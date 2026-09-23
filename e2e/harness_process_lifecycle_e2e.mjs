@@ -591,6 +591,82 @@ async function main() {
   );
   assert.deepEqual(listRequests, [{ limit: 1 }], 'W6 beta stays absent and limit is forwarded');
 
+  // Stream-first receipt table: C1 a stream can replay an older idle; C2 one
+  // receipt changes from pending to processed under the same id; C3 an
+  // requires_action idle precedes end_turn; C4 the stream may close before the
+  // terminal event and history then contains the missing suffix. Effects: E1
+  // same-id replacement preserves one receipt in order; E2 only the caller's
+  // post-receipt predicate completes; E3 a complete stream performs no list;
+  // E4 a dropped stream performs one authoritative backfill and never re-sends.
+  // Rules W9=C1+C2+C3=>E1+E2+E3 and W10=C2+C4=>E1+E2+E4.
+  let streamCalls = 0;
+  let streamListCalls = 0;
+  const streamClient = {
+    beta: { sessions: { events: {
+      stream: async function* stream() {
+        streamCalls += 1;
+        yield { id: 'old-idle', type: 'session.status_idle', processed_at: 't0', stop_reason: { type: 'end_turn' } };
+        yield { id: 'receipt', type: 'user.message', processed_at: null };
+        yield { id: 'receipt', type: 'user.message', processed_at: 't1' };
+        yield { id: 'reply', type: 'agent.message', processed_at: 't2' };
+        yield { id: 'ask', type: 'session.status_idle', processed_at: 't3', stop_reason: { type: 'requires_action' } };
+        yield { id: 'done', type: 'session.status_idle', processed_at: 't4', stop_reason: { type: 'end_turn' } };
+      },
+      list: async function* list() {
+        streamListCalls += 1;
+        throw new Error('W9 completed stream must not list history');
+      },
+    } } },
+  };
+  const streamed = await waitForSessionEventReceipt(
+    streamClient,
+    'session',
+    'receipt',
+    ['managed-agents-test'],
+    ({ delta }) => delta.some((event) => event.type === 'session.status_idle'
+      && event.stop_reason?.type === 'end_turn'),
+    'W9 stream-first exact receipt',
+    { timeoutMs: 1_000, preferStream: true },
+  );
+  assert.equal(streamCalls, 1, 'W9 opens one turn stream');
+  assert.equal(streamListCalls, 0, 'W9 needs no polling or backfill');
+  assert.deepEqual(
+    streamed.events.map((event) => event.id),
+    ['old-idle', 'receipt', 'reply', 'ask', 'done'],
+    'W9 replaces the pending receipt and ignores the older idle',
+  );
+
+  let droppedStreams = 0;
+  let backfills = 0;
+  const droppedClient = {
+    beta: { sessions: { events: {
+      stream: async function* stream() {
+        droppedStreams += 1;
+        // Simulate reconnecting after the receipt frame but before its reply.
+        // History must put this live suffix back after the receipt.
+        yield { id: 'reply', type: 'agent.message', processed_at: 't2' };
+      },
+      list: async function* list() {
+        backfills += 1;
+        yield { id: 'receipt', type: 'user.message', processed_at: 't1' };
+        yield { id: 'reply', type: 'agent.message', processed_at: 't2' };
+        yield { id: 'done', type: 'session.status_idle', processed_at: 't3', stop_reason: { type: 'end_turn' } };
+      },
+    } } },
+  };
+  const backfilled = await waitForSessionEventReceipt(
+    droppedClient,
+    'session',
+    'receipt',
+    ['managed-agents-test'],
+    ({ delta }) => delta.some((event) => event.id === 'done'),
+    'W10 dropped stream history reconciliation',
+    { timeoutMs: 1_000, preferStream: true },
+  );
+  assert.equal(droppedStreams, 1, 'W10 does not reopen after history completes');
+  assert.equal(backfills, 1, 'W10 performs one authoritative backfill');
+  assert.deepEqual(backfilled.delta.map((event) => event.id), ['reply', 'done']);
+
   // Receipt-read failure table: C1 the unkeyed send already returned its exact
   // receipt; C2 the next idempotent history read may fail with a classified
   // HTTP/transport transient; C3 history may fail with an unclassified product

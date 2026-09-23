@@ -8,6 +8,7 @@ import Anthropic from '@anthropic-ai/sdk';
 // declaration shim; Node executes this import directly in the K3D lane.
 // @ts-expect-error -- harness.mjs is the canonical runtime implementation.
 import {
+  listManagedSessionEvents,
   managedFileUploadForm,
   retryableReadStatus,
   waitForSessionEventReceipt,
@@ -185,22 +186,15 @@ async function uploadSkill(base: string, name: string, content: string) {
   return response.value;
 }
 
-async function listSessionEvents(client: Anthropic, sessionId: string) {
-  const history = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    history.push(event);
-  }
-  return history;
-}
-
-function hasCompletedProviderMarker(events: any[], marker: string) {
+export function hasCompletedProviderMarker(events: any[], marker: string) {
   const expected = `ADR71-PROVIDER:${marker}`;
   const markerIndex = events.findIndex((event) => event.type === 'agent.message'
     && (event.content ?? []).some(
       (block: any) => block.type === 'text' && block.text === expected,
     ));
   return markerIndex >= 0
-    && events.slice(markerIndex + 1).some((event) => event.type === 'session.status_idle');
+    && events.slice(markerIndex + 1).some((event) => event.type === 'session.status_idle'
+      && event.stop_reason?.type === 'end_turn');
 }
 
 async function waitForInitialAgentMarker(
@@ -217,7 +211,7 @@ async function waitForInitialAgentMarker(
   // replaying Deployment run. Constraint K1: every ordinary Event send uses the
   // receipt-scoped helper below instead.
   return waitForValue(
-    () => listSessionEvents(client, sessionId),
+    () => listManagedSessionEvents(client, sessionId, BETAS),
     (events: any[]) => hasCompletedProviderMarker(events, marker),
     `Deployment initial Event ${marker} to commit its Provider marker and idle`,
     { timeoutMs, pollMs: 500 },
@@ -259,24 +253,16 @@ async function sendAndWaitForAgentMarker(
       // correctly reject one mixed committed-prefix read with 503; retry that
       // read under the same exact receipt, never the Event send above.
       retryReadError: (error: unknown) => retryableReadStatus(error) !== null,
+      preferStream: true,
     },
   );
   const observedAt = performance.now();
   return { ...observation, elapsed: observedAt - started, admissionMs: acceptedAt - started, observationMs: observedAt - acceptedAt };
 }
 
-export function descendingReceiptObservation(events: any[], receiptId: string) {
-  const receiptIndex = events.findIndex((event) => event.id === receiptId);
-  const receiptEvent = receiptIndex < 0 ? undefined : events[receiptIndex];
-  return {
-    events,
-    receiptEvent,
-    delta: receiptEvent?.processed_at ? events.slice(0, receiptIndex).reverse() : [],
-  };
-}
-
 // Pressure qualification and retained-cluster diagnostics share this exact
-// receipt observer; exporting it adds no alternate wait or acceptance policy.
+// receipt observer; the wrapper only binds this scenario's marker predicate and
+// stream-first transport to the canonical harness state machine.
 export async function waitForRecentSessionEventReceipt(
   client: Anthropic,
   sessionId: string,
@@ -284,26 +270,19 @@ export async function waitForRecentSessionEventReceipt(
   marker: string,
   timeoutMs: number,
 ) {
-  return waitForValue(
-    async () => {
-      const page = await client.beta.sessions.events.list(sessionId, {
-        betas: BETAS, order: 'desc', limit: 50,
-      });
-      const recent = descendingReceiptObservation(page.data, receiptId);
-      if (recent.receiptEvent) return recent;
-      const events = await listSessionEvents(client, sessionId);
-      const receiptIndex = events.findIndex((event: any) => event.id === receiptId);
-      const receiptEvent = receiptIndex < 0 ? undefined : events[receiptIndex];
-      return {
-        events,
-        receiptEvent,
-        delta: receiptEvent?.processed_at ? events.slice(receiptIndex + 1) : [],
-      };
-    },
-    (observation: any) => Boolean(observation.receiptEvent?.processed_at)
-      && hasCompletedProviderMarker(observation.delta, marker),
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }: { delta: any[] }) => hasCompletedProviderMarker(delta, marker),
     `Event ${marker} receipt to reach its exact Provider marker and later idle`,
-    { timeoutMs, pollMs: 500, retryReadError: (error: unknown) => retryableReadStatus(error) !== null },
+    {
+      timeoutMs,
+      pollMs: 500,
+      retryReadError: (error: unknown) => retryableReadStatus(error) !== null,
+      preferStream: true,
+    },
   );
 }
 
@@ -539,7 +518,7 @@ async function readDurableDuringFault(
   assert.equal(deployment.id, deploymentId);
   const session = await client.beta.sessions.retrieve(sessionId, { betas: BETAS });
   assert.equal(session.id, sessionId);
-  const events = await listSessionEvents(client, sessionId);
+  const events = await listManagedSessionEvents(client, sessionId, BETAS);
   const eventIds = events.map((event: any) => event.id);
   assert.equal(new Set(eventIds).size, eventIds.length, 'committed event ids stay unique');
   assertProviderResponseCount(events, committedMarker);
@@ -705,11 +684,21 @@ export function auditLoadResults(
   if (histories.length !== markersBySession.length) errors.push('history count differs from planned Sessions');
   for (let index = 0; index < markersBySession.length; index += 1) {
     const history = histories[index] ?? [];
+    const counts = providerResponseCounts(history);
     for (const marker of markersBySession[index]) {
-      try { assertProviderResponseCount(history, marker); }
+      try {
+        assert.equal(
+          counts.get(`ADR71-PROVIDER:${marker}`),
+          1,
+          `expected one exact Provider response for ${marker}`,
+        );
+      }
       catch (error) { errors.push(String(error)); }
     }
-    try { assertProviderResponsesAreUnique(history); }
+    try {
+      const duplicates = [...counts].filter(([, count]) => count !== 1);
+      assert.deepEqual(duplicates, [], `duplicate Provider responses: ${JSON.stringify(duplicates)}`);
+    }
     catch (error) { errors.push(String(error)); }
   }
   const sorted = [...latencies].sort((left, right) => left - right);
@@ -818,7 +807,9 @@ async function load(base: string) {
     // Refresh durable history after all clients settle, including those whose
     // response was lost. Cached successful observations cannot establish the
     // outcome of the last failed request. A failed read remains an audit error.
-    const finalReads = await Promise.allSettled(sessions.map((session) => listSessionEvents(managed, session)));
+    const finalReads = await Promise.allSettled(
+      sessions.map((session) => listManagedSessionEvents(managed, session, BETAS)),
+    );
     finalReads.forEach((read, index) => {
       if (read.status === 'fulfilled') histories[index] = read.value;
     });
