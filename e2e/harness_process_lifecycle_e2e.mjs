@@ -717,6 +717,44 @@ async function main() {
     assert.deepEqual(observed.delta, [reply, done]);
   }
 
+  // W10b process-local broadcast table: C1 the accepted receipt is pending in
+  // one API replica's open stream; C2 another replica commits it in durable
+  // history without closing or writing to this stream. E1 a bounded read
+  // window reconciles C2 before the overall deadline; E2 exact receipt occurs
+  // once and the command is never resent. A stream that never ends kills an
+  // implementation that backfills only after disconnect or final timeout.
+  let silentStreams = 0;
+  let silentBackfills = 0;
+  let silentSends = 0;
+  const silentClient = { beta: { sessions: { events: {
+    send: async () => { silentSends += 1; throw new Error('accepted command must not be replayed'); },
+    stream: async function* stream(_session, _params, { signal }) {
+      silentStreams += 1;
+      yield pendingReceipt;
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+    },
+    list: async function* list() {
+      silentBackfills += 1;
+      yield committedReceipt;
+      yield reply;
+      yield done;
+    },
+  } } } };
+  const silentStarted = performance.now();
+  const silentObserved = await waitForSessionEventReceipt(
+    silentClient, 'session', 'receipt', undefined,
+    ({ delta }) => delta.some((event) => event.id === 'done'),
+    'W10b silent cross-replica commit',
+    { timeoutMs: 10_000, pollMs: 1, preferStream: true },
+  );
+  assert.ok(performance.now() - silentStarted < 4_000, 'W10b reconciles before the final deadline');
+  assert.equal(silentStreams, 1);
+  assert.equal(silentBackfills, 1);
+  assert.equal(silentSends, 0);
+  assert.equal(silentObserved.receiptEvent?.processed_at, 't1');
+  assert.equal(silentObserved.events.filter((event) => event.id === 'receipt').length, 1);
+  assert.deepEqual(silentObserved.delta, [reply, done]);
+
   // Receipt-read failure table: C1 the unkeyed send already returned its exact
   // receipt; C2 the next idempotent history read may fail with a classified
   // HTTP/transport transient; C3 history may fail with an unclassified product

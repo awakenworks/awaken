@@ -610,7 +610,11 @@ async function waitForSessionEventReceiptStream(
   while (performance.now() < deadline) {
     const controller = new AbortController();
     const remaining = Math.max(1, deadline - performance.now());
-    const timer = setTimeout(() => controller.abort(), remaining);
+    // The committed broadcast is process-local. Another API replica can
+    // accept and commit the receipt while this SSE connection stays silently
+    // open, so reconcile durable history at a bounded cadence even without a
+    // disconnect. Keep the same receipt and never replay its Event send.
+    const timer = setTimeout(() => controller.abort(), Math.min(remaining, 1_000));
     try {
       const stream = await client.beta.sessions.events.stream(
         sessionId,
