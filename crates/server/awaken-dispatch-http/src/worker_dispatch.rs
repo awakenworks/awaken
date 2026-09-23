@@ -782,6 +782,10 @@ fn checkpoint_store(
         .ok_or_else(|| HostError::internal("worker checkpoint store is not configured"))
 }
 
+// Work ownership can outlive a Run claim. Delay only the blocked Dispatch long
+// enough for the pool to see independent Sessions; the store owns the deadline.
+const SESSION_WORK_BUSY_RETRY_MS: u64 = 5_000;
+
 /// Attach the exact subordinate Work authority to a newly claimed Session Run.
 /// This is the only production issuer: it consumes the result of the canonical
 /// acquisition port and never accepts caller-supplied Work coordinates.
@@ -815,12 +819,13 @@ async fn bind_claimed_session_work_authority(
             let claim = RunClaim::from(&claimed_run.lease);
             service
                 .dispatch
-                .relinquish_claim(&claim)
+                .defer_claim(&claim, SESSION_WORK_BUSY_RETRY_MS)
                 .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
-            return Err(HostError::conflict(
-                "Session Work is owned by another Worker attempt",
-            ));
+                .map_err(|error| HostError::unavailable(error.to_string()))?;
+            tracing::debug!(run_id = %claim.run_id.0, session_id,
+                retry_after_ms = SESSION_WORK_BUSY_RETRY_MS,
+                "Session Work is held by another Worker; deferred only this Dispatch");
+            return Ok(None);
         }
         Err(error) => {
             let claim = RunClaim::from(&claimed_run.lease);
