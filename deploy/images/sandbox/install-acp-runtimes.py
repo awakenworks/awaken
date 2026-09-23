@@ -2,10 +2,35 @@
 """Install the exact ACP runtimes declared by the sandbox image contract."""
 
 import json
+import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+def ensure_codex_platform_binary() -> None:
+    """Install the pinned CLI's platform package when npm omits its optional alias."""
+    arch = {"x86_64": "x64", "aarch64": "arm64"}.get(platform.machine().lower())
+    if platform.system() != "Linux" or arch is None:
+        raise SystemExit("Codex Sandbox image requires a supported Linux architecture")
+
+    npm_root = Path(subprocess.check_output(["npm", "root", "-g"], text=True).strip())
+    package = npm_root / "@openai" / "codex" / "package.json"
+    manifest = json.loads(package.read_text(encoding="utf-8"))
+    alias = f"@openai/codex-linux-{arch}"
+    expected = f"npm:@openai/codex@{manifest['version']}-linux-{arch}"
+    if manifest.get("optionalDependencies", {}).get(alias) != expected:
+        raise SystemExit(f"Codex does not declare the pinned {alias} platform package")
+
+    installed = npm_root / "@openai" / f"codex-linux-{arch}"
+    if not installed.is_dir():
+        subprocess.run(
+            ["npm", "install", "-g", "--no-audit", "--no-fund", f"{alias}@{expected}"],
+            check=True,
+        )
+    if not installed.is_dir():
+        raise SystemExit(f"Codex platform package was not installed: {alias}")
 
 
 def main() -> int:
@@ -37,6 +62,8 @@ def main() -> int:
         raise SystemExit(f"unsupported ACP runtime managers: {', '.join(unsupported)}")
     if npm:
         subprocess.run(["npm", "install", "-g", "--no-audit", "--no-fund", *npm], check=True)
+    if "codex" in selected_ids:
+        ensure_codex_platform_binary()
     if pip:
         subprocess.run(["pip", "install", "--no-cache-dir", *pip], check=True)
 
