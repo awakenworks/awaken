@@ -521,9 +521,13 @@ export async function waitForValue(
 
 // One official-SDK owner for complete Managed Session history. Callers that
 // need a durable audit snapshot reuse this pagination loop instead of assuming
-// one SDK page is the whole history.
+// one SDK page is the whole history. The server's bounded maximum is 500;
+// requesting it here avoids rebuilding the same committed projection once per
+// 50-event default page, while preserving explicit caller pagination choices.
 export async function listManagedSessionEvents(client, sessionId, betas, listParams = {}) {
-  const params = betas === undefined ? { ...listParams } : { ...listParams, betas };
+  const params = { ...listParams };
+  params.limit ??= 500;
+  if (betas !== undefined) params.betas = betas;
   const events = [];
   for await (const event of client.beta.sessions.events.list(sessionId, params)) {
     events.push(event);
@@ -611,7 +615,11 @@ async function waitForSessionEventReceiptStream(
   while (performance.now() < deadline) {
     const controller = new AbortController();
     const remaining = Math.max(1, deadline - performance.now());
-    const timer = setTimeout(() => controller.abort(), remaining);
+    // The committed broadcast is process-local. Another API replica can
+    // accept and commit the receipt while this SSE connection stays silently
+    // open, so reconcile durable history at a bounded cadence even without a
+    // disconnect. Keep the same receipt and never replay its Event send.
+    const timer = setTimeout(() => controller.abort(), Math.min(remaining, 1_000));
     try {
       const stream = await client.beta.sessions.events.stream(
         sessionId,
