@@ -2019,6 +2019,7 @@ name = "awaken-resource-store"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",

@@ -1040,7 +1040,7 @@ mod tests {
     /// inserted out of sorted-id order plus a duplicate: `list` must return the *exact*
     /// id set, strictly ascending, with no duplicate for the repeated bytes. Stronger
     /// than "the returned list happens to be sorted": it pins the set and the order.
-    async fn list_sorted_and_dedup(store: &dyn FileStore) {
+    pub(crate) async fn list_sorted_and_dedup(store: &dyn FileStore) {
         let inputs: [&[u8]; 5] = [b"delta", b"alpha", b"charlie", b"bravo", b"echo"];
         let mut expected = Vec::new();
         for bytes in inputs {
@@ -1063,7 +1063,7 @@ mod tests {
 
     /// Empty bytes are a legitimate blob: they hash to a stable id and round-trip like
     /// any other (the fs backend writes and renames a zero-length file).
-    async fn empty_bytes_round_trip(store: &dyn FileStore) {
+    pub(crate) async fn empty_bytes_round_trip(store: &dyn FileStore) {
         let id = store.put(b"").await.unwrap();
         assert_eq!(id, content_id(b""));
         assert_eq!(store.get(&id).await.unwrap().as_deref(), Some(&b""[..]));
@@ -1190,6 +1190,25 @@ mod tests {
             .unwrap();
         assert_eq!(retained, b"damaged");
         pool.close().await;
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn postgres_shared_set_and_empty_blob_laws() {
+        use crate::postgres::PgFileStore;
+
+        // Causes: F1 five distinct contents inserted out of hash order; F2
+        // each retried with identical bytes; F3 a zero-byte blob is written.
+        // Effects: F1+F2 gives the exact strictly sorted, deduplicated id set;
+        // F3 has the canonical empty hash, readable bytes and idempotent
+        // delete. These are the same shared laws memory, FS and SQLite run.
+        // Decision rules: F1+F2 -> set law; F3 -> empty-byte law.
+        let Some(url) = isolated_postgres_url("t_file_store_set").await else {
+            return;
+        };
+        let store = PgFileStore::connect(&url).await.expect("open File store");
+        list_sorted_and_dedup(&store).await;
+        empty_bytes_round_trip(&store).await;
     }
 
     /// Live upgrade proof for the portable-integer renderer transition. The

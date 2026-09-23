@@ -346,6 +346,13 @@ mod tests {
         assert!(!store.delete(&id).await?);
         assert!(store.get("../outside").await?.is_none());
         assert!(!store.delete("../outside").await?);
+        // The medium-specific corruption/partial-upload checks above and the
+        // shared FileStore set/empty rules both run on memory and MinIO.
+        // F1 distinct/replayed bytes -> exact ordered set; F2 zero bytes ->
+        // stable id, readable empty payload, then absence after deletion.
+        let set_store = ObjectFileStore::new(Arc::clone(&backend), format!("{prefix}/set"));
+        crate::tests::list_sorted_and_dedup(&set_store).await;
+        crate::tests::empty_bytes_round_trip(&store).await;
         Ok(())
     }
 

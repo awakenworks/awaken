@@ -16,6 +16,10 @@ pub async fn awaken_store_conformance::env_registry::run_suite<R: awaken_environ
 pub async fn awaken_store_conformance::env_registry::sandbox_binding_is_one_environment_revision<R: awaken_environment_contract::EnvRegistry>(&R)
 pub async fn awaken_store_conformance::env_registry::scope_round_trips_and_updates<R: awaken_environment_contract::EnvRegistry>(&R)
 pub async fn awaken_store_conformance::env_registry::unique_ids<R: awaken_environment_contract::EnvRegistry>(&R)
+pub mod awaken_store_conformance::resource_lifecycle
+pub fn awaken_store_conformance::resource_lifecycle::intent(&str) -> awaken_resource_contract::lifecycle::ResourcePurgeIntent
+pub fn awaken_store_conformance::resource_lifecycle::reference(&str, &str) -> awaken_resource_contract::lifecycle::ResourceReferenceRecord
+pub async fn awaken_store_conformance::resource_lifecycle::run_suite(&impl awaken_resource_contract::lifecycle::ResourcePurgeRepository + awaken_resource_contract::lifecycle::ResourceReferenceIndex)
 pub mod awaken_store_conformance::resource_registry
 pub async fn awaken_store_conformance::resource_registry::listing_is_partitioned_by_workspace<S: awaken_resource_contract::registry::ResourceRegistryRepository>(&S)
 pub fn awaken_store_conformance::resource_registry::memory_store(&str, &str) -> awaken_resource_contract::registry::MemoryStoreAggregate
