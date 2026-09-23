@@ -16,8 +16,9 @@ use awaken_credential_contract::{
     CredentialAccess, CredentialEnvelope, CredentialEnvelopeIssuance, CredentialEnvelopeIssuer,
     CredentialMaterial, CredentialMaterialBinding, CredentialMaterialCapability,
     CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-    CredentialMaterialSource, PlaintextBoundary, PlaintextHolder, ResolvedCredentialMaterial,
-    SealedCredentialEnvelopeRef, credential_envelope_payload_fingerprint,
+    CredentialMaterialSource, CredentialPurpose, CredentialUsage, PlaintextBoundary,
+    PlaintextHolder, ResolvedCredentialMaterial, SealedCredentialEnvelopeRef,
+    credential_envelope_payload_fingerprint,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
@@ -152,20 +153,37 @@ impl RecipientKeyEnvelope {
         {
             return Err(CredentialMaterialError::RecipientMismatch);
         }
-        // Initial self-hosted delivery qualifies scalar Provider and process
-        // credentials. Structured and OAuth bundles keep their existing owners;
-        // this adapter must never reinterpret either as a scalar API key.
-        if access.refresh.is_some() || !access.usage.is_scalar_process_delivery() {
+        // ACP's exact MCP Authorization Bearer is also a scalar. It enters the
+        // already-declared private process protocol field, never an environment
+        // variable or a Worker-held relay. Do not widen the general scalar
+        // process predicate: other callers use it for Provider/env publication.
+        let acp_mcp_client = holder.boundary == PlaintextBoundary::Workload
+            && access
+                .target
+                .as_ref()
+                .is_some_and(|target| target.purpose == CredentialPurpose::McpAuthorization)
+            && matches!(&access.usage, CredentialUsage::HttpHeader { name, scheme }
+                if name.eq_ignore_ascii_case("authorization")
+                    && scheme.as_deref().is_some_and(|value| value.eq_ignore_ascii_case("Bearer")));
+        if access.refresh.is_some()
+            || !(access.usage.is_scalar_process_delivery() || acp_mcp_client)
+        {
             return Err(CredentialMaterialError::MaterialKindMismatch);
         }
-        let realization = match holder.boundary {
-            PlaintextBoundary::Worker => {
-                awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter
+        let realization = if acp_mcp_client {
+            awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField
+        } else {
+            match holder.boundary {
+                PlaintextBoundary::Worker => {
+                    awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter
+                }
+                PlaintextBoundary::Workload => {
+                    awaken_credential_contract::CredentialRealizationKind::ProcessSecretEnvironment
+                }
+                PlaintextBoundary::Platform => {
+                    return Err(CredentialMaterialError::RecipientMismatch);
+                }
             }
-            PlaintextBoundary::Workload => {
-                awaken_credential_contract::CredentialRealizationKind::ProcessSecretEnvironment
-            }
-            PlaintextBoundary::Platform => return Err(CredentialMaterialError::RecipientMismatch),
         };
         let capabilities = awaken_credential_contract::CredentialRealizationCapabilities {
             holders: [holder.clone()].into_iter().collect(),
