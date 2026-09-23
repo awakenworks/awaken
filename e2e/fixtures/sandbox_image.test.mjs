@@ -106,6 +106,23 @@ if(args[0]==='image'){
       for (const args of probes) assert.deepEqual(args.slice(args.indexOf('exact-fixture') + 1),
         runtimeIds === 'all' ? [] : runtimeIds.split(','));
     }
+
+    // Toolchain-seed decision table: C1 an existing image passes every full
+    // admission check; C2 only its current-source fingerprint is stale; C3 no
+    // explicit seed is configured. Effect E1 rebuild once with that accepted
+    // image as RUST_TOOLCHAIN_IMAGE. Mutants that use the unaccepted default or
+    // override an explicit seed are covered by this row and the loop above.
+    delete process.env.AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE;
+    await fs.writeFile(calls, ''); await fs.rm(state, { force:true });
+    process.env.ADMISSION_MODE = 'current';
+    process.env.ADMISSION_FINGERPRINT = hash(Buffer.from(`runtime_ids=\n${inputHashes.join('\n')}\n`));
+    ensureCanonicalSandboxImage({engine:'docker',image:'exact-fixture',repoRoot:root,runtimeIds:''});
+    const seedCommands = (await fs.readFile(calls,'utf8')).trim().split('\n').map(JSON.parse);
+    const [seedBuild] = seedCommands.filter(args => args[0] === 'build');
+    assert.ok(seedBuild, 'stale current inputs rebuild exactly once');
+    const seed = seedBuild.indexOf('RUST_TOOLCHAIN_IMAGE=exact-fixture');
+    assert.ok(seed > 0 && seedBuild[seed - 1] === '--build-arg',
+      'the fully accepted prior image owns the offline toolchain seed');
   } finally {
     for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
     Object.assign(process.env, previous);
