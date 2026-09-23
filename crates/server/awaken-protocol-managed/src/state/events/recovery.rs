@@ -126,6 +126,37 @@ mod lifecycle_merge_tests {
             "M3 stable tie order",
         );
     }
+
+    #[test]
+    fn lifecycle_merge_scaling_matrix_preserves_every_ordered_prefix() {
+        // Scaling matrix: H=100/1k/10k lifecycle facts x S=1/8/25 ordered
+        // Thread streams. Effects: every fact appears once, global cursor order
+        // is monotonic, and elapsed observations remain diagnostic rather than a
+        // machine-speed correctness threshold. K3D owns the public p95 gate.
+        for total in [100_usize, 1_000, 10_000] {
+            for source_count in [1_usize, 8, 25] {
+                let mut streams = vec![Vec::new(); source_count];
+                for cursor in 1..=total {
+                    let source = cursor % source_count;
+                    streams[source].push(event(cursor as u64, source));
+                }
+                let started = std::time::Instant::now();
+                let merged = merge_ordered_lifecycle_streams(streams);
+                let elapsed = started.elapsed();
+                assert_eq!(merged.len(), total, "H={total} S={source_count}");
+                assert!(
+                    merged
+                        .windows(2)
+                        .all(|pair| pair[0].cursor <= pair[1].cursor),
+                    "H={total} S={source_count}"
+                );
+                eprintln!(
+                    "LIFECYCLE_MERGE_BENCH {{\"history\":{total},\"sources\":{source_count},\"elapsed_us\":{}}}",
+                    elapsed.as_micros(),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(any(test, kani))]
