@@ -12,7 +12,6 @@ use crate::types::environment::Environment;
 
 /// Project an [`EnvItem`] to the official `BetaEnvironment` wire shape. No `scope` on
 /// the wire: ownership is credential-implicit (authz enforces the workspace).
-#[must_use]
 pub(crate) fn project_env(item: &EnvItem) -> Result<Environment, &'static str> {
     Ok(Environment {
         id: item.id.clone(),
