@@ -42,7 +42,7 @@ pub awaken_protocol_awaken::ProfiledSessionCreate::mcp_attachments: alloc::vec::
 pub awaken_protocol_awaken::ProfiledSessionCreate::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_awaken::ProfiledSessionCreate::mode: awaken_protocol_awaken::ProfiledSessionMode
 pub awaken_protocol_awaken::ProfiledSessionCreate::mounts: alloc::vec::Vec<awaken_provisioning_contract::vocab::MountRequirement>
-pub awaken_protocol_awaken::ProfiledSessionCreate::network_restriction: core::option::Option<awaken_session_contract::network_policy::SessionNetworkPolicy>
+pub awaken_protocol_awaken::ProfiledSessionCreate::network_restriction: core::option::Option<awaken_session_configuration_contract::network_policy::SessionNetworkPolicy>
 pub awaken_protocol_awaken::ProfiledSessionCreate::prompts: alloc::vec::Vec<alloc::string::String>
 pub awaken_protocol_awaken::ProfiledSessionCreate::repositories: alloc::vec::Vec<awaken_protocol_awaken::ProfiledSessionRepository>
 pub awaken_protocol_awaken::ProfiledSessionCreate::resource_inputs: alloc::vec::Vec<awaken_session_resource_contract::resource::SessionInputAttachment>

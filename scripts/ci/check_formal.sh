@@ -496,6 +496,44 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_registration_intent_is_exact_idempotent_and_recoverable
   # The actual deleted resolver covers empty-inventory replay and one legacy
   # error/frame/Drop call. Legacy replay remains open.
+  run_kani awaken-session-configuration-contract \
+    --harness resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision \
+    --harness session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch \
+    --harness skill_execution_pin_requires_exact_workspace_revision_and_hash \
+    --harness every_skill_execution_pin_axis_is_binding \
+    --harness managed_toolset_default_resolution_is_source_exact_and_configurable \
+    --harness bounded_runtime_capability_iterator_uses_exact_member_projection \
+    --harness runtime_capability_member_projection_is_total_exact_and_bounded \
+    --harness session_network_normalization_none_partition \
+    --harness session_network_normalization_unrestricted_partition \
+    --harness session_network_normalization_empty_partition \
+    --harness session_network_normalization_one_ascii_host_partition \
+    --harness session_network_normalization_two_ascii_hosts_partition \
+    --harness session_network_intersection_two_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_none_by_none_partition \
+    --harness session_network_intersection_none_by_unrestricted_partition \
+    --harness session_network_intersection_none_by_empty_partition \
+    --harness session_network_intersection_none_by_one_ascii_host_partition \
+    --harness session_network_intersection_none_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_unrestricted_by_none_partition \
+    --harness session_network_intersection_unrestricted_by_unrestricted_partition \
+    --harness session_network_intersection_unrestricted_by_empty_partition \
+    --harness session_network_intersection_unrestricted_by_one_ascii_host_partition \
+    --harness session_network_intersection_unrestricted_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_empty_by_none_partition \
+    --harness session_network_intersection_empty_by_unrestricted_partition \
+    --harness session_network_intersection_empty_by_empty_partition \
+    --harness session_network_intersection_empty_by_one_ascii_host_partition \
+    --harness session_network_intersection_empty_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_one_ascii_host_by_none_partition \
+    --harness session_network_intersection_one_ascii_host_by_unrestricted_partition \
+    --harness session_network_intersection_one_ascii_host_by_empty_partition \
+    --harness session_network_intersection_one_ascii_host_by_one_ascii_host_partition \
+    --harness session_network_intersection_one_ascii_host_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_two_ascii_hosts_by_none_partition \
+    --harness session_network_intersection_two_ascii_hosts_by_unrestricted_partition \
+    --harness session_network_intersection_two_ascii_hosts_by_empty_partition \
+    --harness session_network_intersection_two_ascii_hosts_by_one_ascii_host_partition
   run_kani awaken-session-contract -Z unstable-options \
     --harness deleted_admission_resolver_preserves_empty \
     --harness deleted_admission_resolver_preserves_legacy_error_and_frame \
@@ -577,46 +615,14 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_resource_projection_retains_the_exact_desired_generation \
     --harness initial_event_plan_is_installed_only_on_the_complete_fresh_root \
     --harness session_run_reservation_binds_exactly_one_nonzero_activity_receipt \
-    --harness session_network_intersection_two_by_two_ascii_hosts_partition \
-    --harness session_network_intersection_none_by_none_partition \
-    --harness session_network_intersection_none_by_unrestricted_partition \
-    --harness session_network_intersection_none_by_empty_partition \
-    --harness session_network_intersection_none_by_one_ascii_host_partition \
-    --harness session_network_intersection_none_by_two_ascii_hosts_partition \
-    --harness session_network_intersection_unrestricted_by_none_partition \
-    --harness session_network_intersection_unrestricted_by_unrestricted_partition \
-    --harness session_network_intersection_unrestricted_by_empty_partition \
-    --harness session_network_intersection_unrestricted_by_one_ascii_host_partition \
-    --harness session_network_intersection_unrestricted_by_two_ascii_hosts_partition \
-    --harness session_network_intersection_empty_by_none_partition \
-    --harness session_network_intersection_empty_by_unrestricted_partition \
-    --harness session_network_intersection_empty_by_empty_partition \
-    --harness session_network_intersection_empty_by_one_ascii_host_partition \
-    --harness session_network_intersection_empty_by_two_ascii_hosts_partition \
-    --harness session_network_intersection_one_ascii_host_by_none_partition \
-    --harness session_network_intersection_one_ascii_host_by_unrestricted_partition \
-    --harness session_network_intersection_one_ascii_host_by_empty_partition \
-    --harness session_network_intersection_one_ascii_host_by_one_ascii_host_partition \
-    --harness session_network_intersection_one_ascii_host_by_two_ascii_hosts_partition \
-    --harness session_network_intersection_two_ascii_hosts_by_none_partition \
-    --harness session_network_intersection_two_ascii_hosts_by_unrestricted_partition \
-    --harness session_network_intersection_two_ascii_hosts_by_empty_partition \
-    --harness session_network_intersection_two_ascii_hosts_by_one_ascii_host_partition \
-    --harness session_network_normalization_none_partition \
-    --harness session_network_normalization_unrestricted_partition \
-    --harness session_network_normalization_empty_partition \
-    --harness session_network_normalization_one_ascii_host_partition \
-    --harness session_network_normalization_two_ascii_hosts_partition \
     --harness session_root_replacement_preserves_creation_and_monotonic_update_observations \
     --harness public_millisecond_projection_is_exact_bounded_and_nonwrapping \
     --harness realization_generation_authority_requires_every_axis \
     --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
     --harness realization_ownership_loss_proof_is_total_and_exact \
-    --harness session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
     --harness settled_step_has_no_parallel_observation_authority \
-    --harness resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision \
     --harness source_preparation_and_disposal_require_distinct_durable_phases \
     --harness resource_materialization_selects_only_active_or_pending_root_generation \
     --harness failed_resource_replacement_never_promotes_the_pending_manifest \
@@ -624,13 +630,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_execution_never_reopens \
     --harness session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch \
     --harness runtime_intervals_open_once_and_never_close_before_start \
-    --harness managed_toolset_default_resolution_is_source_exact_and_configurable \
-    --harness bounded_runtime_capability_iterator_uses_exact_member_projection \
-    --harness runtime_capability_member_projection_is_total_exact_and_bounded \
     --harness terminal_environment_receipt_is_admitted_only_during_the_fenced_join \
     --harness initial_realization_recovery_is_exact_for_every_execution_state \
-    --harness skill_execution_pin_requires_exact_workspace_revision_and_hash \
-    --harness every_skill_execution_pin_axis_is_binding \
     --harness frozen_worker_agent_publication_is_exact_or_fails_closed \
     --harness quiescence_receipt_requires_exact_operation_epoch_mcp_set_and_zero_live_effects \
     --harness checkpoint_receipt_requires_every_immutable_generation_axis \

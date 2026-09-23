@@ -8,16 +8,16 @@ pub struct awaken_protocol_managed::project::ProjectedEvent
 pub awaken_protocol_managed::project::ProjectedEvent::id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::project::ProjectedEvent::kind: awaken_protocol_managed::types::OutboundKind
 pub awaken_protocol_managed::project::ProjectedEvent::source_tool_call_id: core::option::Option<alloc::string::String>
-pub fn awaken_protocol_managed::project::agent_client_tools(&[awaken_agent_contract::toolset::ClientToolDescriptor]) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>, alloc::string::String>
+pub fn awaken_protocol_managed::project::agent_client_tools(&[awaken_agent_contract::toolset::ClientToolDescriptor]) -> core::result::Result<alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>, alloc::string::String>
 pub fn awaken_protocol_managed::project::agent_multiagent(&awaken_session_contract::session::AgentCapabilities) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
 pub fn awaken_protocol_managed::project::agent_multiagent_ids(&[alloc::string::String]) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
 pub fn awaken_protocol_managed::project::agent_skills(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
-pub fn awaken_protocol_managed::project::agent_tools(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
-pub fn awaken_protocol_managed::project::managed_tools(&awaken_session_contract::tool_configuration::SessionToolConfiguration) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
+pub fn awaken_protocol_managed::project::agent_tools(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
+pub fn awaken_protocol_managed::project::managed_tools(&awaken_session_contract::tool_configuration::SessionToolConfiguration) -> alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
 pub fn awaken_protocol_managed::project::outcome_evaluation(&awaken_session_contract::session::OutcomeIteration) -> awaken_protocol_managed::types::OutcomeEvaluation
 pub fn awaken_protocol_managed::project::project_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<&awaken_session_contract::session::pending::Pending>) -> alloc::vec::Vec<awaken_protocol_managed::project::ProjectedEvent>
-pub fn awaken_protocol_managed::project::resolved_tools(&[awaken_session_contract::agent_config::AgentTool]) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
-pub fn awaken_protocol_managed::project::session_tool_configuration(&[awaken_session_contract::agent_config::AgentTool]) -> awaken_session_contract::tool_configuration::SessionToolConfiguration
+pub fn awaken_protocol_managed::project::resolved_tools(&[awaken_session_configuration_contract::agent_config::AgentTool]) -> alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
+pub fn awaken_protocol_managed::project::session_tool_configuration(&[awaken_session_configuration_contract::agent_config::AgentTool]) -> awaken_session_contract::tool_configuration::SessionToolConfiguration
 pub fn awaken_protocol_managed::project::validate_custom_tool(&awaken_session_contract::session::CustomTool) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_protocol_managed::types
 pub mod awaken_protocol_managed::types::agent
@@ -68,7 +68,7 @@ pub awaken_protocol_managed::types::agent::Agent::name: alloc::string::String
 pub awaken_protocol_managed::types::agent::Agent::object_type: &'static str
 pub awaken_protocol_managed::types::agent::Agent::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::agent::Agent::system: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::agent::Agent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
+pub awaken_protocol_managed::types::agent::Agent::tools: alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
 pub awaken_protocol_managed::types::agent::Agent::updated_at: alloc::string::String
 pub awaken_protocol_managed::types::agent::Agent::version: u64
 pub struct awaken_protocol_managed::types::agent::AgentCreateParams
@@ -80,7 +80,7 @@ pub awaken_protocol_managed::types::agent::AgentCreateParams::multiagent: core::
 pub awaken_protocol_managed::types::agent::AgentCreateParams::name: alloc::string::String
 pub awaken_protocol_managed::types::agent::AgentCreateParams::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::agent::AgentCreateParams::system: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::agent::AgentCreateParams::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
+pub awaken_protocol_managed::types::agent::AgentCreateParams::tools: alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
 pub struct awaken_protocol_managed::types::agent::AgentListParams
 pub awaken_protocol_managed::types::agent::AgentListParams::created_at_gte: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::agent::AgentListParams::created_at_lte: core::option::Option<alloc::string::String>
@@ -120,7 +120,7 @@ pub awaken_protocol_managed::types::agent::AgentUpdateParams::multiagent: core::
 pub awaken_protocol_managed::types::agent::AgentUpdateParams::name: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::agent::AgentUpdateParams::skills: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>>>
 pub awaken_protocol_managed::types::agent::AgentUpdateParams::system: core::option::Option<core::option::Option<alloc::string::String>>
-pub awaken_protocol_managed::types::agent::AgentUpdateParams::tools: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>>
+pub awaken_protocol_managed::types::agent::AgentUpdateParams::tools: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>>>
 pub awaken_protocol_managed::types::agent::AgentUpdateParams::version: core::option::Option<u64>
 pub struct awaken_protocol_managed::types::agent::SelfRosterReference
 pub awaken_protocol_managed::types::agent::SelfRosterReference::kind: awaken_protocol_managed::types::agent::SelfRosterReferenceKind
@@ -595,7 +595,7 @@ pub fn awaken_protocol_managed::types::AgentRef::mcp_servers_override(&self) -> 
 pub fn awaken_protocol_managed::types::AgentRef::model_override(&self) -> awaken_protocol_managed::types::ModelOverride
 pub fn awaken_protocol_managed::types::AgentRef::skills_override(&self) -> core::option::Option<&[awaken_protocol_managed::types::agent::AgentSkill]>
 pub fn awaken_protocol_managed::types::AgentRef::system_override(&self) -> core::option::Option<core::option::Option<&str>>
-pub fn awaken_protocol_managed::types::AgentRef::tools_override(&self) -> core::option::Option<&[awaken_session_contract::agent_config::AgentTool]>
+pub fn awaken_protocol_managed::types::AgentRef::tools_override(&self) -> core::option::Option<&[awaken_session_configuration_contract::agent_config::AgentTool]>
 pub fn awaken_protocol_managed::types::AgentRef::version(&self) -> core::option::Option<u64>
 pub enum awaken_protocol_managed::types::session::AgentRefObject
 pub awaken_protocol_managed::types::session::AgentRefObject::Agent
@@ -607,7 +607,7 @@ pub awaken_protocol_managed::types::session::AgentRefObject::AgentWithOverrides:
 pub awaken_protocol_managed::types::session::AgentRefObject::AgentWithOverrides::model: core::option::Option<awaken_protocol_managed::types::agent::ModelInput>
 pub awaken_protocol_managed::types::session::AgentRefObject::AgentWithOverrides::skills: core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>>
 pub awaken_protocol_managed::types::session::AgentRefObject::AgentWithOverrides::system: core::option::Option<core::option::Option<alloc::string::String>>
-pub awaken_protocol_managed::types::session::AgentRefObject::AgentWithOverrides::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
+pub awaken_protocol_managed::types::session::AgentRefObject::AgentWithOverrides::tools: core::option::Option<alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>>
 pub awaken_protocol_managed::types::session::AgentRefObject::AgentWithOverrides::version: core::option::Option<u64>
 pub enum awaken_protocol_managed::types::session::AutoEvaluatedPermission
 pub awaken_protocol_managed::types::session::AutoEvaluatedPermission::Allow
@@ -959,13 +959,13 @@ pub awaken_protocol_managed::types::session::SessionAgent::multiagent: core::opt
 pub awaken_protocol_managed::types::session::SessionAgent::name: alloc::string::String
 pub awaken_protocol_managed::types::session::SessionAgent::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::session::SessionAgent::system: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::session::SessionAgent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
+pub awaken_protocol_managed::types::session::SessionAgent::tools: alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
 pub awaken_protocol_managed::types::session::SessionAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
 pub struct awaken_protocol_managed::types::session::SessionAgentUpdate
 pub awaken_protocol_managed::types::session::SessionAgentUpdate::mcp_servers: core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentMcpServer>>
-pub awaken_protocol_managed::types::session::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
+pub awaken_protocol_managed::types::session::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>>
 pub struct awaken_protocol_managed::types::session::SessionCreateParams
 pub awaken_protocol_managed::types::session::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
 pub awaken_protocol_managed::types::session::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
@@ -1011,7 +1011,7 @@ pub awaken_protocol_managed::types::session::SessionThreadAgent::model: awaken_p
 pub awaken_protocol_managed::types::session::SessionThreadAgent::name: alloc::string::String
 pub awaken_protocol_managed::types::session::SessionThreadAgent::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::session::SessionThreadAgent::system: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::session::SessionThreadAgent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
+pub awaken_protocol_managed::types::session::SessionThreadAgent::tools: alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
 pub awaken_protocol_managed::types::session::SessionThreadAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
@@ -1329,22 +1329,22 @@ pub awaken_protocol_managed::types::vault::CredentialInjectionLocationParams::he
 pub struct awaken_protocol_managed::types::vault::CredentialMcpProbe
 pub awaken_protocol_managed::types::vault::CredentialMcpProbe::http_response: core::option::Option<awaken_protocol_managed::types::vault::CredentialProbeHttpResponse>
 pub awaken_protocol_managed::types::vault::CredentialMcpProbe::method: alloc::string::String
-impl core::convert::From<awaken_session_contract::mcp_probe::McpProbeFailure> for awaken_protocol_managed::types::vault::CredentialMcpProbe
-pub fn awaken_protocol_managed::types::vault::CredentialMcpProbe::from(awaken_session_contract::mcp_probe::McpProbeFailure) -> Self
+impl core::convert::From<awaken_session_configuration_contract::mcp_probe::McpProbeFailure> for awaken_protocol_managed::types::vault::CredentialMcpProbe
+pub fn awaken_protocol_managed::types::vault::CredentialMcpProbe::from(awaken_session_configuration_contract::mcp_probe::McpProbeFailure) -> Self
 pub struct awaken_protocol_managed::types::vault::CredentialProbeHttpResponse
 pub awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::body: alloc::string::String
 pub awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::body_truncated: bool
 pub awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::content_type: alloc::string::String
 pub awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::status_code: u16
-impl core::convert::From<awaken_session_contract::mcp_probe::ProbeHttpResponse> for awaken_protocol_managed::types::vault::CredentialProbeHttpResponse
-pub fn awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::from(awaken_session_contract::mcp_probe::ProbeHttpResponse) -> Self
+impl core::convert::From<awaken_session_configuration_contract::mcp_probe::ProbeHttpResponse> for awaken_protocol_managed::types::vault::CredentialProbeHttpResponse
+pub fn awaken_protocol_managed::types::vault::CredentialProbeHttpResponse::from(awaken_session_configuration_contract::mcp_probe::ProbeHttpResponse) -> Self
 pub struct awaken_protocol_managed::types::vault::CredentialRefreshResult
 pub awaken_protocol_managed::types::vault::CredentialRefreshResult::http_response: core::option::Option<awaken_protocol_managed::types::vault::CredentialProbeHttpResponse>
 pub awaken_protocol_managed::types::vault::CredentialRefreshResult::status: awaken_protocol_managed::types::vault::CredentialRefreshStatus
 impl awaken_protocol_managed::types::vault::CredentialRefreshResult
 pub fn awaken_protocol_managed::types::vault::CredentialRefreshResult::no_refresh_token() -> Self
-impl core::convert::From<awaken_session_contract::mcp_probe::RefreshExchangeOutcome> for awaken_protocol_managed::types::vault::CredentialRefreshResult
-pub fn awaken_protocol_managed::types::vault::CredentialRefreshResult::from(awaken_session_contract::mcp_probe::RefreshExchangeOutcome) -> Self
+impl core::convert::From<awaken_session_configuration_contract::mcp_probe::RefreshExchangeOutcome> for awaken_protocol_managed::types::vault::CredentialRefreshResult
+pub fn awaken_protocol_managed::types::vault::CredentialRefreshResult::from(awaken_session_configuration_contract::mcp_probe::RefreshExchangeOutcome) -> Self
 pub struct awaken_protocol_managed::types::vault::CredentialUpdateParams
 pub awaken_protocol_managed::types::vault::CredentialUpdateParams::auth: core::option::Option<awaken_protocol_managed::types::vault::CredentialUpdateAuth>
 pub awaken_protocol_managed::types::vault::CredentialUpdateParams::display_name: core::option::Option<core::option::Option<alloc::string::String>>
@@ -1406,7 +1406,7 @@ pub fn awaken_protocol_managed::types::AgentRef::mcp_servers_override(&self) -> 
 pub fn awaken_protocol_managed::types::AgentRef::model_override(&self) -> awaken_protocol_managed::types::ModelOverride
 pub fn awaken_protocol_managed::types::AgentRef::skills_override(&self) -> core::option::Option<&[awaken_protocol_managed::types::agent::AgentSkill]>
 pub fn awaken_protocol_managed::types::AgentRef::system_override(&self) -> core::option::Option<core::option::Option<&str>>
-pub fn awaken_protocol_managed::types::AgentRef::tools_override(&self) -> core::option::Option<&[awaken_session_contract::agent_config::AgentTool]>
+pub fn awaken_protocol_managed::types::AgentRef::tools_override(&self) -> core::option::Option<&[awaken_session_configuration_contract::agent_config::AgentTool]>
 pub fn awaken_protocol_managed::types::AgentRef::version(&self) -> core::option::Option<u64>
 pub enum awaken_protocol_managed::types::AgentRefObject
 pub awaken_protocol_managed::types::AgentRefObject::Agent
@@ -1418,7 +1418,7 @@ pub awaken_protocol_managed::types::AgentRefObject::AgentWithOverrides::mcp_serv
 pub awaken_protocol_managed::types::AgentRefObject::AgentWithOverrides::model: core::option::Option<awaken_protocol_managed::types::agent::ModelInput>
 pub awaken_protocol_managed::types::AgentRefObject::AgentWithOverrides::skills: core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>>
 pub awaken_protocol_managed::types::AgentRefObject::AgentWithOverrides::system: core::option::Option<core::option::Option<alloc::string::String>>
-pub awaken_protocol_managed::types::AgentRefObject::AgentWithOverrides::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
+pub awaken_protocol_managed::types::AgentRefObject::AgentWithOverrides::tools: core::option::Option<alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>>
 pub awaken_protocol_managed::types::AgentRefObject::AgentWithOverrides::version: core::option::Option<u64>
 pub enum awaken_protocol_managed::types::AutoEvaluatedPermission
 pub awaken_protocol_managed::types::AutoEvaluatedPermission::Allow
@@ -1785,13 +1785,13 @@ pub awaken_protocol_managed::types::SessionAgent::multiagent: core::option::Opti
 pub awaken_protocol_managed::types::SessionAgent::name: alloc::string::String
 pub awaken_protocol_managed::types::SessionAgent::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::SessionAgent::system: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::SessionAgent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
+pub awaken_protocol_managed::types::SessionAgent::tools: alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
 pub awaken_protocol_managed::types::SessionAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
 pub struct awaken_protocol_managed::types::SessionAgentUpdate
 pub awaken_protocol_managed::types::SessionAgentUpdate::mcp_servers: core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentMcpServer>>
-pub awaken_protocol_managed::types::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
+pub awaken_protocol_managed::types::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>>
 pub struct awaken_protocol_managed::types::SessionCreateParams
 pub awaken_protocol_managed::types::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
 pub awaken_protocol_managed::types::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
@@ -1837,7 +1837,7 @@ pub awaken_protocol_managed::types::SessionThreadAgent::model: awaken_protocol_m
 pub awaken_protocol_managed::types::SessionThreadAgent::name: alloc::string::String
 pub awaken_protocol_managed::types::SessionThreadAgent::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::SessionThreadAgent::system: core::option::Option<alloc::string::String>
-pub awaken_protocol_managed::types::SessionThreadAgent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
+pub awaken_protocol_managed::types::SessionThreadAgent::tools: alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
 pub awaken_protocol_managed::types::SessionThreadAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
@@ -2058,7 +2058,7 @@ pub awaken_protocol_managed::McpInspectionView::credential: core::option::Option
 pub awaken_protocol_managed::McpInspectionView::http_status: core::option::Option<u16>
 pub awaken_protocol_managed::McpInspectionView::location: &'static str
 pub awaken_protocol_managed::McpInspectionView::status: &'static str
-pub awaken_protocol_managed::McpInspectionView::tools: alloc::vec::Vec<awaken_session_contract::mcp_probe::McpProbeTool>
+pub awaken_protocol_managed::McpInspectionView::tools: alloc::vec::Vec<awaken_session_configuration_contract::mcp_probe::McpProbeTool>
 pub struct awaken_protocol_managed::ModelEntry
 pub awaken_protocol_managed::ModelEntry::context_window: core::option::Option<u32>
 pub awaken_protocol_managed::ModelEntry::display_name: alloc::string::String
@@ -2087,8 +2087,8 @@ pub async fn awaken_protocol_managed::VaultState::reconcile_rollouts(&self) -> c
 pub fn awaken_protocol_managed::VaultState::set_rollout_target(&self, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>)
 pub fn awaken_protocol_managed::VaultState::with_clock(self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> Self
 pub fn awaken_protocol_managed::VaultState::with_material_delivery(self, awaken_credential_contract::custody::CredentialMaterialDelivery) -> Self
-pub fn awaken_protocol_managed::VaultState::with_probe(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>) -> Self
-pub fn awaken_protocol_managed::VaultState::with_refresh_exchange(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::CredentialRefreshExchange>) -> Self
+pub fn awaken_protocol_managed::VaultState::with_probe(self, alloc::sync::Arc<dyn awaken_session_configuration_contract::mcp_probe::McpProbe>) -> Self
+pub fn awaken_protocol_managed::VaultState::with_refresh_exchange(self, alloc::sync::Arc<dyn awaken_session_configuration_contract::mcp_probe::CredentialRefreshExchange>) -> Self
 impl awaken_protocol_managed::VaultState
 pub async fn awaken_protocol_managed::VaultState::inspect_mcp(&self, &str, &str, core::option::Option<&str>) -> core::result::Result<awaken_protocol_managed::McpInspectionView, awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::mcp_credential_choices(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<awaken_protocol_managed::McpCredentialChoice>, awaken_credential_vault::CredentialError>

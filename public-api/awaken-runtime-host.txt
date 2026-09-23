@@ -170,9 +170,9 @@ pub fn awaken_runtime_host::DeploymentConfig::trusted_host_enabled(&self) -> boo
 pub fn awaken_runtime_host::DeploymentConfig::trusted_host_support(&self) -> core::option::Option<awaken_provisioning_contract::sandbox::runtime::SandboxCapabilities>
 pub fn awaken_runtime_host::DeploymentConfig::validate_local_execution(&self) -> core::result::Result<(), alloc::string::String>
 pub struct awaken_runtime_host::ExtMcpProbe
-impl awaken_session_contract::mcp_probe::McpProbe for awaken_runtime_host::ExtMcpProbe
-pub fn awaken_runtime_host::ExtMcpProbe::inspect<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<&'life2 awaken_agent_contract::secret::RedactedString>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::mcp_probe::McpInspection> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_runtime_host::ExtMcpProbe::probe<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_contract::mcp_probe::McpProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_session_configuration_contract::mcp_probe::McpProbe for awaken_runtime_host::ExtMcpProbe
+pub fn awaken_runtime_host::ExtMcpProbe::inspect<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<&'life2 awaken_agent_contract::secret::RedactedString>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_configuration_contract::mcp_probe::McpInspection> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_host::ExtMcpProbe::probe<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_session_configuration_contract::mcp_probe::McpProbeStatus> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_runtime_host::HostError
 pub awaken_runtime_host::HostError::code: alloc::string::String
 pub awaken_runtime_host::HostError::kind: awaken_runtime_host::HostErrorKind
@@ -418,14 +418,14 @@ pub fn awaken_runtime_host::SharedHost::client_tools(&self) -> &std::collections
 pub fn awaken_runtime_host::SharedHost::content_capture_ceiling(&self) -> awaken_runtime_contract::capture::ContentCapture
 pub fn awaken_runtime_host::SharedHost::default_environment_capacity_shape(&self) -> awaken_provisioning_contract::spec::SandboxCapacityShapeId
 pub async fn awaken_runtime_host::SharedHost::discard_default_environment_capacity(&self)
-pub async fn awaken_runtime_host::SharedHost::discard_environment_snapshot_capacity(&self, &awaken_session_contract::baseline::EnvironmentSnapshot)
+pub async fn awaken_runtime_host::SharedHost::discard_environment_snapshot_capacity(&self, &awaken_session_configuration_contract::baseline::EnvironmentSnapshot)
 pub fn awaken_runtime_host::SharedHost::dispatch_completion_sink(&self) -> alloc::sync::Arc<dyn awaken_run_ingress::pool::CompletionSink>
 pub fn awaken_runtime_host::SharedHost::dispatch_owner(&self) -> &str
 pub fn awaken_runtime_host::SharedHost::dispatch_pool_sizing(&self) -> awaken_runtime_host::DispatchPoolSizing
 pub fn awaken_runtime_host::SharedHost::dispatch_store(&self) -> core::result::Result<alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::drain_runtime(&self, core::time::Duration) -> bool
 pub fn awaken_runtime_host::SharedHost::ensure_dispatch_pool(&alloc::sync::Arc<Self>)
-pub fn awaken_runtime_host::SharedHost::environment_snapshot_capacity_shape(&self, &awaken_session_contract::baseline::EnvironmentSnapshot) -> awaken_provisioning_contract::spec::SandboxCapacityShapeId
+pub fn awaken_runtime_host::SharedHost::environment_snapshot_capacity_shape(&self, &awaken_session_configuration_contract::baseline::EnvironmentSnapshot) -> awaken_provisioning_contract::spec::SandboxCapacityShapeId
 pub fn awaken_runtime_host::SharedHost::environment_warmup_limits(&self) -> (usize, usize)
 pub fn awaken_runtime_host::SharedHost::hub(&self) -> &alloc::sync::Arc<awaken_runtime_host::ThreadEventHub>
 pub fn awaken_runtime_host::SharedHost::install_capture_sink(&self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>)
@@ -441,11 +441,11 @@ pub async fn awaken_runtime_host::SharedHost::pool_can_resume_work(&self) -> boo
 pub fn awaken_runtime_host::SharedHost::pool_in_flight(&self) -> u32
 pub async fn awaken_runtime_host::SharedHost::prewarm_cache_volume(&self, awaken_runtime_host::CacheVolumeWarmup) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_runtime_host::SharedHost::prewarm_default_environment_capacity(&self, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::error::SandboxError>
-pub async fn awaken_runtime_host::SharedHost::prewarm_environment_snapshot(&self, &awaken_session_contract::baseline::EnvironmentSnapshot, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::error::SandboxError>
+pub async fn awaken_runtime_host::SharedHost::prewarm_environment_snapshot(&self, &awaken_session_configuration_contract::baseline::EnvironmentSnapshot, usize) -> core::result::Result<usize, awaken_provisioning_contract::sandbox::error::SandboxError>
 pub fn awaken_runtime_host::SharedHost::provision_local_workspace() -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::provision_local_workspace_at(&std::path::Path) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::publish_local_workspace_at(&std::path::Path, &str) -> core::io::error::Result<alloc::string::String>
-pub fn awaken_runtime_host::SharedHost::ready_environment_snapshot_capacity(&self, &awaken_session_contract::baseline::EnvironmentSnapshot) -> usize
+pub fn awaken_runtime_host::SharedHost::ready_environment_snapshot_capacity(&self, &awaken_session_configuration_contract::baseline::EnvironmentSnapshot) -> usize
 pub fn awaken_runtime_host::SharedHost::register_thread_delegates(&self, &str, alloc::vec::Vec<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::register_thread_model(&self, &str, impl core::convert::Into<alloc::string::String>)
 pub fn awaken_runtime_host::SharedHost::registered_thread_workspace(&self, &str) -> core::option::Option<alloc::string::String>
@@ -487,8 +487,8 @@ pub fn awaken_runtime_host::SharedHost::with_session_container_environment_compo
 pub fn awaken_runtime_host::SharedHost::with_session_container_provider(self, alloc::sync::Arc<dyn awaken_sandbox_container::provider_contract::ContainerEnvironmentProvider>, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_container_provider_and_capacity(self, alloc::sync::Arc<dyn awaken_sandbox_container::provider_contract::ContainerEnvironmentProvider>, core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_secret_broker(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::foundation::SecretBroker>) -> Self
-pub fn awaken_runtime_host::SharedHost::with_skill_bundle_source(self, alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::ResourceOperationFence>>) -> Self
-pub fn awaken_runtime_host::SharedHost::with_skill_catalog_application(self, alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillCatalogApplication>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_skill_bundle_source(self, alloc::sync::Arc<dyn awaken_session_configuration_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::ResourceOperationFence>>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_skill_catalog_application(self, alloc::sync::Arc<dyn awaken_session_configuration_contract::skill_execution::SkillCatalogApplication>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_skill_fork_placement(self, awaken_runtime_host::SkillForkPlacement) -> Self
 pub fn awaken_runtime_host::SharedHost::with_skills(self, alloc::vec::Vec<awaken_ext_skills::spec::SkillSpec>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_state_machine(self, serde_json::value::Value) -> Self
@@ -631,7 +631,7 @@ pub fn awaken_runtime_host::default_postgres_max_connections() -> core::num::non
 pub async fn awaken_runtime_host::package_image_provisioner(&awaken_runtime_host::DeploymentConfig) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::runtime::PackageImageProvisioner>>, alloc::string::String>
 pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::platform_plugin_capabilities_with_web_search(&awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
-pub fn awaken_runtime_host::remote_worker_placement(&awaken_runtime_contract::resolved::ResolvedSpec, core::option::Option<&awaken_session_contract::baseline::EnvironmentSnapshot>, core::option::Option<&awaken_session_resource_contract::resource::SessionResourceManifest>, bool) -> awaken_worker_contract::requirements::PlacementRequirements
+pub fn awaken_runtime_host::remote_worker_placement(&awaken_runtime_contract::resolved::ResolvedSpec, core::option::Option<&awaken_session_configuration_contract::baseline::EnvironmentSnapshot>, core::option::Option<&awaken_session_resource_contract::resource::SessionResourceManifest>, bool) -> awaken_worker_contract::requirements::PlacementRequirements
 pub async fn awaken_runtime_host::resolve_sandbox_tier(awaken_runtime_host::SandboxTier, bool, &std::path::Path) -> core::result::Result<awaken_runtime_host::SandboxTier, alloc::string::String>
 pub fn awaken_runtime_host::self_hosted_inference_holder(&awaken_runtime_contract::activation::RunActivation) -> core::result::Result<core::option::Option<awaken_credential_contract::PlaintextHolder>, awaken_runtime_host::HostError>
 pub type awaken_runtime_host::AttemptExecutorDecorator = alloc::sync::Arc<(dyn core::ops::function::Fn(alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> + core::marker::Send + core::marker::Sync)>

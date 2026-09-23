@@ -1,0 +1,38 @@
+[package]
+name = "awaken-session-configuration-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "contract"
+kinds = ["types", "spi"]
+authority = "session-configuration"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-credential-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-session-mcp-contract.workspace = true
+awaken-session-resource-contract.workspace = true
+async-trait.workspace = true
+http = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+schemars = { version = "1", optional = true }
+
+[features]
+schema = ["dep:schemars"]
+
+[dev-dependencies]
+awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
