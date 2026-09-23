@@ -262,6 +262,7 @@ struct RecordingSessionWork {
     epoch: AtomicU64,
     unavailable: AtomicBool,
     mode: Mutex<WorkMode>,
+    foreign_session: Mutex<Option<String>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -293,6 +294,8 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
             ));
         }
         let mode = *self.mode.lock().unwrap();
+        let foreign = matches!(mode, WorkMode::Foreign)
+            || self.foreign_session.lock().unwrap().as_deref() == Some(session_id.as_str());
         if matches!(mode, WorkMode::Retired) {
             return Ok(awaken_session_work_contract::SessionWorkOwnership::Unowned);
         }
@@ -301,7 +304,7 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
                 work_id: format!("work-{session_id}"),
                 environment_id: "env".into(),
                 session_id: session_id.clone(),
-                owner: if matches!(mode, WorkMode::Foreign) {
+                owner: if foreign {
                     "other-worker".into()
                 } else {
                     worker_owner.into()
@@ -337,6 +340,112 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
     ) -> Result<usize, awaken_session_work_contract::WorkQueueError> {
         Ok(0)
     }
+}
+
+#[tokio::test]
+async fn foreign_session_work_defers_only_its_dispatch_and_leaves_other_sessions_runnable() {
+    // Cause/effect graph: C1 the earliest Session Run is claimed but its Work
+    // lease belongs to another Worker; C2 a later independent Session is
+    // runnable; C3 the store clock is before/at the exact retry deadline and
+    // Work ownership becomes available; C4 the Work authority itself fails.
+    // Effects: E1 C1 returns no claim and
+    // retains the first Run without a physical attempt or retry-budget cost;
+    // E2 C1+C2 admits the second Run without an HTTP conflict; E3 C3 rejects
+    // early re-entry and then admits the original Run once due; E4 C4 returns
+    // unavailable and retains the row. Decision table:
+    // R1 C1 -> E1; R2 C1+C2 -> E2; R3 C1+C3(before) -> no claim;
+    // R4 C1+C3(due)+available Work -> E3; R5 C4 -> E4.
+    let clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+    for (run, session) in [("busy-run", "busy-session"), ("ready-run", "ready-session")] {
+        store
+            .enqueue(
+                RunDispatch::new(activation(run, session))
+                    .for_session(ThreadId(session.into()))
+                    .with_session_activity_epoch(1),
+            )
+            .await
+            .expect("enqueue independent Session Run");
+    }
+    let work = Arc::new(RecordingSessionWork::default());
+    *work.foreign_session.lock().unwrap() = Some("busy-session".into());
+    let router = dispatch_transport_router_with_service(Arc::new(
+        WorkerDispatchService::new(
+            store.clone(),
+            Arc::new(HeaderWorkerAuthenticator),
+            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+        )
+        .with_session_work_authority(work.clone()),
+    ));
+
+    let (status, first) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "R1/E1: {first}");
+    assert!(
+        first["claimed"].is_null(),
+        "R1/E1 no foreign Work authority"
+    );
+    let rows = store.list_dispatches().await.unwrap();
+    let blocked = rows.iter().find(|row| row.run_id.0 == "busy-run").unwrap();
+    assert_eq!(
+        blocked.state,
+        awaken_dispatch::DispatchState::Pending,
+        "R1/E1"
+    );
+    assert_eq!(blocked.attempt_count, 0, "R1/E1 no physical retry cost");
+    assert!(!blocked.physical_attempt_active, "R1/E1 no execution");
+
+    let (status, second) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "R2/E2: {second}");
+    assert_eq!(
+        second["claimed"]["request"]["activation"]["run_id"], "ready-run",
+        "R2/E2"
+    );
+    assert!(
+        second["claimed"]["session_work_authority"].is_object(),
+        "R2/E2 exact Work receipt"
+    );
+
+    clock.set(4_999);
+    let (status, early) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "R3: {early}");
+    assert!(early["claimed"].is_null(), "R3 blocked Run is not yet due");
+
+    *work.foreign_session.lock().unwrap() = None;
+    clock.set(5_000);
+    let (status, due) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "R4/E3: {due}");
+    assert_eq!(
+        due["claimed"]["request"]["activation"]["run_id"], "busy-run",
+        "R4/E3"
+    );
+    assert!(
+        due["claimed"]["session_work_authority"].is_object(),
+        "R4/E3 exact Work receipt"
+    );
+
+    store
+        .enqueue(
+            RunDispatch::new(activation("outage-run", "outage-session"))
+                .for_session(ThreadId("outage-session".into()))
+                .with_session_activity_epoch(1),
+        )
+        .await
+        .expect("enqueue outage probe");
+    work.unavailable.store(true, Ordering::SeqCst);
+    let (status, outage) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R5/E4: {outage}");
+    let rows = store.list_dispatches().await.unwrap();
+    let outage_row = rows
+        .iter()
+        .find(|row| row.run_id.0 == "outage-run")
+        .unwrap();
+    assert_eq!(
+        outage_row.state,
+        awaken_dispatch::DispatchState::Pending,
+        "R5/E4"
+    );
+    assert!(!outage_row.physical_attempt_active, "R5/E4");
 }
 
 fn terminal_snapshot(thread_id: &ThreadId, run_id: &RunId, state: RunState) -> RunRecoverySnapshot {
