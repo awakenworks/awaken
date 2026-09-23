@@ -372,6 +372,25 @@ This inventory records the actual backends and executable laws. It does not
 claim that a local test run without configured PostgreSQL or MinIO exercised
 those media, nor that formal or K3D execution is complete.
 
+September 23 qualification at `6772d69e54` ran the existing strict PostgreSQL/
+MinIO group against throwaway substrates, including Resource lifecycle and File
+laws plus exact-prefix PITR recovery. The real K3D group also passed: replicated
+roles, Pod and node loss, ingress/egress/both network partitions, synchronous
+PostgreSQL promotion, public cold-start/load audit, Pod-bound Native hard crash,
+and NATS loss with durable polling. Fixture-image builds use their existing operator-selected network configuration. A build-network failure is separate from production provider behavior and cannot weaken a scenario assertion.
+
+Formal closure is separate. The retained two-ID Accepted first-result Kani
+lemma passes with the real resolver and every `u64` revision. Its complete
+owned-mutation/two-live-output replay harness remains unproved: pinned Z3
+returns ERROR, while CaDiCaL and MiniSat exhaust bounded local memory on the
+revised harness (Kissat also exhausted memory before the input-tree reduction).
+`formal/coverage.json` records this specific gap; static evidence linkage must
+not be read as a successful full formal execution receipt. The existing test
+orchestration checker continues to guard its registered Store and Dispatch
+bindings. A new hand-listed backend-path checker was rejected by the scope
+derivation gate and removed, so it cannot become a second, silently stale
+conformance inventory.
+
 `ContainerEnvironmentProvider` is also not a deprecated competitor to
 `SandboxProvider`. `ContainerProvider<R>` already implements the neutral
 `SandboxProvider` and its restore-target rung. The container projection exists
