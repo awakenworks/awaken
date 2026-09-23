@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  retryableReadStatus,
-  waitForSessionEventReceipt,
-} from '../harness.mjs';
-import {
   auditLoadResults,
   hasCompletedProviderMarker,
   loadShape,
@@ -14,76 +10,6 @@ import {
 } from './distributed_control_driver.ts';
 
 const response = (marker: string) => ({ type: 'agent.message', content: [{ type: 'text', text: `ADR71-PROVIDER:${marker}` }] });
-
-test('receipt observation recovers a raw socket drop without replaying the accepted command', async () => {
-  // S1 dropped SSE body, S2 dropped history body, S3 malformed application
-  // error; C1 an exact accepted receipt exists, C2 the first durable history
-  // can still be pending, C3 the next stream commits marker and idle. Effects:
-  // S1/S2 backfill then reconnect under C1-C3 with one receipt occurrence;
-  // S3 surfaces unchanged. Only read transports may retry, never Event send.
-  const socketError = Object.assign(new TypeError('terminated'), {
-    cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
-  });
-  assert.equal(retryableReadStatus(socketError), 'UND_ERR_SOCKET');
-  assert.equal(retryableReadStatus(Object.assign(new Error('unavailable'), { status: 503 })), 503);
-  assert.equal(retryableReadStatus(Object.assign(new Error('bad request'), { status: 400 })), null);
-  assert.equal(retryableReadStatus(new TypeError('bad decoder')), null);
-  const receipt = { id: 'receipt', type: 'user.message', processed_at: null };
-  const committed = { ...receipt, processed_at: '2026-09-23T00:00:00Z' };
-  const marker = { ...response('stream-drop'), id: 'response' };
-  const idle = { id: 'idle', type: 'session.status_idle', stop_reason: { type: 'end_turn' } };
-
-  for (const droppedRead of ['stream', 'history']) {
-    let streams = 0;
-    let histories = 0;
-    let sends = 0;
-    const client = { beta: { sessions: { events: {
-      send: async () => { sends += 1; throw new Error('accepted command must not be replayed'); },
-      stream: async () => ({
-        async *[Symbol.asyncIterator]() {
-          streams += 1;
-          if (streams === 1) {
-            yield receipt;
-            if (droppedRead === 'stream') throw socketError;
-            return;
-          }
-          yield committed;
-          yield marker;
-          yield idle;
-        },
-      }),
-      list: async function* () {
-        histories += 1;
-        if (droppedRead === 'history') throw socketError;
-        yield receipt;
-      },
-    } } } };
-    const observed = await waitForSessionEventReceipt(
-      client, 'session', 'receipt', undefined,
-      ({ delta }: { delta: unknown[] }) => hasCompletedProviderMarker(delta, 'stream-drop'),
-      'exact receipt after a dropped read',
-      { timeoutMs: 1000, pollMs: 1, preferStream: true,
-        retryReadError: (error: unknown) => retryableReadStatus(error) !== null },
-    );
-    assert.equal(streams, 2, `${droppedRead} reconnects the read stream`);
-    assert.equal(histories, 1, `${droppedRead} reconciles the durable history`);
-    assert.equal(sends, 0, `${droppedRead} never replays the accepted command`);
-    assert.equal(observed.receiptEvent?.processed_at, committed.processed_at);
-    assert.equal(observed.events.filter((event: { id: string }) => event.id === 'receipt').length, 1);
-    assert.deepEqual(observed.delta, [marker, idle]);
-  }
-
-  const badRead = new TypeError('bad decoder');
-  await assert.rejects(
-    waitForSessionEventReceipt(
-      { beta: { sessions: { events: { stream: async () => { throw badRead; } } } } },
-      'session', 'receipt', undefined, () => true, 'unclassified read',
-      { timeoutMs: 1000, pollMs: 1, preferStream: true,
-        retryReadError: (error: unknown) => retryableReadStatus(error) !== null },
-    ),
-    (error: unknown) => error === badRead,
-  );
-});
 
 test('load audit crosses latency and complete-history failures independently', () => {
   // L5 decision table: C1 latency below/equal/above limit; C2 exact/missing/

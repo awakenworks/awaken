@@ -667,6 +667,56 @@ async function main() {
   assert.equal(backfills, 1, 'W10 performs one authoritative backfill');
   assert.deepEqual(backfilled.delta.map((event) => event.id), ['reply', 'done']);
 
+  // W10a extends the same read-only recovery rule to the actual undici error
+  // seen when a response body socket closes: C1 exact receipt accepted; C2
+  // either stream or history read drops before terminal; C3 first history can
+  // still be pending; C4 next stream commits the receipt and reply. Effects:
+  // C1-C4 => one backfill, one reconnect, one receipt and zero send replays.
+  const rawSocketError = Object.assign(new TypeError('terminated'), {
+    cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+  });
+  const pendingReceipt = { id: 'receipt', type: 'user.message', processed_at: null };
+  const committedReceipt = { ...pendingReceipt, processed_at: 't1' };
+  const reply = { id: 'reply', type: 'agent.message', processed_at: 't2' };
+  const done = { id: 'done', type: 'session.status_idle', processed_at: 't3', stop_reason: { type: 'end_turn' } };
+  for (const droppedRead of ['stream', 'history']) {
+    let streams = 0;
+    let histories = 0;
+    let sends = 0;
+    const client = { beta: { sessions: { events: {
+      send: async () => { sends += 1; throw new Error('accepted command must not be replayed'); },
+      stream: async function* stream() {
+        streams += 1;
+        if (streams === 1) {
+          yield pendingReceipt;
+          if (droppedRead === 'stream') throw rawSocketError;
+          return;
+        }
+        yield committedReceipt;
+        yield reply;
+        yield done;
+      },
+      list: async function* list() {
+        histories += 1;
+        if (droppedRead === 'history') throw rawSocketError;
+        yield pendingReceipt;
+      },
+    } } } };
+    const observed = await waitForSessionEventReceipt(
+      client, 'session', 'receipt', undefined,
+      ({ delta }) => delta.some((event) => event.id === 'done'),
+      `W10a ${droppedRead} socket drop`,
+      { timeoutMs: 1_000, pollMs: 1, preferStream: true,
+        retryReadError: (error) => retryableReadStatus(error) !== null },
+    );
+    assert.equal(streams, 2, `W10a ${droppedRead} reconnects the read stream`);
+    assert.equal(histories, 1, `W10a ${droppedRead} reconciles the durable history`);
+    assert.equal(sends, 0, `W10a ${droppedRead} never replays the accepted command`);
+    assert.equal(observed.receiptEvent?.processed_at, 't1');
+    assert.equal(observed.events.filter((event) => event.id === 'receipt').length, 1);
+    assert.deepEqual(observed.delta, [reply, done]);
+  }
+
   // Receipt-read failure table: C1 the unkeyed send already returned its exact
   // receipt; C2 the next idempotent history read may fail with a classified
   // HTTP/transport transient; C3 history may fail with an unclassified product
@@ -683,6 +733,7 @@ async function main() {
   for (const name of ['APIConnectionError', 'APIConnectionTimeoutError']) {
     assert.equal(retryableReadStatus({ name }), name, `W7 classifies SDK ${name}`);
   }
+  assert.equal(retryableReadStatus(rawSocketError), 'UND_ERR_SOCKET', 'W10a classifies a dropped read body');
   const permanentReadErrors = [
     { status: 400 },
     { status: 401 },
@@ -690,6 +741,7 @@ async function main() {
     { status: 404 },
     { status: 422 },
     new Error('product invariant'),
+    new TypeError('bad decoder'),
   ];
   for (const error of permanentReadErrors) {
     assert.equal(
