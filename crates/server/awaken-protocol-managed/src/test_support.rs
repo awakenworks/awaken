@@ -36,7 +36,7 @@ pub fn lifecycle_audit_records<'a>(
             } else {
                 RunEvent::RunStateChanged {
                     state: event.state.clone(),
-                    await_reason: event.await_reason.clone(),
+                    await_reason: event.await_reason,
                     await_target: None,
                 }
             };
