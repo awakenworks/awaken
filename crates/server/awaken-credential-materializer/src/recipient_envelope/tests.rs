@@ -195,6 +195,134 @@ async fn acp_provider_adapter_usage_retains_its_workload_recipient() {
     );
 }
 
+#[tokio::test]
+async fn exact_acp_mcp_bearer_uses_the_existing_recipient_envelope() {
+    // Cause/effect graph: C1 the selected holder is the ACP Workload; C2 usage
+    // is exactly Authorization Bearer for the MCP target; C3 material is scalar
+    // and has no refresh sidecar. Effects: E1 issue and resolve one exact sealed
+    // secret through ProcessProtocolField; E2 Worker holder, another purpose,
+    // or another header shape is rejected without plaintext. Decision table:
+    // R1 C1+C2+C3 -> E1; R2 !C1 -> E2; R3 !C2 -> E2; R4 !C3 -> E2.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("keys.json");
+    write(&path, &document());
+    let adapter = RecipientKeyEnvelope::open(path).unwrap();
+    let mut req = request(PlaintextBoundary::Workload);
+    req.access.usage = CredentialUsage::HttpHeader {
+        name: "authorization".into(),
+        scheme: Some("Bearer".into()),
+    };
+    req.access.target = Some(awaken_credential_contract::CredentialTarget::new(
+        awaken_credential_contract::CredentialPurpose::McpAuthorization,
+        "https://mcp.example.com/diagnosis",
+    ));
+    req.access.policy = CredentialExecutionPolicy::exact(
+        req.selected_holder.clone(),
+        ModelExposurePolicy::VirtualOnly,
+    );
+    req.binding = CredentialMaterialBinding::for_target(
+        "workspace-a",
+        &"https://mcp.example.com/diagnosis",
+        &req.access.usage,
+    );
+    let exact = req.access.clone().with_envelope(
+        adapter
+            .issue(CredentialEnvelopeIssuance {
+                access: req.access.clone(),
+                selected_holder: req.selected_holder.clone(),
+                binding: req.binding.clone(),
+                material: RedactedString::new("mcp-bearer-secret"),
+            })
+            .await
+            .expect("R1 exact ACP MCP bearer is deliverable"),
+    );
+    assert_eq!(
+        opened(&adapter, &exact, &req.selected_holder, &req.binding)
+            .await
+            .unwrap()
+            .material
+            .into_secret()
+            .unwrap()
+            .expose_secret(),
+        "mcp-bearer-secret",
+    );
+    let mut wrong_holder = req.access.clone();
+    wrong_holder
+        .policy
+        .allowed_plaintext_holders
+        .insert(holder(PlaintextBoundary::Worker));
+    assert!(
+        adapter
+            .issue(CredentialEnvelopeIssuance {
+                access: wrong_holder,
+                selected_holder: holder(PlaintextBoundary::Worker),
+                binding: req.binding.clone(),
+                material: RedactedString::new("mcp-bearer-secret"),
+            })
+            .await
+            .is_err(),
+        "R2 Worker may not consume the ACP client field"
+    );
+    let mut wrong_purpose = req.access.clone();
+    wrong_purpose.target = Some(awaken_credential_contract::CredentialTarget::new(
+        awaken_credential_contract::CredentialPurpose::RemoteAgentAuthorization,
+        "https://mcp.example.com/diagnosis",
+    ));
+    assert!(
+        adapter
+            .issue(CredentialEnvelopeIssuance {
+                access: wrong_purpose,
+                selected_holder: req.selected_holder.clone(),
+                binding: req.binding.clone(),
+                material: RedactedString::new("mcp-bearer-secret"),
+            })
+            .await
+            .is_err(),
+        "R3 another purpose cannot acquire the MCP field"
+    );
+    let mut wrong_usage = req.access.clone();
+    wrong_usage.usage = CredentialUsage::HttpHeader {
+        name: "x-api-key".into(),
+        scheme: None,
+    };
+    assert!(
+        adapter
+            .issue(CredentialEnvelopeIssuance {
+                access: wrong_usage,
+                selected_holder: req.selected_holder.clone(),
+                binding: req.binding.clone(),
+                material: RedactedString::new("mcp-bearer-secret"),
+            })
+            .await
+            .is_err(),
+        "R3 another header cannot acquire the MCP field"
+    );
+    let mut refresh = req.access.clone();
+    refresh.refresh = Some(awaken_credential_contract::CredentialRefreshAccess::new(
+        1,
+        "https://auth.example.com/token".into(),
+        "client".into(),
+        awaken_credential_contract::TokenEndpointAuth::None,
+        None,
+        "refresh-ref".into(),
+        "access-ref".into(),
+        None,
+        None,
+    ));
+    assert!(
+        adapter
+            .issue(CredentialEnvelopeIssuance {
+                access: refresh,
+                selected_holder: req.selected_holder,
+                binding: req.binding,
+                material: RedactedString::new("mcp-bearer-secret"),
+            })
+            .await
+            .is_err(),
+        "R4 refresh sidecars require a distinct supported custody path"
+    );
+}
+
 /// Cause/effect graph: a valid ciphertext is fixed; independently change an
 /// authority claim or ciphertext component. D3 absent envelope, D4 expired,
 /// D5 extended expiry, D6 revision, D7 Workspace, D8 target/use, D9 holder,
