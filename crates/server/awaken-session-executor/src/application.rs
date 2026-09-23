@@ -1391,7 +1391,10 @@ impl crate::SharedHost {
             let is_realized = self
                 .session_slots
                 .read(thread, |slot| {
-                    slot.runtime.is_some() || slot.environment_owner.has_local_environment()
+                    slot.runtime
+                        .as_ref()
+                        .is_some_and(|context| !context.is_coordination_envelope())
+                        || slot.environment_owner.has_local_environment()
                 })
                 .unwrap_or(false);
             if is_realized {
@@ -1531,6 +1534,17 @@ impl crate::SharedHost {
                 slot.project_validated_session_init(&init, environment_projection);
                 slot.install_session_request_context(projection.request_context.clone());
                 if let Some(baseline) = baseline_to_install {
+                    // A cold Coordinator may have opened a metadata-only
+                    // reservation envelope before this complete projection.
+                    // Rebuild it against the newly frozen baseline on its next
+                    // read; it has no executable Environment to preserve.
+                    if slot
+                        .runtime
+                        .as_ref()
+                        .is_some_and(|context| context.is_coordination_envelope())
+                    {
+                        slot.runtime = None;
+                    }
                     slot.baseline = Some(baseline);
                 }
                 // The complete frozen projection is the cold Worker's first
