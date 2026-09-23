@@ -577,6 +577,11 @@ async function main() {
   assert.deepEqual(observed.delta.map((event) => event.id), ['new-idle']);
   assert.deepEqual(observed.events.map((event) => event.id), ['old-idle', 'receipt', 'new-idle']);
   assert.ok(listRequests.every((params) => params.betas?.[0] === 'managed-agents-test'));
+  // W11 full-history reads use the server's bounded 500-event page to avoid
+  // one complete projection rebuild per default 50-event page. An explicit
+  // caller limit is authoritative (W6 below); neither rule changes receipt
+  // scope or fabricates a beta for an SDK-owned default.
+  assert.ok(listRequests.every((params) => params.limit === 500), 'W11 uses the bounded maximum page');
 
   reads = snapshots.length - 1;
   listRequests.length = 0;
