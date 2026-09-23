@@ -182,20 +182,22 @@ mod verification {
         first: Option<usize>,
     ) {
         let before = proof.clone();
-        check_replay_against_frame(proof, before, key, fingerprint, first);
+        check_replay_with_frame(proof, key, fingerprint, first, |current| {
+            assert!(
+                *current == before,
+                "independent complete input frame agrees"
+            );
+        });
     }
 
-    fn check_replay_against_frame(
+    fn check_replay_with_frame(
         proof: DeletedSessionEventAdmissions,
-        before: DeletedSessionEventAdmissions,
         key: &str,
         fingerprint: &str,
         first: Option<usize>,
+        check_frame: impl Fn(&DeletedSessionEventAdmissions),
     ) {
-        assert!(proof == before, "independent complete input frame agrees");
-        let mut result = resolve_deleted_event_admission(&proof, key, fingerprint);
-        check_result(&before, first, fingerprint, &result);
-        assert!(proof == before);
+        let mut result = check_first_result(&proof, key, fingerprint, first, &check_frame);
         // Mutating the returned owned clone must not poison retained evidence
         // or the next replay, including ordered operation ids and batch id.
         match &mut result {
@@ -214,14 +216,28 @@ mod verification {
             Ok(SessionEventAdmission::Closed { batch_id }) => batch_id.clear(),
             _ => {}
         }
-        assert!(proof == before);
+        check_frame(&proof);
         check_result(
-            &before,
+            &proof,
             first,
             fingerprint,
             &resolve_deleted_event_admission(&proof, key, fingerprint),
         );
-        assert!(proof == before);
+        check_frame(&proof);
+    }
+
+    fn check_first_result(
+        proof: &DeletedSessionEventAdmissions,
+        key: &str,
+        fingerprint: &str,
+        first: Option<usize>,
+        check_frame: &impl Fn(&DeletedSessionEventAdmissions),
+    ) -> Result<SessionEventAdmission, crate::RunError> {
+        check_frame(proof);
+        let result = resolve_deleted_event_admission(proof, key, fingerprint);
+        check_frame(proof);
+        check_result(proof, first, fingerprint, &result);
+        result
     }
 
     // Legacy-inventory cause R1: one actual resolve must return the exact
@@ -388,9 +404,38 @@ mod verification {
     // bits; C4 distinguishes None/empty/one/two ordered operation ids. The 32
     // literal partitions cover absent=16, conflict=8, closed=4, accepted=4.
     // Each retains every u64 revision and the same complete replay oracle.
-    // Literal fixture choices remove symbolic allocation-branch joins only:
-    // real output Clone, mutation, two-live-output replay and Drop stay intact.
-    fn check_single_retained_literal<const CASE: u8>(revision: u64) {
+    // Literal fixtures avoid a second owned input tree; real output Clone,
+    // mutation, two-live-output replay and Drop stay intact.
+    fn check_literal_frame<const CASE: u8>(proof: &DeletedSessionEventAdmissions, revision: u64) {
+        assert_eq!(proof.deleted_revision, SessionRevision(revision));
+        let rows = proof.admissions.as_ref().expect("literal inventory");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.key, if CASE & 1 == 0 { "b" } else { "a" });
+        assert_eq!(
+            row.request_fingerprint,
+            if CASE & 2 == 0 { "b" } else { "a" }
+        );
+        assert_eq!(row.batch_id, "0");
+        assert_eq!(row.closed, CASE & 4 != 0);
+        match CASE >> 3 {
+            0 => assert!(row.operation_ids.is_none()),
+            1 => assert!(row.operation_ids.as_ref().is_some_and(Vec::is_empty)),
+            2 => {
+                let ids = row.operation_ids.as_ref().expect("one operation");
+                assert_eq!(ids.len(), 1);
+                assert_eq!(ids[0], "x");
+            }
+            _ => {
+                let ids = row.operation_ids.as_ref().expect("two operations");
+                assert_eq!(ids.len(), 2);
+                assert_eq!(ids[0], "x");
+                assert_eq!(ids[1], "y");
+            }
+        }
+    }
+
+    fn literal_fixture<const CASE: u8>(revision: u64) -> DeletedSessionEventAdmissions {
         assert!(CASE < 32);
         let receipt = || RetainedEventAdmission {
             key: if CASE & 1 == 0 { "b" } else { "a" }.into(),
@@ -404,25 +449,37 @@ mod verification {
                 _ => Some(vec!["x".into(), "y".into()]),
             },
         };
-        let fixture = || DeletedSessionEventAdmissions {
+        DeletedSessionEventAdmissions {
             deleted_revision: SessionRevision(revision),
             admissions: Some(vec![receipt()]),
-        };
-        check_replay_against_frame(
-            fixture(),
-            fixture(),
+        }
+    }
+
+    fn check_single_retained_literal<const CASE: u8>(revision: u64) {
+        let proof = literal_fixture::<CASE>(revision);
+        check_replay_with_frame(
+            proof,
             "a",
             "a",
             if CASE & 1 == 0 { None } else { Some(0) },
+            |current| {
+                check_literal_frame::<CASE>(current, revision);
+            },
         );
     }
 
     #[cfg(test)]
     #[test]
     fn deleted_admission_literal_partition_crosscheck() {
-        // Cross the exact proof fixtures with revision endpoints and one;
-        // the original 3,174-row table still checks broader receipt strings,
-        // legacy/empty inventories and all ordered two-receipt combinations.
+        // Causes: C1 key matches; C2 fingerprint matches; C3 receipt is closed;
+        // C4 operation ids are None/empty/one/two; C5 revision is 0/1/MAX.
+        // Effects: absent -> exact Deleted revision; mismatch -> Conflict;
+        // closed -> Closed; open match -> Accepted with ordered owned ids.
+        // Every rule also requires the complete source frame before/after
+        // mutation and an exact second result while the first remains alive.
+        // R1=!C1; R2=C1+!C2; R3=C1+C2+C3; R4=C1+C2+!C3;
+        // C4 and C5 cross every rule. The broader 3,174-row table covers
+        // additional strings, legacy/empty inventories and two receipts.
         for revision in [0, 1, u64::MAX] {
             check_single_retained_literal::<0>(revision);
             check_single_retained_literal::<1>(revision);
@@ -651,6 +708,23 @@ mod verification {
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_accepted_two_27() {
         check_single_retained_literal::<27>(kani::any());
+    }
+
+    // CASE27 first-result lemma. C1 the retained key/fingerprint match and
+    // the receipt is open; C2 it carries two ordered IDs; C3 revision is any
+    // u64. E1 the real resolver returns exact owned Accepted fields; E2 the
+    // complete retained source is unchanged. This is the first stage of the
+    // existing replay oracle, not a proof-only replacement implementation.
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn deleted_admission_one_retained_accepted_two_initial_27() {
+        let revision = kani::any();
+        let proof = literal_fixture::<27>(revision);
+        let check_frame = |current: &DeletedSessionEventAdmissions| {
+            check_literal_frame::<27>(current, revision);
+        };
+        let _result = check_first_result(&proof, "a", "a", Some(0), &check_frame);
     }
 
     #[cfg(kani)]
