@@ -325,7 +325,7 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     );
 
     let recovered = rt
-        .process(&id, &public_id)
+        .process(id, &public_id)
         .await
         .expect("reattach the durable exec handle");
     recovered
