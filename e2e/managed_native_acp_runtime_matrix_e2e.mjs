@@ -122,7 +122,7 @@ async function sendBatch(client, sessionId, events, terminalEffect, description)
       return terminalEffect({ session: lastSession, listed, delta });
     },
     description,
-    { timeoutMs: 30_000, pollMs: 25 },
+    { timeoutMs: 30_000, pollMs: 25, preferStream: true },
   );
   return {
     session: lastSession,
@@ -278,6 +278,63 @@ async function exerciseDirectMatrix() {
         `${cell.runtime}: usage accumulated across restart; prior=${prior.usage}, current=${usageUnits(recovered.session.usage)}`,
       );
       pass(`${cell.runtime}: restart/resource/User+System recovery`);
+    }
+
+    // Test design D2S, applied to Native and Claude ACP because they are the
+    // two Cowork execution backends. Causes: C1 an exact User receipt exists;
+    // C2 its SSE replay is aborted immediately after that receipt; C3 the turn
+    // commits reply + end_turn while disconnected. Effects: E1 reconnect plus
+    // authoritative history recovers the exact suffix; E2 the input is sent
+    // once; E3 same-id receipt state advances monotonically to processed.
+    // Rules S1 Native+C1-C3=>E1-E3; S2 Claude+C1-C3=>E1-E3. This exercises the
+    // real Managed route and official SDK, rather than a transport-only fake.
+    for (const runtime of ['native', 'claude']) {
+      const cell = CASES.find((candidate) => candidate.runtime === runtime);
+      const sessionId = sessions.get(runtime).id;
+      const userText = `matrix-basic stream-drop ${runtime}`;
+      const receipt = await client.beta.sessions.events.send(sessionId, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: userText }] }],
+        betas: BETAS,
+      });
+      assert.equal(receipt.data.length, 1, `${runtime}: one stream-drop receipt`);
+      const receiptId = receipt.data[0].id;
+      const controller = new AbortController();
+      const stream = await client.beta.sessions.events.stream(
+        sessionId,
+        { betas: BETAS },
+        { signal: controller.signal },
+      );
+      let observedReceipt = false;
+      try {
+        for await (const event of stream) {
+          if (event.id === receiptId) {
+            observedReceipt = true;
+            controller.abort();
+            break;
+          }
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
+      }
+      assert.ok(observedReceipt, `${runtime}: dropped stream observed the exact receipt first`);
+      const recovered = await waitForSessionEventReceipt(
+        client,
+        sessionId,
+        receiptId,
+        BETAS,
+        ({ delta }) => eventText(delta).includes(expectedReply(cell, 'stream-drop', 'load'))
+          && delta.some((event) => event.type === 'session.status_idle'
+            && event.stop_reason?.type === 'end_turn'),
+        `${runtime}: reconnect stream and history after exact receipt`,
+        { timeoutMs: 30_000, pollMs: 25, preferStream: true },
+      );
+      assert.ok(recovered.receiptEvent.processed_at, `${runtime}: receipt committed once`);
+      assert.equal(
+        recovered.events.filter((event) => event.id === receiptId).length,
+        1,
+        `${runtime}: one durable receipt after reconnect`,
+      );
+      pass(`${runtime}: dropped SSE resumes from authoritative receipt history`);
     }
 
     // Test design D3, applied to every ACP row.
