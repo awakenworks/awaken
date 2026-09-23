@@ -56,11 +56,12 @@
       }
     },
     "awaken-dispatch-contract": {
-      "depth": 4,
+      "depth": 5,
       "production_lines": 2379,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "claim-fenced carrier redelivery adds one Worker transport capability and one attempt-local source without new durable state"
+        "production_lines": "claim-fenced carrier redelivery adds one Worker transport capability and one attempt-local source without new durable state",
+        "depth": "Extract immutable Session configuration and its resolution ports behind one authoritative owner during facade removal"
       }
     },
     "awaken-runtime-contract": {
@@ -81,12 +82,20 @@
     "awaken-session-budget-contract": {
       "depth": 1
     },
-    "awaken-session-contract": {
+    "awaken-session-configuration-contract": {
       "depth": 3,
-      "production_lines": 12411,
-      "catch_all_errors": 7,
+      "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "Keep one typed FileCatalog/Artifact error projection and separate existing Session mutation and realization models from ports inside the same crate; no dependency-depth or capability-default increase."
+        "catch_all_errors": "Extract immutable Session configuration and its resolution ports behind one authoritative owner during facade removal"
+      }
+    },
+    "awaken-session-contract": {
+      "depth": 4,
+      "production_lines": 10857,
+      "catch_all_errors": 4,
+      "growth_reasons": {
+        "production_lines": "Keep one typed FileCatalog/Artifact error projection and separate existing Session mutation and realization models from ports inside the same crate; no dependency-depth or capability-default increase.",
+        "depth": "Extract immutable Session configuration and its resolution ports behind one authoritative owner during facade removal"
       }
     },
     "awaken-session-dream-contract": {

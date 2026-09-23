@@ -2410,6 +2410,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-session-configuration-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-environment-contract",
+ "awaken-provisioning-contract",
+ "awaken-resource-contract",
+ "awaken-runtime-contract",
+ "awaken-session-mcp-contract",
+ "awaken-session-resource-contract",
+ "http",
+ "proptest",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-session-contract"
 version = "1.0.0"
 dependencies = [
@@ -2422,6 +2444,7 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-runtime-contract",
  "awaken-session-budget-contract",
+ "awaken-session-configuration-contract",
  "awaken-session-dream-contract",
  "awaken-session-event-contract",
  "awaken-session-mcp-contract",
