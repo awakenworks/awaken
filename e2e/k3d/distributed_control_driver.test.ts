@@ -93,6 +93,22 @@ test('load audit rejects absent samples, invalid measurements and hidden history
   assert.equal(contentReads, 1, 'one Provider count index is shared by marker and uniqueness checks');
 });
 
+test('load audit scaling matrix retains linear history ownership', () => {
+  // Scaling matrix: H=M=100/1k/10k exact Provider results in one Session.
+  // Effects: one pass indexes history, every planned marker is accepted once,
+  // and timing is diagnostic only; the public K3D p95 remains the SLO owner.
+  for (const historySize of [100, 1_000, 10_000]) {
+    const markers = Array.from({ length: historySize }, (_, index) => `m-${index}`);
+    const history = markers.map(response);
+    const latencies = markers.map((_, index) => index + 1);
+    const started = performance.now();
+    const audit = auditLoadResults([history], [markers], latencies, historySize + 1);
+    const elapsed = performance.now() - started;
+    assert.deepEqual(audit.errors, [], `H=M=${historySize}`);
+    process.stderr.write(`LOAD_AUDIT_BENCH ${JSON.stringify({ historySize, elapsedMs: elapsed })}\n`);
+  }
+});
+
 test('temporary batch cleanup joins every independent terminal request', async () => {
   // Batch-cleanup decision table. C1 zero/one/many auxiliary Sessions; C2 every
   // public disposal accepts or at least one rejects. Effects: E1 every supplied
