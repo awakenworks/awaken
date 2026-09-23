@@ -121,6 +121,11 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # container and never force-deletes the evidence object. E1 C1+C2+C3+C4 drives
 # the existing ThreadCommit -> stop receipt -> Dispatch finish chain without a
 # second recovery controller or replaying the public Event.
+# D13 normal Worker retirement: C1 preStop closes claim admission before
+# SIGTERM; C2 the configured drain is 15s; C3 the exact cancellation/return
+# observer owns a further bounded 20s; C4 Kubernetes hard-kills at Pod grace.
+# E1 the rendered 60s grace contains C2+C3 plus lifecycle publication margin;
+# E2 shortening it to the former 20s value fails this deployment contract.
 # Each assertion owns one observable terminal effect; the manifest remains the
 # sole deployment source of truth.
 grep -q '/usr/local/bin/awaken-worker' "$RENDERED"
@@ -211,7 +216,8 @@ grep -q -- '- get' <<<"$WORKER_PVC_RULE"
 grep -q -- '- delete' <<<"$WORKER_PVC_RULE"
 ! grep -Eq -- '- (update|list|watch)' <<<"$WORKER_PVC_RULE"
 grep -q 'path: /admin/drain' "$RENDERED"
-grep -q 'terminationGracePeriodSeconds: 20' "$RENDERED"
+grep -q 'terminationGracePeriodSeconds: 60' "$RENDERED"
+! grep -q 'terminationGracePeriodSeconds: 20' "$RENDERED"
 # Cause/effect rule: adopted Pod owner transfer requires update in addition to
 # create/delete. Select the named Worker Role and its first object rule; document
 # order may change when another least-privilege Role is added.
