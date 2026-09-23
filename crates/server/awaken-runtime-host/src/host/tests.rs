@@ -2168,9 +2168,13 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // and classify from the Control-frozen baseline; B2 identical replay ->
         // idempotent; B3 empty fingerprint -> reject; B4 different fingerprint
         // -> reject; B5 Environment already realized -> reject rather than run
-        // without the frozen mounts/env/prompts. Effects: E1 B1 excludes the
-        // direct live-authored Skill source on a cold Worker; E2 B2 preserves
-        // the same projection; E3 B3-B5 publish no conflicting projection.
+        // without the frozen mounts/env/prompts; B6 a metadata-only Coordinator
+        // reservation envelope precedes the first complete baseline under
+        // local realization or Coordinator Dispatch. Effects:
+        // E1 B1 excludes the direct live-authored Skill source on a cold Worker;
+        // E2 B2 preserves the same projection; E3 B3-B5 publish no conflicting
+        // projection; E4 B6 installs the baseline and evicts only the stale
+        // coordination envelope so a later File attachment can be realized.
         let baseline_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
         let _baseline_runtime =
             crate::ManagedHost::new(baseline_host.clone()).install_dispatch_session_runtime();
@@ -2253,6 +2257,66 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .message
                 .contains("realized before its frozen Session baseline"),
             "B5"
+        );
+        install_test_session_application(&baseline_host);
+        baseline_host
+            .session_slots
+            .update("coordinator-before-baseline", |slot| {
+                slot.session_dispatch = true;
+            });
+        let coordinator = baseline_host
+            .ctx_for_session_coordination("coordinator-before-baseline", None)
+            .await
+            .expect("B6 metadata-only reservation context");
+        assert!(
+            coordinator.is_coordination_envelope(),
+            "B6/E4 no execution owner"
+        );
+        assert!(coordinator.env.is_none(), "B6/E4 no physical Environment");
+        baseline_host
+            .install_frozen_session_projection(
+                "coordinator-before-baseline",
+                projection("baseline-a", true),
+                None,
+                true,
+                None,
+            )
+            .await
+            .expect("B6 complete projection replaces the cold reservation envelope");
+        assert!(
+            baseline_host
+                .session_slots
+                .read("coordinator-before-baseline", |slot| {
+                    slot.baseline.is_some() && slot.runtime.is_none()
+                })
+                .unwrap_or(false),
+            "B6/E4 baseline is installed and stale coordination cache is gone"
+        );
+        baseline_host
+            .session_slots
+            .update("dispatch-before-baseline", |slot| {
+                slot.session_dispatch = true;
+            });
+        let dispatch_coordinator = baseline_host
+            .ctx_for_session_coordination("dispatch-before-baseline", None)
+            .await
+            .expect("B6 Coordinator opened a reservation before Resource amendment");
+        assert!(dispatch_coordinator.is_coordination_envelope(), "B6/E4");
+        baseline_host
+            .install_dispatch_frozen_session_projection(
+                "dispatch-before-baseline",
+                projection("baseline-a", true),
+            )
+            .await
+            .expect("B6 Dispatch installs one complete baseline after reservation");
+        assert!(
+            baseline_host
+                .session_slots
+                .read("dispatch-before-baseline", |slot| {
+                    slot.baseline.is_some() && slot.runtime.is_none()
+                })
+                .unwrap_or(false),
+            "B6/E4 Dispatch also clears the stale reservation envelope"
         );
     }
     .await;
