@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   auditLoadResults,
-  descendingReceiptObservation,
+  hasCompletedProviderMarker,
   loadShape,
   disposeFixtureSessions,
   nativeCrashHistoryErrors,
@@ -32,7 +32,7 @@ test('fleet load uses one unique Environment concurrency lane per Session', () =
   // unique. Effect: only F1+F2+F3 enters Session creation. Shared ids are the
   // separate one-active WorkQueue safety topology and cannot masquerade as a
   // fleet-throughput test. Rules cover success and each independent rejection.
-  for (let concurrency=1; concurrency<=12; concurrency+=1) {
+  for (const concurrency of Array.from({ length: 12 }, (_, index) => index + 1)) {
     const exact=Array.from({length:concurrency},(_,index)=>`e${index}`);
     assert.deepEqual(validateFleetEnvironmentIds(exact,concurrency),exact);
     assert.throws(()=>validateFleetEnvironmentIds(exact.slice(1),concurrency),/one Environment/);
@@ -43,23 +43,16 @@ test('fleet load uses one unique Environment concurrency lane per Session', () =
   }
 });
 
-test('descending receipt window preserves chronological post-receipt delta', () => {
-  // Causes: R1 receipt present and processed; R2 present but pending; R3 absent;
-  // newer events are returned newest-first. Effects: R1 returns only the later
-  // events in chronological order; R2/R3 cannot satisfy completion. The live
-  // helper falls back to complete history for R3, retaining exactness.
-  for (let laterCount=0; laterCount<=10; laterCount+=1) {
-    const later=Array.from({length:laterCount},(_,index)=>({id:`later-${index}`}));
-    const receipt={id:'receipt',processed_at:'now',type:'user.message'};
-    const page=[...later].reverse().concat(receipt,{id:'old'});
-    const before=structuredClone(page);
-    assert.deepEqual(descendingReceiptObservation(page,'receipt').delta,later, `R1/${laterCount}`);
-    assert.deepEqual(page,before, `R1/${laterCount} input remains immutable`);
-    assert.deepEqual(descendingReceiptObservation(
-      page.map(event=>event.id==='receipt' ? {...event,processed_at:null} : event),'receipt',
-    ).delta,[], `R2/${laterCount}`);
-  }
-  assert.equal(descendingReceiptObservation([{id:'idle'}],'receipt').receiptEvent,undefined, 'R3');
+test('Provider completion requires the exact marker followed by end_turn idle', () => {
+  // Causes: R1 exact/missing marker; R2 idle before/after marker; R3 idle reason
+  // requires_action/end_turn. Effect: only exact marker + later end_turn accepts.
+  // This keeps approval and budget pauses from becoming load-test successes.
+  const end = { type: 'session.status_idle', stop_reason: { type: 'end_turn' } };
+  const ask = { type: 'session.status_idle', stop_reason: { type: 'requires_action' } };
+  assert.equal(hasCompletedProviderMarker([response('one'), end], 'one'), true, 'R1+R2+R3');
+  assert.equal(hasCompletedProviderMarker([end, response('one')], 'one'), false, 'R2');
+  assert.equal(hasCompletedProviderMarker([response('one'), ask], 'one'), false, 'R3');
+  assert.equal(hasCompletedProviderMarker([response('other'), end], 'one'), false, 'R1');
 });
 
 test('load audit rejects absent samples, invalid measurements and hidden history', () => {
@@ -81,6 +74,23 @@ test('load audit rejects absent samples, invalid measurements and hidden history
   assert.ok(auditLoadResults([], [], [], 5000).errors.length);
   assert.ok(auditLoadResults([histories[0]], markers, times, 5000).errors.length);
   assert.ok(auditLoadResults([[...histories[0], response('other'), response('other')], histories[1]], markers, times, 5000).errors.length);
+
+  // Scan-complexity rule: C1 one Session history contains M planned markers;
+  // E1 its event content is inspected once, producing O(H+M) audit work. A
+  // getter counter kills the former per-marker plus uniqueness rescans.
+  let contentReads = 0;
+  const sharedHistory = [{
+    type: 'agent.message',
+    get content() {
+      contentReads += 1;
+      return [
+        { type: 'text', text: 'ADR71-PROVIDER:one' },
+        { type: 'text', text: 'ADR71-PROVIDER:two' },
+      ];
+    },
+  }];
+  assert.deepEqual(auditLoadResults([sharedHistory], [['one', 'two']], [1, 2], 5000).errors, []);
+  assert.equal(contentReads, 1, 'one Provider count index is shared by marker and uniqueness checks');
 });
 
 test('temporary batch cleanup joins every independent terminal request', async () => {
@@ -113,7 +123,7 @@ test('Native crash history separates terminal model evidence from final settleme
   // pure oracle used by both phases of the live crash scenario. Preparation may
   // observe N3; final verification cannot. An idle before the marker is never a
   // completion witness for that receipt.
-  const idle = { type: 'session.status_idle' };
+  const idle = { type: 'session.status_idle', stop_reason: { type: 'end_turn' } };
   assert.ok(nativeCrashHistoryErrors([], 'one', false).length, 'N1');
   assert.ok(
     nativeCrashHistoryErrors([response('one'), response('one')], 'one', false).length,

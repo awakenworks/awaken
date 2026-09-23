@@ -2,6 +2,132 @@
 
 use super::*;
 
+struct LifecycleMergeEntry {
+    event: RunLifecycleEvent,
+    stream_index: usize,
+}
+
+impl PartialEq for LifecycleMergeEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.event.cursor == other.event.cursor && self.stream_index == other.stream_index
+    }
+}
+
+impl Eq for LifecycleMergeEntry {}
+
+impl PartialOrd for LifecycleMergeEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for LifecycleMergeEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // BinaryHeap is a max-heap; reverse cursor/source comparison to pop the
+        // smallest cursor first. Source order preserves sort_by_key's prior
+        // stable tie behavior for equal cursors.
+        other
+            .event
+            .cursor
+            .cmp(&self.event.cursor)
+            .then_with(|| other.stream_index.cmp(&self.stream_index))
+    }
+}
+
+fn merge_ordered_lifecycle_streams(streams: Vec<Vec<RunLifecycleEvent>>) -> Vec<RunLifecycleEvent> {
+    debug_assert!(streams.iter().all(|events| {
+        events
+            .windows(2)
+            .all(|pair| pair[0].cursor <= pair[1].cursor)
+    }));
+    let capacity = streams.iter().map(Vec::len).sum();
+    let mut streams = streams.into_iter().map(Vec::into_iter).collect::<Vec<_>>();
+    let mut heap = std::collections::BinaryHeap::with_capacity(streams.len());
+    for (stream_index, stream) in streams.iter_mut().enumerate() {
+        if let Some(event) = stream.next() {
+            heap.push(LifecycleMergeEntry {
+                event,
+                stream_index,
+            });
+        }
+    }
+    let mut merged = Vec::with_capacity(capacity);
+    while let Some(entry) = heap.pop() {
+        let stream_index = entry.stream_index;
+        merged.push(entry.event);
+        if let Some(event) = streams[stream_index].next() {
+            heap.push(LifecycleMergeEntry {
+                event,
+                stream_index,
+            });
+        }
+    }
+    merged
+}
+
+#[cfg(test)]
+mod lifecycle_merge_tests {
+    use super::*;
+
+    fn event(cursor: u64, stream: usize) -> RunLifecycleEvent {
+        RunLifecycleEvent {
+            cursor: awaken_agent_contract::RunLifecycleCursor(cursor),
+            source_commit_cursor: cursor,
+            thread_id: awaken_agent_contract::ThreadId(format!("thread-{stream}")),
+            run_id: awaken_agent_contract::RunId(format!("run-{stream}-{cursor}")),
+            kind: awaken_agent_contract::RunLifecycleEventKind::Running,
+            state: awaken_agent_contract::agent::run::RunState::Running,
+            await_reason: None,
+        }
+    }
+
+    #[test]
+    fn ordered_lifecycle_merge_matches_stable_full_sort() {
+        // Causes: C1 zero/one/many source streams; C2 each stream is empty or
+        // carries an ordered subset; C3 cursors may tie across streams. Effects:
+        // E1 every event is retained once; E2 cursors are globally ordered; E3
+        // equal cursors retain input-stream order. Exhaust every assignment of
+        // six distinct cursors to three streams, then cover equal cursors.
+        assert!(merge_ordered_lifecycle_streams(Vec::new()).is_empty(), "M1");
+        for assignment in 0_u32..3_u32.pow(6) {
+            let mut value = assignment;
+            let mut streams = vec![Vec::new(), Vec::new(), Vec::new()];
+            for cursor in 1..=6 {
+                let stream = (value % 3) as usize;
+                value /= 3;
+                streams[stream].push(event(cursor, stream));
+            }
+            let mut expected = streams.iter().flatten().cloned().collect::<Vec<_>>();
+            expected.sort_by_key(|item| item.cursor);
+            let merged = merge_ordered_lifecycle_streams(streams);
+            assert_eq!(
+                merged.iter().map(|item| item.cursor.0).collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|item| item.cursor.0)
+                    .collect::<Vec<_>>(),
+                "M2 assignment {assignment}",
+            );
+        }
+        let tied = merge_ordered_lifecycle_streams(vec![
+            vec![event(1, 0), event(3, 0)],
+            vec![event(1, 1), event(2, 1)],
+        ]);
+        assert_eq!(
+            tied.iter()
+                .map(|item| (item.cursor.0, item.thread_id.0.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, "thread-0"),
+                (1, "thread-1"),
+                (2, "thread-1"),
+                (3, "thread-0")
+            ],
+            "M3 stable tie order",
+        );
+    }
+}
+
 #[cfg(any(test, kani))]
 mod selection_tests;
 
@@ -156,7 +282,7 @@ impl ManagedState {
             Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
     ) -> Result<Vec<RunLifecycleEvent>, StateError> {
-        let mut lifecycle_events = Vec::new();
+        let mut lifecycle_streams = Vec::new();
         for snapshot in snapshots {
             let page = snapshot
                 .lifecycle_events_after(
@@ -164,10 +290,9 @@ impl ManagedState {
                     usize::MAX,
                 )
                 .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-            lifecycle_events.extend(page.events);
+            lifecycle_streams.push(page.events);
         }
-        lifecycle_events.sort_by_key(|event| event.cursor);
-        Ok(lifecycle_events)
+        Ok(merge_ordered_lifecycle_streams(lifecycle_streams))
     }
 
     /// Classify one coordinated child from the same Runtime prefix already read
