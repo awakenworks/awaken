@@ -567,6 +567,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --cbmc-args --unwindset memcmp.0:2
   # Real two-ID output reversal swaps three 8-byte chunks of each String.
   # The bound and solver are owned by the same checked profile as the ledger.
+  # The first-result lemma completes on the real resolver before the larger
+  # owned-mutation/replay harness; it does not substitute for that proof.
+  run_kani awaken-session-application-contract \
+    --harness deleted_admission_one_retained_accepted_two_initial_27
   run_kani awaken-session-application-contract --checked-loop-profile retained-accepted-two-replay-v1 \
     --harness deleted_admission_one_retained_accepted_two_27
   # The complete 64-byte conflict message also needs its loop-exit check.
