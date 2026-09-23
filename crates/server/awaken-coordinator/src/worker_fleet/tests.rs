@@ -10,7 +10,11 @@ use tower::ServiceExt;
 use super::*;
 
 /// A directory that answers `list` from a fixed script and refuses every
-/// mutation: this surface must never reach one.
+/// mutation. Cause/effect guard: each readiness rule supplies a list result;
+/// any register, heartbeat, drain, quiesce, deregister, expire, or process-exit
+/// effect panics the test, while the exact read projection returns its expected
+/// readiness/error response. The three route cases below cover empty, failed,
+/// and capability-filtered reads through this same mutation fence.
 struct ScriptedDirectory(Result<Vec<RegisteredWorker>, RegistryError>);
 
 #[async_trait]
@@ -76,6 +80,14 @@ impl WorkerDirectory for ScriptedDirectory {
         _now_ms: u64,
     ) -> Result<RegistryMutation, RegistryError> {
         unreachable!("a readiness read never expires an incarnation")
+    }
+
+    async fn record_process_exit(
+        &self,
+        _identity: &WorkerIdentity,
+        _receipt: awaken_dispatch::WorkerProcessExit,
+    ) -> Result<RegistryMutation, RegistryError> {
+        unreachable!("a readiness read never records a process exit")
     }
 }
 
