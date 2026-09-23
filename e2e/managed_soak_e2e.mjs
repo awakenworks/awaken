@@ -41,7 +41,17 @@ async function listAll(client, sid) {
 async function main() {
   try {
     await withRealServer('echo', PORT, async (baseUrl) => {
-      const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+      let historyPageReads = 0;
+      const client = new Anthropic({
+        apiKey: 'e2e-dummy', baseURL: baseUrl,
+        fetch: (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          if ((init?.method ?? 'GET') === 'GET' && url.pathname.endsWith('/events')) {
+            historyPageReads += 1;
+          }
+          return globalThis.fetch(input, init);
+        },
+      });
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       pass(`soaking ${TURNS} turns on ${session.id}`);
 
@@ -49,7 +59,10 @@ async function main() {
       // its matching echo and end_turn idle. K1 an earlier turn's echo/idle cannot
       // satisfy a later cycle. D1=C1=>E1, repeated TURNS times before aggregate
       // ledger and stable-reread effects are checked below.
+      let windowElapsed = [];
+      let priorPageReads = 0;
       for (let i = 0; i < TURNS; i++) {
+        const started = performance.now();
         const receipt = (await client.beta.sessions.events.send(session.id, {
           events: [{ type: 'user.message', content: [{ type: 'text', text: `turn-${i}` }] }],
           betas: BETAS,
@@ -65,7 +78,24 @@ async function main() {
               && event.stop_reason?.type === 'end_turn'),
           `soak turn ${i} lifecycle`,
         );
+        windowElapsed.push(performance.now() - started);
         if ((i + 1) % CHECKPOINT === 0) {
+          // Scaling cause/effect table: C1 one immutable Session grows past the
+          // 500-event page boundary; C2 each turn still has one exact processed
+          // receipt. E1 ordinary lifecycle assertions remain unchanged; E2 the
+          // last checkpoint's turn p95 and actual SDK page reads expose repeated
+          // full-history observation as H grows. This is characterization,
+          // not a latency gate borrowed from the separate 12-lane K3D load.
+          const sorted = windowElapsed.sort((a, b) => a - b);
+          console.log(`SOAK_SCALING ${JSON.stringify({
+            turns: i + 1,
+            expectedEvents: TURN_EVENT_TYPES.length * (i + 1),
+            turnP95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1],
+            turnMaxMs: sorted.at(-1),
+            historyPages: historyPageReads - priorPageReads,
+          })}`);
+          windowElapsed = [];
+          priorPageReads = historyPageReads;
           const s = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
           assert.equal(s.status, 'idle', `mid-soak the session is idle after turn ${i}`);
         }
