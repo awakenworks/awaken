@@ -464,8 +464,14 @@ export function retryableReadStatus(error) {
     return [408, 409, 429, 500, 502, 503, 504].includes(status) ? status : null;
   }
   const name = error?.name;
-  return name === 'APIConnectionError' || name === 'APIConnectionTimeoutError'
-    ? String(name)
+  if (name === 'APIConnectionError' || name === 'APIConnectionTimeoutError') {
+    return String(name);
+  }
+  // The SDK wraps connection failures during request setup, but a dropped
+  // response body can surface directly from undici's async stream iterator.
+  // Only the exact transport code is safe to classify as a transient read.
+  return name === 'TypeError' && error?.cause?.code === 'UND_ERR_SOCKET'
+    ? 'UND_ERR_SOCKET'
     : null;
 }
 
