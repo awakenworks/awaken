@@ -2,7 +2,10 @@
 """Static contract for the combined K3D product runtime image."""
 
 import argparse
+import re
 import sys
+import textwrap
+import tomllib
 from pathlib import Path
 
 
@@ -81,6 +84,50 @@ def main() -> None:
     product_resources = (product / "resources.yaml").read_text()
     assert 'resources: ["networkpolicies"]' in product_resources
     assert 'verbs: ["get", "list", "watch"]' in product_resources
+    # Worker-retirement cause/effect decision table. C1 Kubernetes begins a
+    # normal Job/StatefulSet replacement; C2 the Worker can still claim work
+    # until its local gate closes; C3 an in-flight model/tool may outlive the
+    # ordinary drain and require the bounded cancellation/return observer; C4
+    # Kubernetes sends SIGKILL when its Pod grace expires. Effects: E1 preStop
+    # invokes the one existing Worker `/admin/drain` authority before SIGTERM;
+    # E2 the Pod grace covers configured drain + revocation + bounded lifecycle
+    # publication/withdrawal; E3 no deployment-owned stop protocol is added.
+    # Rules WR1=C1+C2=>E1; WR2=C1+C3+C4=>E2; WR3=!E1|!E2=>reject the manifest.
+    # The Worker lifecycle tests own runtime drain/cancellation behavior; this
+    # test owns the cross-language deployment budget that exposed the crash.
+    lifecycle = (
+        Path(__file__).parent.parent.parent
+        / "crates" / "bin" / "awaken-worker" / "src" / "lifecycle.rs"
+    ).read_text()
+    revocation_budget = int(re.search(
+        r"WORKER_REVOCATION_BUDGET[^=]*=.*from_secs\((\d+)\)", lifecycle,
+    ).group(1))
+
+    def worker_retirement_contract(resources_text: str, marker: str) -> bool:
+        worker = resources_text.split(marker, 1)[1].split("\n---", 1)[0]
+        config = resources_text.split("worker.toml: |\n", 1)[1].split("\n---", 1)[0]
+        drain_budget = tomllib.loads(textwrap.dedent(config))["worker_drain_grace_secs"]
+        grace = int(re.search(r"terminationGracePeriodSeconds:\s*(\d+)", worker).group(1))
+        return (
+            "preStop:" in worker
+            and "httpGet: { path: /admin/drain," in worker
+            and grace >= drain_budget + revocation_budget + 10
+        )
+
+    product_marker = "kind: Job\nmetadata:\n  name: awaken-worker"
+    distributed_marker = "kind: StatefulSet\nmetadata: { name: worker, labels: { app: worker } }"
+    assert worker_retirement_contract(product_resources, product_marker)
+    assert worker_retirement_contract(resources, distributed_marker)
+    # Mutation witnesses for WR3: either the old 20s grace or deleting the hook
+    # must fail this exact deployment contract.
+    assert not worker_retirement_contract(
+        product_resources.replace("terminationGracePeriodSeconds: 60", "terminationGracePeriodSeconds: 20", 1),
+        product_marker,
+    )
+    assert not worker_retirement_contract(
+        product_resources.replace("preStop:", "removedPreStop:", 1),
+        product_marker,
+    )
     # Continuation-volume/RBAC cause-effect decision table. C1 a topology runs
     # retained Kubernetes Sessions; C2 its runtime selects the canonical PVC;
     # C3 it can allocate, observe by UID, and finally dispose that claim.
@@ -90,8 +137,6 @@ def main() -> None:
     # policy and Kubernetes API contract; neither owns a parallel PVC registry.
     # KRB1=C1+C2+C3=>E1; KRB2=C1+(!C2|!C3)=>E2. Pod update remains a separate
     # rule and must not widen PVCs.
-    import tomllib
-    import textwrap
     worker = resources.split("  worker.toml: |\n", 1)[1].split("---", 1)[0]
     assert tomllib.loads(textwrap.dedent(worker))["k8s_continuation_volume"] == {
         "storage_class_name": "local-path", "size": "1Gi",

@@ -367,7 +367,10 @@ spec:
     spec:
       serviceAccountName: awaken-worker
       restartPolicy: Never
-      terminationGracePeriodSeconds: 20
+      # The Worker may spend 15s draining and then up to 20s obtaining exact
+      # cancellation/return evidence. Keep Kubernetes from hard-killing the
+      # sole observer while it commits quiescence and deregisters.
+      terminationGracePeriodSeconds: 60
       securityContext:
         fsGroup: 10001
         fsGroupChangePolicy: OnRootMismatch
@@ -379,6 +382,9 @@ spec:
           args: ["--server", "https://awaken-product:8443", "--config", "/etc/awaken-worker/worker.toml"]
           ports:
             - { name: admin, containerPort: 9090 }
+          lifecycle:
+            preStop:
+              httpGet: { path: /admin/drain, port: admin, scheme: HTTP }
           readinessProbe:
             httpGet: { path: /readyz, port: admin }
             initialDelaySeconds: 2
