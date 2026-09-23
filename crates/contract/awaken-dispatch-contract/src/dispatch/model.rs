@@ -62,8 +62,7 @@ pub struct Claimed {
     /// for this claim. Registered remote Session attempts require it before any
     /// committed Thread read; ordinary and colocated attempts omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_work_authority:
-        Option<awaken_session_contract::work_queue::SessionWorkAuthorityReceipt>,
+    pub session_work_authority: Option<awaken_session_work_contract::SessionWorkAuthorityReceipt>,
     /// Exact credential decisions atomically committed with this lease epoch.
     /// Cancellation carries only the selected authenticated remote A2A
     /// transport binding; anonymous and non-remote cancellation remains empty.

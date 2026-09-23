@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_session_contract::{
+use awaken_session_application_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome, blocks_text,
 };
 use axum::body::{Body, to_bytes};

@@ -49,7 +49,10 @@ awaken-ext-builtin-tools.workspace = true
 awaken-sandbox-container.workspace = true
 awaken-tool-relay.workspace = true
 awaken-local-process.workspace = true
-awaken-session-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-realization-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-environment-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "fs"] }
 # The cloud-native admin surface (readyz / livez / metrics / drain) on a separate

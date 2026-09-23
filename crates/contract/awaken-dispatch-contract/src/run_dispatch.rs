@@ -7,8 +7,11 @@
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_provisioning_contract::SandboxCapacityShapeId;
-use awaken_runtime_contract::PlaintextHolder;
-use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::{PlaintextHolder, activation::RunActivation};
+use awaken_session_configuration_contract::{EnvironmentSnapshot, SessionToolConfiguration};
+use awaken_session_mcp_contract::StageMcpAttachment;
+use awaken_session_resource_contract::SessionResourceManifest;
+use awaken_session_execution_contract::{SessionRunCommandFingerprint, SessionRunReplacement};
 pub use awaken_tenancy::ExecutionScopeRef;
 pub use awaken_worker_contract::PlacementRequirements;
 use serde::{Deserialize, Serialize};
@@ -56,9 +59,7 @@ impl SessionResourceEnvelope {
     }
 
     /// Encode the Session-owned manifest into its one durable dispatch shape.
-    pub fn from_manifest(
-        manifest: &awaken_session_contract::SessionResourceManifest,
-    ) -> Result<Self, serde_json::Error> {
+    pub fn from_manifest(manifest: &SessionResourceManifest) -> Result<Self, serde_json::Error> {
         Ok(Self::at_revision(
             manifest.workspace_id.clone(),
             manifest.revision,
@@ -67,16 +68,12 @@ impl SessionResourceEnvelope {
     }
 
     /// Restore the Session-owned manifest before validation or realization.
-    pub fn decode_manifest(
-        &self,
-    ) -> Result<awaken_session_contract::SessionResourceManifest, serde_json::Error> {
-        Ok(
-            awaken_session_contract::SessionResourceManifest::at_revision(
-                self.workspace_id.clone(),
-                self.resource_revision,
-                serde_json::from_str(&self.resolved_resources_json)?,
-            ),
-        )
+    pub fn decode_manifest(&self) -> Result<SessionResourceManifest, serde_json::Error> {
+        Ok(SessionResourceManifest::at_revision(
+            self.workspace_id.clone(),
+            self.resource_revision,
+            serde_json::from_str(&self.resolved_resources_json)?,
+        ))
     }
 }
 
@@ -88,15 +85,15 @@ impl SessionResourceEnvelope {
 /// dispatch projection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DispatchedSessionRuntimeProjection {
-    pub environment: awaken_session_contract::EnvironmentSnapshot,
+    pub environment: EnvironmentSnapshot,
     /// `None` retains publication inheritance; `Some(default())` explicitly
     /// clears the complete Session tool configuration.
     #[serde(default)]
-    pub tools: Option<awaken_session_contract::SessionToolConfiguration>,
+    pub tools: Option<SessionToolConfiguration>,
     /// `None` is reserved for legacy rows predating MCP effect projection. New
     /// dispatches always carry `Some`, including `Some([])`.
     #[serde(default)]
-    pub mcp_stages: Option<Vec<awaken_session_contract::StageMcpAttachment>>,
+    pub mcp_stages: Option<Vec<StageMcpAttachment>>,
 }
 
 /// Dispatch-neutral envelope for the immutable Session runtime projection.
@@ -119,9 +116,9 @@ impl SessionRuntimeEnvelope {
     }
 
     pub fn from_projection(
-        environment: awaken_session_contract::EnvironmentSnapshot,
-        tools: Option<awaken_session_contract::SessionToolConfiguration>,
-        mcp_stages: Vec<awaken_session_contract::StageMcpAttachment>,
+        environment: EnvironmentSnapshot,
+        tools: Option<SessionToolConfiguration>,
+        mcp_stages: Vec<StageMcpAttachment>,
     ) -> Result<Self, serde_json::Error> {
         Ok(Self::new(serde_json::to_string(
             &DispatchedSessionRuntimeProjection {
@@ -174,7 +171,7 @@ pub struct RunDispatch {
     /// Runtime projection. Older durable rows omit it; only a stored omission
     /// selects the legacy reservation comparison.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_command_fingerprint: Option<awaken_session_contract::SessionRunCommandFingerprint>,
+    pub session_command_fingerprint: Option<SessionRunCommandFingerprint>,
     /// Session whose runtime capabilities and commit/history boundary must drive
     /// this Run after recovery. Ordinary Runs omit it and route by their own
     /// thread. A child Run names its parent's session while retaining its own
@@ -190,7 +187,7 @@ pub struct RunDispatch {
     /// persisted on the unclaimable reservation so crash recovery cannot turn
     /// a replacement into an ordinary append.
     #[serde(default)]
-    pub session_run_replacement: awaken_session_contract::SessionRunReplacement,
+    pub session_run_replacement: SessionRunReplacement,
     /// W3C `traceparent` captured when the run was admitted, so a durably-dispatched
     /// execution continues the admitting request's distributed trace across the
     /// queue boundary. Absent when admitted without an active trace (or by an older
@@ -347,7 +344,7 @@ impl RunDispatch {
             session_command_fingerprint: None,
             session_thread_id: None,
             session_activity_epoch: None,
-            session_run_replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
+            session_run_replacement: SessionRunReplacement::PreservePrior,
             traceparent: None,
             execution_scope: None,
             session_resources: None,
@@ -470,7 +467,7 @@ impl RunDispatch {
     #[must_use]
     pub fn with_session_command_fingerprint(
         mut self,
-        fingerprint: awaken_session_contract::SessionRunCommandFingerprint,
+        fingerprint: SessionRunCommandFingerprint,
     ) -> Self {
         self.session_command_fingerprint = Some(fingerprint);
         self
@@ -494,10 +491,7 @@ impl RunDispatch {
     /// Preserve the Session application's explicit replacement intent across
     /// reservation recovery.
     #[must_use]
-    pub fn with_session_run_replacement(
-        mut self,
-        replacement: awaken_session_contract::SessionRunReplacement,
-    ) -> Self {
+    pub fn with_session_run_replacement(mut self, replacement: SessionRunReplacement) -> Self {
         self.session_run_replacement = replacement;
         self
     }
@@ -767,10 +761,10 @@ mod tests {
         )
     }
 
-    fn command_fingerprint(fill: char) -> awaken_session_contract::SessionRunCommandFingerprint {
+    fn command_fingerprint(fill: char) -> SessionRunCommandFingerprint {
         serde_json::from_value(serde_json::Value::String(format!(
             "{}{}",
-            awaken_session_contract::SessionRunCommandFingerprint::CURRENT_PREFIX,
+            SessionRunCommandFingerprint::CURRENT_PREFIX,
             fill.to_string().repeat(64)
         )))
         .expect("test fingerprint decodes")
@@ -981,7 +975,7 @@ mod tests {
         assert!(
             current
                 .session_reservation_fingerprint()
-                .starts_with(awaken_session_contract::SessionRunCommandFingerprint::CURRENT_PREFIX),
+                .starts_with(SessionRunCommandFingerprint::CURRENT_PREFIX),
             "W1/E1"
         );
 
@@ -1051,11 +1045,11 @@ mod tests {
     /// regaining a parallel private schema.
     #[test]
     fn frozen_session_runtime_projection_round_trips_through_its_contract_owner() {
-        let environment = awaken_session_contract::EnvironmentSnapshot {
+        let environment = EnvironmentSnapshot {
             environment_id: "environment-a".into(),
-            revision: awaken_session_contract::EnvironmentRevision(1),
+            revision: awaken_environment_contract::EnvironmentRevision(1),
             self_hosted: true,
-            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+            config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
                 "environment-a@1".into(),
             ),
             sandbox: Default::default(),
@@ -1063,11 +1057,11 @@ mod tests {
             idle_retention: Default::default(),
             packages: Default::default(),
             prepared_image: None,
-            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         };
-        let tools = awaken_session_contract::SessionToolConfiguration {
+        let tools = SessionToolConfiguration {
             toolsets: Vec::new(),
             client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
                 name: "review_plan".into(),
@@ -1339,11 +1333,7 @@ mod tests {
     /// Rules A1 C1=>E1, A2 C1+C2=>E2, A3 C3=>E3 cover every JSON validity class.
     #[test]
     fn session_resource_envelope_is_the_single_lossless_fail_closed_acl() {
-        let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
-            "workspace-a",
-            7,
-            Default::default(),
-        );
+        let manifest = SessionResourceManifest::at_revision("workspace-a", 7, Default::default());
         let envelope = SessionResourceEnvelope::from_manifest(&manifest).expect("A1 encode");
         assert_eq!(envelope.workspace_id, "workspace-a", "A1");
         assert_eq!(envelope.resource_revision, 7, "A1");

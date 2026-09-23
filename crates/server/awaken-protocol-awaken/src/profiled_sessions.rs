@@ -6,10 +6,9 @@ use awaken_credential_contract::CredentialRef;
 use awaken_provisioning_contract::{
     EnvVar, MountRequirement, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
 };
-use awaken_session_contract::{
-    McpAttachmentOrigin, McpTarget, SessionNetworkPolicy, SessionRunExecutionRequirements,
-    SessionToolConfiguration,
-};
+use awaken_session_configuration_contract::{SessionNetworkPolicy, SessionToolConfiguration};
+use awaken_session_mcp_contract::{McpAttachmentOrigin, McpTarget};
+use awaken_session_execution_contract::SessionRunExecutionRequirements;
 use axum::Router;
 use axum::handler::Handler;
 use axum::routing::post;
@@ -61,10 +60,12 @@ pub enum ProfiledSessionMode {
 
 impl ProfiledSessionMode {
     #[must_use]
-    pub const fn mutation_policy(self) -> awaken_session_contract::SessionMutationPolicy {
+    pub const fn mutation_policy(self) -> awaken_session_resource_contract::SessionMutationPolicy {
         match self {
-            Self::WorkUnit => awaken_session_contract::SessionMutationPolicy::Frozen,
-            Self::Interactive => awaken_session_contract::SessionMutationPolicy::FileResources,
+            Self::WorkUnit => awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+            Self::Interactive => {
+                awaken_session_resource_contract::SessionMutationPolicy::FileResources
+            }
         }
     }
 }
@@ -90,7 +91,7 @@ pub struct ProfiledSessionCreate {
     /// Complete Session-local resource inputs. Open resolves these together
     /// with published Agent defaults before the original root insert.
     #[serde(default)]
-    pub resource_inputs: Vec<awaken_session_contract::SessionInputAttachment>,
+    pub resource_inputs: Vec<awaken_session_resource_contract::SessionInputAttachment>,
     #[serde(default)]
     pub mcp_attachments: Vec<ProfiledSessionMcpAttachment>,
     #[serde(default)]
@@ -313,12 +314,12 @@ mod tests {
         );
         assert_eq!(
             ProfiledSessionMode::WorkUnit.mutation_policy(),
-            awaken_session_contract::SessionMutationPolicy::Frozen,
+            awaken_session_resource_contract::SessionMutationPolicy::Frozen,
             "R4"
         );
         assert_eq!(
             ProfiledSessionMode::Interactive.mutation_policy(),
-            awaken_session_contract::SessionMutationPolicy::FileResources,
+            awaken_session_resource_contract::SessionMutationPolicy::FileResources,
             "R5"
         );
         let mut unknown = encoded;

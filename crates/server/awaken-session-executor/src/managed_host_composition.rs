@@ -21,7 +21,7 @@ impl ManagedHost {
     /// cycle (`SessionApplication -> ManagedHost -> SharedHost`).
     pub fn install_agent_coordination_application(
         &self,
-        application: std::sync::Weak<dyn awaken_session_contract::SessionAgentCoordination>,
+        application: std::sync::Weak<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     ) -> Result<(), AgentCoordinationInstallError> {
         let mut installed = self
             .host
@@ -42,7 +42,9 @@ impl ManagedHost {
     /// BackgroundTask state, Run identity mapping, or retry ledger.
     pub fn install_session_background_run_application(
         &self,
-        application: std::sync::Weak<dyn awaken_session_contract::SessionRunBackgroundApplication>,
+        application: std::sync::Weak<
+            dyn awaken_session_application_contract::SessionRunBackgroundApplication,
+        >,
     ) -> Result<(), SessionRunBackgroundInstallError> {
         let mut installed = self
             .host
@@ -122,14 +124,14 @@ impl ManagedHost {
     pub(super) fn complete_session_preparation(
         &self,
         thread: &str,
-        environment: &awaken_session_contract::EnvironmentSnapshot,
+        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) {
         self.host.session_slots.update(thread, |slot| {
             slot.runtime = None;
             slot.session_dispatch = true;
         });
         if environment.sandbox_provisioning
-            == awaken_session_contract::SandboxProvisioning::OnToolUse
+            == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
         {
             let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
                 Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
@@ -147,16 +149,16 @@ impl ManagedHost {
     pub(super) async fn install_projection_facts(
         &self,
         thread: &str,
-        projection: &awaken_session_contract::FrozenSessionProjection,
-        mode: &awaken_session_contract::SessionProjectionInstallMode,
+        projection: &awaken_session_realization_contract::FrozenSessionProjection,
+        mode: &awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
         match mode {
-            awaken_session_contract::SessionProjectionInstallMode::Dispatch => {
+            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch => {
                 self.host
                     .install_dispatch_frozen_session_projection(thread, projection.clone())
                     .await
             }
-            awaken_session_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
                 prepare_session,
                 lease,
             } => {
@@ -180,7 +182,7 @@ impl ManagedHost {
     pub(super) async fn install_test_session_init(
         &self,
         thread: &str,
-        init: awaken_session_contract::SessionInit,
+        init: awaken_session_configuration_contract::SessionInit,
     ) -> Result<(), RunError> {
         let lifecycle = self
             .host

@@ -118,7 +118,7 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
                     tokio::time::advance(std::time::Duration::from_millis(11)).await;
                 } else {
                     send.send(if outcome == "error" {
-                        Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+                        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
                     } else {
                         Ok(())
                     })
@@ -131,14 +131,14 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
                     "deadline" => assert!(matches!(
                         result,
                         Err(
-                            awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                                 _
                             )
                         )
                     )),
                     "error" => assert!(matches!(
                         result,
-                        Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+                        Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
                     )),
                     _ => assert!(result.is_ok()),
                 }

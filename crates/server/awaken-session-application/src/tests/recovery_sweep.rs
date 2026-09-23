@@ -71,7 +71,7 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
     // reloads the root and uses the existing reference/effect authority.
     let mut stable = persisted("resource-interest", true, "idle");
     stable.resources =
-        awaken_session_contract::SessionResourceState::from_active(file_resources("stable"));
+        awaken_session_state_contract::SessionResourceState::from_active(file_resources("stable"));
     assert!(!stable.needs_resource_reconciliation(), "R1 precondition");
     assert!(stable.resources.has_references(), "R1 precondition");
     assert!(
@@ -89,7 +89,7 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
     stable
         .resources
         .prepare(
-            &awaken_session_contract::SessionId::from("resource-interest"),
+            &awaken_session_types::SessionId::from("resource-interest"),
             file_resources("pending"),
         )
         .unwrap();
@@ -103,8 +103,9 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
         "R3"
     );
     let mut terminal = persisted("resource-terminal", true, "activation_failed");
-    terminal.resources =
-        awaken_session_contract::SessionResourceState::from_active(file_resources("terminal"));
+    terminal.resources = awaken_session_state_contract::SessionResourceState::from_active(
+        file_resources("terminal"),
+    );
     let terminal_interests = SessionRecoveryInterests::from_session(&terminal, true);
     assert!(terminal_interests.resources, "R4 cleanup remains scheduled");
     assert!(
@@ -115,7 +116,7 @@ fn resource_reference_audit_is_periodic_while_new_work_is_immediate() {
     preparing
         .resources
         .prepare(
-            &awaken_session_contract::SessionId::from("resource-preparing-skill"),
+            &awaken_session_types::SessionId::from("resource-preparing-skill"),
             skill_resources("pending-skill"),
         )
         .unwrap();
@@ -372,7 +373,7 @@ async fn recovery_sweeps_isolate_slow_sessions_with_a_bounded_owned_sweep() {
                     .iter()
                     .map(|id| SessionRecoveryCandidate {
                         workspace_id: "test".into(),
-                        session_id: awaken_session_contract::SessionId::from(id.as_str()),
+                        session_id: awaken_session_types::SessionId::from(id.as_str()),
                         interests: SessionRecoveryInterests::default(),
                     })
                     .collect(),
@@ -485,7 +486,7 @@ async fn event_sweep_keeps_the_measured_fleet_and_existing_session_in_one_wave()
             .iter()
             .map(|id| SessionRecoveryCandidate {
                 workspace_id: "test".into(),
-                session_id: awaken_session_contract::SessionId::from(id.as_str()),
+                session_id: awaken_session_types::SessionId::from(id.as_str()),
                 interests: SessionRecoveryInterests::default(),
             })
             .collect(),

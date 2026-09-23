@@ -29,7 +29,9 @@ pub use awaken_runtime_contract::{
 use awaken_runtime_contract::{
     CredentialAdmissionError, CredentialRealizationKind, CredentialUsage, PlaintextBoundary,
 };
-use awaken_session_contract::{SessionRunActivityAdmission, SessionRunActivityAdmissionMode};
+use awaken_session_execution_contract::{
+    SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
+};
 use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerIdentity, WorkerSnapshot};
 use serde::{Deserialize, Serialize};
 
@@ -305,11 +307,11 @@ mod tests {
             .clone()
             .unwrap_or_else(|| worker.clone());
         crate::SessionRuntimeEnvelope::from_projection(
-            awaken_session_contract::EnvironmentSnapshot {
+            awaken_session_configuration_contract::EnvironmentSnapshot {
                 environment_id: "environment-a".into(),
-                revision: awaken_session_contract::EnvironmentRevision(1),
+                revision: awaken_environment_contract::EnvironmentRevision(1),
                 self_hosted: true,
-                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
                     "environment-a@1".into(),
                 ),
                 sandbox: Default::default(),
@@ -317,7 +319,7 @@ mod tests {
                 idle_retention: Default::default(),
                 packages: Default::default(),
                 prepared_image: None,
-                network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                 credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                     inference_holder: worker.clone(),
                     mcp_holder,
@@ -325,15 +327,17 @@ mod tests {
                 },
             },
             Some(Default::default()),
-            vec![awaken_session_contract::StageMcpAttachment {
+            vec![awaken_session_mcp_contract::StageMcpAttachment {
                 workspace_id: "workspace-a".into(),
-                generation: awaken_session_contract::McpGenerationRef {
+                generation: awaken_session_mcp_contract::McpGenerationRef {
                     session_id: "session-a".into(),
-                    generation: awaken_session_contract::McpGeneration::of_bare_target(
-                        awaken_session_contract::McpAttachmentId("mcp-a".into()),
+                    generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+                        awaken_session_mcp_contract::McpAttachmentId("mcp-a".into()),
                         1,
-                        &awaken_session_contract::McpTarget::parse_http("https://mcp.example.test")
-                            .expect("valid MCP target"),
+                        &awaken_session_mcp_contract::McpTarget::parse_http(
+                            "https://mcp.example.test",
+                        )
+                        .expect("valid MCP target"),
                     ),
                     runtime_incarnation: "worker-a".into(),
                     lease_epoch: 1,
@@ -342,8 +346,10 @@ mod tests {
                 realization_id: "realization-a".into(),
                 stage_idempotency_key: "stage-a".into(),
                 name: "mcp-a".into(),
-                target: awaken_session_contract::McpTarget::parse_http("https://mcp.example.test")
-                    .expect("valid MCP target"),
+                target: awaken_session_mcp_contract::McpTarget::parse_http(
+                    "https://mcp.example.test",
+                )
+                .expect("valid MCP target"),
                 prompts_as_skills: false,
                 credential,
                 selected_plaintext_holder,

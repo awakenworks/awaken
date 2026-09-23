@@ -1,6 +1,7 @@
 //! One A2A wire mapping for projection/config/delivery state failures.
 
-use awaken_session_contract::{RunApplicationError, RunError};
+use awaken_session_application_contract::RunApplicationError;
+use awaken_session_error_contract::RunError;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

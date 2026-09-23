@@ -1,14 +1,14 @@
 pub mod resources;
 
-use awaken_session_contract::SessionId;
+use awaken_session_types::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use awaken_session_contract::{
+use awaken_session_repository_contract::SessionRepository;
+use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionIdempotencyReceipt,
-    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRepository,
-    SessionRepositoryError,
+    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRepositoryError,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::http::StatusCode;
@@ -188,7 +188,7 @@ pub async fn drive_retained_session_events(
 pub async fn drive_completed_user_dispatches(
     state: &awaken_protocol_managed::ManagedState,
     session_id: &str,
-    completions: &Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>,
+    completions: &Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
 ) {
     // Run only the canonical supervisor, then deliver exact activation facts.
     // No scan of active epochs can substitute for a simulated Applied receipt.
@@ -204,14 +204,14 @@ pub async fn drive_completed_user_dispatches(
 #[allow(dead_code)]
 pub async fn finalize_applied_user_dispatch(
     state: &awaken_protocol_managed::ManagedState,
-    boundary: awaken_session_contract::SessionAgentBoundaryCommand,
+    boundary: awaken_session_execution_contract::SessionAgentBoundaryCommand,
 ) {
     // C1 exact activation coordinates retained by the fake; C2 committed Run;
     // C3 simulated Dispatch CAS Applied. C1+C2+C3 => the production callback
     // records processed and removes only that activity; duplicate callback is
     // a no-op. Calling this without C3 is forbidden: Thread completion alone
     // is not a Dispatch receipt. Production Host/queue tests own actual CAS.
-    use awaken_session_contract::SessionAgentCoordination;
+    use awaken_session_execution_contract::SessionAgentCoordination;
     let application = state.session_application();
     application
         .settle_session_agent_boundary(boundary.clone())
@@ -298,7 +298,7 @@ impl ScheduledConflictRepository {
 
 #[allow(dead_code)]
 pub async fn replace_session_fixture(
-    repo: &dyn awaken_session_contract::SessionStore,
+    repo: &dyn awaken_session_repository_contract::SessionStore,
     owner: &str,
     mut session: PersistedSession,
     key: &str,
@@ -337,7 +337,7 @@ impl SessionRepository for ScheduledConflictRepository {
         session: PersistedSession,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<awaken_session_contract::SessionCreateResult, SessionRepositoryError> {
+    ) -> Result<awaken_session_state_contract::SessionCreateResult, SessionRepositoryError> {
         self.inner
             .create(owner_scope, session, idempotency, lifecycle_facts)
             .await
@@ -361,7 +361,7 @@ impl SessionRepository for ScheduledConflictRepository {
     ) -> Result<SessionMutationResult, SessionRepositoryError> {
         let call = self.commit_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if self.unavailable.lock().unwrap().contains(&call) {
-            return Err(SessionRepositoryError::Unavailable(
+            return Err(SessionRepositoryError::AuthorityUnavailable(
                 "injected root-CAS outage".into(),
             ));
         }
@@ -456,19 +456,21 @@ impl SessionRepository for ScheduledConflictRepository {
 
     async fn scan(
         &self,
-        query: awaken_session_contract::SessionScanQuery<'_>,
-    ) -> Result<awaken_session_contract::SessionScan, awaken_session_contract::SessionRepositoryError>
-    {
+        query: awaken_session_state_contract::SessionScanQuery<'_>,
+    ) -> Result<
+        awaken_session_state_contract::SessionScan,
+        awaken_session_state_contract::SessionRepositoryError,
+    > {
         self.inner.scan(query).await
     }
 
     async fn deleted_event_admissions(
         &self,
         owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<
-        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
-        awaken_session_contract::SessionRepositoryError,
+        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+        awaken_session_state_contract::SessionRepositoryError,
     > {
         self.inner
             .deleted_event_admissions(owner_scope, session_id)
@@ -477,14 +479,14 @@ impl SessionRepository for ScheduledConflictRepository {
 
     async fn count_environment_phase(
         &self,
-        phase: awaken_session_contract::SessionEnvironmentPhase,
-    ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
+        phase: awaken_session_state_contract::SessionEnvironmentPhase,
+    ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
         self.inner.count_environment_phase(phase).await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::LifecycleOutbox for ScheduledConflictRepository {
+impl awaken_session_repository_contract::LifecycleOutbox for ScheduledConflictRepository {
     async fn append_lifecycle(
         &self,
         fact: ManagedLifecycleFact,

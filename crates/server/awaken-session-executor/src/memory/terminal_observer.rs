@@ -84,7 +84,7 @@ impl crate::host::SharedHost {
         session_thread: &str,
         snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
         effective_model_ref: &str,
-        dispatched_resources: Option<&awaken_session_contract::SessionResourceManifest>,
+        dispatched_resources: Option<&awaken_session_resource_contract::SessionResourceManifest>,
         frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
         commit: Arc<HostCommit>,
     ) -> Result<

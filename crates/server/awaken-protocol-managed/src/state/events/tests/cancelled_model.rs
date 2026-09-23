@@ -52,7 +52,7 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
             let run = RunId("cancelled-model".into());
             let activity = warm
                 .application
-                .begin_activity(&awaken_session_contract::SessionId::from(&session.id))
+                .begin_activity(&awaken_session_types::SessionId::from(&session.id))
                 .await
                 .unwrap();
             runtime.lifecycle.lock().unwrap().extend([
@@ -109,15 +109,17 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
             }
             warm.application
                 .settle_activity_observed(
-                    &awaken_session_contract::SessionId::from(&session.id),
+                    &awaken_session_types::SessionId::from(&session.id),
                     activity.activity_epoch,
-                    Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                        activity_epoch: activity.activity_epoch,
-                        thread_id: ThreadId(session.id.clone()),
-                        run_id: run.clone(),
-                        lifecycle_cursor: lifecycle_cursor(3),
-                        source_commit_cursor: 3,
-                    }),
+                    Some(
+                        awaken_session_state_contract::SessionRuntimeIntervalObservation {
+                            activity_epoch: activity.activity_epoch,
+                            thread_id: ThreadId(session.id.clone()),
+                            run_id: run.clone(),
+                            lifecycle_cursor: lifecycle_cursor(3),
+                            source_commit_cursor: 3,
+                        },
+                    ),
                 )
                 .await
                 .unwrap();
@@ -210,10 +212,10 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
             RunId("root".into()),
             0,
             "child",
-            awaken_session_contract::CoordinatedThreadLink {
-                session_id: awaken_session_contract::SessionId::from(&session.id),
+            awaken_session_execution_contract::CoordinatedThreadLink {
+                session_id: awaken_session_types::SessionId::from(&session.id),
                 thread_id: ThreadId(child_id.into()),
-                target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+                target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
                     agent_id: "researcher".into(),
                 },
                 created_by_operation_id: ToolBatch::operation_id_for_step(

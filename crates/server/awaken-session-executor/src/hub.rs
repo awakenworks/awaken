@@ -86,7 +86,7 @@ impl ThreadEventHub {
     pub(crate) fn live_subscription(
         &self,
         thread_key: &str,
-    ) -> Box<dyn awaken_session_contract::SessionThreadLiveSubscription> {
+    ) -> Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription> {
         Box::new(HubLiveSubscription {
             receiver: self.subscribe(thread_key),
         })
@@ -98,12 +98,12 @@ struct HubLiveSubscription {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionThreadLiveSubscription for HubLiveSubscription {
+impl awaken_session_execution_contract::SessionThreadLiveSubscription for HubLiveSubscription {
     async fn recv(
         &mut self,
     ) -> Result<
         Option<awaken_agent_contract::stream::event::Observation>,
-        awaken_session_contract::RunError,
+        awaken_session_error_contract::RunError,
     > {
         loop {
             match self.receiver.recv().await {

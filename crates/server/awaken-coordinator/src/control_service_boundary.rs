@@ -11,7 +11,7 @@ use awaken_agent_config::{AuditedConfigWrite, ManagementAuditEntry, ManagementAu
 use awaken_config_service::{ManagementAuditPlane, ManagementAuditRepository};
 use awaken_credential_contract::CredentialSourceId;
 use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
-use awaken_session_contract::ManagedLifecycleFact;
+use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_tenancy::ScopeId;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -45,7 +45,7 @@ struct ControlServiceState {
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
-    webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
+    webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
     data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
     organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
@@ -81,7 +81,7 @@ struct McpSourceCommand {
 struct SourceCommand {
     source_id: CredentialSourceId,
     workspace_id: String,
-    target: awaken_session_contract::McpTarget,
+    target: awaken_session_mcp_contract::McpTarget,
     selected_holder: awaken_runtime_contract::PlaintextHolder,
     binding: awaken_runtime_contract::CredentialMaterialBinding,
 }
@@ -138,7 +138,7 @@ pub fn router(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
-    webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
+    webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
     data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
     organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
     bearer_token: impl Into<String>,
@@ -161,7 +161,7 @@ pub fn router_with_authenticator(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
-    webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
+    webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
     data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
     organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
@@ -587,7 +587,7 @@ impl SessionCredentialSource for HttpControlServiceClient {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
-        target: &awaken_session_contract::McpTarget,
+        target: &awaken_session_mcp_contract::McpTarget,
         selected_holder: &awaken_runtime_contract::PlaintextHolder,
         binding: &awaken_runtime_contract::CredentialMaterialBinding,
     ) -> Result<awaken_runtime_contract::CredentialAccess, String> {
@@ -666,7 +666,7 @@ impl awaken_resource_contract::RepositoryCredentialValidator for HttpControlServ
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::LifecycleFactDelivery for HttpControlServiceClient {
+impl awaken_session_application_contract::LifecycleFactDelivery for HttpControlServiceClient {
     async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
         self.post(WEBHOOK_DELIVER_PATH, fact).await
     }
@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::LifecycleFactDelivery for RecordingDelivery {
+    impl awaken_session_application_contract::LifecycleFactDelivery for RecordingDelivery {
         async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
             self.0.lock().expect("delivery lock").push(fact.clone());
             Ok(())
@@ -960,7 +960,7 @@ mod tests {
             timestamp: 7,
             runtime_interval: None,
         };
-        awaken_session_contract::LifecycleFactDelivery::deliver(&client, &fact)
+        awaken_session_application_contract::LifecycleFactDelivery::deliver(&client, &fact)
             .await
             .unwrap();
         assert_eq!(*delivery.0.lock().unwrap(), vec![fact], "R2");

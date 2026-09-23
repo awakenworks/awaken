@@ -52,7 +52,7 @@ impl SharedHost {
             }
         };
         let mut links = project_committed_coordination_links(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             advisor_model.as_deref(),
             &committed,
         )?;
@@ -134,7 +134,7 @@ impl SharedHost {
         &self,
         session_id: &str,
         thread_id: &ThreadId,
-    ) -> Result<awaken_session_contract::SessionUsage, HostError> {
+    ) -> Result<awaken_session_budget_contract::SessionUsage, HostError> {
         let commit = self.commit_for_read(session_id).await?;
         if commit
             .authoritative_latest_run(thread_id)
@@ -142,7 +142,7 @@ impl SharedHost {
             .map_err(HostError::internal)?
             .is_none()
         {
-            return Ok(awaken_session_contract::SessionUsage::default());
+            return Ok(awaken_session_budget_contract::SessionUsage::default());
         }
         // Usage depends only on committed State. Reuse its existing authority
         // query instead of reading every Message, Event, Run and resume ticket
@@ -152,9 +152,11 @@ impl SharedHost {
             .committed_state_view(thread_id)
             .await
             .map_err(HostError::internal)?;
-        Ok(awaken_session_contract::session_usage_from_thread_usage(
-            awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state),
-        ))
+        Ok(
+            awaken_session_application_contract::session_usage_from_thread_usage(
+                awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state),
+            ),
+        )
     }
 
     pub(crate) async fn session_thread_disposition(
@@ -182,7 +184,7 @@ mod tests {
     use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy};
     use awaken_agent_contract::thread::commit::RunDisposition;
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
-    use awaken_session_contract::{BudgetRuntime, CoordinationRuntime, ThreadReadRuntime};
+    use awaken_session_execution_contract::{BudgetRuntime, CoordinationRuntime, ThreadReadRuntime};
 
     #[tokio::test]
     async fn coordination_query_reuses_only_the_supplied_root_prefix() {
@@ -214,7 +216,7 @@ mod tests {
         let managed = crate::ManagedHost::new(host.clone());
         assert!(
             managed
-                .coordinated_threads(&awaken_session_contract::SessionId::from(session), None)
+                .coordinated_threads(&awaken_session_types::SessionId::from(session), None)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -251,7 +253,7 @@ mod tests {
         let before = queries.latest_run_reads();
         let original = managed
             .coordinated_threads(
-                &awaken_session_contract::SessionId::from(session),
+                &awaken_session_types::SessionId::from(session),
                 Some(&snapshot),
             )
             .await
@@ -276,7 +278,7 @@ mod tests {
         assert_eq!(
             managed
                 .coordinated_threads(
-                    &awaken_session_contract::SessionId::from(session),
+                    &awaken_session_types::SessionId::from(session),
                     Some(&snapshot)
                 )
                 .await
@@ -291,7 +293,7 @@ mod tests {
         );
         assert_eq!(
             managed
-                .coordinated_threads(&awaken_session_contract::SessionId::from(session), None)
+                .coordinated_threads(&awaken_session_types::SessionId::from(session), None)
                 .await
                 .unwrap()
                 .len(),
@@ -326,7 +328,7 @@ mod tests {
         assert_eq!(
             managed
                 .coordinated_threads(
-                    &awaken_session_contract::SessionId::from(session),
+                    &awaken_session_types::SessionId::from(session),
                     Some(&snapshot)
                 )
                 .await
@@ -340,7 +342,7 @@ mod tests {
             "Q4 no hidden recovery query"
         );
         let error = managed
-            .coordinated_threads(&awaken_session_contract::SessionId::from(session), None)
+            .coordinated_threads(&awaken_session_types::SessionId::from(session), None)
             .await
             .unwrap_err();
         assert!(
@@ -354,7 +356,7 @@ mod tests {
         foreign.thread_id = ThreadId("another-session".into());
         let error = managed
             .coordinated_threads(
-                &awaken_session_contract::SessionId::from(session),
+                &awaken_session_types::SessionId::from(session),
                 Some(&foreign),
             )
             .await
@@ -418,12 +420,12 @@ mod tests {
             assert_eq!(
                 managed
                     .session_thread_usage(
-                        &awaken_session_contract::SessionId::from(session_id),
+                        &awaken_session_types::SessionId::from(session_id),
                         &thread_id.0
                     )
                     .await
                     .unwrap(),
-                awaken_session_contract::SessionUsage::default(),
+                awaken_session_budget_contract::SessionUsage::default(),
                 "U1 absent Run does not read unavailable State"
             );
             store
@@ -442,7 +444,7 @@ mod tests {
                 .unwrap();
             let error = managed
                 .session_thread_usage(
-                    &awaken_session_contract::SessionId::from(session_id),
+                    &awaken_session_types::SessionId::from(session_id),
                     &thread_id.0,
                 )
                 .await
@@ -470,7 +472,7 @@ mod tests {
                 let restarted = crate::ManagedHost::new(make_host());
                 let actual = restarted
                     .session_thread_usage(
-                        &awaken_session_contract::SessionId::from(session_id),
+                        &awaken_session_types::SessionId::from(session_id),
                         &thread_id.0,
                     )
                     .await
@@ -552,12 +554,12 @@ mod tests {
         assert_eq!(
             crate::ManagedHost::new(host.clone())
                 .session_thread_usage(
-                    &awaken_session_contract::SessionId::from(session_id),
+                    &awaken_session_types::SessionId::from(session_id),
                     &child_id.0
                 )
                 .await
                 .expect("R1 absent usage read"),
-            awaken_session_contract::SessionUsage::default(),
+            awaken_session_budget_contract::SessionUsage::default(),
             "R1/E1 only a genuinely absent Run projects zero usage",
         );
 
@@ -654,7 +656,7 @@ mod tests {
         let managed = crate::ManagedHost::new(host.clone());
         let snapshot = managed
             .session_thread_recovery_snapshot(
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 &child_id.0,
             )
             .await
@@ -690,7 +692,7 @@ mod tests {
         assert_eq!(snapshot.next_commit_ordinal, 2, "R2/E2 claimed ordinal");
         let exact_snapshot = managed
             .session_thread_run_recovery_snapshot(
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 &child_id.0,
                 &child_run,
             )
@@ -699,7 +701,7 @@ mod tests {
             .expect("R2 exact committed child Run");
         let usage = managed
             .session_thread_usage(
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 &child_id.0,
             )
             .await
@@ -714,7 +716,7 @@ mod tests {
         assert_eq!(
             managed
                 .session_thread_run_recovery_snapshot(
-                    &awaken_session_contract::SessionId::from(session_id),
+                    &awaken_session_types::SessionId::from(session_id),
                     &child_id.0,
                     &RunId("snapshot-absent-run".into()),
                 )

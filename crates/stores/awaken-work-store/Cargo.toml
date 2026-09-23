@@ -20,7 +20,8 @@ loom = []
 [dependencies]
 # The WorkQueue port + its neutral vocabulary this crate implements a durable backend
 # for (SQLite embedded / Postgres distributed, at parity).
-awaken-session-contract = { workspace = true }
+awaken-session-types.workspace = true
+awaken-session-work-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-sqlite-pool.workspace = true
 awaken-sql-storage.workspace = true

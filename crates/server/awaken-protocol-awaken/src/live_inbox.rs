@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_session_contract::{
+use awaken_session_execution_contract::{
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot,
 };
@@ -52,7 +52,7 @@ fn extension_error(error: LiveInboxApplicationError) -> ExtensionRejection {
         LiveInboxApplicationError::Edit(LiveInboxError::Inactive) => {
             (StatusCode::GONE, "invalid_request_error")
         }
-        LiveInboxApplicationError::Unavailable(_) => {
+        LiveInboxApplicationError::AuthorityUnavailable { .. } => {
             (StatusCode::INTERNAL_SERVER_ERROR, "api_error")
         }
     };
@@ -150,7 +150,7 @@ async fn live_inbox_snapshot(
     Path(id): Path<String>,
 ) -> Result<Json<WireLiveInboxSnapshot>, ExtensionRejection> {
     state
-        .snapshot(&workspace_id, &awaken_session_contract::SessionId::from(id))
+        .snapshot(&workspace_id, &awaken_session_types::SessionId::from(id))
         .await
         .map(|snapshot| Json(project_snapshot(snapshot)))
         .map_err(extension_error)
@@ -165,7 +165,7 @@ async fn live_inbox_queue(
     state
         .queue(
             &workspace_id,
-            &awaken_session_contract::SessionId::from(id),
+            &awaken_session_types::SessionId::from(id),
             body.content,
         )
         .await
@@ -181,7 +181,7 @@ async fn live_inbox_remove(
     state
         .remove(
             &workspace_id,
-            &awaken_session_contract::SessionId::from(id),
+            &awaken_session_types::SessionId::from(id),
             msg,
         )
         .await
@@ -198,7 +198,7 @@ async fn live_inbox_replace(
     state
         .replace(
             &workspace_id,
-            &awaken_session_contract::SessionId::from(id),
+            &awaken_session_types::SessionId::from(id),
             msg,
             body.content,
         )
@@ -216,7 +216,7 @@ async fn live_inbox_reorder(
     state
         .reorder(
             &workspace_id,
-            &awaken_session_contract::SessionId::from(id),
+            &awaken_session_types::SessionId::from(id),
             body.order,
         )
         .await
@@ -247,7 +247,10 @@ mod tests {
             StatusCode::GONE
         );
         assert_eq!(
-            extension_error(LiveInboxApplicationError::Unavailable("down".into())).0,
+            extension_error(LiveInboxApplicationError::AuthorityUnavailable {
+                detail: "down".into(),
+            })
+            .0,
             StatusCode::INTERNAL_SERVER_ERROR
         );
     }

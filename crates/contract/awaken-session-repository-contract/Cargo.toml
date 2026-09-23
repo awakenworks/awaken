@@ -1,0 +1,19 @@
+[package]
+name = "awaken-session-repository-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "contract"
+kinds = ["spi"]
+authority = "session-repository"
+
+[dependencies]
+awaken-session-state-contract.workspace = true
+awaken-session-types.workspace = true
+async-trait.workspace = true
+
+[lints]
+workspace = true

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use awaken_protocol_managed::{ManagedLifecycleFactDelivery, ManagedState};
-use awaken_session_contract::{
+use awaken_session_application_contract::{
     CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
 };
 
@@ -92,10 +92,9 @@ mod tests {
     use awaken_agent_contract::stream::sink::{Error as SinkError, Sink};
     use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
     use awaken_protocol_managed::{ManagedState, StateError, router};
-    use awaken_session_contract::{
-        AdmitSessionRun, LifecycleFactDelivery, ManagedLifecycleFact, SessionExecutionState,
-        session_run_id,
-    };
+    use awaken_session_application_contract::LifecycleFactDelivery;
+    use awaken_session_execution_contract::{AdmitSessionRun, session_run_id};
+    use awaken_session_state_contract::{ManagedLifecycleFact, SessionExecutionState};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
@@ -226,11 +225,11 @@ mod tests {
             .run_admitted_session_for_owner(
                 "default",
                 AdmitSessionRun {
-                    session_id: awaken_session_contract::SessionId::from(&session.id),
+                    session_id: awaken_session_types::SessionId::from(&session.id),
                     agent_id: "coder".into(),
                     operation_id: operation_id.into(),
                     run_id: session_run_id(
-                        &awaken_session_contract::SessionId::from(session.id.as_str()),
+                        &awaken_session_types::SessionId::from(session.id.as_str()),
                         operation_id,
                     ),
                     messages: vec![Message::text(
@@ -241,7 +240,8 @@ mod tests {
                     data_subject_id: None,
                     traceparent: None,
                     execution_requirements: Default::default(),
-                    replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
+                    replacement:
+                        awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
                 },
                 Some(Arc::new(NoopSink)),
             )
@@ -253,7 +253,7 @@ mod tests {
         // test transport plumbing, not a second application completion path.
         let active_epochs = state
             .session_application()
-            .session(&awaken_session_contract::SessionId::from(&session.id))
+            .session(&awaken_session_types::SessionId::from(&session.id))
             .await
             .expect("L1 committed active Session")
             .active_activity_epochs;
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(
             state
                 .session_application()
-                .session(&awaken_session_contract::SessionId::from(&session.id))
+                .session(&awaken_session_types::SessionId::from(&session.id))
                 .await
                 .expect("L1 settled Session")
                 .execution,

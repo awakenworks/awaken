@@ -5,7 +5,7 @@
 
 use awaken_agent_config::ConfigWrite;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
-use awaken_session_contract::preserve_runtime_agent_overrides;
+use awaken_session_configuration_contract::preserve_runtime_agent_overrides;
 use awaken_tenancy::{ExecutionWorkspace, ScopeId, WorkspaceScope};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -372,7 +372,7 @@ pub(crate) async fn get_config(
 
 fn take_agent_permission_preset(
     body: &mut Value,
-) -> Result<Option<awaken_session_contract::AgentPermissionPreset>, String> {
+) -> Result<Option<awaken_session_configuration_contract::AgentPermissionPreset>, String> {
     body.as_object_mut()
         .and_then(|body| body.remove("permission_preset"))
         .map(serde_json::from_value)
@@ -382,14 +382,14 @@ fn take_agent_permission_preset(
 
 fn apply_authoring_permission_preset(
     config: &mut awaken_agent_config::AgentConfig,
-    preset: Option<awaken_session_contract::AgentPermissionPreset>,
+    preset: Option<awaken_session_configuration_contract::AgentPermissionPreset>,
     allowed_runtime_override_ids: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
     let Some(preset) = preset else {
         return Ok(());
     };
-    awaken_session_contract::apply_agent_permission_preset(
-        awaken_session_contract::AgentPermissionPresetTarget {
+    awaken_session_configuration_contract::apply_agent_permission_preset(
+        awaken_session_configuration_contract::AgentPermissionPresetTarget {
             tool_ids: &mut config.tool_ids,
             toolsets: &mut config.toolsets,
             mcp_servers: &config.mcp_servers,

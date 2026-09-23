@@ -11,7 +11,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
     for lifecycle in [false, true] {
         for leased in [false, true] {
             let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-            let lease = awaken_session_contract::SessionRealizationLease {
+            let lease = awaken_session_resource_contract::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/1".into(),
                 epoch: 1,
@@ -96,7 +96,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
     for session in ["held", "free"] {
         host.session_slots.update(session, |slot| {
             slot.install_realization_lease(crate::session_slot::test_observed_lease(
-                awaken_session_contract::SessionRealizationLease {
+                awaken_session_resource_contract::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/1".into(),
                     epoch: 1,
@@ -186,8 +186,8 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
             SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
                 identity: BoundSessionEnvironmentIdentity::Durable {
                     effect_id: "unadopted-effect".into(),
-                    generation: awaken_session_contract::SandboxGeneration::new(
-                        &awaken_session_contract::SessionId::from(unknown.as_str()),
+                    generation: awaken_session_state_contract::SandboxGeneration::new(
+                        &awaken_session_types::SessionId::from(unknown.as_str()),
                         1,
                         u64::MAX,
                         "environment",
@@ -249,20 +249,22 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                         .with_session_recovery_control(control.clone()),
                 );
                 let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-                let lease = awaken_session_contract::SessionRealizationLease {
+                let lease = awaken_session_resource_contract::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/1".into(),
                     epoch: 1,
                     expires_at_unix_ms: now + 5_000,
                 };
                 install_test_renewal_authority(&host, &control, SESSION, lease.clone());
-                let generation = awaken_session_contract::McpGenerationRef {
+                let generation = awaken_session_mcp_contract::McpGenerationRef {
                     session_id: SESSION.into(),
-                    generation: awaken_session_contract::McpGeneration::of_bare_target(
-                        awaken_session_contract::McpAttachmentId("mcp".into()),
+                    generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+                        awaken_session_mcp_contract::McpAttachmentId("mcp".into()),
                         1,
-                        &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                            .unwrap(),
+                        &awaken_session_mcp_contract::McpTarget::parse_http(
+                            "https://fixture.test/mcp",
+                        )
+                        .unwrap(),
                     ),
                     runtime_incarnation: lease.runtime_incarnation.clone(),
                     lease_epoch: lease.epoch,
@@ -321,7 +323,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 assert!(
                     host.authorize_environment_effect_before_io(
                         SESSION,
-                        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
                         None,
                     )
                     .await
@@ -359,7 +361,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 );
                 let managed = crate::ManagedHost::new(host.clone());
                 assert!(
-                    awaken_session_contract::RealizationRuntime::renew_session_realization_lease(
+                    awaken_session_execution_contract::RealizationRuntime::renew_session_realization_lease(
                         &managed,
                         SESSION,
                         crate::session_slot::test_observed_lease(extended.clone()),
@@ -448,8 +450,8 @@ struct StagingFixture {
     host: Arc<SharedHost>,
     control: Arc<RemoteTerminalCleanupControl>,
     source: Arc<GatedFileSource>,
-    projection: awaken_session_contract::FrozenSessionProjection,
-    lease: awaken_session_contract::SessionRealizationLease,
+    projection: awaken_session_realization_contract::FrozenSessionProjection,
+    lease: awaken_session_resource_contract::SessionRealizationLease,
     now: u64,
 }
 
@@ -480,7 +482,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
             .session_slots
             .update(SESSION, |slot| slot.resource_projection.clone());
         let held = resource_lock.lock().await;
-        let proof = awaken_session_contract::SessionRealizationLeaseReceipt {
+        let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt {
             lease: f.lease.clone(),
             remaining_ms: std::num::NonZeroU64::new(3).unwrap(),
         }
@@ -562,7 +564,7 @@ impl StagingFixture {
             initial_commit: None,
         }]);
         let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-        let lease = awaken_session_contract::SessionRealizationLease {
+        let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: 2,
@@ -659,14 +661,16 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
             .is_err(),
         "E2"
     );
-    let epoch = match awaken_session_contract::session_realization_assignment(
+    let epoch = match awaken_session_realization_contract::session_realization_assignment(
         Some(old.epoch),
         true,
         true,
         true,
         true,
     ) {
-        awaken_session_contract::SessionRealizationAssignment::Assign { epoch } => epoch,
+        awaken_session_realization_contract::SessionRealizationAssignment::Assign { epoch } => {
+            epoch
+        }
         other => panic!("R2 requires a successor, got {other:?}"),
     };
     f.lease.epoch = epoch;
@@ -722,7 +726,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     let mut initial = Vec::new();
     for rule in ["L1", "L2", "L3", "L4", "L5", "L6"] {
-        let lease = awaken_session_contract::SessionRealizationLease {
+        let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: if rule == "L3" { "foreign" } else { "local" }.into(),
             runtime_incarnation: if rule == "L4" { "foreign" } else { "boot" }.into(),
             epoch: 1,
@@ -750,7 +754,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     assert_eq!(
         runtime
             .realization()
-            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -799,7 +803,7 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         0,
         "D1"
     );
-    let lease = awaken_session_contract::SessionRealizationLease {
+    let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
@@ -857,7 +861,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         .await
         .unwrap()
         .with_execution_authority(gate.clone());
-    let lease = awaken_session_contract::SessionRealizationLease {
+    let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "runtime".into(),
         epoch: 1,
@@ -1058,7 +1062,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     assert!(
         managed
             .realization()
-            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -1177,8 +1181,9 @@ async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lo
                 .unwrap();
         }
         let task = f.start().await;
-        *f.control.renewal_failure.lock().unwrap() =
-            Some(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        *f.control.renewal_failure.lock().unwrap() = Some(
+            awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
+        );
         let renewal = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             f.host.renew_due_session_realizations(
@@ -1204,7 +1209,7 @@ async fn temporary_renewal_failure_does_not_abort_live_resource_preparation() {
     let f = StagingFixture::new();
     let task = f.start().await;
     *f.control.renewal_failure.lock().unwrap() = Some(
-        awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+        awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
             "injected outage".into(),
         ),
     );

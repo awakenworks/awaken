@@ -52,8 +52,8 @@ fn projection_publish_decision_covers_cache_and_source_fences() {
             (old[axis], new[axis], orders[axis]) = SCALARS[scalar_code % 6];
             scalar_code /= 6;
         }
-        current.session_revision = awaken_session_contract::SessionRevision(old[0]);
-        candidate.session_revision = awaken_session_contract::SessionRevision(new[0]);
+        current.session_revision = awaken_session_types::SessionRevision(old[0]);
+        candidate.session_revision = awaken_session_types::SessionRevision(new[0]);
         current.root_thread_version = old[1];
         candidate.root_thread_version = new[1];
         current.lifecycle_cursor = awaken_agent_contract::RunLifecycleCursor(old[2]);

@@ -21,7 +21,7 @@ pub struct McpCredentialChoice {
 pub struct McpInspectionView {
     pub status: &'static str,
     pub http_status: Option<u16>,
-    pub tools: Vec<awaken_session_contract::McpProbeTool>,
+    pub tools: Vec<awaken_session_configuration_contract::McpProbeTool>,
     pub credential: Option<McpCredentialChoice>,
     pub location: &'static str,
     pub checked_at: String,
@@ -32,14 +32,14 @@ impl VaultState {
         workspace: &str,
         url: &str,
     ) -> Result<Vec<McpCredentialChoice>, CredentialError> {
-        let target = awaken_session_contract::McpTarget::identity(url)
+        let target = awaken_session_mcp_contract::McpTarget::identity(url)
             .map_err(|e| CredentialError::InvalidSource(e.to_string()))?;
         Ok(self
             .mcp_credential_inventory(workspace)
             .await?
             .into_iter()
             .filter(|choice| {
-                awaken_session_contract::McpTarget::identity(&choice.mcp_server_url)
+                awaken_session_mcp_contract::McpTarget::identity(&choice.mcp_server_url)
                     .ok()
                     .as_ref()
                     == Some(&target)
@@ -70,7 +70,7 @@ impl VaultState {
                     AuthRecord::McpOauth { mcp_server_url, .. } => (mcp_server_url, "mcp_oauth"),
                     AuthRecord::EnvironmentVariable { .. } => continue,
                 };
-                let target = awaken_session_contract::McpTarget::parse_http(credential_url)
+                let target = awaken_session_mcp_contract::McpTarget::parse_http(credential_url)
                     .map_err(|e| CredentialError::InvalidSource(e.to_string()))?;
                 let source = self.repository.get(&credential.source_id).await?;
                 if inspection_source_admitted(&source, workspace, credential_url).is_err() {
@@ -134,7 +134,7 @@ impl VaultState {
         workspace: &str,
         url: &str,
         credential_id: &str,
-    ) -> Result<awaken_session_contract::McpInspection, CredentialError> {
+    ) -> Result<awaken_session_configuration_contract::McpInspection, CredentialError> {
         Ok(self
             .run_mcp_inspection(workspace, url, Some(credential_id))
             .await?
@@ -146,10 +146,10 @@ impl VaultState {
     /// instruction, so no exchange was attempted.
     pub(crate) async fn exchange_refresh(
         &self,
-        exchange: &dyn awaken_session_contract::CredentialRefreshExchange,
+        exchange: &dyn awaken_session_configuration_contract::CredentialRefreshExchange,
         source_id: &CredentialSourceId,
         config: awaken_credential_vault::catalog::ManagedMcpOauthRefresh,
-    ) -> Option<awaken_session_contract::RefreshExchangeOutcome> {
+    ) -> Option<awaken_session_configuration_contract::RefreshExchangeOutcome> {
         let source = self.repository.get(source_id).await.ok()?;
         let revision = u64::try_from(source.version).ok()?;
         let access = oauth_refresh_access(&source, revision, config).ok()?;
@@ -164,11 +164,11 @@ impl VaultState {
     ) -> Result<
         (
             Option<McpCredentialChoice>,
-            awaken_session_contract::McpInspection,
+            awaken_session_configuration_contract::McpInspection,
         ),
         CredentialError,
     > {
-        awaken_session_contract::McpTarget::parse_http(url)
+        awaken_session_mcp_contract::McpTarget::parse_http(url)
             .map_err(|e| CredentialError::InvalidSource(e.to_string()))?;
         let choice = if let Some(id) = credential_id {
             Some(
@@ -222,7 +222,7 @@ impl VaultState {
         };
         let mut inspection = match &self.probe {
             Some(probe) => probe.inspect(url, bearer.as_ref()).await,
-            None => awaken_session_contract::McpInspection {
+            None => awaken_session_configuration_contract::McpInspection {
                 status: McpProbeStatus::Unknown,
                 tools: Vec::new(),
                 failure: None,
@@ -357,7 +357,7 @@ pub(super) async fn validate_credential(
                             .await
                     {
                         let succeeded = outcome.status
-                            == awaken_session_contract::RefreshExchangeStatus::Succeeded;
+                            == awaken_session_configuration_contract::RefreshExchangeStatus::Succeeded;
                         refresh = Some(CredentialRefreshResult::from(outcome));
                         if succeeded
                             && let Ok(after) =
@@ -419,7 +419,7 @@ fn inspection_source_admitted(
     {
         return Err(CredentialError::NotActive(source.id.0.clone()));
     }
-    let audience = awaken_session_contract::McpTarget::identity(url)
+    let audience = awaken_session_mcp_contract::McpTarget::identity(url)
         .map_err(|e| CredentialError::InvalidSource(e.to_string()))?
         .canonical_url();
     let target = awaken_credential_contract::CredentialTarget::new(

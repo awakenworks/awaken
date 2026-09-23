@@ -100,14 +100,14 @@ impl ResourcesApplication {
     #[must_use]
     pub fn skill_bundle_source<C: Sync + 'static>(
         &self,
-    ) -> Arc<dyn awaken_session_contract::SkillBundleSource<C>> {
+    ) -> Arc<dyn awaken_session_configuration_contract::SkillBundleSource<C>> {
         Arc::new(StoreSkillBundleSource::new(self.authorities.skill_store()))
     }
 
     #[must_use]
     pub fn skill_catalog_application(
         &self,
-    ) -> Arc<dyn awaken_session_contract::SkillCatalogApplication> {
+    ) -> Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication> {
         Arc::new(StoreSkillCatalogApplication::new(
             self.authorities.skill_store(),
         ))

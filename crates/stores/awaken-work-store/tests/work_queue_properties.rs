@@ -4,8 +4,8 @@
 //! self-hosted environment hand a run to exactly one worker. These properties assert it
 //! over ALL enqueue/claim counts the generator produces, not just the pinned unit case.
 
-use awaken_session_contract::SessionId;
-use awaken_session_contract::work_queue::{WorkQueue, WorkState};
+use awaken_session_types::SessionId;
+use awaken_session_work_contract::{WorkQueue, WorkState};
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS};
 use proptest::prelude::*;
 

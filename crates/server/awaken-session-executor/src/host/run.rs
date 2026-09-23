@@ -78,7 +78,8 @@ impl SharedHost {
     pub(crate) async fn session_budget_resume_tickets(
         &self,
         session_id: &str,
-    ) -> Result<Vec<awaken_session_contract::SessionBudgetResumeTicket>, HostError> {
+    ) -> Result<Vec<awaken_session_application_contract::SessionBudgetResumeTicket>, HostError>
+    {
         let parent = ThreadId(session_id.to_string());
         let mut thread_ids = vec![parent.clone()];
         let dispatch_rows = if let Some(store) = self.optional_dispatch_store() {
@@ -119,14 +120,16 @@ impl SharedHost {
             if let Some(ticket) = recovery_ticket(&snapshot, &latest.id)
                 && ticket.reason() == AwaitReason::BudgetReached
             {
-                tickets.push(awaken_session_contract::SessionBudgetResumeTicket {
-                    ticket,
-                    pause_generation: snapshot.next_commit_ordinal,
-                    prior_session_activity_epoch: dispatch_rows
-                        .iter()
-                        .find(|row| row.run_id == latest.id)
-                        .and_then(|row| row.session_activity_epoch),
-                });
+                tickets.push(
+                    awaken_session_application_contract::SessionBudgetResumeTicket {
+                        ticket,
+                        pause_generation: snapshot.next_commit_ordinal,
+                        prior_session_activity_epoch: dispatch_rows
+                            .iter()
+                            .find(|row| row.run_id == latest.id)
+                            .and_then(|row| row.session_activity_epoch),
+                    },
+                );
             }
         }
         Ok(tickets)
@@ -180,7 +183,7 @@ impl SharedHost {
     async fn delegated_run_snapshot(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, HostError> {
+    ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, HostError> {
         let commit = self.commit_for_read(thread).await?;
         self.delegated_run_snapshot_from_commit(thread, commit)
             .await
@@ -190,7 +193,7 @@ impl SharedHost {
         &self,
         thread: &str,
         commit: Arc<crate::store::HostCommit>,
-    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, HostError> {
+    ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, HostError> {
         let root_thread = ThreadId(thread.to_string());
         let recovery = match commit
             .authoritative_latest_run(&root_thread)
@@ -233,7 +236,7 @@ impl SharedHost {
         }
         projected.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
         projected.dedup_by(|left, right| left.run_id == right.run_id);
-        Ok(awaken_session_contract::DelegatedRunSnapshot {
+        Ok(awaken_session_application_contract::DelegatedRunSnapshot {
             delegated_runs: projected,
             coordinated_thread_ids: Vec::new(),
             watermark,
@@ -1017,8 +1020,9 @@ impl SharedHost {
     /// (built-in vs client-executed) matches the resume variant.
     pub(crate) async fn resume_budget_reached(
         &self,
-        delivery: awaken_session_contract::SessionBudgetResumeDelivery,
-    ) -> Result<awaken_session_contract::SessionBudgetResumeDisposition, HostError> {
+        delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
+    ) -> Result<awaken_session_application_contract::SessionBudgetResumeDisposition, HostError>
+    {
         use awaken_dispatch::Outbox as _;
 
         if delivery.session_activity_epoch == 0 {
@@ -1032,14 +1036,14 @@ impl SharedHost {
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         let Some(ticket) = recovery_ticket(&snapshot, &delivery.run_id) else {
-            return Ok(awaken_session_contract::SessionBudgetResumeDisposition::Stale);
+            return Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Stale);
         };
         if ticket.reason() != AwaitReason::BudgetReached
             || ticket.correlation_id != delivery.correlation_id
             || ticket.thread_id != delivery.thread_id
             || snapshot.next_commit_ordinal != delivery.pause_generation
         {
-            return Ok(awaken_session_contract::SessionBudgetResumeDisposition::Stale);
+            return Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Stale);
         }
 
         let store = self.optional_dispatch_store();
@@ -1069,7 +1073,9 @@ impl SharedHost {
                 None => delivery.prior_session_activity_epoch.is_none(),
             };
             if !activity_matches {
-                return Ok(awaken_session_contract::SessionBudgetResumeDisposition::Stale);
+                return Ok(
+                    awaken_session_application_contract::SessionBudgetResumeDisposition::Stale,
+                );
             }
             store
                 .as_ref()
@@ -1100,7 +1106,7 @@ impl SharedHost {
         let input = PendingInput {
             message_id: format!(
                 "budget-resume-{}",
-                awaken_session_contract::stable_fingerprint(&(
+                awaken_agent_contract::stable_fingerprint(&(
                     delivery.session_id.as_str(),
                     delivery.thread_id.0.as_str(),
                     delivery.run_id.0.as_str(),
@@ -1136,7 +1142,7 @@ impl SharedHost {
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;
         }
-        Ok(awaken_session_contract::SessionBudgetResumeDisposition::Dispatched)
+        Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Dispatched)
     }
 
     pub async fn resume(
@@ -1844,7 +1850,9 @@ mod ticket_projection_tests {
                 session_thread_reply_result(
                     &permission_ticket,
                     "reply-call",
-                    &awaken_session_contract::SessionThreadToolReply::Confirm(decision.clone()),
+                    &awaken_session_execution_contract::SessionThreadToolReply::Confirm(
+                        decision.clone()
+                    ),
                 ),
                 ResumeResult::Permission(decision),
                 "{rule}/E1"
@@ -1862,7 +1870,7 @@ mod ticket_projection_tests {
         for (rule, reply, expected_error, expected_text) in [
             (
                 "R4a",
-                awaken_session_contract::SessionThreadToolReply::Custom {
+                awaken_session_execution_contract::SessionThreadToolReply::Custom {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                         "custom ok",
                     )],
@@ -1873,7 +1881,7 @@ mod ticket_projection_tests {
             ),
             (
                 "R4b",
-                awaken_session_contract::SessionThreadToolReply::Custom {
+                awaken_session_execution_contract::SessionThreadToolReply::Custom {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                         "custom failed",
                     )],
@@ -1884,7 +1892,7 @@ mod ticket_projection_tests {
             ),
             (
                 "R5a",
-                awaken_session_contract::SessionThreadToolReply::Result {
+                awaken_session_execution_contract::SessionThreadToolReply::Result {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                         "generic ok",
                     )],
@@ -1895,7 +1903,7 @@ mod ticket_projection_tests {
             ),
             (
                 "R5b",
-                awaken_session_contract::SessionThreadToolReply::Result {
+                awaken_session_execution_contract::SessionThreadToolReply::Result {
                     content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                         "generic failed",
                     )],
@@ -1915,10 +1923,9 @@ mod ticket_projection_tests {
             }
         }
 
-        let permission =
-            awaken_session_contract::SessionThreadToolReply::Confirm(PermissionDecision::Allow {
-                note: None,
-            });
+        let permission = awaken_session_execution_contract::SessionThreadToolReply::Confirm(
+            PermissionDecision::Allow { note: None },
+        );
         let client_mismatch = ResumeCommand::from_ticket(
             &result_ticket,
             session_thread_reply_result(&result_ticket, "reply-call", &permission),
@@ -1950,7 +1957,7 @@ mod ticket_projection_tests {
             Err(awaken_runtime_contract::resume::ResumeError::ResultKindMismatch),
             "R6/E3 remote target"
         );
-        let supplied = awaken_session_contract::SessionThreadToolReply::Result {
+        let supplied = awaken_session_execution_contract::SessionThreadToolReply::Result {
             content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
                 "forged",
             )],

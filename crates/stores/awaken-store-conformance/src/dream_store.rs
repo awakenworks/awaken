@@ -1,12 +1,12 @@
 //! Shared Dream process and atomic policy claim conformance.
 
-use awaken_session_contract::{DreamPolicyRecord, DreamProcessRecord, DreamProcessStore};
+use awaken_session_dream_contract::{DreamPolicyRecord, DreamProcessRecord, DreamProcessStore};
 
 pub fn dream_policy(next_due_ms: u64) -> DreamPolicyRecord {
     DreamPolicyRecord {
         workspace_id: "workspace".into(),
         memory_store_id: "store".into(),
-        config: awaken_session_contract::DreamPolicyConfig::default(),
+        config: awaken_session_dream_contract::DreamPolicyConfig::default(),
         next_due_ms,
         last_completed_cutoff_ms: 0,
     }
@@ -16,11 +16,11 @@ pub fn process(process_id: &str) -> DreamProcessRecord {
     DreamProcessRecord {
         process_id: process_id.into(),
         workspace_id: "workspace".into(),
-        status: awaken_session_contract::DreamStatus::Pending,
+        status: awaken_session_dream_contract::DreamStatus::Pending,
         source_memory_store_id: "store".into(),
-        output_behavior: awaken_session_contract::DreamOutputBehavior::CreateNew,
+        output_behavior: awaken_session_dream_contract::DreamOutputBehavior::CreateNew,
         session_ids: vec!["session".into()],
-        model: awaken_session_contract::DreamModelConfig {
+        model: awaken_session_dream_contract::DreamModelConfig {
             id: "claude-sonnet-5".into(),
             speed: None,
         },
@@ -99,7 +99,7 @@ pub fn dream_store_conformance(repository: &dyn DreamProcessStore) {
             .unwrap()
     );
     let mut running = original.clone();
-    running.status = awaken_session_contract::DreamStatus::Running;
+    running.status = awaken_session_dream_contract::DreamStatus::Running;
     assert!(
         repository
             .compare_and_swap_dream_process(Some(&original), running.clone())

@@ -60,14 +60,14 @@ pub(super) fn client_result_for_ticket(
 pub(in crate::host) fn session_thread_reply_result(
     ticket: &ResumeTicket,
     tool_use_id: &str,
-    reply: &awaken_session_contract::SessionThreadToolReply,
+    reply: &awaken_session_execution_contract::SessionThreadToolReply,
 ) -> ResumeResult {
     match reply {
-        awaken_session_contract::SessionThreadToolReply::Confirm(decision) => {
+        awaken_session_execution_contract::SessionThreadToolReply::Confirm(decision) => {
             ResumeResult::Permission(decision.clone())
         }
-        awaken_session_contract::SessionThreadToolReply::Custom { content, is_error }
-        | awaken_session_contract::SessionThreadToolReply::Result { content, is_error } => {
+        awaken_session_execution_contract::SessionThreadToolReply::Custom { content, is_error }
+        | awaken_session_execution_contract::SessionThreadToolReply::Result { content, is_error } => {
             client_result_for_ticket(ticket, tool_use_id, content.clone(), *is_error)
         }
     }

@@ -12,7 +12,7 @@ pub fn install_managed_agent_coordination(
     runtime: &Arc<ManagedHost>,
     application: &Arc<SessionApplication>,
 ) -> Result<(), AgentCoordinationInstallError> {
-    let coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination> =
+    let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         application.clone();
     runtime.install_agent_coordination_application(Arc::downgrade(&coordination))
 }

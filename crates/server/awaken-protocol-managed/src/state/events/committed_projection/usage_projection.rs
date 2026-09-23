@@ -7,10 +7,10 @@ use super::*;
 /// cell both retain the Managed wire's optional `null` representation.
 pub(super) fn project_committed_thread_usage(
     snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
+    price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
 ) -> Result<Option<crate::types::SessionThreadUsage>, StateError> {
     let usage = snapshot.map_or_else(SessionUsage::default, |snapshot| {
-        awaken_session_contract::session_usage_from_thread_usage(
+        awaken_session_application_contract::session_usage_from_thread_usage(
             awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&snapshot.state),
         )
     });

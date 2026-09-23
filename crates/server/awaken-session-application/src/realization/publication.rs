@@ -1,8 +1,8 @@
 //! One post-activation publication plan for the durable Session generation set.
 use super::{generation_set_authorizes, projection, unavailable};
-use awaken_session_contract::{
-    McpAttachmentState, McpGenerationRef, SessionMcpAttachment, SessionRealizationAction,
-    SessionRealizationControlFailure,
+use awaken_session_mcp_contract::{McpAttachmentState, McpGenerationRef, SessionMcpAttachment};
+use awaken_session_realization_contract::{
+    SessionRealizationAction, SessionRealizationControlFailure,
 };
 
 /// The one publication-membership predicate used by every realization caller.
@@ -16,7 +16,7 @@ const fn realization_publication_selects(
 }
 
 pub(super) fn publication_generations(
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
     attachments: &[SessionMcpAttachment],
 ) -> Result<Vec<McpGenerationRef>, SessionRealizationControlFailure> {
     attachments
@@ -31,7 +31,7 @@ pub(super) fn publication_generations(
 }
 
 pub(super) fn draining_generations(
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
     attachments: &[SessionMcpAttachment],
 ) -> Result<Vec<McpGenerationRef>, SessionRealizationControlFailure> {
     attachments
@@ -52,14 +52,16 @@ pub(super) fn publication_action(
     receipts: Vec<McpGenerationRef>,
 ) -> Result<SessionRealizationAction, SessionRealizationControlFailure> {
     let expected_publish = publication_generations(
-        &awaken_session_contract::SessionId::from(session_id),
+        &awaken_session_types::SessionId::from(session_id),
         attachments,
     )?;
     let publish = receipts
         .into_iter()
         .filter(|receipt| {
             expected_publish.iter().any(|current| {
-                awaken_session_contract::realization_generation_authorizes(current, receipt)
+                awaken_session_realization_contract::realization_generation_authorizes(
+                    current, receipt,
+                )
             })
         })
         .collect::<Vec<_>>();
@@ -69,7 +71,7 @@ pub(super) fn publication_action(
         ));
     }
     let drain = draining_generations(
-        &awaken_session_contract::SessionId::from(session_id),
+        &awaken_session_types::SessionId::from(session_id),
         attachments,
     )?;
     Ok(SessionRealizationAction::Publish { publish, drain })

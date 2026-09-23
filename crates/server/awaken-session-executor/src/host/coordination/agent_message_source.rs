@@ -3,7 +3,7 @@
 use super::*;
 use awaken_ext_builtin_tools::{AgentMessageTarget, SendMessageArgs};
 use awaken_runtime_contract::tool_batch::ToolCallPhase;
-use awaken_session_contract::SessionAgentTarget;
+use awaken_session_execution_contract::SessionAgentTarget;
 
 pub(super) fn validate(
     snapshot: &RunRecoverySnapshot,
@@ -51,7 +51,7 @@ pub(super) fn validate(
         }
     };
     let committed = SessionAgentMessageCommand {
-        session_id: awaken_session_contract::SessionId::from(&snapshot.thread_id.0),
+        session_id: awaken_session_types::SessionId::from(&snapshot.thread_id.0),
         source_thread_id: snapshot.thread_id.clone(),
         source_run_id: batch.run_id().clone(),
         source_call_id: call.call.call_id.clone(),
@@ -230,7 +230,7 @@ mod tests {
             }
         };
         let exact = SessionAgentMessageCommand {
-            session_id: awaken_session_contract::SessionId::from(&thread.0),
+            session_id: awaken_session_types::SessionId::from(&thread.0),
             source_thread_id: thread.clone(),
             source_run_id: run.clone(),
             source_call_id: call_id.into(),

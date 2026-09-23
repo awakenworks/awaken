@@ -10,7 +10,7 @@
 //! supplies the backends.
 
 use awaken_deployment_contract::{DeploymentRepository, DeploymentWriteOutcome};
-use awaken_session_contract::LifecycleOutbox as _;
+use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_store_conformance::session_store::*;
 

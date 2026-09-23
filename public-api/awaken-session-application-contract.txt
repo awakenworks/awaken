@@ -1,0 +1,119 @@
+pub mod awaken_session_application_contract
+pub use awaken_session_application_contract::CursorParams
+pub use awaken_session_application_contract::HistoryPage
+pub mod awaken_session_application_contract::work_queue
+pub use awaken_session_application_contract::work_queue::<<awaken_session_work_contract::*>>
+pub enum awaken_session_application_contract::RunResume
+pub awaken_session_application_contract::RunResume::ClientResult
+pub awaken_session_application_contract::RunResume::ClientResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_session_application_contract::RunResume::ClientResult::is_error: bool
+pub awaken_session_application_contract::RunResume::Permission(awaken_agent_contract::agent::awaiting::PermissionDecision)
+pub enum awaken_session_application_contract::SessionBudgetResumeDisposition
+pub awaken_session_application_contract::SessionBudgetResumeDisposition::Dispatched
+pub awaken_session_application_contract::SessionBudgetResumeDisposition::Stale
+pub enum awaken_session_application_contract::SessionEventAdmission
+pub awaken_session_application_contract::SessionEventAdmission::Accepted
+pub awaken_session_application_contract::SessionEventAdmission::Accepted::batch_id: alloc::string::String
+pub awaken_session_application_contract::SessionEventAdmission::Accepted::operation_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_session_application_contract::SessionEventAdmission::Closed
+pub awaken_session_application_contract::SessionEventAdmission::Closed::batch_id: alloc::string::String
+pub awaken_session_application_contract::SessionEventAdmission::Deleted
+pub awaken_session_application_contract::SessionEventAdmission::Deleted::deleted_revision: awaken_session_types::SessionRevision
+impl core::convert::From<&awaken_session_event_contract::SessionEventBatch> for awaken_session_application_contract::SessionEventAdmission
+pub fn awaken_session_application_contract::SessionEventAdmission::from(&awaken_session_event_contract::SessionEventBatch) -> Self
+pub struct awaken_session_application_contract::CompositeLifecycleFactDelivery
+impl awaken_session_application_contract::CompositeLifecycleFactDelivery
+pub fn awaken_session_application_contract::CompositeLifecycleFactDelivery::new(alloc::vec::Vec<alloc::sync::Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>>) -> Self
+impl awaken_session_application_contract::LifecycleFactDelivery for awaken_session_application_contract::CompositeLifecycleFactDelivery
+pub fn awaken_session_application_contract::CompositeLifecycleFactDelivery::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_state_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_session_application_contract::DelegatedRun
+pub awaken_session_application_contract::DelegatedRun::agent_id: alloc::string::String
+pub awaken_session_application_contract::DelegatedRun::parent_call_id: alloc::string::String
+pub awaken_session_application_contract::DelegatedRun::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_application_contract::DelegatedRun::status: awaken_agent_contract::agent::delegation::DelegationStatus
+pub struct awaken_session_application_contract::DelegatedRunSnapshot
+pub awaken_session_application_contract::DelegatedRunSnapshot::coordinated_thread_ids: alloc::vec::Vec<awaken_agent_contract::agent::thread::Id>
+pub awaken_session_application_contract::DelegatedRunSnapshot::delegated_runs: alloc::vec::Vec<awaken_session_application_contract::DelegatedRun>
+pub awaken_session_application_contract::DelegatedRunSnapshot::runtime_commit_cursor: u64
+pub awaken_session_application_contract::DelegatedRunSnapshot::watermark: u64
+pub struct awaken_session_application_contract::EventForwardingSink
+impl awaken_session_application_contract::EventForwardingSink
+pub fn awaken_session_application_contract::EventForwardingSink::new(impl core::ops::function::Fn(awaken_agent_contract::event::agent::AgentEvent) -> core::result::Result<(), awaken_agent_contract::stream::sink::Error> + core::marker::Send + core::marker::Sync + 'static) -> Self
+impl awaken_agent_contract::stream::sink::Sink for awaken_session_application_contract::EventForwardingSink
+pub fn awaken_session_application_contract::EventForwardingSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_session_application_contract::ExecutableProjectionAdmission
+impl awaken_session_application_contract::ExecutableProjectionAdmission
+pub fn awaken_session_application_contract::ExecutableProjectionAdmission::enter<T>(&self, impl core::ops::function::FnOnce() -> T) -> T
+pub struct awaken_session_application_contract::ExecutableProjectionRefresh
+impl awaken_session_application_contract::ExecutableProjectionRefresh
+pub fn awaken_session_application_contract::ExecutableProjectionRefresh::new(alloc::sync::Arc<dyn awaken_session_application_contract::ExecutableAgentProjectionRefresh>, alloc::sync::Arc<dyn awaken_session_application_contract::ExecutableEnvironmentProjectionRefresh>) -> Self
+pub async fn awaken_session_application_contract::ExecutableProjectionRefresh::refresh(&self) -> core::result::Result<awaken_session_application_contract::ExecutableProjectionAdmission, alloc::string::String>
+pub struct awaken_session_application_contract::Pending
+pub awaken_session_application_contract::Pending::client_executed: bool
+pub awaken_session_application_contract::Pending::input: serde_json::value::Value
+pub awaken_session_application_contract::Pending::name: alloc::string::String
+pub awaken_session_application_contract::Pending::tool_use_id: alloc::string::String
+impl awaken_session_application_contract::Pending
+pub fn awaken_session_application_contract::Pending::from_await_target(&awaken_agent_contract::agent::awaiting::AwaitTarget) -> core::option::Option<Self>
+pub fn awaken_session_application_contract::Pending::from_resume_ticket(&awaken_agent_contract::agent::awaiting::ResumeTicket) -> core::option::Option<Self>
+pub struct awaken_session_application_contract::SessionBudgetResumeDelivery
+pub awaken_session_application_contract::SessionBudgetResumeDelivery::correlation_id: alloc::string::String
+pub awaken_session_application_contract::SessionBudgetResumeDelivery::pause_generation: u64
+pub awaken_session_application_contract::SessionBudgetResumeDelivery::prior_session_activity_epoch: core::option::Option<u64>
+pub awaken_session_application_contract::SessionBudgetResumeDelivery::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_application_contract::SessionBudgetResumeDelivery::session_activity_epoch: u64
+pub awaken_session_application_contract::SessionBudgetResumeDelivery::session_id: awaken_session_types::SessionId
+pub awaken_session_application_contract::SessionBudgetResumeDelivery::thread_id: awaken_agent_contract::agent::thread::Id
+pub struct awaken_session_application_contract::SessionBudgetResumeTicket
+pub awaken_session_application_contract::SessionBudgetResumeTicket::pause_generation: u64
+pub awaken_session_application_contract::SessionBudgetResumeTicket::prior_session_activity_epoch: core::option::Option<u64>
+pub awaken_session_application_contract::SessionBudgetResumeTicket::ticket: awaken_agent_contract::agent::awaiting::ResumeTicket
+pub struct awaken_session_application_contract::StepOutcome
+pub awaken_session_application_contract::StepOutcome::new_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+impl awaken_session_application_contract::StepOutcome
+pub fn awaken_session_application_contract::StepOutcome::await_reason(&self) -> core::option::Option<&awaken_agent_contract::agent::awaiting::AwaitReason>
+pub fn awaken_session_application_contract::StepOutcome::awaiting(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, core::option::Option<awaken_session_application_contract::Pending>) -> Self
+pub fn awaken_session_application_contract::StepOutcome::delegated_runs(&self) -> &[awaken_session_application_contract::DelegatedRun]
+pub fn awaken_session_application_contract::StepOutcome::ended(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_agent_contract::agent::run::EndCause) -> Self
+pub fn awaken_session_application_contract::StepOutcome::failure(&self) -> core::option::Option<&awaken_agent_contract::agent::run::Failure>
+pub fn awaken_session_application_contract::StepOutcome::pending(&self) -> core::option::Option<&awaken_session_application_contract::Pending>
+pub fn awaken_session_application_contract::StepOutcome::run_id(&self) -> core::option::Option<&awaken_agent_contract::agent::run::Id>
+pub fn awaken_session_application_contract::StepOutcome::state(&self) -> &awaken_agent_contract::agent::run::RunState
+pub fn awaken_session_application_contract::StepOutcome::terminal_event(&self) -> awaken_agent_contract::event::agent::Fact
+pub fn awaken_session_application_contract::StepOutcome::with_await_reason(self, awaken_agent_contract::agent::awaiting::AwaitReason) -> Self
+pub fn awaken_session_application_contract::StepOutcome::with_delegated_runs(self, alloc::vec::Vec<awaken_session_application_contract::DelegatedRun>) -> Self
+pub fn awaken_session_application_contract::StepOutcome::with_run_id(self, awaken_agent_contract::agent::run::Id) -> Self
+pub trait awaken_session_application_contract::ExecutableAgentProjectionRefresh: core::marker::Send + core::marker::Sync
+pub fn awaken_session_application_contract::ExecutableAgentProjectionRefresh::refresh_agent_projection<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_session_application_contract::ExecutableEnvironmentProjectionRefresh: core::marker::Send + core::marker::Sync
+pub fn awaken_session_application_contract::ExecutableEnvironmentProjectionRefresh::refresh_environment_projection<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_session_application_contract::LifecycleFactDelivery: core::marker::Send + core::marker::Sync
+pub fn awaken_session_application_contract::LifecycleFactDelivery::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_state_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_session_application_contract::LifecycleFactDelivery for awaken_session_application_contract::CompositeLifecycleFactDelivery
+pub fn awaken_session_application_contract::CompositeLifecycleFactDelivery::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_state_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_session_application_contract::LifecycleFactNotifier: core::marker::Send + core::marker::Sync
+pub fn awaken_session_application_contract::LifecycleFactNotifier::notify(&self)
+pub trait awaken_session_application_contract::RunApplication: core::marker::Send + core::marker::Sync
+pub fn awaken_session_application_contract::RunApplication::history<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_session_application_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_application_contract::RunApplication::interrupt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_application_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_application_contract::RunApplication::model(&self) -> alloc::string::String
+pub fn awaken_session_application_contract::RunApplication::pending<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_application_contract::Pending>, awaken_session_application_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_application_contract::RunApplication::resume<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, awaken_session_application_contract::RunResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_application_contract::StepOutcome, awaken_session_application_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_session_application_contract::RunApplication::run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_application_contract::StepOutcome, awaken_session_application_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_application_contract::RunApplication::run_streaming<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_application_contract::StepOutcome, awaken_session_application_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_application_contract::RunApplication::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(u64, u64), awaken_session_application_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_session_application_contract::SessionRunBackgroundApplication: core::marker::Send + core::marker::Sync
+pub fn awaken_session_application_contract::SessionRunBackgroundApplication::submit_session_run_background<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, core::option::Option<alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::agent::run::Id, awaken_session_application_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub trait awaken_session_application_contract::SessionRunReplacementApplication: core::marker::Send + core::marker::Sync
+pub fn awaken_session_application_contract::SessionRunReplacementApplication::supersede_session_run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_application_contract::StepOutcome, awaken_session_application_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_application_contract::blocks_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
+pub fn awaken_session_application_contract::epoch_millis_to_rfc3339(u64) -> alloc::string::String
+pub fn awaken_session_application_contract::event_admission_closed() -> awaken_session_error_contract::RunError
+pub fn awaken_session_application_contract::event_admission_conflict() -> awaken_session_error_contract::RunError
+pub fn awaken_session_application_contract::paginate_history<'a>(&'a [awaken_agent_contract::agent::message::Message], core::option::Option<&str>, core::option::Option<usize>) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, awaken_agent_contract::agent::message::Message>, awaken_agent_contract::page::UnknownCursor>
+pub fn awaken_session_application_contract::process_local_executable_projection_admission() -> awaken_session_application_contract::ExecutableProjectionAdmission
+pub fn awaken_session_application_contract::project_epoch_millis(u128) -> u64
+pub fn awaken_session_application_contract::resolve_deleted_event_admission(&awaken_session_state_contract::event_retention::DeletedSessionEventAdmissions, &str, &str) -> core::result::Result<awaken_session_application_contract::SessionEventAdmission, awaken_session_error_contract::RunError>
+pub fn awaken_session_application_contract::rfc3339_to_epoch_millis(&str) -> core::option::Option<u64>
+pub fn awaken_session_application_contract::session_usage_from_thread_usage(awaken_runtime_contract::llm::ThreadUsage) -> awaken_session_budget_contract::SessionUsage
+pub type awaken_session_application_contract::RunApplicationError = awaken_session_error_contract::RunError

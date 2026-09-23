@@ -10,7 +10,7 @@
 //! (`agent.tool_use{allow}`).
 
 use awaken_agent_contract::event::{Fact, ToolDisposition, Transcoder, fold_messages as fold};
-use awaken_session_contract::Pending;
+use awaken_session_application_contract::Pending;
 
 use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration};
 use crate::types::{EvaluatedPermission, OutboundKind, StopReason};
@@ -110,15 +110,15 @@ fn first_forbidden_schema_key(v: &serde_json::Value) -> Option<&'static str> {
     }
 }
 
-use awaken_session_contract::{
+use awaken_session_configuration_contract::{
     AgentTool, CustomToolInputSchema, resolved_toolsets, toolset_policies,
 };
 
 /// Lower the Managed tool union into the Session's one neutral durable owner.
 pub fn session_tool_configuration(
     tools: &[AgentTool],
-) -> awaken_session_contract::SessionToolConfiguration {
-    awaken_session_contract::SessionToolConfiguration {
+) -> awaken_session_configuration_contract::SessionToolConfiguration {
+    awaken_session_configuration_contract::SessionToolConfiguration {
         toolsets: toolset_policies(tools),
         client_tools: tools
             .iter()
@@ -141,7 +141,7 @@ pub fn session_tool_configuration(
 
 /// Project one neutral Session tool configuration onto the Managed union.
 pub fn managed_tools(
-    configuration: &awaken_session_contract::SessionToolConfiguration,
+    configuration: &awaken_session_configuration_contract::SessionToolConfiguration,
 ) -> Vec<AgentTool> {
     let mut tools = resolved_toolsets(&configuration.toolsets);
     tools.extend(configuration.client_tools.iter().map(|tool| {
@@ -166,7 +166,9 @@ pub fn resolved_tools(tools: &[AgentTool]) -> Vec<AgentTool> {
 /// register and mark the confirmation-gated ones `always_ask`; each client tool
 /// becomes a `custom` tool definition.
 pub fn agent_tools(caps: &AgentCapabilities) -> Vec<AgentTool> {
-    managed_tools(&awaken_session_contract::SessionToolConfiguration::from_capabilities(caps))
+    managed_tools(
+        &awaken_session_configuration_contract::SessionToolConfiguration::from_capabilities(caps),
+    )
 }
 
 /// Project exact client-owned descriptors from a published Agent snapshot. This

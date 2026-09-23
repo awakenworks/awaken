@@ -42,9 +42,10 @@ pub struct WorkerRepositoryBindingService {
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     materialization_control:
-        Option<Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>>,
-    publication_control:
-        Option<Arc<dyn awaken_session_contract::SessionTerminalRepositoryPublicationControl>>,
+        Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
+    publication_control: Option<
+        Arc<dyn awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl>,
+    >,
     transport_authorizer: Option<Arc<dyn RepositoryTransportAuthorizer>>,
 }
 
@@ -55,7 +56,7 @@ pub struct RepositoryTransportAuthorization {
     pub worker: WorkerIdentity,
     pub session_id: String,
     pub workspace_id: String,
-    pub input: awaken_session_contract::ResolvedInput,
+    pub input: awaken_session_resource_contract::ResolvedInput,
     pub authority: RepositoryTransportAuthority,
 }
 
@@ -70,11 +71,11 @@ pub enum RepositoryTransportAuthority {
         claim_expires_ms: u64,
     },
     SessionMaterialization {
-        intent: Box<awaken_session_contract::SessionResourceMaterializationIntent>,
+        intent: Box<awaken_session_realization_contract::SessionResourceMaterializationIntent>,
     },
     TerminalPublication {
-        command: Box<awaken_session_contract::SessionRepositoryPublicationCommand>,
-        lease: awaken_session_contract::SessionRealizationLease,
+        command: Box<awaken_session_state_contract::SessionRepositoryPublicationCommand>,
+        lease: awaken_session_resource_contract::SessionRealizationLease,
     },
 }
 
@@ -269,8 +270,8 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
 #[async_trait::async_trait]
 impl
     RepositoryBindingVerifier<(
-        awaken_session_contract::SessionRepositoryPublicationCommand,
-        awaken_session_contract::SessionRealizationLease,
+        awaken_session_state_contract::SessionRepositoryPublicationCommand,
+        awaken_session_resource_contract::SessionRealizationLease,
     )> for HttpRepositoryBindingVerifier
 {
     async fn verify(
@@ -279,8 +280,8 @@ impl
         repository_id: &str,
         config_version: ConfigVersion,
         fence: Option<&(
-            awaken_session_contract::SessionRepositoryPublicationCommand,
-            awaken_session_contract::SessionRealizationLease,
+            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_resource_contract::SessionRealizationLease,
         )>,
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
         let (command, lease) = fence.ok_or_else(|| {
@@ -331,7 +332,9 @@ impl WorkerRepositoryBindingService {
     #[must_use]
     pub fn with_materialization_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>,
+        control: Arc<
+            dyn awaken_session_realization_contract::SessionResourceMaterializationControl,
+        >,
     ) -> Self {
         self.materialization_control = Some(control);
         self
@@ -340,7 +343,9 @@ impl WorkerRepositoryBindingService {
     #[must_use]
     pub fn with_publication_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionTerminalRepositoryPublicationControl>,
+        control: Arc<
+            dyn awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl,
+        >,
     ) -> Self {
         self.publication_control = Some(control);
         self
@@ -351,8 +356,8 @@ impl WorkerRepositoryBindingService {
     #[must_use]
     pub fn with_session_control<T>(mut self, control: Arc<T>) -> Self
     where
-        T: awaken_session_contract::SessionResourceMaterializationControl
-            + awaken_session_contract::SessionTerminalRepositoryPublicationControl
+        T: awaken_session_realization_contract::SessionResourceMaterializationControl
+            + awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl
             + 'static,
     {
         self.materialization_control = Some(control.clone());
@@ -443,7 +448,7 @@ async fn verify_run_repository_binding(
         manifest.resources.inputs().iter().find(|input| {
             matches!(
                 &input.source,
-                awaken_session_contract::ResolvedInputSource::Repository {
+                awaken_session_resource_contract::ResolvedInputSource::Repository {
                     repository_id,
                     config,
                     ..
@@ -525,7 +530,7 @@ async fn verify_session_repository_binding(
     service: Arc<WorkerRepositoryBindingService>,
     worker: &VerifiedWorkerContext,
     request: RepositoryBindingRequest,
-    intent: awaken_session_contract::SessionResourceMaterializationIntent,
+    intent: awaken_session_realization_contract::SessionResourceMaterializationIntent,
 ) -> Response {
     let Some(identity) = request.identity.as_ref() else {
         return StatusCode::FORBIDDEN.into_response();
@@ -550,12 +555,12 @@ async fn verify_session_repository_binding(
     {
         return status.into_response();
     }
-    let awaken_session_contract::SessionResourceMaterializationTarget::Input(input) =
+    let awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(input) =
         intent.target()
     else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let awaken_session_contract::ResolvedInputSource::Repository {
+    let awaken_session_resource_contract::ResolvedInputSource::Repository {
         repository_id,
         config,
         ..
@@ -568,7 +573,9 @@ async fn verify_session_repository_binding(
         .await
     {
         Ok(workspace_id) => workspace_id,
-        Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_)) => {
+        Err(
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_),
+        ) => {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
         Err(_) => return StatusCode::CONFLICT.into_response(),
@@ -647,8 +654,8 @@ async fn verify_terminal_repository_binding(
     service: Arc<WorkerRepositoryBindingService>,
     worker: &VerifiedWorkerContext,
     request: RepositoryBindingRequest,
-    command: awaken_session_contract::SessionRepositoryPublicationCommand,
-    lease: awaken_session_contract::SessionRealizationLease,
+    command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+    lease: awaken_session_resource_contract::SessionRealizationLease,
 ) -> Response {
     let Some(identity) = request.identity.as_ref() else {
         return StatusCode::FORBIDDEN.into_response();
@@ -679,12 +686,14 @@ async fn verify_terminal_repository_binding(
     {
         Ok(Some(projection)) if projection.command == command => projection,
         Ok(_) => return StatusCode::CONFLICT.into_response(),
-        Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_)) => {
+        Err(
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_),
+        ) => {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
         Err(_) => return StatusCode::CONFLICT.into_response(),
     };
-    if !awaken_session_contract::realization_lease_authorizes(
+    if !awaken_session_realization_contract::realization_lease_authorizes(
         &projection.current_lease,
         &lease,
         now_ms,
@@ -708,7 +717,7 @@ async fn verify_terminal_repository_binding(
         return StatusCode::FORBIDDEN.into_response();
     }
     let canonical = &projection.command;
-    let awaken_session_contract::ResolvedInputSource::Repository {
+    let awaken_session_resource_contract::ResolvedInputSource::Repository {
         repository_id,
         config,
         ..
@@ -753,11 +762,11 @@ async fn verify_terminal_repository_binding(
     let latest_now_ms = unix_now_ms();
     if latest.workspace_id != projection.workspace_id
         || latest.command != projection.command
-        || !awaken_session_contract::realization_lease_generation_authorizes(
+        || !awaken_session_realization_contract::realization_lease_generation_authorizes(
             &latest.current_lease,
             &projection.current_lease,
         )
-        || !awaken_session_contract::realization_lease_authorizes(
+        || !awaken_session_realization_contract::realization_lease_authorizes(
             &latest.current_lease,
             &lease,
             latest_now_ms,

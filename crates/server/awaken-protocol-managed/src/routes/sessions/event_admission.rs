@@ -34,12 +34,12 @@ pub async fn close_event_admission(
         )))
     })?;
     let fingerprint =
-        awaken_session_contract::stable_fingerprint(&(&req, &event_data_subject(&headers)?));
+        awaken_agent_contract::stable_fingerprint(&(&req, &event_data_subject(&headers)?));
     let admission = state
         .session_application()
         .close_session_event_admission(
             &owner_scope,
-            &awaken_session_contract::SessionId::from(&id),
+            &awaken_session_types::SessionId::from(&id),
             key.clone(),
             fingerprint,
         )
@@ -55,7 +55,7 @@ pub async fn close_event_admission(
         })?;
     use awaken_protocol_awaken::{EventAdmissionProof, EventAdmissionStatus};
     let (status, proof) = match admission {
-        awaken_session_contract::SessionEventAdmission::Accepted {
+        awaken_session_application_contract::SessionEventAdmission::Accepted {
             batch_id,
             operation_ids,
         } => (
@@ -71,14 +71,16 @@ pub async fn close_event_admission(
                 }),
             },
         ),
-        awaken_session_contract::SessionEventAdmission::Closed { batch_id } => (
+        awaken_session_application_contract::SessionEventAdmission::Closed { batch_id } => (
             EventAdmissionStatus::Closed,
             EventAdmissionProof::EventBatch {
                 batch_id,
                 event_ids: Some(vec![]),
             },
         ),
-        awaken_session_contract::SessionEventAdmission::Deleted { deleted_revision } => (
+        awaken_session_application_contract::SessionEventAdmission::Deleted {
+            deleted_revision,
+        } => (
             EventAdmissionStatus::Closed,
             EventAdmissionProof::SessionDeleted {
                 deleted_revision: deleted_revision.0,

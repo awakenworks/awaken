@@ -8,7 +8,7 @@ use awaken_executable_environment_catalog::{
     executable_environment_registration_router_with_authenticator,
 };
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
-use awaken_session_contract::work_queue::WorkQueue;
+use awaken_session_work_contract::WorkQueue;
 use axum::Router;
 
 use crate::PostgresSchemaMode;

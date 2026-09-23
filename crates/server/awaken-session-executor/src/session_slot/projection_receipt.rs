@@ -1,7 +1,8 @@
 //! Admission of complete aggregate snapshots at the existing slot boundary.
 use super::SessionRuntimeSlot;
 use crate::HostError;
-use awaken_session_contract::{FrozenSessionProjection, SessionRevision};
+use awaken_session_realization_contract::FrozenSessionProjection;
+use awaken_session_types::SessionRevision;
 
 #[derive(Clone, Debug)]
 pub(crate) struct FrozenProjectionReceipt {
@@ -14,7 +15,7 @@ impl FrozenProjectionReceipt {
         // Only aggregate-owned coordinates enter equality. Executable publication,
         // materialized context and decoded Resource receipts are derived by adapters;
         // their existing exact publication/manifest checks remain authoritative.
-        let fingerprint = awaken_session_contract::canonical_json_sha256(
+        let fingerprint = awaken_agent_contract::canonical_json_sha256(
             "session-root-projection-v1",
             &(
                 &p.workspace_id,

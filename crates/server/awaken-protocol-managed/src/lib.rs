@@ -3,7 +3,7 @@
 //! This is the anti-corruption boundary between the public Anthropic Managed
 //! Agents wire and the neutral runtime. It owns the public DTOs, the projection
 //! from committed `Message`s to public events, and the axum router; it drives one
-//! [`SessionRuntime`](awaken_session_contract::SessionRuntime) port and constructs no runtime itself. It is the only crate
+//! [`SessionRuntime`](awaken_session_execution_contract::SessionRuntime) port and constructs no runtime itself. It is the only crate
 //! permitted to name Anthropic protocol vocabulary (G16).
 //!
 //! Scope: `POST /v1/sessions` (advertising the runtime's provisioned tool/resource

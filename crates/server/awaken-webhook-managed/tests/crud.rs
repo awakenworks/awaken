@@ -14,9 +14,9 @@ use awaken_config_resolver::{
     WebhookDeliveryState, WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
 };
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
-use awaken_session_contract::{
-    LifecycleFactDelivery, LifecycleFactNotifier, LifecycleOutbox, ManagedLifecycleFact,
-};
+use awaken_session_application_contract::{LifecycleFactDelivery, LifecycleFactNotifier};
+use awaken_session_repository_contract::LifecycleOutbox;
+use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
     ResolvedSubscription, SubscriptionFailureState, SubscriptionSource, WebhookDispatcher,
@@ -56,7 +56,7 @@ impl LifecycleOutbox for SessionOutbox {
     async fn append_lifecycle(
         &self,
         fact: ManagedLifecycleFact,
-    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+    ) -> Result<(), awaken_session_state_contract::SessionRepositoryError> {
         self.rows
             .lock()
             .unwrap()
@@ -66,16 +66,17 @@ impl LifecycleOutbox for SessionOutbox {
     }
     async fn pending_lifecycle(
         &self,
-    ) -> Result<Vec<ManagedLifecycleFact>, awaken_session_contract::SessionRepositoryError> {
+    ) -> Result<Vec<ManagedLifecycleFact>, awaken_session_state_contract::SessionRepositoryError>
+    {
         Ok(self.rows.lock().unwrap().values().cloned().collect())
     }
     async fn complete_lifecycle(
         &self,
         fact_id: &str,
-    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+    ) -> Result<(), awaken_session_state_contract::SessionRepositoryError> {
         if self.fail_completion_once.swap(false, Ordering::SeqCst) {
             return Err(
-                awaken_session_contract::SessionRepositoryError::Unavailable(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
                     "injected lifecycle completion outage".into(),
                 ),
             );

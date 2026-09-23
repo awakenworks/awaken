@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use awaken_session_contract::{SessionEnvironmentPhase, SessionRepositoryError, SessionScan};
+use awaken_session_state_contract::{SessionEnvironmentPhase, SessionRepositoryError, SessionScan};
 
 use super::SessionApplication;
 
@@ -120,7 +120,7 @@ impl SessionApplication {
 
 #[cfg(test)]
 mod tests {
-    use awaken_session_contract::{SessionRecoveryQuarantine, SessionScan};
+    use awaken_session_state_contract::{SessionRecoveryQuarantine, SessionScan};
 
     use super::*;
 

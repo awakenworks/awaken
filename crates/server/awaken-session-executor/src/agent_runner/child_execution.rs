@@ -128,7 +128,7 @@ pub(crate) struct RunScheduler {
     /// Parent Session resource authority inherited by a child dispatch. The child
     /// keeps its own Run/thread lifecycle while executing in the parent's Session
     /// environment, so a replacement worker must install the same frozen manifest.
-    pub(crate) session_resources: Option<awaken_session_contract::SessionResourceManifest>,
+    pub(crate) session_resources: Option<awaken_session_resource_contract::SessionResourceManifest>,
     /// Attempt-scoped publication lookup inherited by every durable child
     /// admission. A child freezes its own non-root closure from this immutable
     /// source; no execution path reopens the mutable host catalog.

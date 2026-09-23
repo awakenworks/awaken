@@ -20,7 +20,7 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationSource, ExecutableEnvironmentWithdrawal,
     ExecutableEnvironmentWithdrawalOutcome,
 };
-use awaken_session_contract::work_queue::{
+use awaken_session_work_contract::{
     ClaimedWork, HeartbeatResult, LeaseHeartbeat, QueueStats, WorkItem, WorkQueue, WorkQueueError,
     WorkSessionAccess,
 };
@@ -91,8 +91,10 @@ impl EnvironmentExecutionApplication {
         &self,
         environment_id: &str,
         runtime: Option<&str>,
-    ) -> Result<Option<awaken_session_contract::EnvironmentSnapshot>, EnvironmentImageBuildError>
-    {
+    ) -> Result<
+        Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
+        EnvironmentImageBuildError,
+    > {
         self.resolve_current_for_session(environment_id, runtime, &[])
             .await
     }
@@ -101,9 +103,11 @@ impl EnvironmentExecutionApplication {
         &self,
         environment_id: &str,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Result<Option<awaken_session_contract::EnvironmentSnapshot>, EnvironmentImageBuildError>
-    {
+        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+    ) -> Result<
+        Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
+        EnvironmentImageBuildError,
+    > {
         self.resolve_current_for_session(environment_id, runtime, mcp_targets)
             .await
     }
@@ -112,9 +116,11 @@ impl EnvironmentExecutionApplication {
         &self,
         environment_id: &str,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Result<Option<awaken_session_contract::EnvironmentSnapshot>, EnvironmentImageBuildError>
-    {
+        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+    ) -> Result<
+        Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
+        EnvironmentImageBuildError,
+    > {
         let registration = self
             .execution_source
             .current_registration(environment_id)
@@ -139,8 +145,10 @@ impl EnvironmentExecutionApplication {
         environment_id: &str,
         revision: u64,
         runtime: Option<&str>,
-    ) -> Result<Option<awaken_session_contract::EnvironmentSnapshot>, EnvironmentImageBuildError>
-    {
+    ) -> Result<
+        Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
+        EnvironmentImageBuildError,
+    > {
         self.resolve_exact_for_session(environment_id, revision, runtime, &[])
             .await
     }
@@ -150,9 +158,11 @@ impl EnvironmentExecutionApplication {
         environment_id: &str,
         revision: u64,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Result<Option<awaken_session_contract::EnvironmentSnapshot>, EnvironmentImageBuildError>
-    {
+        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+    ) -> Result<
+        Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
+        EnvironmentImageBuildError,
+    > {
         self.resolve_exact_for_session(environment_id, revision, runtime, mcp_targets)
             .await
     }
@@ -162,9 +172,11 @@ impl EnvironmentExecutionApplication {
         environment_id: &str,
         revision: u64,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Result<Option<awaken_session_contract::EnvironmentSnapshot>, EnvironmentImageBuildError>
-    {
+        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+    ) -> Result<
+        Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
+        EnvironmentImageBuildError,
+    > {
         // Current availability is a live deny overlay. Exact history remains
         // queryable, but withdrawal denies admission of a new Session.
         if self
@@ -352,8 +364,7 @@ impl EnvironmentExecutionApplication {
         environment_id: &str,
         work_id: &str,
         worker_id: &str,
-    ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, EnvironmentExecutionError>
-    {
+    ) -> Result<awaken_session_work_contract::WorkMutationResult, EnvironmentExecutionError> {
         self.require_environment(environment_id).await?;
         Ok(self.work.ack(environment_id, work_id, worker_id).await?)
     }
@@ -364,8 +375,7 @@ impl EnvironmentExecutionApplication {
     pub async fn acknowledge_work_with_session_access(
         &self,
         access: &WorkSessionAccess,
-    ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, EnvironmentExecutionError>
-    {
+    ) -> Result<awaken_session_work_contract::WorkMutationResult, EnvironmentExecutionError> {
         self.require_environment(&access.environment_id).await?;
         Ok(self.work.ack_with_session_access(access).await?)
     }
@@ -404,8 +414,7 @@ impl EnvironmentExecutionApplication {
         environment_id: &str,
         work_id: &str,
         worker_id: &str,
-    ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, EnvironmentExecutionError>
-    {
+    ) -> Result<awaken_session_work_contract::WorkMutationResult, EnvironmentExecutionError> {
         self.require_environment(environment_id).await?;
         Ok(self.work.stop(environment_id, work_id, worker_id).await?)
     }
@@ -414,8 +423,7 @@ impl EnvironmentExecutionApplication {
     pub async fn stop_work_with_session_access(
         &self,
         access: &WorkSessionAccess,
-    ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, EnvironmentExecutionError>
-    {
+    ) -> Result<awaken_session_work_contract::WorkMutationResult, EnvironmentExecutionError> {
         self.require_environment(&access.environment_id).await?;
         Ok(self.work.stop_with_session_access(access).await?)
     }
@@ -434,7 +442,7 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         &self,
         environment_id: &str,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_contract::McpTarget],
+        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
     ) -> Result<
         Option<awaken_session_application::ResolvedSessionEnvironment>,
         EnvironmentImageBuildError,
@@ -453,7 +461,7 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         environment_id: &str,
         revision: u64,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_contract::McpTarget],
+        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
     ) -> Result<
         Option<awaken_session_application::ResolvedSessionEnvironment>,
         EnvironmentImageBuildError,
@@ -475,7 +483,7 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         self.work
             .enqueue_session(
                 environment_id,
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
             )
             .await
     }
@@ -488,7 +496,7 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         self.work
             .wake_session(
                 environment_id,
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
             )
             .await
     }
@@ -501,14 +509,14 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         self.work
             .retire_session(
                 environment_id,
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
             )
             .await
     }
 
     async fn release_session_work(
         &self,
-        lease: &awaken_session_contract::work_queue::SessionWorkLease,
+        lease: &awaken_session_work_contract::SessionWorkLease,
     ) -> Result<bool, WorkQueueError> {
         self.work.release_session(lease).await
     }
@@ -519,11 +527,11 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         session_id: &str,
         worker_owner: &str,
         now_ms: u64,
-    ) -> Result<Option<awaken_session_contract::work_queue::SessionWorkLease>, WorkQueueError> {
+    ) -> Result<Option<awaken_session_work_contract::SessionWorkLease>, WorkQueueError> {
         self.work
             .acquire_session(
                 environment_id,
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 worker_owner,
                 now_ms,
             )
@@ -601,13 +609,16 @@ fn registration_unavailable(
 async fn snapshot_from_registration(
     registration: ExecutableEnvironmentRegistration,
     runtime: Option<&str>,
-    mcp_targets: &[awaken_session_contract::McpTarget],
+    mcp_targets: &[awaken_session_mcp_contract::McpTarget],
     image_readiness: Option<&Arc<dyn EnvironmentImageReadiness>>,
     cloud_native_credential_realization: Option<
         &awaken_credential_contract::CredentialRealizationProfile,
     >,
     wait_for_image: bool,
-) -> Result<Option<awaken_session_contract::EnvironmentSnapshot>, EnvironmentImageBuildError> {
+) -> Result<
+    Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
+    EnvironmentImageBuildError,
+> {
     let item = &registration.definition;
     if item.archived_at.is_some() {
         return Ok(None);
@@ -641,7 +652,7 @@ async fn snapshot_from_registration(
         ),
         None => (
             Default::default(),
-            awaken_session_contract::SandboxProvisioning::Eager,
+            awaken_session_configuration_contract::SandboxProvisioning::Eager,
             Default::default(),
         ),
     };
@@ -661,8 +672,8 @@ async fn snapshot_from_registration(
         return Ok(None);
     }
     let self_hosted = item.is_self_hosted();
-    let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
-        awaken_session_contract::stable_fingerprint(&(
+    let config_fingerprint = awaken_session_configuration_contract::EnvironmentFingerprint(
+        awaken_agent_contract::stable_fingerprint(&(
             self_hosted,
             &sandbox,
             &sandbox_provisioning,
@@ -673,26 +684,30 @@ async fn snapshot_from_registration(
             &prepared_image,
         )),
     );
-    Ok(Some(awaken_session_contract::EnvironmentSnapshot {
-        environment_id: item.id.clone(),
-        revision: item.revision,
-        self_hosted,
-        config_fingerprint,
-        sandbox,
-        sandbox_provisioning,
-        idle_retention,
-        packages,
-        prepared_image,
-        network,
-        credential_realization,
-    }))
+    Ok(Some(
+        awaken_session_configuration_contract::EnvironmentSnapshot {
+            environment_id: item.id.clone(),
+            revision: item.revision,
+            self_hosted,
+            config_fingerprint,
+            sandbox,
+            sandbox_provisioning,
+            idle_retention,
+            packages,
+            prepared_image,
+            network,
+            credential_realization,
+        },
+    ))
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::EnvironmentWarmupSource for EnvironmentExecutionApplication {
+impl awaken_session_configuration_contract::EnvironmentWarmupSource
+    for EnvironmentExecutionApplication
+{
     async fn current_environment_warmups(
         &self,
-    ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+    ) -> Result<Vec<awaken_session_configuration_contract::EnvironmentSnapshot>, String> {
         let registrations = self
             .execution_source
             .current_registrations()
@@ -728,9 +743,9 @@ impl awaken_session_contract::EnvironmentWarmupSource for EnvironmentExecutionAp
 
 fn session_network_policy(
     config: &EnvironmentConfig,
-    mcp_targets: &[awaken_session_contract::McpTarget],
-) -> awaken_session_contract::SessionNetworkPolicy {
-    use awaken_session_contract::SessionNetworkPolicy;
+    mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+) -> awaken_session_configuration_contract::SessionNetworkPolicy {
+    use awaken_session_configuration_contract::SessionNetworkPolicy;
 
     let EnvironmentNetworking::Limited {
         allowed_hosts,
@@ -747,7 +762,7 @@ fn session_network_policy(
     if *allow_mcp_servers {
         hosts.extend(mcp_targets.iter().filter_map(|target| {
             target.http_url().and_then(|url| {
-                awaken_session_contract::McpTarget::identity(url)
+                awaken_session_mcp_contract::McpTarget::identity(url)
                     .ok()
                     .map(|identity| identity.host)
             })
@@ -774,7 +789,7 @@ mod tests {
     use awaken_executable_environment_catalog::{
         ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
     };
-    use awaken_session_contract::work_queue::HeartbeatCondition;
+    use awaken_session_work_contract::HeartbeatCondition;
     use awaken_work_store::InMemoryWorkQueue;
 
     fn registration(
@@ -896,7 +911,7 @@ mod tests {
             EnvironmentExecutionApplication::new(Arc::new(InMemoryWorkQueue::new()), catalog)
                 .with_image_readiness(readiness.clone());
         let pending =
-            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+            awaken_session_configuration_contract::EnvironmentWarmupSource::current_environment_warmups(
                 &application,
             )
             .await
@@ -910,7 +925,7 @@ mod tests {
             "W1-W3"
         );
         readiness.0.store(true, Ordering::SeqCst);
-        let ready = awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+        let ready = awaken_session_configuration_contract::EnvironmentWarmupSource::current_environment_warmups(
             &application,
         )
         .await
@@ -945,7 +960,7 @@ mod tests {
             .await
             .unwrap();
         let revised =
-            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+            awaken_session_configuration_contract::EnvironmentWarmupSource::current_environment_warmups(
                 &application,
             )
             .await
@@ -976,7 +991,7 @@ mod tests {
             .unwrap();
         readiness.0.store(false, Ordering::SeqCst);
         let rollout_pending =
-            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+            awaken_session_configuration_contract::EnvironmentWarmupSource::current_environment_warmups(
                 &application,
             )
             .await
@@ -997,7 +1012,7 @@ mod tests {
         );
         readiness.0.store(true, Ordering::SeqCst);
         let rollout_ready =
-            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+            awaken_session_configuration_contract::EnvironmentWarmupSource::current_environment_warmups(
                 &application,
             )
             .await
@@ -1100,7 +1115,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             self_hosted.network,
-            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             "S1"
         );
         assert_eq!(
@@ -1111,7 +1126,7 @@ mod tests {
         let closed = application.snapshot("closed", None).await.unwrap().unwrap();
         assert_eq!(
             closed.network,
-            awaken_session_contract::SessionNetworkPolicy::None,
+            awaken_session_configuration_contract::SessionNetworkPolicy::None,
             "S2"
         );
         assert_eq!(
@@ -1119,14 +1134,15 @@ mod tests {
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
             "S2 E3"
         );
-        let target = awaken_session_contract::McpTarget::parse_http("https://Mcp.Example.test/rpc")
-            .expect("valid MCP target");
+        let target =
+            awaken_session_mcp_contract::McpTarget::parse_http("https://Mcp.Example.test/rpc")
+                .expect("valid MCP target");
         let exceptions = hosted_application
             .snapshot_for_session("exceptions", Some("acp:stdio"), &[target])
             .await
             .unwrap()
             .unwrap();
-        let awaken_session_contract::SessionNetworkPolicy::Allowlist { hosts } =
+        let awaken_session_configuration_contract::SessionNetworkPolicy::Allowlist { hosts } =
             &exceptions.network
         else {
             panic!("S3 must compile an allowlist")
@@ -1155,7 +1171,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             open.network,
-            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             "S4 network"
         );
         assert_eq!(open.credential_realization, platform_profile, "S4 E5");
@@ -1241,7 +1257,7 @@ mod tests {
         let eager = application.snapshot("policy", None).await.unwrap().unwrap();
         assert_eq!(
             eager.sandbox_provisioning,
-            awaken_session_contract::SandboxProvisioning::Eager,
+            awaken_session_configuration_contract::SandboxProvisioning::Eager,
             "P1"
         );
 
@@ -1252,7 +1268,7 @@ mod tests {
                 isolation: Some(IsolationClass::Namespace),
                 ..Default::default()
             },
-            provisioning: awaken_session_contract::SandboxProvisioning::OnToolUse,
+            provisioning: awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
             idle_retention: Default::default(),
             disabled: false,
         };
@@ -1264,7 +1280,7 @@ mod tests {
         assert_eq!(frozen.isolation, Some(IsolationClass::Namespace), "P2");
         assert_eq!(
             lazy.sandbox_provisioning,
-            awaken_session_contract::SandboxProvisioning::OnToolUse,
+            awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
             "P2"
         );
         assert_ne!(eager.config_fingerprint, lazy.config_fingerprint, "P2");
@@ -1275,7 +1291,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .sandbox_provisioning,
-            awaken_session_contract::SandboxProvisioning::Eager,
+            awaken_session_configuration_contract::SandboxProvisioning::Eager,
             "P3"
         );
 
@@ -1283,7 +1299,7 @@ mod tests {
             id: SandboxExecutionPolicyId("policy-a".into()),
             version: SandboxExecutionPolicyVersion(2),
             config: SandboxOverride::default(),
-            provisioning: awaken_session_contract::SandboxProvisioning::Eager,
+            provisioning: awaken_session_configuration_contract::SandboxProvisioning::Eager,
             idle_retention: Default::default(),
             disabled: true,
         };
@@ -1382,14 +1398,14 @@ mod tests {
         async fn enqueue_session(
             &self,
             env: &str,
-            session: &awaken_session_contract::SessionId,
+            session: &awaken_session_types::SessionId,
         ) -> Result<String, WorkQueueError> {
             self.inner.enqueue_session(env, session).await
         }
         async fn wake_session(
             &self,
             env: &str,
-            session: &awaken_session_contract::SessionId,
+            session: &awaken_session_types::SessionId,
         ) -> Result<String, WorkQueueError> {
             self.inner.wake_session(env, session).await
         }
@@ -1440,8 +1456,7 @@ mod tests {
             env: &str,
             work: &str,
             worker: &str,
-        ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, WorkQueueError>
-        {
+        ) -> Result<awaken_session_work_contract::WorkMutationResult, WorkQueueError> {
             self.inner.ack(env, work, worker).await
         }
         async fn heartbeat(
@@ -1461,24 +1476,23 @@ mod tests {
             env: &str,
             work: &str,
             worker: &str,
-        ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, WorkQueueError>
-        {
+        ) -> Result<awaken_session_work_contract::WorkMutationResult, WorkQueueError> {
             self.inner.stop(env, work, worker).await
         }
         async fn retire_session(
             &self,
             env: &str,
-            session: &awaken_session_contract::SessionId,
+            session: &awaken_session_types::SessionId,
         ) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.retire_session(env, session).await
         }
         async fn acquire_session(
             &self,
             env: &str,
-            session: &awaken_session_contract::SessionId,
+            session: &awaken_session_types::SessionId,
             worker: &str,
             now: u64,
-        ) -> Result<Option<awaken_session_contract::work_queue::SessionWorkLease>, WorkQueueError>
+        ) -> Result<Option<awaken_session_work_contract::SessionWorkLease>, WorkQueueError>
         {
             self.inner.acquire_session(env, session, worker, now).await
         }
@@ -1551,7 +1565,7 @@ mod tests {
         assert_eq!(work.list("converge").await.unwrap().len(), 1, "C2");
         work.enqueue_session(
             "converge",
-            &awaken_session_contract::SessionId::from("session-a"),
+            &awaken_session_types::SessionId::from("session-a"),
         )
         .await
         .unwrap();
@@ -1686,10 +1700,7 @@ mod tests {
             .unwrap();
         let mut now = 0;
         let session_work = work
-            .enqueue_session(
-                "worker",
-                &awaken_session_contract::SessionId::from("sesn_a"),
-            )
+            .enqueue_session("worker", &awaken_session_types::SessionId::from("sesn_a"))
             .await
             .unwrap();
         let claimed = loop {

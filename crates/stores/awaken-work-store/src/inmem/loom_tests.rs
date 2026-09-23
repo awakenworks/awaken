@@ -1,7 +1,7 @@
 //! Whole reference-queue authority interleavings, using the actual public port.
 use super::*;
 use crate::test_session_access_digest;
-use awaken_session_contract::SessionId;
+use awaken_session_types::SessionId;
 use loom::{sync::Arc, thread};
 use std::{
     future::Future,

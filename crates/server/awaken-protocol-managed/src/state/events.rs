@@ -7,13 +7,16 @@ use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_ext_builtin_tools::SEND_MESSAGE;
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
+use awaken_session_application_contract::Pending;
+use awaken_session_event_contract::{
+    SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
+    SessionEventToolReplyKind, SessionOutcomeRubric,
+};
 #[cfg(test)]
-use awaken_session_contract::SessionThreadToolReply;
-use awaken_session_contract::{
-    CoordinatedThreadLink, CoordinatedThreadTarget, Pending, SessionEventCommand,
-    SessionEventInput, SessionEventInterrupt, SessionEventToolReply, SessionEventToolReplyKind,
-    SessionOutcomeRubric, SessionThreadTarget, session_agent_report_messages,
-    session_agent_report_text,
+use awaken_session_execution_contract::SessionThreadToolReply;
+use awaken_session_execution_contract::{
+    CoordinatedThreadLink, CoordinatedThreadTarget, SessionThreadTarget,
+    session_agent_report_messages, session_agent_report_text,
 };
 
 const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
@@ -23,7 +26,7 @@ const INBOUND_ADMISSION_PHASE: u16 = 120;
 /// observations may enrich the public row but can never replace this coordinate.
 #[must_use]
 const fn inbound_admission_order(
-    anchor: Option<awaken_session_contract::SessionEventProjectionAnchor>,
+    anchor: Option<awaken_session_event_contract::SessionEventProjectionAnchor>,
 ) -> Option<(u64, u16)> {
     match anchor {
         Some(anchor) => Some((anchor.source_commit_cursor, INBOUND_ADMISSION_PHASE)),
@@ -42,7 +45,7 @@ pub(super) fn coordinated_child_run_is_terminal(
     if is_advisor {
         state.is_terminal()
     } else {
-        awaken_session_contract::coordinated_thread_failed(state)
+        awaken_session_execution_contract::coordinated_thread_failed(state)
     }
 }
 
@@ -104,9 +107,11 @@ fn inbound_admission_receipt_is_stable_across_processing_races() {
 fn inbound_order_is_fixed_before_effect_observation() {
     let admission_cursor: u64 = kani::any();
     let _later_effect_cursor: u64 = kani::any();
-    let anchor = Some(awaken_session_contract::SessionEventProjectionAnchor {
-        source_commit_cursor: admission_cursor,
-    });
+    let anchor = Some(
+        awaken_session_event_contract::SessionEventProjectionAnchor {
+            source_commit_cursor: admission_cursor,
+        },
+    );
     let issued = inbound_admission_order(anchor);
     assert_eq!(issued, Some((admission_cursor, INBOUND_ADMISSION_PHASE)));
     // Effect progress has no input to the order function: replay after any
@@ -117,7 +122,7 @@ fn inbound_order_is_fixed_before_effect_observation() {
 
 fn inbound_projections(
     session_id: &str,
-    batches: &[awaken_session_contract::SessionEventBatch],
+    batches: &[awaken_session_event_contract::SessionEventBatch],
     view: InboundProjectionView,
 ) -> Vec<DurableInboundProjection> {
     let mut projections = Vec::new();
@@ -140,14 +145,14 @@ fn inbound_projections(
 /// original DTO from their lossy execution payloads.
 fn durable_inbound_projections(
     session_id: &str,
-    batches: &[awaken_session_contract::SessionEventBatch],
+    batches: &[awaken_session_event_contract::SessionEventBatch],
 ) -> Vec<DurableInboundProjection> {
     inbound_projections(session_id, batches, InboundProjectionView::DurableHistory)
 }
 
 fn accepted_inbound_receipts(
     session_id: &str,
-    batch: &awaken_session_contract::SessionEventBatch,
+    batch: &awaken_session_event_contract::SessionEventBatch,
 ) -> Vec<DurableInboundProjection> {
     inbound_projections(
         session_id,
@@ -158,7 +163,7 @@ fn accepted_inbound_receipts(
 
 fn inbound_projection(
     session_id: &str,
-    entry: &awaken_session_contract::SessionEventEntry,
+    entry: &awaken_session_event_contract::SessionEventEntry,
     view: InboundProjectionView,
 ) -> DurableInboundProjection {
     DurableInboundProjection {
@@ -240,8 +245,7 @@ fn public_inbound_kind_from_command(
         }
         SessionEventCommand::Interrupt { interrupt, .. } => OutboundKind::UserInterrupt {
             session_thread_id: interrupt.requested_target.as_ref().map(|target| {
-                let internal =
-                    target.thread_id(&awaken_session_contract::SessionId::from(session_id));
+                let internal = target.thread_id(&awaken_session_types::SessionId::from(session_id));
                 public_thread_id(session_id, &internal.0)
             }),
         },
@@ -397,7 +401,9 @@ impl DurableOutcomeProjection {
     }
 }
 
-fn retained_outcome_ids(batches: &[awaken_session_contract::SessionEventBatch]) -> Vec<String> {
+fn retained_outcome_ids(
+    batches: &[awaken_session_event_contract::SessionEventBatch],
+) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     batches
         .iter()
@@ -688,7 +694,7 @@ fn managed_multiagent_event_id(
 ) -> String {
     format!(
         "{MANAGED_MULTIAGENT_EVENT_ID_PREFIX}{}",
-        awaken_session_contract::stable_fingerprint(&(
+        awaken_agent_contract::stable_fingerprint(&(
             "managed-multiagent-event-v1",
             session_id,
             thread_id,

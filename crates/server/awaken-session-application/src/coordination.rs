@@ -2,21 +2,22 @@
 //!
 //! This module adds no child registry. It resolves the roster already frozen by
 //! the Session baseline and delegates ordinary Thread/Run persistence to the
-//! existing [`awaken_session_contract::SessionRuntime`] port.
+//! existing [`awaken_session_execution_contract::SessionRuntime`] port.
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_session_contract::{
-    CoordinatedRunCommand, CoordinatedRunIntent, Pending, RunError, RunResume,
-    SessionAgentBoundaryAction, SessionAgentBoundaryCommand, SessionAgentBoundaryRole,
-    SessionAgentBoundaryVisibility, SessionAgentCommittedReport, SessionAgentCoordination,
-    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
-    SessionAgentRosterEntry, SessionAgentTarget, SessionRunActivityAdmission,
-    SessionRunActivityAdmissionMode, SessionThreadTarget, SessionThreadToolReply,
-    SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, StepOutcome,
-    coordinated_thread_failed, session_agent_boundary_action, session_agent_report_text,
-    session_agent_run_boundary, session_run_activity_operation_id,
+use awaken_session_application_contract::{Pending, RunResume, StepOutcome};
+use awaken_session_error_contract::RunError;
+use awaken_session_execution_contract::{
+    CoordinatedRunCommand, CoordinatedRunIntent, SessionAgentBoundaryAction,
+    SessionAgentBoundaryCommand, SessionAgentBoundaryRole, SessionAgentBoundaryVisibility,
+    SessionAgentCommittedReport, SessionAgentCoordination, SessionAgentMessageCommand,
+    SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionAgentRosterEntry,
+    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
+    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
+    SessionThreadToolReplyDelivery, coordinated_thread_failed, session_agent_boundary_action,
+    session_agent_report_text, session_agent_run_boundary, session_run_activity_operation_id,
 };
 
 use crate::SessionApplication;
@@ -38,10 +39,9 @@ impl SessionApplication {
         activity_epoch: u64,
         result: &Result<T, RunError>,
     ) -> Result<(), RunError> {
-        if result
-            .as_ref()
-            .is_err_and(|error| error.kind == awaken_session_contract::RunErrorKind::BadRequest)
-        {
+        if result.as_ref().is_err_and(|error| {
+            error.kind == awaken_session_error_contract::RunErrorKind::BadRequest
+        }) {
             // A caller rejection proves the Runtime did not durably accept the
             // operation. Dependency/internal failures deliberately retain the
             // activity receipt: enqueue/delivery may have committed before its
@@ -55,9 +55,9 @@ impl SessionApplication {
 
     async fn reconcile_coordination_boundary_usage(
         &self,
-        session: awaken_session_contract::PersistedSession,
+        session: awaken_session_state_contract::PersistedSession,
         source_thread_id: &ThreadId,
-    ) -> Result<awaken_session_contract::PersistedSession, RunError> {
+    ) -> Result<awaken_session_state_contract::PersistedSession, RunError> {
         if session.is_terminal() {
             return Ok(session);
         }
@@ -79,7 +79,7 @@ impl SessionApplication {
         (
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
             RunState,
-            Option<awaken_session_contract::SessionRuntimeIntervalObservation>,
+            Option<awaken_session_state_contract::SessionRuntimeIntervalObservation>,
         ),
         RunError,
     > {
@@ -115,7 +115,7 @@ impl SessionApplication {
 
     async fn validate_coordinated_thread(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         child_thread_id: &ThreadId,
     ) -> Result<(), RunError> {
         if child_thread_id.0 == session_id {
@@ -138,7 +138,7 @@ impl SessionApplication {
     fn coordination_root_profile(
         &self,
         owner_scope: &str,
-        session: &awaken_session_contract::PersistedSession,
+        session: &awaken_session_state_contract::PersistedSession,
     ) -> Result<awaken_executable_agent_contract::ExecutableAgentSessionProfile, RunError> {
         let baseline = session
             .frozen_baseline()
@@ -160,7 +160,7 @@ impl SessionApplication {
     fn coordination_roster(
         &self,
         owner_scope: &str,
-        session: &awaken_session_contract::PersistedSession,
+        session: &awaken_session_state_contract::PersistedSession,
     ) -> Result<Vec<ResolvedRosterMember>, RunError> {
         let baseline = session
             .frozen_baseline()
@@ -220,13 +220,13 @@ impl SessionApplication {
 
     async fn coordination_session(
         &self,
-        session_id: &awaken_session_contract::SessionId,
-    ) -> Result<(String, awaken_session_contract::PersistedSession), RunError> {
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<(String, awaken_session_state_contract::PersistedSession), RunError> {
         let session = self
             .session(session_id)
             .await
             .map_err(|error| match error {
-                awaken_session_contract::SessionRepositoryError::NotFound => {
+                awaken_session_state_contract::SessionRepositoryError::NotFound => {
                     RunError::bad_request("Session was not found")
                 }
                 other => RunError::unavailable(other.to_string()),
@@ -288,8 +288,8 @@ impl SessionApplication {
             None
         } else {
             match fence.activity {
-                awaken_session_contract::SessionThreadToolReplyActivity::ThreadExtension => None,
-                awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                awaken_session_execution_contract::SessionThreadToolReplyActivity::ThreadExtension => None,
+                awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
                     prior_epoch,
                 } => {
                     let (_, epoch) = self
@@ -322,7 +322,7 @@ impl SessionApplication {
     pub async fn resume_session_run(
         &self,
         operation_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunError> {
@@ -337,7 +337,7 @@ impl SessionApplication {
         &self,
         owner_scope: &str,
         operation_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunError> {
@@ -355,7 +355,7 @@ impl SessionApplication {
         &self,
         expected_owner: Option<&str>,
         operation_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunError> {
@@ -450,7 +450,7 @@ impl SessionApplication {
 impl SessionAgentCoordination for SessionApplication {
     async fn admit_session_run_activity(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         agent_id: &str,
         run_id: &RunId,
         mode: SessionRunActivityAdmissionMode,
@@ -472,7 +472,7 @@ impl SessionAgentCoordination for SessionApplication {
                 session_activity_epoch,
             }),
             Err(error)
-                if error.kind == awaken_session_contract::RunErrorKind::BadRequest
+                if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest
                     || error.code == "budget_reached" =>
             {
                 Ok(SessionRunActivityAdmission::Rejected)
@@ -483,7 +483,7 @@ impl SessionAgentCoordination for SessionApplication {
 
     async fn admit_session_model_request(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         thread_id: &ThreadId,
         run_id: &RunId,
     ) -> Result<bool, RunError> {
@@ -525,7 +525,7 @@ impl SessionAgentCoordination for SessionApplication {
                         && entry.projection_anchor.is_none()
                         && matches!(
                             &entry.event,
-                            awaken_session_contract::SessionEventCommand::UserMessage {
+                            awaken_session_event_contract::SessionEventCommand::UserMessage {
                                 run_id: pending_run, ..
                             } if pending_run == run_id
                         )
@@ -547,7 +547,7 @@ impl SessionAgentCoordination for SessionApplication {
 
     async fn list_session_agents(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<Vec<SessionAgentRosterEntry>, RunError> {
         let (owner, session) = self.coordination_session(session_id).await?;
         self.coordination_roster(&owner, &session)
@@ -593,7 +593,7 @@ impl SessionAgentCoordination for SessionApplication {
                         ))
                     })?;
                 (
-                    awaken_session_contract::coordinated_thread_id(
+                    awaken_session_execution_contract::coordinated_thread_id(
                         &command.session_id,
                         &command.source_run_id,
                         &command.operation_id,
@@ -661,7 +661,7 @@ impl SessionAgentCoordination for SessionApplication {
             }
         };
 
-        let run_identity = awaken_session_contract::stable_fingerprint(&(
+        let run_identity = awaken_agent_contract::stable_fingerprint(&(
             "managed-coordinated-run-v1",
             command.session_id.as_str(),
             thread_id.0.as_str(),
@@ -908,7 +908,7 @@ impl SessionAgentCoordination for SessionApplication {
 
     async fn interrupt_session_thread(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         child_thread_id: &ThreadId,
     ) -> Result<(), RunError> {
         self.validate_coordinated_thread(session_id, child_thread_id)
@@ -958,23 +958,23 @@ mod boundary_tests {
         // | B5 | Running | E4 |
         assert_eq!(
             session_agent_run_boundary(&RunState::Awaiting).expect("B1"),
-            awaken_session_contract::SessionAgentRunBoundary::Awaiting,
+            awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting,
             "B1/E1"
         );
         assert_eq!(
             session_agent_run_boundary(&RunState::Ended(EndCause::NaturalEnd,)).expect("B2"),
-            awaken_session_contract::SessionAgentRunBoundary::Completed,
+            awaken_session_execution_contract::SessionAgentRunBoundary::Completed,
             "B2/E2"
         );
         assert_eq!(
             session_agent_run_boundary(&RunState::Ended(EndCause::Error(Failure::StateConflict,)))
                 .expect("B3"),
-            awaken_session_contract::SessionAgentRunBoundary::Failed,
+            awaken_session_execution_contract::SessionAgentRunBoundary::Failed,
             "B3/E3"
         );
         assert_eq!(
             session_agent_run_boundary(&RunState::Ended(EndCause::Cancelled)).expect("B4"),
-            awaken_session_contract::SessionAgentRunBoundary::Cancelled,
+            awaken_session_execution_contract::SessionAgentRunBoundary::Cancelled,
             "B4/E3"
         );
         assert!(

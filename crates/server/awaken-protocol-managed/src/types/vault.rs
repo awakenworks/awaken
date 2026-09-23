@@ -446,8 +446,10 @@ pub struct CredentialProbeHttpResponse {
     pub status_code: u16,
 }
 
-impl From<awaken_session_contract::ProbeHttpResponse> for CredentialProbeHttpResponse {
-    fn from(response: awaken_session_contract::ProbeHttpResponse) -> Self {
+impl From<awaken_session_configuration_contract::ProbeHttpResponse>
+    for CredentialProbeHttpResponse
+{
+    fn from(response: awaken_session_configuration_contract::ProbeHttpResponse) -> Self {
         Self {
             body: response.body,
             body_truncated: response.body_truncated,
@@ -467,8 +469,8 @@ pub struct CredentialMcpProbe {
     pub method: String,
 }
 
-impl From<awaken_session_contract::McpProbeFailure> for CredentialMcpProbe {
-    fn from(failure: awaken_session_contract::McpProbeFailure) -> Self {
+impl From<awaken_session_configuration_contract::McpProbeFailure> for CredentialMcpProbe {
+    fn from(failure: awaken_session_configuration_contract::McpProbeFailure) -> Self {
         Self {
             http_response: failure.http_response.map(Into::into),
             method: failure.method,
@@ -506,9 +508,11 @@ impl CredentialRefreshResult {
     }
 }
 
-impl From<awaken_session_contract::RefreshExchangeOutcome> for CredentialRefreshResult {
-    fn from(outcome: awaken_session_contract::RefreshExchangeOutcome) -> Self {
-        use awaken_session_contract::RefreshExchangeStatus;
+impl From<awaken_session_configuration_contract::RefreshExchangeOutcome>
+    for CredentialRefreshResult
+{
+    fn from(outcome: awaken_session_configuration_contract::RefreshExchangeOutcome) -> Self {
+        use awaken_session_configuration_contract::RefreshExchangeStatus;
         Self {
             http_response: outcome.http_response.map(Into::into),
             status: match outcome.status {

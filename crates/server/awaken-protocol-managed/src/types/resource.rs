@@ -91,12 +91,12 @@ impl ResourceInput {
             Self::File {
                 file_id,
                 mount_path,
-            } => awaken_session_contract::stable_fingerprint(&("file", file_id, mount_path)),
+            } => awaken_agent_contract::stable_fingerprint(&("file", file_id, mount_path)),
             Self::MemoryStore {
                 memory_store_id,
                 instructions,
                 access,
-            } => awaken_session_contract::stable_fingerprint(&(
+            } => awaken_agent_contract::stable_fingerprint(&(
                 "memory_store",
                 memory_store_id,
                 instructions,
@@ -107,7 +107,7 @@ impl ResourceInput {
                 authorization_token,
                 mount_path,
                 checkout,
-            } => awaken_session_contract::stable_fingerprint(&(
+            } => awaken_agent_contract::stable_fingerprint(&(
                 "github_repository",
                 url,
                 authorization_token

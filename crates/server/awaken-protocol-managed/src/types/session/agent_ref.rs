@@ -1,6 +1,6 @@
 //! Managed Session Agent references and per-Session overrides.
 
-use awaken_session_contract::AgentTool;
+use awaken_session_configuration_contract::AgentTool;
 use serde::Deserialize;
 
 use super::ModelConfig;
@@ -179,7 +179,7 @@ impl AgentRef {
             return Err("agent tools override supports at most 128 entries".into());
         }
         if let Some(tools) = self.tools_override() {
-            awaken_session_contract::validate_agent_tools(tools)?;
+            awaken_session_configuration_contract::validate_agent_tools(tools)?;
         }
         Ok(())
     }

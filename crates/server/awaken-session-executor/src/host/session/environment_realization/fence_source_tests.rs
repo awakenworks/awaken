@@ -1,7 +1,8 @@
 use super::*;
 use crate::session_slot::SessionRealizationAuthority;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
-use awaken_session_contract::{SessionRealizationLease, SessionRealizationLeaseReceipt};
+use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
+use awaken_session_resource_contract::SessionRealizationLease;
 use std::{io, sync::Mutex, time::Duration};
 
 struct Worker(Mutex<Option<Duration>>);
@@ -543,9 +544,9 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                 let handle =
                     crate::host::tests::terminal_fixture_container_handle("session", &spec);
                 let binding = serde_json::to_string(&handle).unwrap();
-                let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+                let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
                     "session",
-                    awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+                    awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
                     Some(lease()),
                 )
                 .from_binding(&binding);
@@ -553,7 +554,7 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     provider_fence: Some(lease().sandbox_effect_fence(intent.effect_id()).unwrap()),
                     intent,
                     authorization:
-                        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized,
+                        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
                 };
                 let adopt = host.adopt_bound_session_environment_under_lifecycle(
                     "session",

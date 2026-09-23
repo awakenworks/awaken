@@ -233,7 +233,7 @@ pub(super) fn retain_earliest_order(
 }
 
 pub(super) fn interval_close_cursor(
-    interval: &awaken_session_contract::SessionRuntimeInterval,
+    interval: &awaken_session_state_contract::SessionRuntimeInterval,
 ) -> Option<u64> {
     interval
         .observations
@@ -247,9 +247,9 @@ pub(super) fn interval_close_cursor(
 /// a later Running commit of the same resumed Run.
 pub(super) fn interval_lifecycle_open_event<'a>(
     session_id: &str,
-    interval: &awaken_session_contract::SessionRuntimeInterval,
+    interval: &awaken_session_state_contract::SessionRuntimeInterval,
     prior_close: u64,
-    batches: &[awaken_session_contract::SessionEventBatch],
+    batches: &[awaken_session_event_contract::SessionEventBatch],
     lifecycle_events: &'a [RunLifecycleEvent],
 ) -> Option<&'a RunLifecycleEvent> {
     select_interval_opening(
@@ -265,11 +265,11 @@ pub(super) fn interval_lifecycle_open_event<'a>(
 
 fn select_interval_opening<'a>(
     session_id: &str,
-    opened_revision: awaken_session_contract::SessionRevision,
+    opened_revision: awaken_session_types::SessionRevision,
     activity_epoch: u64,
-    observations: &[awaken_session_contract::SessionRuntimeIntervalObservation],
+    observations: &[awaken_session_state_contract::SessionRuntimeIntervalObservation],
     (prior_close, close): (u64, Option<u64>),
-    batches: &[awaken_session_contract::SessionEventBatch],
+    batches: &[awaken_session_event_contract::SessionEventBatch],
     lifecycle_events: &'a [RunLifecycleEvent],
 ) -> Option<&'a RunLifecycleEvent> {
     let candidates = lifecycle_events
@@ -378,8 +378,8 @@ fn lifecycle_opening_order(
 }
 
 fn interval_owner_openings(
-    opened_revision: awaken_session_contract::SessionRevision,
-    batches: &[awaken_session_contract::SessionEventBatch],
+    opened_revision: awaken_session_types::SessionRevision,
+    batches: &[awaken_session_event_contract::SessionEventBatch],
 ) -> Vec<IntervalOwnerOpening<'_>> {
     let Some(owning_revision) = batches
         .iter()
@@ -407,10 +407,10 @@ fn interval_owner_openings(
             SessionEventCommand::ToolReply { reply, .. } => Some(IntervalOwnerOpening {
                 run_id: &reply.expected_run_id,
                 target: match &reply.target {
-                    awaken_session_contract::SessionThreadTarget::Primary => {
+                    awaken_session_execution_contract::SessionThreadTarget::Primary => {
                         IntervalOwnerTarget::Primary
                     }
-                    awaken_session_contract::SessionThreadTarget::Child(thread_id) => {
+                    awaken_session_execution_contract::SessionThreadTarget::Child(thread_id) => {
                         IntervalOwnerTarget::Child(thread_id)
                     }
                 },
@@ -433,9 +433,9 @@ fn interval_owner_openings(
 /// so a cold replica never mistakes an older lifecycle for the new opening.
 pub(super) fn running_interval_lifecycle_open_event<'a>(
     session_id: &str,
-    interval: &awaken_session_contract::SessionRuntimeIntervalStart,
+    interval: &awaken_session_state_contract::SessionRuntimeIntervalStart,
     prior_close: u64,
-    batches: &[awaken_session_contract::SessionEventBatch],
+    batches: &[awaken_session_event_contract::SessionEventBatch],
     lifecycle_events: &'a [RunLifecycleEvent],
 ) -> Option<&'a RunLifecycleEvent> {
     select_interval_opening(
@@ -453,8 +453,8 @@ pub(super) fn running_interval_lifecycle_open_event<'a>(
 /// budget generation. A still-open crossing has no immutable public coordinate
 /// and remains withheld until the owning interval closes.
 pub(in crate::state::events) fn budget_reach_close_cursor(
-    persisted: &awaken_session_contract::PersistedSession,
-    transition: &awaken_session_contract::BudgetReachTransition,
+    persisted: &awaken_session_state_contract::PersistedSession,
+    transition: &awaken_session_budget_contract::BudgetReachTransition,
 ) -> Option<u64> {
     persisted
         .closed_runtime_intervals
@@ -470,8 +470,8 @@ pub(in crate::state::events) fn budget_reach_close_cursor(
 /// latter boundary owns the one public Usage/Idle pair. Runs which terminate
 /// without an explicit budget Awaiting fact retain the crossing fallback.
 pub(in crate::state::events) fn budget_reach_projection_close_cursor(
-    persisted: &awaken_session_contract::PersistedSession,
-    transition: &awaken_session_contract::BudgetReachTransition,
+    persisted: &awaken_session_state_contract::PersistedSession,
+    transition: &awaken_session_budget_contract::BudgetReachTransition,
     lifecycle_events: &[RunLifecycleEvent],
 ) -> Option<u64> {
     let crossing = budget_reach_close_cursor(persisted, transition)?;
@@ -866,8 +866,9 @@ impl ManagedState {
                             && evaluation.completed_at.is_some()
                         {
                             evaluation.completed_at =
-                                time_for(persisted.session_id.as_str(), source_commit_cursor)
-                                    .map(awaken_session_contract::epoch_millis_to_rfc3339);
+                                time_for(persisted.session_id.as_str(), source_commit_cursor).map(
+                                    awaken_session_application_contract::epoch_millis_to_rfc3339,
+                                );
                         }
                         for (role, phase) in [
                             ("outcome-evaluation-start", 60),
@@ -968,7 +969,7 @@ impl ManagedState {
         // second persisted cursor or Session state.
         let parent_terminal_source = cleanup_terminal_source.or_else(|| {
             (persisted.execution
-                == awaken_session_contract::SessionExecutionState::ActivationFailed)
+                == awaken_session_state_contract::SessionExecutionState::ActivationFailed)
                 .then(|| {
                     orders
                         .values()
@@ -977,7 +978,8 @@ impl ManagedState {
                         .unwrap_or_default()
                 })
         });
-        if persisted.execution == awaken_session_contract::SessionExecutionState::ActivationFailed
+        if persisted.execution
+            == awaken_session_state_contract::SessionExecutionState::ActivationFailed
             && let Some(source_commit_cursor) = parent_terminal_source
         {
             retain_earliest_order(
@@ -1034,7 +1036,7 @@ impl ManagedState {
                 CanonicalEventOrder {
                     processed_at_unix_ms: persisted
                         .archived_at()
-                        .and_then(awaken_session_contract::rfc3339_to_epoch_millis)
+                        .and_then(awaken_session_application_contract::rfc3339_to_epoch_millis)
                         .or_else(|| time_for(persisted.session_id.as_str(), terminal_source)),
                     source_commit_cursor: terminal_source,
                     phase,
@@ -1079,7 +1081,7 @@ impl ManagedState {
                 event.processed_at = event.processed_at.or_else(|| {
                     order
                         .processed_at_unix_ms
-                        .map(awaken_session_contract::epoch_millis_to_rfc3339)
+                        .map(awaken_session_application_contract::epoch_millis_to_rfc3339)
                 });
                 durable.push((order, event));
             }
@@ -1235,11 +1237,12 @@ fn user_observation_cannot_move_the_exact_run_opening() {
     // exercises the production collection selector, not a scalar reimplementation.
     use awaken_agent_contract::agent::run::{Id as RunId, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_session_contract::{
-        SessionEventBatch, SessionEventInput, SessionEventProjectionAnchor, SessionRevision,
+    use awaken_session_event_contract::{
+        SessionEventBatch, SessionEventInput, SessionEventProjectionAnchor,
     };
+    use awaken_session_types::SessionRevision;
     let mut batch = SessionEventBatch::compile(
-        &awaken_session_contract::SessionId::from("session"),
+        &awaken_session_types::SessionId::from("session"),
         "batch",
         vec![SessionEventInput::UserMessage {
             content: vec![ContentBlock::text("explain")],

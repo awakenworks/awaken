@@ -27,7 +27,7 @@ const fn local_claimed_projection_is_ready(
 fn claimed_realization_continuation(
     slot: &crate::session_slot::SessionRuntimeSlot,
     claim: &awaken_dispatch::RunClaim,
-) -> Option<awaken_session_contract::SessionRealizationLease> {
+) -> Option<awaken_session_resource_contract::SessionRealizationLease> {
     slot.dispatch_claim
         .as_ref()
         .filter(|previous| previous.run_id == claim.run_id && previous.owner == claim.owner)
@@ -59,11 +59,13 @@ fn map_claimed_session_control_error(
 /// transition boundary keeps legacy validation and physical replay rules out of
 /// the Worker transport adapter.
 fn control_projection_matches_dispatched_manifest(
-    projection: &awaken_session_contract::FrozenSessionProjection,
-    dispatched: &awaken_session_contract::SessionResourceManifest,
-) -> Result<bool, awaken_session_contract::RunError> {
+    projection: &awaken_session_realization_contract::FrozenSessionProjection,
+    dispatched: &awaken_session_resource_contract::SessionResourceManifest,
+) -> Result<bool, awaken_session_error_contract::RunError> {
     Ok(projection
-        .resource_transition(awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects)?
+        .resource_transition(
+            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+        )?
         .desired()
         == dispatched)
 }
@@ -75,7 +77,7 @@ pub(super) async fn install_claimed_session_projection(
     host: &SharedHost,
     claimed: &awaken_dispatch::Claimed,
     thread_id: &awaken_agent_contract::agent::thread::Id,
-    dispatched_resources: Option<&awaken_session_contract::SessionResourceManifest>,
+    dispatched_resources: Option<&awaken_session_resource_contract::SessionResourceManifest>,
 ) -> Result<(), awaken_dispatch::Error> {
     let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
     let (_realization, continuation) = host
@@ -197,7 +199,7 @@ pub(super) async fn install_claimed_session_projection(
     HostWorkerResolver::drive_session_realization(
         host,
         control.as_ref(),
-        &awaken_session_contract::SessionId::from(&thread_id.0),
+        &awaken_session_types::SessionId::from(&thread_id.0),
         directive,
         Some(claimed),
         request_started,
@@ -224,7 +226,7 @@ mod tests {
             owner: "worker:incarnation".into(),
             epoch: 2,
         };
-        let lease = awaken_session_contract::SessionRealizationLease {
+        let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: "worker".into(),
             runtime_incarnation: claim.owner.clone(),
             epoch: 7,
@@ -329,10 +331,10 @@ mod tests {
         // | R3 | yes | revision mismatch | no | E2 reject |
         // | R4 | yes | resources mismatch | no | E2 reject |
         // | R5 | no | exact desired | yes | E3 error |
-        let desired = awaken_session_contract::SessionResourceManifest::at_revision(
+        let desired = awaken_session_resource_contract::SessionResourceManifest::at_revision(
             "workspace-a",
             7,
-            awaken_session_contract::ResolvedSessionResources::default(),
+            awaken_session_resource_contract::ResolvedSessionResources::default(),
         );
         let projection = frozen_projection_for_manifest(deferred_environment(), &desired);
         assert!(
@@ -341,20 +343,21 @@ mod tests {
             "R1/E1 exact desired manifest"
         );
 
-        let different_resources = awaken_session_contract::ResolvedSessionResources::try_new(
-            Vec::new(),
-            vec![awaken_session_contract::ResolvedSkillBinding {
-                kind: awaken_agent_contract::AgentSkillKind::Custom,
-                skill_id: "different-skill".into(),
-                version: 1,
-                bundle_sha256: "sha256-different".into(),
-            }],
-        )
-        .expect("R4 valid different resources");
+        let different_resources =
+            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+                Vec::new(),
+                vec![awaken_session_resource_contract::ResolvedSkillBinding {
+                    kind: awaken_agent_contract::AgentSkillKind::Custom,
+                    skill_id: "different-skill".into(),
+                    version: 1,
+                    bundle_sha256: "sha256-different".into(),
+                }],
+            )
+            .expect("R4 valid different resources");
         for (rule, carried) in [
             (
                 "R2",
-                awaken_session_contract::SessionResourceManifest::at_revision(
+                awaken_session_resource_contract::SessionResourceManifest::at_revision(
                     "workspace-b",
                     7,
                     Default::default(),
@@ -362,7 +365,7 @@ mod tests {
             ),
             (
                 "R3",
-                awaken_session_contract::SessionResourceManifest::at_revision(
+                awaken_session_resource_contract::SessionResourceManifest::at_revision(
                     "workspace-a",
                     8,
                     Default::default(),
@@ -370,7 +373,7 @@ mod tests {
             ),
             (
                 "R4",
-                awaken_session_contract::SessionResourceManifest::at_revision(
+                awaken_session_resource_contract::SessionResourceManifest::at_revision(
                     "workspace-a",
                     7,
                     different_resources,
@@ -386,12 +389,13 @@ mod tests {
 
         let mut legacy_bound = projection;
         legacy_bound.previous_resource_manifest = None;
-        legacy_bound.environment = awaken_session_contract::SessionEnvironmentState::Resident {
-            binding: "durable-environment".into(),
-            effect_id: None,
-            generation: None,
-            idle_since_unix_ms: None,
-        };
+        legacy_bound.environment =
+            awaken_session_state_contract::SessionEnvironmentState::Resident {
+                binding: "durable-environment".into(),
+                effect_id: None,
+                generation: None,
+                idle_since_unix_ms: None,
+            };
         let error = control_projection_matches_dispatched_manifest(&legacy_bound, &desired)
             .expect_err("R5 legacy bound projection cannot authorize effects");
         assert_eq!(error.code, "session_resource_transition_missing", "R5/E3");
@@ -411,44 +415,44 @@ mod tests {
         let cases = [
             (
                 "R1",
-                awaken_session_contract::SessionRealizationControlFailure::NotReady,
+                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
                 "resolution_not_ready",
             ),
             (
                 "R2 stale",
-                awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
+                awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
                 "execution",
             ),
             (
                 "R2 conflict",
-                awaken_session_contract::SessionRealizationControlFailure::Conflict,
+                awaken_session_realization_contract::SessionRealizationControlFailure::Conflict,
                 "execution",
             ),
             (
                 "R2 unavailable",
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                     "dependency".into(),
                 ),
                 "execution",
             ),
             (
                 "R3 not found",
-                awaken_session_contract::SessionRealizationControlFailure::NotFound,
+                awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
                 "terminal_resolution",
             ),
             (
                 "R3 terminal",
-                awaken_session_contract::SessionRealizationControlFailure::Terminal,
+                awaken_session_realization_contract::SessionRealizationControlFailure::Terminal,
                 "terminal_resolution",
             ),
             (
                 "R3 retired",
-                awaken_session_contract::SessionRealizationControlFailure::Retired,
+                awaken_session_realization_contract::SessionRealizationControlFailure::Retired,
                 "terminal_resolution",
             ),
             (
                 "R3 invalid",
-                awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
                     "invalid phase".into(),
                 ),
                 "terminal_resolution",

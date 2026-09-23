@@ -125,7 +125,8 @@ pub struct WorkerNodeBuilder {
     session_container_provider: Option<InstalledSessionContainerProvider>,
     environment_checkpoint_store:
         Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
-    mcp_attachment_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
+    mcp_attachment_realizer:
+        Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
@@ -594,7 +595,7 @@ impl WorkerNodeBuilder {
     #[must_use]
     pub fn with_mcp_attachment_realizer(
         mut self,
-        realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
+        realizer: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
     ) -> Self {
         self.mcp_attachment_realizer = Some(realizer);
         self
@@ -864,7 +865,8 @@ pub struct WorkerNode {
     session_container_provider: Option<InstalledSessionContainerProvider>,
     environment_checkpoint_store:
         Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
-    mcp_attachment_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
+    mcp_attachment_realizer:
+        Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,

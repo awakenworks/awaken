@@ -15,8 +15,8 @@ use awaken_executable_agent_contract::{
 use awaken_protocol_managed::ManagedState;
 use awaken_resource_contract::ResourceRegistry;
 use awaken_session_application::SessionApplication;
-use awaken_session_contract::DreamProcessStore;
-use awaken_session_contract::SessionRepository;
+use awaken_session_dream_contract::DreamProcessStore;
+use awaken_session_repository_contract::SessionRepository;
 use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
 
@@ -52,8 +52,9 @@ pub struct CoordinatorDependencies {
     /// Exact Resources MemoryStore service shared by HTTP and Dream.
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub worker_file_application: Arc<dyn awaken_resource_contract::FileApplicationService>,
-    pub worker_skill_bundles:
-        Arc<dyn awaken_session_contract::SkillBundleSource<awaken_dispatch::RunClaim>>,
+    pub worker_skill_bundles: Arc<
+        dyn awaken_session_configuration_contract::SkillBundleSource<awaken_dispatch::RunClaim>,
+    >,
     pub application_access: Arc<ApplicationAccessStore>,
     /// Explicit route-scoped browser admission for the AI SDK ingress.
     pub ai_sdk_browser_cors: crate::AiSdkBrowserCors,
@@ -85,7 +86,7 @@ pub struct CoordinatorDependencies {
     /// One stateless process-composed refresh prerequisite shared by every
     /// application consumer of rebuildable executable projections.
     pub executable_projection_refresh:
-        Option<Arc<awaken_session_contract::ExecutableProjectionRefresh>>,
+        Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
     pub environments: Arc<EnvironmentExecutionApplication>,
     pub sessions: Arc<dyn SessionRepository>,
     pub default_workspace: String,

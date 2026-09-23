@@ -5,7 +5,7 @@ use super::realization_control_deadline::{
 };
 use super::{RenewalFailureDisposition, realization_renewal_failure_disposition};
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
-use awaken_session_contract::SessionRealizationControl as _;
+use awaken_session_realization_contract::SessionRealizationControl as _;
 use futures_util::stream::{self, StreamExt};
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize =
 pub(super) struct ResourcePreparation<'a> {
     host: &'a crate::SharedHost,
     session: &'a str,
-    asserted: awaken_session_contract::SessionRealizationLease,
+    asserted: awaken_session_resource_contract::SessionRealizationLease,
     cancellation: Arc<awaken_runtime_contract::CancellationToken>,
     introduced_lease: bool,
 }
@@ -30,7 +30,7 @@ impl<'a> ResourcePreparation<'a> {
     pub(super) fn begin(
         host: &'a crate::SharedHost,
         session: &'a str,
-        proof: awaken_session_contract::ObservedSessionRealizationLease,
+        proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> Result<Self, crate::HostError> {
         let asserted = proof.lease.clone();
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
@@ -143,7 +143,7 @@ impl Drop for ResourcePreparation<'_> {
                 slot.resource_preparation = None;
                 if self.introduced_lease
                     && slot.realization_authority.lease().is_some_and(|current| {
-                        awaken_session_contract::realization_lease_generation_authorizes(
+                        awaken_session_realization_contract::realization_lease_generation_authorizes(
                             current,
                             &self.asserted,
                         )
@@ -163,7 +163,7 @@ impl crate::SharedHost {
         &self,
         control: &DeadlineSessionRealizationControl<'_>,
         session_id: String,
-        lease: awaken_session_contract::SessionRealizationLease,
+        lease: awaken_session_resource_contract::SessionRealizationLease,
         requested_expiry_unix_ms: u64,
     ) -> Result<bool, crate::HostError> {
         // Cause/effect decision table: C1 this lease was selected by the due-only
@@ -198,7 +198,7 @@ impl crate::SharedHost {
             return Ok(false);
         };
         let renewal: Result<
-            awaken_session_contract::ObservedSessionRealizationLease,
+            awaken_session_realization_contract::ObservedSessionRealizationLease,
             (crate::HostError, bool),
         > = async {
             let control_failure = |error| {
@@ -209,11 +209,13 @@ impl crate::SharedHost {
             let request_started = awaken_local_process::authority_proof_started()
                 .map_err(|error| (crate::HostError::internal(error.to_string()), true))?;
             match control
-                .renew_session_realization(awaken_session_contract::RenewSessionRealization {
-                    session_id: awaken_session_contract::SessionId::from(&session_id),
-                    asserted_lease: lease.clone(),
-                    requested_expires_at_unix_ms: requested_expiry_unix_ms,
-                })
+                .renew_session_realization(
+                    awaken_session_realization_contract::RenewSessionRealization {
+                        session_id: awaken_session_types::SessionId::from(&session_id),
+                        asserted_lease: lease.clone(),
+                        requested_expires_at_unix_ms: requested_expiry_unix_ms,
+                    },
+                )
                 .await
             {
                 Ok(renewed_lease) => Ok(renewed_lease.observed(request_started)),
@@ -315,9 +317,9 @@ impl crate::SharedHost {
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
         self.renew_session_realization_projections(
-            self.session_control
-                .as_deref()
-                .map(|control| control as &dyn awaken_session_contract::SessionRealizationControl),
+            self.session_control.as_deref().map(|control| {
+                control as &dyn awaken_session_realization_contract::SessionRealizationControl
+            }),
             None,
             timing,
         )
@@ -326,7 +328,7 @@ impl crate::SharedHost {
 
     pub(crate) async fn renew_session_realization_projections(
         &self,
-        control: Option<&dyn awaken_session_contract::SessionRealizationControl>,
+        control: Option<&dyn awaken_session_realization_contract::SessionRealizationControl>,
         owner: Option<(&str, &str)>,
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
@@ -370,7 +372,7 @@ impl crate::SharedHost {
 
     async fn renew_due_session_projection_leases(
         &self,
-        control: Option<&dyn awaken_session_contract::SessionRealizationControl>,
+        control: Option<&dyn awaken_session_realization_contract::SessionRealizationControl>,
         owner: Option<(&str, &str)>,
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
@@ -402,12 +404,12 @@ impl crate::SharedHost {
         // lane owns cold claim-next recovery and complete effect execution.
         let order = |left: &(
             String,
-            awaken_session_contract::SessionRealizationLease,
+            awaken_session_resource_contract::SessionRealizationLease,
             std::time::Duration,
         ),
                      right: &(
             String,
-            awaken_session_contract::SessionRealizationLease,
+            awaken_session_resource_contract::SessionRealizationLease,
             std::time::Duration,
         )| { left.2.cmp(&right.2).then_with(|| left.0.cmp(&right.0)) };
         due.sort_by(order);

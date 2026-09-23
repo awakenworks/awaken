@@ -8,7 +8,7 @@
 //! outbound wire encoding.
 //!
 //! It also owns [`ExtMcpProbe`] (the
-//! `awaken_session_contract::McpProbe` port the `mcp_oauth_validate` route
+//! `awaken_session_configuration_contract::McpProbe` port the `mcp_oauth_validate` route
 //! drives — a connect + `initialize` handshake as the live credential check).
 
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use awaken_ext_mcp::McpToolTransport;
 use awaken_ext_mcp::{Credential, CredentialRefresher, HttpTransportBuilder, McpRequestTrace};
 use awaken_ext_skills::SkillRegistry as _;
 use awaken_runtime_contract::plugin::Plugin;
-use awaken_session_contract::{McpProbe, McpProbeStatus, ProbeHttpResponse};
+use awaken_session_configuration_contract::{McpProbe, McpProbeStatus, ProbeHttpResponse};
 
 use crate::host::HostError;
 
@@ -90,9 +90,9 @@ impl McpTransportMaterial {
 /// workload-held credential crosses only the process-local ACP Session field.
 pub(crate) fn project_mcp_session_transport(
     prepared: &McpTransportMaterial,
-    request: &awaken_session_contract::StageMcpAttachment,
+    request: &awaken_session_mcp_contract::StageMcpAttachment,
     relay: Option<&crate::mcp_relay::McpRelay>,
-    receipt: &awaken_session_contract::McpRealizationReceipt,
+    receipt: &awaken_session_mcp_contract::McpRealizationReceipt,
     adapter: &awaken_run_executor_acp::AcpCli,
 ) -> Result<awaken_run_executor_acp::SessionMcpServer, HostError> {
     let generation = &request.generation;
@@ -239,7 +239,7 @@ pub(crate) fn project_mcp_session_transport(
 pub(crate) struct McpRefreshMaterial(pub(crate) Arc<dyn CredentialRefresher>);
 
 /// The live MCP credential probe (ADR-0043), implementing the
-/// [`awaken_session_contract::McpProbe`] port over `awaken-ext-mcp`: connect +
+/// [`awaken_session_configuration_contract::McpProbe`] port over `awaken-ext-mcp`: connect +
 /// MCP `initialize` handshake + `tools/list` with the materialized bearer.
 /// Completion → `Valid`; a final auth challenge (401/403) → `Invalid` with the
 /// HTTP status; anything else (unreachable, protocol or server error, timeout)
@@ -261,8 +261,8 @@ impl McpProbe for ExtMcpProbe {
         &self,
         url: &str,
         bearer: Option<&RedactedString>,
-    ) -> awaken_session_contract::McpInspection {
-        use awaken_session_contract::{McpInspection, McpProbeFailure, McpProbeTool};
+    ) -> awaken_session_configuration_contract::McpInspection {
+        use awaken_session_configuration_contract::{McpInspection, McpProbeFailure, McpProbeTool};
         let trace = Arc::new(McpRequestTrace::new());
         let mut builder =
             HttpTransportBuilder::new(url.to_string()).request_trace(Arc::clone(&trace));
@@ -363,7 +363,7 @@ impl crate::SharedHost {
 
     pub(crate) fn mcp_projection(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Option<crate::session_slot::McpGenerationProjection> {
         self.session_slots
             .read(generation.session_id.as_str(), |slot| {
@@ -405,7 +405,7 @@ impl crate::SharedHost {
     /// exact-generation owner before any further fallible await.
     pub(crate) fn attach_staging_mcp_process(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
         process: Arc<dyn awaken_provisioning_contract::ProcessHandle>,
     ) -> Result<bool, HostError> {
         self.session_slots
@@ -439,7 +439,7 @@ impl crate::SharedHost {
     /// remains the separate `Staged -> Active` transition.
     pub(crate) fn complete_staging_mcp_projection(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
         wiring: crate::mcp::McpWiring,
     ) -> Result<(), HostError> {
         self.session_slots
@@ -477,8 +477,8 @@ impl crate::SharedHost {
     /// first stage effect is in flight and republishes its longer exact fence.
     pub(crate) fn renew_mcp_projection(
         &self,
-        request: &awaken_session_contract::StageMcpAttachment,
-    ) -> Result<Option<awaken_session_contract::McpRealizationReceipt>, HostError> {
+        request: &awaken_session_mcp_contract::StageMcpAttachment,
+    ) -> Result<Option<awaken_session_mcp_contract::McpRealizationReceipt>, HostError> {
         let binding = request.renewal_binding_fingerprint();
         self.session_slots
             .update(request.generation.session_id.as_str(), |slot| {
@@ -513,7 +513,7 @@ impl crate::SharedHost {
                         "MCP lease renewal conflicts with the staged realization",
                     ));
                 }
-                let receipt = awaken_session_contract::McpRealizationReceipt {
+                let receipt = awaken_session_mcp_contract::McpRealizationReceipt {
                     generation: request.generation.clone(),
                     realization_id: request.realization_id.clone(),
                     selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -535,7 +535,7 @@ impl crate::SharedHost {
     /// checked current ownership; removing a tombstone grants no staged receipt.
     pub(crate) fn forget_replayable_removed_mcp_projection(
         &self,
-        request: &awaken_session_contract::StageMcpAttachment,
+        request: &awaken_session_mcp_contract::StageMcpAttachment,
     ) -> bool {
         let request_fingerprint = request.fingerprint();
         let renewal_binding = request.renewal_binding_fingerprint();
@@ -563,7 +563,7 @@ impl crate::SharedHost {
 
     pub(crate) async fn publish_mcp_projection(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Result<(), HostError> {
         if !self
             .session_slots
@@ -668,7 +668,7 @@ impl crate::SharedHost {
 
     pub(crate) async fn drain_mcp_projection(
         &self,
-        generation: &awaken_session_contract::McpGenerationRef,
+        generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Result<(), HostError> {
         let Some(drain) = self
             .session_slots
@@ -865,7 +865,7 @@ impl crate::SharedHost {
     pub(crate) async fn drain_mcp_projections(
         &self,
         thread: &str,
-        expected: &[awaken_session_contract::McpGenerationRef],
+        expected: &[awaken_session_mcp_contract::McpGenerationRef],
     ) -> Result<McpQuiescenceProof, HostError> {
         let mut targets = Vec::with_capacity(expected.len());
         for generation in expected {
@@ -932,7 +932,7 @@ impl crate::SharedHost {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct McpQuiescenceProof {
-    pub generations: Vec<awaken_session_contract::McpGenerationRef>,
+    pub generations: Vec<awaken_session_mcp_contract::McpGenerationRef>,
 }
 
 impl McpWiring {
@@ -1104,13 +1104,13 @@ mod acp_projection_tests {
         }
     }
 
-    fn generation() -> awaken_session_contract::McpGenerationRef {
-        awaken_session_contract::McpGenerationRef {
+    fn generation() -> awaken_session_mcp_contract::McpGenerationRef {
+        awaken_session_mcp_contract::McpGenerationRef {
             session_id: "t1".into(),
-            generation: awaken_session_contract::McpGeneration::of_bare_target(
-                awaken_session_contract::McpAttachmentId("mcp-gh".into()),
+            generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+                awaken_session_mcp_contract::McpAttachmentId("mcp-gh".into()),
                 3,
-                &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
                     .unwrap(),
             ),
             runtime_incarnation: "runtime-1".into(),
@@ -1121,15 +1121,15 @@ mod acp_projection_tests {
 
     fn request(
         boundary: awaken_runtime_contract::PlaintextBoundary,
-    ) -> awaken_session_contract::StageMcpAttachment {
+    ) -> awaken_session_mcp_contract::StageMcpAttachment {
         let holder = awaken_runtime_contract::PlaintextHolder::new(boundary, "test-holder");
-        awaken_session_contract::StageMcpAttachment {
+        awaken_session_mcp_contract::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation(),
             realization_id: "realize-gh".into(),
             stage_idempotency_key: "stage-gh".into(),
             name: "gh".into(),
-            target: awaken_session_contract::McpTarget::parse_http("https://mcp.gh").unwrap(),
+            target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.gh").unwrap(),
             prompts_as_skills: false,
             credential: Some(awaken_credential_contract::CredentialAccess::new(
                 awaken_credential_contract::CredentialRef {
@@ -1151,10 +1151,10 @@ mod acp_projection_tests {
     }
 
     fn receipt(
-        request: &awaken_session_contract::StageMcpAttachment,
+        request: &awaken_session_mcp_contract::StageMcpAttachment,
         realization: awaken_runtime_contract::CredentialRealizationKind,
-    ) -> awaken_session_contract::McpRealizationReceipt {
-        awaken_session_contract::McpRealizationReceipt {
+    ) -> awaken_session_mcp_contract::McpRealizationReceipt {
+        awaken_session_mcp_contract::McpRealizationReceipt {
             generation: request.generation.clone(),
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -1164,9 +1164,9 @@ mod acp_projection_tests {
     }
 
     fn legacy_receipt(
-        request: &awaken_session_contract::StageMcpAttachment,
-    ) -> awaken_session_contract::McpRealizationReceipt {
-        awaken_session_contract::McpRealizationReceipt {
+        request: &awaken_session_mcp_contract::StageMcpAttachment,
+    ) -> awaken_session_mcp_contract::McpRealizationReceipt {
+        awaken_session_mcp_contract::McpRealizationReceipt {
             generation: request.generation.clone(),
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -1325,7 +1325,7 @@ mod acp_projection_tests {
         };
         let mut request = request(awaken_runtime_contract::PlaintextBoundary::Worker);
         request.name = "playwright".into();
-        request.target = awaken_session_contract::McpTarget::sandbox_stdio(
+        request.target = awaken_session_mcp_contract::McpTarget::sandbox_stdio(
             "playwright-mcp",
             vec!["--headless".into()],
         )

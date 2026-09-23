@@ -12,6 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
+use awaken_agent_contract::stable_fingerprint;
 use awaken_ext_background_task::{
     BackgroundTask, BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId,
     BackgroundTaskLifecycle, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait,
@@ -25,7 +26,8 @@ use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
 use awaken_runtime_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, ToolTaskStart};
-use awaken_session_contract::{RunErrorKind, SessionRunBackgroundApplication, stable_fingerprint};
+use awaken_session_application_contract::SessionRunBackgroundApplication;
+use awaken_session_error_contract::RunErrorKind;
 
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::store::CommittedAuthority;
@@ -895,7 +897,7 @@ mod tests {
             agent: Option<String>,
             messages: Vec<Message>,
             traceparent: Option<String>,
-        ) -> Result<RunId, awaken_session_contract::RunApplicationError> {
+        ) -> Result<RunId, awaken_session_application_contract::RunApplicationError> {
             self.calls
                 .lock()
                 .expect("attention calls mutex poisoned")
@@ -907,7 +909,7 @@ mod tests {
                     traceparent,
                 });
             if self.definitive_rejection {
-                return Err(awaken_session_contract::RunError::bad_request(
+                return Err(awaken_session_error_contract::RunError::bad_request(
                     "definitive test rejection",
                 ));
             }
@@ -918,12 +920,12 @@ mod tests {
                 })
                 .is_ok()
             {
-                return Err(awaken_session_contract::RunError::unavailable(
+                return Err(awaken_session_error_contract::RunError::unavailable(
                     "transient test failure",
                 ));
             }
-            Ok(awaken_session_contract::session_run_id(
-                &awaken_session_contract::SessionId::from(thread),
+            Ok(awaken_session_execution_contract::session_run_id(
+                &awaken_session_types::SessionId::from(thread),
                 operation_id,
             ))
         }

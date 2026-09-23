@@ -123,7 +123,7 @@ impl SharedHost {
     /// response loss, Worker settlement, process restart, and projection lag.
     pub(super) async fn session_thread_tool_reply_receipt(
         &self,
-        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<SessionReplyReceipt, HostError> {
         if command.session_id.as_str().trim().is_empty()
             || command.expected_run_id.0.trim().is_empty()

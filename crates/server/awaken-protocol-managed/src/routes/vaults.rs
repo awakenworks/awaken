@@ -84,8 +84,8 @@ mod credential_material_ingress;
 
 fn application_mcp_target_fingerprint(
     url: &str,
-) -> Result<String, awaken_session_contract::McpTargetError> {
-    let identity = awaken_session_contract::McpTarget::identity(url)?;
+) -> Result<String, awaken_session_mcp_contract::McpTargetError> {
+    let identity = awaken_session_mcp_contract::McpTarget::identity(url)?;
     let port = identity.port.map(|port| port.to_string());
     Ok(sha256_identity(
         "application-mcp-normalized-target-v1",
@@ -107,7 +107,7 @@ fn application_mcp_target_fingerprint(
 fn mcp_credential_descriptor(
     url: &str,
 ) -> Result<(CredentialDescriptor, String), awaken_credential_vault::CredentialError> {
-    let identity = awaken_session_contract::McpTarget::identity(url).map_err(|_| {
+    let identity = awaken_session_mcp_contract::McpTarget::identity(url).map_err(|_| {
         awaken_credential_vault::CredentialError::InvalidSource(
             "MCP credential target must be an absolute HTTP(S) URL".into(),
         )
@@ -166,7 +166,7 @@ fn apply_metadata_patch(
     }
 }
 
-pub(crate) use awaken_session_contract::{McpProbe, McpProbeStatus};
+pub(crate) use awaken_session_configuration_contract::{McpProbe, McpProbeStatus};
 
 // ---- State ------------------------------------------------------------------
 
@@ -207,7 +207,8 @@ pub struct VaultState {
     /// The OAuth refresh exchange the validate route attempts when the probe
     /// is refused and the credential holds a refresh token. `None` reports no
     /// attempt (`refresh: null`), never a fabricated outcome.
-    refresh_exchange: Option<Arc<dyn awaken_session_contract::CredentialRefreshExchange>>,
+    refresh_exchange:
+        Option<Arc<dyn awaken_session_configuration_contract::CredentialRefreshExchange>>,
     material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
     rollout_target:
         RwLock<Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>>,
@@ -256,7 +257,7 @@ impl VaultState {
     /// The owner clock as the RFC 3339 wire/persistence instant.
     fn now_rfc3339(&self) -> Result<String, awaken_credential_vault::CredentialError> {
         self.now_unix_ms()
-            .map(awaken_session_contract::epoch_millis_to_rfc3339)
+            .map(awaken_session_application_contract::epoch_millis_to_rfc3339)
     }
 
     /// Install the service-owned rolling replacement edge after process
@@ -548,7 +549,7 @@ impl VaultState {
     #[must_use]
     pub fn with_refresh_exchange(
         mut self,
-        exchange: Arc<dyn awaken_session_contract::CredentialRefreshExchange>,
+        exchange: Arc<dyn awaken_session_configuration_contract::CredentialRefreshExchange>,
     ) -> Self {
         self.refresh_exchange = Some(exchange);
         self
@@ -622,7 +623,7 @@ impl VaultState {
         vault_ids: &[String],
         url: &str,
     ) -> Result<Option<CredentialSourceId>, awaken_credential_vault::CredentialError> {
-        let Ok(requested) = awaken_session_contract::McpTarget::identity(url) else {
+        let Ok(requested) = awaken_session_mcp_contract::McpTarget::identity(url) else {
             return Ok(None);
         };
         for vault_id in vault_ids {
@@ -644,7 +645,7 @@ impl VaultState {
                 .filter(|credential| credential.lifecycle.is_active())
                 .find(|credential| {
                     auth_mcp_server_url(&credential.auth)
-                        .and_then(|url| awaken_session_contract::McpTarget::identity(url).ok())
+                        .and_then(|url| awaken_session_mcp_contract::McpTarget::identity(url).ok())
                         .is_some_and(|candidate| candidate == requested)
                 })
             {
@@ -754,7 +755,7 @@ impl VaultState {
                 ));
             }
         };
-        let target = awaken_session_contract::McpTarget::parse_http(&url).map_err(|_| {
+        let target = awaken_session_mcp_contract::McpTarget::parse_http(&url).map_err(|_| {
             awaken_credential_vault::CredentialError::InvalidSource(
                 "MCP credential target is invalid".into(),
             )
@@ -770,7 +771,7 @@ impl VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: Option<&str>,
-        target: &awaken_session_contract::McpTarget,
+        target: &awaken_session_mcp_contract::McpTarget,
         selected_holder: &awaken_credential_contract::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<
@@ -786,7 +787,7 @@ impl VaultState {
                 "MCP credentials require an HTTP target".into(),
             )
         })?;
-        let target_audience = awaken_session_contract::McpTarget::identity(target_url)
+        let target_audience = awaken_session_mcp_contract::McpTarget::identity(target_url)
             .map_err(|_| {
                 awaken_credential_vault::CredentialError::InvalidSource(
                     "MCP credential target is invalid".into(),
@@ -928,7 +929,7 @@ impl SessionCredentialSource for VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
-        target: &awaken_session_contract::McpTarget,
+        target: &awaken_session_mcp_contract::McpTarget,
         selected_holder: &awaken_credential_contract::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {

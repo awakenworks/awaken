@@ -55,7 +55,9 @@ fn managed_client_tool(value: &Value) -> Result<Option<ToolDescriptor>, String> 
     )))
 }
 
-fn managed_toolset(value: &Value) -> Result<Option<awaken_session_contract::AgentTool>, String> {
+fn managed_toolset(
+    value: &Value,
+) -> Result<Option<awaken_session_configuration_contract::AgentTool>, String> {
     match value.get("type").and_then(Value::as_str) {
         Some("agent_toolset_20260401" | "mcp_toolset") => serde_json::from_value(value.clone())
             .map(Some)
@@ -252,7 +254,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    awaken_session_contract::validate_agent_tools(&authored_toolsets)?;
+    awaken_session_configuration_contract::validate_agent_tools(&authored_toolsets)?;
     let config = AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
@@ -267,7 +269,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         model_binding,
         inference,
         tool_ids: tools.iter().filter_map(managed_tool_id).collect(),
-        toolsets: awaken_session_contract::toolset_policies(&authored_toolsets),
+        toolsets: awaken_session_configuration_contract::toolset_policies(&authored_toolsets),
         client_tools,
         plugin_ids: array("plugins")
             .iter()
@@ -439,7 +441,7 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         .map(|id| Value::String(id.clone()))
         .collect::<Vec<_>>();
     tools.extend(
-        awaken_session_contract::resolved_toolsets(&config.toolsets)
+        awaken_session_configuration_contract::resolved_toolsets(&config.toolsets)
             .into_iter()
             .map(|tool| serde_json::to_value(tool).expect("AgentTool serializes")),
     );

@@ -5,12 +5,12 @@
 //! revocation selection compares, so a removed/recreated slot is automatically
 //! a replaced registration. This adapter only feeds that identity and its
 //! acquired owner to the contract-owned kernel and constructor
-//! (`awaken_session_contract::SessionRealizationPermit`); it is not another
+//! (`awaken_session_realization_contract::SessionRealizationPermit`); it is not another
 //! lock, generation counter, registry, admission rule, or durable authority.
 
 use std::sync::Arc;
 
-use awaken_session_contract::SessionRealizationPermit;
+use awaken_session_realization_contract::SessionRealizationPermit;
 
 use super::{SessionRuntimeSlot, SessionRuntimeSlots};
 
@@ -26,7 +26,7 @@ impl SessionRuntimeSlots {
     ) -> (SessionRealizationPermit, R) {
         let slots = self;
         SessionRealizationPermit::acquire(
-            &awaken_session_contract::SessionId::from(session),
+            &awaken_session_types::SessionId::from(session),
             move || {
                 let identity: Arc<tokio::sync::Mutex<()>> =
                     slots.update(session, |slot| slot.realization.clone());

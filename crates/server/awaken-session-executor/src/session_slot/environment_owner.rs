@@ -7,7 +7,7 @@ use std::sync::Arc;
 /// historical rows and non-Managed direct Threads remain explicit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LegacyDirectEnvironmentProvenance {
-    Direct(awaken_session_contract::SessionEnvironmentReceipt),
+    Direct(awaken_session_state_contract::SessionEnvironmentReceipt),
     DurableBinding {
         binding: String,
         effect: LegacyEnvironmentEffect,
@@ -24,7 +24,7 @@ pub(crate) enum LegacyEnvironmentEffect {
 pub(crate) enum BoundSessionEnvironmentIdentity {
     Durable {
         effect_id: String,
-        generation: awaken_session_contract::SandboxGeneration,
+        generation: awaken_session_state_contract::SandboxGeneration,
     },
     LegacyDirect(LegacyDirectEnvironmentProvenance),
 }
@@ -44,16 +44,18 @@ impl UnboundSessionEnvironment {
             && self.environment.handle() == other.environment.handle()
     }
 
-    pub(crate) fn effect_kind(&self) -> awaken_session_contract::SessionEnvironmentEffectKind {
+    pub(crate) fn effect_kind(
+        &self,
+    ) -> awaken_session_state_contract::SessionEnvironmentEffectKind {
         match &self.origin {
             UnboundSessionEnvironmentOrigin::New
             | UnboundSessionEnvironmentOrigin::DurableCreate(_) => {
-                awaken_session_contract::SessionEnvironmentEffectKind::Create
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Create
             }
             UnboundSessionEnvironmentOrigin::Adoption
             | UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
             | UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
-                awaken_session_contract::SessionEnvironmentEffectKind::Adopt
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
             }
         }
     }
@@ -61,7 +63,7 @@ impl UnboundSessionEnvironment {
     pub(crate) fn source_binding(&self) -> Option<&str> {
         matches!(
             self.effect_kind(),
-            awaken_session_contract::SessionEnvironmentEffectKind::Adopt
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
         )
         .then_some(self.binding.as_str())
     }
@@ -140,7 +142,7 @@ pub(crate) enum SessionEnvironmentPreparation {
 #[derive(Clone)]
 pub(crate) enum SessionEnvironmentRestoration {
     Awaiting {
-        request: awaken_session_contract::SandboxRestoreRequest,
+        request: awaken_session_state_contract::SandboxRestoreRequest,
     },
 }
 
@@ -153,8 +155,8 @@ pub(crate) enum SessionEnvironmentRetirementCause {
         effect_id: String,
     },
     CheckpointSource {
-        operation: awaken_session_contract::SessionEnvironmentOperation,
-        generation: awaken_session_contract::SandboxGeneration,
+        operation: awaken_session_state_contract::SessionEnvironmentOperation,
+        generation: awaken_session_state_contract::SandboxGeneration,
     },
 }
 

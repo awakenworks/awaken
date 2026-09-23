@@ -44,21 +44,21 @@ pub(super) struct ClaimedRunActivityReq {
     session_id: String,
     agent_id: String,
     run_id: RunId,
-    mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+    mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
 }
 
 #[derive(Deserialize)]
 pub(super) struct ClaimedSessionMessageReq {
     claim: RunClaim,
     identity: WorkerIdentity,
-    command: awaken_session_contract::SessionAgentMessageCommand,
+    command: awaken_session_execution_contract::SessionAgentMessageCommand,
 }
 
 #[derive(Deserialize)]
 pub(super) struct ClaimedSessionBoundaryReq {
     claim: RunClaim,
     identity: WorkerIdentity,
-    command: awaken_session_contract::SessionAgentBoundaryCommand,
+    command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
 }
 
 async fn claimed_session_authority(
@@ -125,7 +125,8 @@ fn require_primary_session_claim(
 
 fn session_coordination(
     service: &WorkerDispatchService,
-) -> Result<&Arc<dyn awaken_session_contract::SessionAgentCoordination>, RealizationHttpError> {
+) -> Result<&Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>, RealizationHttpError>
+{
     service.session_coordination.as_ref().ok_or_else(|| {
         RealizationHttpError::from(HostError::internal(
             "Session coordination control is not configured",
@@ -134,15 +135,19 @@ fn session_coordination(
 }
 
 fn coordination_failure(
-    error: awaken_session_contract::RunError,
-) -> awaken_session_contract::SessionRealizationControlFailure {
+    error: awaken_session_error_contract::RunError,
+) -> awaken_session_realization_contract::SessionRealizationControlFailure {
     match error.kind {
-        awaken_session_contract::RunErrorKind::BadRequest => {
-            awaken_session_contract::SessionRealizationControlFailure::Invalid(error.message)
+        awaken_session_error_contract::RunErrorKind::BadRequest => {
+            awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                error.message,
+            )
         }
-        awaken_session_contract::RunErrorKind::Internal
-        | awaken_session_contract::RunErrorKind::Unavailable => {
-            awaken_session_contract::SessionRealizationControlFailure::Unavailable(error.message)
+        awaken_session_error_contract::RunErrorKind::Internal
+        | awaken_session_error_contract::RunErrorKind::Unavailable => {
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                error.message,
+            )
         }
     }
 }
@@ -164,9 +169,7 @@ pub(super) async fn session_agents_list(
         require_primary_session_claim(&guard)?;
         drop(guard);
         let agents = session_coordination(&service)?
-            .list_session_agents(&awaken_session_contract::SessionId::from(
-                request.session_id,
-            ))
+            .list_session_agents(&awaken_session_types::SessionId::from(request.session_id))
             .await
             .map_err(coordination_failure)?;
         Ok(json!({ "agents": agents }))
@@ -202,7 +205,7 @@ pub(super) async fn session_model_request_admit(
         // reconciliation so a superseded Worker cannot spend another request.
         let admitted = session_coordination(&service)?
             .admit_session_model_request(
-                &awaken_session_contract::SessionId::from(request.session_id),
+                &awaken_session_types::SessionId::from(request.session_id),
                 &request.thread_id,
                 &request.run_id,
             )
@@ -242,9 +245,9 @@ pub(super) async fn session_run_activity_admit(
             })?;
         let dispatch = guard.request();
         let expected_mode = if guard.cancellation_requested() {
-            awaken_session_contract::SessionRunActivityAdmissionMode::RecoverOnly
+            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOnly
         } else {
-            awaken_session_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit
+            awaken_session_execution_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit
         };
         if !guard.is_live_at(authority.now_ms)
             || request.run_id != request.claim.run_id
@@ -266,7 +269,7 @@ pub(super) async fn session_run_activity_admit(
         // resolution transaction.
         let admission = session_coordination(&service)?
             .admit_session_run_activity(
-                &awaken_session_contract::SessionId::from(request.session_id),
+                &awaken_session_types::SessionId::from(request.session_id),
                 &request.agent_id,
                 &request.run_id,
                 request.mode,

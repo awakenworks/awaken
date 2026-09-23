@@ -18,7 +18,7 @@ impl ProjectionRefreshCandidate {
         base_cache_revision: u64,
         mut record: SessionRecord,
         previous_event_ids: HashSet<String>,
-        session_revision: awaken_session_contract::SessionRevision,
+        session_revision: awaken_session_types::SessionRevision,
         root: Option<&RunRecoverySnapshot>,
         children: &HashMap<String, RunRecoverySnapshot>,
     ) -> Self {
@@ -62,13 +62,13 @@ fn install_complete_projection<T>(current: &mut T, candidate: T) {
 }
 
 struct ObservedProjectionThreadPrefix<C> {
-    session_revision: awaken_session_contract::SessionRevision,
+    session_revision: awaken_session_types::SessionRevision,
     root_thread_version: u64,
     child_thread_versions: C,
 }
 
 fn apply_observed_thread_prefix<C>(
-    session_revision: &mut awaken_session_contract::SessionRevision,
+    session_revision: &mut awaken_session_types::SessionRevision,
     root_thread_version: &mut u64,
     child_thread_versions: &mut C,
     observed: ObservedProjectionThreadPrefix<C>,
@@ -80,7 +80,7 @@ fn apply_observed_thread_prefix<C>(
 
 fn stamp_source(
     candidate: &mut SessionRecord,
-    session_revision: awaken_session_contract::SessionRevision,
+    session_revision: awaken_session_types::SessionRevision,
     root: Option<&RunRecoverySnapshot>,
     children: &HashMap<String, RunRecoverySnapshot>,
 ) {
@@ -281,11 +281,11 @@ fn projection_source_stamp_is_exact_for_the_complete_observed_thread_prefix() {
     // C2 one complete observed prefix supplies arbitrary replacement values.
     // Effect: E1 all three source dimensions become exactly C2 in one call;
     // unrelated lifecycle/budget coordinates are not inputs and cannot change.
-    let mut session_revision = awaken_session_contract::SessionRevision(kani::any());
+    let mut session_revision = awaken_session_types::SessionRevision(kani::any());
     let mut root_thread_version = kani::any();
     let mut child_thread_versions = [kani::any::<u64>(), kani::any::<u64>()];
     let observed = ObservedProjectionThreadPrefix {
-        session_revision: awaken_session_contract::SessionRevision(kani::any()),
+        session_revision: awaken_session_types::SessionRevision(kani::any()),
         root_thread_version: kani::any(),
         child_thread_versions: [kani::any::<u64>(), kani::any::<u64>()],
     };
@@ -342,7 +342,7 @@ mod tests {
         // replaces every C1 coordinate together and cannot touch C2.
         // Decision rule S1=C1+C2 => E1; partial observed prefixes are
         // unrepresentable because the typed input requires every coordinate.
-        let mut session_revision = awaken_session_contract::SessionRevision(1);
+        let mut session_revision = awaken_session_types::SessionRevision(1);
         let mut root_thread_version = 2;
         let mut child_thread_versions = [Some(3), None];
         let lifecycle_cursor = 8;
@@ -352,15 +352,12 @@ mod tests {
             &mut root_thread_version,
             &mut child_thread_versions,
             ObservedProjectionThreadPrefix {
-                session_revision: awaken_session_contract::SessionRevision(5),
+                session_revision: awaken_session_types::SessionRevision(5),
                 root_thread_version: 7,
                 child_thread_versions: [None, Some(11)],
             },
         );
-        assert_eq!(
-            session_revision,
-            awaken_session_contract::SessionRevision(5)
-        );
+        assert_eq!(session_revision, awaken_session_types::SessionRevision(5));
         assert_eq!(root_thread_version, 7);
         assert_eq!(child_thread_versions, [None, Some(11)]);
         assert_eq!(lifecycle_cursor, 8, "S1/E1");

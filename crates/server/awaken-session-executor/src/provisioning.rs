@@ -89,18 +89,20 @@ fn project_memory_write_consistency(
 /// provisioning vocabulary. Admission and realization both consume this value,
 /// so a Worker cannot claim requirements different from those it materializes.
 pub(crate) fn project_environment(
-    environment: &awaken_session_contract::EnvironmentSnapshot,
+    environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
 ) -> crate::session_slot::FrozenEnvironmentRuntimeProjection {
     let network = match &environment.network {
-        awaken_session_contract::SessionNetworkPolicy::Unrestricted => {
+        awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted => {
             pc::NetworkPolicy::Unrestricted
         }
-        awaken_session_contract::SessionNetworkPolicy::Allowlist { hosts } => {
+        awaken_session_configuration_contract::SessionNetworkPolicy::Allowlist { hosts } => {
             pc::NetworkPolicy::Allowlist {
                 hosts: hosts.clone(),
             }
         }
-        awaken_session_contract::SessionNetworkPolicy::None => pc::NetworkPolicy::None,
+        awaken_session_configuration_contract::SessionNetworkPolicy::None => {
+            pc::NetworkPolicy::None
+        }
     };
     let packages = environment.prepared_image.as_ref().map_or_else(
         || pc::PackageRequirements {
@@ -163,7 +165,7 @@ pub(crate) fn model_candidates_require_opaque_process<'a>(
 #[must_use]
 pub(crate) fn frozen_session_requires_opaque_process(
     published: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    baseline: Option<&awaken_session_contract::SessionBaseline>,
+    baseline: Option<&awaken_session_configuration_contract::SessionBaseline>,
 ) -> bool {
     if let Some(publication) = baseline
         .and_then(|baseline| baseline.model_override.as_ref())
@@ -213,7 +215,7 @@ pub(crate) fn session_sandbox_projection(
 /// execution. All callers use this complete signature so no compatibility
 /// overload can omit one Session path cause.
 pub(crate) fn sandbox_requirements(
-    environment: &awaken_session_contract::EnvironmentSnapshot,
+    environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     has_repository: bool,
     opaque_process: bool,
 ) -> pc::SandboxRequirements {
@@ -231,7 +233,7 @@ pub(crate) fn sandbox_requirements(
 /// Scheduling demand projected through the same Environment overlay used for
 /// capability admission and eventual sandbox creation.
 pub(crate) fn sandbox_resource_requests(
-    environment: &awaken_session_contract::EnvironmentSnapshot,
+    environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
 ) -> pc::ResourceRequests {
     let projection = project_environment(environment);
     sandbox_spec_from_projection(
@@ -354,7 +356,7 @@ pub(crate) struct ProjectedSandboxLayout<'a> {
 /// canonical capacity identity. Keeping them in one value prevents placement,
 /// heartbeat receipts, and pool checkout from recomputing parallel identities.
 pub(crate) fn environment_capacity_projection(
-    environment: &awaken_session_contract::EnvironmentSnapshot,
+    environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     provider_enforces_network_isolation: bool,
 ) -> EnvironmentCapacityProjection {
     let projection = project_environment(environment);
@@ -458,7 +460,7 @@ pub(crate) enum ResourceBindingCheck {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RepositoryActivation {
     pub plan: pc::RepositoryRealizationPlan,
-    pub credential_pin: Option<awaken_session_contract::ResolvedRepositoryCredential>,
+    pub credential_pin: Option<awaken_session_resource_contract::ResolvedRepositoryCredential>,
 }
 
 fn repository_http_basic_credential(
@@ -536,7 +538,7 @@ impl SharedHost {
                         transition.desired().resources.inputs().iter().any(|input| {
                             matches!(
                                 input.source,
-                                awaken_session_contract::ResolvedInputSource::Repository { .. }
+                                awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
                             )
                         })
                     });
@@ -585,7 +587,7 @@ impl SharedHost {
     pub(crate) fn sandbox_spec_for_resolved_resources_and_provider(
         &self,
         thread: &str,
-        resources: &awaken_session_contract::ResolvedSessionResources,
+        resources: &awaken_session_resource_contract::ResolvedSessionResources,
         provider: &crate::session_environment::SessionEnvironmentProvider,
     ) -> pc::SandboxSpec {
         let environment = self
@@ -606,7 +608,7 @@ impl SharedHost {
         let has_repositories = resources.inputs().iter().any(|input| {
             matches!(
                 input.source,
-                awaken_session_contract::ResolvedInputSource::Repository { .. }
+                awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
             )
         });
         self.sandbox_spec_for_mount_layout_with_network(
@@ -731,7 +733,7 @@ impl SharedHost {
     pub(crate) fn register_thread_resource_manifest(
         &self,
         thread: &str,
-        manifest: awaken_session_contract::SessionResourceManifest,
+        manifest: awaken_session_resource_contract::SessionResourceManifest,
     ) {
         self.session_slots
             .update(thread, |slot| slot.manifest = Some(manifest));
@@ -740,7 +742,7 @@ impl SharedHost {
     pub(crate) fn thread_resource_manifest(
         &self,
         thread: &str,
-    ) -> Option<awaken_session_contract::SessionResourceManifest> {
+    ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
         self.session_slots
             .read(thread, |slot| slot.manifest.clone())
             .flatten()
@@ -841,8 +843,8 @@ impl SharedHost {
         repository: &RepositoryActivation,
         binding_checks: &[ResourceBindingCheck],
         publication_fence: Option<&(
-            awaken_session_contract::SessionRepositoryPublicationCommand,
-            awaken_session_contract::SessionRealizationLease,
+            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_resource_contract::SessionRealizationLease,
         )>,
     ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host::HostError> {
         let pin = repository.credential_pin.as_ref();
@@ -1060,8 +1062,8 @@ impl SharedHost {
         realizer: &dyn pc::RepositoryRealizer,
         expectation: &pc::RepositoryPublicationExpectation,
         publication_fence: Option<&(
-            awaken_session_contract::SessionRepositoryPublicationCommand,
-            awaken_session_contract::SessionRealizationLease,
+            awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            awaken_session_resource_contract::SessionRealizationLease,
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
         repository.plan.validate_mount_path().map_err(|error| {
@@ -1361,7 +1363,7 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
         workspace: String,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         let recovery = awaken_resource_contract::ArtifactRecovery {
             workspace_id: workspace,

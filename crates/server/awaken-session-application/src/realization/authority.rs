@@ -61,7 +61,7 @@ impl<'a> TerminalCleanupClaimScope<'a> {
 pub(crate) fn terminal_cleanup_worker_requirements(
     owner_scope: &str,
     session: &PersistedSession,
-    action: &awaken_session_contract::SessionTerminalCleanupAction,
+    action: &awaken_session_state_contract::SessionTerminalCleanupAction,
 ) -> Result<awaken_worker_contract::PlacementRequirements, SessionRealizationControlFailure> {
     // Model credentials are irrelevant to cleanup; the physical process owner
     // is not. Preserve this requirement even after resource harvesting so the
@@ -82,7 +82,7 @@ pub(crate) fn terminal_cleanup_worker_requirements(
         };
     if matches!(
         action,
-        awaken_session_contract::SessionTerminalCleanupAction::Dispose { .. }
+        awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { .. }
     ) {
         return Ok(physical_requirements(
             awaken_worker_contract::PlacementRequirements::terminal_cleanup(false, false, None),
@@ -120,7 +120,7 @@ pub(crate) fn terminal_cleanup_worker_requirements(
     let publication_has_credential = pending_publication.is_some_and(|intent| {
         matches!(
             &intent.input.source,
-            awaken_session_contract::ResolvedInputSource::Repository { config, .. }
+            awaken_session_resource_contract::ResolvedInputSource::Repository { config, .. }
                 if config.credential_binding.is_some()
         )
     });
@@ -158,7 +158,11 @@ pub(super) fn verify_lease(
     asserted: &SessionRealizationLease,
 ) -> Result<(), SessionRealizationControlFailure> {
     if !session.realization.as_ref().is_some_and(|current| {
-        awaken_session_contract::realization_lease_authorizes(current, asserted, now_unix_ms())
+        awaken_session_realization_contract::realization_lease_authorizes(
+            current,
+            asserted,
+            now_unix_ms(),
+        )
     }) {
         return Err(SessionRealizationControlFailure::StaleOwnership);
     }
@@ -166,7 +170,7 @@ pub(super) fn verify_lease(
 }
 
 pub(super) fn exact_generation_key(generation: &McpGenerationRef) -> String {
-    awaken_session_contract::stable_fingerprint(generation)
+    awaken_agent_contract::stable_fingerprint(generation)
 }
 
 pub(super) fn generation_set_authorizes(
@@ -181,7 +185,9 @@ pub(super) fn generation_set_authorizes(
             asserted
                 .iter()
                 .position(|actual| {
-                    awaken_session_contract::realization_generation_authorizes(expected, actual)
+                    awaken_session_realization_contract::realization_generation_authorizes(
+                        expected, actual,
+                    )
                 })
                 .is_some_and(|index| matched.insert(index))
         })

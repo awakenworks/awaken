@@ -247,7 +247,7 @@ pub trait Transcoder {
 | `event/{kind,draft,record}.rs` | `audit/{kind,draft,record}.rs` | **keep**: audit's durable envelope (a *view*, not truth) |
 | `agent/{message,content,run,state,...}` | unchanged | domain value objects `AgentEvent` references |
 | `fact/`, `commit/coordinator.rs` | unchanged | `commit/staged.rs`: `assemble` shifts from hand-built events to `fold_step` view |
-| Session Step projection (legacy names removed) | `StepOutcome`, `append_step`, `fold_step` | **canonical Step vocabulary**: the Runtime port is `run()`/`resume()`. `StepOutcome` lives only in `awaken-session-contract`; the former `awaken-protocol-transport` compatibility crate was retired. Live execution vocabulary is Thread/Run/Step; only fixed external wire/adapter fields retain their published spelling. |
+| Session Step projection (legacy names removed) | `StepOutcome`, `append_step`, `fold_step` | **canonical Step vocabulary**: the Runtime port is `run()`/`resume()`. `StepOutcome` lives only in `awaken-session-application-contract`; the former `awaken-protocol-transport` compatibility crate was retired. Live execution vocabulary is Thread/Run/Step; only fixed external wire/adapter fields retain their published spelling. |
 
 ### Axis 12 — Migration sequence (each step compiles + tests green; standalone commits).
 

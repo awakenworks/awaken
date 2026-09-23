@@ -9,36 +9,44 @@ use std::sync::{Arc, OnceLock};
 
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
-#[cfg(test)]
-use awaken_session_contract::SessionExecutionState;
-use awaken_session_contract::{
-    CompleteSessionRuntime, LifecycleFactNotifier, McpAttachmentRealizer, McpTarget,
-    PersistedSession, RunError, SandboxProvisioning, SessionEnvironmentBindingSink,
-    SessionRecoveryQuarantine, SessionRepository, SessionRuntimePlacement, SessionScan,
+use awaken_session_application_contract::LifecycleFactNotifier;
+use awaken_session_configuration_contract::{SandboxProvisioning, SessionRuntimePlacement};
+use awaken_session_error_contract::RunError;
+use awaken_session_mcp_contract::McpTarget;
+use awaken_session_repository_contract::SessionRepository;
+use awaken_session_execution_contract::{
+    CompleteSessionRuntime, McpAttachmentRealizer, SessionEnvironmentBindingSink,
 };
+#[cfg(test)]
+use awaken_session_state_contract::SessionExecutionState;
+use awaken_session_state_contract::{PersistedSession, SessionRecoveryQuarantine, SessionScan};
 
 /// Drain the repository's one typed keyset index before any reconciler starts
 /// effects. The cursor is process-local loop state only: the repository remains
 /// the sole durable scheduling and row authority.
 async fn scan_all_reconcilable_sessions(
     repository: &dyn SessionRepository,
-) -> Result<SessionScan, awaken_session_contract::SessionRepositoryError> {
+) -> Result<SessionScan, awaken_session_state_contract::SessionRepositoryError> {
     let mut complete = SessionScan::default();
     let mut quarantined = std::collections::BTreeMap::new();
     let mut cursor = None;
     loop {
         let page = repository
-            .scan(awaken_session_contract::SessionScanQuery::Reconcilable {
-                after: cursor.as_ref(),
-            })
+            .scan(
+                awaken_session_state_contract::SessionScanQuery::Reconcilable {
+                    after: cursor.as_ref(),
+                },
+            )
             .await?;
         let next_cursor = page.next_cursor;
         if let (Some(current), Some(next)) = (cursor.as_ref(), next_cursor.as_ref())
             && next.session_id() <= current.session_id()
         {
-            return Err(awaken_session_contract::SessionRepositoryError::Corrupt(
-                "Session reconciliation cursor did not advance".into(),
-            ));
+            return Err(
+                awaken_session_state_contract::SessionRepositoryError::Corrupt(
+                    "Session reconciliation cursor did not advance".into(),
+                ),
+            );
         }
         complete.sessions.extend(page.sessions);
         for isolation in page.quarantined {
@@ -56,14 +64,18 @@ async fn scan_all_reconcilable_sessions(
 /// Single Session-application projection from repository policy into the Run
 /// error vocabulary. Repository callers reuse the contract-owned recovery
 /// disposition and never maintain variant lists beside this adapter.
-fn session_repository_error(error: awaken_session_contract::SessionRepositoryError) -> RunError {
-    use awaken_session_contract::{
+fn session_repository_error(
+    error: awaken_session_state_contract::SessionRepositoryError,
+) -> RunError {
+    use awaken_session_state_contract::{
         SessionRepositoryError as Error, SessionRepositoryRecoveryAction as Action,
     };
 
     match (&error, error.recovery_action()) {
         (Error::NotFound, _) => RunError::bad_request("Session was not found"),
-        (Error::Unavailable(message), Action::Retry) => RunError::unavailable(message.clone()),
+        (Error::AuthorityUnavailable(message), Action::Retry) => {
+            RunError::unavailable(message.clone())
+        }
         (_, Action::Retry) => {
             RunError::unavailable_classified("session_repository_unavailable", error.to_string())
         }
@@ -82,7 +94,7 @@ fn session_repository_error(error: awaken_session_contract::SessionRepositoryErr
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SessionRecoveryCandidate {
     workspace_id: String,
-    session_id: awaken_session_contract::SessionId,
+    session_id: awaken_session_types::SessionId,
     interests: SessionRecoveryInterests,
 }
 
@@ -118,11 +130,12 @@ impl SessionRecoveryInterests {
         let environment_continuation = !session.is_terminal()
             && (matches!(
                 session.environment,
-                awaken_session_contract::SessionEnvironmentState::Suspending { .. }
-            ) || (session.execution == awaken_session_contract::SessionExecutionState::Idle
+                awaken_session_state_contract::SessionEnvironmentState::Suspending { .. }
+            ) || (session.execution
+                == awaken_session_state_contract::SessionExecutionState::Idle
                 && matches!(
                     session.environment,
-                    awaken_session_contract::SessionEnvironmentState::Resident {
+                    awaken_session_state_contract::SessionEnvironmentState::Resident {
                         idle_since_unix_ms: Some(_),
                         ..
                     }

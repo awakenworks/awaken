@@ -686,7 +686,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_environment_binding_sink(
         mut self,
-        sink: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+        sink: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     ) -> Self {
         self.environment_binding_sink = std::sync::RwLock::new(Some(sink));
         self
@@ -978,9 +978,9 @@ impl SharedHost {
         E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
                 awaken_dispatch::RunClaim,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_session_contract::SessionResourceMaterializationIntent,
+                awaken_session_realization_contract::SessionResourceMaterializationIntent,
             > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_session_contract::SessionTerminalMemoryIntent,
+                awaken_session_state_contract::SessionTerminalMemoryIntent,
             > + 'static,
     {
         self.memory_reference_encoder = Some(encoder);
@@ -1110,7 +1110,7 @@ impl SharedHost {
     pub fn with_skill_bundle_source(
         mut self,
         source: Arc<
-            dyn awaken_session_contract::SkillBundleSource<
+            dyn awaken_session_configuration_contract::SkillBundleSource<
                     awaken_dispatch::ResourceOperationFence,
                 >,
         >,
@@ -1123,7 +1123,7 @@ impl SharedHost {
     /// selections and publish authored bundles. This grants no Store/purge API.
     pub fn with_skill_catalog_application(
         mut self,
-        application: Arc<dyn awaken_session_contract::SkillCatalogApplication>,
+        application: Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>,
     ) -> Self {
         self.skills.set_application(application);
         self
@@ -1406,7 +1406,7 @@ impl SharedHost {
     /// all enter through the installed provider/capacity pair.
     pub async fn prewarm_environment_snapshot(
         &self,
-        environment: &awaken_session_contract::EnvironmentSnapshot,
+        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
         target: usize,
     ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
         if self.deployment.disable_local_pool
@@ -1443,7 +1443,7 @@ impl SharedHost {
     #[must_use]
     pub fn ready_environment_snapshot_capacity(
         &self,
-        environment: &awaken_session_contract::EnvironmentSnapshot,
+        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> usize {
         let projection = crate::provisioning::environment_capacity_projection(
             environment,
@@ -1457,7 +1457,7 @@ impl SharedHost {
     #[must_use]
     pub fn environment_snapshot_capacity_shape(
         &self,
-        environment: &awaken_session_contract::EnvironmentSnapshot,
+        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
         crate::provisioning::environment_capacity_projection(
             environment,
@@ -1470,7 +1470,7 @@ impl SharedHost {
     /// desired state. Active Sessions are unaffected.
     pub async fn discard_environment_snapshot_capacity(
         &self,
-        environment: &awaken_session_contract::EnvironmentSnapshot,
+        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) {
         let projection = crate::provisioning::environment_capacity_projection(
             environment,

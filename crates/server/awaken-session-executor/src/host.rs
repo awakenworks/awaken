@@ -47,7 +47,7 @@ use awaken_runtime_contract::tool::ToolOutput;
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
 // (rooted tools, repos, artifacts) the host configures into each session's runtime.
 use awaken_sandbox_local::LocalProvider;
-use awaken_session_contract::{DelegatedRun, Pending};
+use awaken_session_application_contract::{DelegatedRun, Pending};
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin};
 
@@ -170,9 +170,9 @@ pub(crate) use worker_resolver::test_support::{
 pub(crate) trait RuntimeMemoryReferenceEncoder:
     awaken_resource_contract::MemoryMaterializationReferenceEncoder<awaken_dispatch::RunClaim>
     + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_session_contract::SessionResourceMaterializationIntent,
+        awaken_session_realization_contract::SessionResourceMaterializationIntent,
     > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-        awaken_session_contract::SessionTerminalMemoryIntent,
+        awaken_session_state_contract::SessionTerminalMemoryIntent,
     >
 {
 }
@@ -181,9 +181,9 @@ impl<T> RuntimeMemoryReferenceEncoder for T where
     T: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
             awaken_dispatch::RunClaim,
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-            awaken_session_contract::SessionResourceMaterializationIntent,
+            awaken_session_realization_contract::SessionResourceMaterializationIntent,
         > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-            awaken_session_contract::SessionTerminalMemoryIntent,
+            awaken_session_state_contract::SessionTerminalMemoryIntent,
         >
 {
 }
@@ -234,7 +234,7 @@ pub struct SharedHost {
     /// claimed coordination without owning cold cleanup; composition installs
     /// this exact role only when the transport supports it.
     pub(crate) terminal_cleanup_control:
-        Option<Arc<dyn awaken_session_contract::SessionTerminalCleanupControl>>,
+        Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
     pub(crate) provider: LocalProvider,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
@@ -332,14 +332,18 @@ pub struct SharedHost {
     /// admission owner. This is executable wiring only; it contains no roster,
     /// Thread relationship, operation receipt, or lifecycle state.
     pub(crate) agent_coordination: std::sync::RwLock<
-        Option<std::sync::Weak<dyn awaken_session_contract::SessionAgentCoordination>>,
+        Option<std::sync::Weak<dyn awaken_session_execution_contract::SessionAgentCoordination>>,
     >,
     /// Weak composition edge to the existing Session Run admission owner.
     /// BackgroundTask completion uses this port only to publish a deterministic
     /// same-Thread attention Run; task lifecycle and result truth remain in
     /// committed Thread State.
     pub(crate) session_background_runs: std::sync::RwLock<
-        Option<std::sync::Weak<dyn awaken_session_contract::SessionRunBackgroundApplication>>,
+        Option<
+            std::sync::Weak<
+                dyn awaken_session_application_contract::SessionRunBackgroundApplication,
+            >,
+        >,
     >,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. A database-less Worker carries a fail-closed adapter;
@@ -410,8 +414,9 @@ pub struct SharedHost {
     /// Database-less Workers replace the process-local relay with the one
     /// authenticated, claim-fenced Coordinator publisher.
     pub(crate) worker_stream_publisher: Option<Arc<dyn awaken_dispatch::ClaimedStreamPublisher>>,
-    pub(crate) environment_binding_sink:
-        std::sync::RwLock<Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>>,
+    pub(crate) environment_binding_sink: std::sync::RwLock<
+        Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
+    >,
     /// The one Host-owned subject-tagged captured-content sink (ADR-0050).
     /// Process startup may install it after the shared Host is created; sessions
     /// snapshot the current sink when they are created. `None` = spans only.

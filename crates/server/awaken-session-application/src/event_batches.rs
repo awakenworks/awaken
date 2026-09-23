@@ -5,15 +5,20 @@
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::RunState;
-use awaken_session_contract::{
-    AdmitSessionRun, AdmittedSessionRun, OUTCOME_BUSY_CODE, PersistedSession, RunError,
-    SessionAgentCoordination, SessionEventBatch, SessionEventBatchAdmissionAction,
+use awaken_session_error_contract::RunError;
+use awaken_session_event_contract::{
+    OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchAdmissionAction,
     SessionEventBatchAdmissionClass, SessionEventBatchAdmissionPlan, SessionEventCommand,
-    SessionEventInput, SessionEventProjectionAnchor, SessionRevision, SessionRunActivation,
-    SessionThreadTarget, SessionUserRunCommand, SessionUserRunSystemInput,
-    classify_session_event_batch_admission, resolve_session_event_batch_admission,
-    session_event_batch_id,
+    SessionEventInput, SessionEventProjectionAnchor, SessionUserRunCommand,
+    SessionUserRunSystemInput, classify_session_event_batch_admission,
+    resolve_session_event_batch_admission, session_event_batch_id,
 };
+use awaken_session_execution_contract::{
+    AdmitSessionRun, AdmittedSessionRun, SessionAgentCoordination, SessionRunActivation,
+    SessionThreadTarget,
+};
+use awaken_session_state_contract::PersistedSession;
+use awaken_session_types::SessionRevision;
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
@@ -222,7 +227,7 @@ impl SessionApplication {
     /// before current pending-tool admission; it does not own another receipt.
     pub async fn session_event_batch_idempotency(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         key: &str,
         request_fingerprint: &str,
     ) -> Result<SessionEventBatchIdempotency, RunError> {
@@ -241,7 +246,7 @@ impl SessionApplication {
 
     async fn message_projection_anchor(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
         message_id: &MessageId,
@@ -265,7 +270,7 @@ impl SessionApplication {
 
     async fn run_snapshot_projection_anchor(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
@@ -325,7 +330,7 @@ impl SessionApplication {
                 data_subject_id: command.data_subject_id,
                 traceparent: command.traceparent,
                 execution_requirements: Default::default(),
-                replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
+                replacement: awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
             })
             .await
         })
@@ -343,7 +348,7 @@ impl SessionApplication {
         traceparent: Option<String>,
     ) -> Result<SessionEventBatch, RunError> {
         self.append_session_event_batch_idempotent(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             inputs,
             data_subject_id,
             traceparent,
@@ -357,7 +362,7 @@ impl SessionApplication {
     /// either observe that exact batch or a conflict under the same root CAS.
     pub async fn append_session_event_batch_idempotent(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
@@ -377,7 +382,7 @@ impl SessionApplication {
             .await?;
         batch
             .require_accepted()
-            .map_err(|_| awaken_session_contract::event_admission_closed())?;
+            .map_err(|_| awaken_session_application_contract::event_admission_closed())?;
         Ok(batch)
     }
 
@@ -387,7 +392,7 @@ impl SessionApplication {
     /// periodic recovery authority if this future is lost after acceptance.
     pub async fn append_and_drive_session_event_batch_idempotent(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
@@ -407,7 +412,7 @@ impl SessionApplication {
             .await?;
         batch
             .require_accepted()
-            .map_err(|_| awaken_session_contract::event_admission_closed())?;
+            .map_err(|_| awaken_session_application_contract::event_admission_closed())?;
         let drive_error = self
             .drive_session_event_batches(session_id, Some(&batch.batch_id))
             .await
@@ -425,10 +430,10 @@ impl SessionApplication {
     pub async fn close_session_event_admission(
         &self,
         owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         key: String,
         request_fingerprint: String,
-    ) -> Result<awaken_session_contract::SessionEventAdmission, RunError> {
+    ) -> Result<awaken_session_application_contract::SessionEventAdmission, RunError> {
         if let Some(deleted) = self
             .session_repository()
             .deleted_event_admissions(owner_scope, session_id)
@@ -436,14 +441,18 @@ impl SessionApplication {
             .map_err(repository_failure)
             .map_err(mutation_run_error)?
         {
-            return deleted.resolve(&key, &request_fingerprint);
+            return awaken_session_application_contract::resolve_deleted_event_admission(
+                &deleted,
+                &key,
+                &request_fingerprint,
+            );
         }
         match self.owner(session_id).await {
             Ok(owner) if owner == owner_scope => {}
             Ok(_) | Err(SessionMutationError::NotFound) => {
                 return Err(RunError {
                     message: "Session was not found".into(),
-                    kind: awaken_session_contract::RunErrorKind::BadRequest,
+                    kind: awaken_session_error_contract::RunErrorKind::BadRequest,
                     code: "session_not_found".into(),
                 });
             }
@@ -471,7 +480,13 @@ impl SessionApplication {
                     .map_err(repository_failure)
                     .map_err(mutation_run_error)?
                 {
-                    Some(deleted) => deleted.resolve(&key, &request_fingerprint),
+                    Some(deleted) => {
+                        awaken_session_application_contract::resolve_deleted_event_admission(
+                            &deleted,
+                            &key,
+                            &request_fingerprint,
+                        )
+                    }
                     None => Err(error),
                 }
             }
@@ -480,7 +495,7 @@ impl SessionApplication {
 
     async fn resolve_session_event_batch(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         admission: EventBatchAdmission,
         wake_after_accept: bool,
     ) -> Result<SessionEventBatch, RunError> {
@@ -509,10 +524,10 @@ impl SessionApplication {
                         .clone());
                 }
                 SessionEventBatchAdmissionPlan::RejectClosed => {
-                    return Err(awaken_session_contract::event_admission_closed());
+                    return Err(awaken_session_application_contract::event_admission_closed());
                 }
                 SessionEventBatchAdmissionPlan::Conflict => {
-                    return Err(awaken_session_contract::event_admission_conflict());
+                    return Err(awaken_session_application_contract::event_admission_conflict());
                 }
                 SessionEventBatchAdmissionPlan::AppendAccepted
                 | SessionEventBatchAdmissionPlan::AppendClosed => {}
@@ -658,7 +673,7 @@ impl SessionApplication {
                 }
                 let session = match self.session_repository().get(&candidate.session_id).await {
                     Ok(session) => session,
-                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                    Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
                         return result;
                     }
                     Err(error) => {
@@ -702,7 +717,7 @@ impl SessionApplication {
     /// Outcome's Worker/Judge execution before delivering its own interrupt.
     pub async fn drive_session_event_batches(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         preferred_batch_id: Option<&str>,
     ) -> Result<(), RunError> {
         let _ = self
@@ -713,7 +728,7 @@ impl SessionApplication {
 
     async fn reconcile_session_event_batches(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         preferred_batch_id: Option<&str>,
         mut initial_session: Option<PersistedSession>,
     ) -> Result<bool, RunError> {
@@ -803,7 +818,7 @@ impl SessionApplication {
     /// any Runtime effect after terminal state.
     async fn resolve_terminal_event_batches(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<bool, RunError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(mutation_run_error)?;
@@ -1176,7 +1191,7 @@ impl SessionApplication {
     ) -> Result<(), RunError> {
         let Some((_, activity_epoch)) = self
             .recover_activity_for_operation(
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 &failed.activity_operation_id,
             )
             .await
@@ -1277,7 +1292,7 @@ impl SessionApplication {
 
     async fn observe_session_event(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         batch_id: &str,
         operation_id: &str,
         observation: EventObservation,
@@ -1419,7 +1434,7 @@ impl SessionApplication {
 
     async fn reconcile_blocking_root_run(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         target_run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<bool, RunError> {
         let Some(snapshot) = self
@@ -1450,7 +1465,7 @@ impl SessionApplication {
                 .session(session_id)
                 .await
                 .map_err(|error| RunError::unavailable(error.to_string()))?;
-            if root.execution == awaken_session_contract::SessionExecutionState::Running
+            if root.execution == awaken_session_state_contract::SessionExecutionState::Running
                 && root.active_activity_epochs.is_empty()
                 && let Some(observation) = root.running_interval.as_ref().and_then(|interval| {
                     interval.observations.iter().find(|observation| {
@@ -1465,7 +1480,7 @@ impl SessionApplication {
                     root.activity_epoch,
                     observation.clone(),
                     &latest.id,
-                    awaken_session_contract::SessionAgentRunBoundary::Awaiting,
+                    awaken_session_execution_contract::SessionAgentRunBoundary::Awaiting,
                 )
                 .await
                 .map_err(crate::SessionActivityError::run_error)?;

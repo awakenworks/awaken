@@ -72,7 +72,7 @@ impl ManagedState {
         let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
         let persisted_session = self
             .application
-            .session(&awaken_session_contract::SessionId::from(session_id))
+            .session(&awaken_session_types::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
         let interrupt_only = !events.is_empty()
@@ -461,7 +461,7 @@ impl ManagedState {
     ) -> Result<SendEventsResponse, StateError> {
         let request_fingerprint = idempotency_key
             .as_ref()
-            .map(|_| awaken_session_contract::stable_fingerprint(&(&req, &data_subject_id)));
+            .map(|_| awaken_agent_contract::stable_fingerprint(&(&req, &data_subject_id)));
         let replay_coordinate = idempotency_key
             .as_deref()
             .zip(request_fingerprint.as_deref());
@@ -482,7 +482,7 @@ impl ManagedState {
             match self
                 .application
                 .session_event_batch_idempotency(
-                    &awaken_session_contract::SessionId::from(session_id),
+                    &awaken_session_types::SessionId::from(session_id),
                     key,
                     fingerprint,
                 )
@@ -492,7 +492,9 @@ impl ManagedState {
                 awaken_session_application::SessionEventBatchIdempotency::Absent => Ok(None),
                 awaken_session_application::SessionEventBatchIdempotency::Exact(batch) => {
                     batch.require_accepted().map_err(|_| {
-                        StateError::Run(awaken_session_contract::event_admission_closed())
+                        StateError::Run(
+                            awaken_session_application_contract::event_admission_closed(),
+                        )
                     })?;
                     Ok(Some(batch))
                 }
@@ -502,7 +504,7 @@ impl ManagedState {
             }
         };
         let receipt_response =
-            |batch: &awaken_session_contract::SessionEventBatch| SendEventsResponse {
+            |batch: &awaken_session_event_contract::SessionEventBatch| SendEventsResponse {
                 data: accepted_inbound_receipts(session_id, batch)
                     .into_iter()
                     .map(|projection| projection.event)
@@ -593,7 +595,7 @@ impl ManagedState {
                 let append = if drive == ValidatedEventBatchDrive::PreferredBatch {
                     self.application
                         .append_and_drive_session_event_batch_idempotent(
-                            &awaken_session_contract::SessionId::from(session_id),
+                            &awaken_session_types::SessionId::from(session_id),
                             validated.inputs,
                             data_subject_id,
                             traceparent,
@@ -603,7 +605,7 @@ impl ManagedState {
                 } else {
                     self.application
                         .append_session_event_batch_idempotent(
-                            &awaken_session_contract::SessionId::from(session_id),
+                            &awaken_session_types::SessionId::from(session_id),
                             validated.inputs,
                             data_subject_id,
                             traceparent,
@@ -647,7 +649,7 @@ impl ManagedState {
         }
         let persisted = self
             .application
-            .session(&awaken_session_contract::SessionId::from(session_id))
+            .session(&awaken_session_types::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
         self.publish_persisted_session(&persisted)?;

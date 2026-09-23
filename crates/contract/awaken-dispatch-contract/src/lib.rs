@@ -21,7 +21,7 @@ pub use awaken_runtime_contract::{
     CredentialRealizationReceipt, CredentialReceiptError,
     credential_realization_persistence_decision, verify_credential_realization_receipt,
 };
-pub use awaken_session_contract::SessionRunReplacement;
+pub use awaken_session_execution_contract::SessionRunReplacement;
 pub use awaken_worker_contract::{
     AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ExecutionLocation,
     HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE,
@@ -101,13 +101,15 @@ pub use worker_transport::{
 #[allow(clippy::large_enum_variant)]
 pub enum ResourceOperationFence {
     Run(RunClaim),
-    SessionMaterialization(awaken_session_contract::SessionResourceMaterializationIntent),
+    SessionMaterialization(
+        awaken_session_realization_contract::SessionResourceMaterializationIntent,
+    ),
     RepositoryPublication {
-        command: Box<awaken_session_contract::SessionRepositoryPublicationCommand>,
-        lease: awaken_session_contract::SessionRealizationLease,
+        command: Box<awaken_session_state_contract::SessionRepositoryPublicationCommand>,
+        lease: awaken_session_resource_contract::SessionRealizationLease,
     },
-    CheckpointRelease(awaken_session_contract::SessionEnvironmentOperation),
-    Terminal(awaken_session_contract::SessionTerminalCleanupEffect),
+    CheckpointRelease(awaken_session_state_contract::SessionEnvironmentOperation),
+    Terminal(awaken_session_state_contract::SessionTerminalCleanupEffect),
 }
 
 impl From<RunClaim> for ResourceOperationFence {

@@ -14,9 +14,7 @@ pub(crate) fn public_thread_id(session_id: &str, internal_thread_id: &str) -> St
     if internal_thread_id == session_id {
         format!(
             "sthr_{}",
-            awaken_session_contract::stable_fingerprint(
-                &("managed-primary-thread-v1", session_id,)
-            )
+            awaken_agent_contract::stable_fingerprint(&("managed-primary-thread-v1", session_id,))
         )
     } else {
         internal_thread_id.to_string()
@@ -218,11 +216,12 @@ impl ManagedState {
         agent_id: &str,
         profile: awaken_executable_agent_contract::ExecutableAgentSessionProfile,
     ) -> SessionThreadAgent {
-        let tools =
-            crate::project::managed_tools(&awaken_session_contract::SessionToolConfiguration {
+        let tools = crate::project::managed_tools(
+            &awaken_session_configuration_contract::SessionToolConfiguration {
                 toolsets: profile.toolsets,
                 client_tools: profile.client_tools,
-            });
+            },
+        );
         SessionThreadAgent {
             id: agent_id.to_owned(),
             kind: "agent",
@@ -476,7 +475,7 @@ impl ManagedState {
         }
         self.application
             .archive_session_thread(
-                &awaken_session_contract::SessionId::from(id),
+                &awaken_session_types::SessionId::from(id),
                 &internal_thread_id,
             )
             .await

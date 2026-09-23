@@ -1,8 +1,7 @@
 //! Read-only Repository reference projection for Session-owned retirement.
 
-use awaken_session_contract::{
-    ResolvedInputSource, ResolvedSessionResources, SessionResourceState,
-};
+use awaken_session_resource_contract::{ResolvedInputSource, ResolvedSessionResources};
+use awaken_session_state_contract::SessionResourceState;
 
 pub(super) fn session_resources_reference_repository(
     resources: &SessionResourceState,

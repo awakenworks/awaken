@@ -970,9 +970,7 @@ impl awaken_dispatch_contract::ClaimedCheckpointTransport for HttpDispatchQueue 
     async fn load_recovery_snapshot(
         &self,
         claim: &RunClaim,
-        session_work_authority: Option<
-            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
-        >,
+        session_work_authority: Option<&awaken_session_work_contract::SessionWorkAuthorityReceipt>,
     ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>
     {
         let value = self

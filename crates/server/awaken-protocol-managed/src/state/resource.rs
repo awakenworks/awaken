@@ -86,14 +86,16 @@ fn binding_projection_class(
 }
 
 pub(super) fn resolved_projection_class(
-    source: &awaken_session_contract::ResolvedInputSource,
+    source: &awaken_session_resource_contract::ResolvedInputSource,
 ) -> InputProjectionClass {
     match source {
-        awaken_session_contract::ResolvedInputSource::File { .. } => InputProjectionClass::File,
-        awaken_session_contract::ResolvedInputSource::MemoryStore { .. } => {
+        awaken_session_resource_contract::ResolvedInputSource::File { .. } => {
+            InputProjectionClass::File
+        }
+        awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. } => {
             InputProjectionClass::MemoryStore
         }
-        awaken_session_contract::ResolvedInputSource::Repository { .. } => {
+        awaken_session_resource_contract::ResolvedInputSource::Repository { .. } => {
             InputProjectionClass::Repository
         }
     }
@@ -115,7 +117,7 @@ fn plan_session_input_attachments(
     session_id: &str,
     resources: &[ParsedSessionInput],
     agent_defaults: &[awaken_resource_contract::InputBinding],
-) -> Result<Vec<awaken_session_contract::SessionInputAttachment>, String> {
+) -> Result<Vec<awaken_session_resource_contract::SessionInputAttachment>, String> {
     resources
         .iter()
         .enumerate()
@@ -161,14 +163,14 @@ fn plan_session_input_attachments(
             if let Some(replaced) = &replaces {
                 binding.binding_id.clone_from(replaced);
             }
-            Ok(awaken_session_contract::SessionInputAttachment { binding, replaces })
+            Ok(awaken_session_resource_contract::SessionInputAttachment { binding, replaces })
         })
         .collect()
 }
 
 pub(crate) struct PreparedSessionInputs {
     resources: Vec<ParsedSessionInput>,
-    attachments: Vec<awaken_session_contract::SessionInputAttachment>,
+    attachments: Vec<awaken_session_resource_contract::SessionInputAttachment>,
     effective_bindings: Vec<awaken_resource_contract::InputBinding>,
 }
 
@@ -232,11 +234,12 @@ impl ManagedState {
         let attachments =
             plan_session_input_attachments(session_id, &normalized_resources, agent_defaults)
                 .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
-        let effective_bindings = awaken_session_contract::SessionInputResolver::effective_bindings(
-            agent_defaults,
-            &attachments,
-        )
-        .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        let effective_bindings =
+            awaken_session_resource_contract::SessionInputResolver::effective_bindings(
+                agent_defaults,
+                &attachments,
+            )
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
 
         Ok(PreparedSessionInputs {
             resources: normalized_resources,
@@ -254,7 +257,7 @@ impl ManagedState {
         prepared: &PreparedSessionInputs,
     ) -> Result<
         (
-            Vec<awaken_session_contract::SessionInputAttachment>,
+            Vec<awaken_session_resource_contract::SessionInputAttachment>,
             Vec<awaken_session_application::ConfiguredSessionRepository>,
         ),
         StateError,
@@ -474,9 +477,9 @@ pub(crate) fn input_binding(
 /// echoed.
 pub(crate) fn resolved_resource_dto(
     session_id: &str,
-    input: &awaken_session_contract::ResolvedInput,
+    input: &awaken_session_resource_contract::ResolvedInput,
 ) -> SessionResource {
-    use awaken_session_contract::ResolvedInputSource;
+    use awaken_session_resource_contract::ResolvedInputSource;
     let id = || format!("{session_id}:resource:{}", input.binding_id.as_str());
     match &input.source {
         ResolvedInputSource::File { file_id } => SessionResource::File {
@@ -633,7 +636,7 @@ mod tests {
         .expect("R2 remains additive");
         assert_eq!(r2[0].replaces, None, "R2 no path fallback");
         assert!(
-            awaken_session_contract::SessionInputResolver::effective_bindings(
+            awaken_session_resource_contract::SessionInputResolver::effective_bindings(
                 &[different_default],
                 &r2,
             )

@@ -15,7 +15,7 @@ pub(super) enum ProjectedEnvironmentOwner {
         binding: String,
     },
     Restoring {
-        request: awaken_session_contract::SandboxRestoreRequest,
+        request: awaken_session_state_contract::SandboxRestoreRequest,
     },
 }
 
@@ -34,7 +34,7 @@ fn legacy_effect(effect_id: &Option<String>) -> LegacyEnvironmentEffect {
 pub(super) fn checkpoint_source_identity(
     source_effect_id: &str,
     source_binding: &str,
-    generation: &awaken_session_contract::SandboxGeneration,
+    generation: &awaken_session_state_contract::SandboxGeneration,
 ) -> BoundSessionEnvironmentIdentity {
     if source_effect_id.is_empty() {
         BoundSessionEnvironmentIdentity::LegacyDirect(
@@ -52,11 +52,11 @@ pub(super) fn checkpoint_source_identity(
 }
 
 pub(super) fn projected_environment_owner(
-    state: &awaken_session_contract::SessionEnvironmentState,
+    state: &awaken_session_state_contract::SessionEnvironmentState,
     workspace_id: &str,
     session_id: &str,
 ) -> Result<ProjectedEnvironmentOwner, HostError> {
-    use awaken_session_contract::SessionEnvironmentState;
+    use awaken_session_state_contract::SessionEnvironmentState;
     match state {
         SessionEnvironmentState::Unmaterialized | SessionEnvironmentState::Hibernated { .. } => {
             Ok(ProjectedEnvironmentOwner::Vacant)
@@ -102,7 +102,7 @@ pub(super) fn projected_environment_owner(
             request: state
                 .restoring_request(
                     workspace_id,
-                    &awaken_session_contract::SessionId::from(session_id),
+                    &awaken_session_types::SessionId::from(session_id),
                 )
                 .expect("Restoring state projects one exact restore request"),
         }),
@@ -478,15 +478,15 @@ impl SessionEnvironmentOwner {
     pub(super) fn begin_preparing(
         &mut self,
         environment: Arc<crate::session_environment::SessionEnvironment>,
-        kind: awaken_session_contract::SessionEnvironmentEffectKind,
+        kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
     ) -> Result<UnboundSessionEnvironment, HostError> {
         let binding = serde_json::to_string(&environment.handle())
             .map_err(|error| HostError::internal(error.to_string()))?;
         let origin = match (&mut *self, kind) {
-            (Self::Vacant, awaken_session_contract::SessionEnvironmentEffectKind::Create) => {
+            (Self::Vacant, awaken_session_state_contract::SessionEnvironmentEffectKind::Create) => {
                 UnboundSessionEnvironmentOrigin::New
             }
-            (Self::Vacant, awaken_session_contract::SessionEnvironmentEffectKind::Adopt) => {
+            (Self::Vacant, awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt) => {
                 UnboundSessionEnvironmentOrigin::Adoption
             }
             (
@@ -494,7 +494,7 @@ impl SessionEnvironmentOwner {
                     identity,
                     binding: expected,
                 }),
-                awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
             ) if *expected == binding => {
                 UnboundSessionEnvironmentOrigin::AdoptionFrom(identity.clone())
             }
@@ -579,7 +579,7 @@ impl SessionEnvironmentOwner {
 
     pub(super) fn begin_restore(
         &mut self,
-        request: &awaken_session_contract::SandboxRestoreRequest,
+        request: &awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<(), HostError> {
         match self {
             Self::Vacant => {
@@ -901,10 +901,10 @@ fn committed_candidate_retains_effect_kind_and_rejects_identity_relabeling() {
 }
 
 pub(in crate::host::session) fn committed_identity(
-    receipt: &awaken_session_contract::SessionEnvironmentReceipt,
-    committed: awaken_session_contract::SessionEnvironmentState,
+    receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
+    committed: awaken_session_state_contract::SessionEnvironmentState,
 ) -> Result<BoundSessionEnvironmentIdentity, HostError> {
-    let awaken_session_contract::SessionEnvironmentState::Resident {
+    let awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding,
         effect_id: Some(effect_id),
         generation: Some(generation),

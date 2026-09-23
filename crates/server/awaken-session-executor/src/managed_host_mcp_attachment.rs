@@ -1,5 +1,5 @@
 fn validate_stdio_credential_binding(
-    target: &awaken_session_contract::McpTarget,
+    target: &awaken_session_mcp_contract::McpTarget,
     has_credential: bool,
     has_plaintext_holder: bool,
 ) -> Result<(), RunError> {
@@ -14,11 +14,11 @@ fn validate_stdio_credential_binding(
 
 // Runtime realization of one Session-owned MCP attachment generation.
 #[async_trait::async_trait]
-impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
+impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        request: awaken_session_mcp_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
         use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary};
 
         if request.workspace_id.trim().is_empty()
@@ -224,7 +224,9 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                         let upstream_host = request
                             .target
                             .http_url()
-                            .and_then(|url| awaken_session_contract::McpTarget::identity(url).ok())
+                            .and_then(|url| {
+                                awaken_session_mcp_contract::McpTarget::identity(url).ok()
+                            })
                             .map(|identity| identity.host)
                             .ok_or_else(|| {
                                 RunError::classified(
@@ -447,7 +449,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 },
             },
         };
-        let receipt = awaken_session_contract::McpRealizationReceipt {
+        let receipt = awaken_session_mcp_contract::McpRealizationReceipt {
             generation: request.generation.clone(),
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -701,7 +703,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
 
     async fn publish_mcp_generation(
         &self,
-        generation: awaken_session_contract::McpGenerationRef,
+        generation: awaken_session_mcp_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         let now_unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -724,7 +726,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
 
     async fn drain_mcp_generation(
         &self,
-        generation: awaken_session_contract::McpGenerationRef,
+        generation: awaken_session_mcp_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.host
             .drain_mcp_projection(&generation)
@@ -745,8 +747,9 @@ mod tests {
         // Complete decision table: only C1 && (C2 || C3) produces E1. HTTP may
         // carry either credential shape, and anonymous stdio remains supported.
         let http =
-            awaken_session_contract::McpTarget::parse_http("https://mcp.example.test/mcp").unwrap();
-        let stdio = awaken_session_contract::McpTarget::sandbox_stdio(
+            awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test/mcp")
+                .unwrap();
+        let stdio = awaken_session_mcp_contract::McpTarget::sandbox_stdio(
             "/usr/bin/node",
             vec!["/mnt/session/uploads/server.js".into()],
         )

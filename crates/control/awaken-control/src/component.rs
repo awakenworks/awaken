@@ -30,7 +30,7 @@ use awaken_protocol_managed::{ManagedAgentRepository, VaultState};
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::RawTool;
-use awaken_session_contract::McpProbe;
+use awaken_session_configuration_contract::McpProbe;
 use axum::Router;
 
 use crate::{
@@ -95,7 +95,8 @@ pub struct ControlDependencies {
     pub mcp_probe: Option<Arc<dyn McpProbe>>,
     /// The OAuth refresh exchange credential validation attempts after an
     /// auth-refused probe. `None` reports no attempt.
-    pub mcp_refresh_exchange: Option<Arc<dyn awaken_session_contract::CredentialRefreshExchange>>,
+    pub mcp_refresh_exchange:
+        Option<Arc<dyn awaken_session_configuration_contract::CredentialRefreshExchange>>,
     pub assistant_model_selection: Option<ModelSelection>,
     pub global_tools: Vec<ToolDescriptor>,
     pub platform_plugins: Vec<PluginCapability>,

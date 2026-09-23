@@ -51,7 +51,7 @@ fn current_session_command_with_operation(
     operation_id: impl Into<String>,
 ) -> RunDispatch {
     let command = AdmitSessionRun {
-        session_id: awaken_session_contract::SessionId::from(
+        session_id: awaken_session_types::SessionId::from(
             &request
                 .session_thread_id
                 .as_ref()

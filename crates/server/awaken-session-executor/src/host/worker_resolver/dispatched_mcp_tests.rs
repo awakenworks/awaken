@@ -42,14 +42,14 @@ async fn dispatched_mcp_effect_projection_decision_table() {
         .expect("install frozen Environment");
 
     let request = |session: &str, attachment: &str, expiry: u64| {
-        awaken_session_contract::StageMcpAttachment {
+        awaken_session_mcp_contract::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
-            generation: awaken_session_contract::McpGenerationRef {
+            generation: awaken_session_mcp_contract::McpGenerationRef {
                 session_id: session.into(),
-                generation: awaken_session_contract::McpGeneration::of_bare_target(
-                    awaken_session_contract::McpAttachmentId(attachment.into()),
+                generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+                    awaken_session_mcp_contract::McpAttachmentId(attachment.into()),
                     1,
-                    &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                    &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
                         .unwrap(),
                 ),
                 runtime_incarnation: "control-runtime".into(),
@@ -59,7 +59,7 @@ async fn dispatched_mcp_effect_projection_decision_table() {
             realization_id: format!("realize-{attachment}"),
             stage_idempotency_key: format!("stage-{attachment}"),
             name: attachment.into(),
-            target: awaken_session_contract::McpTarget::parse_http(format!(
+            target: awaken_session_mcp_contract::McpTarget::parse_http(format!(
                 "https://{attachment}.example.test/mcp"
             ))
             .expect("HTTP target"),

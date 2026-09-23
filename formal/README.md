@@ -32,14 +32,14 @@ The named harnesses in the strict gate invoke production pure functions directly
     child invocation also requires its exact committed Open relationship.
   - cancellation delivery is enabled only by a durable cancellation-requested
     relationship.
-- `awaken-session-contract`
-  - all seven Session realization Control failures map to the exact closed
+- `awaken-session-realization-contract`: all seven Session realization Control
+    failures map to the exact closed
     disposition table; Runtime Worker effects map NotReady to defer, Retryable
     to relinquish, and Terminal to absorbing settlement, while renewal retires
     exactly terminal truth.
-  - awaiting outcomes cannot be terminal or failed;
+- `awaken-session-execution-contract`: awaiting outcomes cannot be terminal or failed;
   - ended outcomes carry the only failure authority and no pending tool.
-  - only queued WorkQueue items are claimable;
+- `awaken-session-work-contract`: only queued WorkQueue items are claimable;
   - only active WorkQueue items accept lease extension;
   - Work mutations require a present row, exact owner/epoch authority, and the
     matching command condition through one kernel used by all three backends;
@@ -129,11 +129,11 @@ The named harnesses in the strict gate invoke production pure functions directly
   - an explicitly requested Agent profile is accepted only when both revisions
     are positive and the returned immutable profile revision exactly matches;
     a custom profile source cannot substitute mutable current selection.
-- `awaken-session-contract`
+- `awaken-session-configuration-contract`
   - a resolved Environment snapshot must retain the selected identity and a
     positive revision; a publication-pinned resolution must also return the
     exact requested revision before the snapshot can be frozen.
-  - a Worker accepts a frozen Agent publication only when Agent identity,
+- `awaken-session-realization-contract`: a Worker accepts a frozen Agent publication only when Agent identity,
     revision, and runtime identity all match; missing/conflicting pins fail closed.
 - `awaken-file-store`
   - object-store allocation accepts exactly a nonempty normalized bucket/prefix

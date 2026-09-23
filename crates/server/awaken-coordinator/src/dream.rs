@@ -15,10 +15,10 @@ use awaken_resource_contract::{
     MemoryStoreId, ResourceAccess, ResourceState,
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
-use awaken_session_contract::{
-    AdmitSessionRun, DreamOutputBehavior, ManagedLifecycleFact, SessionToolConfiguration,
-    session_run_id,
-};
+use awaken_session_configuration_contract::SessionToolConfiguration;
+use awaken_session_dream_contract::DreamOutputBehavior;
+use awaken_session_execution_contract::{AdmitSessionRun, session_run_id};
+use awaken_session_state_contract::ManagedLifecycleFact;
 
 const PLATFORM_INSTRUCTIONS: &str = r#"You are the built-in Dream Agent.
 
@@ -189,7 +189,7 @@ impl BuiltInDreamAgent {
             .create_profiled_session(CreateProfiledSessionCommand {
                 owner_scope: request.workspace_id.clone(),
                 session_id: session_id.clone(),
-                mutation_policy: awaken_session_contract::SessionMutationPolicy::Frozen,
+                mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Frozen,
                 agent_id: request.agent_id.clone(),
                 source_revision: None,
                 // Dream is a filesystem workflow. Pin the built-in local
@@ -203,7 +203,7 @@ impl BuiltInDreamAgent {
                 env: Vec::new(),
                 prompts,
                 resource_inputs: vec![
-                    awaken_session_contract::SessionInputAttachment {
+                    awaken_session_resource_contract::SessionInputAttachment {
                         binding: InputBinding {
                             binding_id: BindingId::from(format!(
                                 "dream:{}:input-memory",
@@ -223,7 +223,7 @@ impl BuiltInDreamAgent {
                         },
                         replaces: None,
                     },
-                    awaken_session_contract::SessionInputAttachment {
+                    awaken_session_resource_contract::SessionInputAttachment {
                         binding: InputBinding {
                             binding_id: BindingId::from(format!(
                                 "dream:{}:output-memory",
@@ -241,7 +241,9 @@ impl BuiltInDreamAgent {
                 ],
                 mcp_candidates: Vec::new(),
                 repositories: Vec::new(),
-                network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
+                network_restriction: Some(
+                    awaken_session_configuration_contract::SessionNetworkPolicy::None,
+                ),
                 title: None,
                 metadata: BTreeMap::from([
                     ("awaken.session.origin".into(), "dream".into()),
@@ -500,7 +502,7 @@ impl DreamExecutor for BuiltInDreamAgent {
         );
         let operation_id = format!("dream-job:{}", request.job_id);
         let run_id = session_run_id(
-            &awaken_session_contract::SessionId::from(preparation.session_id.as_str()),
+            &awaken_session_types::SessionId::from(preparation.session_id.as_str()),
             &operation_id,
         );
         let message = Message::text(
@@ -513,7 +515,7 @@ impl DreamExecutor for BuiltInDreamAgent {
             .run_admitted_session_for_owner(
                 &request.workspace_id,
                 AdmitSessionRun {
-                    session_id: awaken_session_contract::SessionId::from(&preparation.session_id),
+                    session_id: awaken_session_types::SessionId::from(&preparation.session_id),
                     agent_id: request.agent_id.clone(),
                     operation_id,
                     run_id,
@@ -521,7 +523,8 @@ impl DreamExecutor for BuiltInDreamAgent {
                     data_subject_id: None,
                     traceparent: None,
                     execution_requirements: Default::default(),
-                    replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
+                    replacement:
+                        awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
                 },
                 Some(Arc::new(DiscardDreamProgress)),
             )
@@ -536,7 +539,8 @@ impl DreamExecutor for BuiltInDreamAgent {
         preparation: Option<&DreamPreparation>,
     ) -> Result<(), DreamFailure> {
         if let Some(preparation) = preparation {
-            let archived_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
+            let archived_at =
+                awaken_session_application_contract::epoch_millis_to_rfc3339(now_ms());
             let fact = ManagedLifecycleFact {
                 id: format!("session:{}:terminated", preparation.session_id),
                 object_id: preparation.session_id.clone(),
