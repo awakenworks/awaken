@@ -9,6 +9,11 @@
 //!
 //! Gated on the `docker` feature AND a reachable daemon (self-skips otherwise, same
 //! discipline as `docker_it.rs`). Requires `busybox:latest` to be present locally.
+//! Feature decision rule: C1 `docker` is enabled; C2 `podman` is disabled.
+//! E1 this Docker test binary still compiles and retains its Docker residue
+//! cleanup; the Podman-only runtime arm is unreachable. With both features
+//! enabled, each daemon retains its own cleanup arm. The two feature-matrix
+//! builds exercise these rules before the live OOM case below runs.
 //!
 //! Run with: `cargo test -p awaken-sandbox-container --features docker --test pairwise_docker`
 #![cfg(feature = "docker")]

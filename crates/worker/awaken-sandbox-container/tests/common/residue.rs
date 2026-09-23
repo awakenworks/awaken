@@ -112,10 +112,15 @@ impl TestResidue {
                             }
                         }
                     }
+                    #[cfg(feature = "podman")]
                     Backend::Podman => {
                         awaken_sandbox_container::podman::PodmanRuntime::new(RESIDUE_AGENT_PORT)
                             .remove_unreceipted_scope(&scope)
                             .await
+                    }
+                    #[cfg(not(feature = "podman"))]
+                    Backend::Podman => {
+                        unreachable!("Podman residue requires the podman feature")
                     }
                 };
                 if let Err(error) = outcome {
