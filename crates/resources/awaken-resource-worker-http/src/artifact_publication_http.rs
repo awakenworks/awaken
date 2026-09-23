@@ -7,7 +7,7 @@ use awaken_resource_contract::{
     ArtifactRecovery, FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError,
 };
 use awaken_dispatch_contract::{ArtifactPublicationFence, DispatchQueue, RunClaim};
-use awaken_session_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
+use awaken_session_state_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -404,9 +404,9 @@ pub struct WorkerArtifactPublicationService {
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
     terminal_preparation_control:
-        Option<Arc<dyn awaken_session_contract::SessionTerminalPreparationControl>>,
+        Option<Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>>,
     checkpoint_artifact_control:
-        Option<Arc<dyn awaken_session_contract::SessionCheckpointArtifactControl>>,
+        Option<Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>>,
 }
 
 impl WorkerArtifactPublicationService {
@@ -430,7 +430,7 @@ impl WorkerArtifactPublicationService {
     #[must_use]
     pub fn with_terminal_preparation_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionTerminalPreparationControl>,
+        control: Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>,
     ) -> Self {
         self.terminal_preparation_control = Some(control);
         self
@@ -439,7 +439,7 @@ impl WorkerArtifactPublicationService {
     #[must_use]
     pub fn with_checkpoint_artifact_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionCheckpointArtifactControl>,
+        control: Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>,
     ) -> Self {
         self.checkpoint_artifact_control = Some(control);
         self
@@ -451,8 +451,8 @@ impl WorkerArtifactPublicationService {
     #[must_use]
     pub fn with_session_control<T>(mut self, control: Arc<T>) -> Self
     where
-        T: awaken_session_contract::SessionTerminalPreparationControl
-            + awaken_session_contract::SessionCheckpointArtifactControl
+        T: awaken_session_realization_contract::SessionTerminalPreparationControl
+            + awaken_session_realization_contract::SessionCheckpointArtifactControl
             + 'static,
     {
         self.terminal_preparation_control = Some(control.clone());
@@ -493,7 +493,7 @@ async fn authorize_session_worker_lease(
     service: &WorkerArtifactPublicationService,
     worker: &VerifiedWorkerContext,
     identity: Option<&WorkerIdentity>,
-    lease: &awaken_session_contract::SessionRealizationLease,
+    lease: &awaken_session_resource_contract::SessionRealizationLease,
     temporal_rule: SessionWorkerEffectTemporalRule,
 ) -> Result<(), StatusCode> {
     let Some(identity) = identity else {
@@ -516,14 +516,16 @@ async fn authorize_session_worker_lease(
 }
 
 fn authorize_workspace_result(
-    result: Result<String, awaken_session_contract::SessionRealizationControlFailure>,
+    result: Result<String, awaken_session_realization_contract::SessionRealizationControlFailure>,
     expected_workspace: &str,
 ) -> Result<(), StatusCode> {
     match result {
         Ok(authorized_workspace) if authorized_workspace == expected_workspace => Ok(()),
         Ok(_) => Err(StatusCode::FORBIDDEN),
-        Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_))
-        | Err(awaken_session_contract::SessionRealizationControlFailure::Conflict) => {
+        Err(
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_),
+        )
+        | Err(awaken_session_realization_contract::SessionRealizationControlFailure::Conflict) => {
             Err(StatusCode::SERVICE_UNAVAILABLE)
         }
         Err(_) => Err(StatusCode::CONFLICT),
@@ -571,7 +573,7 @@ async fn authorize_checkpoint_release_artifact(
     identity: Option<&WorkerIdentity>,
     operation: &SessionEnvironmentOperation,
     workspace_id: &str,
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
 ) -> Result<(), StatusCode> {
     let Some(lease) = operation.realization.as_ref() else {
         return Err(StatusCode::FORBIDDEN);
@@ -646,7 +648,7 @@ async fn authorize_artifact_effect(
                 identity,
                 operation,
                 workspace_id,
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
             )
             .await?;
         }
@@ -1194,8 +1196,8 @@ mod tests {
         let legacy: ArtifactPublicationRequest =
             serde_json::from_value(legacy).expect("W2 legacy decode");
         assert_eq!(
-            awaken_session_contract::stable_fingerprint(&legacy.operation_fence),
-            awaken_session_contract::stable_fingerprint(&canonical),
+            awaken_agent_contract::stable_fingerprint(&legacy.operation_fence),
+            awaken_agent_contract::stable_fingerprint(&canonical),
             "W2"
         );
 
@@ -1242,12 +1244,12 @@ mod tests {
         // => reject before the Session/File authorities are called.
         let request = ArtifactRecoveryRequest {
             terminal_effect: SessionTerminalCleanupEffect::new(
-                awaken_session_contract::SessionCleanupCommand::new(
-                    &awaken_session_contract::SessionId::from("session"),
+                awaken_session_state_contract::SessionCleanupCommand::new(
+                    &awaken_session_types::SessionId::from("session"),
                     "session",
                     "cleanup",
                 ),
-                awaken_session_contract::SessionRealizationLease {
+                awaken_session_resource_contract::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker:incarnation".into(),
                     epoch: 1,

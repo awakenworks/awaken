@@ -147,7 +147,7 @@ struct ControlServices {
     audit: Arc<dyn awaken_config_service::ManagementAuditRepository>,
     credentials: Arc<dyn awaken_session_application::SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
-    webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
+    webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
 }
 
@@ -170,7 +170,7 @@ impl ControlServices {
 pub struct CoordinatorAuthorityHandles {
     pub runtime_authority: Arc<dyn awaken_session_executor::RuntimeAuthority>,
     pub worker_directory: Arc<dyn awaken_worker_contract::WorkerDirectory>,
-    pub sessions: Arc<dyn awaken_session_contract::SessionRepository>,
+    pub sessions: Arc<dyn awaken_session_repository_contract::SessionRepository>,
     /// The one process-owned Coordinator pool. Hosted adapters and the
     /// process-readiness probe clone this handle rather than reconnecting.
     pub postgres_pool: Option<sqlx::PgPool>,
@@ -1143,17 +1143,19 @@ fn local_org_id() -> String {
 #[cfg(test)]
 mod runtime_session_store_tests {
     use super::*;
+    use awaken_agent_contract::stable_fingerprint;
     use awaken_config_service::ModelPublicationResolver;
-    use awaken_session_contract::{
-        ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentRevision,
-        EnvironmentSnapshot, IdempotencyRecord, PersistedSession, SessionBaselineState,
-        SessionCreationIntent, SessionNetworkPolicy, stable_fingerprint,
+    use awaken_environment_contract::EnvironmentRevision;
+    use awaken_session_configuration_contract::{
+        ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentSnapshot,
+        SessionBaselineState, SessionCreationIntent, SessionNetworkPolicy,
     };
+    use awaken_session_state_contract::{IdempotencyRecord, PersistedSession};
 
     fn creation_intent() -> SessionCreationIntent {
         SessionCreationIntent {
             control: ControlSessionCreationInputs {
-                mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
+                mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
                 environment: EnvironmentSnapshot {
                     environment_id: awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
                         .into(),
@@ -1181,11 +1183,13 @@ mod runtime_session_store_tests {
                         ),
                     },
                 },
-                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+                runtime_placement:
+                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
                 agent_id: "assistant".into(),
                 agent_revision: None,
                 model_override: None,
-                system_prompt: awaken_session_contract::SessionSystemPromptSelection::Inherit,
+                system_prompt:
+                    awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
                 model: "test-model".into(),
                 execution_model_ref: "test-model".into(),
                 runtime: None,
@@ -1202,7 +1206,7 @@ mod runtime_session_store_tests {
         }
     }
 
-    fn session(id: &awaken_session_contract::SessionId) -> PersistedSession {
+    fn session(id: &awaken_session_types::SessionId) -> PersistedSession {
         PersistedSession {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
@@ -1225,7 +1229,7 @@ mod runtime_session_store_tests {
             resources: Default::default(),
             realization: None,
             realization_progress: Default::default(),
-            execution: awaken_session_contract::SessionExecutionState::Idle,
+            execution: awaken_session_state_contract::SessionExecutionState::Idle,
             disposition: Default::default(),
             terminal_cleanup: Default::default(),
         }
@@ -1240,7 +1244,7 @@ mod runtime_session_store_tests {
                 .coordinator
                 .as_ref()
                 .expect("test startup owns Managed Execution");
-            let value = session(&awaken_session_contract::SessionId::from("sesn-restart"));
+            let value = session(&awaken_session_types::SessionId::from("sesn-restart"));
             let payload_hash = stable_fingerprint(&value);
             execution
                 .sessions
@@ -1265,7 +1269,7 @@ mod runtime_session_store_tests {
         assert_eq!(
             execution
                 .sessions
-                .owner(&awaken_session_contract::SessionId::from("sesn-restart"))
+                .owner(&awaken_session_types::SessionId::from("sesn-restart"))
                 .await
                 .as_deref(),
             Ok("workspace-a")
@@ -1273,7 +1277,7 @@ mod runtime_session_store_tests {
         assert_eq!(
             execution
                 .sessions
-                .get(&awaken_session_contract::SessionId::from("sesn-restart"))
+                .get(&awaken_session_types::SessionId::from("sesn-restart"))
                 .await
                 .expect("session survives restart")
                 .baseline,

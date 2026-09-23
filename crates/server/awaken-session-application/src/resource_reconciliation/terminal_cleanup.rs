@@ -3,10 +3,13 @@
 
 use std::{future::Future, pin::Pin};
 
-use awaken_session_contract::{
-    PersistedSession, RenewSessionRealization, RunError, SandboxRestoreRequest,
-    SessionRealizationControlFailure, SessionRealizationDriveError, SessionTerminalCleanupAction,
+use awaken_session_error_contract::RunError;
+use awaken_session_realization_contract::{
+    RenewSessionRealization, SessionRealizationControlFailure, SessionRealizationDriveError,
     SessionTerminalCleanupAssignment,
+};
+use awaken_session_state_contract::{
+    PersistedSession, SandboxRestoreRequest, SessionTerminalCleanupAction,
 };
 
 use super::{internal, mutation_failure, repository_preparation};
@@ -87,9 +90,9 @@ fn terminal_cleanup_path(
 }
 
 fn terminal_driver_failure(
-    error: awaken_session_contract::SessionRealizationDriveError,
+    error: awaken_session_realization_contract::SessionRealizationDriveError,
 ) -> SessionPreparationError {
-    use awaken_session_contract::{
+    use awaken_session_realization_contract::{
         SessionRealizationControlFailure as ControlFailure,
         SessionRealizationDriveError as DriveError,
     };
@@ -121,13 +124,13 @@ fn terminal_driver_failure(
 /// aggregate advanced concurrently; every other malformed command remains a
 /// fail-closed invalid projection.
 pub(super) fn terminal_cleanup_authorization_failure(
-    error: awaken_session_contract::SessionCleanupError,
+    error: awaken_session_state_contract::SessionCleanupError,
 ) -> SessionRealizationControlFailure {
     match error {
-        awaken_session_contract::SessionCleanupError::RealizationMismatch => {
+        awaken_session_state_contract::SessionCleanupError::RealizationMismatch => {
             SessionRealizationControlFailure::StaleOwnership
         }
-        awaken_session_contract::SessionCleanupError::CommandNotPending => {
+        awaken_session_state_contract::SessionCleanupError::CommandNotPending => {
             SessionRealizationControlFailure::NotReady
         }
         error => SessionRealizationControlFailure::Invalid(error.to_string()),
@@ -135,7 +138,7 @@ pub(super) fn terminal_cleanup_authorization_failure(
 }
 
 async fn supervise_local_terminal_cleanup_lease<Drive, Renew, RenewFuture, Clock, R>(
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
     initial_assignment: &SessionTerminalCleanupAssignment,
     runtime: &R,
     drive: Drive,
@@ -143,15 +146,15 @@ async fn supervise_local_terminal_cleanup_lease<Drive, Renew, RenewFuture, Clock
     now_unix_ms: Clock,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError>
 where
-    R: awaken_session_contract::RealizationRuntime
-        + awaken_session_contract::TerminalCleanupRuntime
+    R: awaken_session_execution_contract::RealizationRuntime
+        + awaken_session_execution_contract::TerminalCleanupRuntime
         + ?Sized,
     Drive:
         Future<Output = Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError>>,
     Renew: FnMut(RenewSessionRealization) -> RenewFuture,
     RenewFuture: Future<
         Output = Result<
-            awaken_session_contract::SessionRealizationLeaseReceipt,
+            awaken_session_realization_contract::SessionRealizationLeaseReceipt,
             SessionRealizationControlFailure,
         >,
     >,
@@ -208,7 +211,7 @@ where
                     return Err(SessionRealizationDriveError::Control(SessionRealizationControlFailure::StaleOwnership));
                 }
                 let renewed_lease = observed.lease.clone();
-                if !awaken_session_contract::realization_lease_generation_authorizes(
+                if !awaken_session_realization_contract::realization_lease_generation_authorizes(
                         &renewed_lease,
                         &asserted_lease,
                     )
@@ -246,18 +249,18 @@ impl SessionApplication {
     ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
         let session_id = assignment.session_id.as_str();
         supervise_local_terminal_cleanup_lease(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             assignment,
             self.runtime(),
             crate::drive_session_terminal_cleanup(
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 &assignment.authority.lease,
                 self,
                 self.runtime(),
             ),
             |command| async move {
                 let lease =
-                    awaken_session_contract::SessionRealizationControl::renew_session_realization(
+                    awaken_session_realization_contract::SessionRealizationControl::renew_session_realization(
                         self, command,
                     )
                     .await?;
@@ -323,11 +326,13 @@ impl SessionApplication {
         Box::pin(async move {
             let mut session = match self
                 .session_repository()
-                .get(&awaken_session_contract::SessionId::from(session_id))
+                .get(&awaken_session_types::SessionId::from(session_id))
                 .await
             {
                 Ok(session) => session,
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
+                Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+                    return Ok(None);
+                }
                 Err(error) => return Err(repository_preparation(error)),
             };
             let cleanup_completed = session
@@ -436,7 +441,7 @@ impl SessionApplication {
                     TerminalCleanupPath::DriveLocal => {
                         let assignment = self
                             .claim_local_terminal_cleanup_assignment(
-                                &awaken_session_contract::SessionId::from(session_id),
+                                &awaken_session_types::SessionId::from(session_id),
                             )
                             .await
                             .map_err(|error| terminal_driver_failure(error.into()))?;
@@ -446,11 +451,13 @@ impl SessionApplication {
                         drove_local_cleanup = true;
                         session = match self
                             .session_repository()
-                            .get(&awaken_session_contract::SessionId::from(session_id))
+                            .get(&awaken_session_types::SessionId::from(session_id))
                             .await
                         {
                             Ok(session) => session,
-                            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                            Err(
+                                awaken_session_state_contract::SessionRepositoryError::NotFound,
+                            ) => {
                                 return Ok(None);
                             }
                             Err(error) => return Err(repository_preparation(error)),
@@ -476,7 +483,7 @@ impl SessionApplication {
                 // per-thread effect registry.
                 self.runtime()
                     .acknowledge_completed_terminal_cleanup(
-                        &awaken_session_contract::SessionId::from(session_id),
+                        &awaken_session_types::SessionId::from(session_id),
                         lease,
                     )
                     .await;
@@ -508,8 +515,8 @@ impl SessionApplication {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_contract::SessionRealizationLease;
-    use awaken_session_contract::SessionRuntime;
+    use awaken_session_resource_contract::SessionRealizationLease;
+    use awaken_session_execution_contract::SessionRuntime;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -525,7 +532,7 @@ mod tests {
         assert!(
             matches!(
                 terminal_cleanup_authorization_failure(
-                    awaken_session_contract::SessionCleanupError::CommandNotPending
+                    awaken_session_state_contract::SessionCleanupError::CommandNotPending
                 ),
                 SessionRealizationControlFailure::NotReady
             ),
@@ -534,7 +541,7 @@ mod tests {
         assert!(
             matches!(
                 terminal_cleanup_authorization_failure(
-                    awaken_session_contract::SessionCleanupError::RealizationMismatch
+                    awaken_session_state_contract::SessionCleanupError::RealizationMismatch
                 ),
                 SessionRealizationControlFailure::StaleOwnership
             ),
@@ -543,7 +550,7 @@ mod tests {
         assert!(
             matches!(
                 terminal_cleanup_authorization_failure(
-                    awaken_session_contract::SessionCleanupError::OperationMismatch
+                    awaken_session_state_contract::SessionCleanupError::OperationMismatch
                 ),
                 SessionRealizationControlFailure::Invalid(_)
             ),
@@ -561,20 +568,21 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingTerminalProjectionRuntime {
-        installed: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupAssignment>>,
+        installed:
+            Mutex<Vec<awaken_session_realization_contract::SessionTerminalCleanupAssignment>>,
         fail_install: AtomicBool,
         observation: Mutex<Option<awaken_runtime_contract::authority_lease::AuthorityProofStarted>>,
         installed_remaining_us: AtomicU64,
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::SessionRuntime for RecordingTerminalProjectionRuntime {
+    impl awaken_session_execution_contract::SessionRuntime for RecordingTerminalProjectionRuntime {
         async fn run(
             &self,
             _agent: &str,
             _thread: &str,
             _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-        ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
             Err(RunError::internal("terminal renewal fixture"))
         }
 
@@ -582,8 +590,8 @@ mod tests {
             &self,
             _thread: &str,
             _tool_use_id: &str,
-            _decision: awaken_session_contract::ToolPermissionDecision,
-        ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+            _decision: awaken_session_execution_contract::ToolPermissionDecision,
+        ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
             Err(RunError::internal("terminal renewal fixture"))
         }
 
@@ -593,7 +601,7 @@ mod tests {
             _tool_use_id: &str,
             _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
             _is_error: bool,
-        ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
             Err(RunError::internal("terminal renewal fixture"))
         }
 
@@ -601,65 +609,71 @@ mod tests {
             "terminal-renewal-fixture".into()
         }
 
-        fn realization(&self) -> Option<&dyn awaken_session_contract::RealizationRuntime> {
+        fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
             Some(self)
         }
 
-        fn terminal_cleanup(&self) -> Option<&dyn awaken_session_contract::TerminalCleanupRuntime> {
+        fn terminal_cleanup(
+            &self,
+        ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
             Some(self)
         }
 
-        fn coordination(&self) -> Option<&dyn awaken_session_contract::CoordinationRuntime> {
+        fn coordination(
+            &self,
+        ) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
             Some(self)
         }
 
-        fn budget(&self) -> Option<&dyn awaken_session_contract::BudgetRuntime> {
+        fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
             Some(self)
         }
 
-        fn streaming_runs(&self) -> Option<&dyn awaken_session_contract::StreamingRunRuntime> {
+        fn streaming_runs(
+            &self,
+        ) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
             Some(self)
         }
 
-        fn environment(&self) -> Option<&dyn awaken_session_contract::EnvironmentRuntime> {
+        fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
             Some(self)
         }
 
-        fn thread_reads(&self) -> Option<&dyn awaken_session_contract::ThreadReadRuntime> {
+        fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
             Some(self)
         }
 
-        fn outcomes(&self) -> Option<&dyn awaken_session_contract::OutcomeRuntime> {
+        fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
             Some(self)
         }
 
-        fn live_inbox(&self) -> Option<&dyn awaken_session_contract::LiveInboxRuntime> {
+        fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
             Some(self)
         }
 
-        fn capability(&self) -> Option<&dyn awaken_session_contract::CapabilityRuntime> {
+        fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
             Some(self)
         }
     }
 
-    awaken_session_contract::neutral_role!(CoordinationRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_contract::neutral_role!(BudgetRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_contract::neutral_role!(StreamingRunRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_contract::neutral_role!(EnvironmentRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_contract::neutral_role!(ThreadReadRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_contract::neutral_role!(OutcomeRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(OutcomeRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_contract::neutral_role!(LiveInboxRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RecordingTerminalProjectionRuntime);
 
-    awaken_session_contract::neutral_role!(CapabilityRuntime for RecordingTerminalProjectionRuntime);
+    awaken_session_execution_contract::neutral_role!(CapabilityRuntime for RecordingTerminalProjectionRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::RealizationRuntime for RecordingTerminalProjectionRuntime {
+    impl awaken_session_execution_contract::RealizationRuntime for RecordingTerminalProjectionRuntime {
         fn observe_realization_request(
             &self,
         ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError>
@@ -670,24 +684,24 @@ mod tests {
             }
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Reconcile the existing Runtime projections through the given Control
         /// owner. Local and Worker deployment use one slot-based selection and
         /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
         async fn renew_session_realization_projections(
             &self,
-            control: &dyn awaken_session_contract::SessionRealizationControl,
+            control: &dyn awaken_session_realization_contract::SessionRealizationControl,
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
-        ) -> Result<usize, awaken_session_contract::RunError> {
-            awaken_session_contract::NeutralRuntime
+        ) -> Result<usize, awaken_session_error_contract::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Validate the exact provider-effective Sandbox layout without publishing
         /// process-local state or performing provider, cache, Skill, File, Vault,
@@ -697,12 +711,13 @@ mod tests {
         fn validate_session_sandbox_layout(
             &self,
             thread: &str,
-            layout: &awaken_session_contract::SessionSandboxLayout,
-        ) -> Result<(), awaken_session_contract::RunError> {
-            awaken_session_contract::NeutralRuntime.validate_session_sandbox_layout(thread, layout)
+            layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+        ) -> Result<(), awaken_session_error_contract::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
+                .validate_session_sandbox_layout(thread, layout)
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Install one complete Control-frozen Session projection. Dispatch and
         /// realization are explicit modes of this single port; callers must never
@@ -711,15 +726,15 @@ mod tests {
         async fn install_session_projection(
             &self,
             thread: &str,
-            projection: awaken_session_contract::FrozenSessionProjection,
-            mode: awaken_session_contract::SessionProjectionInstallMode,
-        ) -> Result<(), awaken_session_contract::RunError> {
-            awaken_session_contract::NeutralRuntime
+            projection: awaken_session_realization_contract::FrozenSessionProjection,
+            mode: awaken_session_realization_contract::SessionProjectionInstallMode,
+        ) -> Result<(), awaken_session_error_contract::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
                 .install_session_projection(thread, projection, mode)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
         /// an already-installed realization fence. This is the only lease-only
@@ -727,14 +742,14 @@ mod tests {
         async fn renew_session_realization_lease(
             &self,
             thread: &str,
-            lease: awaken_session_contract::ObservedSessionRealizationLease,
-        ) -> Result<(), awaken_session_contract::RunError> {
-            awaken_session_contract::NeutralRuntime
+            lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        ) -> Result<(), awaken_session_error_contract::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_lease(thread, lease)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Forget one failed realization fence from disposable Runtime state. The
         /// aggregate remains the sole lease authority: this hook only prevents a
@@ -743,27 +758,31 @@ mod tests {
         async fn invalidate_session_realization_lease(
             &self,
             thread: &str,
-            lease: &awaken_session_contract::SessionRealizationLease,
-        ) -> Result<(), awaken_session_contract::RunError> {
-            awaken_session_contract::NeutralRuntime
+            lease: &awaken_session_resource_contract::SessionRealizationLease,
+        ) -> Result<(), awaken_session_error_contract::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Install the durable callback used at the exact sandbox creation boundary.
         fn install_environment_binding_sink(
             &self,
-            sink: std::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+            sink: std::sync::Arc<
+                dyn awaken_session_execution_contract::SessionEnvironmentBindingSink,
+            >,
         ) {
-            awaken_session_contract::NeutralRuntime.install_environment_binding_sink(sink)
+            awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
         }
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::TerminalCleanupRuntime for RecordingTerminalProjectionRuntime {
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    impl awaken_session_execution_contract::TerminalCleanupRuntime
+        for RecordingTerminalProjectionRuntime
+    {
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Execute terminal Repository publication under the same realization
         /// generation that owns the cleanup command set and return either its
@@ -774,80 +793,80 @@ mod tests {
         /// back would erase the terminal ownership proof.
         async fn execute_terminal_repository_publication_for_lease(
             &self,
-            command: awaken_session_contract::SessionRepositoryPublicationCommand,
-            lease: &awaken_session_contract::SessionRealizationLease,
+            command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
+            lease: &awaken_session_resource_contract::SessionRealizationLease,
         ) -> Result<
-            awaken_session_contract::SessionRepositoryPublicationEffect,
-            awaken_session_contract::RunError,
+            awaken_session_state_contract::SessionRepositoryPublicationEffect,
+            awaken_session_error_contract::RunError,
         > {
-            awaken_session_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .execute_terminal_repository_publication_for_lease(command, lease)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Make every source-dependent effect durable under the exact aggregate
         /// preparation fence without deleting the physical realization.
         async fn prepare_terminal_cleanup_for_effect(
             &self,
-            effect: awaken_session_contract::SessionTerminalCleanupEffect,
-            authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+            effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
+            authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
         ) -> Result<
-            awaken_session_contract::SessionCleanupPreparation,
-            awaken_session_contract::RunError,
+            awaken_session_state_contract::SessionCleanupPreparation,
+            awaken_session_error_contract::RunError,
         > {
-            awaken_session_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .prepare_terminal_cleanup_for_effect(effect, authorization)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Retire only a prepared child projection after Control durably accepts
         /// its exact preparation. The shared root Environment must remain until the
         /// aggregate-wide physical disposal is complete.
         async fn acknowledge_terminal_cleanup_preparation(
             &self,
-            effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+            effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
         ) {
-            awaken_session_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_terminal_cleanup_preparation(effect)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Execute the one aggregate-wide physical disposal after every
         /// preparation is durable. The typed effect carries the exact prepared
         /// predecessor plus the current live successor lease.
         async fn dispose_terminal_cleanup_for_effect(
             &self,
-            effect: awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+            effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
         ) -> Result<
-            awaken_session_contract::SessionCleanupDisposalReceipt,
-            awaken_session_contract::RunError,
+            awaken_session_state_contract::SessionCleanupDisposalReceipt,
+            awaken_session_error_contract::RunError,
         > {
-            awaken_session_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .dispose_terminal_cleanup_for_effect(effect)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Retire only the process-local teardown projection after Control has
         /// durably accepted the exact disposal receipt. No provider or Resource
         /// effect is permitted at this edge.
         async fn acknowledge_terminal_cleanup_disposal(
             &self,
-            effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
+            effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
         ) {
-            awaken_session_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_terminal_cleanup_disposal(effect)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Retire a process-local terminal projection after Control reports that
         /// the aggregate has no remaining cleanup work. This closes final receipt
@@ -855,18 +874,18 @@ mod tests {
         /// completion registry.
         async fn acknowledge_completed_terminal_cleanup(
             &self,
-            session_id: &awaken_session_contract::SessionId,
-            lease: &awaken_session_contract::SessionRealizationLease,
+            session_id: &awaken_session_types::SessionId,
+            lease: &awaken_session_resource_contract::SessionRealizationLease,
         ) {
-            awaken_session_contract::NeutralRuntime
+            awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_completed_terminal_cleanup(session_id, lease)
                 .await
         }
 
         async fn install_terminal_cleanup_assignment(
             &self,
-            assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
-            proof: awaken_session_contract::ObservedSessionRealizationLease,
+            assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
+            proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
         ) -> Result<(), RunError> {
             if self.fail_install.swap(false, Ordering::SeqCst) {
                 return Err(RunError::unavailable(
@@ -878,7 +897,7 @@ mod tests {
                 .remaining_at(
                     self.realization()
                         .ok_or_else(|| {
-                            awaken_session_contract::RunError::unavailable(
+                            awaken_session_error_contract::RunError::unavailable(
                                 "RealizationRuntime is unsupported by this runtime",
                             )
                         })?
@@ -906,21 +925,23 @@ mod tests {
     }
 
     fn local_assignment(now_unix_ms: u64) -> SessionTerminalCleanupAssignment {
-        let baseline = awaken_session_contract::SessionBaseline::compile(
-            awaken_session_contract::SessionBaselineInputs {
-                environment: awaken_session_contract::EnvironmentSnapshot {
+        let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
+                environment: awaken_session_configuration_contract::EnvironmentSnapshot {
                     environment_id: "environment".into(),
-                    revision: awaken_session_contract::EnvironmentRevision(1),
+                    revision: awaken_environment_contract::EnvironmentRevision(1),
                     self_hosted: false,
-                    config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
-                        "environment-v1".into(),
-                    ),
+                    config_fingerprint:
+                        awaken_session_configuration_contract::EnvironmentFingerprint(
+                            "environment-v1".into(),
+                        ),
                     sandbox: Default::default(),
                     sandbox_provisioning: Default::default(),
                     idle_retention: Default::default(),
                     packages: Default::default(),
                     prepared_image: None,
-                    network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    network:
+                        awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                     credential_realization:
                         awaken_credential_contract::CredentialRealizationProfile {
                             inference_holder: awaken_credential_contract::PlaintextHolder::new(
@@ -937,7 +958,8 @@ mod tests {
                             ),
                         },
                 },
-                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+                runtime_placement:
+                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "agent".into(),
                 agent_revision: None,
@@ -954,16 +976,16 @@ mod tests {
         );
         SessionTerminalCleanupAssignment {
             session_id: "session".into(),
-            projection: awaken_session_contract::FrozenSessionProjection {
+            projection: awaken_session_realization_contract::FrozenSessionProjection {
                 workspace_id: "workspace".into(),
-                revision: awaken_session_contract::SessionRevision(2),
+                revision: awaken_session_types::SessionRevision(2),
                 baseline,
                 agent_publication: None,
                 environment: Default::default(),
                 resource_revision: 0,
                 resources: Default::default(),
                 previous_resource_manifest: Some(
-                    awaken_session_contract::SessionResourceManifest::at_revision(
+                    awaken_session_resource_contract::SessionResourceManifest::at_revision(
                         "workspace",
                         0,
                         Default::default(),
@@ -973,11 +995,12 @@ mod tests {
                 mcp: Vec::new(),
                 request_context: Vec::new(),
             },
-            authority: awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
-                local_lease(now_unix_ms),
-                now_unix_ms,
-            )
-            .unwrap(),
+            authority:
+                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                    local_lease(now_unix_ms),
+                    now_unix_ms,
+                )
+                .unwrap(),
         }
     }
 
@@ -1023,7 +1046,7 @@ mod tests {
                 async move {
                     let renewal_runtime = runtime.clone();
                     supervise_local_terminal_cleanup_lease(
-                        &awaken_session_contract::SessionId::from("session"),
+                        &awaken_session_types::SessionId::from("session"),
                         &local_assignment(10_000_000),
                         runtime.as_ref(),
                         async move {
@@ -1043,7 +1066,7 @@ mod tests {
                                     ));
                                 let mut lease = command.asserted_lease;
                                 lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-                                awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                     lease,
                                     command.requested_expires_at_unix_ms - 30,
                                 )
@@ -1132,7 +1155,7 @@ mod tests {
             let effect_release = Arc::clone(&effect_release);
             async move {
                 supervise_local_terminal_cleanup_lease(
-                    &awaken_session_contract::SessionId::from("session"),
+                    &awaken_session_types::SessionId::from("session"),
                     &initial,
                     runtime.as_ref(),
                     async move {
@@ -1146,7 +1169,7 @@ mod tests {
                             let mut renewed = command.asserted_lease.clone();
                             renewed.expires_at_unix_ms = command.requested_expires_at_unix_ms;
                             renewals.lock().unwrap().push(command.clone());
-                            awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                            awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                 renewed,
                                 command.requested_expires_at_unix_ms
                                     - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
@@ -1188,7 +1211,7 @@ mod tests {
                 "L1/E2 Runtime receives exact renewed lease B"
             );
             assert!(
-                awaken_session_contract::realization_lease_generation_authorizes(
+                awaken_session_realization_contract::realization_lease_generation_authorizes(
                     &installed.authority.lease,
                     &command.asserted_lease,
                 ),
@@ -1216,7 +1239,7 @@ mod tests {
             "L2 time crossed initial TTL"
         );
         assert!(
-            awaken_session_contract::realization_lease_is_live_at(
+            awaken_session_realization_contract::realization_lease_is_live_at(
                 previous_expiry,
                 after_initial_ttl,
             ),
@@ -1276,7 +1299,7 @@ mod tests {
         let mut mismatched = local_assignment(19_000_000);
         mismatched.session_id = "other-session".into();
         let mismatched_result = supervise_local_terminal_cleanup_lease(
-            &awaken_session_contract::SessionId::from("session"),
+            &awaken_session_types::SessionId::from("session"),
             &mismatched,
             &mismatch_runtime,
             async { Ok(SessionTerminalCleanupDriveOutcome::Completed) },
@@ -1335,7 +1358,7 @@ mod tests {
                 let drive_started = Arc::clone(&drive_started);
                 async move {
                     supervise_local_terminal_cleanup_lease(
-                        &awaken_session_contract::SessionId::from("session"),
+                        &awaken_session_types::SessionId::from("session"),
                         &initial,
                         runtime.as_ref(),
                         async move {
@@ -1364,7 +1387,7 @@ mod tests {
                                         foreign.runtime_incarnation = "foreign-runtime/boot".into();
                                         foreign.expires_at_unix_ms =
                                             command.requested_expires_at_unix_ms;
-                                        awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                                        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                             foreign,
                                             command.requested_expires_at_unix_ms - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
                                         )
@@ -1374,7 +1397,7 @@ mod tests {
                                         successor.epoch = successor.epoch.saturating_add(1);
                                         successor.expires_at_unix_ms =
                                             command.requested_expires_at_unix_ms;
-                                        awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                                        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                             successor,
                                             command.requested_expires_at_unix_ms - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
                                         )
@@ -1383,7 +1406,7 @@ mod tests {
                                         let mut regressed = command.asserted_lease;
                                         regressed.expires_at_unix_ms =
                                             command.requested_expires_at_unix_ms.saturating_sub(1);
-                                        awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                                        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                             regressed,
                                             command.requested_expires_at_unix_ms - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
                                         )
@@ -1392,7 +1415,7 @@ mod tests {
                                         let mut renewed = command.asserted_lease;
                                         renewed.expires_at_unix_ms =
                                             command.requested_expires_at_unix_ms;
-                                        awaken_session_contract::SessionRealizationLeaseReceipt::issued_at(
+                                        awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                             renewed,
                                             command.requested_expires_at_unix_ms - crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS,
                                         )
@@ -1436,7 +1459,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let completed_runtime = RecordingTerminalProjectionRuntime::default();
         let result = supervise_local_terminal_cleanup_lease(
-            &awaken_session_contract::SessionId::from("session"),
+            &awaken_session_types::SessionId::from("session"),
             &local_assignment(30_000_000),
             &completed_runtime,
             async { Ok(SessionTerminalCleanupDriveOutcome::Completed) },
@@ -1472,7 +1495,7 @@ mod tests {
         let failed_calls = Arc::new(AtomicUsize::new(0));
         let failed_runtime = RecordingTerminalProjectionRuntime::default();
         let failed = supervise_local_terminal_cleanup_lease(
-            &awaken_session_contract::SessionId::from("session"),
+            &awaken_session_types::SessionId::from("session"),
             &local_assignment(40_000_000),
             &failed_runtime,
             async {
@@ -1567,38 +1590,40 @@ mod tests {
         // | M6 | driver | DidNotConverge | E6 Unavailable |
         assert!(matches!(
             terminal_driver_failure(
-                awaken_session_contract::SessionRealizationDriveError::Effect(RunError::internal(
-                    "effect"
-                ),)
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                    RunError::internal("effect"),
+                )
             ),
             SessionPreparationError::Rejected(_)
         ));
         assert!(matches!(
             terminal_driver_failure(
-                awaken_session_contract::SessionRealizationDriveError::Control(
-                    awaken_session_contract::SessionRealizationControlFailure::NotFound,
+                awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                    awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
                 )
             ),
             SessionPreparationError::NotFound
         ));
         for failure in [
-            awaken_session_contract::SessionRealizationControlFailure::Conflict,
-            awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
-            awaken_session_contract::SessionRealizationControlFailure::NotReady,
-            awaken_session_contract::SessionRealizationControlFailure::Retired,
-            awaken_session_contract::SessionRealizationControlFailure::Terminal,
+            awaken_session_realization_contract::SessionRealizationControlFailure::Conflict,
+            awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership,
+            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+            awaken_session_realization_contract::SessionRealizationControlFailure::Retired,
+            awaken_session_realization_contract::SessionRealizationControlFailure::Terminal,
         ] {
             assert!(matches!(
                 terminal_driver_failure(
-                    awaken_session_contract::SessionRealizationDriveError::Control(failure)
+                    awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                        failure
+                    )
                 ),
                 SessionPreparationError::Conflict
             ));
         }
         assert!(matches!(
             terminal_driver_failure(
-                awaken_session_contract::SessionRealizationDriveError::Control(
-                    awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                    awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                         "offline".into(),
                     ),
                 )
@@ -1607,8 +1632,8 @@ mod tests {
         ));
         assert!(matches!(
             terminal_driver_failure(
-                awaken_session_contract::SessionRealizationDriveError::Control(
-                    awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                    awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
                         "foreign".into(),
                     ),
                 )
@@ -1617,7 +1642,7 @@ mod tests {
         ));
         assert!(matches!(
             terminal_driver_failure(
-                awaken_session_contract::SessionRealizationDriveError::DidNotConverge
+                awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge
             ),
             SessionPreparationError::Unavailable(_)
         ));

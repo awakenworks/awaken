@@ -83,7 +83,7 @@ use terminal_repository_publication::{
 /// Desired state remains in `EnvironmentWarmupSource`; this adapter owns no
 /// queue, cache, or receipt store.
 pub fn worker_environment_warmup_router(
-    source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource>,
+    source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
     directory: Arc<dyn WorkerDirectory>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
 ) -> Router {
@@ -98,14 +98,14 @@ pub fn worker_environment_warmup_router(
 /// Clock-injected form used by the same deterministic Worker transport tests as
 /// registration and dispatch. Production calls [`worker_environment_warmup_router`].
 pub fn worker_environment_warmup_router_with_clock(
-    source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource>,
+    source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
     directory: Arc<dyn WorkerDirectory>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     clock: Arc<dyn WorkerClock>,
 ) -> Router {
     #[derive(Clone)]
     struct WarmupState {
-        source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource>,
+        source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
         directory: Arc<dyn WorkerDirectory>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         clock: Arc<dyn WorkerClock>,
@@ -166,13 +166,15 @@ pub struct WorkerDispatchService {
     completion: Option<Arc<dyn CompletionSink>>,
     terminal_observer: Option<Arc<dyn DispatchSettlementObserver>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
-    session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
+    session_control:
+        Option<Arc<dyn awaken_session_realization_contract::SessionRealizationControl>>,
     terminal_cleanup_control:
-        Option<Arc<dyn awaken_session_contract::SessionTerminalCleanupControl>>,
+        Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
     session_environment_bindings:
-        Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>,
-    session_coordination: Option<Arc<dyn awaken_session_contract::SessionAgentCoordination>>,
-    session_work: Option<Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>>,
+        Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
+    session_coordination:
+        Option<Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>>,
+    session_work: Option<Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     credential_deliveries:
         Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
@@ -275,7 +277,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_session_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+        control: Arc<dyn awaken_session_realization_contract::SessionRealizationControl>,
     ) -> Self {
         self.session_control = Some(control);
         self
@@ -285,7 +287,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_terminal_cleanup_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionTerminalCleanupControl>,
+        control: Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>,
     ) -> Self {
         self.terminal_cleanup_control = Some(control);
         self
@@ -297,7 +299,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_session_environment_bindings(
         mut self,
-        bindings: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+        bindings: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     ) -> Self {
         self.session_environment_bindings = Some(bindings);
         self
@@ -308,7 +310,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_session_coordination(
         mut self,
-        coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination>,
+        coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     ) -> Self {
         self.session_coordination = Some(coordination);
         self
@@ -317,7 +319,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_session_work_authority(
         mut self,
-        authority: Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>,
+        authority: Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>,
     ) -> Self {
         self.session_work = Some(authority);
         self
@@ -476,11 +478,11 @@ pub struct RegisteredDispatchDependencies {
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,
-    pub sessions: Arc<dyn awaken_session_contract::WorkerSessionRealizationControl>,
+    pub sessions: Arc<dyn awaken_session_realization_contract::WorkerSessionRealizationControl>,
     pub session_environment_bindings:
-        Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
-    pub coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination>,
-    pub session_work: Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>,
+        Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+    pub coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
+    pub session_work: Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>,
     pub authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub recovery: Arc<dyn RunRecoverySource>,
     pub completion: Arc<dyn CompletionSink>,
@@ -705,8 +707,8 @@ fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
 
 enum RealizationHttpError {
     Boundary(HostError),
-    Control(awaken_session_contract::SessionRealizationControlFailure),
-    Binding(awaken_session_contract::RunError),
+    Control(awaken_session_realization_contract::SessionRealizationControlFailure),
+    Binding(awaken_session_error_contract::RunError),
 }
 
 impl From<HostError> for RealizationHttpError {
@@ -715,14 +717,16 @@ impl From<HostError> for RealizationHttpError {
     }
 }
 
-impl From<awaken_session_contract::SessionRealizationControlFailure> for RealizationHttpError {
-    fn from(error: awaken_session_contract::SessionRealizationControlFailure) -> Self {
+impl From<awaken_session_realization_contract::SessionRealizationControlFailure>
+    for RealizationHttpError
+{
+    fn from(error: awaken_session_realization_contract::SessionRealizationControlFailure) -> Self {
         Self::Control(error)
     }
 }
 
-impl From<awaken_session_contract::RunError> for RealizationHttpError {
-    fn from(error: awaken_session_contract::RunError) -> Self {
+impl From<awaken_session_error_contract::RunError> for RealizationHttpError {
+    fn from(error: awaken_session_error_contract::RunError) -> Self {
         Self::Binding(error)
     }
 }
@@ -733,11 +737,11 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
         Err(RealizationHttpError::Boundary(error)) => respond(Err(error)),
         Err(RealizationHttpError::Binding(error)) => {
             let status = match error.kind {
-                awaken_session_contract::RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
-                awaken_session_contract::RunErrorKind::Unavailable => {
+                awaken_session_error_contract::RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+                awaken_session_error_contract::RunErrorKind::Unavailable => {
                     StatusCode::SERVICE_UNAVAILABLE
                 }
-                awaken_session_contract::RunErrorKind::Internal => {
+                awaken_session_error_contract::RunErrorKind::Internal => {
                     StatusCode::INTERNAL_SERVER_ERROR
                 }
             };
@@ -747,7 +751,7 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
             )
         }
         Err(RealizationHttpError::Control(error)) => {
-            use awaken_session_contract::SessionRealizationControlFailure;
+            use awaken_session_realization_contract::SessionRealizationControlFailure;
             let status = match &error {
                 SessionRealizationControlFailure::NotFound => StatusCode::NOT_FOUND,
                 SessionRealizationControlFailure::NotReady
@@ -797,12 +801,12 @@ async fn bind_claimed_session_work_authority(
         .session_work
         .as_ref()
         .ok_or_else(|| HostError::internal("Session Work authority is not configured"))?;
-    let receipt = awaken_session_contract::work_queue::acquire_session_work_receipt(
+    let receipt = awaken_session_work_contract::acquire_session_work_receipt(
         work.as_ref(),
-        &awaken_session_contract::SessionId::from(session_id),
+        &awaken_session_types::SessionId::from(session_id),
         &authority.owner,
         authority.now_ms,
-        awaken_session_contract::work_queue::SessionWorkAcquisition::ClaimedRun,
+        awaken_session_work_contract::SessionWorkAcquisition::ClaimedRun,
     )
     .await;
     let receipt = match receipt {
@@ -1001,7 +1005,9 @@ async fn recovery_snapshot(
                 ));
             }
             (true, Some(receipt)) => {
-                if receipt.session_id().as_str() != session.0 || receipt.worker_owner() != authority.owner {
+                if receipt.session_id().as_str() != session.0
+                    || receipt.worker_owner() != authority.owner
+                {
                     return Err(HostError::bad_request(
                         "Session recovery Work authority identity does not match the claim",
                     ));
@@ -1011,10 +1017,10 @@ async fn recovery_snapshot(
                 })?;
                 let observed = work
                     .acquire_session_work(
-                        &awaken_session_contract::SessionId::from(&session.0),
+                        &awaken_session_types::SessionId::from(&session.0),
                         &authority.owner,
                         authority.now_ms,
-                        awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
+                        awaken_session_work_contract::SessionWorkAcquisition::RealizationRenewal,
                     )
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
@@ -1543,16 +1549,24 @@ async fn settle(
                         "coordinated settlement does not match committed Session activity truth",
                     )));
                 }
-                Some(awaken_session_contract::SessionAgentBoundaryCommand {
-                    session_id: awaken_session_contract::SessionId::from(
-                        session_thread_id.0.clone(),
-                    ),
-                    source_thread_id: thread_id.clone(),
-                    source_run_id: claim.run_id.clone(),
-                    source_agent_id: guard.request().activation.snapshot.root_agent_id.0.clone(),
-                    session_activity_epoch,
-                    cancellation_requested: guard.cancellation_requested(),
-                })
+                Some(
+                    awaken_session_execution_contract::SessionAgentBoundaryCommand {
+                        session_id: awaken_session_types::SessionId::from(
+                            session_thread_id.0.clone(),
+                        ),
+                        source_thread_id: thread_id.clone(),
+                        source_run_id: claim.run_id.clone(),
+                        source_agent_id: guard
+                            .request()
+                            .activation
+                            .snapshot
+                            .root_agent_id
+                            .0
+                            .clone(),
+                        session_activity_epoch,
+                        cancellation_requested: guard.cancellation_requested(),
+                    },
+                )
             } else {
                 None
             }
@@ -1569,31 +1583,31 @@ async fn settle(
         if owns_session_work && let Some(session_work) = service.session_work.as_ref() {
             let lease = match session_work
                 .acquire_session_work(
-                    &awaken_session_contract::SessionId::from(session_thread_id.0),
+                    &awaken_session_types::SessionId::from(session_thread_id.0),
                     &claim.owner,
                     authority.now_ms,
-                    awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
+                    awaken_session_work_contract::SessionWorkAcquisition::RealizationRenewal,
                 )
                 .await
                 .map_err(|error| {
                     RealizationHttpError::from(HostError::internal(error.to_string()))
                 })? {
-                awaken_session_contract::work_queue::SessionWorkOwnership::NotRequired => None,
-                awaken_session_contract::work_queue::SessionWorkOwnership::Leased(lease)
+                awaken_session_work_contract::SessionWorkOwnership::NotRequired => None,
+                awaken_session_work_contract::SessionWorkOwnership::Leased(lease)
                     if lease.owner == claim.owner =>
                 {
                     Some(lease)
                 }
-                awaken_session_contract::work_queue::SessionWorkOwnership::Unowned
-                | awaken_session_contract::work_queue::SessionWorkOwnership::Leased(_)
+                awaken_session_work_contract::SessionWorkOwnership::Unowned
+                | awaken_session_work_contract::SessionWorkOwnership::Leased(_)
                     if committed_terminal =>
                 {
                     // No Work mutation is authorized by another owner's lease.
                     // The subsequent Dispatch settle still checks its own epoch.
                     None
                 }
-                awaken_session_contract::work_queue::SessionWorkOwnership::Unowned
-                | awaken_session_contract::work_queue::SessionWorkOwnership::Leased(_) => {
+                awaken_session_work_contract::SessionWorkOwnership::Unowned
+                | awaken_session_work_contract::SessionWorkOwnership::Leased(_) => {
                     return Err(RealizationHttpError::from(HostError::bad_request(
                         "Session Work ownership was lost before Run settlement",
                     )));

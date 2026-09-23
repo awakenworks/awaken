@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
-use awaken_session_contract::{RunApplication, RunApplicationError};
+use awaken_session_application_contract::{RunApplication, RunApplicationError};
 
 /// The ACP stop reason a served prompt operation ended on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

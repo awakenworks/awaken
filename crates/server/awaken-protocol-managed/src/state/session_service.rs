@@ -8,7 +8,7 @@ use awaken_session_application::SessionApplication;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_application::{CredentialMaterialIngress, SessionCredentialSource};
 #[cfg(any(test, feature = "test-support"))]
-use awaken_session_contract::LifecycleFactNotifier;
+use awaken_session_application_contract::LifecycleFactNotifier;
 #[cfg(any(test, feature = "test-support"))]
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -24,7 +24,9 @@ impl ManagedState {
     /// Session repository and the canonical Environment execution projection via
     /// [`ManagedState::from_application`].
     #[cfg(any(test, feature = "test-support"))]
-    pub fn new(runtime: impl awaken_session_contract::CompleteSessionRuntime + 'static) -> Self {
+    pub fn new(
+        runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
+    ) -> Self {
         Self::from_runtime_fixture(
             Arc::new(runtime),
             Arc::new(UnsupportedMcpAttachmentRealizer),
@@ -39,8 +41,8 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_mcp<R>(runtime: R) -> Self
     where
-        R: awaken_session_contract::CompleteSessionRuntime
-            + awaken_session_contract::McpAttachmentRealizer
+        R: awaken_session_execution_contract::CompleteSessionRuntime
+            + awaken_session_execution_contract::McpAttachmentRealizer
             + 'static,
     {
         let runtime = Arc::new(runtime);
@@ -110,7 +112,7 @@ impl ManagedState {
     #[cfg(test)]
     pub(crate) fn with_executable_projection_refresh(
         mut self,
-        refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
+        refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
     ) -> Self {
         self.application_mut()
             .set_executable_projection_refresh(refresh)
@@ -120,9 +122,9 @@ impl ManagedState {
 
     #[cfg(any(test, feature = "test-support"))]
     fn from_runtime_fixture(
-        runtime: Arc<dyn awaken_session_contract::CompleteSessionRuntime>,
-        mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn awaken_session_contract::SessionStore>,
+        runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
+        mcp_realizer: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
+        sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
         environments: Arc<
             awaken_environment_execution_application::EnvironmentExecutionApplication,
         >,
@@ -172,7 +174,7 @@ impl ManagedState {
     #[must_use]
     pub fn with_session_repo(
         mut self,
-        repo: Arc<dyn awaken_session_contract::SessionStore>,
+        repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     ) -> Self {
         self.application_mut().replace_repository(repo);
         self
@@ -184,7 +186,7 @@ impl ManagedState {
     #[must_use]
     pub fn with_managed_list_price_provider(
         mut self,
-        provider: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
+        provider: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
     ) -> Self {
         self.application_mut()
             .set_managed_list_price_provider(provider);
@@ -275,7 +277,7 @@ impl ManagedState {
     #[must_use]
     pub fn with_model_publication_resolver(
         mut self,
-        resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+        resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     ) -> Self {
         self.application_mut()
             .set_model_publication_resolver(resolver);
@@ -296,7 +298,7 @@ impl ManagedState {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn ephemeral_session_repository() -> Arc<dyn awaken_session_contract::SessionStore> {
+fn ephemeral_session_repository() -> Arc<dyn awaken_session_repository_contract::SessionStore> {
     Arc::new(
         SqliteManagedSessionRepository::open_in_memory()
             .expect("open ephemeral managed Session repository"),

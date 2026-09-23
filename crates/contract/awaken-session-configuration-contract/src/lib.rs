@@ -5,7 +5,9 @@ mod baseline;
 mod mcp_probe;
 mod model_resolution;
 mod network_policy;
+mod runtime_projection;
 mod skill_execution;
+mod tool_configuration;
 
 use awaken_session_mcp_contract::McpAttachmentDraft;
 #[cfg(test)]
@@ -43,9 +45,13 @@ pub use model_resolution::{
     SessionModelPublicationResolver, SessionModelResolutionError, session_model_override_decision,
 };
 pub use network_policy::SessionNetworkPolicy;
+pub use runtime_projection::{SessionInit, SessionSandboxLayout};
 pub use skill_execution::{
     SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, SkillExecutionPin,
     validate_skill_bundle,
+};
+pub use tool_configuration::{
+    AgentCapabilities, BuiltinTool, CustomTool, SessionToolConfiguration,
 };
 
 pub(crate) use awaken_agent_contract::stable_fingerprint;

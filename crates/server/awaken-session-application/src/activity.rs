@@ -3,11 +3,14 @@
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
-use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, RunError,
-    SessionEventDispatchSettlementEffect, SessionEventProjectionAnchor, SessionExecutionState,
-    SessionRevision, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
+use awaken_session_error_contract::RunError;
+use awaken_session_event_contract::SessionEventProjectionAnchor;
+use awaken_session_state_contract::{
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
+    SessionEventDispatchSettlementEffect, SessionExecutionState, SessionRuntimeInterval,
+    SessionRuntimeIntervalObservation,
 };
+use awaken_session_types::SessionRevision;
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
@@ -339,7 +342,7 @@ impl SessionActivityError {
 
 impl SessionApplication {
     fn activity_operation_record(session_id: &str, operation_id: &str) -> IdempotencyRecord {
-        let identity = awaken_session_contract::stable_fingerprint(&(
+        let identity = awaken_agent_contract::stable_fingerprint(&(
             "managed-session-activity-v1",
             session_id,
             operation_id,
@@ -352,7 +355,7 @@ impl SessionApplication {
 
     async fn activity_operation_receipt(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         record: &IdempotencyRecord,
     ) -> Result<Option<u64>, SessionActivityError> {
         let receipt = self
@@ -374,7 +377,7 @@ impl SessionApplication {
 
     async fn replayed_activity_operation(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         record: &IdempotencyRecord,
     ) -> Result<Option<(PersistedSession, u64)>, SessionActivityError> {
         let Some(epoch) = self.activity_operation_receipt(session_id, record).await? else {
@@ -433,7 +436,7 @@ impl SessionApplication {
     pub async fn begin_admitted_activity_for_operation(
         &self,
         agent_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         operation_id: &str,
     ) -> Result<(PersistedSession, u64), RunError> {
         if operation_id.trim().is_empty() {
@@ -468,12 +471,12 @@ impl SessionApplication {
     /// monotonically increasing completion fence.
     pub async fn begin_activity(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionActivityError> {
         match self.session_repository().get(session_id).await {
             Ok(session) if session.is_terminal() => return Err(SessionActivityError::Terminal),
             Ok(_) => {}
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
                 return Err(SessionActivityError::NotFound);
             }
             Err(error) => return Err(SessionActivityError::Unavailable(error.to_string())),
@@ -528,7 +531,7 @@ impl SessionApplication {
     /// retry after settlement) return the same value without reopening activity.
     pub async fn begin_activity_for_operation(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         operation_id: &str,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
         self.begin_activity_for_operation_with_policy(session_id, operation_id, false, None, None)
@@ -539,7 +542,7 @@ impl SessionApplication {
     /// complete execution projection recovered before Runtime reservation.
     pub(crate) async fn begin_activity_for_operation_at_revision(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         projected_revision: SessionRevision,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
@@ -559,7 +562,7 @@ impl SessionApplication {
     /// already-committed activity still requires canonical settlement.
     pub(crate) async fn recover_activity_for_operation(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         operation_id: &str,
     ) -> Result<Option<(PersistedSession, u64)>, SessionActivityError> {
         if operation_id.trim().is_empty() {
@@ -577,7 +580,7 @@ impl SessionApplication {
     /// while a later stale settlement cannot close the newly opened interval.
     pub(crate) async fn transfer_committed_activity_for_operation(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         prior_activity_epoch: Option<u64>,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
@@ -598,7 +601,7 @@ impl SessionApplication {
 
     async fn begin_activity_for_operation_with_policy(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         continue_committed_await: bool,
         prior_activity_epoch: Option<u64>,
@@ -755,7 +758,7 @@ impl SessionApplication {
         expected_epoch: u64,
     ) -> Result<PersistedSession, SessionActivityError> {
         self.settle_activity_observed(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             expected_epoch,
             None,
         )
@@ -768,7 +771,7 @@ impl SessionApplication {
     /// CAS and never create a protocol-side lifecycle owner.
     pub async fn settle_activity_observed(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         expected_epoch: u64,
         observation: Option<SessionRuntimeIntervalObservation>,
     ) -> Result<PersistedSession, SessionActivityError> {
@@ -780,11 +783,11 @@ impl SessionApplication {
     /// User Event marker and activity removal in the existing Session root CAS.
     pub(crate) async fn settle_user_event_dispatch_observed(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         expected_epoch: u64,
         observation: SessionRuntimeIntervalObservation,
         run_id: &RunId,
-        boundary: awaken_session_contract::SessionAgentRunBoundary,
+        boundary: awaken_session_execution_contract::SessionAgentRunBoundary,
     ) -> Result<PersistedSession, SessionActivityError> {
         self.settle_activity_observed_for_event(
             session_id,
@@ -797,10 +800,13 @@ impl SessionApplication {
 
     async fn settle_activity_observed_for_event(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         expected_epoch: u64,
         observation: Option<SessionRuntimeIntervalObservation>,
-        event_run_id: Option<(&RunId, awaken_session_contract::SessionAgentRunBoundary)>,
+        event_run_id: Option<(
+            &RunId,
+            awaken_session_execution_contract::SessionAgentRunBoundary,
+        )>,
     ) -> Result<PersistedSession, SessionActivityError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
@@ -970,7 +976,7 @@ impl SessionApplication {
     /// path so the final interval carries both exact commit coordinates.
     pub(crate) async fn observe_activity_runtime_boundary(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         observation: SessionRuntimeIntervalObservation,
     ) -> Result<PersistedSession, SessionActivityError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {

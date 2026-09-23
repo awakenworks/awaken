@@ -1,7 +1,7 @@
 use super::*;
 use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::{InMemorySecretStore, repo::InMemoryCredentialRepo};
-use awaken_session_contract::{McpProbe, McpProbeStatus};
+use awaken_session_configuration_contract::{McpProbe, McpProbeStatus};
 use axum::{body::Body, http::Request};
 use http_body_util::BodyExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,12 +18,12 @@ impl McpProbe for Probe {
         &self,
         url: &str,
         bearer: Option<&RedactedString>,
-    ) -> awaken_session_contract::McpInspection {
+    ) -> awaken_session_configuration_contract::McpInspection {
         let bearer = bearer.unwrap();
         let status = self.probe(url, bearer).await;
-        awaken_session_contract::McpInspection {
+        awaken_session_configuration_contract::McpInspection {
             status,
-            tools: vec![awaken_session_contract::McpProbeTool {
+            tools: vec![awaken_session_configuration_contract::McpProbeTool {
                 name: "read".into(),
                 description: Some(bearer.expose_secret().into()),
                 input_schema: json!({"type":"object","description":bearer.expose_secret()}),

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_session_contract::{
+use awaken_session_application_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 

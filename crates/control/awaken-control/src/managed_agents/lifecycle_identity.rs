@@ -26,5 +26,5 @@ pub(super) fn lifecycle_timestamp() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
-    awaken_session_contract::epoch_millis_to_rfc3339(milliseconds)
+    awaken_session_application_contract::epoch_millis_to_rfc3339(milliseconds)
 }

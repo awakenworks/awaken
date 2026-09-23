@@ -18,7 +18,8 @@ test-support = []
 [dependencies]
 awaken-runtime-contract.workspace = true
 awaken-provisioning-contract.workspace = true
-awaken-session-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-types.workspace = true
 awaken-resource-contract.workspace = true
 awaken-local-process.workspace = true
 awaken-sandbox-fs.workspace = true

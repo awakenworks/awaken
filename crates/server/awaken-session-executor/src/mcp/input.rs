@@ -4,12 +4,12 @@
 use std::sync::{Arc, Weak};
 
 use awaken_agent_contract::agent::message::{Id, Message, Role};
+use awaken_agent_contract::stable_fingerprint;
 use awaken_ext_mcp::notification::{
     McpNotificationConfig, McpNotificationHandler, McpSelectedInput,
 };
-use awaken_session_contract::{
-    McpGenerationRef, SessionRunBackgroundApplication, stable_fingerprint,
-};
+use awaken_session_application_contract::SessionRunBackgroundApplication;
+use awaken_session_mcp_contract::McpGenerationRef;
 use serde_json::{Value, json};
 
 use crate::{HostError, SharedHost};
@@ -76,7 +76,7 @@ impl McpNotificationHandler for SessionMcpInput {
                     &input_method,
                     &input_event_id,
                 );
-                let target = awaken_session_contract::session_run_id(
+                let target = awaken_session_execution_contract::session_run_id(
                     &self.generation.session_id,
                     &operation,
                 );
@@ -116,7 +116,9 @@ impl McpNotificationHandler for SessionMcpInput {
                 .await
             {
                 Ok(_) => return,
-                Err(error) if error.kind == awaken_session_contract::RunErrorKind::BadRequest => {
+                Err(error)
+                    if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest =>
+                {
                     tracing::warn!(
                         code = "mcp_input_rejected",
                         "MCP input admission rejected; provider payload omitted"
@@ -230,7 +232,7 @@ mod tests {
         // L2 shorter lease, L3 different Session, L4 owner/epoch changed,
         // L5 content/version/attachment changed -> reject. Root liveness is
         // independently checked at delivery, never inferred from this match.
-        use awaken_session_contract::{McpAttachmentId, McpGeneration, McpTarget};
+        use awaken_session_mcp_contract::{McpAttachmentId, McpGeneration, McpTarget};
         let generation = |name: &str, version: u64, url: &str| {
             McpGeneration::of_bare_target(
                 McpAttachmentId(name.into()),

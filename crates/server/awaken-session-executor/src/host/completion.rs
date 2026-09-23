@@ -233,8 +233,8 @@ impl SharedHost {
     /// non-blocking reconciler port and foreground observation.
     pub(crate) async fn activate_session_run_reservation(
         &self,
-        delivery: awaken_session_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_contract::SessionRunActivation, HostError> {
+        delivery: awaken_session_execution_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_execution_contract::SessionRunActivation, HostError> {
         use awaken_dispatch::Outbox as _;
 
         if delivery.session_activity_epoch == 0 {
@@ -253,18 +253,18 @@ impl SharedHost {
             .map_err(|error| HostError::unavailable(error.to_string()))?;
         let projected = match outcome {
             awaken_dispatch::SessionRunReservationActivation::Activated => {
-                awaken_session_contract::SessionRunActivation::Activated
+                awaken_session_execution_contract::SessionRunActivation::Activated
             }
             awaken_dispatch::SessionRunReservationActivation::AlreadyActivated {
                 session_activity_epoch,
-            } => awaken_session_contract::SessionRunActivation::AlreadyActivated {
+            } => awaken_session_execution_contract::SessionRunActivation::AlreadyActivated {
                 session_activity_epoch,
             },
             awaken_dispatch::SessionRunReservationActivation::RecoveryClaimed => {
-                awaken_session_contract::SessionRunActivation::RecoveryClaimed
+                awaken_session_execution_contract::SessionRunActivation::RecoveryClaimed
             }
             awaken_dispatch::SessionRunReservationActivation::Completed => {
-                awaken_session_contract::SessionRunActivation::Completed
+                awaken_session_execution_contract::SessionRunActivation::Completed
             }
             awaken_dispatch::SessionRunReservationActivation::MissingOrRejected => {
                 return Err(HostError::bad_request(
@@ -279,8 +279,8 @@ impl SharedHost {
         };
         if matches!(
             projected,
-            awaken_session_contract::SessionRunActivation::Activated
-                | awaken_session_contract::SessionRunActivation::AlreadyActivated { .. }
+            awaken_session_execution_contract::SessionRunActivation::Activated
+                | awaken_session_execution_contract::SessionRunActivation::AlreadyActivated { .. }
         ) {
             if let Some(pool) = self.dispatch_pool.get() {
                 pool.notify().await;
@@ -299,7 +299,7 @@ impl SharedHost {
     /// the same authoritative Thread read used by other foreground operations.
     pub(crate) async fn activate_and_observe_session_run(
         &self,
-        admission: awaken_session_contract::AdmittedSessionRun,
+        admission: awaken_session_execution_contract::AdmittedSessionRun,
         input_message_ids: Vec<String>,
         stream_sink: Option<Arc<dyn StreamSink>>,
     ) -> Result<CommittedStepReceipt, HostError> {
@@ -313,16 +313,18 @@ impl SharedHost {
             std::time::Duration::from_millis(250),
             || async move {
                 match admission {
-                    awaken_session_contract::AdmittedSessionRun::Reserved(delivery)
-                    | awaken_session_contract::AdmittedSessionRun::AlreadyReserved(delivery)
-                    | awaken_session_contract::AdmittedSessionRun::AlreadyActivated(delivery) => {
-                        self.activate_session_run_reservation(delivery).await
-                    }
-                    awaken_session_contract::AdmittedSessionRun::RecoveryClaimed { .. } => {
-                        Ok(awaken_session_contract::SessionRunActivation::RecoveryClaimed)
-                    }
-                    awaken_session_contract::AdmittedSessionRun::Completed { .. } => {
-                        Ok(awaken_session_contract::SessionRunActivation::Completed)
+                    awaken_session_execution_contract::AdmittedSessionRun::Reserved(delivery)
+                    | awaken_session_execution_contract::AdmittedSessionRun::AlreadyReserved(
+                        delivery,
+                    )
+                    | awaken_session_execution_contract::AdmittedSessionRun::AlreadyActivated(
+                        delivery,
+                    ) => self.activate_session_run_reservation(delivery).await,
+                    awaken_session_execution_contract::AdmittedSessionRun::RecoveryClaimed {
+                        ..
+                    } => Ok(awaken_session_execution_contract::SessionRunActivation::RecoveryClaimed),
+                    awaken_session_execution_contract::AdmittedSessionRun::Completed { .. } => {
+                        Ok(awaken_session_execution_contract::SessionRunActivation::Completed)
                     }
                 }
             },
@@ -338,7 +340,7 @@ impl SharedHost {
     /// are shared with background Managed Event reconciliation.
     pub(crate) async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
     ) -> Result<CommittedStepReceipt, HostError> {
         let session_id = delivery.command.session_id.clone();
         let run_id = delivery.command.expected_run_id.clone();
@@ -627,7 +629,7 @@ async fn activate_and_await_session_run<Activate, ActivateFuture, Read, ReadFutu
 where
     Activate: FnOnce() -> ActivateFuture,
     ActivateFuture: std::future::Future<
-            Output = Result<awaken_session_contract::SessionRunActivation, HostError>,
+            Output = Result<awaken_session_execution_contract::SessionRunActivation, HostError>,
         >,
     Read: FnMut() -> ReadFuture,
     ReadFuture: std::future::Future<Output = Result<Option<RunState>, HostError>>,
@@ -639,7 +641,7 @@ where
     let activation = activate().await?;
     if matches!(
         activation,
-        awaken_session_contract::SessionRunActivation::Completed
+        awaken_session_execution_contract::SessionRunActivation::Completed
     ) && let Some(state) = read_settled().await?
     {
         return Ok(state);
@@ -871,12 +873,14 @@ mod completion_tests {
             .resolved_spec
     }
 
-    fn environment() -> awaken_session_contract::EnvironmentSnapshot {
-        awaken_session_contract::EnvironmentSnapshot {
+    fn environment() -> awaken_session_configuration_contract::EnvironmentSnapshot {
+        awaken_session_configuration_contract::EnvironmentSnapshot {
             environment_id: "env-1".into(),
-            revision: awaken_session_contract::EnvironmentRevision(3),
+            revision: awaken_environment_contract::EnvironmentRevision(3),
             self_hosted: false,
-            config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp-env".into()),
+            config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+                "fp-env".into(),
+            ),
             sandbox: serde_json::from_value(serde_json::json!({
                 "isolation": "container",
                 "requests": {"cpu_millis": 250, "memory_bytes": 33554432},
@@ -885,12 +889,12 @@ mod completion_tests {
             .expect("valid SandboxOverride fixture"),
             sandbox_provisioning: Default::default(),
             idle_retention: Default::default(),
-            packages: awaken_session_contract::EnvironmentPackages {
+            packages: awaken_environment_contract::EnvironmentPackages {
                 npm: vec!["tsx@4".into()],
                 ..Default::default()
             },
             prepared_image: None,
-            network: awaken_session_contract::SessionNetworkPolicy::Allowlist {
+            network: awaken_session_configuration_contract::SessionNetworkPolicy::Allowlist {
                 hosts: vec!["api.example.test".into()],
             },
             credential_realization:
@@ -900,7 +904,7 @@ mod completion_tests {
 
     fn environment_with_isolation(
         isolation: awaken_provisioning_contract::IsolationClass,
-    ) -> awaken_session_contract::EnvironmentSnapshot {
+    ) -> awaken_session_configuration_contract::EnvironmentSnapshot {
         let mut environment = environment();
         let isolation = match isolation {
             awaken_provisioning_contract::IsolationClass::Workdir => "workdir",
@@ -912,7 +916,8 @@ mod completion_tests {
         }))
         .expect("valid isolation-only SandboxOverride fixture");
         environment.packages = Default::default();
-        environment.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
+        environment.network =
+            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted;
         environment
     }
 
@@ -942,12 +947,12 @@ mod completion_tests {
         models
     }
 
-    fn repository_manifest() -> awaken_session_contract::SessionResourceManifest {
+    fn repository_manifest() -> awaken_session_resource_contract::SessionResourceManifest {
         use awaken_resource_contract::{
             BindingId, ClonePolicy, ConfigVersion, RepositoryConfigVersion, RepositoryId,
             ResourceAccess,
         };
-        use awaken_session_contract::{
+        use awaken_session_resource_contract::{
             ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionResourceManifest,
         };
 
@@ -1099,7 +1104,8 @@ mod completion_tests {
                         },
                         ..Default::default()
                     };
-                    requested.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
+                    requested.network =
+                        awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted;
                     requested.packages = Default::default();
                     let placement = remote_worker_placement(&models, Some(&requested), None, true);
                     assert_eq!(placement.sandbox.process_tree_supervision, supervised);
@@ -1140,7 +1146,7 @@ mod completion_tests {
         let mut workdir = frozen.clone();
         workdir.sandbox = Default::default();
         workdir.sandbox.host_access = awaken_provisioning_contract::HostAccessPolicy::TrustedHost;
-        workdir.network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
+        workdir.network = awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted;
         workdir.packages = Default::default();
         let trusted_resources = repository_manifest();
         let trusted =
@@ -1432,7 +1438,7 @@ mod completion_tests {
         // Decision rule: execute every reachable cause partition documented here and
         // require its stated effects, including each fail-closed outcome.
         use awaken_agent_contract::agent::run::EndCause;
-        use awaken_session_contract::SessionRunActivation;
+        use awaken_session_execution_contract::SessionRunActivation;
 
         // Cause/effect graph: C1 activation returns Activated/AlreadyActivated/
         // RecoveryClaimed/Completed; C2 settlement is signalled locally during
@@ -1522,7 +1528,7 @@ mod completion_tests {
     async fn dropping_session_user_run_observation_releases_only_its_waiter() {
         // Constraint/Invariant: the authoritative inputs and ownership boundaries
         // documented here remain the only decision source; no parallel path is admitted.
-        use awaken_session_contract::SessionRunActivation;
+        use awaken_session_execution_contract::SessionRunActivation;
 
         // Cause/effect graph: C1 an activated Run remains Running in committed
         // truth; C2 its foreground caller is dropped. Effects: E1 the observation
@@ -1951,9 +1957,9 @@ mod completion_tests {
 
     #[test]
     fn explicit_empty_manifest_still_requires_the_revocation_capability() {
-        let resources = awaken_session_contract::SessionResourceManifest::new(
+        let resources = awaken_session_resource_contract::SessionResourceManifest::new(
             "workspace-a",
-            awaken_session_contract::ResolvedSessionResources::default(),
+            awaken_session_resource_contract::ResolvedSessionResources::default(),
         );
         let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);
         assert!(

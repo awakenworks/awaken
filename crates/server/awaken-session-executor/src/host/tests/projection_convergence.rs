@@ -3,9 +3,9 @@ use crate::host::worker_resolver::test_support::{
     AdoptionModel, deferred_environment, empty_frozen_projection_for_snapshot, managed_test_host,
     test_activation,
 };
-use awaken_session_contract::{
-    SessionEnvironmentState, SessionProjectionInstallMode, SessionRuntime,
-};
+use awaken_session_realization_contract::SessionProjectionInstallMode;
+use awaken_session_execution_contract::SessionRuntime;
+use awaken_session_state_contract::SessionEnvironmentState;
 
 fn observation(host: &SharedHost) -> serde_json::Value {
     host.session_slots.read("projection-convergence", |slot| {
@@ -21,10 +21,10 @@ fn observation(host: &SharedHost) -> serde_json::Value {
 async fn deliver(
     host: &SharedHost,
     managed: &crate::ManagedHost,
-    projection: awaken_session_contract::FrozenSessionProjection,
+    projection: awaken_session_realization_contract::FrozenSessionProjection,
     rule: String,
     trace: &mut Vec<serde_json::Value>,
-) -> Result<(), awaken_session_contract::RunError> {
+) -> Result<(), awaken_session_error_contract::RunError> {
     let before = observation(host);
     let receipt =
         crate::session_slot::FrozenProjectionReceipt::from_projection(&projection).unwrap();
@@ -32,7 +32,7 @@ async fn deliver(
     let result = managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_contract::RunError::unavailable(
+            awaken_session_error_contract::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })?
@@ -151,9 +151,9 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
             assert_eq!(
                 error.kind,
                 if label.starts_with("stale") {
-                    awaken_session_contract::RunErrorKind::Unavailable
+                    awaken_session_error_contract::RunErrorKind::Unavailable
                 } else {
-                    awaken_session_contract::RunErrorKind::Internal
+                    awaken_session_error_contract::RunErrorKind::Internal
                 },
                 "R3 retries a delayed read; R4 rejects contradictory truth",
             );

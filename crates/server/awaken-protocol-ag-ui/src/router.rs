@@ -23,10 +23,11 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
-use awaken_session_contract::{
-    CursorParams, EventForwardingSink, Pending, RunApplication, RunApplicationError, RunErrorKind,
-    RunResume, StepOutcome, paginate_history,
+use awaken_session_application_contract::{
+    CursorParams, EventForwardingSink, Pending, RunApplication, RunApplicationError, RunResume,
+    StepOutcome, paginate_history,
 };
+use awaken_session_error_contract::RunErrorKind;
 use awaken_tenancy::{ResolvedAgentId, ResolvedResourceId};
 
 use crate::encoder::{AgUiEncoder, encode_history, encode_step};

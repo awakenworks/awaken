@@ -56,28 +56,30 @@ pub(crate) fn test_activation(thread: &str, run: &str) -> RunActivation {
     )
 }
 
-pub(crate) fn deferred_environment() -> awaken_session_contract::EnvironmentSnapshot {
-    awaken_session_contract::EnvironmentSnapshot {
+pub(crate) fn deferred_environment() -> awaken_session_configuration_contract::EnvironmentSnapshot {
+    awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "lazy-env".into(),
-        revision: awaken_session_contract::EnvironmentRevision(1),
+        revision: awaken_environment_contract::EnvironmentRevision(1),
         self_hosted: false,
-        config_fingerprint: awaken_session_contract::EnvironmentFingerprint("lazy-env-v1".into()),
+        config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+            "lazy-env-v1".into(),
+        ),
         sandbox: Default::default(),
-        sandbox_provisioning: awaken_session_contract::SandboxProvisioning::OnToolUse,
+        sandbox_provisioning: awaken_session_configuration_contract::SandboxProvisioning::OnToolUse,
         idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,
-        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
         credential_realization:
             awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
     }
 }
 
-pub(crate) fn eager_environment() -> awaken_session_contract::EnvironmentSnapshot {
+pub(crate) fn eager_environment() -> awaken_session_configuration_contract::EnvironmentSnapshot {
     let mut environment = deferred_environment();
     environment.environment_id = "eager-env".into();
     environment.config_fingerprint =
-        awaken_session_contract::EnvironmentFingerprint("eager-env-v1".into());
+        awaken_session_configuration_contract::EnvironmentFingerprint("eager-env-v1".into());
     environment.sandbox_provisioning = Default::default();
     environment
 }
@@ -88,24 +90,26 @@ pub(crate) fn eager_environment() -> awaken_session_contract::EnvironmentSnapsho
 /// the model cause and never reconstruct slot fields independently.
 pub(super) fn empty_frozen_projection(
     workspace_id: &str,
-    environment: awaken_session_contract::EnvironmentSnapshot,
-) -> awaken_session_contract::FrozenSessionProjection {
+    environment: awaken_session_configuration_contract::EnvironmentSnapshot,
+) -> awaken_session_realization_contract::FrozenSessionProjection {
     empty_frozen_projection_with_model(workspace_id, environment, "agent-a", "stub", None, None)
 }
 
 pub(crate) fn empty_frozen_projection_for_snapshot(
     workspace_id: &str,
-    environment: awaken_session_contract::EnvironmentSnapshot,
+    environment: awaken_session_configuration_contract::EnvironmentSnapshot,
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
-) -> awaken_session_contract::FrozenSessionProjection {
+) -> awaken_session_realization_contract::FrozenSessionProjection {
     let primary = snapshot.resolved_spec.model_binding.clone();
     let runtime = primary.binding().backend_ref.clone();
     let model = primary.binding().model_ref.clone();
-    let model_override = awaken_session_contract::SessionModelOverride {
-        publication: Some(Box::new(awaken_session_contract::SessionModelPublication {
-            primary,
-            candidates: snapshot.resolved_spec.model_candidates.clone(),
-        })),
+    let model_override = awaken_session_configuration_contract::SessionModelOverride {
+        publication: Some(Box::new(
+            awaken_session_configuration_contract::SessionModelPublication {
+                primary,
+                candidates: snapshot.resolved_spec.model_candidates.clone(),
+            },
+        )),
         inference: Default::default(),
     };
     empty_frozen_projection_with_model(
@@ -122,33 +126,33 @@ pub(crate) async fn install_complete_projection_for_snapshot(
     managed: &crate::ManagedHost,
     thread: &str,
     workspace_id: &str,
-    environment: awaken_session_contract::EnvironmentSnapshot,
+    environment: awaken_session_configuration_contract::EnvironmentSnapshot,
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
 ) {
     let mut projection = empty_frozen_projection_for_snapshot(workspace_id, environment, snapshot);
     projection.agent_publication = Some(snapshot.clone());
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         managed,
         thread,
         projection,
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("install complete frozen Session projection");
 }
 
 pub(super) fn frozen_projection_for_manifest(
-    environment: awaken_session_contract::EnvironmentSnapshot,
-    manifest: &awaken_session_contract::SessionResourceManifest,
-) -> awaken_session_contract::FrozenSessionProjection {
+    environment: awaken_session_configuration_contract::EnvironmentSnapshot,
+    manifest: &awaken_session_resource_contract::SessionResourceManifest,
+) -> awaken_session_realization_contract::FrozenSessionProjection {
     let mut projection = empty_frozen_projection(&manifest.workspace_id, environment);
     projection.resource_revision = manifest.revision;
     projection.resources = manifest.resources.clone();
     projection.previous_resource_manifest = Some(
-        awaken_session_contract::SessionResourceManifest::at_revision(
+        awaken_session_resource_contract::SessionResourceManifest::at_revision(
             manifest.workspace_id.clone(),
             0,
-            awaken_session_contract::ResolvedSessionResources::default(),
+            awaken_session_resource_contract::ResolvedSessionResources::default(),
         ),
     );
     projection
@@ -156,16 +160,17 @@ pub(super) fn frozen_projection_for_manifest(
 
 fn empty_frozen_projection_with_model(
     workspace_id: &str,
-    environment: awaken_session_contract::EnvironmentSnapshot,
+    environment: awaken_session_configuration_contract::EnvironmentSnapshot,
     agent_id: &str,
     model: &str,
     runtime: Option<String>,
-    model_override: Option<awaken_session_contract::SessionModelOverride>,
-) -> awaken_session_contract::FrozenSessionProjection {
-    let baseline = awaken_session_contract::SessionBaseline::compile(
-        awaken_session_contract::SessionBaselineInputs {
+    model_override: Option<awaken_session_configuration_contract::SessionModelOverride>,
+) -> awaken_session_realization_contract::FrozenSessionProjection {
+    let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
+        awaken_session_configuration_contract::SessionBaselineInputs {
             environment,
-            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+            runtime_placement:
+                awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id: agent_id.into(),
             agent_revision: None,
@@ -180,18 +185,20 @@ fn empty_frozen_projection_with_model(
             transcript_prefix: None,
         },
     );
-    awaken_session_contract::FrozenSessionProjection {
+    awaken_session_realization_contract::FrozenSessionProjection {
         workspace_id: workspace_id.into(),
-        revision: awaken_session_contract::SessionRevision(1),
+        revision: awaken_session_types::SessionRevision(1),
         baseline,
         agent_publication: None,
         environment: Default::default(),
         resource_revision: 0,
         resources: Default::default(),
-        previous_resource_manifest: Some(awaken_session_contract::SessionResourceManifest::new(
-            workspace_id,
-            awaken_session_contract::ResolvedSessionResources::default(),
-        )),
+        previous_resource_manifest: Some(
+            awaken_session_resource_contract::SessionResourceManifest::new(
+                workspace_id,
+                awaken_session_resource_contract::ResolvedSessionResources::default(),
+            ),
+        ),
         tools: Default::default(),
         mcp: Vec::new(),
         request_context: Vec::new(),
@@ -207,7 +214,7 @@ pub(crate) fn managed_test_host(host: Arc<SharedHost>) -> crate::ManagedHost {
 pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::ManagedHost {
     let managed = managed.install_dispatch_session_runtime();
     static APPLICATION: std::sync::OnceLock<
-        Arc<dyn awaken_session_contract::SessionAgentCoordination>,
+        Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
     let application = APPLICATION.get_or_init(|| {
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
@@ -227,7 +234,7 @@ pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::
 pub(crate) async fn available_local_environment_binding(
     host: &crate::host::SharedHost,
     thread: &str,
-    projection: &awaken_session_contract::FrozenSessionProjection,
+    projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> String {
     host.install_frozen_session_projection(thread, projection.clone(), None, true, None)
         .await
@@ -278,7 +285,7 @@ pub(crate) async fn available_local_environment_binding(
 pub(super) async fn unavailable_local_environment_binding(
     host: &crate::host::SharedHost,
     thread: &str,
-    projection: &awaken_session_contract::FrozenSessionProjection,
+    projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> String {
     let binding = available_local_environment_binding(host, thread, projection).await;
     remove_local_environment_root(host, thread);
@@ -303,9 +310,9 @@ pub(crate) fn with_empty_session_resources(
     request: awaken_dispatch::RunDispatch,
     workspace_id: &str,
 ) -> awaken_dispatch::RunDispatch {
-    let manifest = awaken_session_contract::SessionResourceManifest::new(
+    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
         workspace_id,
-        awaken_session_contract::ResolvedSessionResources::default(),
+        awaken_session_resource_contract::ResolvedSessionResources::default(),
     );
     request
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
@@ -322,11 +329,11 @@ pub(super) async fn prepare_deferred_session(
     thread: &str,
 ) -> crate::ManagedHost {
     let managed = managed_test_host(host.clone());
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         thread,
         empty_frozen_projection(host.local_workspace(), deferred_environment()),
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("prepare complete deferred Session projection");
@@ -340,16 +347,16 @@ pub(super) struct ToggleBindingSink {
 }
 
 pub(super) fn committed_environment(
-    receipt: awaken_session_contract::SessionEnvironmentReceipt,
-) -> awaken_session_contract::SessionEnvironmentState {
-    let generation = awaken_session_contract::SandboxGeneration::new(
+    receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
+) -> awaken_session_state_contract::SessionEnvironmentState {
+    let generation = awaken_session_state_contract::SandboxGeneration::new(
         &receipt.session_id,
         1,
         u64::MAX,
         "test-environment",
         "test-image",
     );
-    awaken_session_contract::SessionEnvironmentState::Resident {
+    awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding: receipt.binding,
         effect_id: Some(receipt.effect_id),
         generation: Some(generation),
@@ -358,39 +365,41 @@ pub(super) fn committed_environment(
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
     async fn authorize(
         &self,
-        _intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+        _intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_contract::RunError,
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_error_contract::RunError,
     > {
         let binding = self.binding.lock().unwrap().clone();
         match binding {
             Some(_) if self.fail.swap(false, Ordering::SeqCst) => {
-                Err(awaken_session_contract::RunError::unavailable(
+                Err(awaken_session_error_contract::RunError::unavailable(
                     "injected Session binding failure during readback",
                 ))
             }
             Some(binding) => Ok(
-                awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                     binding,
                 },
             ),
-            None => Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized),
+            None => Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized),
         }
     }
 
     async fn persist(
         &self,
-        receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
-    {
+        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
+    ) -> Result<
+        awaken_session_state_contract::SessionEnvironmentState,
+        awaken_session_error_contract::RunError,
+    > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         *self.binding.lock().unwrap() = Some(receipt.binding.clone());
         if self.fail.load(Ordering::SeqCst) {
-            Err(awaken_session_contract::RunError::unavailable(
+            Err(awaken_session_error_contract::RunError::unavailable(
                 "injected Session binding failure",
             ))
         } else {
@@ -403,7 +412,7 @@ pub(crate) struct BlockingBindingSink {
     block: std::sync::atomic::AtomicBool,
     pub(crate) entered: tokio::sync::Notify,
     calls: AtomicUsize,
-    delegate: Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>,
+    delegate: Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     commit_before_block: bool,
 }
 
@@ -419,7 +428,7 @@ impl BlockingBindingSink {
     }
 
     pub(crate) fn around(
-        delegate: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+        delegate: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
         commit_before_block: bool,
     ) -> Self {
         Self {
@@ -439,13 +448,13 @@ impl BlockingBindingSink {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionEnvironmentBindingSink for BlockingBindingSink {
+impl awaken_session_execution_contract::SessionEnvironmentBindingSink for BlockingBindingSink {
     async fn authorize(
         &self,
-        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_contract::RunError,
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_error_contract::RunError,
     > {
         // Cancellation fixture rule: C1 the aggregate authorizes the effect;
         // E1 only the following persist await may be cancelled and retried.
@@ -453,15 +462,19 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for BlockingBindingS
         // reviving the removed persist-without-authorization path.
         match &self.delegate {
             Some(delegate) => delegate.authorize(intent).await,
-            None => Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized),
+            None => Ok(
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
+            ),
         }
     }
 
     async fn persist(
         &self,
-        receipt: awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
-    {
+        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
+    ) -> Result<
+        awaken_session_state_contract::SessionEnvironmentState,
+        awaken_session_error_contract::RunError,
+    > {
         self.calls.fetch_add(1, Ordering::SeqCst);
         // Fault schedules share one blocking seam. With a delegate, the real
         // fixture root owns authorization and commitment; cancellation before

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_session_contract::work_queue::WorkQueue;
+use awaken_session_work_contract::WorkQueue;
 use rusqlite::{Connection, TransactionBehavior};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -44,7 +44,7 @@ async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {
             queue
                 .enqueue_session(
                     "env_local",
-                    &awaken_session_contract::SessionId::from("session_waits"),
+                    &awaken_session_types::SessionId::from("session_waits"),
                 )
                 .await
         })

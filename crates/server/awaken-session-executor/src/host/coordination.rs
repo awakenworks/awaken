@@ -20,7 +20,7 @@ use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLife
 use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
 use awaken_dispatch::Outbox as _;
 use awaken_runtime_contract::tool_batch::ToolBatch;
-use awaken_session_contract::{
+use awaken_session_execution_contract::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
     SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
     coordinated_thread_failed,
@@ -32,8 +32,8 @@ fn reply_dispatch_activity(
     dispatch: Option<&awaken_dispatch::DispatchSummary>,
     thread: &ThreadId,
     parent: &ThreadId,
-) -> Result<awaken_session_contract::SessionThreadToolReplyActivity, HostError> {
-    use awaken_session_contract::SessionThreadToolReplyActivity;
+) -> Result<awaken_session_execution_contract::SessionThreadToolReplyActivity, HostError> {
+    use awaken_session_execution_contract::SessionThreadToolReplyActivity;
     match dispatch {
         Some(row) if row.thread_id == *thread => SessionThreadToolReplyActivity::from_dispatch(
             thread,
@@ -74,7 +74,7 @@ fn coordinated_activation_input(
     vec![Message::text(
         MessageId(format!(
             "coord-input-{}",
-            awaken_session_contract::stable_fingerprint(&(
+            awaken_agent_contract::stable_fingerprint(&(
                 session_id,
                 thread_id.0.as_str(),
                 run_id.0.as_str(),
@@ -95,7 +95,7 @@ struct PendingCoordinationCall {
 }
 
 fn project_committed_coordination_links(
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
     advisor_model: Option<&str>,
     committed: &RunRecoverySnapshot,
 ) -> Result<Vec<CoordinatedThreadLink>, HostError> {
@@ -207,7 +207,7 @@ fn apply_lifecycle_latest_runs(
 }
 
 fn apply_advisor_call(
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
     run_id: &RunId,
     step: usize,
     call_id: &str,
@@ -240,7 +240,7 @@ fn apply_advisor_call(
 }
 
 fn apply_coordination_result(
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
     call: &PendingCoordinationCall,
     content: &[ContentBlock],
     is_error: bool,
@@ -275,7 +275,7 @@ fn apply_coordination_result(
             .filter(|value| !value.is_empty()),
     ) {
         (Some(agent_id), None) => {
-            let expected = awaken_session_contract::coordinated_thread_id(
+            let expected = awaken_session_execution_contract::coordinated_thread_id(
                 session_id,
                 &call.run_id,
                 &operation_id,
@@ -320,7 +320,7 @@ fn apply_coordination_result(
 }
 
 fn apply_active_batch_coordination_results(
-    session_id: &awaken_session_contract::SessionId,
+    session_id: &awaken_session_types::SessionId,
     active: &[PendingCoordinationCall],
     batch: Option<&awaken_runtime_contract::ToolBatch>,
     links: &mut Vec<CoordinatedThreadLink>,
@@ -361,7 +361,7 @@ impl SharedHost {
     /// version are only admission fences against delayed or reused call ids.
     pub(super) async fn validated_session_thread_tool_reply(
         &self,
-        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<(ThreadId, ResumeTicket), HostError> {
         if command.session_id.as_str().trim().is_empty()
             || command.expected_run_id.0.trim().is_empty()
@@ -460,8 +460,8 @@ impl SharedHost {
     /// closes call-id reuse and concurrent-resume races without another store.
     pub(crate) async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, HostError> {
+        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, HostError> {
         // Resolve topology before SessionApplication opens a reply activity.
         self.dispatch_store()?
             .session_continuation()
@@ -470,9 +470,9 @@ impl SharedHost {
             Ok(active) => active,
             Err(active_error) => match self.session_thread_tool_reply_receipt(command).await? {
                 SessionReplyReceipt::Exact => {
-                    return Ok(awaken_session_contract::SessionThreadToolReplyFence {
+                    return Ok(awaken_session_execution_contract::SessionThreadToolReplyFence {
                         activity:
-                            awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                            awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
                                 prior_epoch: None,
                             },
                         already_applied: true,
@@ -495,10 +495,12 @@ impl SharedHost {
             .into_iter()
             .find(|dispatch| dispatch.run_id == command.expected_run_id);
         let activity = reply_dispatch_activity(dispatch.as_ref(), &thread_id, &parent)?;
-        Ok(awaken_session_contract::SessionThreadToolReplyFence {
-            activity,
-            already_applied: false,
-        })
+        Ok(
+            awaken_session_execution_contract::SessionThreadToolReplyFence {
+                activity,
+                already_applied: false,
+            },
+        )
     }
 
     /// Deliver a typed reply to one logical Session Thread while retaining the
@@ -507,9 +509,9 @@ impl SharedHost {
     /// Session context or store is opened.
     pub(crate) async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
+        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
     ) -> Result<(), HostError> {
-        let awaken_session_contract::SessionThreadToolReplyDelivery {
+        let awaken_session_execution_contract::SessionThreadToolReplyDelivery {
             command,
             fence,
             session_activity_epoch,
@@ -710,7 +712,7 @@ impl SharedHost {
         let mut snapshot = snapshot;
         let inherit_session_overrides = snapshot.root_agent_id.0 == baseline.agent_id;
         if inherit_session_overrides {
-            snapshot = awaken_session_contract::project_effective_agent_publication(
+            snapshot = awaken_session_realization_contract::project_effective_agent_publication(
                 baseline.model_override.as_ref(),
                 &baseline.system_prompt,
                 &resources.workspace_id,
@@ -748,7 +750,7 @@ impl SharedHost {
         let origin = DelegationOrigin {
             delegation_id: DelegationId(format!(
                 "coordination:{}",
-                awaken_session_contract::stable_fingerprint(&(
+                awaken_agent_contract::stable_fingerprint(&(
                     session_id.as_str(),
                     operation_id.as_str(),
                 ))
@@ -837,7 +839,7 @@ impl SharedHost {
         let ctx = self.ctx_for(command.session_id.as_str(), None).await?;
         let run_id = RunId(format!(
             "coord-report-run-{}",
-            awaken_session_contract::stable_fingerprint(&(
+            awaken_agent_contract::stable_fingerprint(&(
                 "managed-agent-report-run-v1",
                 command.session_id.as_str(),
                 command.source_run_id.0.as_str(),
@@ -1014,7 +1016,7 @@ impl SharedHost {
         }
         let archive_run = RunId(format!(
             "thread-archive-{}",
-            awaken_session_contract::stable_fingerprint(&(
+            awaken_agent_contract::stable_fingerprint(&(
                 "thread-archive-v1",
                 session_id,
                 thread_id.0.as_str(),
@@ -1135,7 +1137,7 @@ mod tests {
             next_commit_ordinal: 1,
         };
         let links = project_committed_coordination_links(
-            &awaken_session_contract::SessionId::from("session"),
+            &awaken_session_types::SessionId::from("session"),
             Some("advisor-model"),
             &snapshot,
         )
@@ -1159,7 +1161,7 @@ mod tests {
                 state: RunState::Running,
             });
         let error = project_committed_coordination_links(
-            &awaken_session_contract::SessionId::from("session"),
+            &awaken_session_types::SessionId::from("session"),
             Some("advisor-model"),
             &ambiguous,
         )
@@ -1238,10 +1240,10 @@ mod tests {
         use awaken_dispatch::DispatchQueue as _;
 
         let manifest = |revision| {
-            awaken_session_contract::SessionResourceManifest::at_revision(
+            awaken_session_resource_contract::SessionResourceManifest::at_revision(
                 "workspace-a",
                 revision,
-                awaken_session_contract::ResolvedSessionResources::default(),
+                awaken_session_resource_contract::ResolvedSessionResources::default(),
             )
         };
         for (rule, active_revision, desired_revision, expected_revision) in [
@@ -1254,19 +1256,19 @@ mod tests {
             let child_run = RunId(format!("coordinated-resource-run-{rule}"));
             let active = active_revision.map(manifest);
             let transition = desired_revision.map(|revision| {
-                awaken_session_contract::SessionResourceTransition::new(
+                awaken_session_resource_contract::SessionResourceTransition::new(
                     active.clone().unwrap_or_else(|| manifest(0)),
                     manifest(revision),
                 )
                 .expect("test transition belongs to one Workspace")
             });
-            let baseline = awaken_session_contract::SessionBaseline::compile(
-                awaken_session_contract::SessionBaselineInputs {
-                    environment: awaken_session_contract::EnvironmentSnapshot {
+            let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
+                awaken_session_configuration_contract::SessionBaselineInputs {
+                    environment: awaken_session_configuration_contract::EnvironmentSnapshot {
                         environment_id: format!("coordinated-resource-environment-{rule}"),
-                        revision: awaken_session_contract::EnvironmentRevision(1),
+                        revision: awaken_environment_contract::EnvironmentRevision(1),
                         self_hosted: false,
-                        config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                        config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
                             format!("coordinated-resource-environment-{rule}-v1"),
                         ),
                         sandbox: Default::default(),
@@ -1274,11 +1276,11 @@ mod tests {
                         idle_retention: Default::default(),
                         packages: Default::default(),
                         prepared_image: None,
-                        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                        network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                         credential_realization:
                             awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
                     },
-                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                    runtime_placement: awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
                     mcp_authoring: Default::default(),
                     agent_id: "agent-a".into(),
                     agent_revision: Some(1),
@@ -1320,7 +1322,7 @@ mod tests {
             let receipt = host
                 .admit_coordinated_run(CoordinatedRunCommand {
                     intent: CoordinatedRunIntent::Spawn,
-                    session_id: awaken_session_contract::SessionId::from(&session_id),
+                    session_id: awaken_session_types::SessionId::from(&session_id),
                     thread_id: child_thread.clone(),
                     run_id: child_run.clone(),
                     parent_run_id: RunId(format!("coordinated-resource-parent-{rule}")),
@@ -1407,7 +1409,7 @@ mod tests {
         let mut links = Vec::new();
 
         apply_advisor_call(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             &first_run,
             0,
             "advisor-call-1",
@@ -1416,7 +1418,7 @@ mod tests {
         )
         .unwrap();
         apply_advisor_call(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             &first_run,
             0,
             "advisor-call-1",
@@ -1427,7 +1429,7 @@ mod tests {
         assert_eq!(links.len(), 1, "I1/E1");
 
         apply_advisor_call(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             &first_run,
             0,
             "advisor-call-2",
@@ -1436,7 +1438,7 @@ mod tests {
         )
         .unwrap();
         apply_advisor_call(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             &second_run,
             0,
             "advisor-call-1",
@@ -1470,7 +1472,7 @@ mod tests {
 
         assert!(
             apply_advisor_call(
-                &awaken_session_contract::SessionId::from(session_id),
+                &awaken_session_types::SessionId::from(session_id),
                 &first_run,
                 0,
                 "advisor-call-1",
@@ -1510,13 +1512,13 @@ mod tests {
         let published_call = "published-send";
         let gap_call = "gap-send";
         let advisor_call = "advisor-call";
-        let published_child = awaken_session_contract::coordinated_thread_id(
-            &awaken_session_contract::SessionId::from(session),
+        let published_child = awaken_session_execution_contract::coordinated_thread_id(
+            &awaken_session_types::SessionId::from(session),
             &run_id,
             &ToolBatch::operation_id_for_step(&run_id, step, published_call),
         );
-        let gap_child = awaken_session_contract::coordinated_thread_id(
-            &awaken_session_contract::SessionId::from(session),
+        let gap_child = awaken_session_execution_contract::coordinated_thread_id(
+            &awaken_session_types::SessionId::from(session),
             &run_id,
             &ToolBatch::operation_id_for_step(&run_id, step, gap_call),
         );
@@ -1652,7 +1654,7 @@ mod tests {
         ];
 
         let mut warm = project_committed_coordination_links(
-            &awaken_session_contract::SessionId::from(session),
+            &awaken_session_types::SessionId::from(session),
             Some("advisor-model"),
             &snapshot,
         )
@@ -1679,7 +1681,7 @@ mod tests {
         let mut without_batch = snapshot.clone();
         without_batch.state.clear();
         let without_batch = project_committed_coordination_links(
-            &awaken_session_contract::SessionId::from(session),
+            &awaken_session_types::SessionId::from(session),
             Some("advisor-model"),
             &without_batch,
         )
@@ -1693,7 +1695,7 @@ mod tests {
         let cold_snapshot: RunRecoverySnapshot =
             serde_json::from_value(serde_json::to_value(&snapshot).unwrap()).unwrap();
         let mut cold = project_committed_coordination_links(
-            &awaken_session_contract::SessionId::from(session),
+            &awaken_session_types::SessionId::from(session),
             Some("advisor-model"),
             &cold_snapshot,
         )

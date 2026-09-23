@@ -1,7 +1,7 @@
 //! Config-plane webhook subscription and delivery adapter.
 //!
 //! The managed webhook bridge connects the managed session lifecycle (the
-//! `LifecycleFactDelivery` port, in `awaken-session-contract`) to `awaken-webhook`'s
+//! `LifecycleFactDelivery` port, in `awaken-session-application-contract`) to `awaken-webhook`'s
 //! neutral delivery machinery, backed by the **config plane**. Subscriptions are an
 //! id-addressed config resource (`awaken-config-resolver`'s [`WebhookStore`],
 //! durably the admin store) and their `whsec_` signing secret is sealed in the
@@ -22,7 +22,8 @@ use awaken_config_resolver::{
     WebhookDeliveryState, WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
 };
 use awaken_credential_vault::{SecretRef, SecretStore};
-use awaken_session_contract::{LifecycleFactDelivery, ManagedLifecycleFact};
+use awaken_session_application_contract::LifecycleFactDelivery;
+use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
     ReqwestSender, ResolvedSubscription, SubscriptionFailureState, SubscriptionSource,

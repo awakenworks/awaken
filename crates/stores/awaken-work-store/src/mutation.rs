@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use awaken_session_contract::work_queue::{WorkQueueError, WorkQueueError::Storage};
+use awaken_session_work_contract::{WorkQueueError, WorkQueueError::Storage};
 use awaken_sql_storage::StoredU64;
 
 pub(super) fn apply_metadata_patch(

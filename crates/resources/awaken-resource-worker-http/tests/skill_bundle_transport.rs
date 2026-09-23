@@ -14,9 +14,8 @@ use awaken_dispatch::{
     DispatchQueue as _, MemoryDispatchStore, ResourceOperationFence, RunClaim, RunDispatch,
     WorkerIdentity,
 };
-use awaken_session_contract::{
-    ResolvedSessionResources, ResolvedSkillBinding, SkillBundleSource as _,
-};
+use awaken_session_configuration_contract::SkillBundleSource as _;
+use awaken_session_resource_contract::{ResolvedSessionResources, ResolvedSkillBinding};
 use awaken_skill_store::{
     InMemorySkillStore, SkillBundleFile, SkillDefinition, SkillStore as _, SkillVersion,
     bundle_sha256,

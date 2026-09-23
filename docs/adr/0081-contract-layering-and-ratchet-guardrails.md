@@ -314,15 +314,15 @@ error payloads.
 |---|---|---|
 | Reused unchanged | Session aggregate/repository and realization state machine; Dispatch row, Inbox and ordinary Outbox; Resource repositories; provisioning `SandboxProvider`; existing backend conformance entrypoints | They remain the only durable fact/effect owners. No second registry, queue, lifecycle, or provider was introduced. |
 | Modified | Session realization, Agent coordination, MCP realization and Environment binding ports; Run-ingress queue/checkpoint/control/outbox/settlement ports; Resource port requirements and error payloads; application and Worker composition roots | Missing capabilities are required methods or exact role traits. Composition stores only the roles a caller needs; no call catches an "unsupported" error to discover topology. Resource category variants remain stable but their opaque detail is a named type. |
-| New | `awaken-session-types`, `awaken-session-budget-contract`, `awaken-session-dream-contract`, `awaken-session-event-contract`, `awaken-session-mcp-contract`, and `awaken-session-work-contract`; the HTTP copy-conflict read operation | These are cohesive owners extracted behind the existing `awaken-session-contract` facade. They add no V2 API or parallel state. The HTTP operation exposes the already-authoritative `MemoryRepository::list_copy_conflicts` capability instead of manufacturing an unsupported implementation. |
+| New | `awaken-session-types`, `awaken-session-budget-contract`, `awaken-session-dream-contract`, `awaken-session-event-contract`, `awaken-session-mcp-contract`, `awaken-session-work-contract`, `awaken-session-configuration-contract`, `awaken-session-state-contract`, `awaken-session-repository-contract`, `awaken-session-realization-contract`, `awaken-session-execution-contract`, `awaken-session-application-contract`, and `awaken-session-error-contract`; the HTTP copy-conflict read operation | These are cohesive Session owners with direct consumers. They add no V2 API, parallel state, or re-export facade. The HTTP operation exposes the already-authoritative `MemoryRepository::list_copy_conflicts` capability instead of manufacturing an unsupported implementation. |
 
-The facade still preserves the old public paths. Its production surface falls
-from about 17,000 to 13,245 lines while the contract dependency depth remains
-three; Run-ingress remains at depth four. All three audited contracts now have
-zero missing-capability defaults: Session, Run-ingress and Resource. The shape
-baseline records the six structural lines needed to split the Dispatch value
-model and aggregate-role modules; no behavior was added to evade the source-file
-limit.
+The compatibility facade has been deleted. Every source and manifest now names
+the owner it consumes, and the public API snapshots cover those owners directly.
+The deeper visible paths in `awaken-session-execution-contract` and
+`awaken-dispatch-contract` are the actual state -> realization -> runtime ->
+ingress dependency chain; the ratchet records that topology with its reason so a
+replacement aggregator cannot conceal it. All audited Session, Run-ingress and
+Resource contracts retain zero missing-capability defaults.
 
 The terminal and resource realization surface is deliberately a capability
 ladder:
@@ -417,11 +417,11 @@ needs a separate product decision and its own ADR.
 - New backend-named contract types, catch-all String errors, capability-style `Err`
   defaults, contract cycles, deeper contract chains and over-budget growth fail at
   commit time, with the crate, rule, baseline, current value and fix in the message.
-- The baseline records the debt that exists today (for example 54 capability defaults
-  in `awaken-session-contract` and 10 backend nouns in `awaken-provisioning-contract`).
+- The baseline records only current owners. The removed facade has no baseline entry;
+  direct Session owner depths are explicit, while capability-default counts remain zero.
   Each refactor that removes an instance lowers the baseline in the same commit, so
   parallel refactors merge by taking the lower number.
-- `awaken-deployment-contract` no longer depends on `awaken-session-contract`. The
+- `awaken-deployment-contract` depends on neither a Session facade nor a Session runtime owner. The
   Deployment aggregate owns a `DeploymentLifecycleFact` that cannot carry a Session
   runtime interval. The one store that writes the shared lifecycle outbox maps it into
   the outbox record.

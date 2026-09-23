@@ -56,12 +56,12 @@
       }
     },
     "awaken-dispatch-contract": {
-      "depth": 5,
+      "depth": 7,
       "production_lines": 2379,
       "catch_all_errors": 3,
       "growth_reasons": {
         "production_lines": "claim-fenced carrier redelivery adds one Worker transport capability and one attempt-local source without new durable state",
-        "depth": "Extract immutable Session configuration and its resolution ports behind one authoritative owner during facade removal"
+        "depth": "Removing the compatibility facade exposes direct domain-owner dependencies; retaining explicit state, realization, runtime, and ingress boundaries avoids a replacement aggregator."
       }
     },
     "awaken-runtime-contract": {
@@ -79,6 +79,9 @@
       "depth": 0,
       "catch_all_errors": 1
     },
+    "awaken-session-application-contract": {
+      "depth": 5
+    },
     "awaken-session-budget-contract": {
       "depth": 1
     },
@@ -89,17 +92,11 @@
         "catch_all_errors": "Extract immutable Session configuration and its resolution ports behind one authoritative owner during facade removal"
       }
     },
-    "awaken-session-contract": {
-      "depth": 4,
-      "production_lines": 10857,
-      "catch_all_errors": 4,
-      "growth_reasons": {
-        "production_lines": "Keep one typed FileCatalog/Artifact error projection and separate existing Session mutation and realization models from ports inside the same crate; no dependency-depth or capability-default increase.",
-        "depth": "Extract immutable Session configuration and its resolution ports behind one authoritative owner during facade removal"
-      }
-    },
     "awaken-session-dream-contract": {
       "depth": 1
+    },
+    "awaken-session-error-contract": {
+      "depth": 0
     },
     "awaken-session-event-contract": {
       "depth": 1
@@ -107,8 +104,20 @@
     "awaken-session-mcp-contract": {
       "depth": 2
     },
+    "awaken-session-realization-contract": {
+      "depth": 5
+    },
+    "awaken-session-repository-contract": {
+      "depth": 5
+    },
     "awaken-session-resource-contract": {
       "depth": 2
+    },
+    "awaken-session-execution-contract": {
+      "depth": 6
+    },
+    "awaken-session-state-contract": {
+      "depth": 4
     },
     "awaken-session-types": {
       "depth": 0

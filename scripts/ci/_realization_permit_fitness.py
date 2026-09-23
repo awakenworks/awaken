@@ -20,7 +20,7 @@ REALIZATION_DRIVER_DEFINITION = (
     "crates/server/awaken-session-application/src/session_realization_driver.rs"
 )
 REALIZATION_PERMIT_DEFINITION = (
-    "crates/contract/awaken-session-contract/src/session_realization/exclusion.rs"
+    "crates/contract/awaken-session-realization-contract/src/session_realization/exclusion.rs"
 )
 # The only two exclusion identity sources: the Worker-side Session runtime slot
 # allocation, and the co-located driver's per-Session registry.
@@ -35,7 +35,7 @@ REALIZATION_PERMIT_MINTERS = {
 # The only two entry points that may reach the application-owned phase driver,
 # and the canonical accessor each must obtain its permit from.
 REALIZATION_DRIVER_ENTRIES = {
-    "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization.rs": (
+    "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/driver.rs": (
         "session_slots.acquire_realization"
     ),
     "crates/server/awaken-session-application/src/realization.rs": (
@@ -192,7 +192,7 @@ SessionRealizationPermit::acquire(session, || slot.realization.clone(), admit)
 pub(crate) struct LocalRealizationLocks();
 SessionRealizationPermit::acquire(session_id, || registry.entry(session_id.to_string()), admit)
 """,
-        "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization.rs": """
+        "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/driver.rs": """
 let realization = host.session_slots.acquire_realization(session_id).await;
 awaken_session_application::drive_session_realization(realization, None)
 """,

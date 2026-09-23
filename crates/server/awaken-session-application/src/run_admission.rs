@@ -7,14 +7,21 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_session_contract::{
-    AdmitSessionRun, AdmittedSessionRun, ControlSessionCreationInputs, McpAttachmentOrigin,
-    Pending, RunApplication, RunApplicationError, RunError, RunResume, SessionBaselineState,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
-    SessionRepositoryError, SessionRevision, SessionRunActivityReceiptPlan, SessionRunDelivery,
-    SessionToolConfiguration, StepOutcome, session_run_activity_operation_id,
-    session_run_activity_receipt_plan,
+use awaken_session_application_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
+use awaken_session_configuration_contract::{
+    ControlSessionCreationInputs, SessionBaselineState, SessionCreationIntent,
+    SessionMcpAuthoringContext, SessionNetworkPolicy, SessionToolConfiguration,
+};
+use awaken_session_error_contract::RunError;
+use awaken_session_mcp_contract::McpAttachmentOrigin;
+use awaken_session_execution_contract::{
+    AdmitSessionRun, AdmittedSessionRun, SessionRunActivityReceiptPlan, SessionRunDelivery,
+    session_run_activity_operation_id, session_run_activity_receipt_plan,
+};
+use awaken_session_state_contract::SessionRepositoryError;
+use awaken_session_types::SessionRevision;
 
 use crate::creation::SessionCreationCompletion;
 use crate::{
@@ -30,7 +37,7 @@ use crate::{
 pub struct CreateProfiledSessionCommand {
     pub owner_scope: String,
     pub session_id: String,
-    pub mutation_policy: awaken_session_contract::SessionMutationPolicy,
+    pub mutation_policy: awaken_session_resource_contract::SessionMutationPolicy,
     pub agent_id: String,
     /// Exact executable publication source revision. `None` selects the current
     /// publication for ordinary interactive authoring.
@@ -46,7 +53,7 @@ pub struct CreateProfiledSessionCommand {
     /// Session-local typed attachments supplied by the product. They join the
     /// published Agent defaults inside this sole composer and therefore freeze
     /// in the original root rather than through a post-create Manifest write.
-    pub resource_inputs: Vec<awaken_session_contract::SessionInputAttachment>,
+    pub resource_inputs: Vec<awaken_session_resource_contract::SessionInputAttachment>,
     /// Explicit Session candidates supplied by the product adapter. Published
     /// Agent candidates are joined and normalized inside the sole composer.
     pub mcp_candidates: Vec<McpAttachmentCandidate>,
@@ -55,7 +62,7 @@ pub struct CreateProfiledSessionCommand {
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub tools: Option<SessionToolConfiguration>,
-    pub idempotency: Option<awaken_session_contract::IdempotencyRecord>,
+    pub idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
 }
 
 /// One product-authored Repository binding joined into the original profiled
@@ -68,7 +75,7 @@ pub struct ProfiledSessionRepositoryInput {
 
 pub struct RecoveredSessionProjection {
     pub owner_scope: String,
-    pub session: awaken_session_contract::PersistedSession,
+    pub session: awaken_session_state_contract::PersistedSession,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -131,8 +138,8 @@ fn profiled_repository_attachment(
     repository_id: awaken_resource_contract::RepositoryId,
     mount_path: String,
     binding_id: awaken_resource_contract::BindingId,
-) -> awaken_session_contract::SessionInputAttachment {
-    awaken_session_contract::SessionInputAttachment {
+) -> awaken_session_resource_contract::SessionInputAttachment {
+    awaken_session_resource_contract::SessionInputAttachment {
         binding: awaken_resource_contract::InputBinding {
             binding_id,
             target: awaken_resource_contract::InputResourceId::Repository(repository_id),
@@ -147,10 +154,10 @@ fn profiled_repository_attachment(
 fn preflight_profiled_resources(
     owner_scope: &str,
     session_id: &str,
-    mutation_policy: awaken_session_contract::SessionMutationPolicy,
-    resource_inputs: &[awaken_session_contract::SessionInputAttachment],
+    mutation_policy: awaken_session_resource_contract::SessionMutationPolicy,
+    resource_inputs: &[awaken_session_resource_contract::SessionInputAttachment],
     repositories: &[ProfiledSessionRepositoryInput],
-) -> Result<Vec<awaken_session_contract::SessionInputAttachment>, RunError> {
+) -> Result<Vec<awaken_session_resource_contract::SessionInputAttachment>, RunError> {
     let repository_owner = SessionRepositoryOwner::profiled(session_id);
     for repository in repositories {
         if repository.binding_id.as_str().trim().is_empty()
@@ -178,8 +185,11 @@ fn preflight_profiled_resources(
             repository.binding_id.clone(),
         )
     }));
-    awaken_session_contract::SessionInputResolver::effective_bindings(&[], &collision_preflight)
-        .map_err(|error| RunError::bad_request(error.to_string()))?;
+    awaken_session_resource_contract::SessionInputResolver::effective_bindings(
+        &[],
+        &collision_preflight,
+    )
+    .map_err(|error| RunError::bad_request(error.to_string()))?;
     Ok(collision_preflight)
 }
 
@@ -349,7 +359,7 @@ impl SessionApplication {
     pub async fn activate_admitted_session_run(
         &self,
         admitted: AdmittedSessionRun,
-    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
+    ) -> Result<awaken_session_execution_contract::SessionRunActivation, RunError> {
         match admitted {
             AdmittedSessionRun::Reserved(delivery)
             | AdmittedSessionRun::AlreadyReserved(delivery)
@@ -357,10 +367,10 @@ impl SessionApplication {
                 self.runtime().activate_session_run(delivery).await
             }
             AdmittedSessionRun::RecoveryClaimed { .. } => {
-                Ok(awaken_session_contract::SessionRunActivation::RecoveryClaimed)
+                Ok(awaken_session_execution_contract::SessionRunActivation::RecoveryClaimed)
             }
             AdmittedSessionRun::Completed { .. } => {
-                Ok(awaken_session_contract::SessionRunActivation::Completed)
+                Ok(awaken_session_execution_contract::SessionRunActivation::Completed)
             }
         }
     }
@@ -376,7 +386,7 @@ impl SessionApplication {
         expected_owner: Option<&str>,
     ) -> Result<Option<RecoveredSessionProjection>, SessionProjectionRecoveryError> {
         let session = match self
-            .session(&awaken_session_contract::SessionId::from(thread_id))
+            .session(&awaken_session_types::SessionId::from(thread_id))
             .await
         {
             Ok(session) => session,
@@ -391,7 +401,7 @@ impl SessionApplication {
             return Err(SessionProjectionRecoveryError::NotFound);
         }
         let owner = self
-            .owner(&awaken_session_contract::SessionId::from(thread_id))
+            .owner(&awaken_session_types::SessionId::from(thread_id))
             .await
             .map_err(|error| match error {
                 SessionMutationError::NotFound => SessionProjectionRecoveryError::NotFound,
@@ -485,7 +495,7 @@ impl SessionApplication {
                 })?;
             session
         } else {
-            self.realize_session_after_refresh(&awaken_session_contract::SessionId::from(thread_id))
+            self.realize_session_after_refresh(&awaken_session_types::SessionId::from(thread_id))
                 .await
                 .map_err(|error| {
                     SessionProjectionRecoveryError::Rejected(realization_error(error))
@@ -553,7 +563,7 @@ impl SessionApplication {
     pub async fn create_profiled_session(
         &self,
         command: CreateProfiledSessionCommand,
-    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
+    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
         // Match the canonical Session-create boundary: the profiled authoring
         // graph is intentionally deep, so keep its state machine behind one
         // heap indirection instead of embedding it in every caller's Tokio
@@ -571,7 +581,7 @@ impl SessionApplication {
     pub async fn accept_profiled_session(
         &self,
         command: CreateProfiledSessionCommand,
-    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
+    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
         Box::pin(self.create_profiled_session_with_completion(
             command,
             SessionCreationCompletion::AcceptDurableRoot,
@@ -583,7 +593,7 @@ impl SessionApplication {
         &self,
         command: CreateProfiledSessionCommand,
         completion: SessionCreationCompletion,
-    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
+    ) -> Result<awaken_session_state_contract::PersistedSession, SessionCreationError> {
         let CreateProfiledSessionCommand {
             owner_scope,
             session_id,
@@ -657,11 +667,12 @@ impl SessionApplication {
             .as_ref()
             .map(|profile| profile.resources.as_slice())
             .unwrap_or_default();
-        let effective_bindings = awaken_session_contract::SessionInputResolver::effective_bindings(
-            agent_resources,
-            &collision_preflight,
-        )
-        .map_err(|error| RunError::bad_request(error.to_string()))?;
+        let effective_bindings =
+            awaken_session_resource_contract::SessionInputResolver::effective_bindings(
+                agent_resources,
+                &collision_preflight,
+            )
+            .map_err(|error| RunError::bad_request(error.to_string()))?;
         // Model-override cause/effect rules: R1 absent -> inherit the Agent
         // publication; R2 equal -> reuse it; R3 different + resolvable -> freeze
         // the complete replacement route; R4 different + invalid/unavailable ->
@@ -771,7 +782,7 @@ impl SessionApplication {
         // Repository/Vault configuration or Skill/File materialization.
         self.validate_session_sandbox_layout(
             &session_id,
-            &awaken_session_contract::SessionSandboxLayout {
+            &awaken_session_configuration_contract::SessionSandboxLayout {
                 workspace_id: owner_scope.clone(),
                 agent_id: agent_id.clone(),
                 agent_revision: profile.as_ref().map(|profile| profile.source_revision),
@@ -889,7 +900,7 @@ impl SessionApplication {
             return Err(first.into());
         }
         for input in resources.inputs() {
-            let awaken_session_contract::ResolvedInputSource::Repository {
+            let awaken_session_resource_contract::ResolvedInputSource::Repository {
                 repository_id,
                 credential,
                 ..
@@ -926,7 +937,8 @@ impl SessionApplication {
                 model,
                 execution_model_ref,
                 model_override,
-                system_prompt: awaken_session_contract::SessionSystemPromptSelection::Inherit,
+                system_prompt:
+                    awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
                 runtime: published_backend_ref,
                 mcp_authoring: SessionMcpAuthoringContext::default(),
                 delegate_ids: profile
@@ -956,7 +968,7 @@ impl SessionApplication {
                 title,
                 metadata,
                 tools,
-                budget: awaken_session_contract::SessionBudgetState::Absent,
+                budget: awaken_session_budget_contract::SessionBudgetState::Absent,
                 repository_configurations,
                 idempotency,
                 initial_events: None,
@@ -975,7 +987,7 @@ impl SessionApplication {
         self.create_profiled_session(CreateProfiledSessionCommand {
             owner_scope: workspace_id.to_string(),
             session_id: thread_id.to_string(),
-            mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
+            mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
             agent_id: agent_id.to_string(),
             source_revision: None,
             environment_id: None,
@@ -1004,7 +1016,7 @@ impl SessionApplication {
         agent_id: &str,
     ) -> Result<SessionRevision, RunApplicationError> {
         match self
-            .session(&awaken_session_contract::SessionId::from(thread_id))
+            .session(&awaken_session_types::SessionId::from(thread_id))
             .await
         {
             Ok(_) => self.recover_admitted_session(workspace_id, thread_id).await,
@@ -1017,10 +1029,11 @@ impl SessionApplication {
                     // Concurrent first Runs race only at the durable create fence;
                     // every loser adopts the exact winner through the same recovery.
                     Err(error)
-                        if error.kind == awaken_session_contract::RunErrorKind::Unavailable =>
+                        if error.kind
+                            == awaken_session_error_contract::RunErrorKind::Unavailable =>
                     {
                         match self
-                            .session(&awaken_session_contract::SessionId::from(thread_id))
+                            .session(&awaken_session_types::SessionId::from(thread_id))
                             .await
                         {
                             Ok(_) => self.recover_admitted_session(workspace_id, thread_id).await,
@@ -1078,7 +1091,7 @@ impl SessionRunApplication {
         requested_agent: Option<&str>,
         messages: Vec<Message>,
         traceparent: Option<String>,
-        replacement: awaken_session_contract::SessionRunReplacement,
+        replacement: awaken_session_execution_contract::SessionRunReplacement,
     ) -> Result<AdmitSessionRun, RunApplicationError> {
         if operation_id.trim().is_empty() {
             return Err(RunError::bad_request(
@@ -1091,11 +1104,11 @@ impl SessionRunApplication {
             ));
         }
         Ok(AdmitSessionRun {
-            session_id: awaken_session_contract::SessionId::from(thread),
+            session_id: awaken_session_types::SessionId::from(thread),
             agent_id: self.agent_for(thread, requested_agent),
             operation_id: operation_id.to_string(),
-            run_id: awaken_session_contract::session_run_id(
-                &awaken_session_contract::SessionId::from(thread),
+            run_id: awaken_session_execution_contract::session_run_id(
+                &awaken_session_types::SessionId::from(thread),
                 operation_id,
             ),
             messages,
@@ -1113,7 +1126,7 @@ impl SessionRunApplication {
         requested_agent: Option<String>,
         messages: Vec<Message>,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-        replacement: awaken_session_contract::SessionRunReplacement,
+        replacement: awaken_session_execution_contract::SessionRunReplacement,
     ) -> Result<StepOutcome, RunApplicationError> {
         let command = self.admission_command(
             operation_id,
@@ -1147,7 +1160,7 @@ impl RunApplication for SessionRunApplication {
             agent,
             messages,
             None,
-            awaken_session_contract::SessionRunReplacement::PreservePrior,
+            awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
         )
         .await
     }
@@ -1166,7 +1179,7 @@ impl RunApplication for SessionRunApplication {
             agent,
             messages,
             Some(sink),
-            awaken_session_contract::SessionRunReplacement::PreservePrior,
+            awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
         )
         .await
     }
@@ -1182,7 +1195,7 @@ impl RunApplication for SessionRunApplication {
             .resume_session_run_for_owner(
                 &(self.workspace)(thread),
                 operation_id,
-                &awaken_session_contract::SessionId::from(thread),
+                &awaken_session_types::SessionId::from(thread),
                 tool_use_id,
                 resume,
             )
@@ -1211,7 +1224,9 @@ impl RunApplication for SessionRunApplication {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRunReplacementApplication for SessionRunApplication {
+impl awaken_session_application_contract::SessionRunReplacementApplication
+    for SessionRunApplication
+{
     async fn supersede_session_run(
         &self,
         operation_id: &str,
@@ -1225,14 +1240,16 @@ impl awaken_session_contract::SessionRunReplacementApplication for SessionRunApp
             agent,
             messages,
             None,
-            awaken_session_contract::SessionRunReplacement::SupersedePrior,
+            awaken_session_execution_contract::SessionRunReplacement::SupersedePrior,
         )
         .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRunBackgroundApplication for SessionRunApplication {
+impl awaken_session_application_contract::SessionRunBackgroundApplication
+    for SessionRunApplication
+{
     async fn submit_session_run_background(
         &self,
         operation_id: &str,
@@ -1247,7 +1264,7 @@ impl awaken_session_contract::SessionRunBackgroundApplication for SessionRunAppl
             agent.as_deref(),
             messages,
             traceparent,
-            awaken_session_contract::SessionRunReplacement::PreservePrior,
+            awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
         )?;
         let run_id = command.run_id.clone();
         let owner_scope = (self.workspace)(thread);

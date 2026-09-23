@@ -13,16 +13,16 @@ pub(super) enum SessionRealizationWorkerEffect {
 }
 
 pub(super) const fn session_realization_worker_effect(
-    disposition: awaken_session_contract::SessionRealizationControlDisposition,
+    disposition: awaken_session_realization_contract::SessionRealizationControlDisposition,
 ) -> SessionRealizationWorkerEffect {
     match disposition {
-        awaken_session_contract::SessionRealizationControlDisposition::NotReady => {
+        awaken_session_realization_contract::SessionRealizationControlDisposition::NotReady => {
             SessionRealizationWorkerEffect::Defer
         }
-        awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
+        awaken_session_realization_contract::SessionRealizationControlDisposition::Retryable => {
             SessionRealizationWorkerEffect::Relinquish
         }
-        awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
+        awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal => {
             SessionRealizationWorkerEffect::Absorb
         }
     }
@@ -34,15 +34,15 @@ fn session_realization_control_disposition_projects_exact_worker_effect() {
     let selector = kani::any::<u8>() % 3;
     let (disposition, expected) = match selector {
         0 => (
-            awaken_session_contract::SessionRealizationControlDisposition::NotReady,
+            awaken_session_realization_contract::SessionRealizationControlDisposition::NotReady,
             SessionRealizationWorkerEffect::Defer,
         ),
         1 => (
-            awaken_session_contract::SessionRealizationControlDisposition::Retryable,
+            awaken_session_realization_contract::SessionRealizationControlDisposition::Retryable,
             SessionRealizationWorkerEffect::Relinquish,
         ),
         _ => (
-            awaken_session_contract::SessionRealizationControlDisposition::Terminal,
+            awaken_session_realization_contract::SessionRealizationControlDisposition::Terminal,
             SessionRealizationWorkerEffect::Absorb,
         ),
     };
@@ -52,15 +52,15 @@ fn session_realization_control_disposition_projects_exact_worker_effect() {
 
 impl HostWorkerResolver {
     pub(super) fn map_session_realization_drive_error(
-        error: awaken_session_contract::SessionRealizationDriveError,
+        error: awaken_session_realization_contract::SessionRealizationDriveError,
     ) -> awaken_dispatch::Error {
         match error {
-            awaken_session_contract::SessionRealizationDriveError::Effect(error)
-                if error.kind == awaken_session_contract::RunErrorKind::Unavailable =>
+            awaken_session_realization_contract::SessionRealizationDriveError::Effect(error)
+                if error.kind == awaken_session_error_contract::RunErrorKind::Unavailable =>
             {
                 Self::execution_error(error.to_string())
             }
-            awaken_session_contract::SessionRealizationDriveError::Control(control) => {
+            awaken_session_realization_contract::SessionRealizationDriveError::Control(control) => {
                 match session_realization_worker_effect(control.disposition()) {
                     SessionRealizationWorkerEffect::Defer => {
                         awaken_dispatch::Error::ResolutionNotReady(
@@ -75,7 +75,7 @@ impl HostWorkerResolver {
                     }
                 }
             }
-            retryable @ awaken_session_contract::SessionRealizationDriveError::DidNotConverge => {
+            retryable @ awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge => {
                 Self::execution_error(retryable.to_string())
             }
             error => Self::terminal_resolution_error(error.to_string()),
@@ -102,8 +102,8 @@ mod tests {
         // | R3 | Control not ready | ResolutionNotReady |
         // | R4 | permanent effect/invalid Control | TerminalResolution |
         let retryable_effect = HostWorkerResolver::map_session_realization_drive_error(
-            awaken_session_contract::SessionRealizationDriveError::Effect(
-                awaken_session_contract::RunError::unavailable_classified(
+            awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                awaken_session_error_contract::RunError::unavailable_classified(
                     "mcp_material_source_unavailable",
                     "materializer unavailable",
                 ),
@@ -115,8 +115,8 @@ mod tests {
         ));
 
         let retryable_control = HostWorkerResolver::map_session_realization_drive_error(
-            awaken_session_contract::SessionRealizationDriveError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+            awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                     "repository unavailable".into(),
                 ),
             ),
@@ -127,8 +127,8 @@ mod tests {
         ));
 
         let not_ready = HostWorkerResolver::map_session_realization_drive_error(
-            awaken_session_contract::SessionRealizationDriveError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::NotReady,
+            awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
             ),
         );
         assert!(matches!(
@@ -137,14 +137,14 @@ mod tests {
         ));
 
         for permanent in [
-            awaken_session_contract::SessionRealizationDriveError::Effect(
-                awaken_session_contract::RunError::classified(
+            awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                awaken_session_error_contract::RunError::classified(
                     "mcp_credential_revision_mismatch",
                     "invalid revision",
                 ),
             ),
-            awaken_session_contract::SessionRealizationDriveError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::Invalid(
+            awaken_session_realization_contract::SessionRealizationDriveError::Control(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
                     "invalid phase".into(),
                 ),
             ),

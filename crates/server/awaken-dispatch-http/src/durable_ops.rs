@@ -3,9 +3,10 @@
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_dispatch::{ApplicationError, ApplicationErrorKind, DurableRunOperations};
-use awaken_session_contract::{
-    RunErrorKind, SessionRunBackgroundApplication, SessionRunReplacementApplication,
+use awaken_session_application_contract::{
+    SessionRunBackgroundApplication, SessionRunReplacementApplication,
 };
+use awaken_session_error_contract::RunErrorKind;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -150,7 +151,7 @@ async fn submit_background(
     )
 }
 
-fn map_run_error(error: awaken_session_contract::RunError) -> ApplicationError {
+fn map_run_error(error: awaken_session_error_contract::RunError) -> ApplicationError {
     match error.kind {
         RunErrorKind::BadRequest => ApplicationError::invalid(error.message),
         RunErrorKind::Unavailable => ApplicationError::unavailable(error.message),

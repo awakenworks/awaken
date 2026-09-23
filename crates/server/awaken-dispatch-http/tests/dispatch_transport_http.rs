@@ -141,84 +141,86 @@ struct FailFirstTerminalSettlement {
 
 #[derive(Default)]
 struct RecordingSessionCoordination {
-    finalized: Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>,
+    finalized: Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionAgentCoordination for RecordingSessionCoordination {
+impl awaken_session_execution_contract::SessionAgentCoordination for RecordingSessionCoordination {
     async fn admit_session_run_activity(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
+        _session_id: &awaken_session_types::SessionId,
         _agent_id: &str,
         _run_id: &RunId,
-        _mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
-        awaken_session_contract::SessionRunActivityAdmission,
-        awaken_session_contract::RunError,
+        awaken_session_execution_contract::SessionRunActivityAdmission,
+        awaken_session_error_contract::RunError,
     > {
-        Err(awaken_session_contract::RunError::bad_request(
+        Err(awaken_session_error_contract::RunError::bad_request(
             "settlement fixture does not admit Session activity",
         ))
     }
 
     async fn admit_session_model_request(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
+        _session_id: &awaken_session_types::SessionId,
         _thread_id: &ThreadId,
         _run_id: &RunId,
-    ) -> Result<bool, awaken_session_contract::RunError> {
-        Err(awaken_session_contract::RunError::bad_request(
+    ) -> Result<bool, awaken_session_error_contract::RunError> {
+        Err(awaken_session_error_contract::RunError::bad_request(
             "settlement fixture does not admit model requests",
         ))
     }
 
     async fn list_session_agents(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
+        _session_id: &awaken_session_types::SessionId,
     ) -> Result<
-        Vec<awaken_session_contract::SessionAgentRosterEntry>,
-        awaken_session_contract::RunError,
+        Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
+        awaken_session_error_contract::RunError,
     > {
         Ok(Vec::new())
     }
 
     async fn send_session_agent_message(
         &self,
-        _command: awaken_session_contract::SessionAgentMessageCommand,
+        _command: awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
-        awaken_session_contract::SessionAgentMessageReceipt,
-        awaken_session_contract::RunError,
+        awaken_session_execution_contract::SessionAgentMessageReceipt,
+        awaken_session_error_contract::RunError,
     > {
-        Err(awaken_session_contract::RunError::bad_request("unused"))
+        Err(awaken_session_error_contract::RunError::bad_request(
+            "unused",
+        ))
     }
 
     async fn settle_session_agent_boundary(
         &self,
-        _command: awaken_session_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         Ok(())
     }
 
     async fn finalize_session_agent_boundary(
         &self,
-        command: awaken_session_contract::SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         self.finalized.lock().unwrap().push(command);
         Ok(())
     }
 
     async fn interrupt_session_thread(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
+        _session_id: &awaken_session_types::SessionId,
         _child_thread_id: &ThreadId,
-    ) -> Result<(), awaken_session_contract::RunError> {
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         Ok(())
     }
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         Ok(())
     }
 }
@@ -273,62 +275,56 @@ enum WorkMode {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for RecordingSessionWork {
+impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessionWork {
     async fn acquire_session_work(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         now_ms: u64,
-        _acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
+        _acquisition: awaken_session_work_contract::SessionWorkAcquisition,
     ) -> Result<
-        awaken_session_contract::work_queue::SessionWorkOwnership,
-        awaken_session_contract::work_queue::WorkQueueError,
+        awaken_session_work_contract::SessionWorkOwnership,
+        awaken_session_work_contract::WorkQueueError,
     > {
         self.acquisitions.fetch_add(1, Ordering::SeqCst);
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(
-                awaken_session_contract::work_queue::WorkQueueError::Storage(
-                    "injected Work authority outage".into(),
-                ),
-            );
+            return Err(awaken_session_work_contract::WorkQueueError::Storage(
+                "injected Work authority outage".into(),
+            ));
         }
         let mode = *self.mode.lock().unwrap();
         if matches!(mode, WorkMode::Retired) {
-            return Ok(awaken_session_contract::work_queue::SessionWorkOwnership::Unowned);
+            return Ok(awaken_session_work_contract::SessionWorkOwnership::Unowned);
         }
-        Ok(
-            awaken_session_contract::work_queue::SessionWorkOwnership::Leased(
-                awaken_session_contract::work_queue::SessionWorkLease {
-                    work_id: format!("work-{session_id}"),
-                    environment_id: "env".into(),
-                    session_id: session_id.clone(),
-                    owner: if matches!(mode, WorkMode::Foreign) {
-                        "other-worker".into()
-                    } else {
-                        worker_owner.into()
-                    },
-                    epoch: self.epoch.load(Ordering::SeqCst).max(1),
-                    expires_at_unix_ms: now_ms + 60_000,
+        Ok(awaken_session_work_contract::SessionWorkOwnership::Leased(
+            awaken_session_work_contract::SessionWorkLease {
+                work_id: format!("work-{session_id}"),
+                environment_id: "env".into(),
+                session_id: session_id.clone(),
+                owner: if matches!(mode, WorkMode::Foreign) {
+                    "other-worker".into()
+                } else {
+                    worker_owner.into()
                 },
-            ),
-        )
+                epoch: self.epoch.load(Ordering::SeqCst).max(1),
+                expires_at_unix_ms: now_ms + 60_000,
+            },
+        ))
     }
 
     async fn release_session_work(
         &self,
-        _lease: &awaken_session_contract::work_queue::SessionWorkLease,
-    ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
+        _lease: &awaken_session_work_contract::SessionWorkLease,
+    ) -> Result<bool, awaken_session_work_contract::WorkQueueError> {
         self.releases.fetch_add(1, Ordering::SeqCst);
         let mut mode = self.mode.lock().unwrap();
         match *mode {
             WorkMode::ReleaseRace => Ok(false),
             WorkMode::ReleaseResponseLost => {
                 *mode = WorkMode::Retired;
-                Err(
-                    awaken_session_contract::work_queue::WorkQueueError::Storage(
-                        "release committed but its response was lost".into(),
-                    ),
-                )
+                Err(awaken_session_work_contract::WorkQueueError::Storage(
+                    "release committed but its response was lost".into(),
+                ))
             }
             WorkMode::Foreign => panic!("cannot release another Work owner"),
             _ => Ok(true),
@@ -338,7 +334,7 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for Recordin
     async fn release_worker_session_work(
         &self,
         _worker_owner: &str,
-    ) -> Result<usize, awaken_session_contract::work_queue::WorkQueueError> {
+    ) -> Result<usize, awaken_session_work_contract::WorkQueueError> {
         Ok(0)
     }
 }

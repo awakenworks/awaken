@@ -6,7 +6,7 @@ use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::fresh_process_id;
-use awaken_session_contract::{Pending, RunApplicationError, RunResume};
+use awaken_session_application_contract::{Pending, RunApplicationError, RunResume};
 use serde_json::Value;
 
 use crate::types::{Part, SendMessageRequest};

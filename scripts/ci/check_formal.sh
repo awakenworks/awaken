@@ -162,7 +162,7 @@ cargo test -p awaken-service-lifecycle --test service_lifecycle \
 # The abstract network algebra is not Rust String/Vec refinement. Exercise the
 # actual owner and frozen SQLite root alongside its TLAPS/TLC checks below.
 cargo test -p awaken-protocol-managed --lib projection_publish_decision_covers_cache_and_source_fences
-cargo test -p awaken-session-contract --lib network_policy::tests
+cargo test -p awaken-session-configuration-contract --lib network_policy::tests
 cargo test -p awaken-session-application --lib profiled_session_creation_enforces_publication_and_upfront_inputs
 cargo test -p awaken-session-application --lib realization::publication::collection_tests
 # The executable-refresh theorem abstracts async trait dispatch and application
@@ -171,7 +171,7 @@ cargo test -p awaken-session-application --lib realization::publication::collect
 cargo test -p awaken-coordinator --lib failed_refresh_never_enters_shared_inventory_or_warmup_handlers
 cargo test -p awaken-session-application --lib admission_surfaces_dispatch_failure_and_preserves_retryable_intent
 cargo test -p awaken-deployment-application --lib scheduler_refresh_failure_precedes_candidate_mutation_and_launch
-cargo test -p awaken-session-contract --lib \
+cargo test -p awaken-session-application-contract --lib \
   executable_projection::tests::paired_refresh_capability_covers_every_domain_outcome
 # ManagementAuditIntent abstracts the repository and Axum middleware boundary.
 # Require the canonical protected router to attempt durable intent persistence
@@ -534,13 +534,13 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_network_intersection_two_ascii_hosts_by_unrestricted_partition \
     --harness session_network_intersection_two_ascii_hosts_by_empty_partition \
     --harness session_network_intersection_two_ascii_hosts_by_one_ascii_host_partition
-  run_kani awaken-session-contract -Z unstable-options \
+  run_kani awaken-session-application-contract -Z unstable-options \
     --harness deleted_admission_resolver_preserves_empty \
     --harness deleted_admission_resolver_preserves_legacy_error_and_frame \
     --cbmc-args --unwindset memcmp.0:64
   # All 24 None/empty/one-ID cases plus all two-ID Absent/Conflict/Closed;
   # full source frame and two-live-output replay/Drop (two-ID output stays open).
-  run_kani awaken-session-contract -Z unstable-options \
+  run_kani awaken-session-application-contract -Z unstable-options \
     --harness deleted_admission_one_retained_absent_none_00 \
     --harness deleted_admission_one_retained_absent_none_02 \
     --harness deleted_admission_one_retained_accepted_none_03 \
@@ -567,10 +567,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --cbmc-args --unwindset memcmp.0:2
   # Real two-ID output reversal swaps three 8-byte chunks of each String.
   # The bound and solver are owned by the same checked profile as the ledger.
-  run_kani awaken-session-contract --checked-loop-profile retained-accepted-two-replay-v1 \
+  run_kani awaken-session-application-contract --checked-loop-profile retained-accepted-two-replay-v1 \
     --harness deleted_admission_one_retained_accepted_two_27
   # The complete 64-byte conflict message also needs its loop-exit check.
-  run_kani awaken-session-contract -Z unstable-options \
+  run_kani awaken-session-application-contract -Z unstable-options \
     --harness deleted_admission_one_retained_conflict_none_01 \
     --harness deleted_admission_one_retained_conflict_none_05 \
     --harness deleted_admission_one_retained_conflict_empty_09 \
@@ -610,29 +610,24 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness first_heartbeat_is_authorized_exactly_once \
     --harness matching_heartbeat_rejects_every_other_receipt \
     --harness stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run
-  run_kani awaken-session-contract \
+  run_kani awaken-session-execution-contract \
     --harness session_agent_boundary_requires_a_visible_committed_target \
-    --harness terminal_resource_projection_retains_the_exact_desired_generation \
-    --harness initial_event_plan_is_installed_only_on_the_complete_fresh_root \
     --harness session_run_reservation_binds_exactly_one_nonzero_activity_receipt \
-    --harness session_root_replacement_preserves_creation_and_monotonic_update_observations \
-    --harness public_millisecond_projection_is_exact_bounded_and_nonwrapping \
-    --harness realization_generation_authority_requires_every_axis \
-    --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
-    --harness realization_ownership_loss_proof_is_total_and_exact \
     --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
     --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
-    --harness settled_step_has_no_parallel_observation_authority \
+    --harness settled_step_has_no_parallel_observation_authority
+  run_kani awaken-session-state-contract \
+    --harness terminal_resource_projection_retains_the_exact_desired_generation \
+    --harness initial_event_plan_is_installed_only_on_the_complete_fresh_root \
+    --harness session_root_replacement_preserves_creation_and_monotonic_update_observations \
     --harness source_preparation_and_disposal_require_distinct_durable_phases \
     --harness resource_materialization_selects_only_active_or_pending_root_generation \
     --harness failed_resource_replacement_never_promotes_the_pending_manifest \
     --harness resource_retry_reuses_exact_pending_revision \
     --harness terminal_execution_never_reopens \
-    --harness session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch \
     --harness runtime_intervals_open_once_and_never_close_before_start \
     --harness terminal_environment_receipt_is_admitted_only_during_the_fenced_join \
     --harness initial_realization_recovery_is_exact_for_every_execution_state \
-    --harness frozen_worker_agent_publication_is_exact_or_fails_closed \
     --harness quiescence_receipt_requires_exact_operation_epoch_mcp_set_and_zero_live_effects \
     --harness checkpoint_receipt_requires_every_immutable_generation_axis \
     --harness source_disposal_receipt_requires_exact_binding_and_termination \
@@ -641,20 +636,28 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_cleanup_phase_advances_only_not_requested_fenced_requested_completed \
     --harness session_delete_request_plan_is_exact_hidden_terminal_and_idempotent \
     --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup
-  run_kani awaken-session-contract --checked-loop-profile activity-admission-height-v1 \
+  run_kani awaken-session-application-contract \
+    --harness public_millisecond_projection_is_exact_bounded_and_nonwrapping
+  run_kani awaken-session-realization-contract \
+    --harness realization_generation_authority_requires_every_axis \
+    --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
+    --harness realization_ownership_loss_proof_is_total_and_exact \
+    --harness session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch \
+    --harness frozen_worker_agent_publication_is_exact_or_fails_closed
+  run_kani awaken-session-state-contract --checked-loop-profile activity-admission-height-v1 \
     --harness activity_next_epoch_inserts_exact_checked_successor \
     --harness activity_exact_epoch_inserts_only_fresh_positive_member
   run_kani awaken-session-resource-contract \
     --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority
   # The two-admission partitions run the reducer over the two-slot member
   # model: no B-tree loops, so no checked loop profile applies to them.
-  run_kani awaken-session-contract \
+  run_kani awaken-session-state-contract \
     --harness activity_two_slot_next_next_admissions_preserve_exact_members \
     --harness activity_two_slot_next_exact_admissions_preserve_exact_members \
     --harness activity_two_slot_exact_next_admissions_preserve_exact_members \
     --harness activity_two_slot_exact_exact_admissions_preserve_exact_members \
     --harness activity_two_slot_terminal_transition_clears_members
-  run_kani awaken-session-contract --checked-loop-profile activity-terminal-height-v1 \
+  run_kani awaken-session-state-contract --checked-loop-profile activity-terminal-height-v1 \
     --harness activity_terminal_transition_clears_one_real_member
   run_kani awaken-session-store \
     --harness session_identity_and_create_shapes_require_one_owned_live_row
@@ -795,8 +798,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-durable-projection \
     --harness projection_install_reconciliation_preserves_cursor_and_monotonic_authority \
     --harness projection_refresh_domain_permit_is_exclusive
-  run_kani awaken-session-contract \
-    --harness executable_projection_admission_requires_both_ordered_refreshes \
+  run_kani awaken-session-application-contract \
+    --harness executable_projection_admission_requires_both_ordered_refreshes
+  run_kani awaken-session-realization-contract \
     --harness session_realization_permit_admits_only_a_current_acquired_slot
   run_kani awaken-credential-contract --solver minisat \
     --harness managed_rollout_identity_requires_every_payload_field

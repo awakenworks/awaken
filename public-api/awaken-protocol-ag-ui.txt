@@ -2,7 +2,7 @@ pub mod awaken_protocol_ag_ui
 pub mod awaken_protocol_ag_ui::encoder
 pub struct awaken_protocol_ag_ui::encoder::AgUiEncoder
 impl awaken_protocol_ag_ui::encoder::AgUiEncoder
-pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::complete(&mut self, &awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::complete(&mut self, &awaken_session_application_contract::step_outcome::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
 pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::fail(&mut self, impl core::convert::Into<alloc::string::String>) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
 pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::fail_with_code(&mut self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
 pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
@@ -11,7 +11,7 @@ pub type awaken_protocol_ag_ui::encoder::AgUiEncoder::Output = awaken_protocol_a
 pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::delta(&mut self, &awaken_agent_contract::event::agent::Delta) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
 pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::fact(&mut self, &awaken_agent_contract::event::agent::Fact) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
 pub fn awaken_protocol_ag_ui::encoder::encode_history(&[awaken_agent_contract::agent::message::Message]) -> alloc::vec::Vec<serde_json::value::Value>
-pub fn awaken_protocol_ag_ui::encoder::encode_step(&awaken_session_contract::session::StepOutcome, &str, &str) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::encode_step(&awaken_session_application_contract::step_outcome::StepOutcome, &str, &str) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
 pub mod awaken_protocol_ag_ui::request
 pub enum awaken_protocol_ag_ui::request::ProcessError
 pub awaken_protocol_ag_ui::request::ProcessError::ForwardedPropsUnsupported
@@ -35,7 +35,7 @@ pub awaken_protocol_ag_ui::request::ToolResultInput::error: core::option::Option
 pub awaken_protocol_ag_ui::request::ToolResultInput::tool_call_id: alloc::string::String
 pub fn awaken_protocol_ag_ui::request::process(awaken_protocol_ag_ui::types::RunAgentInput, core::option::Option<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>) -> core::result::Result<awaken_protocol_ag_ui::request::Processed, awaken_protocol_ag_ui::request::ProcessError>
 pub mod awaken_protocol_ag_ui::router
-pub fn awaken_protocol_ag_ui::router::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router
+pub fn awaken_protocol_ag_ui::router::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>) -> axum::routing::Router
 pub mod awaken_protocol_ag_ui::types
 pub enum awaken_protocol_ag_ui::types::AgUiContent
 pub awaken_protocol_ag_ui::types::AgUiContent::Parts(alloc::vec::Vec<awaken_protocol_ag_ui::types::InputContentPart>)
@@ -183,7 +183,7 @@ pub fn awaken_protocol_ag_ui::types::AgUiEvent::classified_error(impl core::conv
 pub fn awaken_protocol_ag_ui::types::AgUiEvent::error(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_protocol_ag_ui::AgUiEncoder
 impl awaken_protocol_ag_ui::encoder::AgUiEncoder
-pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::complete(&mut self, &awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::complete(&mut self, &awaken_session_application_contract::step_outcome::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
 pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::fail(&mut self, impl core::convert::Into<alloc::string::String>) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
 pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::fail_with_code(&mut self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
 pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
@@ -201,4 +201,4 @@ pub awaken_protocol_ag_ui::RunAgentInput::run_id: core::option::Option<alloc::st
 pub awaken_protocol_ag_ui::RunAgentInput::state: serde_json::value::Value
 pub awaken_protocol_ag_ui::RunAgentInput::thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_ag_ui::RunAgentInput::tools: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiTool>
-pub fn awaken_protocol_ag_ui::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router
+pub fn awaken_protocol_ag_ui::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>) -> axum::routing::Router

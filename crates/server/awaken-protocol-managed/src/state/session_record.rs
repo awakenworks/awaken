@@ -27,7 +27,7 @@ pub(super) struct ManagedProjectionSourceVersion {
     /// Exact Session root revision paired with the rendered projection. Root
     /// mutations and Runtime Thread commits have independent clocks, so neither
     /// coordinate may stand in for the other.
-    pub(super) session_revision: awaken_session_contract::SessionRevision,
+    pub(super) session_revision: awaken_session_types::SessionRevision,
     /// Per-Thread optimistic-concurrency coordinates of the committed prefixes
     /// consumed by the reducer. The backend-wide store cursor is deliberately
     /// absent: unrelated Threads must not conflict this Session projection.
@@ -171,7 +171,7 @@ pub(super) struct SessionRecord {
     pub(super) agent_id: String,
     pub(super) session: Session,
     /// Durable source of truth for the runtime's currently applied input projection.
-    pub(super) resource_state: awaken_session_contract::SessionResourceState,
+    pub(super) resource_state: awaken_session_state_contract::SessionResourceState,
     /// Rendered projection result. Durable entries advance only through the one
     /// committed-prefix reducer; only `evt_N` entries originate from
     /// [`Self::overlay`].
@@ -381,8 +381,8 @@ impl SessionRecord {
     pub(super) fn new(
         agent_id: String,
         session: Session,
-        session_revision: awaken_session_contract::SessionRevision,
-        resource_state: awaken_session_contract::SessionResourceState,
+        session_revision: awaken_session_types::SessionRevision,
+        resource_state: awaken_session_state_contract::SessionResourceState,
         events: Vec<Event>,
     ) -> Self {
         let checkpoint = ManagedProjectionCheckpoint {

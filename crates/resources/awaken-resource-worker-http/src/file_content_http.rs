@@ -54,10 +54,10 @@ pub struct WorkerFileContentService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
-    session_repository: Option<Arc<dyn awaken_session_contract::SessionRepository>>,
+    session_repository: Option<Arc<dyn awaken_session_repository_contract::SessionRepository>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
     materialization_control:
-        Option<Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>>,
+        Option<Arc<dyn awaken_session_realization_contract::SessionResourceMaterializationControl>>,
 }
 
 impl WorkerFileContentService {
@@ -90,7 +90,7 @@ impl WorkerFileContentService {
     #[must_use]
     pub fn with_session_repository(
         mut self,
-        sessions: Arc<dyn awaken_session_contract::SessionRepository>,
+        sessions: Arc<dyn awaken_session_repository_contract::SessionRepository>,
     ) -> Self {
         self.session_repository = Some(sessions);
         self
@@ -105,7 +105,9 @@ impl WorkerFileContentService {
     #[must_use]
     pub fn with_session_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionResourceMaterializationControl>,
+        control: Arc<
+            dyn awaken_session_realization_contract::SessionResourceMaterializationControl,
+        >,
     ) -> Self {
         self.materialization_control = Some(control);
         self
@@ -270,7 +272,7 @@ async fn read_file_content(
                 manifest.resources.inputs().iter().any(|input| {
                     matches!(
                         &input.source,
-                        awaken_session_contract::ResolvedInputSource::File { file_id }
+                        awaken_session_resource_contract::ResolvedInputSource::File { file_id }
                             if file_id.as_str() == request.file_id
                     )
                 })
@@ -322,21 +324,21 @@ async fn read_file_content(
                 .await
             {
                 Ok(workspace) => workspace,
-                Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_))
-                | Err(awaken_session_contract::SessionRealizationControlFailure::Conflict) => {
+                Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_))
+                | Err(awaken_session_realization_contract::SessionRealizationControlFailure::Conflict) => {
                     return StatusCode::SERVICE_UNAVAILABLE.into_response();
                 }
-                Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership) => {
+                Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership) => {
                     return StatusCode::CONFLICT.into_response();
                 }
                 Err(_) => return StatusCode::FORBIDDEN.into_response(),
             };
             let exact_file = matches!(
                 intent.target(),
-                awaken_session_contract::SessionResourceMaterializationTarget::Input(input)
+                awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(input)
                     if matches!(
                         &input.source,
-                        awaken_session_contract::ResolvedInputSource::File { file_id }
+                        awaken_session_resource_contract::ResolvedInputSource::File { file_id }
                             if file_id.as_str() == request.file_id
                     )
             );
@@ -454,7 +456,7 @@ async fn application_session_file_is_frozen(
         return false;
     };
     let Ok(owner_scope) = sessions
-        .owner(&awaken_session_contract::SessionId::from(&session_id.0))
+        .owner(&awaken_session_types::SessionId::from(&session_id.0))
         .await
     else {
         return false;
@@ -463,7 +465,7 @@ async fn application_session_file_is_frozen(
         return false;
     }
     let Ok(session) = sessions
-        .get(&awaken_session_contract::SessionId::from(&session_id.0))
+        .get(&awaken_session_types::SessionId::from(&session_id.0))
         .await
     else {
         return false;
@@ -471,7 +473,7 @@ async fn application_session_file_is_frozen(
     let lease_matches = session.realization.as_ref().is_some_and(|lease| {
         lease.owner == identity.worker_id
             && lease.runtime_incarnation == identity.lease_owner()
-            && awaken_session_contract::realization_lease_is_live_at(
+            && awaken_session_realization_contract::realization_lease_is_live_at(
                 lease.expires_at_unix_ms,
                 now_ms,
             )
@@ -482,7 +484,7 @@ async fn application_session_file_is_frozen(
         && session.resources.desired().inputs().iter().any(|input| {
             matches!(
                 &input.source,
-                awaken_session_contract::ResolvedInputSource::File { file_id }
+                awaken_session_resource_contract::ResolvedInputSource::File { file_id }
                     if file_id.as_str() == request.file_id
             )
         })

@@ -482,7 +482,7 @@ fn versioned_session_response(
 
 fn versioned_session_response_at_revision(
     session: Session,
-    revision: awaken_session_contract::SessionRevision,
+    revision: awaken_session_types::SessionRevision,
 ) -> (HeaderMap, Json<Session>) {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -556,9 +556,9 @@ async fn update_session(
     // durable receipts written by a previous process version remain replayable.
     let request_fingerprint = match budget {
         None => {
-            awaken_session_contract::stable_fingerprint(&(&title, &metadata, &tools, &mcp_servers))
+            awaken_agent_contract::stable_fingerprint(&(&title, &metadata, &tools, &mcp_servers))
         }
-        Some(_) => awaken_session_contract::stable_fingerprint(&(
+        Some(_) => awaken_agent_contract::stable_fingerprint(&(
             &title,
             &metadata,
             &tools,
@@ -567,8 +567,7 @@ async fn update_session(
         )),
     };
     let idempotency_key = parse_idempotency_key(&headers)?;
-    let if_match =
-        parse_if_match(&headers, "Session")?.map(awaken_session_contract::SessionRevision);
+    let if_match = parse_if_match(&headers, "Session")?.map(awaken_session_types::SessionRevision);
     let title = title.map(|value| match value {
         Some(value) => awaken_session_application::SessionFieldUpdate::Replace(value),
         None => awaken_session_application::SessionFieldUpdate::Clear,
@@ -596,7 +595,7 @@ async fn update_session(
                             .map(|server| {
                                 crate::state::agent_mcp_candidate(
                                     server,
-                                    awaken_session_contract::McpAttachmentOrigin::Session,
+                                    awaken_session_mcp_contract::McpAttachmentOrigin::Session,
                                 )
                             })
                             .collect(),
@@ -966,7 +965,7 @@ fn live_sse_stream<F>(
     terminal_scope: SseTerminalScope,
     project: F,
     thread_preview: Option<(
-        Box<dyn awaken_session_contract::SessionThreadLiveSubscription>,
+        Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>,
         ThreadPreviewProjector,
     )>,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>>
@@ -1094,7 +1093,7 @@ async fn stream_thread_events(
         state
             .session_application()
             .subscribe_session_thread_live(
-                &awaken_session_contract::SessionId::from(&id),
+                &awaken_session_types::SessionId::from(&id),
                 &project_thread,
             )
             .await
@@ -1158,7 +1157,7 @@ pub async fn replace_resource_manifest(
         .iter()
         .map(crate::types::resource::ResourceInput::idempotency_fingerprint)
         .collect::<Vec<_>>();
-    let request_fingerprint = awaken_session_contract::stable_fingerprint(&fingerprints);
+    let request_fingerprint = awaken_agent_contract::stable_fingerprint(&fingerprints);
     // The state owner composes Repository lowering, root CAS, realization, and
     // durable retirement. Keep that complete application future behind the one
     // HTTP-adapter boundary instead of embedding it in Axum's request future.
@@ -1213,8 +1212,8 @@ pub async fn create_profiled_session(
             "profiled Session identity or revision is invalid",
         ))));
     }
-    let request_fingerprint = awaken_session_contract::stable_fingerprint(&body);
-    let idempotency = awaken_session_contract::IdempotencyRecord {
+    let request_fingerprint = awaken_agent_contract::stable_fingerprint(&body);
+    let idempotency = awaken_session_state_contract::IdempotencyRecord {
         key: format!(
             "{PROFILED_SESSION_CREATE_RECEIPT_PREFIX}:{}",
             body.session_id
@@ -1366,8 +1365,10 @@ pub async fn release_profiled_session(
             .archive_with_repository_publication(
                 awaken_session_application::SessionArchiveWithRepositoryPublicationCommand {
                     owner_scope: owner_scope.clone(),
-                    session_id: awaken_session_contract::SessionId::from(&id),
-                    archived_at: awaken_session_contract::epoch_millis_to_rfc3339(observed_at),
+                    session_id: awaken_session_types::SessionId::from(&id),
+                    archived_at: awaken_session_application_contract::epoch_millis_to_rfc3339(
+                        observed_at,
+                    ),
                     lifecycle_fact: lifecycle_fact(
                         format!("session:{id}:terminated"),
                         &id,
@@ -1539,7 +1540,7 @@ async fn stream_events(
     let thread_preview = if previews.any() {
         state
             .session_application()
-            .subscribe_session_thread_live(&awaken_session_contract::SessionId::from(&id), &id)
+            .subscribe_session_thread_live(&awaken_session_types::SessionId::from(&id), &id)
             .await
             .map_err(StateError::Run)
             .map_err(error_response)?

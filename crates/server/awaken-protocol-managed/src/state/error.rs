@@ -1,6 +1,7 @@
 //! Managed Session command failures and their protocol-facing classification.
 
-use awaken_session_contract::{LiveInboxError, RunError, RunErrorKind};
+use awaken_session_error_contract::{RunError, RunErrorKind};
+use awaken_session_execution_contract::LiveInboxError;
 
 const SESSION_PROJECTION_RECOVERY_REQUIRED_CODE: &str = "session_projection_recovery_required";
 
@@ -58,14 +59,14 @@ impl StateError {
     }
 }
 
-impl From<awaken_session_contract::SessionRepositoryError> for StateError {
-    fn from(error: awaken_session_contract::SessionRepositoryError) -> Self {
+impl From<awaken_session_state_contract::SessionRepositoryError> for StateError {
+    fn from(error: awaken_session_state_contract::SessionRepositoryError) -> Self {
         match error {
-            awaken_session_contract::SessionRepositoryError::NotFound => Self::NotFound,
-            awaken_session_contract::SessionRepositoryError::Unavailable(message) => {
-                Self::Run(RunError::unavailable(message))
-            }
-            awaken_session_contract::SessionRepositoryError::Conflict(_) => Self::Conflict,
+            awaken_session_state_contract::SessionRepositoryError::NotFound => Self::NotFound,
+            awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                message,
+            ) => Self::Run(RunError::unavailable(message)),
+            awaken_session_state_contract::SessionRepositoryError::Conflict(_) => Self::Conflict,
             error => Self::Run(RunError::internal(error.to_string())),
         }
     }
@@ -74,7 +75,7 @@ impl From<awaken_session_contract::SessionRepositoryError> for StateError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_contract::{SessionRepositoryConflict, SessionRepositoryError};
+    use awaken_session_state_contract::{SessionRepositoryConflict, SessionRepositoryError};
 
     #[test]
     fn repository_causes_survive_the_managed_boundary() {
@@ -90,7 +91,9 @@ mod tests {
         );
         assert!(
             matches!(
-                StateError::from(SessionRepositoryError::Unavailable("offline".into())),
+                StateError::from(SessionRepositoryError::AuthorityUnavailable(
+                    "offline".into()
+                )),
                 StateError::Run(RunError {
                     kind: RunErrorKind::Unavailable,
                     ..

@@ -119,7 +119,7 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 message: format!("subagent `{delegate}` is archived"),
             });
         }
-        let launch_fingerprint = awaken_session_contract::stable_fingerprint(&request);
+        let launch_fingerprint = awaken_agent_contract::stable_fingerprint(&request);
         let initial_events = request
             .initial_events
             .into_iter()

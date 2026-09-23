@@ -1,9 +1,9 @@
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_session_contract::LifecycleOutbox as _;
-use awaken_session_contract::ManagedLifecycleFact;
-use awaken_session_contract::SessionId;
+use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_state_contract::ManagedLifecycleFact;
+use awaken_session_types::SessionId;
 
 fn coordinated_session(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
@@ -12,9 +12,9 @@ fn coordinated_session(id: &str) -> PersistedSession {
         .expect("fixture baseline")
         .environment
         .clone();
-    session.baseline = awaken_session_contract::SessionBaselineState::Frozen(
-        awaken_session_contract::SessionBaseline::compile(
-            awaken_session_contract::SessionBaselineInputs {
+    session.baseline = awaken_session_configuration_contract::SessionBaselineState::Frozen(
+        awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
                 environment,
                 runtime_placement: SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
@@ -37,21 +37,25 @@ fn coordinated_session(id: &str) -> PersistedSession {
 
 fn session_with_unsettled_event(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
-    let mut batch = awaken_session_contract::SessionEventBatch::compile(
-        &awaken_session_contract::SessionId::from(id),
+    let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
+        &awaken_session_types::SessionId::from(id),
         format!("batch:{id}"),
-        vec![awaken_session_contract::SessionEventInput::UserMessage {
-            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                "accepted before terminal",
-            )],
-        }],
+        vec![
+            awaken_session_event_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "accepted before terminal",
+                )],
+            },
+        ],
     )
     .expect("valid retained Event batch");
-    batch.admitted_revision = awaken_session_contract::SessionRevision(1);
+    batch.admitted_revision = awaken_session_types::SessionRevision(1);
     batch
-        .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
-            source_commit_cursor: 0,
-        })
+        .anchor_admission_projection(
+            awaken_session_event_contract::SessionEventProjectionAnchor {
+                source_commit_cursor: 0,
+            },
+        )
         .unwrap();
     session.event_batches.push(batch);
     session
@@ -59,7 +63,7 @@ fn session_with_unsettled_event(id: &str) -> PersistedSession {
 
 async fn anchor_unsettled_event(
     app: &SessionApplication,
-    repository: &dyn awaken_session_contract::SessionStore,
+    repository: &dyn awaken_session_repository_contract::SessionStore,
     session_id: &str,
 ) {
     let mut session = repository
@@ -74,7 +78,7 @@ async fn anchor_unsettled_event(
         session.event_batches[0]
             .mark_processed(
                 &operation_id,
-                awaken_session_contract::SessionEventProjectionAnchor {
+                awaken_session_event_contract::SessionEventProjectionAnchor {
                     source_commit_cursor: 17,
                 },
                 1_700_000_000_000
@@ -94,14 +98,14 @@ async fn anchor_unsettled_event(
 
 fn coordination_spawn_command(
     session_id: &str,
-) -> awaken_session_contract::SessionAgentMessageCommand {
-    awaken_session_contract::SessionAgentMessageCommand {
+) -> awaken_session_execution_contract::SessionAgentMessageCommand {
+    awaken_session_execution_contract::SessionAgentMessageCommand {
         session_id: session_id.into(),
         source_thread_id: ThreadId(session_id.into()),
         source_run_id: RunId(format!("{session_id}-parent-run")),
         source_call_id: "send-call".into(),
         operation_id: "send-operation".into(),
-        target: awaken_session_contract::SessionAgentTarget::Spawn {
+        target: awaken_session_execution_contract::SessionAgentTarget::Spawn {
             agent_id: "coord-child".into(),
         },
         message: "investigate".into(),
@@ -109,7 +113,7 @@ fn coordination_spawn_command(
 }
 
 fn configured_admission_application(
-    repo: Arc<dyn awaken_session_contract::SessionStore>,
+    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     runtime: Arc<RecordingAgentAdmissionRuntime>,
 ) -> SessionApplication {
     let mut app = application_with_runtime(
@@ -196,7 +200,7 @@ async fn register_replayed_token_repository(
 fn repository_retirement_resources(
     session_id: &str,
     credential: Option<awaken_credential_contract::CredentialRef>,
-) -> awaken_session_contract::ResolvedSessionResources {
+) -> awaken_session_resource_contract::ResolvedSessionResources {
     let repository_id = managed_repository_id(session_id);
     let remote_url = "https://github.com/awaken/example.git";
     let credential_binding = credential
@@ -207,31 +211,35 @@ fn repository_retirement_resources(
             awaken_credential_contract::PlaintextBoundary::Workload,
             "spiffe://awaken.test/sandbox",
         );
-        Box::new(awaken_session_contract::ResolvedRepositoryCredential {
-            access: awaken_credential_contract::CredentialAccess::new(
-                credential,
-                awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_session_contract::repository_transport_credential_usage(),
-                awaken_credential_contract::CredentialExecutionPolicy::exact(
-                    holder.clone(),
-                    awaken_credential_contract::ModelExposurePolicy::Forbidden,
-                ),
-            )
-            .with_target(
-                awaken_session_contract::repository_transport_credential_target(remote_url)
+        Box::new(
+            awaken_session_resource_contract::ResolvedRepositoryCredential {
+                access: awaken_credential_contract::CredentialAccess::new(
+                    credential,
+                    awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_session_resource_contract::repository_transport_credential_usage(),
+                    awaken_credential_contract::CredentialExecutionPolicy::exact(
+                        holder.clone(),
+                        awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                    ),
+                )
+                .with_target(
+                    awaken_session_resource_contract::repository_transport_credential_target(
+                        remote_url,
+                    )
                     .expect("Repository target"),
-            ),
-            selected_plaintext_holder: holder,
-        })
+                ),
+                selected_plaintext_holder: holder,
+            },
+        )
     });
-    awaken_session_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_contract::ResolvedInput {
+    awaken_session_resource_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_resource_contract::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from(format!(
                 "repository-{session_id}"
             )),
-            source: awaken_session_contract::ResolvedInputSource::Repository {
+            source: awaken_session_resource_contract::ResolvedInputSource::Repository {
                 repository_id: repository_id.clone().into(),
                 config: awaken_resource_contract::RepositoryConfigVersion {
                     repository_id: repository_id.into(),
@@ -256,15 +264,15 @@ fn repository_retirement_resources(
 fn session_with_repository_retirement(
     session_id: &str,
     self_hosted: bool,
-    resources: awaken_session_contract::ResolvedSessionResources,
+    resources: awaken_session_resource_contract::ResolvedSessionResources,
 ) -> PersistedSession {
     let mut session = persisted(session_id, self_hosted, "idle");
-    session.resources = awaken_session_contract::SessionResourceState::from_active(resources);
+    session.resources = awaken_session_state_contract::SessionResourceState::from_active(resources);
     session
         .resources
         .prepare(
-            &awaken_session_contract::SessionId::from(session_id),
-            awaken_session_contract::ResolvedSessionResources::default(),
+            &awaken_session_types::SessionId::from(session_id),
+            awaken_session_resource_contract::ResolvedSessionResources::default(),
         )
         .expect("prepare omission");
     session.resources.commit().expect("commit omission");
@@ -655,7 +663,7 @@ fn repository_saga_application(
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ingress: Arc<dyn CredentialMaterialIngress>,
 ) -> SessionApplication {
-    let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
     );
@@ -666,7 +674,7 @@ fn repository_saga_application(
 }
 
 fn repository_retirement_application(
-    sessions: Arc<dyn awaken_session_contract::SessionStore>,
+    sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
     registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ingress: Arc<dyn CredentialMaterialIngress>,
 ) -> SessionApplication {
@@ -692,7 +700,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let registry = resources.authorities().resource_registry();
     let repository_id = managed_repository_id("repo-replay");
-    let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
     );
@@ -750,7 +758,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
         .expect_err("R3 definition mismatch");
     assert_eq!(
         definition_mismatch.kind,
-        awaken_session_contract::RunErrorKind::BadRequest,
+        awaken_session_error_contract::RunErrorKind::BadRequest,
         "R3/E3"
     );
     let config_mismatch = restarted
@@ -762,7 +770,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
         .expect_err("R4 config mismatch");
     assert_eq!(
         config_mismatch.kind,
-        awaken_session_contract::RunErrorKind::BadRequest,
+        awaken_session_error_contract::RunErrorKind::BadRequest,
         "R4/E3"
     );
     assert_eq!(
@@ -1147,7 +1155,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
     let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let registry = resources.authorities().resource_registry();
     let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
-    let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
     );
@@ -1253,7 +1261,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     register_retirement_repository(registry.as_ref(), session_id, true, true).await;
 
     {
-        let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+        let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path)
                 .expect("open Session authority"),
         );
@@ -1271,7 +1279,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
                 app.replace_session_resource_manifest(
                     &SessionId::from(session_id),
                     ReplaceSessionResourceManifest {
-                        request_fingerprint: awaken_session_contract::stable_fingerprint(&manifest),
+                        request_fingerprint: awaken_agent_contract::stable_fingerprint(&manifest),
                         resources: manifest.clone(),
                         expected_resource_revision: None,
                         idempotency_key: None,
@@ -1313,7 +1321,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         );
     }
 
-    let sessions: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+    let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open(&path)
             .expect("reopen Session authority"),
     );
@@ -1351,7 +1359,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
         .replace_session_resource_manifest(
             &SessionId::from(session_id),
             ReplaceSessionResourceManifest {
-                request_fingerprint: awaken_session_contract::stable_fingerprint(&manifest),
+                request_fingerprint: awaken_agent_contract::stable_fingerprint(&manifest),
                 resources: manifest.clone(),
                 expected_resource_revision: None,
                 idempotency_key: None,
@@ -1417,8 +1425,8 @@ async fn root_mutation_cause_effect_decision_table() {
         .expect("fixture");
     let mut candidate = original.clone();
     candidate.title = Some("applied".into());
-    let payload = awaken_session_contract::SessionMutationPayload::Replace(candidate.clone());
-    let record = awaken_session_contract::IdempotencyRecord {
+    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(candidate.clone());
+    let record = awaken_session_state_contract::IdempotencyRecord {
         key: "mutation:one".into(),
         payload_hash: payload.stable_hash(),
     };
@@ -1459,7 +1467,7 @@ async fn root_mutation_cause_effect_decision_table() {
         .into_session();
     assert!(later.revision > applied.revision);
     let facts_before = repo.pending_lifecycle().await.expect("M5 outbox before");
-    let replay_fact = awaken_session_contract::ManagedLifecycleFact {
+    let replay_fact = awaken_session_state_contract::ManagedLifecycleFact {
         id: "must-not-append-on-replay".into(),
         object_id: "mutation".into(),
         workspace_id: Some("workspace".into()),
@@ -1535,7 +1543,7 @@ async fn root_mutation_cause_effect_decision_table() {
         .commit_session_snapshot_with_record(
             "workspace",
             candidate,
-            awaken_session_contract::IdempotencyRecord {
+            awaken_session_state_contract::IdempotencyRecord {
                 key: record.key,
                 payload_hash: "another-payload".into(),
             },
@@ -1572,8 +1580,8 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let original = persisted("create-root", false, "preparing");
-    let payload = awaken_session_contract::SessionMutationPayload::Replace(original.clone());
-    let record = awaken_session_contract::IdempotencyRecord {
+    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(original.clone());
+    let record = awaken_session_state_contract::IdempotencyRecord {
         key: "create-root:one".into(),
         payload_hash: payload.stable_hash(),
     };
@@ -1593,7 +1601,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     let inserted = inserted.into_session();
     assert_eq!(
         inserted.revision,
-        awaken_session_contract::SessionRevision(1),
+        awaken_session_types::SessionRevision(1),
         "C1"
     );
     let mut durable = inserted.clone();
@@ -1632,7 +1640,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
             app.create_session_root(
                 "workspace",
                 crate::creation::CompleteSessionRoot::from_fresh(changed).unwrap(),
-                awaken_session_contract::IdempotencyRecord {
+                awaken_session_state_contract::IdempotencyRecord {
                     key: record.key,
                     payload_hash: "changed-hash".into(),
                 },
@@ -1648,7 +1656,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
             app.create_session_root(
                 "workspace",
                 crate::creation::CompleteSessionRoot::from_fresh(original).unwrap(),
-                awaken_session_contract::IdempotencyRecord {
+                awaken_session_state_contract::IdempotencyRecord {
                     key: "create-root:another".into(),
                     payload_hash: "another-hash".into(),
                 },
@@ -1709,25 +1717,26 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
             .expect("profiled Repository publication repository"),
     );
     let mut session = persisted("profiled-publication", false, "idle");
-    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+    session.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding: "profiled-publication-source".into(),
         effect_id: None,
         generation: None,
         idle_since_unix_ms: None,
     };
-    session.resources = awaken_session_contract::SessionResourceState::from_active(
+    session.resources = awaken_session_state_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
     create(repo.as_ref(), session).await;
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    *runtime.delegated_snapshot.lock().unwrap() = awaken_session_contract::DelegatedRunSnapshot {
-        delegated_runs: Vec::new(),
-        coordinated_thread_ids: vec![awaken_agent_contract::agent::thread::Id(
-            "profiled-publication-child".into(),
-        )],
-        watermark: 5,
-        runtime_commit_cursor: 8,
-    };
+    *runtime.delegated_snapshot.lock().unwrap() =
+        awaken_session_application_contract::DelegatedRunSnapshot {
+            delegated_runs: Vec::new(),
+            coordinated_thread_ids: vec![awaken_agent_contract::agent::thread::Id(
+                "profiled-publication-child".into(),
+            )],
+            watermark: 5,
+            runtime_commit_cursor: 8,
+        };
     let application = SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
@@ -1735,7 +1744,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration::default(),
     );
-    let fact = awaken_session_contract::ManagedLifecycleFact {
+    let fact = awaken_session_state_contract::ManagedLifecycleFact {
         id: "profiled-publication:terminated".into(),
         object_id: "profiled-publication".into(),
         workspace_id: Some("workspace".into()),
@@ -1785,7 +1794,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
             .await
             .unwrap()
             .execution,
-        awaken_session_contract::SessionExecutionState::Idle,
+        awaken_session_state_contract::SessionExecutionState::Idle,
         "R1-R2/E1"
     );
 
@@ -1835,7 +1844,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
             .await
             .unwrap()
             .terminal_cleanup
-            .repository_publication_receipt(&awaken_session_contract::SessionId::from(
+            .repository_publication_receipt(&awaken_session_types::SessionId::from(
                 "profiled-publication"
             ))
             .unwrap(),
@@ -1879,13 +1888,14 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     // Permanent publication rejection is durable before ordinary root cleanup;
     // exact profiled replay returns the same rejection without a second Git call.
     let mut rejected_session = persisted("profiled-rejected", false, "idle");
-    rejected_session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
-        binding: "profiled-rejected-source".into(),
-        effect_id: None,
-        generation: None,
-        idle_since_unix_ms: None,
-    };
-    rejected_session.resources = awaken_session_contract::SessionResourceState::from_active(
+    rejected_session.environment =
+        awaken_session_state_contract::SessionEnvironmentState::Resident {
+            binding: "profiled-rejected-source".into(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
+    rejected_session.resources = awaken_session_state_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
     create(repo.as_ref(), rejected_session).await;
@@ -1919,7 +1929,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     assert!(
         rejected_durable
             .terminal_cleanup
-            .repository_publication_rejection(&awaken_session_contract::SessionId::from(
+            .repository_publication_rejection(&awaken_session_types::SessionId::from(
                 "profiled-rejected"
             ))
             .unwrap()
@@ -1950,15 +1960,17 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     runtime.reject_publication.store(false, Ordering::SeqCst);
     runtime.fail_publication_once.store(true, Ordering::SeqCst);
     let mut unavailable_session = persisted("profiled-unavailable", false, "idle");
-    unavailable_session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
-        binding: "profiled-unavailable-source".into(),
-        effect_id: None,
-        generation: None,
-        idle_since_unix_ms: None,
-    };
-    unavailable_session.resources = awaken_session_contract::SessionResourceState::from_active(
-        repository_resources("source", "repo-1"),
-    );
+    unavailable_session.environment =
+        awaken_session_state_contract::SessionEnvironmentState::Resident {
+            binding: "profiled-unavailable-source".into(),
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
+    unavailable_session.resources =
+        awaken_session_state_contract::SessionResourceState::from_active(repository_resources(
+            "source", "repo-1",
+        ));
     create(repo.as_ref(), unavailable_session).await;
     let mut unavailable = command;
     unavailable.session_id = "profiled-unavailable".into();
@@ -1984,7 +1996,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     assert!(
         pending
             .terminal_cleanup
-            .publication_command(&awaken_session_contract::SessionId::from(
+            .publication_command(&awaken_session_types::SessionId::from(
                 "profiled-unavailable"
             ))
             .unwrap()
@@ -2066,7 +2078,7 @@ fn terminal_only_release_rejects_live_execution_and_preserves_failure_truth() {
             );
             assert!(matches!(
                 completed.disposition,
-                awaken_session_contract::SessionDisposition::Archived { .. }
+                awaken_session_state_contract::SessionDisposition::Archived { .. }
             ));
             assert!(
                 app.begin_activity(&SessionId::from(&id)).await.is_err(),
@@ -2147,7 +2159,7 @@ fn terminal_only_release_waits_for_cleanup_and_recovers_committed_failure() {
         let pending = repo.get(&SessionId::from(id)).await.unwrap();
         assert!(matches!(
             pending.disposition,
-            awaken_session_contract::SessionDisposition::Archived { .. }
+            awaken_session_state_contract::SessionDisposition::Archived { .. }
         ));
         assert_eq!(pending.execution, SessionExecutionState::ActivationFailed);
         assert!(!pending.verified_terminal_cleanup().unwrap().is_completed());
@@ -2211,7 +2223,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     // the only transition authority; replays cannot create another terminal fact.
     // Decision rule: execute L1-L9 and require every accepted, blocked, raced,
     // forced, and delete effect in the table above.
-    let durable_repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+    let durable_repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
@@ -2231,7 +2243,8 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     create(repo.as_ref(), persisted("archive-force", false, "idle")).await;
     for session_id in ["delete-live", "archive-work"] {
         let mut session = persisted(session_id, true, "idle");
-        let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
+        let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+            &mut session.baseline
         else {
             unreachable!("fixture baseline")
         };
@@ -2248,7 +2261,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     .await;
     let environments = Arc::new(RecordingEnvironmentSource::default());
     let app = application(repo.clone(), environments.clone());
-    let fact = |id: &str, event_type: &str| awaken_session_contract::ManagedLifecycleFact {
+    let fact = |id: &str, event_type: &str| awaken_session_state_contract::ManagedLifecycleFact {
         id: format!("{id}:{event_type}"),
         object_id: id.into(),
         workspace_id: Some("workspace".into()),
@@ -2298,7 +2311,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         matches!(
             root_rejected,
             Err(SessionPreparationError::Rejected(ref error))
-                if error.kind == awaken_session_contract::RunErrorKind::BadRequest
+                if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest
                     && error.message == "only an idle Session may be archived"
         ),
         "L3/E2: {root_rejected:?}"
@@ -2332,7 +2345,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         matches!(
             child_rejected,
             Err(SessionPreparationError::Rejected(ref error))
-                if error.kind == awaken_session_contract::RunErrorKind::BadRequest
+                if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest
         ),
         "L4/E2: {child_rejected:?}"
     );
@@ -2358,7 +2371,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         matches!(
             race_archive,
             Err(SessionPreparationError::Rejected(ref error))
-                if error.kind == awaken_session_contract::RunErrorKind::BadRequest
+                if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest
         ),
         "L5/E3: {race_archive:?}"
     );
@@ -2408,7 +2421,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
         .expect_err("L7 tombstone");
     assert!(matches!(
         tombstone,
-        awaken_session_contract::SessionRepositoryError::NotFound
+        awaken_session_state_contract::SessionRepositoryError::NotFound
     ));
     assert!(
         environments
@@ -2480,7 +2493,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
     // `processed=false` intentionally covers both a merely queued command and
     // crash-after-effect/before-root-CAS: the effect owner may make replay a
     // no-op, but terminal admission cannot infer that fact or drop provenance.
-    let repository: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
     );
@@ -2499,7 +2512,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let fact = |session_id: &str| awaken_session_contract::ManagedLifecycleFact {
+    let fact = |session_id: &str| awaken_session_state_contract::ManagedLifecycleFact {
         id: format!("{session_id}:terminated"),
         object_id: session_id.into(),
         workspace_id: Some("workspace".into()),
@@ -2530,7 +2543,7 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
             matches!(
                 result,
                 Err(SessionPreparationError::Rejected(ref error))
-                    if error.kind == awaken_session_contract::RunErrorKind::Unavailable
+                    if error.kind == awaken_session_error_contract::RunErrorKind::Unavailable
                         && error.code == "session_event_batch_pending"
             ),
             "{rule}: {result:?}"
@@ -2582,12 +2595,12 @@ async fn deletion_fixture(
     initial: &str,
     session_id: &str,
 ) -> (
-    Arc<dyn awaken_session_contract::SessionStore>,
+    Arc<dyn awaken_session_repository_contract::SessionStore>,
     Arc<FaultingSessionRepository>,
     Arc<RecordingCleanupRuntime>,
     Arc<SessionApplication>,
 ) {
-    let durable: Arc<dyn awaken_session_contract::SessionStore> =
+    let durable: Arc<dyn awaken_session_repository_contract::SessionStore> =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
     let runtime = Arc::new(RecordingCleanupRuntime::default());
@@ -2942,7 +2955,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     assert!(
                         matches!(
                             actual_result,
-                            awaken_session_contract::SessionMutationResult::Conflict { .. }
+                            awaken_session_state_contract::SessionMutationResult::Conflict { .. }
                         ),
                         "R2 real stale-root CAS conflict"
                     );
@@ -2950,14 +2963,18 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     assert!(
                         matches!(
                             actual_result,
-                            awaken_session_contract::SessionMutationResult::Replayed { .. }
+                            awaken_session_state_contract::SessionMutationResult::Replayed { .. }
                         ),
                         "R1/R3/R4 actual SQLite receipt replay"
                     );
                 }
                 let sqlite_result = match actual_result {
-                    awaken_session_contract::SessionMutationResult::Conflict { .. } => "conflict",
-                    awaken_session_contract::SessionMutationResult::Replayed { .. } => "replayed",
+                    awaken_session_state_contract::SessionMutationResult::Conflict { .. } => {
+                        "conflict"
+                    }
+                    awaken_session_state_contract::SessionMutationResult::Replayed { .. } => {
+                        "replayed"
+                    }
                     _ => unreachable!("race must actually reach a losing CAS branch"),
                 };
                 let race = serde_json::json!({
@@ -3040,7 +3057,7 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     // | W3 | present | self-hosted/nonterminal | stopped | wake + Leased |
     // | W4 | present | self-hosted/terminal | stopped | Unowned; no wake |
     // | W5 | present | self-hosted/nonterminal renewal | stopped | Unowned; no wake |
-    use awaken_session_contract::work_queue::{
+    use awaken_session_work_contract::{
         SessionWorkAcquisition, SessionWorkLeaseAuthority, SessionWorkOwnership,
     };
 
@@ -3321,7 +3338,7 @@ async fn run_activity_fence_decision_table() {
         app.force_terminate_session(
             "activity-oldest-first",
             "2026-08-11T00:00:00Z",
-            awaken_session_contract::ManagedLifecycleFact {
+            awaken_session_state_contract::ManagedLifecycleFact {
                 id: "activity-terminal".into(),
                 object_id: "activity-oldest-first".into(),
                 workspace_id: Some("workspace".into()),
@@ -3398,7 +3415,7 @@ async fn run_activity_fence_decision_table() {
         assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E5");
 
         let mut worker_preparing = persisted("activity-worker-preparing", false, "preparing");
-        let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
+        let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
             &mut worker_preparing.baseline
         else {
             unreachable!("fixture is frozen")
@@ -3633,7 +3650,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     let invalid_source =
         configured_admission_application(repo.clone(), invalid_source_runtime.clone());
     let invalid_source_error =
-        awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+        awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
             &invalid_source,
             coordination_spawn_command("send-invalid-source"),
         )
@@ -3641,7 +3658,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .expect_err("S0 source mismatch");
     assert_eq!(
         invalid_source_error.kind,
-        awaken_session_contract::RunErrorKind::BadRequest,
+        awaken_session_error_contract::RunErrorKind::BadRequest,
         "S0/E0"
     );
     assert!(
@@ -3661,7 +3678,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         AgentAdmissionOutcome::Accepted,
     ]));
     let accepted = configured_admission_application(repo.clone(), accepted_runtime.clone());
-    awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+    awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
         &accepted,
         coordination_spawn_command("send-accepted"),
     )
@@ -3687,7 +3704,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     ]));
     let rejected = configured_admission_application(repo.clone(), rejected_runtime);
     let rejected_error =
-        awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+        awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
             &rejected,
             coordination_spawn_command("send-rejected"),
         )
@@ -3695,7 +3712,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .expect_err("S2 definitive rejection");
     assert_eq!(
         rejected_error.kind,
-        awaken_session_contract::RunErrorKind::BadRequest
+        awaken_session_error_contract::RunErrorKind::BadRequest
     );
     assert!(
         repo.get(&SessionId::from("send-rejected"))
@@ -3711,7 +3728,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         AgentAdmissionOutcome::Accepted,
     ]));
     let ambiguous = configured_admission_application(repo.clone(), ambiguous_runtime.clone());
-    awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+    awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
         &ambiguous,
         coordination_spawn_command("send-ambiguous"),
     )
@@ -3726,7 +3743,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         std::collections::BTreeSet::from([ambiguous_epoch]),
         "S3/E3"
     );
-    awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+    awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
         &ambiguous,
         coordination_spawn_command("send-ambiguous"),
     )
@@ -3752,7 +3769,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     ]));
     let mismatch = configured_admission_application(repo.clone(), mismatch_runtime.clone());
     let mismatch_error =
-        awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+        awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
             &mismatch,
             coordination_spawn_command("send-mismatch"),
         )
@@ -3760,7 +3777,7 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         .expect_err("S4 mismatched receipt");
     assert_eq!(
         mismatch_error.kind,
-        awaken_session_contract::RunErrorKind::Internal
+        awaken_session_error_contract::RunErrorKind::Internal
     );
     let mismatch_epoch = mismatch_runtime.admissions.lock().unwrap()[0].session_activity_epoch;
     assert_eq!(
@@ -3773,9 +3790,9 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
     );
 
     ambiguous_runtime.commit_boundary("send-ambiguous", &child, &run, RunState::Awaiting, "");
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &ambiguous,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "send-ambiguous".into(),
             source_thread_id: child,
             source_run_id: run,
@@ -3803,9 +3820,9 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         RunState::Ended(EndCause::NaturalEnd),
         "research complete",
     );
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &accepted,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "send-accepted".into(),
             source_thread_id: accepted_admission.thread_id,
             source_run_id: accepted_admission.run_id,
@@ -3853,9 +3870,9 @@ async fn coordinated_agent_admission_preserves_activity_across_ambiguous_deliver
         RunState::Ended(EndCause::NaturalEnd),
         "coordinator acknowledged report",
     );
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &accepted,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "send-accepted".into(),
             source_thread_id: ThreadId("send-accepted".into()),
             source_run_id: RunId("coord-report-run".into()),
@@ -3940,7 +3957,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
             format!("recovered report {rule}"),
         );
         assert!(
-            awaken_session_contract::CoordinationRuntime::coordinated_threads(
+            awaken_session_execution_contract::CoordinationRuntime::coordinated_threads(
                 runtime.as_ref(),
                 &SessionId::from(&session_id),
                 None,
@@ -3952,9 +3969,9 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
         );
 
         let result =
-            awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+            awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
                 &app,
-                awaken_session_contract::SessionAgentBoundaryCommand {
+                awaken_session_execution_contract::SessionAgentBoundaryCommand {
                     session_id: SessionId::from(&session_id),
                     source_thread_id: child,
                     source_run_id: run,
@@ -3976,7 +3993,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
             let error = result.expect_err("R2-R4/E2 unknown identity fails closed");
             assert_eq!(
                 error.kind,
-                awaken_session_contract::RunErrorKind::BadRequest,
+                awaken_session_error_contract::RunErrorKind::BadRequest,
                 "{rule}/E2"
             );
             assert_eq!(runtime.continuations.lock().unwrap().len(), 1, "{rule}/E2");
@@ -4040,7 +4057,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
         ]));
         let app = configured_admission_application(repo.clone(), runtime.clone());
         let receipt =
-            awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
+            awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
                 &app,
                 coordination_spawn_command(&session_id),
             )
@@ -4059,21 +4076,22 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             .await
             .expect("activity before follow-up")
             .active_activity_epochs;
-        let follow_up = awaken_session_contract::SessionAgentMessageCommand {
+        let follow_up = awaken_session_execution_contract::SessionAgentMessageCommand {
             session_id: SessionId::from(&session_id),
             source_thread_id: ThreadId(session_id.clone()),
             source_run_id: RunId(format!("{session_id}-parent-follow-up")),
             source_call_id: format!("{rule}-follow-up-call"),
             operation_id: format!("{rule}-follow-up-operation"),
-            target: awaken_session_contract::SessionAgentTarget::ExistingThread {
+            target: awaken_session_execution_contract::SessionAgentTarget::ExistingThread {
                 thread_id: receipt.thread_id.clone(),
             },
             message: "continue".into(),
         };
-        let result = awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
-            &app, follow_up,
-        )
-        .await;
+        let result =
+            awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
+                &app, follow_up,
+            )
+            .await;
         if accepted {
             let accepted_receipt = result.expect(rule);
             assert_eq!(accepted_receipt.thread_id, receipt.thread_id, "{rule}/E1");
@@ -4081,14 +4099,14 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             assert_eq!(admissions.len(), 2, "{rule}/E1");
             assert_eq!(
                 admissions[1].intent,
-                awaken_session_contract::CoordinatedRunIntent::FollowUp,
+                awaken_session_execution_contract::CoordinatedRunIntent::FollowUp,
                 "{rule}/E1"
             );
         } else {
             let error = result.expect_err("A5 Failed must reject");
             assert_eq!(
                 error.kind,
-                awaken_session_contract::RunErrorKind::BadRequest,
+                awaken_session_error_contract::RunErrorKind::BadRequest,
                 "A5/E2"
             );
             assert_eq!(runtime.admissions.lock().unwrap().len(), 1, "A5/E2");
@@ -4114,20 +4132,20 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
         let thread_id = ThreadId(format!("{session_id}-target"));
         match rule {
             "A6" => {}
-            "A7" => runtime.commit_link(awaken_session_contract::CoordinatedThreadLink {
+            "A7" => runtime.commit_link(awaken_session_execution_contract::CoordinatedThreadLink {
                 session_id: SessionId::from(&session_id),
                 thread_id: thread_id.clone(),
-                target: awaken_session_contract::CoordinatedThreadTarget::Advisor {
+                target: awaken_session_execution_contract::CoordinatedThreadTarget::Advisor {
                     model: "advisor-model".into(),
                 },
                 created_by_operation_id: "advisor-operation".into(),
                 latest_run_id: Some(RunId("advisor-run".into())),
             }),
             "A8" => {
-                runtime.commit_link(awaken_session_contract::CoordinatedThreadLink {
+                runtime.commit_link(awaken_session_execution_contract::CoordinatedThreadLink {
                     session_id: SessionId::from(&session_id),
                     thread_id: thread_id.clone(),
-                    target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+                    target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
                         agent_id: "coord-child".into(),
                     },
                     created_by_operation_id: "archived-agent-operation".into(),
@@ -4143,23 +4161,26 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             .await
             .expect("target state before rejection")
             .active_activity_epochs;
-        let error = awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
-            &app,
-            awaken_session_contract::SessionAgentMessageCommand {
-                session_id: SessionId::from(&session_id),
-                source_thread_id: ThreadId(session_id.clone()),
-                source_run_id: RunId(format!("{session_id}-parent-run")),
-                source_call_id: format!("{rule}-call"),
-                operation_id: format!("{rule}-operation"),
-                target: awaken_session_contract::SessionAgentTarget::ExistingThread { thread_id },
-                message: "must reject before activity".into(),
-            },
-        )
-        .await
-        .expect_err("non-ordinary/closed target must reject");
+        let error =
+            awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
+                &app,
+                awaken_session_execution_contract::SessionAgentMessageCommand {
+                    session_id: SessionId::from(&session_id),
+                    source_thread_id: ThreadId(session_id.clone()),
+                    source_run_id: RunId(format!("{session_id}-parent-run")),
+                    source_call_id: format!("{rule}-call"),
+                    operation_id: format!("{rule}-operation"),
+                    target: awaken_session_execution_contract::SessionAgentTarget::ExistingThread {
+                        thread_id,
+                    },
+                    message: "must reject before activity".into(),
+                },
+            )
+            .await
+            .expect_err("non-ordinary/closed target must reject");
         assert_eq!(
             error.kind,
-            awaken_session_contract::RunErrorKind::BadRequest,
+            awaken_session_error_contract::RunErrorKind::BadRequest,
             "{rule}/E2"
         );
         assert!(
@@ -4212,7 +4233,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let allow = || {
-        awaken_session_contract::RunResume::Permission(
+        awaken_session_application_contract::RunResume::Permission(
             awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
         )
     };
@@ -4237,7 +4258,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
         (
             "foreground-request-wrong-kind",
             "reply-tool",
-            awaken_session_contract::RunResume::ClientResult {
+            awaken_session_application_contract::RunResume::ClientResult {
                 content: Vec::new(),
                 is_error: false,
             },
@@ -4288,7 +4309,7 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
     let delivery = accepted_runtime.deliveries.lock().unwrap()[0].clone();
     assert_eq!(
         delivery.command.target,
-        awaken_session_contract::SessionThreadTarget::Primary,
+        awaken_session_execution_contract::SessionThreadTarget::Primary,
         "F3/E2"
     );
     assert_eq!(delivery.command.expected_run_id.0, "reply-run", "F3/E2");
@@ -4374,26 +4395,29 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     ] {
         create(repo.as_ref(), persisted(session_id, false, "idle")).await;
     }
-    let command = |session_id: &str| awaken_session_contract::SessionThreadToolReplyCommand {
-        session_id: SessionId::from(session_id),
-        tool_request_event_id: None,
-        expected_thread_version: None,
-        target: awaken_session_contract::SessionThreadTarget::Child(ThreadId("reply-child".into())),
-        expected_run_id: RunId("reply-run".into()),
-        expected_correlation_id: "reply-correlation".into(),
-        tool_use_id: "reply-tool".into(),
-        reply: awaken_session_contract::SessionThreadToolReply::Confirm(
-            awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
-        ),
-        accompanying_system: None,
-    };
+    let command =
+        |session_id: &str| awaken_session_execution_contract::SessionThreadToolReplyCommand {
+            session_id: SessionId::from(session_id),
+            tool_request_event_id: None,
+            expected_thread_version: None,
+            target: awaken_session_execution_contract::SessionThreadTarget::Child(ThreadId(
+                "reply-child".into(),
+            )),
+            expected_run_id: RunId("reply-run".into()),
+            expected_correlation_id: "reply-correlation".into(),
+            tool_use_id: "reply-tool".into(),
+            reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
+                awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
+            ),
+            accompanying_system: None,
+        };
 
     // P7: extension-owned primary reply -> delivered without opening any root activity.
     // Exact replay has the same effect; the Outcome's ordinary Run remains its sole owner.
     create(repo.as_ref(), persisted("reply-extension", false, "idle")).await;
     let mut extension_runtime = RecordingReplyRuntime::new(ReplyRuntimeOutcome::Accepted);
     extension_runtime.activity =
-        awaken_session_contract::SessionThreadToolReplyActivity::ThreadExtension;
+        awaken_session_execution_contract::SessionThreadToolReplyActivity::ThreadExtension;
     let extension_runtime = Arc::new(extension_runtime);
     let extension = application_with_runtime(
         extension_runtime.clone(),
@@ -4401,9 +4425,9 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         Arc::new(RecordingEnvironmentSource::default()),
     );
     let mut extension_command = command("reply-extension");
-    extension_command.target = awaken_session_contract::SessionThreadTarget::Primary;
+    extension_command.target = awaken_session_execution_contract::SessionThreadTarget::Primary;
     for _ in 0..2 {
-        awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             &extension,
             extension_command.clone(),
         )
@@ -4432,7 +4456,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+    awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         &accepted,
         command("reply-accepted"),
     )
@@ -4449,7 +4473,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         "P1/E1"
     );
 
-    awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+    awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         &accepted,
         command("reply-accepted"),
     )
@@ -4477,8 +4501,8 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     );
 
     let mut primary_command = command("reply-primary");
-    primary_command.target = awaken_session_contract::SessionThreadTarget::Primary;
-    awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+    primary_command.target = awaken_session_execution_contract::SessionThreadTarget::Primary;
+    awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         &accepted,
         primary_command,
     )
@@ -4493,7 +4517,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         .expect("P6 delivery");
     assert_eq!(
         primary_delivery.command.target,
-        awaken_session_contract::SessionThreadTarget::Primary,
+        awaken_session_execution_contract::SessionThreadTarget::Primary,
         "P6/E6"
     );
     assert_eq!(
@@ -4513,7 +4537,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             &rejected,
             command("reply-rejected"),
         )
@@ -4539,7 +4563,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         Arc::new(RecordingEnvironmentSource::default()),
     );
     assert!(
-        awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             &ambiguous,
             command("reply-ambiguous"),
         )
@@ -4565,7 +4589,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         "P4/E4"
     );
     assert!(
-        awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
             &ambiguous,
             command("reply-ambiguous"),
         )
@@ -4592,9 +4616,9 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         "P4R/E4 one retained activity"
     );
 
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &accepted,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "reply-accepted".into(),
             source_thread_id: ThreadId("reply-child".into()),
             source_run_id: RunId("reply-run".into()),
@@ -4638,12 +4662,13 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
     );
     for session_id in ["reached-valid-reply", "reached-invalid-reply"] {
         let mut session = persisted(session_id, false, "idle");
-        session.budget = awaken_session_contract::SessionBudgetState::Active {
+        session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
             max_list_cost_minor: 1,
-            consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-                * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
+            consumed_numerator:
+                awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+                    * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
             usage_cursor: Default::default(),
-            snapshot: awaken_session_contract::ManagedListPriceSnapshot {
+            snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
                 snapshot_id: "required-action-price-v1".into(),
                 version: 1,
                 effective_at_unix_ms: 1,
@@ -4671,19 +4696,19 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
         ),
         "A1/E1"
     );
-    awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+    awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
         &app,
-        awaken_session_contract::SessionThreadToolReplyCommand {
+        awaken_session_execution_contract::SessionThreadToolReplyCommand {
             session_id: "reached-valid-reply".into(),
             tool_request_event_id: None,
             expected_thread_version: None,
-            target: awaken_session_contract::SessionThreadTarget::Child(ThreadId(
+            target: awaken_session_execution_contract::SessionThreadTarget::Child(ThreadId(
                 "reply-child".into(),
             )),
             expected_run_id: RunId("reply-run".into()),
             expected_correlation_id: "reply-correlation".into(),
             tool_use_id: "reply-tool".into(),
-            reply: awaken_session_contract::SessionThreadToolReply::Confirm(
+            reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
                 awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
             ),
             accompanying_system: None,
@@ -4702,29 +4727,32 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
         .get(&SessionId::from("reached-invalid-reply"))
         .await
         .expect("A3 state before");
-    let error = awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
-        &app,
-        awaken_session_contract::SessionThreadToolReplyCommand {
-            session_id: "reached-invalid-reply".into(),
-            tool_request_event_id: None,
-            expected_thread_version: None,
-            target: awaken_session_contract::SessionThreadTarget::Child(ThreadId(
-                "reply-child".into(),
-            )),
-            expected_run_id: RunId("reply-run".into()),
-            expected_correlation_id: "reply-correlation".into(),
-            tool_use_id: "forged-tool".into(),
-            reply: awaken_session_contract::SessionThreadToolReply::Confirm(
-                awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
-            ),
-            accompanying_system: None,
-        },
-    )
-    .await
-    .expect_err("A3 forged reply");
+    let error =
+        awaken_session_execution_contract::SessionAgentCoordination::reply_session_thread_tool(
+            &app,
+            awaken_session_execution_contract::SessionThreadToolReplyCommand {
+                session_id: "reached-invalid-reply".into(),
+                tool_request_event_id: None,
+                expected_thread_version: None,
+                target: awaken_session_execution_contract::SessionThreadTarget::Child(ThreadId(
+                    "reply-child".into(),
+                )),
+                expected_run_id: RunId("reply-run".into()),
+                expected_correlation_id: "reply-correlation".into(),
+                tool_use_id: "forged-tool".into(),
+                reply: awaken_session_execution_contract::SessionThreadToolReply::Confirm(
+                    awaken_agent_contract::agent::awaiting::PermissionDecision::Allow {
+                        note: None,
+                    },
+                ),
+                accompanying_system: None,
+            },
+        )
+        .await
+        .expect_err("A3 forged reply");
     assert_eq!(
         error.kind,
-        awaken_session_contract::RunErrorKind::BadRequest,
+        awaken_session_error_contract::RunErrorKind::BadRequest,
         "A3/E3"
     );
     assert_eq!(
@@ -4759,12 +4787,12 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
             .expect("budget choke repository"),
     );
     let mut session = coordinated_session("budget-admission-choke");
-    session.budget = awaken_session_contract::SessionBudgetState::Active {
+    session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
         max_list_cost_minor: 1,
-        consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
+        consumed_numerator: awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
         usage_cursor: Default::default(),
-        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
+        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
             snapshot_id: "budget-choke-price-v1".into(),
             version: 1,
             effective_at_unix_ms: 1,
@@ -4781,7 +4809,7 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
     ]));
     let app = configured_admission_application(repo.clone(), runtime.clone());
 
-    let roster = awaken_session_contract::SessionAgentCoordination::list_session_agents(
+    let roster = awaken_session_execution_contract::SessionAgentCoordination::list_session_agents(
         &app,
         &SessionId::from("budget-admission-choke"),
     )
@@ -4789,12 +4817,13 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
     .expect("G1 read-only roster remains visible");
     assert_eq!(roster.len(), 1, "G1/E1");
 
-    let error = awaken_session_contract::SessionAgentCoordination::send_session_agent_message(
-        &app,
-        coordination_spawn_command("budget-admission-choke"),
-    )
-    .await
-    .expect_err("G2 reached budget");
+    let error =
+        awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
+            &app,
+            coordination_spawn_command("budget-admission-choke"),
+        )
+        .await
+        .expect_err("G2 reached budget");
     assert_eq!(error.code, "budget_reached", "G2/E2");
     assert!(runtime.admissions.lock().unwrap().is_empty(), "G2/E3");
     assert!(
@@ -4875,9 +4904,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         RunState::Awaiting,
         "pending",
     );
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &app,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-awaiting".into(),
             source_thread_id: ThreadId("boundary-child".into()),
             source_run_id: RunId("boundary-child-run".into()),
@@ -4899,9 +4928,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         .get(&SessionId::from("boundary-terminal"))
         .await
         .expect("B2 before");
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &app,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-terminal".into(),
             source_thread_id: ThreadId("boundary-terminal-child".into()),
             source_run_id: RunId("boundary-terminal-run".into()),
@@ -4932,9 +4961,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         "",
     );
     let rejected =
-        awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             &app,
-            awaken_session_contract::SessionAgentBoundaryCommand {
+            awaken_session_execution_contract::SessionAgentBoundaryCommand {
                 session_id: "boundary-running".into(),
                 source_thread_id: ThreadId("boundary-running-child".into()),
                 source_run_id: RunId("boundary-running-run".into()),
@@ -4965,9 +4994,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         RunState::Ended(EndCause::NaturalEnd),
         "must not become a primary report",
     );
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &app,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-interrupted".into(),
             source_thread_id: ThreadId("boundary-interrupted-child".into()),
             source_run_id: RunId("boundary-interrupted-run".into()),
@@ -5001,9 +5030,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         )),
         "must not become a primary report",
     );
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &app,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "boundary-failed".into(),
             source_thread_id: failed_child.clone(),
             source_run_id: failed_run,
@@ -5040,9 +5069,9 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     );
     runtime.set_lifecycle_visible(false);
     let unavailable =
-        awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             &app,
-            awaken_session_contract::SessionAgentBoundaryCommand {
+            awaken_session_execution_contract::SessionAgentBoundaryCommand {
                 session_id: "boundary-unprojected".into(),
                 source_thread_id: ThreadId("boundary-unprojected-child".into()),
                 source_run_id: RunId("boundary-unprojected-run".into()),
@@ -5176,7 +5205,7 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
     );
     runtime.set_generic_recovery_available(false);
     assert!(
-        awaken_session_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
+        awaken_session_execution_contract::ThreadReadRuntime::session_thread_recovery_snapshot(
             runtime.as_ref(),
             &SessionId::from(session_id),
             &thread_id.0,
@@ -5201,9 +5230,9 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
         "R2 precondition"
     );
 
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &app,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: session_id.into(),
             source_thread_id: thread_id.clone(),
             source_run_id,
@@ -5220,23 +5249,24 @@ async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_suc
         .expect("R2 Session");
     assert_eq!(after_replay, before_replay, "R2/E1+E2");
 
-    let missing = awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &app,
-        awaken_session_contract::SessionAgentBoundaryCommand {
-            session_id: session_id.into(),
-            source_thread_id: thread_id,
-            source_run_id: RunId("boundary-redelivery-missing".into()),
-            source_agent_id: "unused-redelivery-agent".into(),
-            session_activity_epoch: source_epoch,
-            cancellation_requested: false,
-        },
-    )
-    .await;
+    let missing =
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
+            &app,
+            awaken_session_execution_contract::SessionAgentBoundaryCommand {
+                session_id: session_id.into(),
+                source_thread_id: thread_id,
+                source_run_id: RunId("boundary-redelivery-missing".into()),
+                source_agent_id: "unused-redelivery-agent".into(),
+                session_activity_epoch: source_epoch,
+                cancellation_requested: false,
+            },
+        )
+        .await;
     assert!(
         matches!(
             missing,
             Err(RunError {
-                kind: awaken_session_contract::RunErrorKind::BadRequest,
+                kind: awaken_session_error_contract::RunErrorKind::BadRequest,
                 ..
             })
         ),
@@ -5298,9 +5328,9 @@ async fn completed_child_without_a_committed_reply_settles_without_a_report_run(
         "",
     );
 
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &app,
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "completed-without-report".into(),
             source_thread_id: child,
             source_run_id: run,
@@ -5345,7 +5375,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     );
     create(repo.as_ref(), persisted("advisor-usage", false, "idle")).await;
     let runtime = Arc::new(
-        RecordingBoundaryBudgetRuntime::new(awaken_session_contract::SessionUsage {
+        RecordingBoundaryBudgetRuntime::new(awaken_session_budget_contract::SessionUsage {
             input_tokens: 3,
             output_tokens: 7,
             cache_read_tokens: 2,
@@ -5355,7 +5385,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
             active_seconds: 888,
             by_model: std::collections::BTreeMap::from([(
                 "shared-model".into(),
-                awaken_session_contract::SessionModelUsage {
+                awaken_session_budget_contract::SessionModelUsage {
                     input_tokens: 3,
                     output_tokens: 7,
                     cache_read_tokens: 2,
@@ -5363,11 +5393,13 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
                 },
             )]),
         })
-        .with_child_target(awaken_session_contract::CoordinatedThreadTarget::Advisor {
-            model: "advisor-model".into(),
-        }),
+        .with_child_target(
+            awaken_session_execution_contract::CoordinatedThreadTarget::Advisor {
+                model: "advisor-model".into(),
+            },
+        ),
     );
-    runtime.set_root_usage(awaken_session_contract::SessionUsage {
+    runtime.set_root_usage(awaken_session_budget_contract::SessionUsage {
         input_tokens: 10,
         output_tokens: 14,
         cache_read_tokens: 4,
@@ -5377,7 +5409,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         active_seconds: 999,
         by_model: std::collections::BTreeMap::from([(
             "shared-model".into(),
-            awaken_session_contract::SessionModelUsage {
+            awaken_session_budget_contract::SessionModelUsage {
                 input_tokens: 10,
                 output_tokens: 14,
                 cache_read_tokens: 4,
@@ -5418,7 +5450,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         .session_usage("advisor-usage", None)
         .await
         .expect("A1 Session usage");
-    let expected_one = awaken_session_contract::SessionUsage {
+    let expected_one = awaken_session_budget_contract::SessionUsage {
         input_tokens: 13,
         output_tokens: 21,
         cache_read_tokens: 6,
@@ -5428,7 +5460,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
         active_seconds: 0,
         by_model: std::collections::BTreeMap::from([(
             "shared-model".into(),
-            awaken_session_contract::SessionModelUsage {
+            awaken_session_budget_contract::SessionModelUsage {
                 input_tokens: 13,
                 output_tokens: 21,
                 cache_read_tokens: 6,
@@ -5481,7 +5513,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     assert_eq!(
         runtime
             .coordination()
-            .ok_or_else(|| awaken_session_contract::RunError::unavailable(
+            .ok_or_else(|| awaken_session_error_contract::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime"
             ))
             .expect("runtime role")
@@ -5518,7 +5550,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     let observed = runtime
         .coordination()
         .ok_or_else(|| {
-            awaken_session_contract::RunError::unavailable(
+            awaken_session_error_contract::RunError::unavailable(
                 "CoordinationRuntime is unsupported by this runtime",
             )
         })
@@ -5607,7 +5639,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
             .await
             .unwrap_err()
             .kind,
-        awaken_session_contract::RunErrorKind::Unavailable,
+        awaken_session_error_contract::RunErrorKind::Unavailable,
         "A6b fresh dependency error"
     );
     assert!(runtime.usage_thread_reads.lock().unwrap().is_empty());
@@ -5631,7 +5663,7 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
             .unwrap_err();
         assert_eq!(
             error.kind,
-            awaken_session_contract::RunErrorKind::Internal,
+            awaken_session_error_contract::RunErrorKind::Internal,
             "A7"
         );
         assert!(
@@ -5675,14 +5707,14 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("request gate repository"),
     );
-    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
+    let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
         snapshot_id: "request-gate-prices-v1".into(),
         version: 1,
         effective_at_unix_ms: 1,
         arithmetic_version: 1,
         model_rates: std::collections::BTreeMap::from([(
             "model".into(),
-            awaken_session_contract::ManagedTokenListRates {
+            awaken_session_budget_contract::ManagedTokenListRates {
                 input_micros_per_million: 1_000_000,
                 ..Default::default()
             },
@@ -5692,7 +5724,8 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     };
     for id in ["request-gate-root", "request-gate-child"] {
         let mut session = persisted(id, false, "idle");
-        session.budget = awaken_session_contract::SessionBudgetState::active(1, snapshot.clone());
+        session.budget =
+            awaken_session_budget_contract::SessionBudgetState::active(1, snapshot.clone());
         create(repo.as_ref(), session).await;
     }
     let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(Default::default()));
@@ -5701,11 +5734,11 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let reached_usage = awaken_session_contract::SessionUsage {
+    let reached_usage = awaken_session_budget_contract::SessionUsage {
         input_tokens: 10_000,
         by_model: std::collections::BTreeMap::from([(
             "model".into(),
-            awaken_session_contract::SessionModelUsage {
+            awaken_session_budget_contract::SessionModelUsage {
                 input_tokens: 10_000,
                 ..Default::default()
             },
@@ -5723,7 +5756,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
         "",
     );
     assert!(
-        awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+        awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
             &app,
             &SessionId::from("request-gate-root"),
             &root_thread,
@@ -5736,7 +5769,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     runtime.set_root_usage(reached_usage.clone());
     for replay in [false, true] {
         assert!(
-            !awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+            !awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
                 &app,
                 &SessionId::from("request-gate-root"),
                 &root_thread,
@@ -5769,7 +5802,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
         "",
     );
     assert!(
-        awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+        awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
             &app,
             &SessionId::from("request-gate-child"),
             &child_thread,
@@ -5782,7 +5815,7 @@ async fn model_request_admission_reconciles_root_and_child_usage_at_one_cas() {
     runtime.set_child_usage(reached_usage);
     for replay in [false, true] {
         assert!(
-            !awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+            !awaken_session_execution_contract::SessionAgentCoordination::admit_session_model_request(
                 &app,
                 &SessionId::from("request-gate-child"),
                 &child_thread,
@@ -5833,14 +5866,14 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("boundary budget repository"),
     );
-    let price_snapshot = awaken_session_contract::ManagedListPriceSnapshot {
+    let price_snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
         snapshot_id: "boundary-price-v1".into(),
         version: 1,
         effective_at_unix_ms: 1,
         arithmetic_version: 1,
         model_rates: std::collections::BTreeMap::from([(
             "model".into(),
-            awaken_session_contract::ManagedTokenListRates {
+            awaken_session_budget_contract::ManagedTokenListRates {
                 input_micros_per_million: 1_000_000,
                 ..Default::default()
             },
@@ -5851,15 +5884,15 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     for id in ["boundary-budget-awaiting", "boundary-budget-ended"] {
         let mut session = coordinated_session(id);
         session.budget =
-            awaken_session_contract::SessionBudgetState::active(1, price_snapshot.clone());
+            awaken_session_budget_contract::SessionBudgetState::active(1, price_snapshot.clone());
         create(repo.as_ref(), session).await;
     }
     let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(
-        awaken_session_contract::SessionUsage {
+        awaken_session_budget_contract::SessionUsage {
             input_tokens: 10_000,
             by_model: std::collections::BTreeMap::from([(
                 "model".into(),
-                awaken_session_contract::SessionModelUsage {
+                awaken_session_budget_contract::SessionModelUsage {
                     input_tokens: 10_000,
                     ..Default::default()
                 },
@@ -5874,17 +5907,18 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     );
     app.set_config_source(Arc::new(CoordinatedAgentSource));
 
-    let settle =
-        |session_id: &str, epoch: u64| -> awaken_session_contract::SessionAgentBoundaryCommand {
-            awaken_session_contract::SessionAgentBoundaryCommand {
-                session_id: session_id.into(),
-                source_thread_id: ThreadId("budget-child".into()),
-                source_run_id: RunId("budget-child-run".into()),
-                source_agent_id: "coord-child".into(),
-                session_activity_epoch: epoch,
-                cancellation_requested: false,
-            }
-        };
+    let settle = |session_id: &str,
+                  epoch: u64|
+     -> awaken_session_execution_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
+            session_id: session_id.into(),
+            source_thread_id: ThreadId("budget-child".into()),
+            source_run_id: RunId("budget-child-run".into()),
+            source_agent_id: "coord-child".into(),
+            session_activity_epoch: epoch,
+            cancellation_requested: false,
+        }
+    };
 
     let (_, awaiting_epoch) = app
         .begin_activity_for_operation(&SessionId::from("boundary-budget-awaiting"), "awaiting-op")
@@ -5897,7 +5931,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
         RunState::Awaiting,
         "budget report",
     );
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &app,
         settle("boundary-budget-awaiting", awaiting_epoch),
     )
@@ -5937,7 +5971,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
         "budget report",
     );
     let ended_command = settle("boundary-budget-ended", ended_epoch);
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &app,
         ended_command.clone(),
     )
@@ -5962,7 +5996,7 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     assert_eq!(ended.execution, SessionExecutionState::Running, "B2/E3");
     let revision = ended.revision;
 
-    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
         &app,
         ended_command,
     )
@@ -6014,16 +6048,16 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
             .expect("concurrent budget repository"),
     );
     let mut session = coordinated_session("concurrent-child-budget");
-    session.budget = awaken_session_contract::SessionBudgetState::active(
+    session.budget = awaken_session_budget_contract::SessionBudgetState::active(
         1,
-        awaken_session_contract::ManagedListPriceSnapshot {
+        awaken_session_budget_contract::ManagedListPriceSnapshot {
             snapshot_id: "concurrent-price-v1".into(),
             version: 1,
             effective_at_unix_ms: 1,
             arithmetic_version: 1,
             model_rates: std::collections::BTreeMap::from([(
                 "model".into(),
-                awaken_session_contract::ManagedTokenListRates {
+                awaken_session_budget_contract::ManagedTokenListRates {
                     input_micros_per_million: 1_000_000,
                     ..Default::default()
                 },
@@ -6034,11 +6068,11 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
     );
     create(repo.as_ref(), session).await;
     let runtime = Arc::new(RecordingBoundaryBudgetRuntime::new(
-        awaken_session_contract::SessionUsage {
+        awaken_session_budget_contract::SessionUsage {
             input_tokens: 5_000,
             by_model: std::collections::BTreeMap::from([(
                 "model".into(),
-                awaken_session_contract::SessionModelUsage {
+                awaken_session_budget_contract::SessionModelUsage {
                     input_tokens: 5_000,
                     ..Default::default()
                 },
@@ -6079,7 +6113,7 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         .await
         .expect("C1 child B activity");
     let command = |thread_id, run_id, session_activity_epoch| {
-        awaken_session_contract::SessionAgentBoundaryCommand {
+        awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: "concurrent-child-budget".into(),
             source_thread_id: thread_id,
             source_run_id: run_id,
@@ -6089,11 +6123,11 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         }
     };
     let (settled_a, settled_b) = tokio::join!(
-        awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             &app,
             command(child_a.clone(), run_a.clone(), epoch_a),
         ),
-        awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             &app,
             command(child_b.clone(), run_b.clone(), epoch_b),
         )
@@ -6153,7 +6187,7 @@ async fn transferred_activity_fences_a_late_distinct_boundary_before_conflict_va
         .expect("A1 activity");
     let first_epoch = first.activity_epoch;
     let observation =
-        |source_commit_cursor| awaken_session_contract::SessionRuntimeIntervalObservation {
+        |source_commit_cursor| awaken_session_state_contract::SessionRuntimeIntervalObservation {
             activity_epoch: first_epoch,
             thread_id: ThreadId(session_id.into()),
             run_id: RunId("shared-run".into()),
@@ -6224,7 +6258,7 @@ async fn cancellation_before_external_realization_settles_without_a_runtime_inte
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let observation = awaken_session_contract::SessionRuntimeIntervalObservation {
+    let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
         activity_epoch: epoch,
         thread_id: ThreadId(session_id.into()),
         run_id: RunId("cancelled-before-realization-run".into()),
@@ -6259,8 +6293,8 @@ struct FailOnceMcpRealizer {
 impl McpAttachmentRealizer for FailOnceMcpRealizer {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        request: awaken_session_mcp_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
         if self.stage_calls.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(RunError::unavailable("injected MCP stage outage"));
         }
@@ -6269,14 +6303,14 @@ impl McpAttachmentRealizer for FailOnceMcpRealizer {
 
     async fn publish_mcp_generation(
         &self,
-        generation: awaken_session_contract::McpGenerationRef,
+        generation: awaken_session_mcp_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         McpAttachmentRealizer::publish_mcp_generation(&NoopMcpRealizer, generation).await
     }
 
     async fn drain_mcp_generation(
         &self,
-        generation: awaken_session_contract::McpGenerationRef,
+        generation: awaken_session_mcp_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         McpAttachmentRealizer::drain_mcp_generation(&NoopMcpRealizer, generation).await
     }
@@ -6306,11 +6340,11 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
             .expect("mixed update repository"),
     );
     let mut session = persisted(session_id, false, "idle");
-    session.budget = awaken_session_contract::SessionBudgetState::Active {
+    session.budget = awaken_session_budget_contract::SessionBudgetState::Active {
         max_list_cost_minor: 10,
         consumed_numerator: 0,
         usage_cursor: Default::default(),
-        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
+        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
             snapshot_id: "mixed-prices-v1".into(),
             version: 1,
             effective_at_unix_ms: 1,
@@ -6326,7 +6360,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
         .get(&SessionId::from(session_id))
         .await
         .expect("initial mixed Session");
-    let command_revision = awaken_session_contract::SessionRevision(
+    let command_revision = awaken_session_types::SessionRevision(
         before
             .revision
             .0
@@ -6356,11 +6390,11 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
                 ),
                 prompts_as_skills: false,
                 published_credential: None,
-                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
             },
         ])),
         idempotency_key: Some(idempotency_key.into()),
-        request_fingerprint: awaken_session_contract::stable_fingerprint(&(
+        request_fingerprint: awaken_agent_contract::stable_fingerprint(&(
             "mixed-update-one-root-v1",
             session_id,
         )),
@@ -6376,7 +6410,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     };
     assert_eq!(
         failure.kind,
-        awaken_session_contract::RunErrorKind::Unavailable,
+        awaken_session_error_contract::RunErrorKind::Unavailable,
         "M1/E2"
     );
     assert_eq!(committed.command_revision, command_revision, "M1/E1");
@@ -6470,7 +6504,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     );
     assert_eq!(
         desired[0].state,
-        awaken_session_contract::McpAttachmentState::Active,
+        awaken_session_mcp_contract::McpAttachmentState::Active,
         "M2/E3"
     );
     assert!(desired[0].publication_acknowledged, "M2/E3");
@@ -6521,7 +6555,7 @@ async fn update_admission_uses_only_durable_session_status() {
         tools: None,
         mcp_update: None,
         idempotency_key: None,
-        request_fingerprint: awaken_session_contract::stable_fingerprint(&title),
+        request_fingerprint: awaken_agent_contract::stable_fingerprint(&title),
         if_match: None,
     };
 
@@ -6568,19 +6602,20 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
     for (id, policy) in [
         (
             "update-managed-policy",
-            awaken_session_contract::SessionMutationPolicy::Managed,
+            awaken_session_resource_contract::SessionMutationPolicy::Managed,
         ),
         (
             "update-frozen-policy",
-            awaken_session_contract::SessionMutationPolicy::Frozen,
+            awaken_session_resource_contract::SessionMutationPolicy::Frozen,
         ),
         (
             "update-files-policy",
-            awaken_session_contract::SessionMutationPolicy::FileResources,
+            awaken_session_resource_contract::SessionMutationPolicy::FileResources,
         ),
     ] {
         let mut session = persisted(id, false, "idle");
-        let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
+        let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+            &mut session.baseline
         else {
             unreachable!("fixture baseline is frozen")
         };
@@ -6593,7 +6628,7 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let tools = awaken_session_contract::SessionToolConfiguration {
+    let tools = awaken_session_configuration_contract::SessionToolConfiguration {
         toolsets: Vec::new(),
         client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
             name: "client-tool".into(),
@@ -6756,7 +6791,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
             .expect("session repository"),
     );
     let mut active = persisted("budget-active", false, "idle");
-    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
+    let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
         snapshot_id: "prices-v1".into(),
         version: 1,
         effective_at_unix_ms: 1,
@@ -6765,18 +6800,19 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
         runtime_rates: Default::default(),
         fingerprint: "prices-v1-fingerprint".into(),
     };
-    active.budget = awaken_session_contract::SessionBudgetState::Active {
+    active.budget = awaken_session_budget_contract::SessionBudgetState::Active {
         max_list_cost_minor: 10,
         consumed_numerator: 2
-            * awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
+            * awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
         usage_cursor: Default::default(),
         snapshot,
-        reach_transitions: vec![awaken_session_contract::BudgetReachTransition {
+        reach_transitions: vec![awaken_session_budget_contract::BudgetReachTransition {
             generation: 1,
             max_list_cost_minor: 1,
-            consumed_numerator: awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
-                * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
+            consumed_numerator:
+                awaken_session_budget_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+                    * awaken_session_budget_contract::SessionBudgetState::COST_DENOMINATOR,
             usage_cursor: Default::default(),
             price_snapshot_id: "prices-v1".into(),
         }],
@@ -6797,7 +6833,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
         tools: None,
         mcp_update: None,
         idempotency_key: None,
-        request_fingerprint: awaken_session_contract::stable_fingerprint(&budget),
+        request_fingerprint: awaken_agent_contract::stable_fingerprint(&budget),
         if_match: None,
     };
 
@@ -6838,7 +6874,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
     assert!(
         matches!(
             removed.session.budget,
-            awaken_session_contract::SessionBudgetState::Removed { .. }
+            awaken_session_budget_contract::SessionBudgetState::Removed { .. }
         ),
         "B4/E4"
     );
@@ -6881,15 +6917,16 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
     // | R3 | exact concurrent raise | root | dispatched/replay | E1+E3 |
     // | R4 | raise | root | stale | E4 |
     use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
-    use awaken_session_contract::{
-        SessionBudgetResumeDisposition, SessionBudgetResumeTicket, SessionBudgetState,
+    use awaken_session_application_contract::{
+        SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
     };
+    use awaken_session_budget_contract::SessionBudgetState;
 
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("budget resume repository"),
     );
-    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
+    let snapshot = awaken_session_budget_contract::ManagedListPriceSnapshot {
         snapshot_id: "resume-prices-v1".into(),
         version: 1,
         effective_at_unix_ms: 1,
@@ -6969,7 +7006,7 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
         tools: None,
         mcp_update: None,
         idempotency_key: Some(key.into()),
-        request_fingerprint: awaken_session_contract::stable_fingerprint(&(budget, key)),
+        request_fingerprint: awaken_agent_contract::stable_fingerprint(&(budget, key)),
         if_match: None,
     };
 
@@ -7105,11 +7142,11 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     fn receipt(
         session_id: &str,
         binding: &str,
-        realization: Option<&awaken_session_contract::SessionRealizationLease>,
-    ) -> awaken_session_contract::SessionEnvironmentReceipt {
-        awaken_session_contract::SessionEnvironmentReceipt::new(
+        realization: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+    ) -> awaken_session_state_contract::SessionEnvironmentReceipt {
+        awaken_session_state_contract::SessionEnvironmentReceipt::new(
             session_id,
-            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
             binding,
             realization.cloned(),
         )
@@ -7120,7 +7157,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
             .expect("session repository"),
     );
     let mut session = persisted("binding-fence", false, "idle");
-    let current = awaken_session_contract::SessionRealizationLease {
+    let current = awaken_session_resource_contract::SessionRealizationLease {
         owner: "runtime-a".into(),
         runtime_incarnation: "runtime-a/boot-1".into(),
         epoch: 3,
@@ -7156,7 +7193,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     let first_intent = first.effect_intent().expect("B1 intent");
     assert_eq!(
         sink.authorize(&first_intent).await.expect("B1 authorize"),
-        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized,
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
         "B1"
     );
     // B13 the CAS commits but its acknowledgement is lost. Retry must read back
@@ -7188,7 +7225,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     clock.set(300);
     assert_eq!(
         sink.authorize(&first_intent).await.expect("B2 authorize"),
-        awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding: "sandbox-a".into(),
         },
         "B2"
@@ -7200,12 +7237,12 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     assert_eq!(replayed, bound, "B10 exact replay");
     super::observation_refinement::root_step("binding-replay", &bound, &replayed, 300);
     let mut renewed_session = persisted("binding-renewed", false, "idle");
-    renewed_session.realization = Some(awaken_session_contract::SessionRealizationLease {
+    renewed_session.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
         expires_at_unix_ms: u64::MAX,
         ..current.clone()
     });
     create(repo.as_ref(), renewed_session).await;
-    let admitted_before_renewal = awaken_session_contract::SessionRealizationLease {
+    let admitted_before_renewal = awaken_session_resource_contract::SessionRealizationLease {
         expires_at_unix_ms: u64::MAX - 1,
         ..current.clone()
     };
@@ -7224,7 +7261,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     sink.persist(receipt("binding-unassigned", "sandbox-legacy", None))
         .await
         .expect("B6");
-    let stale = awaken_session_contract::SessionRealizationLease {
+    let stale = awaken_session_resource_contract::SessionRealizationLease {
         owner: "runtime-b".into(),
         runtime_incarnation: "runtime-b/boot-1".into(),
         epoch: 4,
@@ -7241,7 +7278,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .expect_err("B4 stale equal-binding replay is fenced");
     assert_eq!(
         stale_error.kind,
-        awaken_session_contract::RunErrorKind::Unavailable,
+        awaken_session_error_contract::RunErrorKind::Unavailable,
         "B4"
     );
     assert_eq!(stale_error.code, "session_realization_stale", "B4");
@@ -7262,11 +7299,11 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .expect_err("B5 stale binding replacement is fenced");
     assert_eq!(
         error.kind,
-        awaken_session_contract::RunErrorKind::Unavailable,
+        awaken_session_error_contract::RunErrorKind::Unavailable,
         "B5"
     );
     assert_eq!(error.code, "session_realization_stale", "B5");
-    let expired = awaken_session_contract::SessionRealizationLease {
+    let expired = awaken_session_resource_contract::SessionRealizationLease {
         expires_at_unix_ms: 0,
         ..current.clone()
     };
@@ -7276,14 +7313,14 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .expect("B6 fixture");
     expired_session.realization = Some(expired.clone());
     let expected_revision = expired_session.revision;
-    let payload = awaken_session_contract::SessionMutationPayload::Replace(expired_session);
+    let payload = awaken_session_state_contract::SessionMutationPayload::Replace(expired_session);
     let payload_hash = payload.stable_hash();
     assert!(matches!(
         repo.commit(
             "workspace",
-            awaken_session_contract::SessionMutation {
+            awaken_session_state_contract::SessionMutation {
                 expected_revision,
-                idempotency: awaken_session_contract::IdempotencyRecord {
+                idempotency: awaken_session_state_contract::IdempotencyRecord {
                     key: "binding-fence:expire".into(),
                     payload_hash,
                 },
@@ -7293,7 +7330,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         )
         .await
         .expect("B7 fixture mutation"),
-        awaken_session_contract::SessionMutationResult::Applied { .. }
+        awaken_session_state_contract::SessionMutationResult::Applied { .. }
     ));
     let expired_error = sink
         .persist(receipt("binding-fence", "sandbox-a", Some(&expired)))
@@ -7301,7 +7338,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .expect_err("B7 expired equal-binding replay is fenced");
     assert_eq!(
         expired_error.kind,
-        awaken_session_contract::RunErrorKind::Unavailable,
+        awaken_session_error_contract::RunErrorKind::Unavailable,
         "B7"
     );
     assert_eq!(expired_error.code, "session_realization_stale", "B7");
@@ -7376,7 +7413,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .expect("missing intent");
     assert_eq!(
         sink.authorize(&absent).await.expect("missing lookup"),
-        awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned,
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned,
         "missing aggregate is the only Unowned rule"
     );
 }
@@ -7448,25 +7485,25 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         } else {
             admitted_expiry
         };
-        let asserted_lease = awaken_session_contract::SessionRealizationLease {
+        let asserted_lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: "runtime-a".into(),
             runtime_incarnation: "runtime-a/boot-1".into(),
             epoch: 7,
             expires_at_unix_ms: admitted_expiry,
         };
-        let current_lease = awaken_session_contract::SessionRealizationLease {
+        let current_lease = awaken_session_resource_contract::SessionRealizationLease {
             expires_at_unix_ms: renewed_expiry,
             ..asserted_lease.clone()
         };
         let mut session = persisted("in-flight-renewal", false, "activating");
         session.realization = Some(current_lease.clone());
-        session.mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
-            vec![awaken_session_contract::McpAttachmentDraft {
+        session.mcp = awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
+            vec![awaken_session_mcp_contract::McpAttachmentDraft {
                 name: "browser".into(),
                 target: McpTarget::parse_http("https://browser.example.test/mcp").unwrap(),
                 prompts_as_skills: false,
                 credential: None,
-                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
             }],
             None,
         )
@@ -7476,7 +7513,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             .mcp
             .claim_realization(
                 &generation,
-                awaken_session_contract::McpRealizationClaim {
+                awaken_session_mcp_contract::McpRealizationClaim {
                     realization_id: "realization-1".into(),
                     runtime_incarnation: asserted_lease.runtime_incarnation.clone(),
                     lease_epoch: asserted_lease.epoch,
@@ -7505,7 +7542,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         let active_resources = file_resources("resource-2");
         let desired_resources = file_resources("resource-3");
         if pending_resources {
-            session.resources = awaken_session_contract::SessionResourceState::from_active(
+            session.resources = awaken_session_state_contract::SessionResourceState::from_active(
                 file_resources("resource-1"),
             );
             session
@@ -7524,7 +7561,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             repo.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
         );
-        let admitted_receipt = awaken_session_contract::McpRealizationReceipt {
+        let admitted_receipt = awaken_session_mcp_contract::McpRealizationReceipt {
             receipt_fingerprint: admitted_request.fingerprint(),
             generation: admitted_request.generation.clone(),
             realization_id: admitted_request.realization_id.clone(),
@@ -7536,14 +7573,14 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             .get(&SessionId::from("in-flight-renewal"))
             .await
             .unwrap();
-        let command = awaken_session_contract::ActivateSessionRealization {
+        let command = awaken_session_realization_contract::ActivateSessionRealization {
             session_id: "in-flight-renewal".into(),
             lease: asserted_lease.clone(),
             prepared_resource_revision,
             mcp_receipts: vec![admitted_receipt],
         };
         let result =
-            awaken_session_contract::SessionRealizationControl::activate_session_realization(
+            awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
                 &app,
                 command.clone(),
             )
@@ -7554,7 +7591,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             assert!(
                 matches!(
                     result,
-                    Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
+                    Err(awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(_))
                 ),
                 "F5/E6 reject mismatched preparation before catch-up"
             );
@@ -7591,7 +7628,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         // F1/F2 replay preserves phase, projection and durable lease, while
         // each response independently samples its remaining authority horizon.
         assert!(
-            awaken_session_contract::SessionRealizationControl::activate_session_realization(
+            awaken_session_realization_contract::SessionRealizationControl::activate_session_realization(
                 &app, command
             )
             .await
@@ -7607,8 +7644,10 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             revision,
             "F1/F2 no duplicate activation write"
         );
-        let awaken_session_contract::SessionRealizationAction::Publish { publish, drain } =
-            directive.action
+        let awaken_session_realization_contract::SessionRealizationAction::Publish {
+            publish,
+            drain,
+        } = directive.action
         else {
             panic!("F1/E3 and F2/E3 publish only an exact staged generation")
         };
@@ -7670,13 +7709,16 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
 
 #[tokio::test]
 async fn recovery_replacement_partitions_staged_receipts_and_replays_activation() {
-    use awaken_session_contract::{
-        AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
+    use awaken_session_mcp_contract::{
         McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpRealizationClaim,
-        McpRealizationReceipt, RenewSessionRealization, SessionMcpAttachmentSet,
-        SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
-        SessionRealizationLease, SessionRealizationTarget,
+        McpRealizationReceipt, SessionMcpAttachmentSet,
     };
+    use awaken_session_realization_contract::{
+        AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
+        RenewSessionRealization, SessionRealizationAction, SessionRealizationControl,
+        SessionRealizationControlFailure, SessionRealizationTarget,
+    };
+    use awaken_session_resource_contract::SessionRealizationLease;
     // Cause/effect graph: C1 hot owner versus restarted owner; C2 renewal
     // between Stage and activation; C3 activation response loss/replay;
     // C4 valid versus corrupted recovered-old receipt. The full replacement
@@ -8096,13 +8138,13 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
     }
     let memory_store_id = awaken_resource_contract::MemoryStoreId::from("page-two-memory");
     let mut blocker = persisted("page-z-blocker", true, "idle");
-    blocker.resources = awaken_session_contract::SessionResourceState::from_active(
-        awaken_session_contract::ResolvedSessionResources::try_new(
-            vec![awaken_session_contract::ResolvedInput {
+    blocker.resources = awaken_session_state_contract::SessionResourceState::from_active(
+        awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            vec![awaken_session_resource_contract::ResolvedInput {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::from("page-two-memory"),
-                source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+                source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
                     memory_store_id: memory_store_id.clone(),
                     config: awaken_resource_contract::MemoryStoreConfigVersion {
                         memory_store_id: memory_store_id.clone(),
@@ -8119,7 +8161,7 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
         .expect("valid page-two MemoryStore binding"),
     );
     create(repo.as_ref(), blocker).await;
-    let repository: Arc<dyn awaken_session_contract::SessionStore> = repo.clone();
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = repo.clone();
 
     let failing_recovery = Arc::new(FaultingSessionRepository::new(repository.clone()));
     failing_recovery.fail_recovery_scan_on_call(2);
@@ -8205,13 +8247,13 @@ async fn publication_race_fixture(
     );
     let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
     let mut session = persisted(session_id, false, "idle");
-    session.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+    session.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding: format!("{session_id}-source"),
         effect_id: None,
         generation: None,
         idle_since_unix_ms: None,
     };
-    session.resources = awaken_session_contract::SessionResourceState::from_active(
+    session.resources = awaken_session_state_contract::SessionResourceState::from_active(
         repository_resources("source", "repo-1"),
     );
     create(repo.as_ref(), session).await;
@@ -8299,7 +8341,7 @@ async fn concurrent_repository_publication_archive_cannot_report_the_losing_cas_
     assert!(
         matches!(
             pause.result.lock().unwrap().clone().unwrap(),
-            awaken_session_contract::SessionMutationResult::Replayed { .. }
+            awaken_session_state_contract::SessionMutationResult::Replayed { .. }
         ),
         "C2 the delayed candidate really lost a root CAS by receipt replay"
     );
@@ -8427,7 +8469,7 @@ async fn every_disposition_command_reports_a_lost_root_cas_as_a_replay() {
         assert!(
             matches!(
                 pause.result.lock().unwrap().clone().unwrap(),
-                awaken_session_contract::SessionMutationResult::Replayed { .. }
+                awaken_session_state_contract::SessionMutationResult::Replayed { .. }
             ),
             "C2 {case} the delayed candidate really lost the root CAS by receipt replay"
         );

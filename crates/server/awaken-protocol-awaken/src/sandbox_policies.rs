@@ -53,9 +53,9 @@ struct SandboxPolicyCreate {
     id: String,
     config: awaken_provisioning_contract::SandboxOverride,
     #[serde(default)]
-    provisioning: awaken_session_contract::SandboxProvisioning,
+    provisioning: awaken_session_configuration_contract::SandboxProvisioning,
     #[serde(default)]
-    idle_retention: awaken_session_contract::EnvironmentIdleRetentionPolicy,
+    idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
     #[serde(default)]
     disabled: bool,
 }
@@ -66,9 +66,9 @@ struct SandboxPolicyPublish {
     expected_current: u64,
     config: awaken_provisioning_contract::SandboxOverride,
     #[serde(default)]
-    provisioning: awaken_session_contract::SandboxProvisioning,
+    provisioning: awaken_session_configuration_contract::SandboxProvisioning,
     #[serde(default)]
-    idle_retention: awaken_session_contract::EnvironmentIdleRetentionPolicy,
+    idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
     #[serde(default)]
     disabled: bool,
 }
@@ -103,7 +103,7 @@ struct SandboxPolicyBindingOutput {
     policy_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<u64>,
-    provisioning: awaken_session_contract::SandboxProvisioning,
+    provisioning: awaken_session_configuration_contract::SandboxProvisioning,
 }
 
 fn policy_store(
@@ -567,7 +567,7 @@ mod tests {
                 environment_id,
                 policy_id: None,
                 version: None,
-                provisioning: awaken_session_contract::SandboxProvisioning::Eager,
+                provisioning: awaken_session_configuration_contract::SandboxProvisioning::Eager,
             }
         );
         let encoded = std::str::from_utf8(&body).expect("projection response is UTF-8 JSON");

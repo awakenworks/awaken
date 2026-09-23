@@ -39,7 +39,7 @@ use awaken_runtime_contract::{
     CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRef, CredentialUsage,
     InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
-use awaken_session_contract::{
+use awaken_session_execution_contract::{
     AdmitSessionRun, SessionRunCommandFingerprint, SessionRunExecutionRequirements,
 };
 

@@ -4,7 +4,7 @@
 //! transitions, Run identities, and terminal truth remain exclusively in the
 //! existing Outcome aggregate and its Thread commits.
 
-use awaken_session_contract::OutcomeDrive;
+use awaken_session_execution_contract::OutcomeDrive;
 
 #[cfg(test)]
 use super::mutation::repository_failure;
@@ -49,7 +49,7 @@ impl SessionApplication {
         for candidate in &candidates.sessions {
             let session = match self.session_repository().get(&candidate.session_id).await {
                 Ok(session) => session,
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
+                Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => continue,
                 Err(error) => {
                     report
                         .failures

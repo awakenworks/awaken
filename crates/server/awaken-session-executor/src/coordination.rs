@@ -19,7 +19,7 @@ use awaken_runtime_contract::llm::{
     ModelRequestAdmission, ModelRequestAdmissionRequest, ModelRequestGate,
 };
 use awaken_runtime_contract::tool::ToolError;
-use awaken_session_contract::{
+use awaken_session_execution_contract::{
     SessionAgentBoundaryCommand, SessionAgentCoordination, SessionAgentMessageCommand,
     SessionAgentMessageReceipt, SessionAgentRosterEntry, SessionAgentTarget,
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
@@ -99,7 +99,7 @@ impl CoordinationEndpoint {
 
     async fn list(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         source_run_id: &str,
     ) -> Result<Vec<SessionAgentRosterEntry>, ToolError> {
         match self {
@@ -125,7 +125,7 @@ impl CoordinationEndpoint {
 
     async fn admit_model_request(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         request: &ModelRequestAdmissionRequest,
     ) -> Result<bool, String> {
         match self {
@@ -154,7 +154,7 @@ impl CoordinationEndpoint {
     async fn admit_run_activity(
         &self,
         claim: &RunClaim,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         agent_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
         mode: SessionRunActivityAdmissionMode,
@@ -282,7 +282,7 @@ impl ModelRequestGate for HostModelRequestGate {
     ) -> Result<ModelRequestAdmission, String> {
         self.endpoint
             .admit_model_request(
-                &awaken_session_contract::SessionId::from(&self.session_id),
+                &awaken_session_types::SessionId::from(&self.session_id),
                 &request,
             )
             .await
@@ -308,13 +308,13 @@ impl HostAgentCoordinator {
     }
 }
 
-fn tool_error(error: awaken_session_contract::RunError) -> ToolError {
+fn tool_error(error: awaken_session_error_contract::RunError) -> ToolError {
     match error.kind {
-        awaken_session_contract::RunErrorKind::BadRequest => {
+        awaken_session_error_contract::RunErrorKind::BadRequest => {
             ToolError::InvalidArguments(error.message)
         }
-        awaken_session_contract::RunErrorKind::Internal
-        | awaken_session_contract::RunErrorKind::Unavailable => {
+        awaken_session_error_contract::RunErrorKind::Internal
+        | awaken_session_error_contract::RunErrorKind::Unavailable => {
             ToolError::DefinitiveFailure(error.message)
         }
     }
@@ -333,7 +333,7 @@ impl AgentCoordinator for HostAgentCoordinator {
         }
         self.endpoint
             .list(
-                &awaken_session_contract::SessionId::from(request.source_thread_id),
+                &awaken_session_types::SessionId::from(request.source_thread_id),
                 &request.source_run_id,
             )
             .await
@@ -367,7 +367,7 @@ impl AgentCoordinator for HostAgentCoordinator {
             .send(
                 &source_run_id,
                 SessionAgentMessageCommand {
-                    session_id: awaken_session_contract::SessionId::from(session_id),
+                    session_id: awaken_session_types::SessionId::from(session_id),
                     source_thread_id: awaken_agent_contract::agent::thread::Id(
                         request.source_thread_id,
                     ),
@@ -426,7 +426,7 @@ impl HostDispatchSettlementObserver {
             ));
         }
         Ok(Some(SessionAgentBoundaryCommand {
-            session_id: awaken_session_contract::SessionId::from(&session_id.0),
+            session_id: awaken_session_types::SessionId::from(&session_id.0),
             source_thread_id: dispatch.thread_id().clone(),
             source_run_id: dispatch.run_id().clone(),
             source_agent_id: dispatch.activation.snapshot.root_agent_id.0.clone(),
@@ -456,7 +456,7 @@ impl awaken_dispatch::SessionRunAdmissionObserver for HostDispatchSettlementObse
         self.endpoint
             .admit_run_activity(
                 claim,
-                &awaken_session_contract::SessionId::from(&session_id.0),
+                &awaken_session_types::SessionId::from(&session_id.0),
                 &dispatch.activation.snapshot.root_agent_id.0,
                 dispatch.run_id(),
                 mode,
@@ -537,53 +537,55 @@ impl Drop for AdmissionDropReceipt {
 impl SessionAgentCoordination for RecordingSessionAgentCoordination {
     async fn admit_session_run_activity(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
+        _session_id: &awaken_session_types::SessionId,
         _agent_id: &str,
         _run_id: &awaken_agent_contract::agent::run::Id,
-        _mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+        _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
     ) -> Result<
-        awaken_session_contract::SessionRunActivityAdmission,
-        awaken_session_contract::RunError,
+        awaken_session_execution_contract::SessionRunActivityAdmission,
+        awaken_session_error_contract::RunError,
     > {
-        Err(awaken_session_contract::RunError::bad_request(
+        Err(awaken_session_error_contract::RunError::bad_request(
             "recording coordination fixture does not admit Session activity",
         ))
     }
 
     async fn admit_session_model_request(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
+        _session_id: &awaken_session_types::SessionId,
         _thread_id: &awaken_agent_contract::agent::thread::Id,
         _run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<bool, awaken_session_contract::RunError> {
-        Err(awaken_session_contract::RunError::bad_request(
+    ) -> Result<bool, awaken_session_error_contract::RunError> {
+        Err(awaken_session_error_contract::RunError::bad_request(
             "recording coordination fixture does not admit model requests",
         ))
     }
 
     async fn list_session_agents(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
-    ) -> Result<Vec<SessionAgentRosterEntry>, awaken_session_contract::RunError> {
+        _session_id: &awaken_session_types::SessionId,
+    ) -> Result<Vec<SessionAgentRosterEntry>, awaken_session_error_contract::RunError> {
         Ok(Vec::new())
     }
 
     async fn send_session_agent_message(
         &self,
         _command: SessionAgentMessageCommand,
-    ) -> Result<SessionAgentMessageReceipt, awaken_session_contract::RunError> {
+    ) -> Result<SessionAgentMessageReceipt, awaken_session_error_contract::RunError> {
         if let Some(gate) = &self.message_gate {
             let _receipt = AdmissionDropReceipt(gate.clone());
             gate.entered.notify_one();
             gate.release.notified().await;
         }
-        Err(awaken_session_contract::RunError::bad_request("unused"))
+        Err(awaken_session_error_contract::RunError::bad_request(
+            "unused",
+        ))
     }
 
     async fn settle_session_agent_boundary(
         &self,
         command: SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_contract::RunError> {
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         self.boundaries.lock().unwrap().push(command);
         Ok(())
     }
@@ -591,7 +593,7 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
     async fn finalize_session_agent_boundary(
         &self,
         _command: SessionAgentBoundaryCommand,
-    ) -> Result<(), awaken_session_contract::RunError> {
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         // This fixture has no retained Session Event aggregate. Its only
         // reachable root continuation is a child-report Run, for which the
         // production application also classifies post-Dispatch finalization as
@@ -601,16 +603,16 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
 
     async fn interrupt_session_thread(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
+        _session_id: &awaken_session_types::SessionId,
         _child_thread_id: &awaken_agent_contract::agent::thread::Id,
-    ) -> Result<(), awaken_session_contract::RunError> {
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         Ok(())
     }
 
     async fn reply_session_thread_tool(
         &self,
-        _command: awaken_session_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        _command: awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         Ok(())
     }
 }
@@ -640,52 +642,53 @@ mod tests {
     struct RemoteControl;
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::SessionRealizationControl for RemoteControl {
+    impl awaken_session_realization_contract::SessionRealizationControl for RemoteControl {
         async fn begin_session_realization(
             &self,
-            _command: awaken_session_contract::BeginSessionRealization,
+            _command: awaken_session_realization_contract::BeginSessionRealization,
         ) -> Result<
-            awaken_session_contract::SessionRealizationDirective,
-            awaken_session_contract::SessionRealizationControlFailure,
+            awaken_session_realization_contract::SessionRealizationDirective,
+            awaken_session_realization_contract::SessionRealizationControlFailure,
         > {
-            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
         }
 
         async fn activate_session_realization(
             &self,
-            _command: awaken_session_contract::ActivateSessionRealization,
+            _command: awaken_session_realization_contract::ActivateSessionRealization,
         ) -> Result<
-            awaken_session_contract::SessionRealizationDirective,
-            awaken_session_contract::SessionRealizationControlFailure,
+            awaken_session_realization_contract::SessionRealizationDirective,
+            awaken_session_realization_contract::SessionRealizationControlFailure,
         > {
-            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
         }
 
         async fn acknowledge_session_realization(
             &self,
-            _command: awaken_session_contract::AcknowledgeSessionRealization,
+            _command: awaken_session_realization_contract::AcknowledgeSessionRealization,
         ) -> Result<
-            awaken_session_contract::SessionRealizationDirective,
-            awaken_session_contract::SessionRealizationControlFailure,
+            awaken_session_realization_contract::SessionRealizationDirective,
+            awaken_session_realization_contract::SessionRealizationControlFailure,
         > {
-            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
         }
 
         async fn fail_session_realization(
             &self,
-            _command: awaken_session_contract::FailSessionRealization,
-        ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+            _command: awaken_session_realization_contract::FailSessionRealization,
+        ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure>
+        {
+            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
         }
 
         async fn renew_session_realization(
             &self,
-            _command: awaken_session_contract::RenewSessionRealization,
+            _command: awaken_session_realization_contract::RenewSessionRealization,
         ) -> Result<
-            awaken_session_contract::SessionRealizationLeaseReceipt,
-            awaken_session_contract::SessionRealizationControlFailure,
+            awaken_session_realization_contract::SessionRealizationLeaseReceipt,
+            awaken_session_realization_contract::SessionRealizationControlFailure,
         > {
-            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+            Err(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)
         }
     }
 
@@ -696,11 +699,11 @@ mod tests {
             _claim: &RunClaim,
             _session_id: &str,
             _session_work_authority: Option<
-                &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+                &awaken_session_work_contract::SessionWorkAuthorityReceipt,
             >,
-            _continuation: Option<&awaken_session_contract::SessionRealizationLease>,
+            _continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         ) -> Result<
-            Option<awaken_session_contract::SessionRealizationDirective>,
+            Option<awaken_session_realization_contract::SessionRealizationDirective>,
             awaken_dispatch_contract::ClaimedSessionControlError,
         > {
             Ok(None)
@@ -714,7 +717,7 @@ mod tests {
             _claim: &RunClaim,
             _session_id: &str,
         ) -> Result<
-            Vec<awaken_session_contract::SessionAgentRosterEntry>,
+            Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
             awaken_dispatch_contract::ClaimedSessionControlError,
         > {
             Err(
@@ -744,9 +747,9 @@ mod tests {
             _session_id: &str,
             _agent_id: &str,
             _run_id: &awaken_agent_contract::agent::run::Id,
-            _mode: awaken_session_contract::SessionRunActivityAdmissionMode,
+            _mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
         ) -> Result<
-            awaken_session_contract::SessionRunActivityAdmission,
+            awaken_session_execution_contract::SessionRunActivityAdmission,
             awaken_dispatch_contract::ClaimedSessionControlError,
         > {
             Err(
@@ -759,9 +762,9 @@ mod tests {
         async fn send_session_agent_message(
             &self,
             _claim: &RunClaim,
-            _command: awaken_session_contract::SessionAgentMessageCommand,
+            _command: awaken_session_execution_contract::SessionAgentMessageCommand,
         ) -> Result<
-            awaken_session_contract::SessionAgentMessageReceipt,
+            awaken_session_execution_contract::SessionAgentMessageReceipt,
             awaken_dispatch_contract::ClaimedSessionControlError,
         > {
             Err(
@@ -774,7 +777,7 @@ mod tests {
         async fn settle_session_agent_boundary(
             &self,
             _claim: &RunClaim,
-            _command: awaken_session_contract::SessionAgentBoundaryCommand,
+            _command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
         ) -> Result<(), awaken_dispatch_contract::ClaimedSessionControlError> {
             Err(
                 awaken_dispatch_contract::ClaimedSessionControlError::new(

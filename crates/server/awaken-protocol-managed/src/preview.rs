@@ -2,7 +2,7 @@
 //! observations into stream-only Managed `event_start` / `event_delta` frames.
 //!
 //! RuntimeHost's `ThreadEventHub` remains the sole live fan-out owner and
-//! [`awaken_session_contract::SessionThreadLiveSubscription`] is its neutral port.
+//! [`awaken_session_execution_contract::SessionThreadLiveSubscription`] is its neutral port.
 //! This module owns only disposable wire state: root text is emitted immediately,
 //! while child text is buffered until ordinary-message proof prevents a terminal
 //! cross-Thread report from leaking as an `agent.message` preview. Stable ids come

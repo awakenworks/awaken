@@ -64,7 +64,7 @@ fn check(inputs: &[Input], events: &[RunLifecycleEvent], fence: u64) {
         (None, Err(StateError::Run(error))) => {
             assert_eq!(
                 error.kind,
-                awaken_session_contract::RunErrorKind::Unavailable
+                awaken_session_error_contract::RunErrorKind::Unavailable
             );
             assert_eq!(error.code, "unavailable");
         }

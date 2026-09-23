@@ -2,6 +2,16 @@
   "version": 1,
   "exclusions": [
     {
+      "path": "crates/contract/awaken-session-configuration-contract/src/runtime_projection.rs",
+      "boundary": "projection_vocabulary",
+      "reason": "SessionInit and SessionSandboxLayout are passive, secret-free typed projections assembled from already-authorized frozen Session configuration and Resource bindings. They define no transition, admission, fallback, persistence, retry, or physical effect; runtime roles and the Runtime Host remain the behavior owners.",
+      "evidence": [
+        "crates/contract/awaken-session-configuration-contract/src/lib.rs",
+        "crates/contract/awaken-session-execution-contract/src/session/roles.rs",
+        "crates/server/awaken-session-executor/src/host.rs"
+      ]
+    },
+    {
       "path": "crates/stores/awaken-store-conformance/src/dream_store.rs",
       "boundary": "test_support_crate",
       "reason": "Shared Dream process and policy CAS assertions in the existing tooling crate, called by the in-memory application fixture and both durable Session stores. This module verifies adapters and owns no production state or effect.",
@@ -20,11 +30,11 @@
       ]
     },
     {
-      "path": "crates/contract/awaken-session-contract/src/realization_observation.rs",
+      "path": "crates/contract/awaken-session-realization-contract/src/realization_observation.rs",
       "boundary": "test_support_observation_port",
       "reason": "The parent module exports this port only under the test-support feature. It forwards checkpoints to the scenario executable without owning product transitions or persistence; the scenario adapter and real HTTP crash tests validate observation behavior. This exclusion is not a production proof claim.",
       "evidence": [
-        "crates/contract/awaken-session-contract/src/lib.rs",
+        "crates/contract/awaken-session-realization-contract/src/session_realization.rs",
         "crates/devtools/awaken-scenario-host/src/realization_observation.rs",
         "e2e/managed_mcp_recovery_e2e.ts"
       ]
@@ -321,9 +331,9 @@
     {
       "path": "crates/server/awaken-coordinator/src/managed_lifecycle.rs",
       "boundary": "composition_wiring",
-      "reason": "Static owner: Coordinator assembly of existing lifecycle delivery ports. Dynamic path: committed lifecycle facts flow through CompositeLifecycleFactDelivery to the existing WebhookOutboxNotifier; no lifecycle transition, retry, or durable-outbox decision is reimplemented here. Evidence: crates/contract/awaken-session-contract/src/lifecycle.rs and crates/server/awaken-webhook-managed/src/lib.rs.",
+      "reason": "Static owner: Coordinator assembly of existing lifecycle delivery ports. Dynamic path: committed lifecycle facts flow through CompositeLifecycleFactDelivery to the existing WebhookOutboxNotifier; no lifecycle transition, retry, or durable-outbox decision is reimplemented here. Evidence: crates/contract/awaken-session-state-contract/src/lifecycle.rs and crates/server/awaken-webhook-managed/src/lib.rs.",
       "evidence": [
-        "crates/contract/awaken-session-contract/src/lifecycle.rs",
+        "crates/contract/awaken-session-state-contract/src/lifecycle.rs",
         "crates/server/awaken-webhook-managed/src/lib.rs"
       ]
     },
@@ -408,11 +418,11 @@
       ]
     },
     {
-      "path": "crates/contract/awaken-session-contract/src/session/run_coordination.rs",
+      "path": "crates/contract/awaken-session-application-contract/src/run_coordination.rs",
       "boundary": "projection_dto",
       "reason": "Defines immutable delegated-Run snapshots, budget-resume delivery and ticket shapes, plus a closed disposition enum; it performs no transition, dispatch, persistence, or authorization decision. Runtime and Session owners consume these values.",
       "evidence": [
-        "crates/contract/awaken-session-contract/src/session.rs"
+        "crates/contract/awaken-session-execution-contract/src/session.rs"
       ]
     },
     {

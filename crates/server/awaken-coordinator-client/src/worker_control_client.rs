@@ -122,7 +122,7 @@ impl WorkerControlClient {
     fn session_environment_error(
         status: reqwest::StatusCode,
         body: &Value,
-    ) -> awaken_session_contract::RunError {
+    ) -> awaken_session_error_contract::RunError {
         let code = body.get("code").and_then(Value::as_str).unwrap_or(
             if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
                 "unavailable"
@@ -135,19 +135,19 @@ impl WorkerControlClient {
             .and_then(Value::as_str)
             .unwrap_or("Session Environment control request rejected");
         if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-            awaken_session_contract::RunError::unavailable_classified(code, message)
+            awaken_session_error_contract::RunError::unavailable_classified(code, message)
         } else {
-            awaken_session_contract::RunError::classified(code, message)
+            awaken_session_error_contract::RunError::classified(code, message)
         }
     }
 
     pub async fn authorize_session_environment_effect(
         &self,
         identity: &WorkerIdentity,
-        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
-        awaken_session_contract::SessionEnvironmentEffectAuthorization,
-        awaken_session_contract::RunError,
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+        awaken_session_error_contract::RunError,
     > {
         let (status, body) = self
             .post_response(
@@ -155,13 +155,15 @@ impl WorkerControlClient {
                 json!({ "identity": identity, "intent": intent }),
             )
             .await
-            .map_err(|error| awaken_session_contract::RunError::unavailable(error.to_string()))?;
+            .map_err(|error| {
+                awaken_session_error_contract::RunError::unavailable(error.to_string())
+            })?;
         if !status.is_success() {
             return Err(Self::session_environment_error(status, &body));
         }
         serde_json::from_value(body.get("authorization").cloned().unwrap_or(Value::Null)).map_err(
             |error| {
-                awaken_session_contract::RunError::internal(format!(
+                awaken_session_error_contract::RunError::internal(format!(
                     "Session Environment authorization decode: {error}"
                 ))
             },
@@ -171,22 +173,26 @@ impl WorkerControlClient {
     pub async fn persist_session_environment_receipt(
         &self,
         identity: &WorkerIdentity,
-        receipt: &awaken_session_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
-    {
+        receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
+    ) -> Result<
+        awaken_session_state_contract::SessionEnvironmentState,
+        awaken_session_error_contract::RunError,
+    > {
         let (status, body) = self
             .post_response(
                 "/v1/worker/session/environment/persist",
                 json!({ "identity": identity, "receipt": receipt }),
             )
             .await
-            .map_err(|error| awaken_session_contract::RunError::unavailable(error.to_string()))?;
+            .map_err(|error| {
+                awaken_session_error_contract::RunError::unavailable(error.to_string())
+            })?;
         if !status.is_success() {
             return Err(Self::session_environment_error(status, &body));
         }
         serde_json::from_value(body.get("environment").cloned().unwrap_or(Value::Null)).map_err(
             |error| {
-                awaken_session_contract::RunError::internal(format!(
+                awaken_session_error_contract::RunError::internal(format!(
                     "Session Environment authority decode: {error}"
                 ))
             },
@@ -268,7 +274,7 @@ impl WorkerControlClient {
     pub async fn current_environment_warmups(
         &self,
         identity: &WorkerIdentity,
-    ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+    ) -> Result<Vec<awaken_session_configuration_contract::EnvironmentSnapshot>, String> {
         let body = self
             .post(
                 "/v1/worker/environment/warmups",
@@ -309,12 +315,10 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         claim: &RunClaim,
         session_id: &str,
-        session_work_authority: Option<
-            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
-        >,
-        continuation: Option<&awaken_session_contract::SessionRealizationLease>,
+        session_work_authority: Option<&awaken_session_work_contract::SessionWorkAuthorityReceipt>,
+        continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<
-        Option<awaken_session_contract::SessionRealizationDirective>,
+        Option<awaken_session_realization_contract::SessionRealizationDirective>,
         ClaimedSessionControlError,
     > {
         let body = self
@@ -330,23 +334,25 @@ impl WorkerControlClient {
             )
             .await
             .map_err(ClaimedSessionControlError::from)?;
-        let directive: Option<awaken_session_contract::SessionRealizationDirective> = body
-            .get("realization")
-            .filter(|value| !value.is_null())
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| {
-                ClaimedSessionControlError::new(format!("Session resume directive decode: {error}"))
-            })?;
+        let directive: Option<awaken_session_realization_contract::SessionRealizationDirective> =
+            body.get("realization")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| {
+                    ClaimedSessionControlError::new(format!(
+                        "Session resume directive decode: {error}"
+                    ))
+                })?;
         if let (Some(asserted), Some(directive)) = (continuation, &directive)
-            && !awaken_session_contract::realization_lease_generation_authorizes(
+            && !awaken_session_realization_contract::realization_lease_generation_authorizes(
                 &directive.authority.lease,
                 asserted,
             )
         {
             return Err(
-                awaken_session_contract::SessionRealizationControlFailure::StaleOwnership.into(),
+                awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership.into(),
             );
         }
         Ok(directive)
@@ -358,10 +364,10 @@ impl WorkerControlClient {
     pub async fn claim_next_terminal_cleanup(
         &self,
         identity: &WorkerIdentity,
-        target: awaken_session_contract::SessionRealizationTarget,
+        target: awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<
-        Option<awaken_session_contract::SessionTerminalCleanupAssignment>,
-        awaken_session_contract::SessionRealizationControlFailure,
+        Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         let body = self
             .realization_response(
@@ -378,9 +384,9 @@ impl WorkerControlClient {
             .map(serde_json::from_value)
             .transpose()
             .map_err(|error| {
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
-                    "Session terminal cleanup assignment decode: {error}"
-                ))
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                    format!("Session terminal cleanup assignment decode: {error}"),
+                )
             })
     }
 
@@ -392,10 +398,10 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_contract::SessionTerminalCleanupWork>,
-        awaken_session_contract::SessionRealizationControlFailure,
+        Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         let body = self
             .realization_response(
@@ -408,24 +414,24 @@ impl WorkerControlClient {
             )
             .await?;
         let work = body.get("work").cloned().ok_or_else(|| {
-            awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                 "Session terminal cleanup response omitted its work projection".into(),
             )
         })?;
         serde_json::from_value(work).map_err(|error| {
-            awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
-                "Session terminal cleanup work decode: {error}"
-            ))
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                format!("Session terminal cleanup work decode: {error}"),
+            )
         })
     }
 
     pub async fn authorize_terminal_cleanup_effect(
         &self,
         identity: &WorkerIdentity,
-        effect: &awaken_session_contract::SessionTerminalCleanupEffect,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
     ) -> Result<
-        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         let body = self
             .realization_response(
@@ -436,17 +442,17 @@ impl WorkerControlClient {
                 }),
             )
             .await?;
-        let authorization: awaken_session_contract::SessionTerminalCleanupPreparationAuthorization =
+        let authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization =
             serde_json::from_value(body.get("authorization").cloned().unwrap_or(Value::Null))
                 .map_err(|error| {
-                    awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                    awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(format!(
                         "Session terminal cleanup preparation authorization decode: {error}"
                     ))
                 })?;
         authorization.verify_for(effect).map_err(|error| {
-            awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
-                "Session terminal cleanup preparation authorization mismatch: {error}"
-            ))
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                format!("Session terminal cleanup preparation authorization mismatch: {error}"),
+            )
         })?;
         Ok(authorization)
     }
@@ -454,9 +460,9 @@ impl WorkerControlClient {
     pub async fn record_terminal_cleanup_preparation(
         &self,
         identity: &WorkerIdentity,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        preparation: awaken_session_contract::SessionCleanupPreparation,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        preparation: awaken_session_state_contract::SessionCleanupPreparation,
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
             "/v1/worker/session/cleanup/preparation/record",
             json!({
@@ -472,8 +478,8 @@ impl WorkerControlClient {
     pub async fn authorize_terminal_cleanup_disposal(
         &self,
         identity: &WorkerIdentity,
-        effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<String, awaken_session_contract::SessionRealizationControlFailure> {
+        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
         let body = self
             .realization_response(
                 "/v1/worker/session/cleanup/disposal/authorize",
@@ -488,7 +494,7 @@ impl WorkerControlClient {
             .filter(|workspace_id| !workspace_id.trim().is_empty())
             .map(str::to_owned)
             .ok_or_else(|| {
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                     "Session terminal cleanup disposal authorization response has no Workspace"
                         .into(),
                 )
@@ -498,9 +504,9 @@ impl WorkerControlClient {
     pub async fn record_terminal_cleanup_disposal(
         &self,
         identity: &WorkerIdentity,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        receipt: awaken_session_contract::SessionCleanupDisposalReceipt,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
             "/v1/worker/session/cleanup/disposal/record",
             json!({
@@ -520,10 +526,10 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> Result<
-        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
-        awaken_session_contract::SessionRealizationControlFailure,
+        Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         let body = self
             .realization_response(
@@ -541,9 +547,9 @@ impl WorkerControlClient {
             .map(serde_json::from_value)
             .transpose()
             .map_err(|error| {
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
-                    "Session Repository publication projection decode: {error}"
-                ))
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                    format!("Session Repository publication projection decode: {error}"),
+                )
             })
     }
 
@@ -551,9 +557,9 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
             "/v1/worker/session/cleanup/repository-publication/complete",
             json!({
@@ -571,9 +577,9 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         session_id: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
             "/v1/worker/session/cleanup/repository-publication/reject",
             json!({
@@ -591,8 +597,10 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         claim: &RunClaim,
         session_id: &str,
-    ) -> Result<Vec<awaken_session_contract::SessionAgentRosterEntry>, ClaimedSessionControlError>
-    {
+    ) -> Result<
+        Vec<awaken_session_execution_contract::SessionAgentRosterEntry>,
+        ClaimedSessionControlError,
+    > {
         let body = self
             .realization_response(
                 "/v1/worker/session/agents/list",
@@ -648,9 +656,11 @@ impl WorkerControlClient {
         session_id: &str,
         agent_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
-        mode: awaken_session_contract::SessionRunActivityAdmissionMode,
-    ) -> Result<awaken_session_contract::SessionRunActivityAdmission, ClaimedSessionControlError>
-    {
+        mode: awaken_session_execution_contract::SessionRunActivityAdmissionMode,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivityAdmission,
+        ClaimedSessionControlError,
+    > {
         let body = self
             .realization_response(
                 "/v1/worker/session/run-activity/admit",
@@ -678,9 +688,11 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         claim: &RunClaim,
-        command: awaken_session_contract::SessionAgentMessageCommand,
-    ) -> Result<awaken_session_contract::SessionAgentMessageReceipt, ClaimedSessionControlError>
-    {
+        command: awaken_session_execution_contract::SessionAgentMessageCommand,
+    ) -> Result<
+        awaken_session_execution_contract::SessionAgentMessageReceipt,
+        ClaimedSessionControlError,
+    > {
         let body = self
             .realization_response(
                 "/v1/worker/session/agents/send",
@@ -699,7 +711,7 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         claim: &RunClaim,
-        command: awaken_session_contract::SessionAgentBoundaryCommand,
+        command: awaken_session_execution_contract::SessionAgentBoundaryCommand,
     ) -> Result<(), ClaimedSessionControlError> {
         self.realization_response(
             "/v1/worker/session/agents/settle",
@@ -713,10 +725,10 @@ impl WorkerControlClient {
     pub async fn activate_session_realization(
         &self,
         identity: &WorkerIdentity,
-        command: awaken_session_contract::ActivateSessionRealization,
+        command: awaken_session_realization_contract::ActivateSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.realization_phase("/v1/worker/session/realization/activate", identity, command)
             .await
@@ -725,10 +737,10 @@ impl WorkerControlClient {
     pub async fn renew_session_realization(
         &self,
         identity: &WorkerIdentity,
-        command: awaken_session_contract::RenewSessionRealization,
+        command: awaken_session_realization_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationLeaseReceipt,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         let body = self
             .realization_response(
@@ -737,19 +749,19 @@ impl WorkerControlClient {
             )
             .await?;
         serde_json::from_value(body).map_err(|error| {
-            awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
-                "Session realization lease decode: {error}"
-            ))
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                format!("Session realization lease decode: {error}"),
+            )
         })
     }
 
     pub async fn acknowledge_session_realization(
         &self,
         identity: &WorkerIdentity,
-        command: awaken_session_contract::AcknowledgeSessionRealization,
+        command: awaken_session_realization_contract::AcknowledgeSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.realization_phase(
             "/v1/worker/session/realization/acknowledge",
@@ -762,8 +774,8 @@ impl WorkerControlClient {
     pub async fn fail_session_realization(
         &self,
         identity: &WorkerIdentity,
-        command: awaken_session_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        command: awaken_session_realization_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
             "/v1/worker/session/realization/fail",
             json!({ "identity": identity, "command": command }),
@@ -778,17 +790,17 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         command: T,
     ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         let body = self
             .realization_response(path, json!({ "identity": identity, "command": command }))
             .await?;
         serde_json::from_value(body.get("realization").cloned().unwrap_or(Value::Null)).map_err(
             |error| {
-                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
-                    "Session realization directive decode: {error}"
-                ))
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                    format!("Session realization directive decode: {error}"),
+                )
             },
         )
     }
@@ -797,9 +809,9 @@ impl WorkerControlClient {
         &self,
         path: &str,
         body: Value,
-    ) -> Result<Value, awaken_session_contract::SessionRealizationControlFailure> {
+    ) -> Result<Value, awaken_session_realization_contract::SessionRealizationControlFailure> {
         let (status, body) = self.post_response(path, body).await.map_err(|error| {
-            awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                 error.to_string(),
             )
         })?;
@@ -810,7 +822,7 @@ impl WorkerControlClient {
             return serde_json::from_value(error.clone()).map_or_else(
                 |decode| {
                     Err(
-                        awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                        awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                             format!("Session realization failure decode: {decode}"),
                         ),
                     )
@@ -819,7 +831,7 @@ impl WorkerControlClient {
             );
         }
         Err(
-            awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                 body.get("error")
                     .and_then(Value::as_str)
                     .unwrap_or("worker control request rejected")

@@ -1,7 +1,7 @@
 use super::*;
 use crate::state::test_support::{ConflictInjectingRepo, ReadControl};
 use awaken_runtime_contract::tool_batch::ToolBatch;
-use awaken_session_contract::SessionId;
+use awaken_session_types::SessionId;
 
 struct RecordingProjectionRefresh {
     calls: std::sync::atomic::AtomicUsize,
@@ -9,7 +9,9 @@ struct RecordingProjectionRefresh {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::ExecutableAgentProjectionRefresh for RecordingProjectionRefresh {
+impl awaken_session_application_contract::ExecutableAgentProjectionRefresh
+    for RecordingProjectionRefresh
+{
     async fn refresh_agent_projection(&self) -> Result<(), String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
@@ -21,7 +23,7 @@ impl awaken_session_contract::ExecutableAgentProjectionRefresh for RecordingProj
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::ExecutableEnvironmentProjectionRefresh
+impl awaken_session_application_contract::ExecutableEnvironmentProjectionRefresh
     for RecordingProjectionRefresh
 {
     async fn refresh_environment_projection(&self) -> Result<(), String> {
@@ -36,11 +38,13 @@ impl awaken_session_contract::ExecutableEnvironmentProjectionRefresh
 
 fn paired_projection_refresh(
     refresh: Arc<RecordingProjectionRefresh>,
-) -> Arc<awaken_session_contract::ExecutableProjectionRefresh> {
-    Arc::new(awaken_session_contract::ExecutableProjectionRefresh::new(
-        refresh.clone(),
-        refresh,
-    ))
+) -> Arc<awaken_session_application_contract::ExecutableProjectionRefresh> {
+    Arc::new(
+        awaken_session_application_contract::ExecutableProjectionRefresh::new(
+            refresh.clone(),
+            refresh,
+        ),
+    )
 }
 
 struct RevisionedProfiles(std::sync::atomic::AtomicU64);
@@ -223,10 +227,10 @@ fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     ));
     let mut persisted = sample_persisted("cold-hidden-axes");
     let (inputs, _) = persisted.resources.desired().clone().into_parts();
-    persisted.resources = awaken_session_contract::SessionResourceState::from_active(
-        awaken_session_contract::ResolvedSessionResources::try_new(
+    persisted.resources = awaken_session_state_contract::SessionResourceState::from_active(
+        awaken_session_resource_contract::ResolvedSessionResources::try_new(
             inputs,
-            vec![awaken_session_contract::ResolvedSkillBinding {
+            vec![awaken_session_resource_contract::ResolvedSkillBinding {
                 kind: awaken_agent_contract::AgentSkillKind::Custom,
                 skill_id: "pinned-skill".into(),
                 version: 9,
@@ -235,7 +239,8 @@ fn cold_projection_restores_every_frozen_agent_hidden_axis() {
         )
         .unwrap(),
     );
-    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut persisted.baseline
+    let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut persisted.baseline
     else {
         unreachable!("fixture baseline is frozen")
     };
@@ -267,18 +272,22 @@ fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     );
     assert_eq!(inherited.vault_ids, ["vault-a", "vault-b"], "H1/E3");
 
-    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut persisted.baseline
+    let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut persisted.baseline
     else {
         unreachable!("fixture baseline is frozen")
     };
-    baseline.model_override = Some(awaken_session_contract::SessionModelOverride {
-        publication: None,
-        inference: awaken_runtime_contract::agent_bindings::InferenceOptions {
-            effort: Some(awaken_runtime_contract::agent_bindings::ReasoningEffort::High),
-            ..Default::default()
+    baseline.model_override = Some(
+        awaken_session_configuration_contract::SessionModelOverride {
+            publication: None,
+            inference: awaken_runtime_contract::agent_bindings::InferenceOptions {
+                effort: Some(awaken_runtime_contract::agent_bindings::ReasoningEffort::High),
+                ..Default::default()
+            },
         },
-    });
-    *baseline.system_prompt = awaken_session_contract::SessionSystemPromptSelection::Clear;
+    );
+    *baseline.system_prompt =
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Clear;
     let cleared = state
         .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, persisted.clone())
         .expect("H2 exact cold projection");
@@ -291,13 +300,15 @@ fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     assert_eq!(cleared.agent.system, None, "H2/E2 clear");
     assert_eq!(cleared.vault_ids, inherited.vault_ids, "H2/E3");
 
-    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut persisted.baseline
+    let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut persisted.baseline
     else {
         unreachable!("fixture baseline is frozen")
     };
-    *baseline.system_prompt = awaken_session_contract::SessionSystemPromptSelection::Replace(
-        "session-only system".into(),
-    );
+    *baseline.system_prompt =
+        awaken_session_configuration_contract::SessionSystemPromptSelection::Replace(
+            "session-only system".into(),
+        );
     let replaced = state
         .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, persisted)
         .expect("H3 exact cold projection");
@@ -314,7 +325,7 @@ async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
     // Cause/effect table: C1 durable Session exists, C2 binding absent,
     // C3 identical binding already committed. R1 C1+C2 -> persist binding
     // and advance revision; R2 C1+C3 -> success without another revision.
-    use awaken_session_contract::SessionEnvironmentBindingSink;
+    use awaken_session_execution_contract::SessionEnvironmentBindingSink;
 
     let repo = Arc::new(ephemeral_session_repo());
     create_session_fixture(
@@ -325,9 +336,9 @@ async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
     .await;
     let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(repo.clone());
 
-    let receipt = awaken_session_contract::SessionEnvironmentReceipt::new(
+    let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
         "binding-now",
-        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
         "opaque-handle",
         None,
     )
@@ -365,7 +376,8 @@ fn persisted_with_mcp_source(
             "https://x",
         )),
     );
-    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
+    let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut session.baseline
     else {
         unreachable!("fixture baseline is frozen")
     };
@@ -394,12 +406,12 @@ impl awaken_session_application::SessionCredentialSource for RolloutCredentialSo
         &self,
         source_id: &awaken_credential_contract::CredentialSourceId,
         _workspace_id: &str,
-        target: &awaken_session_contract::McpTarget,
+        target: &awaken_session_mcp_contract::McpTarget,
         selected_holder: &awaken_credential_contract::PlaintextHolder,
         _binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {
         let revision = if source_id.0 == "source-a" { 2 } else { 1 };
-        let audience = awaken_session_contract::McpTarget::identity(
+        let audience = awaken_session_mcp_contract::McpTarget::identity(
             target.http_url().ok_or("MCP target is not HTTP")?,
         )
         .map_err(|error| error.to_string())?
@@ -473,7 +485,8 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     // | V3 | B | A | any | E4 scope fence |
     // | V4 | A | A | archive | E2 |
     // | V5 | A | A absent | delete | E3 |
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     create_session_fixture(
         repo.as_ref(),
         "workspace-a",
@@ -557,13 +570,13 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     );
     assert!(
         repo.scan(
-            awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+            awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                 workspace_id: "workspace-a",
                 source_id: &awaken_credential_contract::CredentialSourceId("source-a".into())
             }
         )
         .await
-        .map(awaken_session_contract::SessionScan::into_sessions)
+        .map(awaken_session_state_contract::SessionScan::into_sessions)
         .unwrap()
         .is_empty(),
         "V4/E2"
@@ -610,7 +623,7 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
     // C2 conflict count reaches the bound. R1 C1 -> retry then persist;
     // R2 C2 -> error and leave the binding absent. These are the two
     // equivalence classes for the moved application-owned CAS loop.
-    use awaken_session_contract::SessionEnvironmentBindingSink;
+    use awaken_session_execution_contract::SessionEnvironmentBindingSink;
 
     for (case, conflicts, accepted) in [
         ("one conflict then success", 1, true),
@@ -629,9 +642,9 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
             ReadControl::default(),
         ));
         let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(repo);
-        let receipt = awaken_session_contract::SessionEnvironmentReceipt::new(
+        let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
             format!("binding-{conflicts}"),
-            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
             "opaque",
             None,
         )
@@ -651,13 +664,14 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
     }
 }
 
-pub(in crate::state) fn sample_inputs() -> awaken_session_contract::ResolvedSessionResources {
-    awaken_session_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_contract::ResolvedInput {
+pub(in crate::state) fn sample_inputs() -> awaken_session_resource_contract::ResolvedSessionResources
+{
+    awaken_session_resource_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_resource_contract::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("input-file"),
-            source: awaken_session_contract::ResolvedInputSource::File {
+            source: awaken_session_resource_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from("file-hash"),
             },
             mount_path: "/input.txt".into(),
@@ -714,10 +728,7 @@ async fn application_root_cas_decision_table() {
             )
             .await
             .unwrap();
-        assert_eq!(
-            applied.revision,
-            awaken_session_contract::SessionRevision(2)
-        );
+        assert_eq!(applied.revision, awaken_session_types::SessionRevision(2));
 
         match rule {
             ApplicationCasRule::Apply => {}
@@ -767,20 +778,21 @@ fn rehydrated_session_restores_persisted_config() {
     // | T2 | no durable row | NotFound; no projection is constructed |
     let state = ManagedState::new_with_mcp(RehydrateFake::default());
     let mut persisted = sample_persisted("sesn_1");
-    persisted.mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Requested;
+    persisted.mcp.attachments[0].state = awaken_session_mcp_contract::McpAttachmentState::Requested;
     assert!(
         persisted.visible_mcp_servers().is_empty(),
         "T1 execution visibility has not been acknowledged"
     );
-    persisted.tools =
-        crate::project::session_tool_configuration(&[awaken_session_contract::AgentTool::Custom {
+    persisted.tools = crate::project::session_tool_configuration(&[
+        awaken_session_configuration_contract::AgentTool::Custom {
             name: "durable-tool".into(),
             description: "Client-executed tool".into(),
-            input_schema: awaken_session_contract::CustomToolInputSchema::from_value(
+            input_schema: awaken_session_configuration_contract::CustomToolInputSchema::from_value(
                 serde_json::json!({"type": "object"}),
             )
             .unwrap(),
-        }]);
+        },
+    ]);
     let session = state
         .rehydrated_session("sesn_1", DEFAULT_SCOPE, persisted)
         .expect("valid durable projection");
@@ -798,7 +810,7 @@ fn rehydrated_session_restores_persisted_config() {
     );
     assert!(matches!(
         &session.agent.tools[..],
-        [awaken_session_contract::AgentTool::Custom { name, .. }] if name == "durable-tool"
+        [awaken_session_configuration_contract::AgentTool::Custom { name, .. }] if name == "durable-tool"
     ));
     assert!(
         session.resources.is_empty(),
@@ -858,10 +870,11 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
     // outage into a read failure (S8/O5/D7), so cold reads remain pure; flattening
     // child tool events into the primary Thread destroys context isolation
     // (S8/O4/D6), so R2 asserts both inclusion and exclusion projections.
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     let mut persisted = sample_persisted("sesn_1");
     persisted.environment.set_resident("opaque-runtime-binding");
-    persisted.realization = Some(awaken_session_contract::SessionRealizationLease {
+    persisted.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
         owner: "managed-runtime/prior-boot".into(),
         runtime_incarnation: "managed-runtime/prior-boot".into(),
         epoch: 3,
@@ -882,7 +895,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             },
         ],
     )]);
-    *runtime.pending.lock().unwrap() = Some(awaken_session_contract::Pending {
+    *runtime.pending.lock().unwrap() = Some(awaken_session_application_contract::Pending {
         tool_use_id: "call-submit".into(),
         name: "design_submit_artifact".into(),
         input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
@@ -929,10 +942,10 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         root_run_id.clone(),
         0,
         "call-durable",
-        awaken_session_contract::CoordinatedThreadLink {
+        awaken_session_execution_contract::CoordinatedThreadLink {
             session_id: "sesn_1".into(),
             thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
-            target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+            target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
                 agent_id: "researcher".into(),
             },
             created_by_operation_id: ToolBatch::operation_id_for_step(
@@ -1098,7 +1111,8 @@ async fn cold_workspace_list_projects_durable_sessions_without_runtime_effects()
     // Effects: E1 the requested Workspace still lists its Session; E2 the other
     // Workspace remains fenced; E3 a collection read performs no Runtime,
     // Environment, Resource, or MCP restoration.
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     create_session_fixture(
         repo.as_ref(),
         "workspace-a",
@@ -1155,7 +1169,8 @@ async fn cold_workspace_list_isolates_a_missing_preview_publication() {
     // R2 C2+C3 => list a read-only frozen projection without restoring Runtime.
     // R3 C2+interactive recovery => fail closed; a collection read must never
     // make the missing publication executable.
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     create_session_fixture(
         repo.as_ref(),
         "workspace-a",
@@ -1163,7 +1178,8 @@ async fn cold_workspace_list_isolates_a_missing_preview_publication() {
     )
     .await;
     let mut preview = sample_persisted("sesn_preview");
-    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut preview.baseline
+    let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+        &mut preview.baseline
     else {
         unreachable!("fixture baseline is frozen")
     };
@@ -1217,7 +1233,8 @@ async fn committed_event_refresh_merges_peer_messages_exactly_once() {
     // | warm  | none             | one          | unchanged              |
     // | warm  | one peer message | one          | append peer projection |
     // | warm  | same peer message| repeated     | no duplicate           |
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_peer")).await;
     let runtime = RehydrateFake::default();
     let first = Message::text(
@@ -1259,7 +1276,8 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
     // not merely "present".  The shared preparer must traverse the same
     // recovery path that reinstalls its frozen Resource and Environment
     // snapshot before a wire adapter may execute.
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     let mut persisted = sample_persisted("external-thread");
     persisted.environment.set_resident("opaque-runtime-binding");
     create_session_fixture(repo.as_ref(), "workspace-a", persisted).await;
@@ -1290,7 +1308,8 @@ async fn protocol_defaults_preparer_rehydrates_the_exact_durable_baseline() {
 
 #[tokio::test]
 async fn session_id_mint_namespaces_restart_away_from_repository_truth() {
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_0")).await;
     let restarted = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo);
     let created = restarted
@@ -1311,7 +1330,8 @@ async fn active_active_session_id_mint_is_collision_free() {
     // |---|---|---|---|---|
     // | S1 | different | both zero | yes | two distinct committed Sessions |
     // | S2 | same process object | increasing | yes | distinct Sessions |
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     let left = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
     let right = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
     let (left_result, right_result) = tokio::join!(
@@ -1340,14 +1360,15 @@ async fn active_active_session_id_mint_is_collision_free() {
 
 #[tokio::test]
 async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation() {
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     let mut pending = sample_persisted("sesn_pending");
     let desired = pending.resources.active.clone();
     pending.resources = Default::default();
     pending
         .resources
         .prepare(
-            &awaken_session_contract::SessionId::from("sesn_pending"),
+            &awaken_session_types::SessionId::from("sesn_pending"),
             desired.clone(),
         )
         .unwrap();
@@ -1368,7 +1389,7 @@ async fn resource_reconciler_retries_and_commits_a_crash_interrupted_activation(
     assert_eq!(durable.resources.activations[0].attempts, 2);
     assert_eq!(
         durable.resources.activations[0].state,
-        awaken_session_contract::ActivationState::Active
+        awaken_session_state_contract::ActivationState::Active
     );
 }
 
@@ -1383,13 +1404,14 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
     // replaced before release settles. Effects: E1 restart executes the one
     // canonical release; E2 the cleanup row becomes a tombstone; E3 no
     // reconcilable Session remains. Decision rule R1=C1+C2=>E1+E2+E3.
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     let mut deleted = sample_persisted("sesn_deleted");
     deleted.disposition = SessionDisposition::Deleting;
-    deleted.execution = awaken_session_contract::SessionExecutionState::Terminated;
+    deleted.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
     deleted
         .resources
-        .adopt_legacy_active(&awaken_session_contract::SessionId::from("sesn_deleted"));
+        .adopt_legacy_active(&awaken_session_types::SessionId::from("sesn_deleted"));
     deleted.resources.begin_release().unwrap();
     create_session_fixture(repo.as_ref(), "workspace-a", deleted).await;
 
@@ -1401,12 +1423,12 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart_case() {
     assert!(
         matches!(
             repo.get(&SessionId::from("sesn_deleted")).await,
-            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
         ),
         "D3: a successful retry converges the hidden cleanup row to a tombstone"
     );
     assert!(
-        repo.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
             .await
             .unwrap()
             .sessions
@@ -1435,14 +1457,15 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
     // | R3 | rescheduling | true | environment | 0 | 0 | unchanged |
     // | R4 | terminated | true | terminal | 0 | 1 | released |
     // | R5 | deleted | false | deleted | 0 | 1 | tombstoned |
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     for status in ["idle", "running", "rescheduling", "terminated"] {
         let id = format!("sesn_{status}");
         let mut session = sample_persisted(&id);
         session.execution = status.parse().expect("fixture execution state");
         session
             .resources
-            .adopt_legacy_active(&awaken_session_contract::SessionId::from(id.as_str()));
+            .adopt_legacy_active(&awaken_session_types::SessionId::from(id.as_str()));
         session
             .environment
             .set_resident(format!("binding-{status}"));
@@ -1450,7 +1473,7 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
     }
     let mut deleted = sample_persisted("sesn_deleted_empty");
     deleted.disposition = SessionDisposition::Deleting;
-    deleted.execution = awaken_session_contract::SessionExecutionState::Terminated;
+    deleted.execution = awaken_session_state_contract::SessionExecutionState::Terminated;
     deleted.resources = Default::default();
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, deleted).await;
 
@@ -1491,7 +1514,7 @@ async fn resource_reclaimer_never_tears_down_a_live_session_environment_case() {
     assert!(
         matches!(
             repo.get(&SessionId::from("sesn_deleted_empty")).await,
-            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+            Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
         ),
         "R5"
     );
@@ -1505,12 +1528,13 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
     // performs no Resource, Environment, or terminal teardown effect.
     // The terminal and pending branches are covered by the reclaimer table
     // above and `ensure_session_retries_and_commits_a_crash_interrupted_activation`.
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     let mut running = sample_persisted("sesn_running_rehydrate");
     running.execution = SessionExecutionState::Running;
     running
         .resources
-        .adopt_legacy_active(&awaken_session_contract::SessionId::from(
+        .adopt_legacy_active(&awaken_session_types::SessionId::from(
             "sesn_running_rehydrate",
         ));
     running.environment.set_resident("running-binding");
@@ -1592,12 +1616,13 @@ async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
     // Cause graph: repository index hit + MCP nonterminal + root terminal
     // -> skip realization. The lifecycle classification table lives on
     // PersistedSession; this integration rule proves the scanner consumes it.
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     let mut failed = sample_persisted("sesn_failed_mcp");
     failed.execution = SessionExecutionState::ActivationFailed;
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
     assert_eq!(
-        repo.scan(awaken_session_contract::SessionScanQuery::Reconcilable { after: None })
+        repo.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })
             .await
             .unwrap()
             .sessions
@@ -1634,7 +1659,8 @@ async fn startup_mcp_recovery_adopts_the_durable_environment_before_staging() {
     // | yes | present | required | prepare -> adopt -> stage; binding unchanged |
     // | yes | absent  | required | prepare -> stage may create one Environment |
     // | terminal | any | required | no Runtime effect (covered above) |
-    let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(ephemeral_session_repo());
+    let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        Arc::new(ephemeral_session_repo());
     let mut persisted = sample_persisted("sesn_startup_mcp");
     persisted.environment.set_resident("durable-k8s-binding");
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
@@ -1672,7 +1698,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
     // | R1 | add | success | revision +1, one Active | exact id/path restored |
     // | R2 | delete | success | revision +1, no Active | resource absent |
     let (repo, catalog, restarted, id, resource_id) = Box::pin(async {
-        let repo: Arc<dyn awaken_session_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
             Arc::new(ephemeral_session_repo());
         let catalog = Arc::new(ephemeral_resource_registry());
         let state = ManagedState::new_with_mcp(RehydrateFake::default())
@@ -1705,7 +1731,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
                 .activations
                 .iter()
                 .filter(|activation| {
-                    activation.state == awaken_session_contract::ActivationState::Active
+                    activation.state == awaken_session_state_contract::ActivationState::Active
                 })
                 .count(),
             1
@@ -1746,7 +1772,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
         let mut after_delete = repo.get(&SessionId::from(&id)).await.unwrap();
         assert_eq!(after_delete.resources.revision, 3);
         assert!(after_delete.resources.activations.iter().all(|activation| {
-            activation.state != awaken_session_contract::ActivationState::Active
+            activation.state != awaken_session_state_contract::ActivationState::Active
         }));
         after_delete
             .realization
@@ -1797,7 +1823,7 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
     use tracing::instrument::WithSubscriber;
     for case in ["busy", "precommit", "postcommit"] {
         let failed_refresh = case == "precommit";
-        let repo: Arc<dyn awaken_session_contract::SessionStore> =
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
             Arc::new(ephemeral_session_repo());
         let mut busy = persisted_with_mcp_source("busy", "source-a", "vault-event");
         busy.execution = SessionExecutionState::Running;

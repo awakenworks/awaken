@@ -9,10 +9,10 @@ use awaken_resource_contract::{
     FileReadPurpose, LiveResourceBindingVerifier, RepositoryBindingVerifier,
     RepositoryBindingVerifierError, ResolvedFileContent, SkillStore, SkillVersion, content_id,
 };
-use awaken_session_contract::{
-    ResolvedSkillBinding, SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication,
-    validate_skill_bundle,
+use awaken_session_configuration_contract::{
+    SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, validate_skill_bundle,
 };
+use awaken_session_resource_contract::ResolvedSkillBinding;
 
 pub struct ApplicationFileContentSource {
     application: Arc<dyn FileApplicationService>,

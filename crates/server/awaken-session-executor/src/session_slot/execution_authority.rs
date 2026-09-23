@@ -5,7 +5,7 @@ use super::*;
 #[cfg(target_os = "linux")]
 use crate::session_environment::SessionEnvironment;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
-use awaken_session_contract::SessionRealizationLease;
+use awaken_session_resource_contract::SessionRealizationLease;
 use std::{io, sync::Weak, time::Duration};
 
 struct SessionExecutionAuthority {

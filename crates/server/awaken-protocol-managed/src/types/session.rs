@@ -83,7 +83,7 @@ impl BudgetLimit {
 }
 use serde_json::Value;
 
-use awaken_session_contract::{AgentTool, validate_agent_tools};
+use awaken_session_configuration_contract::{AgentTool, validate_agent_tools};
 
 use super::agent::{AgentMcpServer, AgentSkill};
 use super::resource::{ResourceInput, SessionResource};

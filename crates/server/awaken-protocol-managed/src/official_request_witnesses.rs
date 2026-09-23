@@ -407,7 +407,7 @@ const REGISTRY: &[(&str, Decode, Decode)] = &[
     ("beta.dreams.cancel", ignored_body, ignored_query),
     (
         "beta.dreams.create",
-        json::<awaken_session_contract::DreamCreateParams>,
+        json::<awaken_session_dream_contract::DreamCreateParams>,
         ignored_query,
     ),
     ("beta.dreams.list", ignored_body, dream_list),

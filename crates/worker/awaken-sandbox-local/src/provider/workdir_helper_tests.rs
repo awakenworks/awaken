@@ -1123,8 +1123,8 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
 }
 
 pub(super) fn checkpoint_request_for(session_id: &str) -> pc::SandboxCheckpointRequest {
-    let generation = awaken_session_contract::SandboxGeneration::new(
-        &awaken_session_contract::SessionId::from(session_id),
+    let generation = awaken_session_state_contract::SandboxGeneration::new(
+        &awaken_session_types::SessionId::from(session_id),
         10,
         10_000,
         "environment",

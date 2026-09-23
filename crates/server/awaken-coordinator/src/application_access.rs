@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use awaken_authz_enforce::{ApplicationGrant, ApplicationThreadBinding};
-use awaken_session_contract::SessionRepository;
+use awaken_session_repository_contract::SessionRepository;
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -161,13 +161,13 @@ pub async fn issue_application_access(
     let mut thread_bindings = HashMap::new();
     for requested in &request.thread_bindings {
         let owner = match sessions
-            .owner(&awaken_session_contract::SessionId::from(
+            .owner(&awaken_session_types::SessionId::from(
                 &requested.managed_session_id,
             ))
             .await
         {
             Ok(owner) => owner,
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
                 return Err(ApplicationAccessIssuanceError::SessionNotFound);
             }
             Err(_) => {
@@ -178,13 +178,13 @@ pub async fn issue_application_access(
             return Err(ApplicationAccessIssuanceError::SessionNotFound);
         }
         let session = match sessions
-            .get(&awaken_session_contract::SessionId::from(
+            .get(&awaken_session_types::SessionId::from(
                 &requested.managed_session_id,
             ))
             .await
         {
             Ok(session) => session,
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
                 return Err(ApplicationAccessIssuanceError::SessionNotFound);
             }
             Err(_) => {
@@ -211,7 +211,7 @@ pub async fn issue_application_access(
     }
     let now_ms = now_unix_millis();
     let expires_ms = now_ms.saturating_add(request.expires_in_seconds.saturating_mul(1000));
-    let expires_at = awaken_session_contract::epoch_millis_to_rfc3339(expires_ms);
+    let expires_at = awaken_session_application_contract::epoch_millis_to_rfc3339(expires_ms);
     let grant = ApplicationGrant {
         protocols: request.protocols.iter().cloned().collect::<HashSet<_>>(),
         operations: request.operations.iter().cloned().collect::<HashSet<_>>(),
@@ -369,11 +369,12 @@ mod tests {
 
     use async_trait::async_trait;
     use awaken_authz_enforce::ApplicationAccessAuthenticator;
-    use awaken_session_contract::{
-        EnvironmentFingerprint, EnvironmentSnapshot, ManagedLifecycleFact, PersistedSession,
-        SessionBaseline, SessionBaselineInputs, SessionBaselineState, SessionMcpAuthoringContext,
-        SessionNetworkPolicy, SessionRuntimePlacement,
+    use awaken_session_configuration_contract::{
+        EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
+        SessionBaselineState, SessionMcpAuthoringContext, SessionNetworkPolicy,
+        SessionRuntimePlacement,
     };
+    use awaken_session_state_contract::{ManagedLifecycleFact, PersistedSession};
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use serde_json::{Value, json};
@@ -398,14 +399,14 @@ mod tests {
             &self,
             _owner_scope: &str,
             _session: PersistedSession,
-            _idempotency: awaken_session_contract::IdempotencyRecord,
+            _idempotency: awaken_session_state_contract::IdempotencyRecord,
             _lifecycle_facts: Vec<ManagedLifecycleFact>,
         ) -> Result<
-            awaken_session_contract::SessionCreateResult,
-            awaken_session_contract::SessionRepositoryError,
+            awaken_session_state_contract::SessionCreateResult,
+            awaken_session_state_contract::SessionRepositoryError,
         > {
             Err(
-                awaken_session_contract::SessionRepositoryError::Unavailable(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions".into(),
                 ),
             )
@@ -414,12 +415,12 @@ mod tests {
         async fn replay_create(
             &self,
             _owner_scope: &str,
-            _session_id: &awaken_session_contract::SessionId,
-            _idempotency: &awaken_session_contract::IdempotencyRecord,
-        ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError>
+            _session_id: &awaken_session_types::SessionId,
+            _idempotency: &awaken_session_state_contract::IdempotencyRecord,
+        ) -> Result<Option<PersistedSession>, awaken_session_state_contract::SessionRepositoryError>
         {
             Err(
-                awaken_session_contract::SessionRepositoryError::Unavailable(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions".into(),
                 ),
             )
@@ -428,13 +429,13 @@ mod tests {
         async fn commit(
             &self,
             _owner_scope: &str,
-            _mutation: awaken_session_contract::SessionMutation,
+            _mutation: awaken_session_state_contract::SessionMutation,
         ) -> Result<
-            awaken_session_contract::SessionMutationResult,
-            awaken_session_contract::SessionRepositoryError,
+            awaken_session_state_contract::SessionMutationResult,
+            awaken_session_state_contract::SessionRepositoryError,
         > {
             Err(
-                awaken_session_contract::SessionRepositoryError::Unavailable(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions".into(),
                 ),
             )
@@ -442,32 +443,35 @@ mod tests {
 
         async fn get(
             &self,
-            session_id: &awaken_session_contract::SessionId,
-        ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
+            session_id: &awaken_session_types::SessionId,
+        ) -> Result<PersistedSession, awaken_session_state_contract::SessionRepositoryError>
+        {
             if self.failure == Some(TestSessionReadFailure::Get) {
-                return Err(awaken_session_contract::SessionRepositoryError::Corrupt(
-                    "get-backend-diagnostic-456".into(),
-                ));
+                return Err(
+                    awaken_session_state_contract::SessionRepositoryError::Corrupt(
+                        "get-backend-diagnostic-456".into(),
+                    ),
+                );
             }
             self.rows
                 .get(session_id.as_str())
                 .map(|(_, session)| session.clone())
-                .ok_or(awaken_session_contract::SessionRepositoryError::NotFound)
+                .ok_or(awaken_session_state_contract::SessionRepositoryError::NotFound)
         }
 
         async fn scan(
             &self,
-            query: awaken_session_contract::SessionScanQuery<'_>,
+            query: awaken_session_state_contract::SessionScanQuery<'_>,
         ) -> Result<
-            awaken_session_contract::SessionScan,
-            awaken_session_contract::SessionRepositoryError,
+            awaken_session_state_contract::SessionScan,
+            awaken_session_state_contract::SessionRepositoryError,
         > {
             match query {
-                awaken_session_contract::SessionScanQuery::Reconcilable { .. } => {
-                    Ok(awaken_session_contract::SessionScan::default())
+                awaken_session_state_contract::SessionScanQuery::Reconcilable { .. } => {
+                    Ok(awaken_session_state_contract::SessionScan::default())
                 }
                 _ => Err(
-                    awaken_session_contract::SessionRepositoryError::Unavailable(
+                    awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
                         "read-only TestSessions does not own Session indexing".into(),
                     ),
                 ),
@@ -477,13 +481,13 @@ mod tests {
         async fn deleted_event_admissions(
             &self,
             _owner_scope: &str,
-            _session_id: &awaken_session_contract::SessionId,
+            _session_id: &awaken_session_types::SessionId,
         ) -> Result<
-            Option<awaken_session_contract::DeletedSessionEventAdmissions>,
-            awaken_session_contract::SessionRepositoryError,
+            Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
+            awaken_session_state_contract::SessionRepositoryError,
         > {
             Err(
-                awaken_session_contract::SessionRepositoryError::Unavailable(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions does not retain deletion evidence".into(),
                 ),
             )
@@ -491,10 +495,10 @@ mod tests {
 
         async fn count_environment_phase(
             &self,
-            _phase: awaken_session_contract::SessionEnvironmentPhase,
-        ) -> Result<u64, awaken_session_contract::SessionRepositoryError> {
+            _phase: awaken_session_state_contract::SessionEnvironmentPhase,
+        ) -> Result<u64, awaken_session_state_contract::SessionRepositoryError> {
             Err(
-                awaken_session_contract::SessionRepositoryError::Unavailable(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
                     "read-only TestSessions does not count Environment phases".into(),
                 ),
             )
@@ -502,22 +506,22 @@ mod tests {
 
         async fn idempotency_receipt(
             &self,
-            _session_id: &awaken_session_contract::SessionId,
+            _session_id: &awaken_session_types::SessionId,
             _key: &str,
         ) -> Result<
-            Option<awaken_session_contract::SessionIdempotencyReceipt>,
-            awaken_session_contract::SessionRepositoryError,
+            Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
+            awaken_session_state_contract::SessionRepositoryError,
         > {
             Ok(None)
         }
 
         async fn owner(
             &self,
-            session_id: &awaken_session_contract::SessionId,
-        ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
+            session_id: &awaken_session_types::SessionId,
+        ) -> Result<String, awaken_session_state_contract::SessionRepositoryError> {
             if self.failure == Some(TestSessionReadFailure::Owner) {
                 return Err(
-                    awaken_session_contract::SessionRepositoryError::Unavailable(
+                    awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
                         "owner-backend-diagnostic-123".into(),
                     ),
                 );
@@ -525,7 +529,7 @@ mod tests {
             self.rows
                 .get(session_id.as_str())
                 .map(|(owner, _)| owner.clone())
-                .ok_or(awaken_session_contract::SessionRepositoryError::NotFound)
+                .ok_or(awaken_session_state_contract::SessionRepositoryError::NotFound)
         }
     }
 
@@ -596,12 +600,14 @@ mod tests {
         let SessionBaselineState::Frozen(baseline) = session.baseline else {
             unreachable!()
         };
-        session.baseline =
-            SessionBaselineState::Preparing(awaken_session_contract::SessionCreationIntent {
-                control: awaken_session_contract::ControlSessionCreationInputs {
-                    mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
+        session.baseline = SessionBaselineState::Preparing(
+            awaken_session_configuration_contract::SessionCreationIntent {
+                control: awaken_session_configuration_contract::ControlSessionCreationInputs {
+                    mutation_policy:
+                        awaken_session_resource_contract::SessionMutationPolicy::Managed,
                     environment: baseline.environment,
-                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+                    runtime_placement:
+                        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
                     agent_revision: baseline.agent_revision,
                     model_override: baseline.model_override,
@@ -619,7 +625,8 @@ mod tests {
                     resources: Default::default(),
                     initial_mcp: Vec::new(),
                 },
-            });
+            },
+        );
         session
     }
 

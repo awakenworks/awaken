@@ -26,7 +26,7 @@ impl crate::session_slot::SessionRuntimeSlot {
         &self,
         thread: &str,
         workspace_id: &str,
-        state: &awaken_session_contract::SessionEnvironmentState,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
         newer: bool,
     ) -> Result<SessionEnvironmentOwner, HostError> {
         let projected = projected_environment_owner(state, workspace_id, thread)?;
@@ -38,7 +38,7 @@ impl crate::session_slot::SessionRuntimeSlot {
     pub(crate) fn install_projected_environment_owner(
         &mut self,
         owner: SessionEnvironmentOwner,
-        state: &awaken_session_contract::SessionEnvironmentState,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
     ) {
         self.environment_owner = owner;
         self.reopen_mcp_realization_admission_from_projection(state);
@@ -57,9 +57,9 @@ struct LocalRetirementTransition {
 /// optional physical owner together prevents terminal checkpoint and Sandbox
 /// cleanup from re-reading or independently interpreting the slot.
 struct TerminalEnvironmentPreparation {
-    state: awaken_session_contract::SessionEnvironmentState,
+    state: awaken_session_state_contract::SessionEnvironmentState,
     environment: PreparedBoundEnvironment,
-    pending_checkpoint: Option<awaken_session_contract::SandboxCheckpointRequest>,
+    pending_checkpoint: Option<awaken_session_state_contract::SandboxCheckpointRequest>,
 }
 
 /// Exact decoded binding, provider-effective spec, and any process-local
@@ -118,7 +118,7 @@ impl PreparedBoundEnvironment {
     /// excuse to repeat live source effects under terminal T.
     fn with_preparation_authorization(
         mut self,
-        authorization: &awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
+        authorization: &awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Self {
         if authorization.inherited_provider_disposal().is_some() {
             self.effect_mode = TerminalEffectMode::RecoverOnlyAlreadyPrepared;
@@ -160,7 +160,7 @@ impl PreparedBoundEnvironment {
 /// provider effects. The contract owns the optional-handle join and intent
 /// construction; this transient plan only carries its exact result forward.
 struct TerminalMemoryPlan {
-    intents: Vec<awaken_session_contract::SessionTerminalMemoryIntent>,
+    intents: Vec<awaken_session_state_contract::SessionTerminalMemoryIntent>,
     acknowledged_materializations:
         Option<Vec<awaken_provisioning_contract::MemoryMaterializationEvidence>>,
     workspace_id: Option<String>,
@@ -292,12 +292,12 @@ impl TerminalEnvironmentPreparation {
 }
 
 fn terminal_state_harvests_agent_outputs(
-    state: &awaken_session_contract::SessionEnvironmentState,
+    state: &awaken_session_state_contract::SessionEnvironmentState,
 ) -> bool {
     matches!(
         state,
-        awaken_session_contract::SessionEnvironmentState::Resident { .. }
-            | awaken_session_contract::SessionEnvironmentState::Suspending { .. }
+        awaken_session_state_contract::SessionEnvironmentState::Resident { .. }
+            | awaken_session_state_contract::SessionEnvironmentState::Suspending { .. }
     )
 }
 
@@ -432,8 +432,8 @@ impl SharedHost {
     fn validate_suspend_operation(
         &self,
         thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-        _generation: &awaken_session_contract::SandboxGeneration,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        _generation: &awaken_session_state_contract::SandboxGeneration,
     ) -> Result<(), HostError> {
         // The Session aggregate is the sole operation writer. Existing durable
         // operations, including legacy fingerprints, replay opaquely; Runtime
@@ -460,10 +460,10 @@ impl SharedHost {
     pub(crate) fn resident_checkpoint_source_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
         source_effect_id: &str,
         source_binding: &str,
-        generation: &awaken_session_contract::SandboxGeneration,
+        generation: &awaken_session_state_contract::SandboxGeneration,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
         self.validate_suspend_operation(thread, operation, generation)?;
         let expected_identity =
@@ -506,7 +506,7 @@ impl SharedHost {
         &self,
         thread: &str,
         workspace_id: &str,
-        state: &awaken_session_contract::SessionEnvironmentState,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> Result<(), HostError> {
         self.session_slots.update(thread, |slot| {
             let owner = slot.projected_environment_owner(thread, workspace_id, state, false)?;
@@ -544,9 +544,9 @@ impl SharedHost {
     ) {
         let binding = serde_json::to_string(&environment.handle())
             .expect("test Environment handle serializes");
-        let receipt = awaken_session_contract::SessionEnvironmentReceipt::new(
+        let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
             thread,
-            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
             binding.clone(),
             None,
         );
@@ -564,7 +564,7 @@ impl SharedHost {
     pub(crate) fn begin_session_environment_restore(
         &self,
         thread: &str,
-        request: &awaken_session_contract::SandboxRestoreRequest,
+        request: &awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<(), HostError> {
         self.session_slots
             .update(thread, |slot| slot.environment_owner.begin_restore(request))
@@ -579,7 +579,7 @@ impl SharedHost {
         &self,
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
-        resolved_resources: Option<&awaken_session_contract::ResolvedSessionResources>,
+        resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
     ) -> awaken_provisioning_contract::SandboxSpec {
         match resolved_resources {
             Some(resources) => {
@@ -613,7 +613,7 @@ impl SharedHost {
         thread: &str,
         encoded: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
-        resolved_resources: Option<&awaken_session_contract::ResolvedSessionResources>,
+        resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
     ) -> Result<ValidatedSessionEnvironmentAdoption, HostError> {
         let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(encoded)
             .map_err(|error| {
@@ -904,7 +904,7 @@ impl SharedHost {
                 authorized = self
                     .authorize_environment_effect_before_io(
                         thread,
-                        awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+                        awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
                         Some(encoded),
                     )
                     .await?;
@@ -920,7 +920,7 @@ impl SharedHost {
                 "unacknowledged Candidate recovery requires current aggregate adoption authority",
             ));
         }
-        if let awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+        if let awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding,
         } = &effect.authorization
             && binding != encoded
@@ -1215,7 +1215,7 @@ impl SharedHost {
     pub(crate) async fn retire_replaced_scoped_execution(
         &self,
         thread: &str,
-        incoming: &awaken_session_contract::ObservedSessionRealizationLease,
+        incoming: &awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> Result<(), HostError> {
         let retirement = self.authorize_worker_effect(|| {
             let now = awaken_local_process::authority_proof_started()
@@ -1234,8 +1234,8 @@ impl SharedHost {
                     _ => return None,
                 };
                 let same_generation = slot.realization_authority.lease().is_some_and(|old| {
-                    awaken_session_contract::realization_lease_generation_authorizes(old, &incoming.lease)
-                    || awaken_session_contract::realization_lease_generation_authorizes(&incoming.lease, old)
+                    awaken_session_realization_contract::realization_lease_generation_authorizes(old, &incoming.lease)
+                    || awaken_session_realization_contract::realization_lease_generation_authorizes(&incoming.lease, old)
                 });
                 (!same_generation).then(|| environment.clone())
             }).flatten();
@@ -1346,8 +1346,8 @@ impl SharedHost {
     pub(crate) fn retain_checkpoint_source_environment_for_disposal(
         &self,
         thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-        generation: &awaken_session_contract::SandboxGeneration,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_state_contract::SandboxGeneration,
         source_binding: &str,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<(), HostError> {
@@ -1397,8 +1397,8 @@ impl SharedHost {
     pub(crate) async fn dispose_prepared_checkpoint_source_environment(
         &self,
         thread: &str,
-        operation: &awaken_session_contract::SessionEnvironmentOperation,
-        generation: &awaken_session_contract::SandboxGeneration,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_state_contract::SandboxGeneration,
         source_binding: &str,
         authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
     ) -> Result<(), HostError> {
@@ -1694,7 +1694,7 @@ mod terminal_output_tests {
          * HT1b otherwise+Live=>E2; HT1c any+RecoverOnly=>E3. C2 dominates C1:
          * a durable Disposing gate must never be mistaken for "no artifacts"
          * merely because the aggregate state is non-Agent-authored. */
-        let resident = awaken_session_contract::SessionEnvironmentState::Resident {
+        let resident = awaken_session_state_contract::SessionEnvironmentState::Resident {
             binding: "binding-a".into(),
             effect_id: None,
             generation: None,
@@ -1703,13 +1703,13 @@ mod terminal_output_tests {
         assert!(terminal_state_harvests_agent_outputs(&resident), "HT1a");
         assert!(
             !terminal_state_harvests_agent_outputs(
-                &awaken_session_contract::SessionEnvironmentState::Unmaterialized
+                &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
             ),
             "HT1b"
         );
 
         let disposing_non_agent_state = TerminalEnvironmentPreparation {
-            state: awaken_session_contract::SessionEnvironmentState::Unmaterialized,
+            state: awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
             environment: PreparedBoundEnvironment::new(
                 None,
                 None,

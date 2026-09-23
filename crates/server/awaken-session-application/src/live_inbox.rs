@@ -1,7 +1,9 @@
 //! Workspace-fenced application boundary for attempt-local live steering.
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_session_contract::{LiveInboxApplication, LiveInboxApplicationError, LiveInboxSnapshot};
+use awaken_session_execution_contract::{
+    LiveInboxApplication, LiveInboxApplicationError, LiveInboxSnapshot,
+};
 
 use crate::SessionApplication;
 
@@ -9,7 +11,7 @@ impl SessionApplication {
     async fn require_live_inbox_owner(
         &self,
         workspace_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<(), LiveInboxApplicationError> {
         match self.owner(session_id).await {
             Ok(owner) if owner == workspace_id => Ok(()),
@@ -17,7 +19,9 @@ impl SessionApplication {
             Ok(_) | Err(crate::SessionMutationError::NotFound) => {
                 Err(LiveInboxApplicationError::NotFound)
             }
-            Err(error) => Err(LiveInboxApplicationError::Unavailable(error.to_string())),
+            Err(error) => Err(LiveInboxApplicationError::AuthorityUnavailable {
+                detail: error.to_string(),
+            }),
         }
     }
 }
@@ -27,7 +31,7 @@ impl LiveInboxApplication for SessionApplication {
     async fn snapshot(
         &self,
         workspace_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<LiveInboxSnapshot, LiveInboxApplicationError> {
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
@@ -40,7 +44,7 @@ impl LiveInboxApplication for SessionApplication {
     async fn queue(
         &self,
         workspace_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         content: Vec<ContentBlock>,
     ) -> Result<u64, LiveInboxApplicationError> {
         self.require_live_inbox_owner(workspace_id, session_id)
@@ -54,7 +58,7 @@ impl LiveInboxApplication for SessionApplication {
     async fn remove(
         &self,
         workspace_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         message_id: u64,
     ) -> Result<(), LiveInboxApplicationError> {
         self.require_live_inbox_owner(workspace_id, session_id)
@@ -68,7 +72,7 @@ impl LiveInboxApplication for SessionApplication {
     async fn replace(
         &self,
         workspace_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         message_id: u64,
         content: Vec<ContentBlock>,
     ) -> Result<(), LiveInboxApplicationError> {
@@ -83,7 +87,7 @@ impl LiveInboxApplication for SessionApplication {
     async fn reorder(
         &self,
         workspace_id: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         order: Vec<u64>,
     ) -> Result<(), LiveInboxApplicationError> {
         self.require_live_inbox_owner(workspace_id, session_id)

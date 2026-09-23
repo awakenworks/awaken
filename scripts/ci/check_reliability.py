@@ -54,7 +54,9 @@ REQUIRED_TOOL_GATES = (
     "cleanup_mutation_artifacts\npython3 scripts/ci/check_reliability.py",
     'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/sse/mutants.out"',
     'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch/mutants.out"',
-    'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-observations/mutants.out"',
+    'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-event-observations/mutants.out"',
+    'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-realization-observations/mutants.out"',
+    'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-work-observations/mutants.out"',
 )
 
 
@@ -256,7 +258,7 @@ class ReliabilityCheckerTests(unittest.TestCase):
     def test_actual_runner_owns_directory_and_propagates_tool_failure(self) -> None:
         # Directory/tool graph: D1 output parent missing/existing/nested; D2 a
         # regular file blocks creation; D3 a mutation command fails. Effects:
-        # D1 => initialize + run all 4 tools; D2 => zero mutation calls + failure;
+        # D1 => initialize + run all 6 tools; D2 => zero mutation calls + failure;
         # D3 => stop + failure + cleanup. The real script runs in a disposable
         # checkout with process stubs: these prove orchestration, not Rust tests.
         # Removing the mkdir line must kill the fresh-directory positive control.
@@ -300,7 +302,7 @@ esac
                 mutations = [line for line in calls if line.startswith("mutants ")]
                 passed = case in ("fresh", "existing", "nested")
                 self.assertEqual(result.returncode == 0, passed, result.stderr)
-                self.assertEqual(len(mutations), 4 if passed else 0 if case == "blocked" else 1)
+                self.assertEqual(len(mutations), 6 if passed else 0 if case == "blocked" else 1)
                 self.assertEqual(calls[-1], "clean -p awaken-session-executor", "D2/D3 cleanup")
                 if case == "blocked":
                     self.assertEqual(output.read_text(), "owned file must remain unchanged")

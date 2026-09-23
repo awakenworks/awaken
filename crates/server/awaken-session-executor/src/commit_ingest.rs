@@ -150,21 +150,23 @@ mod tests {
         (snapshot, override_candidate, extractor)
     }
 
-    fn claimed_memory_manifest(store_id: &str) -> awaken_session_contract::SessionResourceManifest {
+    fn claimed_memory_manifest(
+        store_id: &str,
+    ) -> awaken_session_resource_contract::SessionResourceManifest {
         let config = awaken_resource_contract::MemoryStoreConfigVersion {
             memory_store_id: store_id.to_string().into(),
             version: awaken_resource_contract::ConfigVersion::INITIAL,
             retention_policy: Default::default(),
         };
-        awaken_session_contract::SessionResourceManifest::at_revision(
+        awaken_session_resource_contract::SessionResourceManifest::at_revision(
             WORKSPACE_ID,
             7,
-            awaken_session_contract::ResolvedSessionResources::try_new(
-                vec![awaken_session_contract::ResolvedInput {
+            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+                vec![awaken_session_resource_contract::ResolvedInput {
                     created_at_unix_ms: None,
                     updated_at_unix_ms: None,
                     binding_id: awaken_resource_contract::BindingId::new(MEMORY_BINDING_ID),
-                    source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+                    source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
                         memory_store_id: store_id.to_string().into(),
                         config,
                     },
@@ -181,14 +183,14 @@ mod tests {
     fn claimed_memory_projection(
         root: &awaken_runtime_contract::ExecutableAgentSnapshot,
         override_candidate: &ResolvedModelCandidate,
-        manifest: &awaken_session_contract::SessionResourceManifest,
-    ) -> awaken_session_contract::FrozenSessionProjection {
+        manifest: &awaken_session_resource_contract::SessionResourceManifest,
+    ) -> awaken_session_realization_contract::FrozenSessionProjection {
         let binding = override_candidate.binding();
-        let environment = awaken_session_contract::EnvironmentSnapshot {
+        let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
             environment_id: "claimed-memory-environment".into(),
-            revision: awaken_session_contract::EnvironmentRevision(1),
+            revision: awaken_environment_contract::EnvironmentRevision(1),
             self_hosted: false,
-            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+            config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
                 "claimed-memory-environment-v1".into(),
             ),
             sandbox: Default::default(),
@@ -196,25 +198,30 @@ mod tests {
             idle_retention: Default::default(),
             packages: Default::default(),
             prepared_image: None,
-            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         };
-        let baseline = awaken_session_contract::SessionBaseline::compile(
-            awaken_session_contract::SessionBaselineInputs {
+        let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
                 environment,
-                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                runtime_placement:
+                    awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
                 mcp_authoring: Default::default(),
                 agent_id: root.root_agent_id.0.clone(),
                 agent_revision: None,
                 model: binding.model_ref.clone(),
-                model_override: Some(awaken_session_contract::SessionModelOverride {
-                    publication: Some(Box::new(awaken_session_contract::SessionModelPublication {
-                        primary: override_candidate.clone(),
-                        candidates: Vec::new(),
-                    })),
-                    inference: Default::default(),
-                }),
+                model_override: Some(
+                    awaken_session_configuration_contract::SessionModelOverride {
+                        publication: Some(Box::new(
+                            awaken_session_configuration_contract::SessionModelPublication {
+                                primary: override_candidate.clone(),
+                                candidates: Vec::new(),
+                            },
+                        )),
+                        inference: Default::default(),
+                    },
+                ),
                 runtime: Some(binding.backend_ref.clone()),
                 delegate_ids: Vec::new(),
                 toolsets: Vec::new(),
@@ -224,19 +231,19 @@ mod tests {
                 transcript_prefix: None,
             },
         );
-        awaken_session_contract::FrozenSessionProjection {
+        awaken_session_realization_contract::FrozenSessionProjection {
             workspace_id: manifest.workspace_id.clone(),
-            revision: awaken_session_contract::SessionRevision(1),
+            revision: awaken_session_types::SessionRevision(1),
             baseline,
             agent_publication: Some(root.clone()),
             environment: Default::default(),
             resource_revision: manifest.revision,
             resources: manifest.resources.clone(),
             previous_resource_manifest: Some(
-                awaken_session_contract::SessionResourceManifest::at_revision(
+                awaken_session_resource_contract::SessionResourceManifest::at_revision(
                     manifest.workspace_id.clone(),
                     0,
-                    awaken_session_contract::ResolvedSessionResources::default(),
+                    awaken_session_resource_contract::ResolvedSessionResources::default(),
                 ),
             ),
             tools: Default::default(),
@@ -526,16 +533,16 @@ mod tests {
         let managed = crate::ManagedHost::new(host.clone())
             .with_resource_validator(crate::host::test_resource_validator())
             .install_dispatch_session_runtime();
-        let application: Arc<dyn awaken_session_contract::SessionAgentCoordination> =
+        let application: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
             Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
         managed
             .install_agent_coordination_application(Arc::downgrade(&application))
             .expect("C5 install canonical Session application authority");
-        awaken_session_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &managed,
             thread,
             claimed_memory_projection(&root_publication, &override_candidate, &manifest),
-            awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await
         .expect("C5 install complete frozen Session projection");

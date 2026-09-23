@@ -1,6 +1,7 @@
 //! Canonical Session MCP authoring normalization and credential selection.
 
-use awaken_session_contract::{McpAttachmentDraft, McpAttachmentOrigin, McpTarget, RunError};
+use awaken_session_error_contract::RunError;
+use awaken_session_mcp_contract::{McpAttachmentDraft, McpAttachmentOrigin, McpTarget};
 
 use super::SessionApplication;
 

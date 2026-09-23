@@ -70,7 +70,7 @@ use std::sync::Arc;
 mod dream;
 
 use awaken_protocol_managed::{ManagedState, router};
-use awaken_session_contract::RunApplication;
+use awaken_session_application_contract::RunApplication;
 use axum::Router;
 
 // This data plane depends on each authoritative owner directly.
@@ -312,7 +312,7 @@ pub fn local_managed_state(
 pub fn local_managed_state_with_model_publication_resolver(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+    resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, None, None, Some(resolver), None)
 }
@@ -325,7 +325,7 @@ pub fn local_managed_state_with_agent_source_and_model_publication_resolver(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
-    resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+    resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(
         host,
@@ -357,7 +357,7 @@ pub fn local_managed_state_with_agent_source_and_list_prices(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
-    list_prices: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
+    list_prices: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(
         host,
@@ -410,9 +410,11 @@ fn local_managed_state_over(
     >,
     agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
     model_publication_resolver: Option<
-        Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+        Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     >,
-    managed_list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
+    managed_list_price_provider: Option<
+        Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
+    >,
 ) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -435,13 +437,14 @@ fn local_managed_state_over(
     if let Some(repo) = &durable_session_repo {
         host.install_memory_extraction_repository(repo.clone());
     }
-    let session_repo: Arc<dyn awaken_session_contract::SessionStore> = match durable_session_repo {
-        Some(repo) => repo,
-        None => Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                .expect("open ephemeral managed Session repository"),
-        ),
-    };
+    let session_repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+        match durable_session_repo {
+            Some(repo) => repo,
+            None => Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .expect("open ephemeral managed Session repository"),
+            ),
+        };
 
     // Test/scenario startup must freeze the same topology fact as product
     // startup. Deriving placement from the canonical Host value eliminates
@@ -528,7 +531,7 @@ fn ephemeral_resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRe
 #[cfg(feature = "test-support")]
 fn scenario_dream_process_store(
     host: &SharedHost,
-) -> Arc<dyn awaken_session_contract::DreamProcessStore> {
+) -> Arc<dyn awaken_session_dream_contract::DreamProcessStore> {
     match host.storage_dir() {
         Some(root) => {
             std::fs::create_dir_all(root).expect("create durable Dream repository directory");
@@ -725,8 +728,9 @@ pub struct ManagedRoutingExtensions {
     pub resource_management_router: Router,
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub worker_file_application: Arc<dyn awaken_resource_contract::FileApplicationService>,
-    pub worker_skill_bundles:
-        Arc<dyn awaken_session_contract::SkillBundleSource<awaken_dispatch::RunClaim>>,
+    pub worker_skill_bundles: Arc<
+        dyn awaken_session_configuration_contract::SkillBundleSource<awaken_dispatch::RunClaim>,
+    >,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
     pub worker_execution_bindings:
@@ -749,9 +753,9 @@ pub struct ManagedApplicationServices {
     pub resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     pub model_inventory:
         Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>>,
-    pub dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
+    pub dream_process_store: Arc<dyn awaken_session_dream_contract::DreamProcessStore>,
     pub executable_projection_refresh:
-        Option<Arc<awaken_session_contract::ExecutableProjectionRefresh>>,
+        Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
 }
 
 enum ApplicationAccessMount {
@@ -762,7 +766,7 @@ enum ApplicationAccessMount {
 
 struct RefreshingExecutableAgentInventory {
     source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
-    refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
+    refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
 }
 
 #[async_trait::async_trait]
@@ -786,15 +790,17 @@ impl awaken_executable_agent_contract::ExecutableAgentInventorySource
 }
 
 struct RefreshingEnvironmentWarmups {
-    source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource>,
-    refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
+    source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
+    refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::EnvironmentWarmupSource for RefreshingEnvironmentWarmups {
+impl awaken_session_configuration_contract::EnvironmentWarmupSource
+    for RefreshingEnvironmentWarmups
+{
     async fn current_environment_warmups(
         &self,
-    ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+    ) -> Result<Vec<awaken_session_configuration_contract::EnvironmentSnapshot>, String> {
         let admission = self.refresh.refresh().await?;
         admission
             .enter(|| self.source.current_environment_warmups())
@@ -814,7 +820,7 @@ mod executable_projection_refresh_tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::ExecutableAgentProjectionRefresh for ToggleRefresh {
+    impl awaken_session_application_contract::ExecutableAgentProjectionRefresh for ToggleRefresh {
         async fn refresh_agent_projection(&self) -> Result<(), String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
@@ -826,7 +832,7 @@ mod executable_projection_refresh_tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::ExecutableEnvironmentProjectionRefresh for ToggleRefresh {
+    impl awaken_session_application_contract::ExecutableEnvironmentProjectionRefresh for ToggleRefresh {
         async fn refresh_environment_projection(&self) -> Result<(), String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
@@ -858,10 +864,11 @@ mod executable_projection_refresh_tests {
     struct Warmups(AtomicUsize);
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::EnvironmentWarmupSource for Warmups {
+    impl awaken_session_configuration_contract::EnvironmentWarmupSource for Warmups {
         async fn current_environment_warmups(
             &self,
-        ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+        ) -> Result<Vec<awaken_session_configuration_contract::EnvironmentSnapshot>, String>
+        {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
         }
@@ -879,10 +886,12 @@ mod executable_projection_refresh_tests {
         // it succeeds, one Environment attempt per handler entry so a false
         // pass cannot come from bypassing the prerequisite altogether.
         let refresh = Arc::new(ToggleRefresh::default());
-        let pair = Arc::new(awaken_session_contract::ExecutableProjectionRefresh::new(
-            refresh.clone(),
-            refresh.clone(),
-        ));
+        let pair = Arc::new(
+            awaken_session_application_contract::ExecutableProjectionRefresh::new(
+                refresh.clone(),
+                refresh.clone(),
+            ),
+        );
         let inventory = Arc::new(Inventory::default());
         let warmups = Arc::new(Warmups::default());
         let refreshing_inventory = RefreshingExecutableAgentInventory {
@@ -904,7 +913,7 @@ mod executable_projection_refresh_tests {
             "D1/E1"
         );
         assert!(
-            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+            awaken_session_configuration_contract::EnvironmentWarmupSource::current_environment_warmups(
                 &refreshing_warmups,
             )
             .await
@@ -922,7 +931,7 @@ mod executable_projection_refresh_tests {
         )
         .await
         .unwrap();
-        awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+        awaken_session_configuration_contract::EnvironmentWarmupSource::current_environment_warmups(
             &refreshing_warmups,
         )
         .await
@@ -1194,14 +1203,15 @@ fn mount_with_managed_over_and_models(
     // production and Scenario compositions. Its source is the exact Environment
     // execution application already used by Session admission; this adapter owns
     // no second catalog, WorkQueue, cache, or receipt state.
-    let environment_warmup_source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource> =
-        match executable_projection_refresh.clone() {
-            Some(refresh) => Arc::new(RefreshingEnvironmentWarmups {
-                source: managed_state.environment_execution(),
-                refresh,
-            }),
-            None => managed_state.environment_execution(),
-        };
+    let environment_warmup_source: Arc<
+        dyn awaken_session_configuration_contract::EnvironmentWarmupSource,
+    > = match executable_projection_refresh.clone() {
+        Some(refresh) => Arc::new(RefreshingEnvironmentWarmups {
+            source: managed_state.environment_execution(),
+            refresh,
+        }),
+        None => managed_state.environment_execution(),
+    };
     let environment_warmups = awaken_dispatch_http::worker_environment_warmup_router(
         environment_warmup_source,
         worker_directory.clone(),
@@ -1273,7 +1283,9 @@ fn mount_with_managed_over_and_models(
                 .await
             {
                 Ok(_) => Ok(true),
-                Err(error) if error.kind == awaken_session_contract::RunErrorKind::BadRequest => {
+                Err(error)
+                    if error.kind == awaken_session_error_contract::RunErrorKind::BadRequest =>
+                {
                     Ok(false)
                 }
                 Err(error) => Err(error.to_string()),
@@ -1329,8 +1341,9 @@ fn mount_with_managed_over_and_models(
         move |thread| workspace_host.thread_workspace(thread),
         move |thread| agent_host.thread_agent_projection(thread),
     ));
-    let background_runs: Arc<dyn awaken_session_contract::SessionRunBackgroundApplication> =
-        session_runs.clone();
+    let background_runs: Arc<
+        dyn awaken_session_application_contract::SessionRunBackgroundApplication,
+    > = session_runs.clone();
     ManagedHost::new(host.clone())
         .install_session_background_run_application(Arc::downgrade(&background_runs))
         .expect("Session background Run application binds once");

@@ -16,7 +16,19 @@ authority = "runtime-host"
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-local-process.workspace = true
-awaken-session-contract.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-error-contract.workspace = true
+awaken-session-realization-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-budget-contract.workspace = true
+awaken-session-event-contract.workspace = true
+awaken-session-mcp-contract.workspace = true
+awaken-session-resource-contract.workspace = true
+awaken-session-types.workspace = true
+awaken-session-work-contract.workspace = true
+awaken-environment-contract.workspace = true
 # The one topology-neutral terminal cleanup driver is Session application
 # orchestration over contract ports; local and remote Workers both call it.
 awaken-session-application.workspace = true

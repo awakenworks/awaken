@@ -15,7 +15,7 @@ impl SharedHost {
         self.begin_session_environment_candidate(
             thread,
             environment,
-            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
         )
     }
 
@@ -27,7 +27,7 @@ impl SharedHost {
         self.begin_session_environment_candidate(
             thread,
             environment,
-            awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
         )
     }
 
@@ -35,7 +35,7 @@ impl SharedHost {
         &self,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
-        kind: awaken_session_contract::SessionEnvironmentEffectKind,
+        kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
     ) -> Result<UnboundSessionEnvironment, HostError> {
         self.session_slots.update(thread, |slot| {
             let candidate = slot.environment_owner.begin_preparing(environment, kind)?;

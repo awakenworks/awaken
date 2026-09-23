@@ -899,7 +899,7 @@ impl SessionRepository for SqliteManagedSessionRepository {
     async fn replay_create(
         &self,
         owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
         if owner_scope.trim().is_empty()
@@ -1084,7 +1084,7 @@ impl SessionRepository for SqliteManagedSessionRepository {
 
     async fn get(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionRepositoryError> {
         let session_id = session_id.to_string();
         self.with_connection(move |conn| {
@@ -1112,9 +1112,9 @@ impl SessionRepository for SqliteManagedSessionRepository {
 
     async fn scan(
         &self,
-        query: awaken_session_contract::SessionScanQuery<'_>,
+        query: awaken_session_state_contract::SessionScanQuery<'_>,
     ) -> Result<SessionScan, SessionRepositoryError> {
-        use awaken_session_contract::SessionScanQuery;
+        use awaken_session_state_contract::SessionScanQuery;
         match query {
             SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after).await,
             SessionScanQuery::Workspace { workspace_id } => Ok(Self::scoped_scan(
@@ -1169,10 +1169,12 @@ impl SessionRepository for SqliteManagedSessionRepository {
 
     async fn idempotency_receipt(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         key: &str,
-    ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
-    {
+    ) -> Result<
+        Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
+        SessionRepositoryError,
+    > {
         let session_id = session_id.to_string();
         let key = key.to_string();
         self.with_connection(move |conn| {
@@ -1188,7 +1190,7 @@ impl SessionRepository for SqliteManagedSessionRepository {
             row.map(|(payload_hash, revision)| {
                 u64::try_from(revision)
                     .map(
-                        |revision| awaken_session_contract::SessionIdempotencyReceipt {
+                        |revision| awaken_session_state_contract::SessionIdempotencyReceipt {
                             payload_hash,
                             committed_revision: SessionRevision(revision),
                         },
@@ -1203,9 +1205,9 @@ impl SessionRepository for SqliteManagedSessionRepository {
     async fn deleted_event_admissions(
         &self,
         owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<
-        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
     > {
         let owner_scope = owner_scope.to_string();
@@ -1219,7 +1221,7 @@ impl SessionRepository for SqliteManagedSessionRepository {
 
     async fn owner(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<String, SessionRepositoryError> {
         let session_id = session_id.to_string();
         self.with_connection(move |conn| {
@@ -1253,7 +1255,7 @@ impl SqliteManagedSessionRepository {
 
     async fn scan_reconcilable(
         &self,
-        after: Option<&awaken_session_contract::SessionScanCursor>,
+        after: Option<&awaken_session_state_contract::SessionScanCursor>,
     ) -> Result<SessionScan, SessionRepositoryError> {
         let after = after.map(|cursor| cursor.session_id().to_string());
         self.with_connection(move |conn| {
@@ -1294,7 +1296,9 @@ impl SqliteManagedSessionRepository {
                 rows.truncate(page_size);
                 if has_more {
                     scan.next_cursor = rows.last().map(|(_, session_id, _, _)| {
-                        awaken_session_contract::SessionScanCursor::after_session_id(session_id)
+                        awaken_session_state_contract::SessionScanCursor::after_session_id(
+                            session_id,
+                        )
                     });
                 }
                 for (workspace_id, session_id, row, observed_revision) in rows {
@@ -1348,7 +1352,7 @@ impl SqliteManagedSessionRepository {
                     let rows = quarantined
                         .query_map(params![RECOVERY_BATCH_SIZE], |row| {
                             Ok(SessionRecoveryQuarantine {
-                                session_id: awaken_session_contract::SessionId::from(
+                                session_id: awaken_session_types::SessionId::from(
                                     row.get::<_, String>(0)?,
                                 ),
                                 reason: row.get(1)?,

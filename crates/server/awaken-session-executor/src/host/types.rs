@@ -14,7 +14,7 @@ pub struct CommittedStepReceipt {
     pub state: RunState,
     pub pending: Option<Pending>,
     pub await_reason: Option<AwaitReason>,
-    pub delegated_runs: Vec<awaken_session_contract::DelegatedRun>,
+    pub delegated_runs: Vec<awaken_session_application_contract::DelegatedRun>,
     proof: CommittedStepProof,
 }
 
@@ -33,7 +33,7 @@ pub(super) struct VerifiedStepProjection {
     pub state: RunState,
     pub pending: Option<Pending>,
     pub await_reason: Option<AwaitReason>,
-    pub delegated_runs: Vec<awaken_session_contract::DelegatedRun>,
+    pub delegated_runs: Vec<awaken_session_application_contract::DelegatedRun>,
 }
 
 impl CommittedStepReceipt {

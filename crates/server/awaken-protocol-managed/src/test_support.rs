@@ -6,7 +6,7 @@ pub use managed_event_observer::{
     DurableFact, wait_for_delivered_lifecycle_facts, wait_for_session_events,
 };
 
-use awaken_session_contract::SessionRuntime;
+use awaken_session_execution_contract::SessionRuntime;
 use std::sync::Arc;
 
 use awaken_environment_execution_application::{
@@ -62,7 +62,7 @@ use crate::{
 /// still fail closed instead of receiving a default timing capability.
 pub fn observe_realization_request() -> Result<
     awaken_runtime_contract::authority_lease::AuthorityProofStarted,
-    awaken_session_contract::RunError,
+    awaken_session_error_contract::RunError,
 > {
     static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let origin = *ORIGIN.get_or_init(std::time::Instant::now);
@@ -178,14 +178,17 @@ impl ManagedTunnelApplication for EmptyManagedTunnelApplication {
 /// recreating a partial projection or silently accepting empty coordinates.
 pub fn complete_session_projection_init(
     thread: &str,
-    projection: &awaken_session_contract::FrozenSessionProjection,
-    mode: &awaken_session_contract::SessionProjectionInstallMode,
-) -> Result<Option<awaken_session_contract::SessionInit>, awaken_session_contract::RunError> {
+    projection: &awaken_session_realization_contract::FrozenSessionProjection,
+    mode: &awaken_session_realization_contract::SessionProjectionInstallMode,
+) -> Result<
+    Option<awaken_session_configuration_contract::SessionInit>,
+    awaken_session_error_contract::RunError,
+> {
     if thread.is_empty()
         || projection.workspace_id.is_empty()
         || projection.baseline.agent_id.is_empty()
     {
-        return Err(awaken_session_contract::RunError::bad_request(
+        return Err(awaken_session_error_contract::RunError::bad_request(
             "test Session projection must carry complete frozen coordinates",
         ));
     }
@@ -197,21 +200,24 @@ pub fn complete_session_projection_init(
 /// adapter prevents each router/state fixture from recreating the retired
 /// one-stage cleanup path or silently ignoring the effect echoed by Control.
 pub fn complete_terminal_cleanup_preparation(
-    effect: &awaken_session_contract::SessionTerminalCleanupEffect,
-    authorization: &awaken_session_contract::SessionTerminalCleanupPreparationAuthorization,
-) -> Result<awaken_session_contract::SessionCleanupPreparation, awaken_session_contract::RunError> {
+    effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+    authorization: &awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
+) -> Result<
+    awaken_session_state_contract::SessionCleanupPreparation,
+    awaken_session_error_contract::RunError,
+> {
     authorization
         .verify_for(effect)
-        .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
+        .map_err(|error| awaken_session_error_contract::RunError::internal(error.to_string()))?;
     let provider_prepared_effect_fence = effect
         .sandbox_effect_fence()
-        .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
-    awaken_session_contract::SessionCleanupPreparation::try_new(
+        .map_err(|error| awaken_session_error_contract::RunError::internal(error.to_string()))?;
+    awaken_session_state_contract::SessionCleanupPreparation::try_new(
         effect,
         provider_prepared_effect_fence,
         Vec::new(),
     )
-    .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))
+    .map_err(|error| awaken_session_error_contract::RunError::internal(error.to_string()))
 }
 
 /// Complete the physical half of a protocol test Runtime from the one typed
@@ -219,9 +225,9 @@ pub fn complete_terminal_cleanup_preparation(
 /// owner; this helper owns no cleanup state or compatibility behavior.
 #[must_use]
 pub fn complete_terminal_cleanup_disposal(
-    effect: &awaken_session_contract::SessionTerminalCleanupDisposalEffect,
-) -> awaken_session_contract::SessionCleanupDisposalReceipt {
-    awaken_session_contract::SessionCleanupDisposalReceipt::new(&effect.command)
+    effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+) -> awaken_session_state_contract::SessionCleanupDisposalReceipt {
+    awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command)
 }
 
 #[must_use]
@@ -229,7 +235,7 @@ pub fn environment_components() -> (
     Arc<EnvironmentAuthoringState>,
     Arc<EnvironmentExecutionApplication>,
 ) {
-    let work: Arc<dyn awaken_session_contract::work_queue::WorkQueue> =
+    let work: Arc<dyn awaken_session_work_contract::WorkQueue> =
         Arc::new(awaken_work_store::InMemoryWorkQueue::new());
     let catalog =
         Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
@@ -263,12 +269,13 @@ pub fn environment_components() -> (
 /// accepted primary Run; no `DelegatedRun` hint or child-named store participates.
 #[derive(Clone)]
 pub struct CoordinatedRuntimeFake {
-    completed_user_dispatches:
-        std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>>,
+    completed_user_dispatches: std::sync::Arc<
+        std::sync::Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
+    >,
     runs: std::sync::Arc<std::sync::atomic::AtomicU64>,
     reserved_user_runs: std::sync::Arc<
         std::sync::Mutex<
-            std::collections::HashMap<String, awaken_session_contract::AdmitSessionRun>,
+            std::collections::HashMap<String, awaken_session_execution_contract::AdmitSessionRun>,
         >,
     >,
     user_run_states: std::sync::Arc<
@@ -277,7 +284,9 @@ pub struct CoordinatedRuntimeFake {
         >,
     >,
     user_run_outcomes: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<String, awaken_session_contract::StepOutcome>>,
+        std::sync::Mutex<
+            std::collections::HashMap<String, awaken_session_application_contract::StepOutcome>,
+        >,
     >,
     root_messages:
         std::sync::Arc<std::sync::Mutex<Vec<awaken_agent_contract::agent::message::Message>>>,
@@ -313,12 +322,12 @@ struct FakeLiveSubscription {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionThreadLiveSubscription for FakeLiveSubscription {
+impl awaken_session_execution_contract::SessionThreadLiveSubscription for FakeLiveSubscription {
     async fn recv(
         &mut self,
     ) -> Result<
         Option<awaken_agent_contract::stream::event::Observation>,
-        awaken_session_contract::RunError,
+        awaken_session_error_contract::RunError,
     > {
         loop {
             match self.receiver.recv().await {
@@ -399,8 +408,9 @@ impl CoordinatedRuntimeFake {
     /// delivery. Terminal transcript projection cannot manufacture this fence.
     pub fn completed_user_dispatches(
         &self,
-    ) -> std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>>
-    {
+    ) -> std::sync::Arc<
+        std::sync::Mutex<Vec<awaken_session_execution_contract::SessionAgentBoundaryCommand>>,
+    > {
         self.completed_user_dispatches.clone()
     }
 
@@ -581,13 +591,16 @@ impl CoordinatedRuntimeFake {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
+impl awaken_session_execution_contract::SessionRuntime for CoordinatedRuntimeFake {
     async fn run(
         &self,
         _agent: &str,
         thread: &str,
         _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+    ) -> Result<
+        awaken_session_application_contract::StepOutcome,
+        awaken_session_error_contract::RunError,
+    > {
         use awaken_agent_contract::agent::content::ContentBlock;
         use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
         use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -735,7 +748,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
                     await_reason: None,
                 });
         }
-        Ok(awaken_session_contract::StepOutcome::ended(
+        Ok(awaken_session_application_contract::StepOutcome::ended(
             delta,
             EndCause::NaturalEnd,
         ))
@@ -745,8 +758,11 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _decision: awaken_session_contract::ToolPermissionDecision,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+        _decision: awaken_session_execution_contract::ToolPermissionDecision,
+    ) -> Result<
+        awaken_session_application_contract::StepOutcome,
+        awaken_session_error_contract::RunError,
+    > {
         unreachable!()
     }
 
@@ -756,7 +772,10 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         _tool_use_id: &str,
         _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _is_error: bool,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+    ) -> Result<
+        awaken_session_application_contract::StepOutcome,
+        awaken_session_error_contract::RunError,
+    > {
         unreachable!()
     }
 
@@ -764,82 +783,84 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         "test-model".into()
     }
 
-    fn realization(&self) -> Option<&dyn awaken_session_contract::RealizationRuntime> {
+    fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
         Some(self)
     }
 
-    fn coordination(&self) -> Option<&dyn awaken_session_contract::CoordinationRuntime> {
+    fn coordination(&self) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
         Some(self)
     }
 
-    fn budget(&self) -> Option<&dyn awaken_session_contract::BudgetRuntime> {
+    fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
         Some(self)
     }
 
-    fn streaming_runs(&self) -> Option<&dyn awaken_session_contract::StreamingRunRuntime> {
+    fn streaming_runs(&self) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
         Some(self)
     }
 
-    fn thread_reads(&self) -> Option<&dyn awaken_session_contract::ThreadReadRuntime> {
+    fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
         Some(self)
     }
 
-    fn outcomes(&self) -> Option<&dyn awaken_session_contract::OutcomeRuntime> {
+    fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
         Some(self)
     }
 
-    fn capability(&self) -> Option<&dyn awaken_session_contract::CapabilityRuntime> {
+    fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
         Some(self)
     }
 
-    fn environment(&self) -> Option<&dyn awaken_session_contract::EnvironmentRuntime> {
+    fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
         Some(self)
     }
 
-    fn terminal_cleanup(&self) -> Option<&dyn awaken_session_contract::TerminalCleanupRuntime> {
+    fn terminal_cleanup(
+        &self,
+    ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
         Some(self)
     }
 
-    fn live_inbox(&self) -> Option<&dyn awaken_session_contract::LiveInboxRuntime> {
+    fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
         Some(self)
     }
 }
 
-awaken_session_contract::neutral_role!(EnvironmentRuntime for CoordinatedRuntimeFake);
+awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for CoordinatedRuntimeFake);
 
-awaken_session_contract::neutral_role!(TerminalCleanupRuntime for CoordinatedRuntimeFake);
+awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for CoordinatedRuntimeFake);
 
-awaken_session_contract::neutral_role!(LiveInboxRuntime for CoordinatedRuntimeFake);
+awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for CoordinatedRuntimeFake);
 
 #[async_trait::async_trait]
-impl awaken_session_contract::RealizationRuntime for CoordinatedRuntimeFake {
+impl awaken_session_execution_contract::RealizationRuntime for CoordinatedRuntimeFake {
     fn observe_realization_request(
         &self,
     ) -> Result<
         awaken_runtime_contract::authority_lease::AuthorityProofStarted,
-        awaken_session_contract::RunError,
+        awaken_session_error_contract::RunError,
     > {
         crate::test_support::observe_realization_request()
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Reconcile the existing Runtime projections through the given Control
     /// owner. Local and Worker deployment use one slot-based selection and
     /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
     async fn renew_session_realization_projections(
         &self,
-        control: &dyn awaken_session_contract::SessionRealizationControl,
+        control: &dyn awaken_session_realization_contract::SessionRealizationControl,
         owner: &str,
         runtime_incarnation: &str,
         timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
-    ) -> Result<usize, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+    ) -> Result<usize, awaken_session_error_contract::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Validate the exact provider-effective Sandbox layout without publishing
     /// process-local state or performing provider, cache, Skill, File, Vault,
@@ -849,22 +870,23 @@ impl awaken_session_contract::RealizationRuntime for CoordinatedRuntimeFake {
     fn validate_session_sandbox_layout(
         &self,
         thread: &str,
-        layout: &awaken_session_contract::SessionSandboxLayout,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime.validate_session_sandbox_layout(thread, layout)
+        layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
+            .validate_session_sandbox_layout(thread, layout)
     }
 
     async fn install_session_projection(
         &self,
         thread: &str,
-        projection: awaken_session_contract::FrozenSessionProjection,
-        mode: awaken_session_contract::SessionProjectionInstallMode,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        projection: awaken_session_realization_contract::FrozenSessionProjection,
+        mode: awaken_session_realization_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         complete_session_projection_init(thread, &projection, &mode)?;
         Ok(())
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Install a monotonic same-owner/same-incarnation/same-epoch successor of
     /// an already-installed realization fence. This is the only lease-only
@@ -872,14 +894,14 @@ impl awaken_session_contract::RealizationRuntime for CoordinatedRuntimeFake {
     async fn renew_session_realization_lease(
         &self,
         thread: &str,
-        lease: awaken_session_contract::ObservedSessionRealizationLease,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+        lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
             .renew_session_realization_lease(thread, lease)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Forget one failed realization fence from disposable Runtime state. The
     /// aggregate remains the sole lease authority: this hook only prevents a
@@ -888,64 +910,68 @@ impl awaken_session_contract::RealizationRuntime for CoordinatedRuntimeFake {
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Install the durable callback used at the exact sandbox creation boundary.
     fn install_environment_binding_sink(
         &self,
-        sink: std::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     ) {
-        awaken_session_contract::NeutralRuntime.install_environment_binding_sink(sink)
+        awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
+impl awaken_session_execution_contract::CoordinationRuntime for CoordinatedRuntimeFake {
     async fn reserve_session_run(
         &self,
-        command: awaken_session_contract::AdmitSessionRun,
-    ) -> Result<awaken_session_contract::SessionRunReservation, awaken_session_contract::RunError>
-    {
+        command: awaken_session_execution_contract::AdmitSessionRun,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunReservation,
+        awaken_session_error_contract::RunError,
+    > {
         if self
             .user_run_states
             .lock()
             .unwrap()
             .contains_key(&command.run_id.0)
         {
-            return Ok(awaken_session_contract::SessionRunReservation::Completed);
+            return Ok(awaken_session_execution_contract::SessionRunReservation::Completed);
         }
         let mut reservations = self.reserved_user_runs.lock().unwrap();
         if let Some(existing) = reservations.get(&command.run_id.0) {
             if existing != &command {
-                return Err(awaken_session_contract::RunError::bad_request(
+                return Err(awaken_session_error_contract::RunError::bad_request(
                     "test reservation replay changed its canonical User Run",
                 ));
             }
-            return Ok(awaken_session_contract::SessionRunReservation::AlreadyReserved);
+            return Ok(awaken_session_execution_contract::SessionRunReservation::AlreadyReserved);
         }
         reservations.insert(command.run_id.0.clone(), command);
-        Ok(awaken_session_contract::SessionRunReservation::Reserved)
+        Ok(awaken_session_execution_contract::SessionRunReservation::Reserved)
     }
 
     async fn activate_session_run(
         &self,
-        delivery: awaken_session_contract::SessionRunDelivery,
-    ) -> Result<awaken_session_contract::SessionRunActivation, awaken_session_contract::RunError>
-    {
+        delivery: awaken_session_execution_contract::SessionRunDelivery,
+    ) -> Result<
+        awaken_session_execution_contract::SessionRunActivation,
+        awaken_session_error_contract::RunError,
+    > {
         if self
             .user_run_states
             .lock()
             .unwrap()
             .contains_key(&delivery.run_id.0)
         {
-            return Ok(awaken_session_contract::SessionRunActivation::Completed);
+            return Ok(awaken_session_execution_contract::SessionRunActivation::Completed);
         }
         let command = self
             .reserved_user_runs
@@ -954,12 +980,12 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
             .get(&delivery.run_id.0)
             .cloned()
             .ok_or_else(|| {
-                awaken_session_contract::RunError::bad_request(
+                awaken_session_error_contract::RunError::bad_request(
                     "test activation has no matching User Run reservation",
                 )
             })?;
         if command.session_id != delivery.session_id {
-            return Err(awaken_session_contract::RunError::bad_request(
+            return Err(awaken_session_error_contract::RunError::bad_request(
                 "test activation changed its Session identity",
             ));
         }
@@ -998,19 +1024,21 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
         // The production application already boxes each Event reconciliation.
         // Keep this integration fake's reused legacy Run body behind the same
         // heap boundary so the test does not require a non-default Tokio stack.
-        let outcome = Box::pin(<Self as awaken_session_contract::SessionRuntime>::run(
-            self,
-            &command.agent_id,
-            command.session_id.as_str(),
-            command
-                .messages
-                .last()
-                .map(|message| message.content.clone())
-                .unwrap_or_default(),
-        ))
+        let outcome = Box::pin(
+            <Self as awaken_session_execution_contract::SessionRuntime>::run(
+                self,
+                &command.agent_id,
+                command.session_id.as_str(),
+                command
+                    .messages
+                    .last()
+                    .map(|message| message.content.clone())
+                    .unwrap_or_default(),
+            ),
+        )
         .await?;
         let root_terminal_cursor = if deferred { base + 3 } else { base + 4 };
-        let boundary = awaken_session_contract::SessionAgentBoundaryCommand {
+        let boundary = awaken_session_execution_contract::SessionAgentBoundaryCommand {
             session_id: delivery.session_id.clone(),
             source_thread_id: awaken_agent_contract::agent::thread::Id(String::from(
                 delivery.session_id,
@@ -1047,25 +1075,28 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
             .lock()
             .unwrap()
             .push(boundary);
-        Ok(awaken_session_contract::SessionRunActivation::Activated)
+        Ok(awaken_session_execution_contract::SessionRunActivation::Activated)
     }
 
     async fn activate_and_observe_session_run(
         &self,
-        admission: awaken_session_contract::AdmittedSessionRun,
+        admission: awaken_session_execution_contract::AdmittedSessionRun,
         _input_message_ids: Vec<String>,
         _sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+    ) -> Result<
+        awaken_session_application_contract::StepOutcome,
+        awaken_session_error_contract::RunError,
+    > {
         let run_id = admission.run_id().clone();
         match admission {
-            awaken_session_contract::AdmittedSessionRun::Reserved(delivery)
-            | awaken_session_contract::AdmittedSessionRun::AlreadyReserved(delivery) => {
+            awaken_session_execution_contract::AdmittedSessionRun::Reserved(delivery)
+            | awaken_session_execution_contract::AdmittedSessionRun::AlreadyReserved(delivery) => {
                 let _ = self.activate_session_run(delivery).await?;
             }
-            awaken_session_contract::AdmittedSessionRun::AlreadyActivated(_)
-            | awaken_session_contract::AdmittedSessionRun::Completed { .. } => {}
-            awaken_session_contract::AdmittedSessionRun::RecoveryClaimed { .. } => {
-                return Err(awaken_session_contract::RunError::unavailable(
+            awaken_session_execution_contract::AdmittedSessionRun::AlreadyActivated(_)
+            | awaken_session_execution_contract::AdmittedSessionRun::Completed { .. } => {}
+            awaken_session_execution_contract::AdmittedSessionRun::RecoveryClaimed { .. } => {
+                return Err(awaken_session_error_contract::RunError::unavailable(
                     "test reservation recovery has not completed",
                 ));
             }
@@ -1076,7 +1107,7 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
             .get(&run_id.0)
             .cloned()
             .ok_or_else(|| {
-                awaken_session_contract::RunError::unavailable(
+                awaken_session_error_contract::RunError::unavailable(
                     "test committed Session Run outcome is unavailable",
                 )
             })
@@ -1084,16 +1115,16 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
 
     async fn session_run_state(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
+        _session_id: &awaken_session_types::SessionId,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<
         Option<awaken_agent_contract::agent::run::RunState>,
-        awaken_session_contract::RunError,
+        awaken_session_error_contract::RunError,
     > {
         Ok(self.user_run_states.lock().unwrap().get(&run_id.0).cloned())
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Read the runtime-owned, durable child-Run relationships for `thread`.
     /// Protocol adapters use this only to rebuild disposable projections after a
@@ -1101,13 +1132,16 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
     async fn delegated_runs(
         &self,
         thread: &str,
-    ) -> Result<Vec<awaken_session_contract::DelegatedRun>, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+    ) -> Result<
+        Vec<awaken_session_application_contract::DelegatedRun>,
+        awaken_session_error_contract::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
             .delegated_runs(thread)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Admit one ordinary child Run after the Session application has validated
     /// the frozen roster and lifecycle. Implementations must use their canonical
@@ -1115,34 +1149,34 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
     /// process-local task.
     async fn admit_coordinated_run(
         &self,
-        command: awaken_session_contract::CoordinatedRunCommand,
+        command: awaken_session_execution_contract::CoordinatedRunCommand,
     ) -> Result<
-        awaken_session_contract::SessionAgentMessageReceipt,
-        awaken_session_contract::RunError,
+        awaken_session_execution_contract::SessionAgentMessageReceipt,
+        awaken_session_error_contract::RunError,
     > {
-        awaken_session_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .admit_coordinated_run(command)
             .await
     }
 
     async fn coordinated_threads(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<
-        Vec<awaken_session_contract::CoordinatedThreadLink>,
-        awaken_session_contract::RunError,
+        Vec<awaken_session_execution_contract::CoordinatedThreadLink>,
+        awaken_session_error_contract::RunError,
     > {
         let run_count = self.runs.load(std::sync::atomic::Ordering::SeqCst);
         let operation_id = self.coordination_operation_id.lock().unwrap().clone();
         Ok(operation_id
             .map(
-                |created_by_operation_id| awaken_session_contract::CoordinatedThreadLink {
+                |created_by_operation_id| awaken_session_execution_contract::CoordinatedThreadLink {
                     session_id: session_id.clone(),
                     thread_id: awaken_agent_contract::agent::thread::Id(
                         Self::CHILD_THREAD_ID.into(),
                     ),
-                    target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+                    target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
                         agent_id: "researcher".into(),
                     },
                     created_by_operation_id,
@@ -1157,11 +1191,11 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
 
     async fn subscribe_session_thread_live(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<
-        Option<Box<dyn awaken_session_contract::SessionThreadLiveSubscription>>,
-        awaken_session_contract::RunError,
+        Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
+        awaken_session_error_contract::RunError,
     > {
         if thread_id != session_id && thread_id != Self::CHILD_THREAD_ID {
             return Ok(None);
@@ -1173,36 +1207,36 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
         Ok(Some(Box::new(subscription)))
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Admit one Session-approved child report as immutable input of the
     /// deterministic primary Run. Implementations must not stage a parallel
     /// Outbox/Inbox message for this internal Agent-to-Agent transfer.
     async fn continue_session_agent_report(
         &self,
-        command: awaken_session_contract::SessionAgentReportContinuation,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+        command: awaken_session_execution_contract::SessionAgentReportContinuation,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
             .continue_session_agent_report(command)
             .await
     }
 
     async fn interrupt_session_thread(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         child_thread_id: &awaken_agent_contract::agent::thread::Id,
-    ) -> Result<(), awaken_session_contract::RunError> {
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         let target = format!("child:{session_id}:{}", child_thread_id.0);
         self.interrupts.lock().unwrap().push(target.clone());
         if self.rejected_interrupt.lock().unwrap().as_ref() == Some(&target) {
-            return Err(awaken_session_contract::RunError::unavailable(
+            return Err(awaken_session_error_contract::RunError::unavailable(
                 "injected child interrupt failure",
             ));
         }
         Ok(())
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Read and validate the exact committed Awaiting coordinate that a Primary
     /// or child Thread tool reply intends to answer. The command already carries
@@ -1211,30 +1245,30 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
     /// applying the reply so a concurrent resume or later Run fails closed.
     async fn session_thread_tool_reply_fence(
         &self,
-        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<
-        awaken_session_contract::SessionThreadToolReplyFence,
-        awaken_session_contract::RunError,
+        awaken_session_execution_contract::SessionThreadToolReplyFence,
+        awaken_session_error_contract::RunError,
     > {
-        awaken_session_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .session_thread_tool_reply_fence(command)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Reply to the exact pending tool of a Primary or logical child Thread
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
         &self,
-        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
             .reply_session_thread_tool(delivery)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Foreground form of [`Self::reply_session_thread_tool`]. The durable
     /// reply ingress remains identical; implementations additionally register
@@ -1242,43 +1276,48 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
     /// truth. No inline executor is authorized by this observation policy.
     async fn reply_and_observe_session_thread_tool(
         &self,
-        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+        delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+    ) -> Result<
+        awaken_session_application_contract::StepOutcome,
+        awaken_session_error_contract::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
             .reply_and_observe_session_thread_tool(delivery)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Stop the parent Run, wait until it can no longer commit a delegation, and
     /// then read the complete child set from durable runtime authority.
     async fn quiesce_terminal_delegations(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, awaken_session_contract::RunError>
-    {
+    ) -> Result<
+        awaken_session_application_contract::DelegatedRunSnapshot,
+        awaken_session_error_contract::RunError,
+    > {
         self.streaming_runs()
             .ok_or_else(|| {
-                awaken_session_contract::RunError::unavailable(
+                awaken_session_error_contract::RunError::unavailable(
                     "StreamingRunRuntime is unsupported by this runtime",
                 )
             })?
             .interrupt(thread)
             .await?;
-        Ok(awaken_session_contract::DelegatedRunSnapshot {
+        Ok(awaken_session_application_contract::DelegatedRunSnapshot {
             delegated_runs: self.delegated_runs(thread).await?,
             coordinated_thread_ids: Vec::new(),
             watermark: 0,
             runtime_commit_cursor: self
                 .thread_reads()
                 .ok_or_else(|| {
-                    awaken_session_contract::RunError::unavailable(
+                    awaken_session_error_contract::RunError::unavailable(
                         "ThreadReadRuntime is unsupported by this runtime",
                     )
                 })?
                 .session_thread_recovery_snapshot(
-                    &awaken_session_contract::SessionId::from(thread),
+                    &awaken_session_types::SessionId::from(thread),
                     thread,
                 )
                 .await?
@@ -1287,7 +1326,7 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
         })
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Validate one model-facing Agent command against the source Run's exact
     /// committed `ActiveToolBatch`. Implementations must use the same atomic
@@ -1300,49 +1339,49 @@ impl awaken_session_contract::CoordinationRuntime for CoordinatedRuntimeFake {
     /// command source.
     async fn validate_session_agent_message_source(
         &self,
-        command: &awaken_session_contract::SessionAgentMessageCommand,
+        command: &awaken_session_execution_contract::SessionAgentMessageCommand,
     ) -> Result<
-        awaken_session_contract::SessionAgentMessageCommand,
-        awaken_session_contract::RunError,
+        awaken_session_execution_contract::SessionAgentMessageCommand,
+        awaken_session_error_contract::RunError,
     > {
-        awaken_session_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .validate_session_agent_message_source(command)
             .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::BudgetRuntime for CoordinatedRuntimeFake {
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+impl awaken_session_execution_contract::BudgetRuntime for CoordinatedRuntimeFake {
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Resume an exact `BudgetReached` ticket without injecting transcript
     /// content. Implementations reuse the foreground Run driver or the existing
     /// durable dispatch row; they must not enqueue a replacement Run.
     async fn resume_budget_reached(
         &self,
-        delivery: awaken_session_contract::SessionBudgetResumeDelivery,
+        delivery: awaken_session_application_contract::SessionBudgetResumeDelivery,
     ) -> Result<
-        awaken_session_contract::SessionBudgetResumeDisposition,
-        awaken_session_contract::RunError,
+        awaken_session_application_contract::SessionBudgetResumeDisposition,
+        awaken_session_error_contract::RunError,
     > {
-        awaken_session_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .resume_budget_reached(delivery)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Discover current budget-paused continuations from committed Run tickets
     /// and existing Session-affine dispatch rows. This is a recovery query over
     /// those authorities, never a pause registry.
     async fn session_budget_resume_tickets(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<
-        Vec<awaken_session_contract::SessionBudgetResumeTicket>,
-        awaken_session_contract::RunError,
+        Vec<awaken_session_application_contract::SessionBudgetResumeTicket>,
+        awaken_session_error_contract::RunError,
     > {
-        awaken_session_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .session_budget_resume_tickets(session_id)
             .await
     }
@@ -1350,26 +1389,32 @@ impl awaken_session_contract::BudgetRuntime for CoordinatedRuntimeFake {
     async fn session_usage(
         &self,
         thread: &str,
-    ) -> Result<awaken_session_contract::SessionUsage, awaken_session_contract::RunError> {
-        Ok(awaken_session_contract::session_usage_from_thread_usage(
-            Self::committed_usage(thread),
-        ))
+    ) -> Result<awaken_session_budget_contract::SessionUsage, awaken_session_error_contract::RunError>
+    {
+        Ok(
+            awaken_session_application_contract::session_usage_from_thread_usage(
+                Self::committed_usage(thread),
+            ),
+        )
     }
 
     async fn session_thread_usage(
         &self,
-        _session_id: &awaken_session_contract::SessionId,
+        _session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_session_contract::SessionUsage, awaken_session_contract::RunError> {
-        Ok(awaken_session_contract::session_usage_from_thread_usage(
-            Self::committed_usage(thread_id),
-        ))
+    ) -> Result<awaken_session_budget_contract::SessionUsage, awaken_session_error_contract::RunError>
+    {
+        Ok(
+            awaken_session_application_contract::session_usage_from_thread_usage(
+                Self::committed_usage(thread_id),
+            ),
+        )
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::StreamingRunRuntime for CoordinatedRuntimeFake {
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+impl awaken_session_execution_contract::StreamingRunRuntime for CoordinatedRuntimeFake {
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one request with its protocol-projected, backend-neutral content
     /// owner. Adapters that do not support attributed capture may use the
@@ -1381,15 +1426,18 @@ impl awaken_session_contract::StreamingRunRuntime for CoordinatedRuntimeFake {
         thread: &str,
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _data_subject_id: Option<String>,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+    ) -> Result<
+        awaken_session_application_contract::StepOutcome,
+        awaken_session_error_contract::RunError,
+    > {
         self.run(agent, thread, content).await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Run one user request, installing `sink` as the Run's best-effort live-progress
     /// channel so the adapter can project in-flight `stream::Kind` into
-    /// `event_start`/`event_delta` previews. The committed [`awaken_session_contract::StepOutcome`] is
+    /// `event_start`/`event_delta` previews. The committed [`awaken_session_application_contract::StepOutcome`] is
     /// identical to [`run`](Self::run) — the sink only mirrors in-flight events. The
     /// default ignores the sink and delegates to `run`, so a host without a
     /// streaming path (or a test double) is unaffected.
@@ -1399,11 +1447,14 @@ impl awaken_session_contract::StreamingRunRuntime for CoordinatedRuntimeFake {
         thread: &str,
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+    ) -> Result<
+        awaken_session_application_contract::StepOutcome,
+        awaken_session_error_contract::RunError,
+    > {
         self.run(agent, thread, content).await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Streaming counterpart of [`run_attributed`](Self::run_attributed).
     async fn run_streaming_attributed(
@@ -1413,22 +1464,25 @@ impl awaken_session_contract::StreamingRunRuntime for CoordinatedRuntimeFake {
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _data_subject_id: Option<String>,
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+    ) -> Result<
+        awaken_session_application_contract::StepOutcome,
+        awaken_session_error_contract::RunError,
+    > {
         self.run_streaming(agent, thread, content, sink).await
     }
 
-    async fn interrupt(&self, thread: &str) -> Result<(), awaken_session_contract::RunError> {
+    async fn interrupt(&self, thread: &str) -> Result<(), awaken_session_error_contract::RunError> {
         let target = format!("primary:{thread}");
         self.interrupts.lock().unwrap().push(target.clone());
         if self.rejected_interrupt.lock().unwrap().as_ref() == Some(&target) {
-            return Err(awaken_session_contract::RunError::unavailable(
+            return Err(awaken_session_error_contract::RunError::unavailable(
                 "injected primary interrupt failure",
             ));
         }
         Ok(())
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Rebind `thread` to `model` for its subsequent Runs (R5, per-Run override).
     /// The default is a no-op, so a host without per-thread model routing is
@@ -1438,24 +1492,24 @@ impl awaken_session_contract::StreamingRunRuntime for CoordinatedRuntimeFake {
         &self,
         thread: &str,
         model: &str,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+    ) -> Result<(), awaken_session_error_contract::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
             .rebind_model(thread, model)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Whether the thread's selected model accepts a system message after the
     /// conversation has started. Runtimes whose models do not support this can
     /// fail admission before the Managed adapter persists the inbound event.
     async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
-        awaken_session_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .supports_mid_conversation_system(thread)
             .await
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// The tool currently blocking `thread`, if any. Admission uses this
     /// read-only projection to reject events that cannot legally precede the
@@ -1463,24 +1517,30 @@ impl awaken_session_contract::StreamingRunRuntime for CoordinatedRuntimeFake {
     async fn pending_tool(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_contract::Pending>, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+    ) -> Result<
+        Option<awaken_session_application_contract::Pending>,
+        awaken_session_error_contract::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
             .pending_tool(thread)
             .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+impl awaken_session_execution_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// True when durable truth already exists for `thread`. Session-id minting
     /// consults this to skip ids a previous process persisted; implementations
     /// MUST answer without materializing any per-thread state (no context
     /// build, no cache entry) — probing must be free of side effects. The
     /// default reports nothing, so an ephemeral host mints densely from 0.
-    async fn owns_thread(&self, thread: &str) -> Result<bool, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+    async fn owns_thread(
+        &self,
+        thread: &str,
+    ) -> Result<bool, awaken_session_error_contract::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
             .owns_thread(thread)
             .await
     }
@@ -1490,18 +1550,18 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
         _thread: &str,
     ) -> Result<
         Vec<awaken_agent_contract::agent::message::Message>,
-        awaken_session_contract::RunError,
+        awaken_session_error_contract::RunError,
     > {
         Ok(self.root_messages.lock().unwrap().clone())
     }
 
     async fn session_thread_recovery_snapshot(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-        awaken_session_contract::RunError,
+        awaken_session_error_contract::RunError,
     > {
         let run_count = self.runs.load(std::sync::atomic::Ordering::SeqCst);
         if run_count == 0 {
@@ -1603,7 +1663,7 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
         ))
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Read one exact committed Run through the same internally consistent
     /// logical-Thread prefix. Settlement already owns the immutable Run id from
@@ -1616,12 +1676,12 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
     /// directly by `run_id`.
     async fn session_thread_run_recovery_snapshot(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-        awaken_session_contract::RunError,
+        awaken_session_error_contract::RunError,
     > {
         let Some(mut snapshot) = self
             .session_thread_recovery_snapshot(session_id, thread_id)
@@ -1638,9 +1698,10 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
 
     async fn session_thread_disposition(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_session_contract::RunError> {
+    ) -> Result<awaken_agent_contract::ThreadDisposition, awaken_session_error_contract::RunError>
+    {
         Ok(self
             .disposition_by_thread
             .lock()
@@ -1652,14 +1713,14 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
 
     async fn archive_session_thread(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         thread_id: &str,
-    ) -> Result<(), awaken_session_contract::RunError> {
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         if self
             .reject_archive
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            return Err(awaken_session_contract::RunError::internal(
+            return Err(awaken_session_error_contract::RunError::internal(
                 "archive disposition commit failed",
             ));
         }
@@ -1707,7 +1768,9 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
         .unwrap_or_default()
         .checked_add(1)
         .ok_or_else(|| {
-            awaken_session_contract::RunError::internal("test disposition commit cursor exhausted")
+            awaken_session_error_contract::RunError::internal(
+                "test disposition commit cursor exhausted",
+            )
         })?;
         let mut dispositions = self.disposition_by_thread.lock().unwrap();
         let mut disposition_cursors = self.disposition_commit_cursors.lock().unwrap();
@@ -1722,29 +1785,29 @@ impl awaken_session_contract::ThreadReadRuntime for CoordinatedRuntimeFake {
         Ok(())
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Read one exact terminal Outcome projection from committed Thread truth.
     /// `None` means the id is absent or still active. Implementations must not
     /// resume the Outcome or reconstruct a terminal from an in-process
-    /// [`awaken_session_contract::StepOutcome`].
+    /// [`awaken_session_application_contract::StepOutcome`].
     async fn committed_outcome_projection(
         &self,
         thread: &str,
         outcome_id: &str,
     ) -> Result<
-        Option<awaken_session_contract::CommittedOutcomeProjection>,
-        awaken_session_contract::RunError,
+        Option<awaken_session_execution_contract::CommittedOutcomeProjection>,
+        awaken_session_error_contract::RunError,
     > {
-        awaken_session_contract::NeutralRuntime
+        awaken_session_execution_contract::NeutralRuntime
             .committed_outcome_projection(thread, outcome_id)
             .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::OutcomeRuntime for CoordinatedRuntimeFake {
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+impl awaken_session_execution_contract::OutcomeRuntime for CoordinatedRuntimeFake {
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
     /// The opaque id is supplied by the application command so crash replay and
@@ -1756,8 +1819,8 @@ impl awaken_session_contract::OutcomeRuntime for CoordinatedRuntimeFake {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<u64, awaken_session_contract::RunError> {
-        awaken_session_contract::NeutralRuntime
+    ) -> Result<u64, awaken_session_error_contract::RunError> {
+        awaken_session_execution_contract::NeutralRuntime
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
             .await
     }
@@ -1768,11 +1831,14 @@ impl awaken_session_contract::OutcomeRuntime for CoordinatedRuntimeFake {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<awaken_session_contract::OutcomeDrive, awaken_session_contract::RunError> {
+    ) -> Result<
+        awaken_session_execution_contract::OutcomeDrive,
+        awaken_session_error_contract::RunError,
+    > {
         unreachable!()
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// Continue the active Outcome after the ordinary Run resume has committed.
     /// `None` proves there is no active aggregate; implementations must rebuild
@@ -1780,29 +1846,34 @@ impl awaken_session_contract::OutcomeRuntime for CoordinatedRuntimeFake {
     async fn continue_outcome(
         &self,
         thread: &str,
-    ) -> Result<Option<awaken_session_contract::OutcomeDrive>, awaken_session_contract::RunError>
-    {
-        awaken_session_contract::NeutralRuntime
+    ) -> Result<
+        Option<awaken_session_execution_contract::OutcomeDrive>,
+        awaken_session_error_contract::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
             .continue_outcome(thread)
             .await
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::CapabilityRuntime for CoordinatedRuntimeFake {
-    fn capabilities(&self) -> awaken_session_contract::AgentCapabilities {
-        awaken_session_contract::AgentCapabilities {
+impl awaken_session_execution_contract::CapabilityRuntime for CoordinatedRuntimeFake {
+    fn capabilities(&self) -> awaken_session_configuration_contract::AgentCapabilities {
+        awaken_session_configuration_contract::AgentCapabilities {
             delegates: vec!["researcher".into()],
             ..Default::default()
         }
     }
 
-    // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
     /// The capability surface visible to one prepared session. Runtimes whose
     /// catalogs are workspace-scoped override this; simple runtimes inherit the
     /// process-wide view for backwards compatibility.
-    fn capabilities_for(&self, _thread: &str) -> awaken_session_contract::AgentCapabilities {
+    fn capabilities_for(
+        &self,
+        _thread: &str,
+    ) -> awaken_session_configuration_contract::AgentCapabilities {
         self.capabilities()
     }
 }

@@ -5,27 +5,33 @@
 //! APIs, so `RunClaim` never enters the durable Session aggregate.
 
 use crate::RunClaim;
-use awaken_session_contract::{
+use awaken_session_realization_contract::{SessionRealizationControl, SessionRealizationDirective};
+use awaken_session_execution_contract::{
     SessionAgentBoundaryCommand, SessionAgentMessageCommand, SessionAgentMessageReceipt,
-    SessionAgentRosterEntry, SessionRealizationControl, SessionRealizationDirective,
-    SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
+    SessionAgentRosterEntry, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
 
 /// Failure crossing the authenticated claim-fenced Session-control boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("claimed Session control failed: {0}")]
-pub struct ClaimedSessionControlError(awaken_session_contract::SessionRealizationControlFailure);
+pub struct ClaimedSessionControlError(
+    awaken_session_realization_contract::SessionRealizationControlFailure,
+);
 
 impl ClaimedSessionControlError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self(awaken_session_contract::SessionRealizationControlFailure::Unavailable(message.into()))
+        Self(
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                message.into(),
+            ),
+        )
     }
 
     #[must_use]
     pub const fn disposition(
         &self,
-    ) -> awaken_session_contract::SessionRealizationControlDisposition {
+    ) -> awaken_session_realization_contract::SessionRealizationControlDisposition {
         self.0.disposition()
     }
 
@@ -33,15 +39,15 @@ impl ClaimedSessionControlError {
     pub const fn is_not_ready(&self) -> bool {
         matches!(
             self.disposition(),
-            awaken_session_contract::SessionRealizationControlDisposition::NotReady
+            awaken_session_realization_contract::SessionRealizationControlDisposition::NotReady
         )
     }
 }
 
-impl From<awaken_session_contract::SessionRealizationControlFailure>
+impl From<awaken_session_realization_contract::SessionRealizationControlFailure>
     for ClaimedSessionControlError
 {
-    fn from(error: awaken_session_contract::SessionRealizationControlFailure) -> Self {
+    fn from(error: awaken_session_realization_contract::SessionRealizationControlFailure) -> Self {
         Self(error)
     }
 }
@@ -57,10 +63,8 @@ pub trait ClaimedSessionRealizationControl: SessionRealizationControl + Send + S
         &self,
         claim: &RunClaim,
         session_id: &str,
-        session_work_authority: Option<
-            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
-        >,
-        continuation: Option<&awaken_session_contract::SessionRealizationLease>,
+        session_work_authority: Option<&awaken_session_work_contract::SessionWorkAuthorityReceipt>,
+        continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<Option<SessionRealizationDirective>, ClaimedSessionControlError>;
 }
 

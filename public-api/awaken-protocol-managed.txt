@@ -9,16 +9,16 @@ pub awaken_protocol_managed::project::ProjectedEvent::id: core::option::Option<a
 pub awaken_protocol_managed::project::ProjectedEvent::kind: awaken_protocol_managed::types::OutboundKind
 pub awaken_protocol_managed::project::ProjectedEvent::source_tool_call_id: core::option::Option<alloc::string::String>
 pub fn awaken_protocol_managed::project::agent_client_tools(&[awaken_agent_contract::toolset::ClientToolDescriptor]) -> core::result::Result<alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>, alloc::string::String>
-pub fn awaken_protocol_managed::project::agent_multiagent(&awaken_session_contract::session::AgentCapabilities) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
+pub fn awaken_protocol_managed::project::agent_multiagent(&awaken_session_configuration_contract::tool_configuration::AgentCapabilities) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
 pub fn awaken_protocol_managed::project::agent_multiagent_ids(&[alloc::string::String]) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
-pub fn awaken_protocol_managed::project::agent_skills(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
-pub fn awaken_protocol_managed::project::agent_tools(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
-pub fn awaken_protocol_managed::project::managed_tools(&awaken_session_contract::tool_configuration::SessionToolConfiguration) -> alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
-pub fn awaken_protocol_managed::project::outcome_evaluation(&awaken_session_contract::session::OutcomeIteration) -> awaken_protocol_managed::types::OutcomeEvaluation
-pub fn awaken_protocol_managed::project::project_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<&awaken_session_contract::session::pending::Pending>) -> alloc::vec::Vec<awaken_protocol_managed::project::ProjectedEvent>
+pub fn awaken_protocol_managed::project::agent_skills(&awaken_session_configuration_contract::tool_configuration::AgentCapabilities) -> alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
+pub fn awaken_protocol_managed::project::agent_tools(&awaken_session_configuration_contract::tool_configuration::AgentCapabilities) -> alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
+pub fn awaken_protocol_managed::project::managed_tools(&awaken_session_configuration_contract::tool_configuration::SessionToolConfiguration) -> alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
+pub fn awaken_protocol_managed::project::outcome_evaluation(&awaken_session_execution_contract::session::OutcomeIteration) -> awaken_protocol_managed::types::OutcomeEvaluation
+pub fn awaken_protocol_managed::project::project_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<&awaken_session_application_contract::pending::Pending>) -> alloc::vec::Vec<awaken_protocol_managed::project::ProjectedEvent>
 pub fn awaken_protocol_managed::project::resolved_tools(&[awaken_session_configuration_contract::agent_config::AgentTool]) -> alloc::vec::Vec<awaken_session_configuration_contract::agent_config::AgentTool>
-pub fn awaken_protocol_managed::project::session_tool_configuration(&[awaken_session_configuration_contract::agent_config::AgentTool]) -> awaken_session_contract::tool_configuration::SessionToolConfiguration
-pub fn awaken_protocol_managed::project::validate_custom_tool(&awaken_session_contract::session::CustomTool) -> core::result::Result<(), alloc::string::String>
+pub fn awaken_protocol_managed::project::session_tool_configuration(&[awaken_session_configuration_contract::agent_config::AgentTool]) -> awaken_session_configuration_contract::tool_configuration::SessionToolConfiguration
+pub fn awaken_protocol_managed::project::validate_custom_tool(&awaken_session_configuration_contract::tool_configuration::CustomTool) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_protocol_managed::types
 pub mod awaken_protocol_managed::types::agent
 pub enum awaken_protocol_managed::types::agent::AdvisorRosterEntryKind
@@ -1928,13 +1928,13 @@ pub enum awaken_protocol_managed::StateError
 pub awaken_protocol_managed::StateError::Archived
 pub awaken_protocol_managed::StateError::Conflict
 pub awaken_protocol_managed::StateError::IdempotencyMismatch
-pub awaken_protocol_managed::StateError::LiveInbox(awaken_session_contract::session::LiveInboxError)
+pub awaken_protocol_managed::StateError::LiveInbox(awaken_session_execution_contract::session::LiveInboxError)
 pub awaken_protocol_managed::StateError::NotFound
-pub awaken_protocol_managed::StateError::Run(awaken_session_contract::session::RunError)
+pub awaken_protocol_managed::StateError::Run(awaken_session_error_contract::RunError)
 pub awaken_protocol_managed::StateError::TerminalCreateConflict
 pub awaken_protocol_managed::StateError::VaultNotFound(alloc::string::String)
-impl core::convert::From<awaken_session_contract::session_repo::mutation::SessionRepositoryError> for awaken_protocol_managed::StateError
-pub fn awaken_protocol_managed::StateError::from(awaken_session_contract::session_repo::mutation::SessionRepositoryError) -> Self
+impl core::convert::From<awaken_session_state_contract::session_repo::mutation::SessionRepositoryError> for awaken_protocol_managed::StateError
+pub fn awaken_protocol_managed::StateError::from(awaken_session_state_contract::session_repo::mutation::SessionRepositoryError) -> Self
 pub struct awaken_protocol_managed::AgentRegistryState
 impl awaken_protocol_managed::AgentRegistryState
 pub fn awaken_protocol_managed::AgentRegistryState::from_repository(alloc::sync::Arc<dyn awaken_protocol_managed::ManagedAgentRepository>) -> Self
@@ -1959,8 +1959,8 @@ pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::launch<'life0,
 pub struct awaken_protocol_managed::ManagedLifecycleFactDelivery
 impl awaken_protocol_managed::ManagedLifecycleFactDelivery
 pub fn awaken_protocol_managed::ManagedLifecycleFactDelivery::new(&alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> Self
-impl awaken_session_contract::lifecycle::LifecycleFactDelivery for awaken_protocol_managed::ManagedLifecycleFactDelivery
-pub fn awaken_protocol_managed::ManagedLifecycleFactDelivery::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_session_application_contract::lifecycle_delivery::LifecycleFactDelivery for awaken_protocol_managed::ManagedLifecycleFactDelivery
+pub fn awaken_protocol_managed::ManagedLifecycleFactDelivery::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_state_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_protocol_managed::ManagedRateLimitDecision
 pub awaken_protocol_managed::ManagedRateLimitDecision::allowed: bool
 pub awaken_protocol_managed::ManagedRateLimitDecision::limit: u32

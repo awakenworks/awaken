@@ -14,21 +14,21 @@ import sys
 # Pinned nightly-2026-05-01 / Kani 0.67 std loop identities. No shell expansion.
 ACTIVITY_HEIGHT_LOOPS = (
     # navigate.rs:465
-    ('_RINvMsj_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingyNtNtB8_7set_val9SetValZSTNtB1z_4LeafENtB1z_4EdgeE17deallocating_nextNtNtBc_5alloc6GlobalECseln4KG8PkwO_23awaken_session_contract.0', 1),
+    ('_RINvMsj_NtNtNtCs6NSMbdZCE7r_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingyNtNtB8_7set_val9SetValZSTNtB1z_4LeafENtB1z_4EdgeE17deallocating_nextNtNtBc_5alloc6GlobalECsaNb1NCWtnRw_29awaken_session_state_contract.0', 1),
     # search.rs:57
-    ('_RINvMs_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree6searchINtNtB7_4node7NodeRefNtNtBY_6marker3MutyNtNtB7_7set_val9SetValZSTNtB1i_14LeafOrInternalE11search_treeyECseln4KG8PkwO_23awaken_session_contract.0', 1),
+    ('_RINvMs_NtNtNtCs6NSMbdZCE7r_5alloc11collections5btree6searchINtNtB7_4node7NodeRefNtNtBY_6marker3MutyNtNtB7_7set_val9SetValZSTNtB1i_14LeafOrInternalE11search_treeyECsaNb1NCWtnRw_29awaken_session_state_contract.0', 1),
     # node.rs:558
-    ('_RINvMsp_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree4nodeINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1a_8InternalE30correct_childrens_parent_linksINtNtNtCsjxLPRqQEPX2_4core3ops5range5RangejEECseln4KG8PkwO_23awaken_session_contract.0', 1),
+    ('_RINvMsp_NtNtNtCs6NSMbdZCE7r_5alloc11collections5btree4nodeINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1a_8InternalE30correct_childrens_parent_linksINtNtNtCsci0VKyKEi6N_4core3ops5range5RangejEECsaNb1NCWtnRw_29awaken_session_state_contract.0', 1),
     # navigate.rs:518
-    ('_RINvMsj_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingyNtNtB8_7set_val9SetValZSTNtB1z_4LeafENtB1z_4EdgeE16deallocating_endNtNtBc_5alloc6GlobalECseln4KG8PkwO_23awaken_session_contract.0', 1),
+    ('_RINvMsj_NtNtNtCs6NSMbdZCE7r_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingyNtNtB8_7set_val9SetValZSTNtB1z_4LeafENtB1z_4EdgeE16deallocating_endNtNtBc_5alloc6GlobalECsaNb1NCWtnRw_29awaken_session_state_contract.0', 1),
     # node.rs:558
-    ('_RINvMsp_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree4nodeINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1a_8InternalE30correct_childrens_parent_linksINtNtNtCsjxLPRqQEPX2_4core3ops5range14RangeInclusivejEECseln4KG8PkwO_23awaken_session_contract.0', 1),
+    ('_RINvMsp_NtNtNtCs6NSMbdZCE7r_5alloc11collections5btree4nodeINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1a_8InternalE30correct_childrens_parent_linksINtNtNtCsci0VKyKEi6N_4core3ops5range14RangeInclusivejEECsaNb1NCWtnRw_29awaken_session_state_contract.0', 1),
     # node.rs:1072
-    ('_RINvMsN_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree4nodeINtB6_6HandleINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1n_4LeafENtB1n_4EdgeE16insert_recursingNtNtBc_5alloc6GlobalNCNvMs6_NtNtB8_3map5entryINtB3b_11VacantEntryyB1E_E12insert_entry0ECseln4KG8PkwO_23awaken_session_contract.0', 1),
+    ('_RINvMsN_NtNtNtCs6NSMbdZCE7r_5alloc11collections5btree4nodeINtB6_6HandleINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1n_4LeafENtB1n_4EdgeE16insert_recursingNtNtBc_5alloc6GlobalNCNvMs6_NtNtB8_3map5entryINtB3b_11VacantEntryyB1E_E12insert_entry0ECsaNb1NCWtnRw_29awaken_session_state_contract.0', 1),
     # navigate.rs:634
-    ('_RNvMsn_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB7_4node7NodeRefNtNtB10_6marker5DyingyNtNtB7_7set_val9SetValZSTNtB1k_14LeafOrInternalE15first_leaf_edgeCseln4KG8PkwO_23awaken_session_contract.0', 1),
+    ('_RNvMsn_NtNtNtCs6NSMbdZCE7r_5alloc11collections5btree8navigateINtNtB7_4node7NodeRefNtNtB10_6marker5DyingyNtNtB7_7set_val9SetValZSTNtB1k_14LeafOrInternalE15first_leaf_edgeCsaNb1NCWtnRw_29awaken_session_state_contract.0', 1),
     # search.rs:57
-    ('_RINvMs_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree6searchINtNtB7_4node7NodeRefNtNtBY_6marker5ImmutyNtNtB7_7set_val9SetValZSTNtB1i_14LeafOrInternalE11search_treeyECseln4KG8PkwO_23awaken_session_contract.0', 1),
+    ('_RINvMs_NtNtNtCs6NSMbdZCE7r_5alloc11collections5btree6searchINtNtB7_4node7NodeRefNtNtBY_6marker5ImmutyNtNtB7_7set_val9SetValZSTNtB1i_14LeafOrInternalE11search_treeyECsaNb1NCWtnRw_29awaken_session_state_contract.0', 1),
 )
 
 # One pinned UTF-8 loop catalog for the canonical fixed-width encoder. The
@@ -137,7 +137,7 @@ PROFILES = {
         "cadical",
     ),
     "activity-admission-height-v1": (
-        "awaken-session-contract",
+        "awaken-session-state-contract",
         frozenset({
             "activity_next_epoch_inserts_exact_checked_successor",
             "activity_exact_epoch_inserts_only_fresh_positive_member",
@@ -146,13 +146,13 @@ PROFILES = {
         None,
     ),
     "activity-terminal-height-v1": (
-        "awaken-session-contract",
+        "awaken-session-state-contract",
         frozenset({"activity_terminal_transition_clears_one_real_member"}),
         ACTIVITY_HEIGHT_LOOPS[:7],
         None,
     ),
     "retained-accepted-two-replay-v1": (
-        "awaken-session-contract",
+        "awaken-session-application-contract",
         frozenset({"deleted_admission_one_retained_accepted_two_27"}),
         (
             ("memcmp.0", 2),

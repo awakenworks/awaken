@@ -13,7 +13,7 @@ authority = "run-ingress"
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-dispatch-contract = { workspace = true }
-awaken-session-contract.workspace = true
+awaken-session-execution-contract.workspace = true
 awaken-runtime = { workspace = true }
 # W3C traceparent capture (submit) + `wake.dispatch` span (worker) so a durably
 # dispatched run continues the admitting request's trace across the queue boundary.

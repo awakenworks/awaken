@@ -1,11 +1,12 @@
-use awaken_session_contract::LifecycleOutbox as _;
+use awaken_session_repository_contract::LifecycleOutbox as _;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use awaken_reliability_testkit::CrashProcess;
-use awaken_session_contract::{
+use awaken_session_repository_contract::SessionRepository;
+use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionExecutionState,
-    SessionMutationPayload, SessionRepository,
+    SessionMutationPayload,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -18,17 +19,19 @@ fn session() -> PersistedSession {
         awaken_credential_contract::PlaintextBoundary::Worker,
         "awaken.worker",
     );
-    let environment = awaken_session_contract::EnvironmentSnapshot {
+    let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "env".into(),
-        revision: awaken_session_contract::EnvironmentRevision(1),
+        revision: awaken_environment_contract::EnvironmentRevision(1),
         self_hosted: false,
-        config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
+        config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+            "env-1".into(),
+        ),
         sandbox: Default::default(),
         sandbox_provisioning: Default::default(),
         idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,
-        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
         credential_realization: awaken_credential_contract::CredentialRealizationProfile {
             inference_holder: holder.clone(),
             mcp_holder: holder.clone(),
@@ -40,11 +43,12 @@ fn session() -> PersistedSession {
         updated_at_unix_ms: None,
         session_id: "sesn_process_crash".into(),
         revision: Default::default(),
-        baseline: awaken_session_contract::SessionBaselineState::Frozen(
-            awaken_session_contract::SessionBaseline::compile(
-                awaken_session_contract::SessionBaselineInputs {
+        baseline: awaken_session_configuration_contract::SessionBaselineState::Frozen(
+            awaken_session_configuration_contract::SessionBaseline::compile(
+                awaken_session_configuration_contract::SessionBaselineInputs {
                     environment,
-                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+                    runtime_placement:
+                        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
                     mcp_authoring: Default::default(),
                     agent_id: "assistant".into(),
                     agent_revision: None,
@@ -141,12 +145,10 @@ async fn session_commit_survives_process_kill_before_notification() {
 
     let repo = SqliteManagedSessionRepository::open(db.to_str().unwrap()).unwrap();
     let mut expected = session();
-    expected.revision = awaken_session_contract::SessionRevision(1);
+    expected.revision = awaken_session_types::SessionRevision(1);
     assert_eq!(
-        repo.get(&awaken_session_contract::SessionId::from(
-            "sesn_process_crash"
-        ))
-        .await,
+        repo.get(&awaken_session_types::SessionId::from("sesn_process_crash"))
+            .await,
         Ok(expected)
     );
     assert_eq!(repo.pending_lifecycle().await.unwrap(), vec![fact()]);

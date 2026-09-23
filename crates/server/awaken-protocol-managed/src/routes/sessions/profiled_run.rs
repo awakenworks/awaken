@@ -13,7 +13,7 @@ use crate::state::{ManagedState, RunError, StateError};
 fn exact_receipt(
     session_id: &str,
     run_id: &awaken_agent_contract::agent::run::Id,
-    admitted: &awaken_session_contract::AdmittedSessionRun,
+    admitted: &awaken_session_execution_contract::AdmittedSessionRun,
 ) -> Result<awaken_protocol_awaken::ProfiledSessionRunReceipt, WireErr> {
     if admitted.session_id() != session_id || admitted.run_id() != run_id {
         return Err(error_response(StateError::Run(RunError::internal(
@@ -63,8 +63,8 @@ pub async fn submit_profiled_session_run(
     let run_id = body.run_id.clone();
     let admitted = Box::pin(application.admit_session_run_for_owner(
         &owner_scope,
-        awaken_session_contract::AdmitSessionRun {
-            session_id: awaken_session_contract::SessionId::from(&id),
+        awaken_session_execution_contract::AdmitSessionRun {
+            session_id: awaken_session_types::SessionId::from(&id),
             agent_id: body.agent_id,
             operation_id: body.operation_id,
             run_id: body.run_id,
@@ -72,7 +72,7 @@ pub async fn submit_profiled_session_run(
             data_subject_id: None,
             traceparent: None,
             execution_requirements: body.execution_requirements,
-            replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
+            replacement: awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
         },
     ))
     .await
@@ -99,7 +99,7 @@ mod tests {
         // E2 C2 is a typed 500 before the caller can pass admission to
         // activation. Rules R1=C1=>E1 and R8=C2=>E2.
         let run_id = awaken_agent_contract::agent::run::Id("run-1".into());
-        let exact = awaken_session_contract::AdmittedSessionRun::Completed {
+        let exact = awaken_session_execution_contract::AdmittedSessionRun::Completed {
             session_id: "session-1".into(),
             run_id: run_id.clone(),
         };
@@ -111,13 +111,13 @@ mod tests {
             },
             "R1/E1"
         );
-        let changed = awaken_session_contract::AdmittedSessionRun::Completed {
+        let changed = awaken_session_execution_contract::AdmittedSessionRun::Completed {
             session_id: "other-session".into(),
             run_id: run_id.clone(),
         };
         let (status, _) = exact_receipt("session-1", &run_id, &changed).unwrap_err();
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "R8/E2 Session");
-        let changed = awaken_session_contract::AdmittedSessionRun::Completed {
+        let changed = awaken_session_execution_contract::AdmittedSessionRun::Completed {
             session_id: "session-1".into(),
             run_id: awaken_agent_contract::agent::run::Id("other-run".into()),
         };

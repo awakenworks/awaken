@@ -8,7 +8,7 @@
 
 use awaken_agent_contract::RedactedString;
 use awaken_iam_core::{EntropySource, OsEntropy};
-use awaken_session_contract::work_queue::SessionAccessDigest;
+use awaken_session_work_contract::SessionAccessDigest;
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 

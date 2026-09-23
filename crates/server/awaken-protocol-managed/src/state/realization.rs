@@ -1,7 +1,8 @@
 //! Managed wire-cache coordination around the Session application realization owner.
 
 use super::*;
-use awaken_session_contract::{RunError, SessionRealizationControlFailure};
+use awaken_session_error_contract::RunError;
+use awaken_session_realization_contract::SessionRealizationControlFailure;
 
 impl ManagedState {
     fn map_realization_failure(error: SessionRealizationControlFailure) -> StateError {
@@ -41,15 +42,23 @@ mod tests {
     use awaken_credential_contract::{
         CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
     };
-    use awaken_session_contract::{
-        AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-        EnvironmentFingerprint, EnvironmentSnapshot, FailSessionRealization, IdempotencyRecord,
-        McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpGenerationRef,
-        McpRealizationReceipt, McpTarget, RenewSessionRealization, SessionBaseline,
-        SessionBaselineInputs, SessionBaselineState, SessionMcpAttachmentSet, SessionNetworkPolicy,
-        SessionRealizationAction, SessionRealizationControl, SessionResourceState, SessionRevision,
-        SessionRuntime, StageMcpAttachment, StepOutcome, ToolPermissionDecision,
+    use awaken_session_application_contract::StepOutcome;
+    use awaken_session_configuration_contract::{
+        EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
+        SessionBaselineState, SessionNetworkPolicy,
     };
+    use awaken_session_mcp_contract::{
+        McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpGenerationRef,
+        McpRealizationReceipt, McpTarget, SessionMcpAttachmentSet, StageMcpAttachment,
+    };
+    use awaken_session_realization_contract::{
+        AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
+        FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
+        SessionRealizationControl,
+    };
+    use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
+    use awaken_session_state_contract::{IdempotencyRecord, SessionResourceState};
+    use awaken_session_types::SessionRevision;
 
     struct NoopRuntime;
 
@@ -87,92 +96,98 @@ mod tests {
             "test-model".into()
         }
 
-        fn realization(&self) -> Option<&dyn awaken_session_contract::RealizationRuntime> {
+        fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
             Some(self)
         }
 
-        fn outcomes(&self) -> Option<&dyn awaken_session_contract::OutcomeRuntime> {
+        fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
             Some(self)
         }
 
-        fn coordination(&self) -> Option<&dyn awaken_session_contract::CoordinationRuntime> {
+        fn coordination(
+            &self,
+        ) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
             Some(self)
         }
 
-        fn budget(&self) -> Option<&dyn awaken_session_contract::BudgetRuntime> {
+        fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
             Some(self)
         }
 
-        fn streaming_runs(&self) -> Option<&dyn awaken_session_contract::StreamingRunRuntime> {
+        fn streaming_runs(
+            &self,
+        ) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
             Some(self)
         }
 
-        fn environment(&self) -> Option<&dyn awaken_session_contract::EnvironmentRuntime> {
+        fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
             Some(self)
         }
 
-        fn thread_reads(&self) -> Option<&dyn awaken_session_contract::ThreadReadRuntime> {
+        fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
             Some(self)
         }
 
-        fn terminal_cleanup(&self) -> Option<&dyn awaken_session_contract::TerminalCleanupRuntime> {
+        fn terminal_cleanup(
+            &self,
+        ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
             Some(self)
         }
 
-        fn live_inbox(&self) -> Option<&dyn awaken_session_contract::LiveInboxRuntime> {
+        fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
             Some(self)
         }
 
-        fn capability(&self) -> Option<&dyn awaken_session_contract::CapabilityRuntime> {
+        fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
             Some(self)
         }
     }
 
-    awaken_session_contract::neutral_role!(CoordinationRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(CoordinationRuntime for NoopRuntime);
 
-    awaken_session_contract::neutral_role!(BudgetRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(BudgetRuntime for NoopRuntime);
 
-    awaken_session_contract::neutral_role!(StreamingRunRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(StreamingRunRuntime for NoopRuntime);
 
-    awaken_session_contract::neutral_role!(EnvironmentRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(EnvironmentRuntime for NoopRuntime);
 
-    awaken_session_contract::neutral_role!(ThreadReadRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(ThreadReadRuntime for NoopRuntime);
 
-    awaken_session_contract::neutral_role!(TerminalCleanupRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(TerminalCleanupRuntime for NoopRuntime);
 
-    awaken_session_contract::neutral_role!(LiveInboxRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for NoopRuntime);
 
-    awaken_session_contract::neutral_role!(CapabilityRuntime for NoopRuntime);
+    awaken_session_execution_contract::neutral_role!(CapabilityRuntime for NoopRuntime);
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::RealizationRuntime for NoopRuntime {
+    impl awaken_session_execution_contract::RealizationRuntime for NoopRuntime {
         fn observe_realization_request(
             &self,
         ) -> Result<
             awaken_runtime_contract::authority_lease::AuthorityProofStarted,
-            awaken_session_contract::RunError,
+            awaken_session_error_contract::RunError,
         > {
             crate::test_support::observe_realization_request()
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Reconcile the existing Runtime projections through the given Control
         /// owner. Local and Worker deployment use one slot-based selection and
         /// physical-cutoff refresh algorithm; no durable Session rescan is implied.
         async fn renew_session_realization_projections(
             &self,
-            control: &dyn awaken_session_contract::SessionRealizationControl,
+            control: &dyn awaken_session_realization_contract::SessionRealizationControl,
             owner: &str,
             runtime_incarnation: &str,
             timing: awaken_runtime_contract::authority_lease::AuthorityLeaseTiming,
-        ) -> Result<usize, awaken_session_contract::RunError> {
-            awaken_session_contract::NeutralRuntime
+        ) -> Result<usize, awaken_session_error_contract::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
                 .renew_session_realization_projections(control, owner, runtime_incarnation, timing)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Validate the exact provider-effective Sandbox layout without publishing
         /// process-local state or performing provider, cache, Skill, File, Vault,
@@ -182,16 +197,17 @@ mod tests {
         fn validate_session_sandbox_layout(
             &self,
             thread: &str,
-            layout: &awaken_session_contract::SessionSandboxLayout,
-        ) -> Result<(), awaken_session_contract::RunError> {
-            awaken_session_contract::NeutralRuntime.validate_session_sandbox_layout(thread, layout)
+            layout: &awaken_session_configuration_contract::SessionSandboxLayout,
+        ) -> Result<(), awaken_session_error_contract::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
+                .validate_session_sandbox_layout(thread, layout)
         }
 
         async fn install_session_projection(
             &self,
             thread: &str,
-            projection: awaken_session_contract::FrozenSessionProjection,
-            mode: awaken_session_contract::SessionProjectionInstallMode,
+            projection: awaken_session_realization_contract::FrozenSessionProjection,
+            mode: awaken_session_realization_contract::SessionProjectionInstallMode,
         ) -> Result<(), RunError> {
             crate::test_support::complete_session_projection_init(thread, &projection, &mode)?;
             Ok(())
@@ -200,12 +216,12 @@ mod tests {
         async fn renew_session_realization_lease(
             &self,
             _thread: &str,
-            _lease: awaken_session_contract::ObservedSessionRealizationLease,
+            _lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
         ) -> Result<(), RunError> {
             Ok(())
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Forget one failed realization fence from disposable Runtime state. The
         /// aggregate remains the sole lease authority: this hook only prevents a
@@ -214,27 +230,29 @@ mod tests {
         async fn invalidate_session_realization_lease(
             &self,
             thread: &str,
-            lease: &awaken_session_contract::SessionRealizationLease,
-        ) -> Result<(), awaken_session_contract::RunError> {
-            awaken_session_contract::NeutralRuntime
+            lease: &awaken_session_resource_contract::SessionRealizationLease,
+        ) -> Result<(), awaken_session_error_contract::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
                 .await
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Install the durable callback used at the exact sandbox creation boundary.
         fn install_environment_binding_sink(
             &self,
-            sink: std::sync::Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+            sink: std::sync::Arc<
+                dyn awaken_session_execution_contract::SessionEnvironmentBindingSink,
+            >,
         ) {
-            awaken_session_contract::NeutralRuntime.install_environment_binding_sink(sink)
+            awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
         }
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::OutcomeRuntime for NoopRuntime {
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+    impl awaken_session_execution_contract::OutcomeRuntime for NoopRuntime {
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Persist one Outcome aggregate without executing a Worker or Grader Run.
         /// The opaque id is supplied by the application command so crash replay and
@@ -246,8 +264,8 @@ mod tests {
             description: &str,
             rubric: &str,
             max_iterations: u32,
-        ) -> Result<u64, awaken_session_contract::RunError> {
-            awaken_session_contract::NeutralRuntime
+        ) -> Result<u64, awaken_session_error_contract::RunError> {
+            awaken_session_execution_contract::NeutralRuntime
                 .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
                 .await
         }
@@ -262,7 +280,7 @@ mod tests {
             unreachable!()
         }
 
-        // Former `awaken_session_contract::SessionRuntime` default, kept verbatim: this implementation never
+        // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
         // answered this role method with anything but the refusal below.
         /// Continue the active Outcome after the ordinary Run resume has committed.
         /// `None` proves there is no active aggregate; implementations must rebuild
@@ -270,16 +288,18 @@ mod tests {
         async fn continue_outcome(
             &self,
             thread: &str,
-        ) -> Result<Option<awaken_session_contract::OutcomeDrive>, awaken_session_contract::RunError>
-        {
-            awaken_session_contract::NeutralRuntime
+        ) -> Result<
+            Option<awaken_session_execution_contract::OutcomeDrive>,
+            awaken_session_error_contract::RunError,
+        > {
+            awaken_session_execution_contract::NeutralRuntime
                 .continue_outcome(thread)
                 .await
         }
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::McpAttachmentRealizer for NoopRuntime {
+    impl awaken_session_execution_contract::McpAttachmentRealizer for NoopRuntime {
         async fn stage_mcp_attachment(
             &self,
             request: StageMcpAttachment,
@@ -331,7 +351,8 @@ mod tests {
                     resource_holder: holder(),
                 },
             },
-            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+            runtime_placement:
+                awaken_session_configuration_contract::SessionRuntimePlacement::Local,
             mcp_authoring: Default::default(),
             agent_id: "agent".into(),
             agent_revision: None,
@@ -348,7 +369,7 @@ mod tests {
         let mut resources = SessionResourceState::default();
         resources
             .prepare(
-                &awaken_session_contract::SessionId::from(id),
+                &awaken_session_types::SessionId::from(id),
                 Default::default(),
             )
             .expect("prepare generation 1 resources");
@@ -393,12 +414,16 @@ mod tests {
 
     async fn harness_for(
         session: PersistedSession,
-    ) -> (ManagedState, Arc<dyn awaken_session_contract::SessionStore>) {
-        let repo: Arc<dyn awaken_session_contract::SessionStore> = Arc::new(
+    ) -> (
+        ManagedState,
+        Arc<dyn awaken_session_repository_contract::SessionStore>,
+    ) {
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
         );
         let id = session.session_id.clone();
-        let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
+        let payload =
+            awaken_session_state_contract::SessionMutationPayload::Replace(session.clone());
         let payload_hash = payload.stable_hash();
         repo.create(
             "workspace-a",
@@ -417,7 +442,12 @@ mod tests {
         )
     }
 
-    async fn harness(id: &str) -> (ManagedState, Arc<dyn awaken_session_contract::SessionStore>) {
+    async fn harness(
+        id: &str,
+    ) -> (
+        ManagedState,
+        Arc<dyn awaken_session_repository_contract::SessionStore>,
+    ) {
         harness_for(persisted_session(id)).await
     }
 
@@ -494,7 +524,7 @@ mod tests {
         // | Q14 | activate pending | exact | exact prepared revision | - | commit that Resource generation (covered by Q6) |
         // | Q15 | renew with stale asserted epoch | stale | - | - | fenced/no mutation (covered by the application contract table) |
         let (state, repo) = harness("session-phase").await;
-        let target = awaken_session_contract::SessionRealizationTarget {
+        let target = awaken_session_realization_contract::SessionRealizationTarget {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX - 2,
@@ -515,7 +545,7 @@ mod tests {
             SessionRealizationAction::Stage { .. }
         ));
         let after_begin = repo
-            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .get(&awaken_session_types::SessionId::from("session-phase"))
             .await
             .unwrap();
         assert_eq!(
@@ -538,7 +568,7 @@ mod tests {
             "Q2 response age is not phase progress"
         );
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+            repo.get(&awaken_session_types::SessionId::from("session-phase"))
                 .await
                 .unwrap()
                 .revision,
@@ -551,7 +581,7 @@ mod tests {
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-phase".into(),
-                target: awaken_session_contract::SessionRealizationTarget {
+                target: awaken_session_realization_contract::SessionRealizationTarget {
                     owner: "worker-b".into(),
                     ..target
                 },
@@ -563,7 +593,7 @@ mod tests {
             "Q3"
         );
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+            repo.get(&awaken_session_types::SessionId::from("session-phase"))
                 .await
                 .unwrap()
                 .revision,
@@ -585,7 +615,7 @@ mod tests {
             "Q4"
         );
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+            repo.get(&awaken_session_types::SessionId::from("session-phase"))
                 .await
                 .unwrap()
                 .revision,
@@ -629,7 +659,7 @@ mod tests {
         assert_eq!(publish.len(), 1, "Q6");
         assert!(drain.is_empty(), "Q6");
         let after_activate = repo
-            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .get(&awaken_session_types::SessionId::from("session-phase"))
             .await
             .unwrap();
         assert_eq!(
@@ -652,7 +682,7 @@ mod tests {
         // Q7 compares durable progress, not response-relative horizon age.
         assert!(activate_replay.same_progress_as(&activated), "Q7");
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+            repo.get(&awaken_session_types::SessionId::from("session-phase"))
                 .await
                 .unwrap()
                 .revision,
@@ -674,7 +704,7 @@ mod tests {
             "Q8"
         );
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+            repo.get(&awaken_session_types::SessionId::from("session-phase"))
                 .await
                 .unwrap()
                 .revision,
@@ -699,7 +729,7 @@ mod tests {
             "Q9"
         );
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+            repo.get(&awaken_session_types::SessionId::from("session-phase"))
                 .await
                 .unwrap()
                 .revision,
@@ -720,7 +750,7 @@ mod tests {
             .expect("Q10");
         assert_eq!(complete.action, SessionRealizationAction::Complete, "Q10");
         let after_ack = repo
-            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .get(&awaken_session_types::SessionId::from("session-phase"))
             .await
             .unwrap();
         assert_eq!(after_ack.execution, SessionExecutionState::Idle, "Q10");
@@ -733,7 +763,7 @@ mod tests {
             .expect("Q11");
         assert_eq!(ack_replay.action, SessionRealizationAction::Complete, "Q11");
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+            repo.get(&awaken_session_types::SessionId::from("session-phase"))
                 .await
                 .unwrap()
                 .revision,
@@ -745,7 +775,7 @@ mod tests {
         // idle. It is durable pending work, but only a claimed Run may read the
         // remote custom Skill bytes and acknowledge that Resource generation.
         let mut pending = repo
-            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .get(&awaken_session_types::SessionId::from("session-phase"))
             .await
             .unwrap();
         let active_resource_revision = pending.resources.active_revision();
@@ -753,24 +783,26 @@ mod tests {
             .resources
             .active
             .clone()
-            .with_skills(vec![awaken_session_contract::ResolvedSkillBinding {
-                kind: awaken_agent_contract::AgentSkillKind::Custom,
-                skill_id: "design".into(),
-                version: 36,
-                bundle_sha256: "sha256-design-v36".into(),
-            }])
+            .with_skills(vec![
+                awaken_session_resource_contract::ResolvedSkillBinding {
+                    kind: awaken_agent_contract::AgentSkillKind::Custom,
+                    skill_id: "design".into(),
+                    version: 36,
+                    bundle_sha256: "sha256-design-v36".into(),
+                },
+            ])
             .unwrap();
         pending
             .resources
             .prepare(
-                &awaken_session_contract::SessionId::from("session-phase"),
+                &awaken_session_types::SessionId::from("session-phase"),
                 desired.clone(),
             )
             .expect("Q12 pending Resource generation");
         let expected_revision = pending.revision;
-        let payload = awaken_session_contract::SessionMutationPayload::Replace(pending);
+        let payload = awaken_session_state_contract::SessionMutationPayload::Replace(pending);
         let payload_hash = payload.stable_hash();
-        let mutation = awaken_session_contract::SessionMutation {
+        let mutation = awaken_session_state_contract::SessionMutation {
             expected_revision,
             idempotency: IdempotencyRecord {
                 key: "Q12:pending-resource".into(),
@@ -781,11 +813,11 @@ mod tests {
         };
         assert!(matches!(
             repo.commit("workspace-a", mutation).await.unwrap(),
-            awaken_session_contract::SessionMutationResult::Applied { .. }
+            awaken_session_state_contract::SessionMutationResult::Applied { .. }
         ));
 
         let before_renewal = repo
-            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .get(&awaken_session_types::SessionId::from("session-phase"))
             .await
             .unwrap();
         let renewal = state
@@ -801,7 +833,7 @@ mod tests {
             .await
             .expect("Q12");
         let renewed = repo
-            .get(&awaken_session_contract::SessionId::from("session-phase"))
+            .get(&awaken_session_types::SessionId::from("session-phase"))
             .await
             .unwrap();
         assert_eq!(renewal.lease.expires_at_unix_ms, u64::MAX - 1, "Q12");
@@ -858,7 +890,7 @@ mod tests {
             "Q13 durable lease, not response age"
         );
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from("session-phase"))
+            repo.get(&awaken_session_types::SessionId::from("session-phase"))
                 .await
                 .unwrap()
                 .revision,
@@ -878,15 +910,11 @@ mod tests {
         let (state, repo) = harness("session-supervised").await;
         state
             .application
-            .realize_session(&awaken_session_contract::SessionId::from(
-                "session-supervised",
-            ))
+            .realize_session(&awaken_session_types::SessionId::from("session-supervised"))
             .await
             .expect("L1 setup");
         let before = repo
-            .get(&awaken_session_contract::SessionId::from(
-                "session-supervised",
-            ))
+            .get(&awaken_session_types::SessionId::from("session-supervised"))
             .await
             .unwrap();
         assert!(
@@ -898,11 +926,9 @@ mod tests {
             "L1/E1"
         );
         assert_eq!(
-            repo.get(&awaken_session_contract::SessionId::from(
-                "session-supervised"
-            ))
-            .await
-            .unwrap(),
+            repo.get(&awaken_session_types::SessionId::from("session-supervised"))
+                .await
+                .unwrap(),
             before,
             "L1/E2"
         );
@@ -920,7 +946,7 @@ mod tests {
         // | O2 | live | same | new | claim epoch N+1 |
         // | O3 | live | other | any | StaleOwnership |
         let (state, repo) = harness("session-owner-restart").await;
-        let target = awaken_session_contract::SessionRealizationTarget {
+        let target = awaken_session_realization_contract::SessionRealizationTarget {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
@@ -951,7 +977,7 @@ mod tests {
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-owner-restart".into(),
-                target: awaken_session_contract::SessionRealizationTarget {
+                target: awaken_session_realization_contract::SessionRealizationTarget {
                     runtime_incarnation: "worker-a/incarnation-2".into(),
                     ..target.clone()
                 },
@@ -968,7 +994,7 @@ mod tests {
             "O2"
         );
         let persisted = repo
-            .get(&awaken_session_contract::SessionId::from(
+            .get(&awaken_session_types::SessionId::from(
                 "session-owner-restart",
             ))
             .await
@@ -988,7 +1014,7 @@ mod tests {
             .begin_session_realization(BeginSessionRealization {
                 expected_resources: None,
                 session_id: "session-owner-restart".into(),
-                target: awaken_session_contract::SessionRealizationTarget {
+                target: awaken_session_realization_contract::SessionRealizationTarget {
                     owner: "worker-b".into(),
                     runtime_incarnation: "worker-b/incarnation-1".into(),
                     ..target
@@ -1020,7 +1046,7 @@ mod tests {
         baseline_only.resources = Default::default();
         baseline_only.mcp = SessionMcpAttachmentSet::default();
         let (baseline_state, _) = harness_for(baseline_only).await;
-        let target = awaken_session_contract::SessionRealizationTarget {
+        let target = awaken_session_realization_contract::SessionRealizationTarget {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/incarnation-1".into(),
             lease_expires_at_unix_ms: u64::MAX,
@@ -1097,7 +1123,7 @@ mod tests {
             .expect("F2 acknowledge");
         assert_eq!(
             empty_repo
-                .get(&awaken_session_contract::SessionId::from("session-empty"))
+                .get(&awaken_session_types::SessionId::from("session-empty"))
                 .await
                 .unwrap()
                 .execution,
@@ -1129,7 +1155,7 @@ mod tests {
             .await
             .expect("F3");
         let after_failure = failed_repo
-            .get(&awaken_session_contract::SessionId::from("session-failed"))
+            .get(&awaken_session_types::SessionId::from("session-failed"))
             .await
             .unwrap();
         assert_eq!(
@@ -1149,7 +1175,7 @@ mod tests {
             .expect("F4");
         assert_eq!(
             failed_repo
-                .get(&awaken_session_contract::SessionId::from("session-failed"))
+                .get(&awaken_session_types::SessionId::from("session-failed"))
                 .await
                 .unwrap()
                 .revision,
@@ -1162,7 +1188,7 @@ mod tests {
                 .begin_session_realization(BeginSessionRealization {
                     expected_resources: None,
                     session_id: "session-failed".into(),
-                    target: awaken_session_contract::SessionRealizationTarget {
+                    target: awaken_session_realization_contract::SessionRealizationTarget {
                         owner: "worker-a".into(),
                         runtime_incarnation: "worker-a/incarnation-2".into(),
                         lease_expires_at_unix_ms: u64::MAX,

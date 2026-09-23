@@ -25,16 +25,16 @@ use super::{RealizationHttpError, WorkerDispatchService, respond_realization};
 pub(super) struct SessionRepositoryPublicationCompleteReq {
     identity: WorkerIdentity,
     session_id: String,
-    lease: awaken_session_contract::SessionRealizationLease,
-    receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+    lease: awaken_session_resource_contract::SessionRealizationLease,
+    receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
 }
 
 #[derive(Deserialize)]
 pub(super) struct SessionRepositoryPublicationRejectReq {
     identity: WorkerIdentity,
     session_id: String,
-    lease: awaken_session_contract::SessionRealizationLease,
-    rejection: awaken_session_contract::SessionRepositoryPublicationRejection,
+    lease: awaken_session_resource_contract::SessionRealizationLease,
+    rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
 }
 
 pub(super) async fn session_repository_publication_poll(
@@ -48,7 +48,7 @@ pub(super) async fn session_repository_publication_poll(
         let projection = terminal_cleanup_control(&service)
             .map_err(RealizationHttpError::from)?
             .terminal_repository_publication_command(
-                &awaken_session_contract::SessionId::from(request.session_id),
+                &awaken_session_types::SessionId::from(request.session_id),
                 &request.lease,
             )
             .await
@@ -70,7 +70,7 @@ pub(super) async fn session_repository_publication_complete(
         terminal_cleanup_control(&service)
             .map_err(RealizationHttpError::from)?
             .record_terminal_repository_publication_receipt(
-                &awaken_session_contract::SessionId::from(request.session_id),
+                &awaken_session_types::SessionId::from(request.session_id),
                 &request.lease,
                 request.receipt,
             )
@@ -93,7 +93,7 @@ pub(super) async fn session_repository_publication_reject(
         terminal_cleanup_control(&service)
             .map_err(RealizationHttpError::from)?
             .record_terminal_repository_publication_rejection(
-                &awaken_session_contract::SessionId::from(request.session_id),
+                &awaken_session_types::SessionId::from(request.session_id),
                 &request.lease,
                 request.rejection,
             )

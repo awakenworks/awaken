@@ -8,44 +8,44 @@ from pathlib import Path
 import _crate_boundary_workspace
 
 
-SESSION_RUNTIME = "crates/contract/awaken-session-contract/src/session.rs"
-SESSION_RUNTIME_ROLES = "crates/contract/awaken-session-contract/src/session/roles.rs"
-SESSION_CLEANUP = "crates/contract/awaken-session-contract/src/terminal_cleanup.rs"
+SESSION_RUNTIME = "crates/contract/awaken-session-execution-contract/src/session.rs"
+SESSION_RUNTIME_ROLES = "crates/contract/awaken-session-execution-contract/src/session/roles.rs"
+SESSION_CLEANUP = "crates/contract/awaken-session-state-contract/src/terminal_cleanup.rs"
 SESSION_REPOSITORY_PUBLICATION = (
-    "crates/contract/awaken-session-contract/src/"
+    "crates/contract/awaken-session-state-contract/src/"
     "terminal_cleanup/repository_publication.rs"
 )
 SESSION_CLEANUP_DRIVER = (
     "crates/server/awaken-session-application/src/terminal_cleanup_driver.rs"
 )
 SESSION_CLEANUP_EFFECTS = (
-    "crates/contract/awaken-session-contract/src/terminal_cleanup/effects.rs"
+    "crates/contract/awaken-session-state-contract/src/terminal_cleanup/effects.rs"
 )
 SESSION_CLEANUP_PROGRESS = (
-    "crates/contract/awaken-session-contract/src/terminal_cleanup/progress.rs"
+    "crates/contract/awaken-session-state-contract/src/terminal_cleanup/progress.rs"
 )
 SESSION_REPOSITORY_RECOVERY = (
-    "crates/contract/awaken-session-contract/src/session_repo/recovery.rs"
+    "crates/contract/awaken-session-state-contract/src/session_repo/recovery.rs"
 )
 SESSION_REPOSITORY_PORT = (
-    "crates/contract/awaken-session-contract/src/session_repo/repository_port.rs"
+    "crates/contract/awaken-session-repository-contract/src/repository_port.rs"
 )
 SESSION_REPOSITORY_MUTATION = (
-    "crates/contract/awaken-session-contract/src/session_repo/mutation.rs"
+    "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs"
 )
 SESSION_REPOSITORY_PUBLICATION_AGGREGATE = (
-    "crates/contract/awaken-session-contract/src/session_repo/repository_publication.rs"
+    "crates/contract/awaken-session-state-contract/src/session_repo/repository_publication.rs"
 )
 SESSION_DELETE_DISPOSITION = (
-    "crates/contract/awaken-session-contract/src/session_repo/disposition.rs"
+    "crates/contract/awaken-session-state-contract/src/session_repo/disposition.rs"
 )
 SESSION_ROW_CODEC = "crates/stores/awaken-session-store/src/row_codec.rs"
-SESSION_REALIZATION = "crates/contract/awaken-session-contract/src/session_realization.rs"
+SESSION_REALIZATION = "crates/contract/awaken-session-realization-contract/src/session_realization.rs"
 SESSION_REALIZATION_DRIVER = (
     "crates/server/awaken-session-application/src/session_realization_driver.rs"
 )
 SESSION_TERMINAL_AUTHORIZATION = (
-    "crates/contract/awaken-session-contract/src/"
+    "crates/contract/awaken-session-realization-contract/src/"
     "session_realization/terminal_cleanup_authorization.rs"
 )
 PROVISIONING_REPOSITORY_PUBLICATION = (
@@ -172,7 +172,7 @@ REQUIRED = {
     ),
     SESSION_REPOSITORY_RECOVERY: (
         "SessionRepositoryRecoveryAction",
-        "Self::Unavailable(_)",
+        "Self::AuthorityUnavailable(_)",
         "Self::Corrupt(_)",
     ),
     SESSION_REPOSITORY_MUTATION: (
@@ -269,7 +269,7 @@ REQUIRED = {
         ".delete_session(awaken_session_application::SessionDeleteCommand::new(id))",
     ),
     SESSION_STORE: (
-        "SessionRepositoryError::Unavailable",
+        "SessionRepositoryError::AuthorityUnavailable",
         "SessionRepositoryError::Corrupt",
         "fn validate_current_mutation(",
         "current.admits_tombstone(",

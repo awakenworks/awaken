@@ -14,9 +14,10 @@ use awaken_ext_skills::SkillSpec;
 #[cfg(test)]
 use awaken_resource_contract::SkillDefinition;
 use awaken_resource_contract::{SkillStoreError, SkillVersion};
-use awaken_session_contract::{ResolvedSkillBinding, RunError};
+use awaken_session_error_contract::RunError;
+use awaken_session_resource_contract::ResolvedSkillBinding;
 
-use awaken_session_contract::{SkillBundleSource, SkillCatalogApplication};
+use awaken_session_configuration_contract::{SkillBundleSource, SkillCatalogApplication};
 
 /// Keep repository failure classification beside the one durable Skill owner so
 /// every create, restore, and live-apply path shares the same closed algebra.
@@ -266,7 +267,11 @@ impl SkillCatalog {
         workspace: &str,
         bindings: &[ResolvedSkillBinding],
         claim: Option<&awaken_dispatch::RunClaim>,
-        realization: Option<(&str, u64, &awaken_session_contract::SessionRealizationLease)>,
+        realization: Option<(
+            &str,
+            u64,
+            &awaken_session_resource_contract::SessionRealizationLease,
+        )>,
     ) -> Result<Vec<SkillVersion>, SkillStoreError> {
         if bindings.is_empty() {
             return Ok(Vec::new());
@@ -281,7 +286,7 @@ impl SkillCatalog {
                     let authority = match (claim, realization) {
                         (_, Some((session_id, revision, lease))) => Some(
                             awaken_dispatch::ResourceOperationFence::SessionMaterialization(
-                                awaken_session_contract::SessionResourceMaterializationIntent::try_new_skill(
+                                awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new_skill(
                                     session_id,
                                     revision,
                                     binding.clone(),
@@ -426,7 +431,7 @@ impl SkillCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_contract::RunErrorKind;
+    use awaken_session_error_contract::RunErrorKind;
     use awaken_skill_store::{InMemorySkillStore, SkillBundleFile, bundle_sha256};
 
     fn version(id: &str, ordinal: u64, body: &str) -> SkillVersion {

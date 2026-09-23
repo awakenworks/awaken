@@ -7,7 +7,8 @@
 
 use std::sync::{Arc, Weak};
 
-use awaken_session_contract::{LifecycleFactDelivery, ManagedLifecycleFact};
+use awaken_session_application_contract::LifecycleFactDelivery;
+use awaken_session_state_contract::ManagedLifecycleFact;
 
 use crate::{ManagedState, StateError};
 

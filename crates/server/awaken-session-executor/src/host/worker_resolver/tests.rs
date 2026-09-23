@@ -34,7 +34,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     let session_id = "reservation-repair";
     let run_id = "reservation-repair-run";
     let activation = test_activation(session_id, run_id);
-    let command = awaken_session_contract::AdmitSessionRun {
+    let command = awaken_session_execution_contract::AdmitSessionRun {
         session_id: session_id.into(),
         agent_id: activation.snapshot.root_agent_id.0.clone(),
         operation_id: "reservation-repair-operation".into(),
@@ -48,7 +48,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     let request = awaken_dispatch::RunDispatch::new(activation)
         .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()))
         .with_session_command_fingerprint(
-            awaken_session_contract::SessionRunCommandFingerprint::current(&command),
+            awaken_session_execution_contract::SessionRunCommandFingerprint::current(&command),
         );
     assert_eq!(
         store
@@ -176,11 +176,11 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     let ephemeral = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
     let ephemeral_managed = managed_test_host(ephemeral.clone());
     let session_id = "ephemeral-report-root";
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &ephemeral_managed,
         session_id,
         empty_frozen_projection(ephemeral.local_workspace(), eager_environment()),
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("R1 install complete co-located Session projection");
@@ -193,13 +193,15 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     let child_run = RunId("reported-child-run".into());
     let report_id = MessageId::agent_thread_report(&child_run);
     ephemeral
-        .continue_session_agent_report(awaken_session_contract::SessionAgentReportContinuation {
-            session_id: session_id.into(),
-            source_thread_id: ThreadId("reported-child-thread".into()),
-            source_run_id: child_run,
-            session_activity_epoch: 7,
-            message: Message::text(report_id.clone(), Role::User, "child report"),
-        })
+        .continue_session_agent_report(
+            awaken_session_execution_contract::SessionAgentReportContinuation {
+                session_id: session_id.into(),
+                source_thread_id: ThreadId("reported-child-thread".into()),
+                source_run_id: child_run,
+                session_activity_epoch: 7,
+                message: Message::text(report_id.clone(), Role::User, "child report"),
+            },
+        )
         .await
         .expect("R1 queue root continuation");
     let ephemeral_store = ephemeral.dispatch_store().expect("R1 dispatch authority");
@@ -377,7 +379,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
     )
     .expect("encode complete ordinary Runtime projection");
     let complete_activation = delegated("cold-delegation", "run-cold-delegation");
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         "cold-delegation",
         empty_frozen_projection_for_snapshot(
@@ -385,7 +387,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             deferred_environment(),
             &complete_activation.snapshot,
         ),
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("D1 install complete cold Runtime projection");
@@ -513,11 +515,11 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
             .with_agent_publications(Arc::new(catalog)),
     );
     let managed = managed_test_host(host.clone());
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         "claimed-cache",
         empty_frozen_projection_for_snapshot(host.local_workspace(), deferred_environment(), &root),
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("K1 install complete warm projection");
@@ -625,7 +627,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
 #[tokio::test]
 async fn durable_deferred_sandbox_publication_decision_table() {
     use awaken_dispatch::{Clock, DispatchQueue};
-    use awaken_session_contract::SessionRuntime;
+    use awaken_session_execution_contract::SessionRuntime;
 
     let now = awaken_dispatch::SystemClock.now_ms();
     let storage = tempfile::tempdir().expect("isolated deferred Sandbox root");
@@ -648,7 +650,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_contract::RunError::unavailable(
+            awaken_session_error_contract::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -723,7 +725,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     loss_managed
         .realization()
         .ok_or_else(|| {
-            awaken_session_contract::RunError::unavailable(
+            awaken_session_error_contract::RunError::unavailable(
                 "RealizationRuntime is unsupported by this runtime",
             )
         })
@@ -801,11 +803,13 @@ async fn durable_deferred_sandbox_publication_decision_table() {
 
 struct RecordingSessionControl {
     resume_calls: Arc<AtomicUsize>,
-    continuations:
-        Arc<std::sync::Mutex<Vec<Option<awaken_session_contract::SessionRealizationLease>>>>,
+    continuations: Arc<
+        std::sync::Mutex<Vec<Option<awaken_session_resource_contract::SessionRealizationLease>>>,
+    >,
     phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
-    projection: Arc<std::sync::Mutex<Option<awaken_session_contract::FrozenSessionProjection>>>,
-    mcp_stage: Option<awaken_session_contract::StageMcpAttachment>,
+    projection:
+        Arc<std::sync::Mutex<Option<awaken_session_realization_contract::FrozenSessionProjection>>>,
+    mcp_stage: Option<awaken_session_mcp_contract::StageMcpAttachment>,
     fail_begin: Arc<AtomicBool>,
 }
 
@@ -817,12 +821,14 @@ struct RecordingMcpRealizer {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::McpAttachmentRealizer for RecordingMcpRealizer {
+impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRealizer {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
-    {
+        request: awaken_session_mcp_contract::StageMcpAttachment,
+    ) -> Result<
+        awaken_session_mcp_contract::McpRealizationReceipt,
+        awaken_session_error_contract::RunError,
+    > {
         self.calls.lock().unwrap().push("stage");
         if let Some((host, thread)) = &self.required_physical_environment {
             let physical_only = host.upgrade().is_some_and(|host| {
@@ -833,19 +839,19 @@ impl awaken_session_contract::McpAttachmentRealizer for RecordingMcpRealizer {
                     .unwrap_or(false)
             });
             if !physical_only {
-                return Err(awaken_session_contract::RunError::classified(
+                return Err(awaken_session_error_contract::RunError::classified(
                     "test_session_physical_environment_missing",
                     "claimed MCP stage requires the physical Environment but no parent Runtime",
                 ));
             }
         }
         if self.fail_stage.load(Ordering::SeqCst) {
-            return Err(awaken_session_contract::RunError::classified(
+            return Err(awaken_session_error_contract::RunError::classified(
                 "test_mcp_stage_failed",
                 "test MCP stage failed",
             ));
         }
-        Ok(awaken_session_contract::McpRealizationReceipt {
+        Ok(awaken_session_mcp_contract::McpRealizationReceipt {
             receipt_fingerprint: request.fingerprint(),
             generation: request.generation,
             realization_id: request.realization_id,
@@ -856,16 +862,16 @@ impl awaken_session_contract::McpAttachmentRealizer for RecordingMcpRealizer {
 
     async fn publish_mcp_generation(
         &self,
-        _generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        _generation: awaken_session_mcp_contract::McpGenerationRef,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         self.calls.lock().unwrap().push("publish");
         Ok(())
     }
 
     async fn drain_mcp_generation(
         &self,
-        _generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        _generation: awaken_session_mcp_contract::McpGenerationRef,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         self.calls.lock().unwrap().push("drain");
         Ok(())
     }
@@ -905,7 +911,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone()),
     );
     let activation = test_activation(thread, "run-cold-stdio-recovery");
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         thread,
         empty_frozen_projection_for_snapshot(
@@ -913,18 +919,18 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
             deferred_environment(),
             &activation.snapshot,
         ),
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("S1 install complete cold Runtime coordinates");
-    let stage = awaken_session_contract::StageMcpAttachment {
+    let stage = awaken_session_mcp_contract::StageMcpAttachment {
         workspace_id: host.local_workspace().into(),
-        generation: awaken_session_contract::McpGenerationRef {
+        generation: awaken_session_mcp_contract::McpGenerationRef {
             session_id: thread.into(),
-            generation: awaken_session_contract::McpGeneration::of_bare_target(
-                awaken_session_contract::McpAttachmentId("browser".into()),
+            generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+                awaken_session_mcp_contract::McpAttachmentId("browser".into()),
                 1,
-                &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
                     .unwrap(),
             ),
             runtime_incarnation: "worker-a".into(),
@@ -934,7 +940,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         realization_id: "realize-browser-1".into(),
         stage_idempotency_key: "stage-browser-1".into(),
         name: "browser".into(),
-        target: awaken_session_contract::McpTarget::sandbox_stdio(
+        target: awaken_session_mcp_contract::McpTarget::sandbox_stdio(
             "playwright-mcp",
             vec!["--headless".into()],
         )
@@ -987,12 +993,10 @@ impl awaken_dispatch_contract::ClaimedSessionRealizationControl for RecordingSes
         &self,
         claim: &awaken_dispatch::RunClaim,
         _session_id: &str,
-        _session_work_authority: Option<
-            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
-        >,
-        continuation: Option<&awaken_session_contract::SessionRealizationLease>,
+        _session_work_authority: Option<&awaken_session_work_contract::SessionWorkAuthorityReceipt>,
+        continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<
-        Option<awaken_session_contract::SessionRealizationDirective>,
+        Option<awaken_session_realization_contract::SessionRealizationDirective>,
         awaken_dispatch_contract::ClaimedSessionControlError,
     > {
         self.resume_calls.fetch_add(1, Ordering::SeqCst);
@@ -1001,11 +1005,11 @@ impl awaken_dispatch_contract::ClaimedSessionRealizationControl for RecordingSes
             .unwrap()
             .push(continuation.cloned());
         Ok(self.projection.lock().unwrap().clone().map(|projection| {
-            awaken_session_contract::SessionRealizationDirective {
+            awaken_session_realization_contract::SessionRealizationDirective {
                 projection,
                 authority: crate::session_slot::test_lease_receipt(
                     continuation.cloned().unwrap_or_else(|| {
-                        awaken_session_contract::SessionRealizationLease {
+                        awaken_session_resource_contract::SessionRealizationLease {
                             owner: claim.owner.clone(),
                             runtime_incarnation: claim.owner.clone(),
                             epoch: claim.epoch,
@@ -1013,138 +1017,142 @@ impl awaken_dispatch_contract::ClaimedSessionRealizationControl for RecordingSes
                         }
                     }),
                 ),
-                action: awaken_session_contract::SessionRealizationAction::Complete,
+                action: awaken_session_realization_contract::SessionRealizationAction::Complete,
             }
         }))
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRealizationControl for RecordingSessionControl {
+impl awaken_session_realization_contract::SessionRealizationControl for RecordingSessionControl {
     async fn begin_session_realization(
         &self,
-        command: awaken_session_contract::BeginSessionRealization,
+        command: awaken_session_realization_contract::BeginSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.phases.lock().unwrap().push("begin");
         if self.fail_begin.load(Ordering::SeqCst) {
-            return Err(awaken_session_contract::SessionRealizationControlFailure::NotReady);
+            return Err(
+                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+            );
         }
-        let projection = self
-            .projection
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
-        let mut stage = self
-            .mcp_stage
-            .clone()
-            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        let projection = self.projection.lock().unwrap().clone().ok_or(
+            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+        )?;
+        let mut stage = self.mcp_stage.clone().ok_or(
+            awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+        )?;
         stage.generation.lease_expires_at_unix_ms = command.target.lease_expires_at_unix_ms;
         stage.stage_idempotency_key = format!("renew:{}", command.target.lease_expires_at_unix_ms);
-        Ok(awaken_session_contract::SessionRealizationDirective {
-            projection,
-            authority: crate::session_slot::test_lease_receipt(
-                awaken_session_contract::SessionRealizationLease {
-                    owner: command.target.owner,
-                    runtime_incarnation: command.target.runtime_incarnation,
-                    epoch: 1,
-                    expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
+        Ok(
+            awaken_session_realization_contract::SessionRealizationDirective {
+                projection,
+                authority: crate::session_slot::test_lease_receipt(
+                    awaken_session_resource_contract::SessionRealizationLease {
+                        owner: command.target.owner,
+                        runtime_incarnation: command.target.runtime_incarnation,
+                        epoch: 1,
+                        expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
+                    },
+                ),
+                action: awaken_session_realization_contract::SessionRealizationAction::Stage {
+                    prepare_session: false,
+                    mcp_stages: vec![stage],
                 },
-            ),
-            action: awaken_session_contract::SessionRealizationAction::Stage {
-                prepare_session: false,
-                mcp_stages: vec![stage],
             },
-        })
+        )
     }
 
     async fn activate_session_realization(
         &self,
-        command: awaken_session_contract::ActivateSessionRealization,
+        command: awaken_session_realization_contract::ActivateSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.phases.lock().unwrap().push("activate");
-        Ok(awaken_session_contract::SessionRealizationDirective {
-            projection: self
-                .projection
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("frozen Session projection"),
-            authority: crate::session_slot::test_lease_receipt(command.lease),
-            action: awaken_session_contract::SessionRealizationAction::Publish {
-                publish: command
-                    .mcp_receipts
-                    .into_iter()
-                    .map(|receipt| receipt.generation)
-                    .collect(),
-                drain: Vec::new(),
+        Ok(
+            awaken_session_realization_contract::SessionRealizationDirective {
+                projection: self
+                    .projection
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("frozen Session projection"),
+                authority: crate::session_slot::test_lease_receipt(command.lease),
+                action: awaken_session_realization_contract::SessionRealizationAction::Publish {
+                    publish: command
+                        .mcp_receipts
+                        .into_iter()
+                        .map(|receipt| receipt.generation)
+                        .collect(),
+                    drain: Vec::new(),
+                },
             },
-        })
+        )
     }
 
     async fn acknowledge_session_realization(
         &self,
-        command: awaken_session_contract::AcknowledgeSessionRealization,
+        command: awaken_session_realization_contract::AcknowledgeSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.phases.lock().unwrap().push("acknowledge");
-        Ok(awaken_session_contract::SessionRealizationDirective {
-            projection: self
-                .projection
-                .lock()
-                .unwrap()
-                .clone()
-                .expect("frozen Session projection"),
-            authority: crate::session_slot::test_lease_receipt(command.lease),
-            action: awaken_session_contract::SessionRealizationAction::Complete,
-        })
+        Ok(
+            awaken_session_realization_contract::SessionRealizationDirective {
+                projection: self
+                    .projection
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("frozen Session projection"),
+                authority: crate::session_slot::test_lease_receipt(command.lease),
+                action: awaken_session_realization_contract::SessionRealizationAction::Complete,
+            },
+        )
     }
 
     async fn fail_session_realization(
         &self,
-        _command: awaken_session_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        _command: awaken_session_realization_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.phases.lock().unwrap().push("fail");
         Ok(())
     }
 
     async fn renew_session_realization(
         &self,
-        command: awaken_session_contract::RenewSessionRealization,
+        command: awaken_session_realization_contract::RenewSessionRealization,
     ) -> Result<
-        awaken_session_contract::SessionRealizationLeaseReceipt,
-        awaken_session_contract::SessionRealizationControlFailure,
+        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.phases.lock().unwrap().push("renew");
         let mut lease = command.asserted_lease;
         if command.requested_expires_at_unix_ms < lease.expires_at_unix_ms {
-            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+            return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
         }
         lease.expires_at_unix_ms = command.requested_expires_at_unix_ms;
         Ok(crate::session_slot::test_lease_receipt(lease))
     }
 }
 
-fn ordinary_frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
+fn ordinary_frozen_projection() -> awaken_session_realization_contract::FrozenSessionProjection {
     let holder = awaken_runtime_contract::PlaintextHolder::new(
         awaken_runtime_contract::PlaintextBoundary::Worker,
         "test.worker",
     );
     empty_frozen_projection(
         "workspace",
-        awaken_session_contract::EnvironmentSnapshot {
+        awaken_session_configuration_contract::EnvironmentSnapshot {
             environment_id: "env".into(),
-            revision: awaken_session_contract::EnvironmentRevision(1),
+            revision: awaken_environment_contract::EnvironmentRevision(1),
             self_hosted: true,
-            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+            config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
                 "env-fingerprint".into(),
             ),
             sandbox: Default::default(),
@@ -1152,7 +1160,7 @@ fn ordinary_frozen_projection() -> awaken_session_contract::FrozenSessionProject
             idle_retention: Default::default(),
             packages: Default::default(),
             prepared_image: None,
-            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                 inference_holder: holder.clone(),
                 mcp_holder: holder.clone(),
@@ -1201,7 +1209,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
             })),
     );
     let managed = managed_test_host(host.clone());
-    awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
+    awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
         &managed,
         Arc::new(ToggleBindingSink {
             fail: AtomicBool::new(false),
@@ -1242,7 +1250,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         slot.dispatch_claim = Some(predecessor.clone());
         slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
             crate::session_slot::test_observed_lease(
-                awaken_session_contract::SessionRealizationLease {
+                awaken_session_resource_contract::SessionRealizationLease {
                     owner: claimed.lease.owner.clone(),
                     runtime_incarnation: claimed.lease.owner.clone(),
                     epoch: 0,
@@ -1320,7 +1328,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     );
 
     let ordinary_activation = test_activation("ordinary-run", "run-without-session");
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         "ordinary-run",
         empty_frozen_projection_for_snapshot(
@@ -1328,7 +1336,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
             deferred_environment(),
             &ordinary_activation.snapshot,
         ),
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("O5 install complete ordinary Runtime projection");
@@ -1379,16 +1387,17 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
             }
             "revision" => projection.resource_revision += 1,
             "bindings" => {
-                projection.resources = awaken_session_contract::ResolvedSessionResources::try_new(
-                    Vec::new(),
-                    vec![awaken_session_contract::ResolvedSkillBinding {
-                        kind: awaken_agent_contract::AgentSkillKind::Custom,
-                        skill_id: "replacement-skill".into(),
-                        version: 1,
-                        bundle_sha256: "sha256-replacement".into(),
-                    }],
-                )
-                .unwrap();
+                projection.resources =
+                    awaken_session_resource_contract::ResolvedSessionResources::try_new(
+                        Vec::new(),
+                        vec![awaken_session_resource_contract::ResolvedSkillBinding {
+                            kind: awaken_agent_contract::AgentSkillKind::Custom,
+                            skill_id: "replacement-skill".into(),
+                            version: 1,
+                            bundle_sha256: "sha256-replacement".into(),
+                        }],
+                    )
+                    .unwrap();
             }
             _ => unreachable!(),
         }
@@ -1614,14 +1623,14 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .await
         .expect("create file")
         .id;
-    let manifest = awaken_session_contract::SessionResourceManifest::new(
+    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
         "workspace-a",
-        awaken_session_contract::ResolvedSessionResources::try_new(
-            vec![awaken_session_contract::ResolvedInput {
+        awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            vec![awaken_session_resource_contract::ResolvedInput {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::new("file-binding"),
-                source: awaken_session_contract::ResolvedInputSource::File {
+                source: awaken_session_resource_contract::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from(file_id.as_str()),
                 },
                 mount_path: "/uploads/input.bin".to_string(),
@@ -1633,14 +1642,14 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .unwrap(),
     );
 
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         "thread-cold-resource",
         frozen_projection_for_manifest(
             ordinary_frozen_projection().baseline.environment,
             &manifest,
         ),
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("F1 install the complete projection and proven Empty->desired transition");
@@ -1682,10 +1691,10 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         Some(manifest.clone())
     );
 
-    let cleared = awaken_session_contract::SessionResourceManifest::at_revision(
+    let cleared = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
         2,
-        awaken_session_contract::ResolvedSessionResources::default(),
+        awaken_session_resource_contract::ResolvedSessionResources::default(),
     );
     let error = host
         .install_dispatched_resources("thread-cold-resource", &cleared, None)
@@ -1709,9 +1718,11 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         "F3 does not remove the live File"
     );
 
-    let transition =
-        awaken_session_contract::SessionResourceTransition::new(manifest.clone(), cleared.clone())
-            .expect("F4 exact aggregate transition");
+    let transition = awaken_session_resource_contract::SessionResourceTransition::new(
+        manifest.clone(),
+        cleared.clone(),
+    )
+    .expect("F4 exact aggregate transition");
     host.apply_dispatched_resource_transition("thread-cold-resource", &transition, None, None)
         .await
         .expect("F4 exact live replacement");
@@ -1773,25 +1784,25 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     // | R3 | rev1→rev1 | absent | rev2 | E2 |
     let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
     let managed = managed_test_host(host.clone());
-    let revision_one = awaken_session_contract::SessionResourceManifest::at_revision(
+    let revision_one = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
         1,
-        awaken_session_contract::ResolvedSessionResources::default(),
+        awaken_session_resource_contract::ResolvedSessionResources::default(),
     );
-    let revision_two = awaken_session_contract::SessionResourceManifest::at_revision(
+    let revision_two = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
         2,
-        awaken_session_contract::ResolvedSessionResources::default(),
+        awaken_session_resource_contract::ResolvedSessionResources::default(),
     );
 
     for thread in ["exact-cold-transition", "mismatched-cold-transition"] {
         let mut projection = frozen_projection_for_manifest(deferred_environment(), &revision_one);
         projection.previous_resource_manifest = Some(revision_one.clone());
-        awaken_session_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &managed,
             thread,
             projection,
-            awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await
         .unwrap_or_else(|error| panic!("{thread}: complete projection producer: {error}"));
@@ -1805,11 +1816,11 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     let mut active_projection =
         frozen_projection_for_manifest(deferred_environment(), &revision_two);
     active_projection.previous_resource_manifest = Some(revision_one.clone());
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         active_thread,
         active_projection,
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("R2 complete projection producer");
@@ -1919,19 +1930,19 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         owner: "worker-generation-fence".into(),
         epoch: 1,
     };
-    let revision_four = awaken_session_contract::SessionResourceManifest::at_revision(
+    let revision_four = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
         4,
-        awaken_session_contract::ResolvedSessionResources::default(),
+        awaken_session_resource_contract::ResolvedSessionResources::default(),
     );
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         "thread-generation-fence",
         frozen_projection_for_manifest(
             ordinary_frozen_projection().baseline.environment,
             &revision_four,
         ),
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .expect("install the complete initial projection and exact transition");
@@ -1951,17 +1962,17 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         .expect("R1 exact replay revalidation");
 
     for rejected in [
-        awaken_session_contract::SessionResourceManifest::at_revision(
+        awaken_session_resource_contract::SessionResourceManifest::at_revision(
             "workspace-a",
             3,
-            awaken_session_contract::ResolvedSessionResources::default(),
+            awaken_session_resource_contract::ResolvedSessionResources::default(),
         ),
-        awaken_session_contract::SessionResourceManifest::at_revision(
+        awaken_session_resource_contract::SessionResourceManifest::at_revision(
             "workspace-a",
             4,
-            awaken_session_contract::ResolvedSessionResources::try_new(
+            awaken_session_resource_contract::ResolvedSessionResources::try_new(
                 Vec::new(),
-                vec![awaken_session_contract::ResolvedSkillBinding {
+                vec![awaken_session_resource_contract::ResolvedSkillBinding {
                     kind: awaken_agent_contract::AgentSkillKind::Custom,
                     skill_id: "different-same-generation".into(),
                     version: 1,
@@ -1970,10 +1981,10 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
             )
             .unwrap(),
         ),
-        awaken_session_contract::SessionResourceManifest::at_revision(
+        awaken_session_resource_contract::SessionResourceManifest::at_revision(
             "workspace-b",
             5,
-            awaken_session_contract::ResolvedSessionResources::default(),
+            awaken_session_resource_contract::ResolvedSessionResources::default(),
         ),
     ] {
         let result = host
@@ -1989,15 +2000,15 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         );
     }
 
-    let revision_five = awaken_session_contract::SessionResourceManifest::at_revision(
+    let revision_five = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
         5,
-        awaken_session_contract::ResolvedSessionResources::default(),
+        awaken_session_resource_contract::ResolvedSessionResources::default(),
     );
     host.install_dispatched_resources("thread-generation-fence", &revision_five, Some(&claim))
         .await
         .expect_err("R2 newer desired-only generation still lacks previous");
-    let transition = awaken_session_contract::SessionResourceTransition::new(
+    let transition = awaken_session_resource_contract::SessionResourceTransition::new(
         revision_four,
         revision_five.clone(),
     )
@@ -2031,9 +2042,9 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
     let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
     let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let thread = "resource-projection-guard";
-    let manifest = awaken_session_contract::SessionResourceManifest::new(
+    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
         host.local_workspace(),
-        awaken_session_contract::ResolvedSessionResources::default(),
+        awaken_session_resource_contract::ResolvedSessionResources::default(),
     );
     let resource_projection = host
         .session_slots
@@ -2126,19 +2137,19 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .await
         .expect("P2 exact Skill store")
         .expect("P2 create exact Skill");
-    let missing_resources = awaken_session_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_contract::ResolvedInput {
+    let missing_resources = awaken_session_resource_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_resource_contract::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::new("missing-file-binding"),
-            source: awaken_session_contract::ResolvedInputSource::File {
+            source: awaken_session_resource_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from("missing-file"),
             },
             mount_path: "/missing.txt".into(),
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }],
-        vec![awaken_session_contract::ResolvedSkillBinding {
+        vec![awaken_session_resource_contract::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: "cold-recovery".into(),
             version: 1,
@@ -2146,22 +2157,24 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         }],
     )
     .expect("valid missing-File projection");
-    let previous = awaken_session_contract::SessionResourceManifest::at_revision(
+    let previous = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
         1,
         Default::default(),
     );
-    let desired = awaken_session_contract::SessionResourceManifest::at_revision(
+    let desired = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
         2,
         missing_resources,
     );
-    let transition =
-        awaken_session_contract::SessionResourceTransition::new(previous.clone(), desired.clone())
-            .expect("exact transition");
+    let transition = awaken_session_resource_contract::SessionResourceTransition::new(
+        previous.clone(),
+        desired.clone(),
+    )
+    .expect("exact transition");
 
     let foreign_thread = "foreign-active-resource";
-    let foreign = awaken_session_contract::SessionResourceManifest::at_revision(
+    let foreign = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
         9,
         Default::default(),
@@ -2277,14 +2290,14 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
             .with_file_content_source(Arc::new(ClaimFileSource)),
     );
     let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
-    let manifest = awaken_session_contract::SessionResourceManifest::new(
+    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
         "workspace-remote",
-        awaken_session_contract::ResolvedSessionResources::try_new(
-            vec![awaken_session_contract::ResolvedInput {
+        awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            vec![awaken_session_resource_contract::ResolvedInput {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::new("remote-file-binding"),
-                source: awaken_session_contract::ResolvedInputSource::File {
+                source: awaken_session_resource_contract::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from("file-remote"),
                 },
                 mount_path: "/input.txt".into(),
@@ -2847,7 +2860,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                 })),
         );
         let managed = managed_test_host(host.clone());
-        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
+        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
             &managed,
             Arc::new(ToggleBindingSink {
                 fail: AtomicBool::new(false),
@@ -2899,11 +2912,11 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
             claimed.request.admission_shape(),
             awaken_dispatch_contract::DispatchAdmissionShape::OrdinaryRoot
         );
-        awaken_session_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &managed,
             &thread,
             frozen,
-            awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
         )
         .await
         .expect("later Session use preserves frozen baseline");
@@ -2924,8 +2937,8 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
         &activation.snapshot,
     );
     projection.baseline.runtime_placement =
-        awaken_session_contract::SessionRuntimePlacement::Worker;
-    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+    projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding: "opaque-worker-owned-environment".into(),
         effect_id: None,
         generation: None,
@@ -2933,11 +2946,11 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
     };
     let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
     let managed = managed_test_host(host.clone());
-    awaken_session_contract::RealizationRuntime::install_session_projection(
+    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         thread,
         projection,
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
     .unwrap();

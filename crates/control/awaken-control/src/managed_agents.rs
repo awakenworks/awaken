@@ -23,7 +23,7 @@ use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::agent_bindings::ToolsetPolicy;
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_session_contract::{
+use awaken_session_configuration_contract::{
     AgentTool, CustomToolInputSchema, preserve_runtime_agent_overrides, resolved_toolsets,
     toolset_policies, validate_agent_tools,
 };

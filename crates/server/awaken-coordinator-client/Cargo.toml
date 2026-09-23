@@ -13,7 +13,14 @@ authority = "worker-runtime-transport"
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-session-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-error-contract.workspace = true
+awaken-session-realization-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-resource-contract.workspace = true
+awaken-session-types.workspace = true
+awaken-session-work-contract.workspace = true
 awaken-outbound-http = { workspace = true }
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
@@ -26,7 +33,6 @@ tracing = "0.1"
 
 [dev-dependencies]
 awaken-dispatch = { workspace = true, features = ["test-support"] }
-awaken-session-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
 axum.workspace = true

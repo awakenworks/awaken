@@ -1,5 +1,6 @@
 //! Credential-outbox consumer for online Managed Sessions.
 
+use awaken_agent_contract::stable_fingerprint;
 use awaken_credential_vault::repo::{
     ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress, ManagedCredentialOperation,
     ManagedCredentialRollout, ManagedCredentialRolloutTarget,
@@ -8,7 +9,7 @@ use awaken_session_application::{
     McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionMcpUpdate, SessionUpdateCommand,
     SessionUpdateError,
 };
-use awaken_session_contract::{SessionExecutionState, stable_fingerprint};
+use awaken_session_state_contract::SessionExecutionState;
 
 use super::ManagedState;
 
@@ -37,13 +38,13 @@ impl ManagedState {
             .application
             .session_repository_handle()
             .scan(
-                awaken_session_contract::SessionScanQuery::CredentialSourceReferences {
+                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
                     workspace_id: &event.workspace_id,
                     source_id: &event.source_id,
                 },
             )
             .await
-            .map(awaken_session_contract::SessionScan::into_sessions)
+            .map(awaken_session_state_contract::SessionScan::into_sessions)
             .map_err(|error| ManagedCredentialAdoptionError::Unavailable(error.to_string()))?;
         let mut pending = false;
         for session in sessions {

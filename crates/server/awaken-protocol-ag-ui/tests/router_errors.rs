@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::Message;
-use awaken_session_contract::{
+use awaken_session_application_contract::{
     Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::{Body, to_bytes};

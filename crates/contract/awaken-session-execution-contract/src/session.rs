@@ -1,0 +1,899 @@
+//! Neutral value types and the [`SessionRuntime`] interface the adapter drives:
+//! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
+
+mod neutral;
+mod roles;
+
+pub use awaken_session_budget_contract::SessionUsage;
+pub use neutral::NeutralRuntime;
+pub use roles::*;
+use std::sync::Arc;
+
+use crate::{
+    AgentCapabilities, DelegatedRun, DelegatedRunSnapshot, Pending, RunError,
+    SessionBudgetResumeDelivery, SessionBudgetResumeDisposition, SessionBudgetResumeTicket,
+    StepOutcome,
+};
+#[cfg(test)]
+use crate::{RunErrorKind, session_usage_from_thread_usage};
+use async_trait::async_trait;
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::agent::run::Id as RunId;
+#[cfg(test)]
+use awaken_agent_contract::agent::run::{EndCause, Failure};
+
+/// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
+pub use awaken_agent_contract::agent::awaiting::PermissionDecision as ToolPermissionDecision;
+
+/// One evaluation round of a goal: the agent's revision messages committed this
+/// round (empty when grading the existing deliverable), and the verdict.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutcomeIteration {
+    pub messages: Vec<Message>,
+    pub outcome_id: String,
+    pub description: String,
+    pub iteration: u32,
+    pub result: String,
+    pub explanation: String,
+    /// What grading this round cost, observed on the Judge Run's own Thread.
+    /// `None` is a distinct fact from zero: the round was never graded, or the
+    /// backend recorded no token usage for the grading Run.
+    pub usage: Option<awaken_agent_contract::audit::model_request::TokenUsage>,
+}
+
+/// The result of `user.define_outcome`: the ordered evaluation rounds. The loop
+/// always ends idle (`end_turn`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutcomeReport {
+    pub iterations: Vec<OutcomeIteration>,
+}
+
+/// Neutral infrastructure failure committed by the Outcome aggregate. The
+/// optional source Run correlates an ordinary lifecycle fact so adapters can
+/// project one public error without parsing identities or duplicating it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutcomeFailure {
+    pub code: String,
+    pub message: String,
+    pub source_run_id: Option<RunId>,
+}
+
+/// One terminal Outcome rebuilt from committed Thread truth. A rubric `failed`
+/// remains a completed report; only execution/schema/persistence faults use the
+/// infrastructure-error branch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommittedOutcomeProjection {
+    Completed(OutcomeReport),
+    Errored(OutcomeFailure),
+}
+
+/// The next durable boundary reached while driving an Outcome. Awaiting keeps
+/// the active aggregate in Thread state; completed carries its terminal report.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutcomeDrive {
+    Awaiting,
+    Completed(OutcomeReport),
+}
+
+// Keep the live-inbox names' public defining path at `session::…` while their
+// implementation remains physically split below the repository file limit.
+include!("session/live_inbox.rs");
+
+/// Public exact-generation realization port owned by the Session application
+/// boundary. Local Host relay/connection code and downstream platform gateways
+/// implement this same contract; neither becomes Session desired-state authority.
+#[async_trait]
+pub trait McpAttachmentRealizer: Send + Sync {
+    /// Stage one exact generation without making it tool-visible.
+    async fn stage_mcp_attachment(
+        &self,
+        request: crate::StageMcpAttachment,
+    ) -> Result<crate::McpRealizationReceipt, RunError>;
+
+    /// Publish one durably active exact generation at a safe boundary.
+    async fn publish_mcp_generation(
+        &self,
+        generation: crate::McpGenerationRef,
+    ) -> Result<(), RunError>;
+
+    /// Hide and dispose one exact generation idempotently.
+    async fn drain_mcp_generation(
+        &self,
+        generation: crate::McpGenerationRef,
+    ) -> Result<(), RunError>;
+}
+
+pub async fn publish_mcp_generation_receipt(
+    mcp: &dyn McpAttachmentRealizer,
+    generation: crate::McpGenerationRef,
+) -> Result<crate::McpProjectionReceipt, RunError> {
+    mcp.publish_mcp_generation(generation.clone()).await?;
+    Ok(crate::McpProjectionReceipt::new(
+        generation,
+        crate::McpProjectionEffectKind::Publish,
+    ))
+}
+
+pub async fn drain_mcp_generation_receipt(
+    mcp: &dyn McpAttachmentRealizer,
+    generation: crate::McpGenerationRef,
+) -> Result<crate::McpProjectionReceipt, RunError> {
+    mcp.drain_mcp_generation(generation.clone()).await?;
+    Ok(crate::McpProjectionReceipt::new(
+        generation,
+        crate::McpProjectionEffectKind::Drain,
+    ))
+}
+
+/// One best-effort subscription to a logical Session Thread's neutral live
+/// observations. The transport/runtime adapter owns buffering and fan-out; the
+/// protocol sees neither Tokio channels nor Host types.
+#[async_trait]
+pub trait SessionThreadLiveSubscription: Send {
+    /// Wait for the next live observation. `None` means the producer has closed;
+    /// lag is implementation-defined and never affects committed truth.
+    async fn recv(
+        &mut self,
+    ) -> Result<Option<awaken_agent_contract::stream::event::Observation>, RunError>;
+}
+
+/// The runtime seam the adapter drives (DDD port). Implemented by the server over
+/// the kernel; the adapter never constructs a runtime. MCP realization is kept on
+/// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
+#[async_trait]
+pub trait SessionRuntime: Send + Sync {
+    /// Run one user request on `thread` to its first pause or end. `content` is the
+    /// user message's full block list (multimodal): text interleaved with any
+    /// image blocks, never flattened to a bare string.
+    async fn run(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<ContentBlock>,
+    ) -> Result<StepOutcome, RunError>;
+
+    /// Answer a built-in tool the run awaits (allow/deny) and continue.
+    /// `tool_use_id` is the client's asserted target; implementations must fail
+    /// closed when it does not name the run's pending built-in tool.
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        decision: ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError>;
+
+    /// Deliver a client-executed tool's result to the awaiting run and continue.
+    /// `tool_use_id` is the client's asserted target; implementations must fail
+    /// closed when it does not name the run's pending client-executed tool.
+    async fn resume_custom(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        content: Vec<ContentBlock>,
+        is_error: bool,
+    ) -> Result<StepOutcome, RunError>;
+
+    /// The model id to echo in the session's agent object.
+    fn model(&self) -> String;
+
+    /// Session realization: projections, leases and binding sinks a Coordinator installs on a Worker-side runtime. `None` means this runtime does not own that role; callers
+    /// select a [`RealizationRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn realization(&self) -> Option<&dyn RealizationRuntime> {
+        None
+    }
+
+    /// Session Run coordination: reservations, activation, child threads, tool replies and delegation quiescence. `None` means this runtime does not own that role; callers
+    /// select a [`CoordinationRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn coordination(&self) -> Option<&dyn CoordinationRuntime> {
+        None
+    }
+
+    /// Budget and usage accounting for a Session and its threads. `None` means this runtime does not own that role; callers
+    /// select a [`BudgetRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn budget(&self) -> Option<&dyn BudgetRuntime> {
+        None
+    }
+
+    /// Streaming and attributed Run execution, interruption, model rebinding and pending-tool readback. `None` means this runtime does not own that role; callers
+    /// select a [`StreamingRunRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn streaming_runs(&self) -> Option<&dyn StreamingRunRuntime> {
+        None
+    }
+
+    /// Session environment lifecycle: adoption, checkpoints, restore, tool and skill resolution, input application. `None` means this runtime does not own that role; callers
+    /// select a [`EnvironmentRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn environment(&self) -> Option<&dyn EnvironmentRuntime> {
+        None
+    }
+
+    /// Committed thread readback: messages, recovery snapshots, run lifecycle, disposition and outcome projections. `None` means this runtime does not own that role; callers
+    /// select a [`ThreadReadRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn thread_reads(&self) -> Option<&dyn ThreadReadRuntime> {
+        None
+    }
+
+    /// Terminal cleanup effects a Worker performs under a realization lease. `None` means this runtime does not own that role; callers
+    /// select a [`TerminalCleanupRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn terminal_cleanup(&self) -> Option<&dyn TerminalCleanupRuntime> {
+        None
+    }
+
+    /// Outcome preparation, definition and continuation. `None` means this runtime does not own that role; callers
+    /// select a [`OutcomeRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn outcomes(&self) -> Option<&dyn OutcomeRuntime> {
+        None
+    }
+
+    /// Live inbox mutation and snapshot for a running thread. `None` means this runtime does not own that role; callers
+    /// select a [`LiveInboxRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn live_inbox(&self) -> Option<&dyn LiveInboxRuntime> {
+        None
+    }
+
+    /// Capability advertisement for the runtime and for one Session. `None` means this runtime does not own that role; callers
+    /// select a [`CapabilityRuntime`] at composition instead of discovering the gap at the effect
+    /// (ADR-0081 capability ladder).
+    fn capability(&self) -> Option<&dyn CapabilityRuntime> {
+        None
+    }
+}
+
+/// Complete runtime required by the canonical Session application. Partial
+/// runtimes remain valid for lower-level adapters and focused tests, but they
+/// cannot be installed as the application executor merely because their base
+/// methods compile. The marker carries no behavior or parallel state.
+pub trait CompleteSessionRuntime:
+    SessionRuntime
+    + RealizationRuntime
+    + CoordinationRuntime
+    + BudgetRuntime
+    + StreamingRunRuntime
+    + EnvironmentRuntime
+    + ThreadReadRuntime
+    + TerminalCleanupRuntime
+    + OutcomeRuntime
+    + LiveInboxRuntime
+    + CapabilityRuntime
+{
+}
+
+impl<T> CompleteSessionRuntime for T where
+    T: SessionRuntime
+        + RealizationRuntime
+        + CoordinationRuntime
+        + BudgetRuntime
+        + StreamingRunRuntime
+        + EnvironmentRuntime
+        + ThreadReadRuntime
+        + TerminalCleanupRuntime
+        + OutcomeRuntime
+        + LiveInboxRuntime
+        + CapabilityRuntime
+        + ?Sized
+{
+}
+/// Immediate durability boundary for a newly materialized Session environment.
+/// The binding must commit before the runtime exposes that environment to work.
+#[async_trait]
+pub trait SessionEnvironmentBindingSink: Send + Sync {
+    /// Atomically determine whether the durable aggregate owns this effect and
+    /// whether the exact effect already committed. Internal runtime threads
+    /// deliberately return `Unowned`; callers must not split this check into a
+    /// separate existence read and a later authorization decision.
+    async fn authorize(
+        &self,
+        intent: &crate::SessionEnvironmentEffectIntent,
+    ) -> Result<crate::SessionEnvironmentEffectAuthorization, RunError>;
+
+    /// Commit one authorized receipt and return the exact Store-read
+    /// Environment authority. Runtime owner installation must consume this
+    /// value rather than reconstructing generation state from local time.
+    async fn persist(
+        &self,
+        receipt: crate::SessionEnvironmentReceipt,
+    ) -> Result<crate::SessionEnvironmentState, RunError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+
+    #[test]
+    fn thread_usage_has_one_lossless_session_projection() {
+        // Cause/effect graph: C1 no model has committed usage; C2 one model has
+        // committed usage; C3 several models have committed usage. Effects: E1
+        // the projection is empty; E2 each model retains exact attribution; E3
+        // totals are the saturating sum; E4 non-token counters remain zero
+        // because ThreadUsage does not own them. Decision rules:
+        // R1=C1=>E1,E4; R2=C2=>E2,E3,E4; R3=C3=>E2,E3,E4.
+        let empty = session_usage_from_thread_usage(Default::default());
+        assert_eq!(empty, SessionUsage::default(), "R1/E1,E4");
+
+        let attributed = awaken_runtime_contract::llm::ThreadUsage {
+            by_model: std::collections::BTreeMap::from([
+                (
+                    "model-a".into(),
+                    awaken_runtime_contract::llm::TokenUsage {
+                        prompt_tokens: 3,
+                        completion_tokens: 5,
+                        cache_read_tokens: 7,
+                        cache_creation_tokens: 11,
+                    },
+                ),
+                (
+                    "model-b".into(),
+                    awaken_runtime_contract::llm::TokenUsage {
+                        prompt_tokens: 13,
+                        completion_tokens: 17,
+                        cache_read_tokens: 19,
+                        cache_creation_tokens: 23,
+                    },
+                ),
+            ]),
+        };
+
+        let one_model =
+            session_usage_from_thread_usage(awaken_runtime_contract::llm::ThreadUsage {
+                by_model: std::collections::BTreeMap::from([(
+                    "model-a".into(),
+                    awaken_runtime_contract::llm::TokenUsage {
+                        prompt_tokens: 3,
+                        completion_tokens: 5,
+                        cache_read_tokens: 7,
+                        cache_creation_tokens: 11,
+                    },
+                )]),
+            });
+        assert_eq!(one_model.input_tokens, 3, "R2/E3");
+        assert_eq!(one_model.by_model["model-a"].output_tokens, 5, "R2/E2");
+        assert_eq!(one_model.active_seconds, 0, "R2/E4");
+
+        let projected = session_usage_from_thread_usage(attributed);
+        assert_eq!(projected.input_tokens, 16, "R3/E3");
+        assert_eq!(projected.output_tokens, 22, "R3/E3");
+        assert_eq!(projected.cache_read_tokens, 26, "R3/E3");
+        assert_eq!(projected.cache_creation_tokens, 34, "R3/E3");
+        assert_eq!(projected.by_model["model-a"].input_tokens, 3, "R3/E2");
+        assert_eq!(projected.by_model["model-b"].output_tokens, 17, "R3/E2");
+        assert_eq!(projected.active_seconds, 0, "R3/E4");
+        assert_eq!(projected.web_fetch_requests, 0, "R3/E4");
+        assert_eq!(projected.web_search_requests, 0, "R3/E4");
+    }
+
+    /// A minimal double that overrides ONLY [`SessionRuntime::run`] (plus the trait's
+    /// other *required* methods, implemented minimally). Every fail-closed DEFAULT
+    /// method (`live_inbox_*`, `owns_thread`, `committed_messages`, `run_streaming`,
+    /// …) is left at the trait's default so the tests below exercise those defaults.
+    struct MinimalRuntime;
+
+    /// The distinctive outcome `run` returns — used to prove `run_streaming` delegates
+    /// to `run` identically (the default just ignores the sink).
+    fn sample_outcome() -> StepOutcome {
+        StepOutcome::ended(
+            vec![
+                Message::text(MessageId("m1".into()), Role::Assistant, "one"),
+                Message::text(MessageId("m2".into()), Role::Assistant, "two"),
+            ],
+            EndCause::Error(Failure::Inference {
+                code: "boom".into(),
+                message: "it failed".into(),
+            }),
+        )
+    }
+
+    #[async_trait]
+    impl SessionRuntime for MinimalRuntime {
+        async fn run(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _content: Vec<ContentBlock>,
+        ) -> Result<StepOutcome, RunError> {
+            Ok(sample_outcome())
+        }
+
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _decision: ToolPermissionDecision,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!("not exercised by the default-method tests")
+        }
+
+        async fn resume_custom(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _content: Vec<ContentBlock>,
+            _is_error: bool,
+        ) -> Result<StepOutcome, RunError> {
+            unreachable!("not exercised by the default-method tests")
+        }
+
+        fn model(&self) -> String {
+            "test-model".into()
+        }
+
+        fn outcomes(&self) -> Option<&dyn crate::OutcomeRuntime> {
+            Some(self)
+        }
+
+        fn realization(&self) -> Option<&dyn crate::RealizationRuntime> {
+            Some(self)
+        }
+
+        fn coordination(&self) -> Option<&dyn crate::CoordinationRuntime> {
+            Some(self)
+        }
+
+        fn budget(&self) -> Option<&dyn crate::BudgetRuntime> {
+            Some(self)
+        }
+
+        fn streaming_runs(&self) -> Option<&dyn crate::StreamingRunRuntime> {
+            Some(self)
+        }
+
+        fn environment(&self) -> Option<&dyn crate::EnvironmentRuntime> {
+            Some(self)
+        }
+
+        fn thread_reads(&self) -> Option<&dyn crate::ThreadReadRuntime> {
+            Some(self)
+        }
+
+        fn terminal_cleanup(&self) -> Option<&dyn crate::TerminalCleanupRuntime> {
+            Some(self)
+        }
+
+        fn live_inbox(&self) -> Option<&dyn crate::LiveInboxRuntime> {
+            Some(self)
+        }
+
+        fn capability(&self) -> Option<&dyn crate::CapabilityRuntime> {
+            Some(self)
+        }
+    }
+
+    crate::neutral_role!(RealizationRuntime for MinimalRuntime);
+
+    crate::neutral_role!(CoordinationRuntime for MinimalRuntime);
+
+    crate::neutral_role!(BudgetRuntime for MinimalRuntime);
+
+    crate::neutral_role!(StreamingRunRuntime for MinimalRuntime);
+
+    crate::neutral_role!(EnvironmentRuntime for MinimalRuntime);
+
+    crate::neutral_role!(ThreadReadRuntime for MinimalRuntime);
+
+    crate::neutral_role!(TerminalCleanupRuntime for MinimalRuntime);
+
+    crate::neutral_role!(LiveInboxRuntime for MinimalRuntime);
+
+    crate::neutral_role!(CapabilityRuntime for MinimalRuntime);
+
+    #[async_trait::async_trait]
+    impl crate::OutcomeRuntime for MinimalRuntime {
+        // Neutral role behaviour: forwarded to `NeutralRuntime` rather than scripted here.
+        async fn prepare_outcome(
+            &self,
+            thread: &str,
+            outcome_id: &str,
+            description: &str,
+            rubric: &str,
+            max_iterations: u32,
+        ) -> Result<u64, RunError> {
+            crate::NeutralRuntime
+                .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
+                .await
+        }
+
+        async fn define_outcome(
+            &self,
+            _thread: &str,
+            _description: &str,
+            _rubric: &str,
+            _max_iterations: u32,
+        ) -> Result<OutcomeDrive, RunError> {
+            unreachable!("not exercised by the default-method tests")
+        }
+
+        // Neutral role behaviour: forwarded to `NeutralRuntime` rather than scripted here.
+        async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
+            crate::NeutralRuntime.continue_outcome(thread).await
+        }
+    }
+
+    // Item 1: the fail-closed DEFAULT live-inbox methods all reject with `Inactive`.
+    // Item 1: the other fail-closed defaults — ownership false, committed empty.
+    /// Cause-effect graph for a Runtime without generation support:
+    ///
+    /// C1 exact generation command reaches the default SessionRuntime port
+    ///   -> C2 no concrete generation adapter is installed
+    ///   -> E1 reject before any stage/publish/drain effect.
+    ///
+    /// Decision table (the test cases below are generated one-for-one):
+    ///
+    /// | Rule | command | C1 | C2 | result |
+    /// |---|---|---|---|---|
+    /// | R1 | stage | T | T | `mcp_runtime_unsupported` |
+    /// | R2 | publish | T | T | `mcp_runtime_unsupported` |
+    /// | R3 | drain | T | T | `mcp_runtime_unsupported` |
+    #[test]
+    fn core_only_runtime_owns_no_role() {
+        // Capability ladder (ADR-0081 §3): C1 a runtime that implements only the
+        // four core operations. R1 every role accessor answers `None`, so
+        // coordination queries, terminal publication, live-inbox edits,
+        // thread probes and streaming runs are unreachable at the type level
+        // instead of answered by a refusing default; R2 the core surface is
+        // still there, which is what an ephemeral in-process host needs.
+        struct CoreOnlyRuntime;
+        #[async_trait]
+        impl SessionRuntime for CoreOnlyRuntime {
+            async fn run(
+                &self,
+                agent: &str,
+                thread: &str,
+                content: Vec<ContentBlock>,
+            ) -> Result<StepOutcome, RunError> {
+                MinimalRuntime.run(agent, thread, content).await
+            }
+            async fn resume(
+                &self,
+                thread: &str,
+                tool_use_id: &str,
+                decision: ToolPermissionDecision,
+            ) -> Result<StepOutcome, RunError> {
+                MinimalRuntime.resume(thread, tool_use_id, decision).await
+            }
+            async fn resume_custom(
+                &self,
+                thread: &str,
+                tool_use_id: &str,
+                content: Vec<ContentBlock>,
+                is_error: bool,
+            ) -> Result<StepOutcome, RunError> {
+                MinimalRuntime
+                    .resume_custom(thread, tool_use_id, content, is_error)
+                    .await
+            }
+            fn model(&self) -> String {
+                MinimalRuntime.model()
+            }
+        }
+        let rt = CoreOnlyRuntime;
+        assert!(rt.realization().is_none(), "R1 realization");
+        assert!(rt.coordination().is_none(), "R1 coordination");
+        assert!(rt.budget().is_none(), "R1 budget");
+        assert!(rt.streaming_runs().is_none(), "R1 streaming runs");
+        assert!(rt.environment().is_none(), "R1 environment");
+        assert!(rt.thread_reads().is_none(), "R1 thread reads");
+        assert!(rt.terminal_cleanup().is_none(), "R1 terminal cleanup");
+        assert!(rt.outcomes().is_none(), "R1 outcomes");
+        assert!(rt.live_inbox().is_none(), "R1 live inbox");
+        assert!(rt.capability().is_none(), "R1 capability");
+        let _: &dyn SessionRuntime = &rt;
+    }
+
+    #[tokio::test]
+    async fn explicit_unsupported_mcp_fixture_fails_closed_from_decision_table() {
+        use crate::{McpGenerationRef, McpTarget, StageMcpAttachment};
+
+        struct UnsupportedRealizer;
+        #[async_trait]
+        impl McpAttachmentRealizer for UnsupportedRealizer {
+            async fn stage_mcp_attachment(
+                &self,
+                _request: crate::StageMcpAttachment,
+            ) -> Result<crate::McpRealizationReceipt, RunError> {
+                Err(RunError::classified(
+                    "mcp_runtime_unsupported",
+                    "fixture does not support generation-fenced MCP realization",
+                ))
+            }
+
+            async fn publish_mcp_generation(
+                &self,
+                _generation: crate::McpGenerationRef,
+            ) -> Result<(), RunError> {
+                Err(RunError::classified(
+                    "mcp_runtime_unsupported",
+                    "fixture does not support generation-fenced MCP publication",
+                ))
+            }
+
+            async fn drain_mcp_generation(
+                &self,
+                _generation: crate::McpGenerationRef,
+            ) -> Result<(), RunError> {
+                Err(RunError::classified(
+                    "mcp_runtime_unsupported",
+                    "fixture does not support generation-fenced MCP drain",
+                ))
+            }
+        }
+        let runtime = UnsupportedRealizer;
+        let generation = McpGenerationRef {
+            session_id: "session-1".into(),
+            generation: crate::mcp_attachment::test_generation(
+                "mcp-1",
+                1,
+                "https://mcp.example.test",
+            ),
+            runtime_incarnation: "runtime-1".into(),
+            lease_epoch: 7,
+            lease_expires_at_unix_ms: u64::MAX,
+        };
+        let stage = StageMcpAttachment {
+            workspace_id: "workspace-1".into(),
+            generation: generation.clone(),
+            realization_id: "realization-1".into(),
+            stage_idempotency_key: "stage-1".into(),
+            name: "calculator".into(),
+            target: McpTarget::parse_http("https://mcp.example.test").unwrap(),
+            credential: None,
+            prompts_as_skills: false,
+            selected_plaintext_holder: None,
+        };
+
+        let stage_error = runtime.stage_mcp_attachment(stage).await.unwrap_err();
+        let publish_error = runtime
+            .publish_mcp_generation(generation.clone())
+            .await
+            .unwrap_err();
+        let drain_error = runtime.drain_mcp_generation(generation).await.unwrap_err();
+        for (rule, error) in [
+            ("R1", stage_error),
+            ("R2", publish_error),
+            ("R3", drain_error),
+        ] {
+            assert_eq!(error.code, "mcp_runtime_unsupported", "{rule}");
+            assert_eq!(error.kind, RunErrorKind::Internal, "{rule}");
+        }
+    }
+
+    // Item 1: `run_streaming`'s default delegates to `run` — the committed outcome is
+    // identical (the sink only mirrors in-flight events, which the default ignores).
+    // Item 4: `LiveInboxError` Display messages are stable, distinct wire text.
+    #[test]
+    fn live_inbox_error_display_messages_are_pinned() {
+        // Test design — Causes: each closed LiveInbox failure variant is rendered.
+        // Effects: it produces its exact distinct operator-facing text.
+        // Constraints/invariants: display text is a pinned wire/debug boundary;
+        // variants never alias. Decision rule L1: enumerate all variants=>three
+        // exact, pairwise-distinct messages.
+        assert_eq!(
+            LiveInboxError::Inactive.to_string(),
+            "no Run is in flight; send the message as a normal event",
+        );
+        assert_eq!(
+            LiveInboxError::UnknownMessage.to_string(),
+            "no queued message with that id",
+        );
+        assert_eq!(
+            LiveInboxError::StaleOrder.to_string(),
+            "proposed order does not match the current queue",
+        );
+    }
+
+    // Cause/effect decision table: R1 runtime faults map to Internal/internal;
+    // R2 caller faults map to BadRequest/invalid_request; R3 temporary dependency
+    // faults map to Unavailable/unavailable. The wire adapter owns 500/400/503.
+    // Constraints/invariants: the contract preserves three distinct stable kinds
+    // and codes; transport status selection remains outside this value object.
+    #[test]
+    fn run_error_display_and_kind_mapping() {
+        let internal = RunError::internal("provider blew up");
+        assert_eq!(internal.to_string(), "run failed: provider blew up");
+        assert_eq!(internal.kind, RunErrorKind::Internal);
+
+        let bad = RunError::bad_request("no such await");
+        assert_eq!(bad.to_string(), "run failed: no such await");
+        assert_eq!(bad.kind, RunErrorKind::BadRequest);
+
+        let unavailable = RunError::unavailable("image is still building");
+        assert_eq!(unavailable.kind, RunErrorKind::Unavailable);
+        assert_eq!(unavailable.code, "unavailable");
+
+        // The three causes remain distinct.
+        assert_ne!(internal.kind, bad.kind);
+        assert_ne!(bad.kind, unavailable.kind);
+    }
+
+    // Item 5: `LiveInboxSnapshot::inactive()` invariants.
+    #[test]
+    fn inactive_snapshot_is_empty_versionless_and_inactive() {
+        // Test design — Cause: no Run is in flight, so the canonical inactive
+        // constructor is selected. Effects: active=false, version=0, and no
+        // queued messages. Constraints/invariants: absence carries neither a
+        // resumable version nor latent inbox state. Decision rule I1: inactive
+        // constructor=>assert the complete three-field boundary tuple.
+        let snap = LiveInboxSnapshot::inactive();
+        assert!(!snap.active);
+        assert_eq!(snap.version, 0);
+        assert!(snap.messages.is_empty());
+    }
+
+    #[test]
+    fn committed_resume_ticket_has_one_pending_projection_decision_table() {
+        use awaken_agent_contract::agent::awaiting::{
+            AwaitTarget, PauseReason, PendingTool as TicketPendingTool, RemoteInputReason,
+            ResumeTicket, ToolAwaitReason,
+        };
+
+        // Causes: C1 each closed ToolCall reason is Permission, ClientExecution,
+        // ScheduledAction, or Delegation; C2 each RemoteInput reason is UserInput
+        // or ExternalEvent; C3 each Pause reason is Manual, RateLimit, or
+        // BudgetReached. Effects: E1 preserve the exact call/tool and classify a
+        // built-in confirmation; E2 preserve the exact call/tool and classify a
+        // client execution; E3 synthesize client-executed agent_input with the
+        // exact reason token; E4 omit system-owned waits. This is the sole
+        // foreground/cold decoder.
+        //
+        // Decision table:
+        // | Rule | Closed target | Effect |
+        // |---|---|---|
+        // | P1 | ToolCall(Permission) | E1 |
+        // | P2 | ToolCall(ClientExecution) | E2 |
+        // | P3 | RemoteInput(UserInput) | E3 user_input |
+        // | P4 | RemoteInput(ExternalEvent) | E3 external_event |
+        // | P5 | ToolCall(ScheduledAction) | E4 |
+        // | P6 | ToolCall(Delegation) | E4 |
+        // | P7 | Pause(Manual) | E4 |
+        // | P8 | Pause(RateLimit) | E4 |
+        // | P9 | Pause(BudgetReached) | E4 |
+        // Constraints/invariants: K1 ToolCall necessarily carries call id and
+        // PendingTool, so projection has no malformed-payload error; K2 internal
+        // waits never become required action; K3 exhaustive matching makes a new
+        // closed target fail compilation until this authority classifies it.
+        let ticket = |target| {
+            ResumeTicket::new(
+                "correlation",
+                RunId("run".into()),
+                awaken_agent_contract::agent::thread::Id("thread".into()),
+                "snapshot",
+                "catalog",
+                target,
+            )
+        };
+        let concrete = || TicketPendingTool {
+            tool_id: "calculator".into(),
+            arguments: serde_json::json!({"value": 7}),
+        };
+
+        let tool = |reason| AwaitTarget::ToolCall {
+            reason,
+            call_id: "call".into(),
+            tool: concrete(),
+            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
+        };
+        let exact_tool = |client_executed| {
+            Some(Pending {
+                tool_use_id: "call".into(),
+                name: "calculator".into(),
+                input: serde_json::json!({"value": 7}),
+                client_executed,
+            })
+        };
+        let agent_input = |reason| {
+            Some(Pending {
+                tool_use_id: "call".into(),
+                name: "agent_input".into(),
+                input: serde_json::json!({"reason": reason}),
+                client_executed: true,
+            })
+        };
+        let cases = [
+            (
+                "P1/E1",
+                tool(ToolAwaitReason::Permission),
+                exact_tool(false),
+            ),
+            (
+                "P2/E2",
+                tool(ToolAwaitReason::ClientExecution),
+                exact_tool(true),
+            ),
+            (
+                "P3/E3",
+                AwaitTarget::RemoteInput {
+                    reason: RemoteInputReason::UserInput,
+                    call_id: "call".into(),
+                },
+                agent_input("user_input"),
+            ),
+            (
+                "P4/E3",
+                AwaitTarget::RemoteInput {
+                    reason: RemoteInputReason::ExternalEvent,
+                    call_id: "call".into(),
+                },
+                agent_input("external_event"),
+            ),
+            ("P5/E4", tool(ToolAwaitReason::ScheduledAction), None),
+            ("P6/E4", tool(ToolAwaitReason::Delegation), None),
+            ("P7/E4", AwaitTarget::Pause(PauseReason::Manual), None),
+            ("P8/E4", AwaitTarget::Pause(PauseReason::RateLimit), None),
+            (
+                "P9/E4",
+                AwaitTarget::Pause(PauseReason::BudgetReached),
+                None,
+            ),
+        ];
+
+        for (rule, target, expected) in cases {
+            assert_eq!(
+                Pending::from_resume_ticket(&ticket(target)),
+                expected,
+                "{rule}"
+            );
+        }
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn awaiting_constructor_cannot_create_a_terminal_or_failed_outcome() {
+        // Test design — Causes: the Awaiting constructor receives no pending tool.
+        // Effects: state is Awaiting and failure is absent. Constraints/invariants:
+        // Awaiting cannot also be terminal. Decision rule K1: any empty message
+        // vector+None pending=>Awaiting and no failure authority.
+        let outcome = StepOutcome::awaiting(Vec::new(), None);
+        assert!(matches!(outcome.state(), RunState::Awaiting));
+        assert!(outcome.failure().is_none());
+        std::mem::forget(outcome);
+    }
+
+    #[kani::proof]
+    fn ended_constructor_carries_the_only_failure_authority_and_no_pending_tool() {
+        // Test design — Causes: an Ended constructor receives either a classified
+        // error or natural completion. Effects: both are terminal, only the error
+        // exposes Failure, and neither has pending work. Constraints/invariants:
+        // EndCause is the sole failure authority. Decision rule K2: error=>failure;
+        // natural=>none; both=>Ended+no pending.
+        let cause = if kani::any::<bool>() {
+            EndCause::Error(Failure::CapabilityBound)
+        } else {
+            EndCause::NaturalEnd
+        };
+        let is_error = matches!(&cause, EndCause::Error(_));
+        let outcome = StepOutcome::ended(Vec::new(), cause);
+        assert!(matches!(outcome.state(), RunState::Ended(_)));
+        assert!(outcome.pending().is_none());
+        assert_eq!(outcome.failure().is_some(), is_error);
+        std::mem::forget(outcome);
+    }
+
+    #[kani::proof]
+    fn settled_step_has_no_parallel_observation_authority() {
+        // Cause/effect decision rule: a terminal committed Run cause creates an
+        // Ended Step outcome; compaction, retry, and model-request observations
+        // remain exclusively in the committed recovery snapshot audit stream.
+        // Constraints/invariants: StepOutcome carries no parallel observation
+        // authority and a settled Step cannot retain pending work.
+        let ended = StepOutcome::ended(Vec::new(), EndCause::NaturalEnd);
+        assert!(matches!(
+            ended.state(),
+            RunState::Ended(EndCause::NaturalEnd)
+        ));
+        assert!(ended.pending().is_none());
+        std::mem::forget(ended);
+    }
+}

@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use awaken_session_contract::{
+use awaken_session_application_contract::{
     EventForwardingSink, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 

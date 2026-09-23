@@ -24,7 +24,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
-use awaken_session_contract::{
+use awaken_session_application_contract::{
     CursorParams, EventForwardingSink, Pending, RunApplication, RunApplicationError, RunResume,
     StepOutcome, paginate_history,
 };
@@ -473,7 +473,7 @@ fn sse_error(err: RunApplicationError) -> Response {
 }
 
 fn query_error(error: RunApplicationError) -> Response {
-    use awaken_session_contract::RunErrorKind;
+    use awaken_session_error_contract::RunErrorKind;
 
     let status = match error.kind {
         RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,

@@ -22,16 +22,16 @@ use awaken_dispatch::{
     DispatchQueue as _, MemoryDispatchStore, ResourceOperationFence, RunClaim, RunDispatch,
     WorkerIdentity,
 };
-use awaken_session_contract::SessionRepository as _;
+use awaken_session_repository_contract::SessionRepository as _;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
-fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources {
-    awaken_session_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_contract::ResolvedInput {
+fn resources(file_id: &str) -> awaken_session_resource_contract::ResolvedSessionResources {
+    awaken_session_resource_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_resource_contract::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::new("file-binding"),
-            source: awaken_session_contract::ResolvedInputSource::File {
+            source: awaken_session_resource_contract::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from(file_id),
             },
             mount_path: "/workspace/input.txt".into(),
@@ -193,38 +193,41 @@ fn frozen_application_session(
     session_id: &str,
     file_id: &str,
     identity: &WorkerIdentity,
-) -> awaken_session_contract::PersistedSession {
-    let environment = awaken_session_contract::EnvironmentSnapshot {
+) -> awaken_session_state_contract::PersistedSession {
+    let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
         environment_id: "env-worker".into(),
         revision: awaken_environment_contract::EnvironmentRevision(1),
         self_hosted: true,
-        config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
+        config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
+            "env-1".into(),
+        ),
         sandbox: Default::default(),
         sandbox_provisioning: Default::default(),
         idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,
-        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
         credential_realization:
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
     };
-    let mut resource_state = awaken_session_contract::SessionResourceState::default();
+    let mut resource_state = awaken_session_state_contract::SessionResourceState::default();
     resource_state
         .prepare(
-            &awaken_session_contract::SessionId::from(session_id),
+            &awaken_session_types::SessionId::from(session_id),
             resources(file_id),
         )
         .expect("prepare Worker Session resources");
-    awaken_session_contract::PersistedSession {
+    awaken_session_state_contract::PersistedSession {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
         session_id: session_id.into(),
         revision: Default::default(),
-        baseline: awaken_session_contract::SessionBaselineState::Frozen(
-            awaken_session_contract::SessionBaseline::compile(
-                awaken_session_contract::SessionBaselineInputs {
+        baseline: awaken_session_configuration_contract::SessionBaselineState::Frozen(
+            awaken_session_configuration_contract::SessionBaseline::compile(
+                awaken_session_configuration_contract::SessionBaselineInputs {
                     environment,
-                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                    runtime_placement:
+                        awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
                     mcp_authoring: Default::default(),
                     agent_id: "agent".into(),
                     agent_revision: None,
@@ -254,14 +257,14 @@ fn frozen_application_session(
         environment: Default::default(),
         mcp: Default::default(),
         resources: resource_state,
-        realization: Some(awaken_session_contract::SessionRealizationLease {
+        realization: Some(awaken_session_resource_contract::SessionRealizationLease {
             owner: identity.worker_id.clone(),
             runtime_incarnation: identity.lease_owner(),
             epoch: 1,
             expires_at_unix_ms: support::unix_now_ms().saturating_add(60_000),
         }),
         realization_progress: Default::default(),
-        execution: awaken_session_contract::SessionExecutionState::Running,
+        execution: awaken_session_state_contract::SessionExecutionState::Running,
         disposition: Default::default(),
         terminal_cleanup: Default::default(),
     }
@@ -577,7 +580,7 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         .create(
             "workspace-file",
             session,
-            awaken_session_contract::IdempotencyRecord {
+            awaken_session_state_contract::IdempotencyRecord {
                 key: "create:session-application-file".into(),
                 payload_hash: "payload:session-application-file".into(),
             },

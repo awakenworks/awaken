@@ -4,9 +4,7 @@
 use std::collections::BTreeMap;
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_session_contract::work_queue::{
-    WorkItem, WorkPayload, WorkState, next_heartbeat_receipt,
-};
+use awaken_session_work_contract::{WorkItem, WorkPayload, WorkState, next_heartbeat_receipt};
 use rusqlite::{Connection, OptionalExtension};
 use sqlx::postgres::PgPool;
 

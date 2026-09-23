@@ -6,14 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_session_contract::{
+use awaken_session_dream_contract::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, Dream, DreamCleanupAdmission,
     DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
     DreamModelSpeed, DreamOutput, DreamOutputBehavior, DreamPage, DreamPolicyApplication,
     DreamPolicyApplicationError, DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord,
     DreamProcessStore, DreamStatus, DreamStatusEvent, DreamUsage,
 };
-pub use awaken_session_contract::{DreamPolicy, DreamPolicyConfig};
+pub use awaken_session_dream_contract::{DreamPolicy, DreamPolicyConfig};
 use chrono::{DateTime, Utc};
 
 const DEFAULT_PAGE_SIZE: usize = 20;
@@ -33,7 +33,7 @@ pub struct DreamRequest {
     pub workspace_id: String,
     pub source_memory_store_id: String,
     pub output_behavior: DreamOutputBehavior,
-    pub session_ids: Vec<awaken_session_contract::SessionId>,
+    pub session_ids: Vec<awaken_session_types::SessionId>,
     pub model: DreamModelConfig,
     pub request_guidance: Option<String>,
     /// Ordinary published Agent id used by the auxiliary Session. The stable
@@ -61,7 +61,7 @@ pub trait DreamSessionSource: Send + Sync {
         workspace_id: &str,
         updated_after_ms: u64,
         limit: usize,
-    ) -> Vec<awaken_session_contract::SessionId>;
+    ) -> Vec<awaken_session_types::SessionId>;
 
     /// Read the ordinary auxiliary Session's cumulative committed usage. Dream
     /// never persists a second copy of these execution facts.
@@ -157,12 +157,12 @@ struct DreamProcess {
     status: DreamStatus,
     source_memory_store_id: String,
     output_behavior: DreamOutputBehavior,
-    session_ids: Vec<awaken_session_contract::SessionId>,
+    session_ids: Vec<awaken_session_types::SessionId>,
     model: DreamModelConfig,
     request_guidance: Option<String>,
     agent_id: String,
     result_memory_store_id: Option<String>,
-    session_id: Option<awaken_session_contract::SessionId>,
+    session_id: Option<awaken_session_types::SessionId>,
     transcript_file_ids: Vec<String>,
     cleanup_pending: bool,
     created_at: u64,
@@ -288,7 +288,7 @@ fn process_from_record(record: DreamProcessRecord) -> DreamProcess {
         session_id: record
             .session_id
             .map(String::from)
-            .map(awaken_session_contract::SessionId::from),
+            .map(awaken_session_types::SessionId::from),
         transcript_file_ids: record.transcript_file_ids,
         cleanup_pending: record.cleanup_pending,
         created_at: record.created_at,
@@ -303,7 +303,7 @@ fn process_from_record(record: DreamProcessRecord) -> DreamProcess {
 }
 
 fn timestamp(value: u64) -> String {
-    awaken_session_contract::epoch_millis_to_rfc3339(value)
+    awaken_session_application_contract::epoch_millis_to_rfc3339(value)
 }
 
 fn now_ms() -> u64 {
@@ -342,7 +342,8 @@ pub struct InMemoryDreamProcessStore(Mutex<InMemoryDreamRecords>);
 impl DreamProcessStore for InMemoryDreamProcessStore {
     fn dream_processes(
         &self,
-    ) -> Result<Vec<DreamProcessRecord>, awaken_session_contract::DreamProcessStoreError> {
+    ) -> Result<Vec<DreamProcessRecord>, awaken_session_dream_contract::DreamProcessStoreError>
+    {
         Ok(self.0.lock().unwrap().processes.values().cloned().collect())
     }
 
@@ -350,7 +351,7 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
         &self,
         expected: Option<&DreamProcessRecord>,
         record: DreamProcessRecord,
-    ) -> Result<bool, awaken_session_contract::DreamProcessStoreError> {
+    ) -> Result<bool, awaken_session_dream_contract::DreamProcessStoreError> {
         let mut state = self.0.lock().unwrap();
         let current = state.processes.get(&record.process_id);
         if current != expected {
@@ -362,7 +363,7 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
 
     fn dream_policies(
         &self,
-    ) -> Result<Vec<DreamPolicyRecord>, awaken_session_contract::DreamProcessStoreError> {
+    ) -> Result<Vec<DreamPolicyRecord>, awaken_session_dream_contract::DreamProcessStoreError> {
         Ok(self.0.lock().unwrap().policies.values().cloned().collect())
     }
 
@@ -370,7 +371,7 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
         &self,
         expected: Option<&DreamPolicyRecord>,
         record: DreamPolicyRecord,
-    ) -> Result<bool, awaken_session_contract::DreamProcessStoreError> {
+    ) -> Result<bool, awaken_session_dream_contract::DreamProcessStoreError> {
         let mut state = self.0.lock().unwrap();
         let key = (record.workspace_id.clone(), record.memory_store_id.clone());
         let current = state.policies.get(&key);
@@ -386,7 +387,7 @@ impl DreamProcessStore for InMemoryDreamProcessStore {
         expected_policy: &DreamPolicyRecord,
         policy: DreamPolicyRecord,
         process: DreamProcessRecord,
-    ) -> Result<bool, awaken_session_contract::DreamProcessStoreError> {
+    ) -> Result<bool, awaken_session_dream_contract::DreamProcessStoreError> {
         let mut state = self.0.lock().unwrap();
         let key = (policy.workspace_id.clone(), policy.memory_store_id.clone());
         if state.policies.get(&key) != Some(expected_policy)
@@ -502,7 +503,7 @@ impl DreamApplication {
             process
                 .session_id
                 .as_ref()
-                .map(awaken_session_contract::SessionId::as_str),
+                .map(awaken_session_types::SessionId::as_str),
         ) {
             (Some(source), Some(session_id)) => source
                 .session_usage(&process.workspace_id, session_id)
@@ -595,11 +596,13 @@ impl DreamApplication {
                 object_type: "dream_policy",
                 memory_store_id: policy.memory_store_id,
                 config: policy.config,
-                next_due_at: Some(awaken_session_contract::epoch_millis_to_rfc3339(
-                    policy.next_due_ms,
-                )),
+                next_due_at: Some(
+                    awaken_session_application_contract::epoch_millis_to_rfc3339(
+                        policy.next_due_ms,
+                    ),
+                ),
                 last_completed_cutoff_at: (policy.last_completed_cutoff_ms > 0).then(|| {
-                    awaken_session_contract::epoch_millis_to_rfc3339(
+                    awaken_session_application_contract::epoch_millis_to_rfc3339(
                         policy.last_completed_cutoff_ms,
                     )
                 }),
@@ -920,7 +923,7 @@ impl DreamApplication {
         };
         let prepared_job = match self.commit_job_update(&id, |job| {
             job.result_memory_store_id = Some(preparation.result_memory_store_id.clone());
-            job.session_id = Some(awaken_session_contract::SessionId::from(
+            job.session_id = Some(awaken_session_types::SessionId::from(
                 preparation.session_id.clone(),
             ));
             job.transcript_file_ids = preparation.transcript_file_ids.clone();
@@ -1302,7 +1305,7 @@ fn parse_bound(value: Option<&str>) -> Result<Option<u64>, DreamApiError> {
 
 fn validate_create(
     params: &DreamCreateParams,
-) -> Result<(String, Vec<awaken_session_contract::SessionId>), DreamApiError> {
+) -> Result<(String, Vec<awaken_session_types::SessionId>), DreamApiError> {
     if params.inputs.len() != 2 {
         return Err(DreamApiError::BadRequest(
             "inputs must contain exactly one memory_store and one sessions input".into(),
@@ -1436,7 +1439,7 @@ mod tests {
                 _workspace_id: &str,
                 _updated_after_ms: u64,
                 _limit: usize,
-            ) -> Vec<awaken_session_contract::SessionId> {
+            ) -> Vec<awaken_session_types::SessionId> {
                 Vec::new()
             }
 
@@ -1463,7 +1466,7 @@ mod tests {
             request_guidance: None,
             agent_id: "dream".into(),
             result_memory_store_id: Some("result".into()),
-            session_id: Some(awaken_session_contract::SessionId::from(
+            session_id: Some(awaken_session_types::SessionId::from(
                 "session-a".to_string(),
             )),
             transcript_file_ids: Vec::new(),

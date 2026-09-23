@@ -2,15 +2,15 @@ pub mod awaken_protocol_ai_sdk
 pub mod awaken_protocol_ai_sdk::encoder
 pub struct awaken_protocol_ai_sdk::encoder::AiSdkEncoder
 impl awaken_protocol_ai_sdk::encoder::AiSdkEncoder
-pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::complete(&mut self, &awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
+pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::complete(&mut self, &awaken_session_application_contract::step_outcome::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
 pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::fail(&mut self, impl core::convert::Into<alloc::string::String>) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
 pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::new() -> Self
 impl awaken_agent_contract::event::fold::Transcoder for awaken_protocol_ai_sdk::encoder::AiSdkEncoder
 pub type awaken_protocol_ai_sdk::encoder::AiSdkEncoder::Output = awaken_protocol_ai_sdk::types::UIStreamEvent
 pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::delta(&mut self, &awaken_agent_contract::event::agent::Delta) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
 pub fn awaken_protocol_ai_sdk::encoder::AiSdkEncoder::fact(&mut self, &awaken_agent_contract::event::agent::Fact) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
-pub fn awaken_protocol_ai_sdk::encoder::encode_history(&[awaken_agent_contract::agent::message::Message], core::option::Option<&awaken_session_contract::session::pending::Pending>) -> alloc::vec::Vec<serde_json::value::Value>
-pub fn awaken_protocol_ai_sdk::encoder::encode_step(&awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
+pub fn awaken_protocol_ai_sdk::encoder::encode_history(&[awaken_agent_contract::agent::message::Message], core::option::Option<&awaken_session_application_contract::pending::Pending>) -> alloc::vec::Vec<serde_json::value::Value>
+pub fn awaken_protocol_ai_sdk::encoder::encode_step(&awaken_session_application_contract::step_outcome::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIStreamEvent>
 pub mod awaken_protocol_ai_sdk::request
 pub enum awaken_protocol_ai_sdk::request::DecisionKind
 pub awaken_protocol_ai_sdk::request::DecisionKind::Approved
@@ -43,7 +43,7 @@ pub fn awaken_protocol_ai_sdk::request::ProcessedRequest::is_resume_only(&self) 
 pub fn awaken_protocol_ai_sdk::request::process_request(awaken_protocol_ai_sdk::types::AiSdkChatRequest, &[awaken_agent_contract::agent::message::Message]) -> core::result::Result<awaken_protocol_ai_sdk::request::ProcessedRequest, awaken_protocol_ai_sdk::request::ProcessError>
 pub fn awaken_protocol_ai_sdk::request::result_text(&serde_json::value::Value) -> alloc::string::String
 pub mod awaken_protocol_ai_sdk::router
-pub fn awaken_protocol_ai_sdk::router::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router
+pub fn awaken_protocol_ai_sdk::router::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>) -> axum::routing::Router
 pub mod awaken_protocol_ai_sdk::types
 pub enum awaken_protocol_ai_sdk::types::AwakenFileKind
 pub awaken_protocol_ai_sdk::types::AwakenFileKind::Document
@@ -197,4 +197,4 @@ pub struct awaken_protocol_ai_sdk::AiSdkChatRequest
 pub awaken_protocol_ai_sdk::AiSdkChatRequest::agent_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_ai_sdk::AiSdkChatRequest::messages: alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIMessage>
 pub awaken_protocol_ai_sdk::AiSdkChatRequest::thread_id: core::option::Option<alloc::string::String>
-pub fn awaken_protocol_ai_sdk::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router
+pub fn awaken_protocol_ai_sdk::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>) -> axum::routing::Router

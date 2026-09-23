@@ -1020,11 +1020,11 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
             .unwrap();
         let view = environment.agent_filesystem_view(cwd, AgentFilesystemClient::AcpProcess);
         let logical = "/mnt/session/uploads/资料 brief.txt";
-        let input = awaken_session_contract::ResolvedInput {
+        let input = awaken_session_resource_contract::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: "file".into(),
-            source: awaken_session_contract::ResolvedInputSource::File {
+            source: awaken_session_resource_contract::ResolvedInputSource::File {
                 file_id: "file".into(),
             },
             mount_path: logical.into(),
@@ -1734,23 +1734,25 @@ async fn prepared_image_is_the_only_environment_to_container_image_conversion() 
     // This test crosses the final `SessionEnvironmentProvider::create`
     // boundary, so it verifies the actual container adapter input rather
     // than only an intermediate projection helper.
-    fn snapshot(prepared_image: Option<String>) -> awaken_session_contract::EnvironmentSnapshot {
-        awaken_session_contract::EnvironmentSnapshot {
+    fn snapshot(
+        prepared_image: Option<String>,
+    ) -> awaken_session_configuration_contract::EnvironmentSnapshot {
+        awaken_session_configuration_contract::EnvironmentSnapshot {
             environment_id: "image-flow".into(),
-            revision: awaken_session_contract::EnvironmentRevision(7),
+            revision: awaken_environment_contract::EnvironmentRevision(7),
             self_hosted: false,
-            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+            config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
                 "image-flow-v7".into(),
             ),
             sandbox: Default::default(),
             sandbox_provisioning: Default::default(),
             idle_retention: Default::default(),
-            packages: awaken_session_contract::EnvironmentPackages {
+            packages: awaken_environment_contract::EnvironmentPackages {
                 npm: vec!["tsx@4".into()],
                 ..Default::default()
             },
             prepared_image,
-            network: awaken_session_contract::SessionNetworkPolicy::None,
+            network: awaken_session_configuration_contract::SessionNetworkPolicy::None,
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         }
@@ -4244,7 +4246,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
     use crate::host::{
         eager_environment, empty_frozen_projection_for_snapshot, managed_test_host, test_activation,
     };
-    use awaken_session_contract::SessionRuntime as _;
+    use awaken_session_execution_contract::SessionRuntime as _;
 
     // Causes: C1 exact durable Retiring owner after revocation; C2 typed provider
     // observation unavailable/Ready; C3 attached/resident Hand; C4 repeated
@@ -4285,7 +4287,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         managed
             .realization()
             .ok_or_else(|| {
-                awaken_session_contract::RunError::unavailable(
+                awaken_session_error_contract::RunError::unavailable(
                     "RealizationRuntime is unsupported by this runtime",
                 )
             })
@@ -4293,7 +4295,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             .install_session_projection(
                 thread,
                 projection.clone(),
-                awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+                awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
             )
             .await
             .unwrap();
@@ -4301,8 +4303,8 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         let original = Arc::new(provider.create(&spec).await.unwrap());
         let handle = original.handle();
         let binding = serde_json::to_string(&handle).unwrap();
-        let generation = awaken_session_contract::SandboxGeneration::new(
-            &awaken_session_contract::SessionId::from(thread),
+        let generation = awaken_session_state_contract::SandboxGeneration::new(
+            &awaken_session_types::SessionId::from(thread),
             1,
             u64::MAX,
             "environment",
@@ -4312,7 +4314,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             effect_id: "create-effect".into(),
             generation: generation.clone(),
         };
-        projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
             binding: binding.clone(),
             effect_id: Some("create-effect".into()),
             generation: Some(generation),
@@ -4363,7 +4365,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             managed
                 .realization()
                 .ok_or_else(|| {
-                    awaken_session_contract::RunError::unavailable(
+                    awaken_session_error_contract::RunError::unavailable(
                         "RealizationRuntime is unsupported by this runtime",
                     )
                 })
@@ -4371,7 +4373,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .install_session_projection(
                     thread,
                     projection.clone(),
-                    awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+                    awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
                 )
                 .await
                 .unwrap();

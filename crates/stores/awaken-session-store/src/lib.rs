@@ -17,15 +17,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_session_repository_contract::{LifecycleOutbox, SessionRepository};
 #[cfg(test)]
-use awaken_session_contract::SessionExecutionState;
-use awaken_session_contract::{
-    IdempotencyRecord, LifecycleOutbox, ManagedLifecycleFact, PersistedSession,
-    ScopedPersistedSession, SessionCreateResult, SessionEnvironmentPhase, SessionEnvironmentState,
+use awaken_session_state_contract::SessionExecutionState;
+use awaken_session_state_contract::{
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, ScopedPersistedSession,
+    SessionCreateResult, SessionEnvironmentPhase, SessionEnvironmentState,
     SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionRecoveryQuarantine, SessionRepository, SessionRepositoryConflict,
-    SessionRepositoryError, SessionRevision, SessionScan,
+    SessionRecoveryQuarantine, SessionRepositoryConflict, SessionRepositoryError, SessionScan,
 };
+use awaken_session_types::SessionRevision;
 
 mod deployments;
 mod dream;
@@ -92,7 +93,7 @@ fn db_revision(revision: SessionRevision) -> Result<i64, SessionRepositoryError>
 }
 
 fn storage(error: impl std::fmt::Display) -> SessionRepositoryError {
-    SessionRepositoryError::Unavailable(error.to_string())
+    SessionRepositoryError::AuthorityUnavailable(error.to_string())
 }
 
 fn corrupt(error: impl std::fmt::Display) -> SessionRepositoryError {

@@ -24,7 +24,7 @@ pub(crate) const WORKER_REVOCATION_BUDGET: std::time::Duration = std::time::Dura
 
 #[derive(Clone)]
 enum WarmCapacityDemand {
-    Environment(Box<awaken_session_contract::EnvironmentSnapshot>),
+    Environment(Box<awaken_session_configuration_contract::EnvironmentSnapshot>),
     Default,
 }
 
@@ -45,7 +45,7 @@ struct WarmCapacityPlan {
 impl WarmCapacityPlan {
     fn build(
         host: &SharedHost,
-        desired: Vec<awaken_session_contract::EnvironmentSnapshot>,
+        desired: Vec<awaken_session_configuration_contract::EnvironmentSnapshot>,
     ) -> Self {
         let (per_shape, total) = host.environment_warmup_limits();
         if per_shape == 0 || total == 0 {
@@ -157,7 +157,7 @@ pub(crate) struct WorkerSupervisor {
         RwLock<
             BTreeMap<
                 awaken_provisioning_contract::SandboxCapacityShapeId,
-                awaken_session_contract::EnvironmentSnapshot,
+                awaken_session_configuration_contract::EnvironmentSnapshot,
             >,
         >,
     >,
@@ -661,7 +661,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                 let lifecycle = cold_lifecycle.clone();
                 async move {
                     let now = wall_clock_ms();
-                    let cleanup_target = awaken_session_contract::SessionRealizationTarget {
+                    let cleanup_target = awaken_session_realization_contract::SessionRealizationTarget {
                         owner: lifecycle.identity.worker_id.clone(),
                         runtime_incarnation: lifecycle.identity.lease_owner(),
                         lease_expires_at_unix_ms: now

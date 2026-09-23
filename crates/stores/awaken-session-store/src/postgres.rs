@@ -574,7 +574,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
     async fn replay_create(
         &self,
         owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
         if owner_scope.trim().is_empty()
@@ -754,7 +754,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
 
     async fn get(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionRepositoryError> {
         let row = sqlx::query(
             "SELECT aggregate_json, revision \
@@ -776,9 +776,9 @@ impl SessionRepository for PostgresManagedSessionRepository {
 
     async fn scan(
         &self,
-        query: awaken_session_contract::SessionScanQuery<'_>,
+        query: awaken_session_state_contract::SessionScanQuery<'_>,
     ) -> Result<SessionScan, SessionRepositoryError> {
-        use awaken_session_contract::SessionScanQuery;
+        use awaken_session_state_contract::SessionScanQuery;
         match query {
             SessionScanQuery::Reconcilable { after } => self.scan_reconcilable(after).await,
             SessionScanQuery::Workspace { workspace_id } => Ok(Self::scoped_scan(
@@ -829,10 +829,12 @@ impl SessionRepository for PostgresManagedSessionRepository {
 
     async fn idempotency_receipt(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         key: &str,
-    ) -> Result<Option<awaken_session_contract::SessionIdempotencyReceipt>, SessionRepositoryError>
-    {
+    ) -> Result<
+        Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
+        SessionRepositoryError,
+    > {
         let row = sqlx::query(
             "SELECT payload_hash, committed_revision FROM managed_session_idempotency
              WHERE session_id = $1 AND idempotency_key = $2",
@@ -844,7 +846,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
         .map_err(storage)?;
         row.map(|row| {
             let revision: i64 = row.try_get("committed_revision").map_err(storage)?;
-            Ok(awaken_session_contract::SessionIdempotencyReceipt {
+            Ok(awaken_session_state_contract::SessionIdempotencyReceipt {
                 payload_hash: row.try_get("payload_hash").map_err(storage)?,
                 committed_revision: SessionRevision(
                     u64::try_from(revision)
@@ -858,9 +860,9 @@ impl SessionRepository for PostgresManagedSessionRepository {
     async fn deleted_event_admissions(
         &self,
         owner_scope: &str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<
-        Option<awaken_session_contract::DeletedSessionEventAdmissions>,
+        Option<awaken_session_state_contract::DeletedSessionEventAdmissions>,
         SessionRepositoryError,
     > {
         let row = sqlx::query("SELECT deleted_revision, event_admissions_json FROM managed_session_tombstone WHERE session_id=$1 AND scope_id=$2")
@@ -876,7 +878,7 @@ impl SessionRepository for PostgresManagedSessionRepository {
 
     async fn owner(
         &self,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
     ) -> Result<String, SessionRepositoryError> {
         let row = sqlx::query("SELECT scope_id FROM managed_session WHERE session_id = $1")
             .bind(session_id.as_str())
@@ -905,7 +907,7 @@ impl PostgresManagedSessionRepository {
 
     async fn scan_reconcilable(
         &self,
-        after: Option<&awaken_session_contract::SessionScanCursor>,
+        after: Option<&awaken_session_state_contract::SessionScanCursor>,
     ) -> Result<SessionScan, SessionRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let page_size = usize::try_from(RECOVERY_BATCH_SIZE)
@@ -932,8 +934,9 @@ impl PostgresManagedSessionRepository {
                 .ok_or_else(|| storage("recovery lookahead produced an empty page"))?
                 .try_get::<String, _>("session_id")
                 .map_err(storage)?;
-            scan.next_cursor =
-                Some(awaken_session_contract::SessionScanCursor::after_session_id(session_id));
+            scan.next_cursor = Some(
+                awaken_session_state_contract::SessionScanCursor::after_session_id(session_id),
+            );
         }
         for row in rows {
             let session_id: String = row.try_get("session_id").map_err(storage)?;
@@ -992,7 +995,7 @@ impl PostgresManagedSessionRepository {
         .map_err(storage)?
         {
             scan.quarantined.push(SessionRecoveryQuarantine {
-                session_id: awaken_session_contract::SessionId::from(
+                session_id: awaken_session_types::SessionId::from(
                     row.try_get::<String, _>("session_id").map_err(storage)?,
                 ),
                 reason: row.try_get("reason").map_err(storage)?,

@@ -81,21 +81,25 @@ impl InferenceExecutorMaterializer for RouteProvider {
 struct RoutePublicationResolver;
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionModelPublicationResolver for RoutePublicationResolver {
+impl awaken_session_configuration_contract::SessionModelPublicationResolver
+    for RoutePublicationResolver
+{
     async fn resolve_session_model(
         &self,
         _workspace_id: &str,
         model_reference: &str,
     ) -> Result<
-        awaken_session_contract::SessionModelPublication,
-        awaken_session_contract::SessionModelResolutionError,
+        awaken_session_configuration_contract::SessionModelPublication,
+        awaken_session_configuration_contract::SessionModelResolutionError,
     > {
         let selection =
             awaken_config_service::parse_managed_model_id(model_reference).map_err(|error| {
-                awaken_session_contract::SessionModelResolutionError::Invalid(error.to_string())
+                awaken_session_configuration_contract::SessionModelResolutionError::Invalid(
+                    error.to_string(),
+                )
             })?;
         let (target, backend_ref) = selection.target().ok_or_else(|| {
-            awaken_session_contract::SessionModelResolutionError::Invalid(
+            awaken_session_configuration_contract::SessionModelResolutionError::Invalid(
                 "model-route requires an explicit model target".into(),
             )
         })?;
@@ -106,10 +110,12 @@ impl awaken_session_contract::SessionModelPublicationResolver for RoutePublicati
             )
         {
             return Err(
-                awaken_session_contract::SessionModelResolutionError::Invalid(format!(
-                    "model-route cannot realize model {} on backend {backend_ref}",
-                    target.model_id
-                )),
+                awaken_session_configuration_contract::SessionModelResolutionError::Invalid(
+                    format!(
+                        "model-route cannot realize model {} on backend {backend_ref}",
+                        target.model_id
+                    ),
+                ),
             );
         }
         let provider = target
@@ -124,20 +130,24 @@ impl awaken_session_contract::SessionModelPublicationResolver for RoutePublicati
             )
             .map(awaken_runtime_contract::resolved::ResolvedModelCandidate::host)
             .map_err(|error| {
-                awaken_session_contract::SessionModelResolutionError::Invalid(format!(
-                    "model-route provider `{provider}` / model `{model}` on backend \
+                awaken_session_configuration_contract::SessionModelResolutionError::Invalid(
+                    format!(
+                        "model-route provider `{provider}` / model `{model}` on backend \
                      `{backend_ref}`: {error}"
-                ))
+                    ),
+                )
             })
         };
-        Ok(awaken_session_contract::SessionModelPublication {
-            primary: candidate(&target.model_id)?,
-            candidates: ["fast", "slow", "default"]
-                .into_iter()
-                .filter(|model| *model != target.model_id)
-                .map(candidate)
-                .collect::<Result<Vec<_>, _>>()?,
-        })
+        Ok(
+            awaken_session_configuration_contract::SessionModelPublication {
+                primary: candidate(&target.model_id)?,
+                candidates: ["fast", "slow", "default"]
+                    .into_iter()
+                    .filter(|model| *model != target.model_id)
+                    .map(candidate)
+                    .collect::<Result<Vec<_>, _>>()?,
+            },
+        )
     }
 }
 

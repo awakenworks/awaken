@@ -13,7 +13,19 @@ authority = "session"
 awaken-agent-contract.workspace = true
 # The SessionRepository port + PersistedSession this crate implements a durable
 # backend for (SQLite embedded / Postgres distributed, at parity).
-awaken-session-contract = { workspace = true }
+awaken-session-application-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-error-contract.workspace = true
+awaken-session-repository-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-budget-contract.workspace = true
+awaken-session-dream-contract.workspace = true
+awaken-session-event-contract.workspace = true
+awaken-session-mcp-contract.workspace = true
+awaken-session-resource-contract.workspace = true
+awaken-session-types.workspace = true
+awaken-environment-contract.workspace = true
+awaken-resource-contract.workspace = true
 awaken-sql-storage.workspace = true
 awaken-sqlite-pool.workspace = true
 awaken-deployment-contract = { workspace = true }

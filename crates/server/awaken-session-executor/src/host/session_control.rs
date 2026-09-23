@@ -41,7 +41,7 @@ impl SharedHost {
     pub fn with_session_recovery_control<T>(mut self, control: Arc<T>) -> Self
     where
         T: awaken_dispatch_contract::ClaimedSessionRealizationControl
-            + awaken_session_contract::SessionTerminalCleanupControl
+            + awaken_session_realization_contract::SessionTerminalCleanupControl
             + 'static,
     {
         self.session_control = Some(control.clone());
@@ -54,7 +54,7 @@ impl SharedHost {
     #[must_use]
     pub fn with_terminal_cleanup_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::SessionTerminalCleanupControl>,
+        control: Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>,
     ) -> Self {
         self.terminal_cleanup_control = Some(control);
         self

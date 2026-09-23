@@ -18,22 +18,22 @@ use awaken_resource_worker_http::{
     memory_materialization_reference, terminal_memory_materialization_reference,
 };
 use awaken_dispatch::{DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch};
-use awaken_session_contract::{
+use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionResourceMaterializationIntent,
-    SessionTerminalMemoryIntent, SessionTerminalMemoryTarget,
 };
+use awaken_session_state_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn memory_input(
     binding: &str,
     store: &str,
     access: ResourceAccess,
-) -> awaken_session_contract::ResolvedInput {
-    awaken_session_contract::ResolvedInput {
+) -> awaken_session_resource_contract::ResolvedInput {
+    awaken_session_resource_contract::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::new(binding),
-        source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+        source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
             memory_store_id: store.into(),
             config: MemoryStoreConfigVersion {
                 memory_store_id: store.into(),
@@ -73,7 +73,7 @@ async fn create_store(catalog: &awaken_resource_application::RegistryApplication
 struct ExactTerminalMemoryControl {
     workspace_id: String,
     intent: SessionTerminalMemoryIntent,
-    current_effect: awaken_session_contract::SessionTerminalCleanupEffect,
+    current_effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
 }
 
 // Keep File/Skill renewal wire coverage beside Memory to reuse the same exact
@@ -92,10 +92,10 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
         HttpFileContentSource, HttpSkillBundleSource, WorkerFileContentService,
         WorkerSkillBundleService, worker_file_content_router, worker_skill_bundle_router,
     };
-    use awaken_session_contract::SkillBundleSource as _;
+    use awaken_session_configuration_contract::SkillBundleSource as _;
     use awaken_skill_store::SkillStore as _;
     let (directory, identity) = support::ready_worker("worker-renewed-resources").await;
-    let lease = awaken_session_contract::SessionRealizationLease {
+    let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         epoch: 7,
@@ -128,7 +128,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
         Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
     ));
     let mut file_input = memory_input("file", "unused", ResourceAccess::ReadOnly);
-    file_input.source = awaken_session_contract::ResolvedInputSource::File {
+    file_input.source = awaken_session_resource_contract::ResolvedInputSource::File {
         file_id: "renewed-file".into(),
     };
     let file_intent = SessionResourceMaterializationIntent::try_new(
@@ -169,7 +169,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
         )
         .await
         .unwrap();
-    let binding = awaken_session_contract::ResolvedSkillBinding {
+    let binding = awaken_session_resource_contract::ResolvedSkillBinding {
         kind: awaken_agent_contract::AgentSkillKind::Custom,
         skill_id: version.skill_id.to_string(),
         version: 1,
@@ -187,7 +187,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
             Arc::new(ExactResourceControl {
                 workspace_id: "workspace-memory".into(),
                 intent,
-                current_lease: awaken_session_contract::SessionRealizationLease {
+                current_lease: awaken_session_resource_contract::SessionRealizationLease {
                     expires_at_unix_ms: current_expiry,
                     ..lease.clone()
                 },
@@ -259,11 +259,13 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
 struct ExactResourceControl {
     workspace_id: String,
     intent: SessionResourceMaterializationIntent,
-    current_lease: awaken_session_contract::SessionRealizationLease,
+    current_lease: awaken_session_resource_contract::SessionRealizationLease,
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionResourceMaterializationControl for ExactResourceControl {
+impl awaken_session_realization_contract::SessionResourceMaterializationControl
+    for ExactResourceControl
+{
     async fn authorize_resource_materialization_intent(
         &self,
         intent: &SessionResourceMaterializationIntent,
@@ -271,7 +273,7 @@ impl awaken_session_contract::SessionResourceMaterializationControl for ExactRes
         if intent.session_id() != self.intent.session_id()
             || intent.resource_revision() != self.intent.resource_revision()
             || intent.target() != self.intent.target()
-            || !awaken_session_contract::realization_lease_authorizes(
+            || !awaken_session_realization_contract::realization_lease_authorizes(
                 &self.current_lease,
                 intent.lease(),
                 support::unix_now_ms(),
@@ -284,18 +286,20 @@ impl awaken_session_contract::SessionResourceMaterializationControl for ExactRes
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionTerminalMemoryControl for ExactTerminalMemoryControl {
+impl awaken_session_realization_contract::SessionTerminalMemoryControl
+    for ExactTerminalMemoryControl
+{
     async fn authorize_terminal_memory_intent(
         &self,
         intent: &SessionTerminalMemoryIntent,
     ) -> Result<SessionTerminalMemoryTarget, SessionRealizationControlFailure> {
         if intent != &self.intent
             || self.current_effect.command != intent.effect().command
-            || !awaken_session_contract::realization_lease_generation_authorizes(
+            || !awaken_session_realization_contract::realization_lease_generation_authorizes(
                 &self.current_effect.lease,
                 &intent.effect().lease,
             )
-            || !awaken_session_contract::realization_lease_is_live_at(
+            || !awaken_session_realization_contract::realization_lease_is_live_at(
                 self.current_effect.lease.expires_at_unix_ms,
                 support::unix_now_ms(),
             )
@@ -334,7 +338,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     ));
     create_store(&catalog, "memory-rw").await;
     create_store(&catalog, "memory-ro").await;
-    let resources = awaken_session_contract::ResolvedSessionResources::try_new(
+    let resources = awaken_session_resource_contract::ResolvedSessionResources::try_new(
         vec![
             memory_input("rw", "memory-rw", ResourceAccess::ReadWrite),
             memory_input("ro", "memory-ro", ResourceAccess::ReadOnly),
@@ -593,7 +597,7 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
         awaken_dispatch::SystemClock,
     )));
     let (directory, identity) = support::ready_worker("worker-realization-memory").await;
-    let lease = awaken_session_contract::SessionRealizationLease {
+    let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         epoch: 13,
@@ -622,7 +626,7 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
         .with_materialization_control(Arc::new(ExactResourceControl {
             workspace_id: "workspace-memory".into(),
             intent: intent.clone(),
-            current_lease: awaken_session_contract::SessionRealizationLease {
+            current_lease: awaken_session_resource_contract::SessionRealizationLease {
                 expires_at_unix_ms: u64::MAX,
                 ..lease.clone()
             },
@@ -806,20 +810,20 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         ],
     )
     .unwrap();
-    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
-        awaken_session_contract::SessionCleanupCommand::new(
-            &awaken_session_contract::SessionId::from("session-terminal-memory"),
+    let effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
+        awaken_session_state_contract::SessionCleanupCommand::new(
+            &awaken_session_types::SessionId::from("session-terminal-memory"),
             "session-terminal-memory",
             "cleanup-root",
         ),
-        awaken_session_contract::SessionRealizationLease {
+        awaken_session_resource_contract::SessionRealizationLease {
             owner: identity.worker_id.clone(),
             runtime_incarnation: identity.lease_owner(),
             epoch: 9,
             expires_at_unix_ms: u64::MAX,
         },
     );
-    let intent = awaken_session_contract::terminal_memory_reconciliation_intent(
+    let intent = awaken_session_state_contract::terminal_memory_reconciliation_intent(
         &input,
         &materialization,
         &effect,
@@ -1046,16 +1050,16 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     let mut expired_effect = effect.clone();
     let now_unix_ms = support::unix_now_ms();
     expired_effect.lease.expires_at_unix_ms = now_unix_ms.saturating_sub(20_001);
-    let expired_intent = awaken_session_contract::terminal_memory_reconciliation_intent(
+    let expired_intent = awaken_session_state_contract::terminal_memory_reconciliation_intent(
         &input,
         &materialization,
         &expired_effect,
     )
     .unwrap();
     let expired_reference = terminal_memory_materialization_reference(&expired_intent).unwrap();
-    let renewed_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+    let renewed_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         expired_effect.command.clone(),
-        awaken_session_contract::SessionRealizationLease {
+        awaken_session_resource_contract::SessionRealizationLease {
             expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
             ..expired_effect.lease.clone()
         },
@@ -1126,15 +1130,15 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         "T7 expired current root uses the canonical conflict status: {expired_error}"
     );
 
-    let successor_effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+    let successor_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         expired_effect.command.clone(),
-        awaken_session_contract::SessionRealizationLease {
+        awaken_session_resource_contract::SessionRealizationLease {
             epoch: expired_effect.lease.epoch + 1,
             expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
             ..expired_effect.lease.clone()
         },
     );
-    let successor_intent = awaken_session_contract::terminal_memory_reconciliation_intent(
+    let successor_intent = awaken_session_state_contract::terminal_memory_reconciliation_intent(
         &input,
         &materialization,
         &successor_effect,
@@ -1179,7 +1183,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         Vec::new(),
     )
     .unwrap();
-    let altered_intent = awaken_session_contract::terminal_memory_reconciliation_intent(
+    let altered_intent = awaken_session_state_contract::terminal_memory_reconciliation_intent(
         &input,
         &altered_materialization,
         &effect,

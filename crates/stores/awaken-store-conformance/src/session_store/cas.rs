@@ -39,7 +39,7 @@ pub fn delete_mutation(value: &PersistedSession, key: &str) -> SessionMutation {
 }
 
 pub async fn tombstone_requires_hidden_completed_cleanup<
-    R: awaken_session_contract::SessionStore,
+    R: awaken_session_repository_contract::SessionStore,
 >(
     repo: &R,
 ) {
@@ -121,10 +121,13 @@ pub async fn tombstone_requires_hidden_completed_cleanup<
     );
 }
 
-pub async fn deleted_event_admission_decision_table<R: awaken_session_contract::SessionStore>(
+pub async fn deleted_event_admission_decision_table<
+    R: awaken_session_repository_contract::SessionStore,
+>(
     repo: &R,
 ) {
-    use awaken_session_contract::{SessionEventAdmission, SessionEventBatch, SessionEventInput};
+    use awaken_session_application_contract::SessionEventAdmission;
+    use awaken_session_event_contract::{SessionEventBatch, SessionEventInput};
     // Delete CAS is the sole proof writer. D1 accepted key=>same Accepted;
     // D2 closed key=>same Closed; D3 absent key=>Deleted fence; D4 changed
     // fingerprint=>conflict; D5 foreign/missing Session=>no disclosure; D6
@@ -243,13 +246,20 @@ pub async fn deleted_event_admission_decision_table<R: awaken_session_contract::
         let deleted = SessionEventAdmission::Deleted {
             deleted_revision: SessionRevision(value.revision.0 + 1),
         };
-        assert_eq!(proof.resolve("unseen", "fp").unwrap(), deleted, "D3");
+        let resolve = |key, fingerprint| {
+            awaken_session_application_contract::resolve_deleted_event_admission(
+                &proof,
+                key,
+                fingerprint,
+            )
+        };
+        assert_eq!(resolve("unseen", "fp").unwrap(), deleted, "D3");
         if kind == "empty" {
             assert_eq!(proof.admissions, Some(vec![]));
-            assert_eq!(proof.resolve("key", "fp").unwrap(), deleted);
+            assert_eq!(resolve("key", "fp").unwrap(), deleted);
         } else {
             assert_eq!(
-                proof.resolve("key", "fp").unwrap(),
+                resolve("key", "fp").unwrap(),
                 if kind != "closed" {
                     SessionEventAdmission::Accepted {
                         batch_id: "batch".into(),
@@ -263,7 +273,7 @@ pub async fn deleted_event_admission_decision_table<R: awaken_session_contract::
                 "D1/D2"
             );
             assert_eq!(
-                proof.resolve("key", "changed").unwrap_err().code,
+                resolve("key", "changed").unwrap_err().code,
                 "idempotency_conflict",
                 "D4"
             );
@@ -272,14 +282,14 @@ pub async fn deleted_event_admission_decision_table<R: awaken_session_contract::
         }
         if kind == "mixed" {
             assert_eq!(
-                proof.resolve("prior-key", "prior-fp").unwrap(),
+                resolve("prior-key", "prior-fp").unwrap(),
                 SessionEventAdmission::Closed {
                     batch_id: "prior:batch".into(),
                 },
                 "D7 first key remains distinct from accepted second key"
             );
             assert_eq!(
-                proof.resolve("prior-key", "fp").unwrap_err().code,
+                resolve("prior-key", "fp").unwrap_err().code,
                 "idempotency_conflict",
                 "D7 fingerprint belongs to its exact key"
             );
@@ -342,7 +352,9 @@ pub async fn deleted_event_admission_decision_table<R: awaken_session_contract::
     );
 }
 
-pub async fn root_cas_decision_table<R: awaken_session_contract::SessionStore>(repo: &R) {
+pub async fn root_cas_decision_table<R: awaken_session_repository_contract::SessionStore>(
+    repo: &R,
+) {
     // Cause-effect graph:
     // C1 valid command -> C2 idempotency absent-or-equal -> C3 live row exists
     // -> C4 owner exact -> C5 revision exact -> E1 atomic applied/replayed.
@@ -394,7 +406,7 @@ pub async fn root_cas_decision_table<R: awaken_session_contract::SessionStore>(r
             .expect("initial CAS create");
         assert_eq!(
             created,
-            awaken_session_contract::SessionCreateResult::Applied({
+            awaken_session_state_contract::SessionCreateResult::Applied({
                 let mut expected = session(&id, "initial");
                 if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
                     assert!(expected.request_delete("ws_a", 0).unwrap().is_some());
@@ -407,10 +419,12 @@ pub async fn root_cas_decision_table<R: awaken_session_contract::SessionStore>(r
         assert_eq!(
             repo.idempotency_receipt(&SessionId::from(&id), "create")
                 .await,
-            Ok(Some(awaken_session_contract::SessionIdempotencyReceipt {
-                payload_hash: create_record.payload_hash.clone(),
-                committed_revision: SessionRevision(1),
-            })),
+            Ok(Some(
+                awaken_session_state_contract::SessionIdempotencyReceipt {
+                    payload_hash: create_record.payload_hash.clone(),
+                    committed_revision: SessionRevision(1),
+                }
+            )),
             "the decision table reads the same atomic receipt it writes"
         );
 
@@ -425,7 +439,7 @@ pub async fn root_cas_decision_table<R: awaken_session_contract::SessionStore>(r
                     repo.create("ws_a", replay, create_record, Vec::new())
                         .await
                         .unwrap(),
-                    awaken_session_contract::SessionCreateResult::Replayed(expected)
+                    awaken_session_state_contract::SessionCreateResult::Replayed(expected)
                 );
             }
             CasRule::CreateIdempotencyMismatch => {
@@ -444,7 +458,7 @@ pub async fn root_cas_decision_table<R: awaken_session_contract::SessionStore>(r
                 assert_eq!(
                     error,
                     SessionRepositoryError::Conflict(
-                        awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch
+                        awaken_session_state_contract::SessionRepositoryConflict::IdempotencyMismatch
                     )
                 );
             }
@@ -584,7 +598,9 @@ pub async fn root_cas_decision_table<R: awaken_session_contract::SessionStore>(r
     }
 }
 
-pub async fn create_receipt_decision_table<R: awaken_session_contract::SessionStore>(repo: &R) {
+pub async fn create_receipt_decision_table<R: awaken_session_repository_contract::SessionStore>(
+    repo: &R,
+) {
     // Create-receipt cause/effect table. C1 receipt absent/present; C2 durable
     // identity absent/live/tombstoned; C3 owner exact/foreign; C4 hash exact/
     // mismatched; C5 the live aggregate advanced after create. Effects: E1 a
@@ -721,7 +737,9 @@ pub async fn create_receipt_decision_table<R: awaken_session_contract::SessionSt
     }
 }
 
-pub async fn create_receipt_race_decision_table<R: awaken_session_contract::SessionStore>(
+pub async fn create_receipt_race_decision_table<
+    R: awaken_session_repository_contract::SessionStore,
+>(
     repo: std::sync::Arc<R>,
 ) {
     // Concurrent create cause/effect table. C1 same key+hash with different

@@ -21,7 +21,7 @@ impl<'a> WorkerProjectionSynchronizer<'a> {
     pub(super) fn for_claimed(
         host: &'a SharedHost,
         session_id: &str,
-        directive: &awaken_session_contract::SessionRealizationDirective,
+        directive: &awaken_session_realization_contract::SessionRealizationDirective,
         claimed: Option<&'a awaken_dispatch::Claimed>,
         claim: Option<&'a awaken_dispatch::RunClaim>,
     ) -> Self {
@@ -49,7 +49,7 @@ impl<'a> WorkerProjectionSynchronizer<'a> {
     /// of MCP stage intent; this adapter derives only the physical ordering bit.
     pub(super) fn for_directive(
         host: &'a SharedHost,
-        directive: &awaken_session_contract::SessionRealizationDirective,
+        directive: &awaken_session_realization_contract::SessionRealizationDirective,
         claim: Option<&'a awaken_dispatch::RunClaim>,
         published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
         rebuild_unavailable_environment: bool,
@@ -57,7 +57,7 @@ impl<'a> WorkerProjectionSynchronizer<'a> {
     ) -> Self {
         let requires_runtime_before_effects = matches!(
             &directive.action,
-            awaken_session_contract::SessionRealizationAction::Stage { mcp_stages, .. }
+            awaken_session_realization_contract::SessionRealizationAction::Stage { mcp_stages, .. }
                 if mcp_stages
                     .iter()
                     .any(|stage| stage.target.sandbox_stdio_target().is_some())
@@ -77,13 +77,13 @@ impl<'a> WorkerProjectionSynchronizer<'a> {
 /// Session aggregate. A missing binding is not sufficient evidence: suspended
 /// continuation phases also omit one, but remain authoritative durable state.
 pub(super) fn merge_legacy_claimed_environment_binding(
-    environment: &mut awaken_session_contract::SessionEnvironmentState,
+    environment: &mut awaken_session_state_contract::SessionEnvironmentState,
     claimed_environment_binding: Option<&str>,
 ) {
-    if let (awaken_session_contract::SessionEnvironmentState::Unmaterialized, Some(binding)) =
+    if let (awaken_session_state_contract::SessionEnvironmentState::Unmaterialized, Some(binding)) =
         (&*environment, claimed_environment_binding)
     {
-        *environment = awaken_session_contract::SessionEnvironmentState::Resident {
+        *environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
             binding: binding.to_string(),
             effect_id: None,
             generation: None,
@@ -93,25 +93,29 @@ pub(super) fn merge_legacy_claimed_environment_binding(
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
+impl awaken_session_realization_contract::SessionProjectionSynchronizer
+    for WorkerProjectionSynchronizer<'_>
+{
     fn observe_realization_request(
         &self,
     ) -> Result<
         awaken_runtime_contract::authority_lease::AuthorityProofStarted,
-        awaken_session_contract::RunError,
+        awaken_session_error_contract::RunError,
     > {
         awaken_local_process::authority_proof_started().map_err(|error| {
-            awaken_session_contract::RunError::unavailable(format!("authority clock: {error}"))
+            awaken_session_error_contract::RunError::unavailable(format!(
+                "authority clock: {error}"
+            ))
         })
     }
 
     async fn synchronize_session_projection(
         &self,
-        session_id: &awaken_session_contract::SessionId,
-        projection: &awaken_session_contract::FrozenSessionProjection,
-        lease: &awaken_session_contract::ObservedSessionRealizationLease,
+        session_id: &awaken_session_types::SessionId,
+        projection: &awaken_session_realization_contract::FrozenSessionProjection,
+        lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
-    ) -> Result<(), awaken_session_contract::RunError> {
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         let retained_publication = self
             .host
             .session_slots
@@ -119,15 +123,15 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             .flatten();
         if let Some(claimed) = self.published_snapshot
             && !matches!(
-                awaken_session_contract::frozen_agent_publication_decision(
+                awaken_session_realization_contract::frozen_agent_publication_decision(
                     &projection.baseline,
                     Some(claimed),
                 ),
-                awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
-                    | awaken_session_contract::FrozenAgentPublicationDecision::Exact
+                awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
+                    | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact
             )
         {
-            return Err(awaken_session_contract::RunError::classified(
+            return Err(awaken_session_error_contract::RunError::classified(
                 "session_runtime_publication_conflict",
                 "claimed Run does not match the frozen Session Agent publication",
             ));
@@ -137,21 +141,21 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             .as_ref()
             .or(self.published_snapshot);
         let published_snapshot = delivered_publication.or(retained_publication.as_ref());
-        match awaken_session_contract::frozen_agent_publication_decision(
+        match awaken_session_realization_contract::frozen_agent_publication_decision(
             &projection.baseline,
             published_snapshot,
         ) {
-            awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
-            | awaken_session_contract::FrozenAgentPublicationDecision::OptionalMissing
-            | awaken_session_contract::FrozenAgentPublicationDecision::Exact => {}
-            awaken_session_contract::FrozenAgentPublicationDecision::MissingRequired => {
-                return Err(awaken_session_contract::RunError::classified(
+            awaken_session_realization_contract::FrozenAgentPublicationDecision::Unpinned
+            | awaken_session_realization_contract::FrozenAgentPublicationDecision::OptionalMissing
+            | awaken_session_realization_contract::FrozenAgentPublicationDecision::Exact => {}
+            awaken_session_realization_contract::FrozenAgentPublicationDecision::MissingRequired => {
+                return Err(awaken_session_error_contract::RunError::classified(
                     "session_runtime_publication_missing",
                     "Worker Session realization requires its exact frozen Agent publication",
                 ));
             }
-            awaken_session_contract::FrozenAgentPublicationDecision::Mismatch => {
-                return Err(awaken_session_contract::RunError::classified(
+            awaken_session_realization_contract::FrozenAgentPublicationDecision::Mismatch => {
+                return Err(awaken_session_error_contract::RunError::classified(
                     "session_runtime_publication_conflict",
                     "Worker Agent publication does not match the frozen Session identity, revision, or runtime",
                 ));
@@ -189,7 +193,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             let has_environment_binding = self.claimed_environment_binding.is_some()
                 || projection.environment.binding().is_some();
             if a2a_only && (has_environment_binding || has_local_environment_owner) {
-                return Err(awaken_session_contract::RunError::classified(
+                return Err(awaken_session_error_contract::RunError::classified(
                     "session_runtime_remote_environment_conflict",
                     "remote A2A Session realization cannot consume a local Environment binding or owner",
                 ));
@@ -277,7 +281,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             && published_snapshot.is_none()
             && !runtime_authority_resident
         {
-            return Err(awaken_session_contract::RunError::classified(
+            return Err(awaken_session_error_contract::RunError::classified(
                 "session_runtime_publication_missing",
                 "sandbox stdio MCP realization requires the exact claimed Agent snapshot before effects",
             ));
@@ -344,7 +348,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                 .apply_dispatched_resource_transition(
                     session_id.as_str(),
                     &projection.resource_transition(
-                        awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects,
+                        awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
                     )?,
                     self.claim,
                     Some(&lease.lease),
@@ -356,9 +360,9 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
 
     async fn invalidate_session_realization_lease(
         &self,
-        session_id: &awaken_session_contract::SessionId,
-        lease: &awaken_session_contract::SessionRealizationLease,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        session_id: &awaken_session_types::SessionId,
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         self.host
             .invalidate_session_realization_lease(session_id.as_str(), lease);
         Ok(())
@@ -370,26 +374,28 @@ pub(in crate::host::worker_resolver) struct WorkerMcpEffects<'a>(
 );
 
 #[async_trait::async_trait]
-impl awaken_session_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
+impl awaken_session_execution_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
-    {
+        request: awaken_session_mcp_contract::StageMcpAttachment,
+    ) -> Result<
+        awaken_session_mcp_contract::McpRealizationReceipt,
+        awaken_session_error_contract::RunError,
+    > {
         self.0.stage_dispatched_mcp(request).await
     }
 
     async fn publish_mcp_generation(
         &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        generation: awaken_session_mcp_contract::McpGenerationRef,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         self.0.publish_dispatched_mcp(generation).await
     }
 
     async fn drain_mcp_generation(
         &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
+        generation: awaken_session_mcp_contract::McpGenerationRef,
+    ) -> Result<(), awaken_session_error_contract::RunError> {
         self.0.drain_dispatched_mcp(generation).await
     }
 }
@@ -411,25 +417,25 @@ mod tests {
     struct LegacyUnownedEnvironmentBindingSink;
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::SessionEnvironmentBindingSink
+    impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         for LegacyUnownedEnvironmentBindingSink
     {
         async fn authorize(
             &self,
-            _intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+            _intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
         ) -> Result<
-            awaken_session_contract::SessionEnvironmentEffectAuthorization,
-            awaken_session_contract::RunError,
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
+            awaken_session_error_contract::RunError,
         > {
-            Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Unowned)
+            Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned)
         }
 
         async fn persist(
             &self,
-            _receipt: awaken_session_contract::SessionEnvironmentReceipt,
+            _receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
         ) -> Result<
-            awaken_session_contract::SessionEnvironmentState,
-            awaken_session_contract::RunError,
+            awaken_session_state_contract::SessionEnvironmentState,
+            awaken_session_error_contract::RunError,
         > {
             panic!("legacy aggregate-Unowned recovery must not persist a durable binding")
         }
@@ -639,7 +645,7 @@ mod tests {
         initial: InitialEnvironment,
         successor_cancellations: &[bool],
     ) {
-        use awaken_session_contract::SessionProjectionSynchronizer as _;
+        use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
         let committed_candidate = initial != InitialEnvironment::Resident;
         let acknowledged = matches!(
             initial,
@@ -706,12 +712,12 @@ mod tests {
                 .create(memory_store, "/note.txt", "seed")
                 .await
                 .unwrap();
-            let resources = awaken_session_contract::ResolvedSessionResources::try_new(
-                vec![awaken_session_contract::ResolvedInput {
+            let resources = awaken_session_resource_contract::ResolvedSessionResources::try_new(
+                vec![awaken_session_resource_contract::ResolvedInput {
                     created_at_unix_ms: None,
                     updated_at_unix_ms: None,
                     binding_id: "chain-memory".into(),
-                    source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+                    source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
                         memory_store_id: memory_store.into(),
                         config: awaken_resource_contract::MemoryStoreConfigVersion {
                             memory_store_id: memory_store.into(),
@@ -728,7 +734,7 @@ mod tests {
             .unwrap();
             projection = crate::host::worker_resolver::test_support::frozen_projection_for_manifest(
                 projection.baseline.environment.clone(),
-                &awaken_session_contract::SessionResourceManifest::at_revision(
+                &awaken_session_resource_contract::SessionResourceManifest::at_revision(
                     projection.workspace_id.clone(),
                     1,
                     resources,
@@ -738,22 +744,22 @@ mod tests {
         projection.agent_publication = Some(snapshot.clone());
         let control = RecoveryControl::fixed(projection.clone());
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
-        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
+        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
             &managed,
             binding_sink.clone(),
         );
-        let initial_lease = awaken_session_contract::SessionRealizationLease {
+        let initial_lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: 1,
             expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
                 + 60_000,
         };
-        awaken_session_contract::RealizationRuntime::install_session_projection(
+        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &managed,
             thread,
             projection,
-            awaken_session_contract::SessionProjectionInstallMode::Realization {
+            awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
                 lease: crate::session_slot::test_observed_lease(initial_lease.clone()),
                 prepare_session: true,
             },
@@ -774,7 +780,7 @@ mod tests {
                     initial == InitialEnvironment::LostResponse,
                 ),
             );
-            awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
+            awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
                 &managed,
                 sink.clone(),
             );
@@ -809,7 +815,7 @@ mod tests {
                     .unwrap()
                     .exact_matches(&candidate)
             );
-            awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
+            awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
                 &managed,
                 binding_sink.clone(),
             );
@@ -825,7 +831,7 @@ mod tests {
             let effect = host
                 .authorize_environment_effect_before_io(
                     thread,
-                    awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                    awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
                     None,
                 )
                 .await
@@ -1018,17 +1024,17 @@ mod tests {
             .unwrap()
             .unwrap();
         let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
-        let lease = awaken_session_contract::SessionRealizationLease {
+        let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
             epoch: 2,
             expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
                 + 60_000,
         };
-        let directive = awaken_session_contract::SessionRealizationDirective {
+        let directive = awaken_session_realization_contract::SessionRealizationDirective {
             projection: projection.clone(),
             authority: crate::session_slot::test_lease_receipt(lease.clone()),
-            action: awaken_session_contract::SessionRealizationAction::Complete,
+            action: awaken_session_realization_contract::SessionRealizationAction::Complete,
         };
         if scoped && !revoke {
             // SR5/SC2: a newer root with a foreign binding OR generation is not retirement
@@ -1044,14 +1050,14 @@ mod tests {
                 foreign.revision.0 += 1;
                 if foreign.environment.binding().is_none() {
                     foreign.environment =
-                        awaken_session_contract::SessionEnvironmentState::Resident {
+                        awaken_session_state_contract::SessionEnvironmentState::Resident {
                             binding: binding.clone(),
                             effect_id: None,
                             generation: None,
                             idle_since_unix_ms: None,
                         };
                 }
-                if let awaken_session_contract::SessionEnvironmentState::Resident {
+                if let awaken_session_state_contract::SessionEnvironmentState::Resident {
                     binding,
                     generation,
                     ..
@@ -1120,7 +1126,7 @@ mod tests {
                 claimed_binding,
             )
             .synchronize_session_projection(
-                &awaken_session_contract::SessionId::from(thread),
+                &awaken_session_types::SessionId::from(thread),
                 &projection,
                 &crate::session_slot::test_observed_lease(lease.clone()),
                 true,
@@ -1153,15 +1159,15 @@ mod tests {
         let mut retired = vec![original.clone()];
         for round in 0..=successor_cancellations.len() {
             let projection = control.current_projection();
-            let lease = awaken_session_contract::SessionRealizationLease {
+            let lease = awaken_session_resource_contract::SessionRealizationLease {
                 epoch: 2 + round as u64,
                 runtime_incarnation: format!("worker-a/boot-{}", 2 + round),
                 ..lease.clone()
             };
-            let directive = awaken_session_contract::SessionRealizationDirective {
+            let directive = awaken_session_realization_contract::SessionRealizationDirective {
                 projection: projection.clone(),
                 authority: crate::session_slot::test_lease_receipt(lease.clone()),
-                action: awaken_session_contract::SessionRealizationAction::Complete,
+                action: awaken_session_realization_contract::SessionRealizationAction::Complete,
             };
             let cancelled_sink = successor_cancellations.get(round).map(|commit| {
                 Arc::new(
@@ -1172,7 +1178,7 @@ mod tests {
                 )
             });
             if let Some(sink) = &cancelled_sink {
-                awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
+                awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
                     &managed,
                     sink.clone(),
                 );
@@ -1188,7 +1194,7 @@ mod tests {
                         projection.environment.binding(),
                     )
                     .synchronize_session_projection(
-                        &awaken_session_contract::SessionId::from(thread),
+                        &awaken_session_types::SessionId::from(thread),
                         &projection,
                         &crate::session_slot::test_observed_lease(lease.clone()),
                         true,
@@ -1273,7 +1279,7 @@ mod tests {
                     b"same physical durable root"
                 );
                 retired.push(candidate.environment);
-                awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
+                awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
                     &managed,
                     binding_sink.clone(),
                 );
@@ -1524,7 +1530,7 @@ mod tests {
     /// | CR4 | yes | Rebuild | closed/error | A | typed lifecycle table CP3 |
     #[tokio::test]
     async fn claimed_rebuild_disposes_legacy_v1_before_projection_install() {
-        use awaken_session_contract::SessionProjectionSynchronizer as _;
+        use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
 
         let thread = "claimed-ready-v1-preinstall-rebuild";
         let storage = tempfile::tempdir().expect("legacy rebuild storage");
@@ -1532,7 +1538,7 @@ mod tests {
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
         let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
-        awaken_session_contract::RealizationRuntime::install_environment_binding_sink(
+        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
             &managed,
             Arc::new(LegacyUnownedEnvironmentBindingSink),
         );
@@ -1565,7 +1571,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
-        let lease = awaken_session_contract::SessionRealizationLease {
+        let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: claim.epoch,
@@ -1580,7 +1586,7 @@ mod tests {
             claimed_environment_binding: Some(&raw_binding),
         }
         .synchronize_session_projection(
-            &awaken_session_contract::SessionId::from(thread),
+            &awaken_session_types::SessionId::from(thread),
             &projection,
             &crate::session_slot::test_observed_lease(lease.clone()),
             true,
@@ -1623,7 +1629,7 @@ mod tests {
     /// | RA3 | yes | local-capable | Retiring LegacyDirect | Rebuild | CR1 |
     #[tokio::test]
     async fn claimed_remote_a2a_rejects_a_retiring_local_owner_before_any_effect() {
-        use awaken_session_contract::SessionProjectionSynchronizer as _;
+        use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
 
         let thread = "claimed-remote-a2a-retiring-local";
         let storage = tempfile::tempdir().expect("remote A2A guard storage");
@@ -1634,7 +1640,7 @@ mod tests {
         let local_snapshot = test_activation(thread, "run-local-owner").snapshot;
         let mut local_projection = frozen_projection();
         local_projection.agent_publication = Some(local_snapshot.clone());
-        let cached_lease = awaken_session_contract::SessionRealizationLease {
+        let cached_lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: "previous-worker".into(),
             runtime_incarnation: "previous-worker/boot-1".into(),
             epoch: 1,
@@ -1686,16 +1692,16 @@ mod tests {
             owner: "worker-a".into(),
             epoch: 2,
         };
-        let lease = awaken_session_contract::SessionRealizationLease {
+        let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
             epoch: claim.epoch,
             expires_at_unix_ms: u64::MAX,
         };
-        let directive = awaken_session_contract::SessionRealizationDirective {
+        let directive = awaken_session_realization_contract::SessionRealizationDirective {
             projection: remote_projection.clone(),
             authority: crate::session_slot::test_lease_receipt(lease.clone()),
-            action: awaken_session_contract::SessionRealizationAction::Complete,
+            action: awaken_session_realization_contract::SessionRealizationAction::Complete,
         };
         let error = WorkerProjectionSynchronizer::for_directive(
             host.as_ref(),
@@ -1706,7 +1712,7 @@ mod tests {
             None,
         )
         .synchronize_session_projection(
-            &awaken_session_contract::SessionId::from(thread),
+            &awaken_session_types::SessionId::from(thread),
             &remote_projection,
             &crate::session_slot::test_observed_lease(lease.clone()),
             true,

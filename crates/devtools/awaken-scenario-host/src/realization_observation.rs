@@ -1,6 +1,6 @@
 //! File observation/fault adapter for the existing real HTTP scenario server.
 //! The contract port emits observations; this adapter never selects transitions.
-use awaken_session_contract::realization_observation::{self, RealizationObserver};
+use awaken_session_realization_contract::realization_observation::{self, RealizationObserver};
 use std::{
     io::Write,
     path::PathBuf,
@@ -24,7 +24,7 @@ impl RealizationObserver for FileObserver {
     async fn observe(
         &self,
         point: &'static str,
-        session_id: &awaken_session_contract::SessionId,
+        session_id: &awaken_session_types::SessionId,
         data: serde_json::Value,
     ) {
         let should_pause = {
@@ -151,7 +151,7 @@ mod tests {
                 std::time::Duration::from_secs(5),
                 observer.observe(
                     point,
-                    &awaken_session_contract::SessionId::from("S"),
+                    &awaken_session_types::SessionId::from("S"),
                     json!({}),
                 ),
             )
@@ -166,14 +166,14 @@ mod tests {
         observer
             .observe(
                 "begin-before",
-                &awaken_session_contract::SessionId::from("S"),
+                &awaken_session_types::SessionId::from("S"),
                 json!({"attachments": []}),
             )
             .await;
         observer
             .observe(
                 "complete",
-                &awaken_session_contract::SessionId::from("S"),
+                &awaken_session_types::SessionId::from("S"),
                 json!({}),
             )
             .await;

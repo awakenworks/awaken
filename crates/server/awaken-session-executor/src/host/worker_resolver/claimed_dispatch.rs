@@ -121,24 +121,23 @@ impl HostWorkerResolver {
     pub(super) async fn reconcile_dispatched_mcp(
         host: &SharedHost,
         session_id: &str,
-        stages: Vec<awaken_session_contract::StageMcpAttachment>,
+        stages: Vec<awaken_session_mcp_contract::StageMcpAttachment>,
     ) -> Result<(), awaken_dispatch::Error> {
-        use awaken_session_contract::McpAttachmentRealizer as _;
+        use awaken_session_execution_contract::McpAttachmentRealizer as _;
 
         let existing = host.active_mcp_projections(session_id);
         let existing_generations = existing
             .iter()
             .map(|projection| {
-                awaken_session_contract::stable_fingerprint(&projection.request.generation)
+                awaken_agent_contract::stable_fingerprint(&projection.request.generation)
             })
             .collect::<std::collections::BTreeSet<_>>();
         let mut desired_generations = std::collections::BTreeSet::new();
         let mut desired_names = std::collections::BTreeSet::new();
         for stage in &stages {
             if stage.generation.session_id != session_id
-                || !desired_generations.insert(awaken_session_contract::stable_fingerprint(
-                    &stage.generation,
-                ))
+                || !desired_generations
+                    .insert(awaken_agent_contract::stable_fingerprint(&stage.generation))
                 || !desired_names.insert(stage.name.clone())
             {
                 return Err(Self::execution_error(
@@ -152,7 +151,7 @@ impl HostWorkerResolver {
         for stage in stages {
             match effects.stage_mcp_attachment(stage.clone()).await {
                 Ok(receipt) => {
-                    if !existing_generations.contains(&awaken_session_contract::stable_fingerprint(
+                    if !existing_generations.contains(&awaken_agent_contract::stable_fingerprint(
                         &receipt.generation,
                     )) {
                         newly_staged.push(receipt.generation.clone());
@@ -180,7 +179,7 @@ impl HostWorkerResolver {
             }
         }
         for projection in existing {
-            if !desired_generations.contains(&awaken_session_contract::stable_fingerprint(
+            if !desired_generations.contains(&awaken_agent_contract::stable_fingerprint(
                 &projection.request.generation,
             )) {
                 effects
@@ -379,7 +378,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                         .as_ref()
                         .is_some_and(|environment| {
                             environment.provisioning
-                                == awaken_session_contract::SandboxProvisioning::OnToolUse
+                                == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
                         })
             })
             .unwrap_or(false);
