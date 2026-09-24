@@ -1832,6 +1832,9 @@ pub mod docker;
 
 #[cfg(feature = "k8s")]
 pub mod k8s;
+/// Public internal-CA path mounted by the hosted Kubernetes Repository transport.
+/// Only the exact Repository clone/push process opts into this trust root.
+pub const REPOSITORY_GATEWAY_CA_PATH: &str = "/var/run/awaken/repository-trust/ca.crt";
 /// Real Kubernetes backend (kube). Gated behind the `k8s` feature; compile-verified
 /// here, running requires a cluster.
 #[cfg(feature = "k8s")]

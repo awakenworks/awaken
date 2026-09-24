@@ -13,7 +13,7 @@
 //! a rendezvous is set, by **reverse dial** (the egress-fenced Pod dials the host
 //! out) — all via [`crate::net`]. Compile-verified here; running requires a cluster.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -132,6 +132,46 @@ fn ephemeral_plan() -> ContainerPlan {
 }
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Deployment-owned, public trust for the private HTTPS Repository Gateway.
+/// The address is resolved by the trusted Worker; Session Pods use a host alias
+/// so a restricted Pod has no general DNS egress channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct K8sRepositoryGatewayTrust {
+    host: String,
+    address: IpAddr,
+    ca_secret_name: String,
+    ca_secret_key: String,
+}
+
+impl K8sRepositoryGatewayTrust {
+    pub fn new(
+        host: impl Into<String>,
+        address: IpAddr,
+        ca_secret_name: impl Into<String>,
+        ca_secret_key: impl Into<String>,
+    ) -> Result<Self, RuntimeError> {
+        let host = host.into();
+        let ca_secret_name = ca_secret_name.into();
+        let ca_secret_key = ca_secret_key.into();
+        if crate::normalize_hostname(&host).ok().as_deref() != Some(host.as_str())
+            || ca_secret_name.trim().is_empty()
+            || ca_secret_name.contains('/')
+            || ca_secret_key.trim().is_empty()
+            || ca_secret_key.contains('/')
+        {
+            return Err(backend(
+                "invalid Kubernetes Repository Gateway trust configuration",
+            ));
+        }
+        Ok(Self {
+            host,
+            address,
+            ca_secret_name,
+            ca_secret_key,
+        })
+    }
+}
 const SANDBOX_REALIZATION_ANNOTATION: &str = "awaken.dev/sandbox-realization";
 const SANDBOX_ADOPTION_ANNOTATION: &str = "awaken.dev/sandbox-adoption";
 const SANDBOX_EFFECT_ANNOTATION: &str = "awaken.dev/sandbox-effect";
@@ -551,6 +591,7 @@ pub struct K8sRuntime {
     /// the host direct-dials `agent_addr` (a published Service) instead.
     rendezvous: Option<SocketAddr>,
     image_pull_secrets: Vec<String>,
+    repository_gateway_trust: Option<K8sRepositoryGatewayTrust>,
     /// Live apiserver evidence for the canonical sandbox NetworkPolicy graph.
     /// The same fact drives capability projection and restricted-Pod admission.
     network_policy_attestation: network_policy::Attestation,
@@ -622,6 +663,7 @@ impl K8sRuntime {
             owner_id: crate::runtime_owner_id(),
             rendezvous: None,
             image_pull_secrets: Vec::new(),
+            repository_gateway_trust: None,
             network_policy_attestation: network_policy::Attestation::new(),
             pod_channel_port: None,
             sandbox_control_forwarder: None,
@@ -665,6 +707,12 @@ impl K8sRuntime {
     }
 
     #[must_use]
+    pub fn with_repository_gateway_trust(mut self, trust: K8sRepositoryGatewayTrust) -> Self {
+        self.repository_gateway_trust = Some(trust);
+        self
+    }
+
+    #[must_use]
     pub fn with_pod_channel_port(mut self, port: u16) -> Self {
         self.pod_channel_port = Some(port);
         self
@@ -702,6 +750,7 @@ impl K8sRuntime {
             owner_id: crate::runtime_owner_id(),
             rendezvous: None,
             image_pull_secrets: Vec::new(),
+            repository_gateway_trust: None,
             network_policy_attestation: network_policy::Attestation::new(),
             pod_channel_port: None,
             sandbox_control_forwarder: None,
@@ -1539,6 +1588,7 @@ impl K8sRuntime {
             claim.as_deref(),
             effect_fence,
             self.sandbox_control_forwarder.as_ref(),
+            self.repository_gateway_trust.as_ref(),
         );
         let labels = pod.metadata.labels.get_or_insert_with(Default::default);
         labels.insert(crate::MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
@@ -1562,6 +1612,7 @@ fn build_pod_with_continuation(
     continuation_claim: Option<&str>,
     effect_fence: Option<&ContainerEffectFence>,
     sandbox_control_forwarder: Option<&K8sSandboxControlForwarder>,
+    repository_gateway_trust: Option<&K8sRepositoryGatewayTrust>,
 ) -> Pod {
     assert!(
         plan.control_services.is_empty() || sandbox_control_forwarder.is_some(),
@@ -1577,6 +1628,16 @@ fn build_pod_with_continuation(
                 value_from: None,
             })
             .collect();
+        if let Some(trust) = repository_gateway_trust {
+            if plan.env.iter().any(|(key, _)| key == "HTTPS_PROXY") {
+                agent_env.retain(|variable| variable.name != "NO_PROXY");
+                agent_env.push(EnvVar {
+                    name: "NO_PROXY".into(),
+                    value: Some(format!("localhost,127.0.0.1,{}", trust.host)),
+                    value_from: None,
+                });
+            }
+        }
         if let Some(addr) = rendezvous {
             agent_env.push(EnvVar {
                 name: "AWAKEN_ACP_RENDEZVOUS".into(),
@@ -1592,6 +1653,30 @@ fn build_pod_with_continuation(
         // receives neither a second Memory database nor Resource-authority credentials.
         let mut volumes: Vec<Volume> = Vec::new();
         let mut agent_mounts: Vec<VolumeMount> = Vec::new();
+        if let Some(trust) = repository_gateway_trust {
+            volumes.push(Volume {
+                name: "repository-gateway-trust".into(),
+                secret: Some(SecretVolumeSource {
+                    secret_name: Some(trust.ca_secret_name.clone()),
+                    items: Some(vec![k8s_openapi::api::core::v1::KeyToPath {
+                        key: trust.ca_secret_key.clone(),
+                        path: "ca.crt".into(),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            agent_mounts.push(VolumeMount {
+                name: "repository-gateway-trust".into(),
+                mount_path: crate::REPOSITORY_GATEWAY_CA_PATH
+                    .strip_suffix("/ca.crt")
+                    .expect("Repository CA path has one file component")
+                    .into(),
+                read_only: Some(true),
+                ..Default::default()
+            });
+        }
         let mut sidecars: Vec<Container> = Vec::new();
         let mut init_containers: Vec<Container> = Vec::new();
         let mut memory_projector_mounts = Vec::new();
@@ -1814,6 +1899,12 @@ fn build_pod_with_continuation(
                         .iter()
                         .map(|name| LocalObjectReference { name: name.clone() })
                         .collect()
+                }),
+                host_aliases: repository_gateway_trust.map(|trust| {
+                    vec![k8s_openapi::api::core::v1::HostAlias {
+                        hostnames: Some(vec![trust.host.clone()]),
+                        ip: trust.address.to_string(),
+                    }]
                 }),
                 ..Default::default()
             }),
