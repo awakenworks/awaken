@@ -50,7 +50,7 @@
         "crates/runtime/awaken-ext-background-task/src/supervisor.rs": 1,
         "crates/runtime/awaken-ext-memory/src/extraction/controller.rs": 1,
         "crates/runtime/awaken-mcp-wire/src/progress.rs": 1,
-        "crates/runtime/awaken-provider-genai/src/lib.rs": 6,
+        "crates/runtime/awaken-provider-genai/src/lib.rs": 4,
         "crates/runtime/awaken-runtime/src/circuit_breaker.rs": 1,
         "crates/runtime/awaken-runtime/src/engine/inference.rs": 1,
         "crates/runtime/awaken-runtime/src/engine/tool_execution.rs": 1,

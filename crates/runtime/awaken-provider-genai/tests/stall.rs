@@ -32,6 +32,7 @@ enum StreamFixture {
     OpenAiEmptyChoiceStall,
     OpenAiEmptyTerminal,
     OpenAiCompleteAfterEmptyChoices,
+    OpenAiTextBurst,
 }
 
 /// The one local SSE fixture owner. Each behavior changes only the provider
@@ -166,6 +167,18 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
                         let _ = socket.flush().await;
                         std::future::pending::<()>().await;
                     }
+                    StreamFixture::OpenAiTextBurst => {
+                        for _ in 0..40 {
+                            let _ = socket.write_all(concat!(
+                                "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",",
+                                "\"created\":1,\"model\":\"model-test\",\"choices\":[{\"index\":0,",
+                                "\"delta\":{\"content\":\"x\"},\"finish_reason\":null}]}\n\n",
+                            ).as_bytes()).await;
+                        }
+                        let _ = socket.write_all(openai_finish()).await;
+                        let _ = socket.write_all(b"data: [DONE]\n\n").await;
+                        let _ = socket.flush().await;
+                    }
                 }
             });
         }
@@ -181,7 +194,8 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
         StreamFixture::AnthropicStall | StreamFixture::AnthropicHeartbeat => "/",
         StreamFixture::OpenAiEmptyChoiceStall
         | StreamFixture::OpenAiEmptyTerminal
-        | StreamFixture::OpenAiCompleteAfterEmptyChoices => "/v1",
+        | StreamFixture::OpenAiCompleteAfterEmptyChoices
+        | StreamFixture::OpenAiTextBurst => "/v1",
     };
     format!("http://{addr}{suffix}")
 }
@@ -456,6 +470,20 @@ impl DeltaSink for NullSink {
     async fn on_text(&self, _chunk: &str) {}
 }
 
+#[derive(Default)]
+struct ObservedSink {
+    text: std::sync::Mutex<Vec<String>>,
+    arrived: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl DeltaSink for ObservedSink {
+    async fn on_text(&self, chunk: &str) {
+        self.text.lock().unwrap().push(chunk.to_owned());
+        self.arrived.notify_one();
+    }
+}
+
 fn request() -> ChatRequest {
     ChatRequest {
         model_binding: ModelBinding::new(
@@ -470,6 +498,48 @@ fn request() -> ChatRequest {
         }],
         tools: Vec::new(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn burst_text_uses_fewer_live_calls_and_keeps_the_committed_answer() {
+    // Causes: C1 forty adjacent provider text fragments arrive before the
+    // terminal frame; C2 the SDK captures the complete response independently.
+    // Effects: E1 far fewer live sink calls carry the same concatenated bytes;
+    // E2 committed content and stop reason remain exact. Rule L1=C1+C2=>E1+E2.
+    let base_url = spawn_sse_server(StreamFixture::OpenAiTextBurst).await;
+    let executor =
+        GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base_url, "test-key")
+            .unwrap();
+    let sink = ObservedSink::default();
+    let response = executor.infer_streaming(request(), &sink).await.unwrap();
+    let chunks = sink.text.lock().unwrap().clone();
+    assert_eq!(chunks.concat(), "x".repeat(40), "L1/E1 exact live bytes");
+    assert!(chunks.len() < 10, "L1/E1 bounded remote round trips");
+    assert_eq!(response.output.text_content(), "x".repeat(40), "L1/E2");
+    assert_eq!(response.stop_reason, Some(StopReason::NaturalEnd), "L1/E2");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn paused_provider_flushes_live_text_before_the_idle_error() {
+    // Causes: C1 one partial text delta arrives; C2 the provider then stops
+    // sending events without a terminal frame. Effects: E1 a short timer emits
+    // the visible prefix before the longer idle deadline; E2 the existing
+    // retryable timeout still owns the terminal result. Rule L2=C1+C2=>E1+E2.
+    let base_url = spawn_sse_server(StreamFixture::AnthropicStall).await;
+    let executor =
+        GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
+            .unwrap()
+            .with_idle_timeout(Duration::from_secs(2));
+    let sink = std::sync::Arc::new(ObservedSink::default());
+    let observed = sink.clone();
+    let run =
+        tokio::spawn(async move { executor.infer_streaming(request(), observed.as_ref()).await });
+    tokio::time::timeout(Duration::from_millis(700), sink.arrived.notified())
+        .await
+        .expect("L2/E1 visible prefix arrives before the idle error");
+    assert_eq!(sink.text.lock().unwrap().concat(), "hel", "L2/E1");
+    let error = run.await.unwrap().unwrap_err();
+    assert_eq!(error.code(), "timeout", "L2/E2");
 }
 
 /*
