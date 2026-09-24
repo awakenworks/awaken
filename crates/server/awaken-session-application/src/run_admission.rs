@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
+    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use awaken_session_configuration_contract::{
     ControlSessionCreationInputs, SessionBaselineState, SessionCreationIntent,
@@ -1121,25 +1121,13 @@ impl SessionRunApplication {
 
     async fn run_admitted(
         &self,
-        operation_id: &str,
-        thread: &str,
-        requested_agent: Option<String>,
-        messages: Vec<Message>,
+        owner_scope: &str,
+        command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-        replacement: awaken_session_execution_contract::SessionRunReplacement,
     ) -> Result<StepOutcome, RunApplicationError> {
-        let command = self.admission_command(
-            operation_id,
-            thread,
-            requested_agent.as_deref(),
-            messages,
-            None,
-            replacement,
-        )?;
-        let owner_scope = (self.workspace)(thread);
         Box::pin(
             self.sessions
-                .run_admitted_session_for_owner(&owner_scope, command, sink),
+                .run_admitted_session_for_owner(owner_scope, command, sink),
         )
         .await
     }
@@ -1154,15 +1142,16 @@ impl RunApplication for SessionRunApplication {
         agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.run_admitted(
+        let command = self.admission_command(
             operation_id,
             thread,
-            agent,
+            agent.as_deref(),
             messages,
             None,
             awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
-        )
-        .await
+        )?;
+        self.run_admitted(&(self.workspace)(thread), command, None)
+            .await
     }
 
     async fn run_streaming(
@@ -1173,13 +1162,13 @@ impl RunApplication for SessionRunApplication {
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.run_admitted(
+        self.run_streaming_for_owner(
+            &(self.workspace)(thread),
             operation_id,
             thread,
             agent,
             messages,
-            Some(sink),
-            awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+            sink,
         )
         .await
     }
@@ -1191,15 +1180,14 @@ impl RunApplication for SessionRunApplication {
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.sessions
-            .resume_session_run_for_owner(
-                &(self.workspace)(thread),
-                operation_id,
-                &awaken_session_types::SessionId::from(thread),
-                tool_use_id,
-                resume,
-            )
-            .await
+        self.resume_for_owner(
+            &(self.workspace)(thread),
+            operation_id,
+            thread,
+            tool_use_id,
+            resume,
+        )
+        .await
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
@@ -1224,6 +1212,48 @@ impl RunApplication for SessionRunApplication {
 }
 
 #[async_trait::async_trait]
+impl OwnerScopedRunApplication for SessionRunApplication {
+    async fn run_streaming_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+        sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        let command = self.admission_command(
+            operation_id,
+            thread,
+            agent.as_deref(),
+            messages,
+            None,
+            awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+        )?;
+        self.run_admitted(owner_scope, command, Some(sink)).await
+    }
+
+    async fn resume_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.sessions
+            .resume_session_run_for_owner(
+                owner_scope,
+                operation_id,
+                &awaken_session_types::SessionId::from(thread),
+                tool_use_id,
+                resume,
+            )
+            .await
+    }
+}
+
+#[async_trait::async_trait]
 impl awaken_session_application_contract::SessionRunReplacementApplication
     for SessionRunApplication
 {
@@ -1234,15 +1264,16 @@ impl awaken_session_application_contract::SessionRunReplacementApplication
         agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.run_admitted(
+        let command = self.admission_command(
             operation_id,
             thread,
-            agent,
+            agent.as_deref(),
             messages,
             None,
             awaken_session_execution_contract::SessionRunReplacement::SupersedePrior,
-        )
-        .await
+        )?;
+        self.run_admitted(&(self.workspace)(thread), command, None)
+            .await
     }
 }
 

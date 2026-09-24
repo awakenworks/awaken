@@ -43,7 +43,8 @@ pub fn awaken_protocol_ai_sdk::request::ProcessedRequest::is_resume_only(&self) 
 pub fn awaken_protocol_ai_sdk::request::process_request(awaken_protocol_ai_sdk::types::AiSdkChatRequest, &[awaken_agent_contract::agent::message::Message]) -> core::result::Result<awaken_protocol_ai_sdk::request::ProcessedRequest, awaken_protocol_ai_sdk::request::ProcessError>
 pub fn awaken_protocol_ai_sdk::request::result_text(&serde_json::value::Value) -> alloc::string::String
 pub mod awaken_protocol_ai_sdk::router
-pub fn awaken_protocol_ai_sdk::router::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>) -> axum::routing::Router
+pub fn awaken_protocol_ai_sdk::router::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>, alloc::string::String) -> axum::routing::Router
+pub fn awaken_protocol_ai_sdk::router::router_with_owner_scope<T>(alloc::sync::Arc<T>) -> axum::routing::Router where T: awaken_session_application_contract::run_application::OwnerScopedRunApplication + 'static
 pub mod awaken_protocol_ai_sdk::types
 pub enum awaken_protocol_ai_sdk::types::AwakenFileKind
 pub awaken_protocol_ai_sdk::types::AwakenFileKind::Document
@@ -197,4 +198,5 @@ pub struct awaken_protocol_ai_sdk::AiSdkChatRequest
 pub awaken_protocol_ai_sdk::AiSdkChatRequest::agent_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_ai_sdk::AiSdkChatRequest::messages: alloc::vec::Vec<awaken_protocol_ai_sdk::types::UIMessage>
 pub awaken_protocol_ai_sdk::AiSdkChatRequest::thread_id: core::option::Option<alloc::string::String>
-pub fn awaken_protocol_ai_sdk::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>) -> axum::routing::Router
+pub fn awaken_protocol_ai_sdk::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>, alloc::string::String) -> axum::routing::Router
+pub fn awaken_protocol_ai_sdk::router_with_owner_scope<T>(alloc::sync::Arc<T>) -> axum::routing::Router where T: awaken_session_application_contract::run_application::OwnerScopedRunApplication + 'static

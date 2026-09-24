@@ -84,7 +84,7 @@ fn transcript(n: usize) -> Vec<Message> {
 }
 
 async fn get(rt: Arc<PersistedRuntime>, uri: &str) -> (StatusCode, Value) {
-    let app = awaken_protocol_ag_ui::router::router(rt);
+    let app = awaken_protocol_ag_ui::router::router(rt, "test-workspace".into());
     let response = app
         .oneshot(
             Request::builder()

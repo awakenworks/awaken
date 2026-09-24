@@ -57,10 +57,10 @@
     },
     "awaken-dispatch-contract": {
       "depth": 7,
-      "production_lines": 2379,
+      "production_lines": 2381,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "claim-fenced carrier redelivery adds one Worker transport capability and one attempt-local source without new durable state",
+        "production_lines": "The rebased operator-quarantine contract adds one shared occupied-slot decision used by Memory, SQLite, and PostgreSQL; no duplicate dispatch authority is introduced.",
         "depth": "Removing the compatibility facade exposes direct domain-owner dependencies; retaining explicit state, realization, runtime, and ingress boundaries avoids a replacement aggregator."
       }
     },

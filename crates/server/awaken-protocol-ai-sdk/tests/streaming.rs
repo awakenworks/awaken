@@ -125,7 +125,7 @@ fn committed() -> StepOutcome {
 
 /// Collect the SSE body into the ordered list of decoded `{ "type": ... }` frames.
 async fn frames() -> Vec<Value> {
-    let app = awaken_protocol_ai_sdk::router(Arc::new(StreamingMock));
+    let app = awaken_protocol_ai_sdk::router(Arc::new(StreamingMock), "test-workspace".into());
     let body =
         json!({ "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "go" }] }] });
     let response = app
@@ -239,7 +239,7 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
         }
     }
 
-    let app = awaken_protocol_ai_sdk::router(Arc::new(SilentMock));
+    let app = awaken_protocol_ai_sdk::router(Arc::new(SilentMock), "test-workspace".into());
     let body =
         json!({ "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "go" }] }] });
     let response = app
@@ -347,7 +347,7 @@ async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
     let runtime = Arc::new(RetainedSinkMock {
         retained: Mutex::new(None),
     });
-    let app = awaken_protocol_ai_sdk::router(runtime.clone());
+    let app = awaken_protocol_ai_sdk::router(runtime.clone(), "test-workspace".into());
     let body =
         json!({ "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "go" }] }] });
     let response = app
@@ -453,7 +453,7 @@ async fn a_client_hangup_mid_stream_stops_the_producer_without_hanging() {
         observed_close: observed_close.clone(),
         finished: finished.clone(),
     });
-    let app = awaken_protocol_ai_sdk::router::router(rt);
+    let app = awaken_protocol_ai_sdk::router::router(rt, "test-workspace".into());
     let response = app
         .oneshot(
             Request::builder()

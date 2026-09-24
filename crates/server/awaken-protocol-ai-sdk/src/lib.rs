@@ -16,5 +16,5 @@ pub mod request;
 pub mod router;
 pub mod types;
 
-pub use router::router;
+pub use router::{router, router_with_owner_scope};
 pub use types::{AiSdkChatRequest, UIStreamEvent};

@@ -24,17 +24,25 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
 use awaken_session_application_contract::{
-    CursorParams, EventForwardingSink, Pending, RunApplication, RunApplicationError, RunResume,
-    StepOutcome, paginate_history,
+    CursorParams, EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication,
+    RunApplicationError, RunResume, StepOutcome, paginate_history,
 };
 use awaken_session_error_contract::RunErrorKind;
-use awaken_tenancy::{ResolvedAgentId, ResolvedResourceId};
+use awaken_tenancy::{ResolvedAgentId, ResolvedResourceId, WorkspaceScope};
 
 use crate::encoder::{AgUiEncoder, encode_history, encode_step};
 use crate::request::{ToolResultInput, process};
 use crate::types::{AgUiEvent, RunAgentInput};
 
 type Runtime = Arc<dyn RunApplication>;
+type ScopedRuntime = Arc<dyn OwnerScopedRunApplication>;
+type RuntimeState = (Runtime, RunMode);
+
+#[derive(Clone)]
+enum RunMode {
+    Local,
+    OwnerScoped(ScopedRuntime),
+}
 
 /// A JSON body extractor for the AG-UI routes. On a decode failure (malformed
 /// JSON, wrong field type, bad content-type) it returns a bare `RUN_ERROR` event
@@ -60,7 +68,22 @@ where
 
 /// Build the AG-UI router. Mount it alongside other protocol routers; the paths
 /// are the `/v1/ag-ui...` surface an AG-UI `HttpAgent` posts to.
-pub fn router(runtime: Runtime) -> Router {
+pub fn router(runtime: Runtime, local_workspace: String) -> Router {
+    router_with_ports(runtime, RunMode::Local).layer(Extension(WorkspaceScope(local_workspace)))
+}
+
+/// Require the owner-qualified port at a guarded composition root, while the
+/// AG-UI wire and the Session Run lifecycle retain their one implementation.
+pub fn router_with_owner_scope<T>(runtime: Arc<T>) -> Router
+where
+    T: OwnerScopedRunApplication + 'static,
+{
+    let unscoped: Runtime = runtime.clone();
+    let scoped: ScopedRuntime = runtime;
+    router_with_ports(unscoped, RunMode::OwnerScoped(scoped))
+}
+
+fn router_with_ports(runtime: Runtime, mode: RunMode) -> Router {
     Router::new()
         .route("/v1/ag-ui", post(run_agent))
         .route("/v1/ag-ui/agents/{agent_id}", post(run_agent_scoped))
@@ -68,7 +91,7 @@ pub fn router(runtime: Runtime) -> Router {
             "/v1/ag-ui/threads/{thread_id}/messages",
             get(thread_messages),
         )
-        .with_state(runtime)
+        .with_state((runtime, mode))
 }
 
 /// `GET /v1/ag-ui/threads/{id}/messages` — the server-persisted history of a
@@ -76,7 +99,7 @@ pub fn router(runtime: Runtime) -> Router {
 /// replays history in each run), so this endpoint lets a client that lost its
 /// state rehydrate from committed truth. Paginated by cursor (`next_page`).
 async fn thread_messages(
-    State(rt): State<Runtime>,
+    State((rt, _)): State<RuntimeState>,
     Path(thread_id): Path<String>,
     resolved: Option<Extension<ResolvedResourceId>>,
     Query(params): Query<CursorParams>,
@@ -101,32 +124,49 @@ async fn thread_messages(
 }
 
 async fn run_agent(
-    State(rt): State<Runtime>,
+    State((rt, mode)): State<RuntimeState>,
     resolved_agent: Option<Extension<ResolvedAgentId>>,
-    AgUiJson(input): AgUiJson<RunAgentInput>,
-) -> Response {
-    run(rt, input, resolved_agent.map(|Extension(agent)| agent.0)).await
-}
-
-async fn run_agent_scoped(
-    State(rt): State<Runtime>,
-    Path(agent_id): Path<String>,
-    resolved_agent: Option<Extension<ResolvedAgentId>>,
+    Extension(owner): Extension<WorkspaceScope>,
     AgUiJson(input): AgUiJson<RunAgentInput>,
 ) -> Response {
     run(
         rt,
+        mode,
+        input,
+        resolved_agent.map(|Extension(agent)| agent.0),
+        owner.0,
+    )
+    .await
+}
+
+async fn run_agent_scoped(
+    State((rt, mode)): State<RuntimeState>,
+    Path(agent_id): Path<String>,
+    resolved_agent: Option<Extension<ResolvedAgentId>>,
+    Extension(owner): Extension<WorkspaceScope>,
+    AgUiJson(input): AgUiJson<RunAgentInput>,
+) -> Response {
+    run(
+        rt,
+        mode,
         input,
         Some(
             resolved_agent
                 .map(|Extension(agent)| agent.0)
                 .unwrap_or(agent_id),
         ),
+        owner.0,
     )
     .await
 }
 
-async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Response {
+async fn run(
+    rt: Runtime,
+    mode: RunMode,
+    input: RunAgentInput,
+    agent_id: Option<String>,
+    owner_scope: String,
+) -> Response {
     let peek = input
         .thread_id
         .clone()
@@ -171,13 +211,30 @@ async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Res
 
     if processed.messages.is_empty() {
         // RunResume answers an awaiting tool decision — one committed step, framed whole.
-        match resume_step(&rt, &run_id, &thread, &processed.tool_results).await {
+        match resume_step(
+            &rt,
+            &mode,
+            &owner_scope,
+            &run_id,
+            &thread,
+            &processed.tool_results,
+        )
+        .await
+        {
             Ok(outcome) => sse_response(encode_step(&outcome, &thread, &run_id)),
             Err(err) => sse_error(&thread, &run_id, err),
         }
     } else {
         // A fresh turn: stream the engine's live progress, then the committed tail.
-        stream_turn(rt, thread, run_id, processed.agent_id, processed.messages)
+        stream_turn(
+            rt,
+            mode,
+            thread,
+            run_id,
+            processed.agent_id,
+            processed.messages,
+            owner_scope,
+        )
     }
 }
 
@@ -188,10 +245,12 @@ async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Res
 /// committed projection, so the committed step stays the source of truth.
 fn stream_turn(
     rt: Runtime,
+    mode: RunMode,
     thread: String,
     run_id: String,
     agent: Option<String>,
     messages: Vec<Message>,
+    owner_scope: String,
 ) -> Response {
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
@@ -210,8 +269,23 @@ fn stream_turn(
         let rt_cancel = rt.clone();
         let operation_id = run_id.clone();
         let turn = tokio::spawn(async move {
-            rt.run_streaming(&operation_id, &thread, agent, messages, sink)
-                .await
+            match mode {
+                RunMode::OwnerScoped(port) => {
+                    port.run_streaming_for_owner(
+                        &owner_scope,
+                        &operation_id,
+                        &thread,
+                        agent,
+                        messages,
+                        sink,
+                    )
+                    .await
+                }
+                RunMode::Local => {
+                    rt.run_streaming(&operation_id, &thread, agent, messages, sink)
+                        .await
+                }
+            }
         });
         while let Some(event) = live_rx.recv().await {
             let wires = match &event {
@@ -246,6 +320,8 @@ fn stream_turn(
 /// is no awaiting tool or no matching result.
 async fn resume_step(
     rt: &Runtime,
+    mode: &RunMode,
+    owner_scope: &str,
     operation_id: &str,
     thread: &str,
     tool_results: &[ToolResultInput],
@@ -264,8 +340,22 @@ async fn resume_step(
             ))
         })?;
     let resume = to_resume(&result.content, result.error.as_deref(), &pending);
-    rt.resume(operation_id, thread, &pending.tool_use_id, resume)
-        .await
+    match mode {
+        RunMode::OwnerScoped(port) => {
+            port.resume_for_owner(
+                owner_scope,
+                operation_id,
+                thread,
+                &pending.tool_use_id,
+                resume,
+            )
+            .await
+        }
+        RunMode::Local => {
+            rt.resume(operation_id, thread, &pending.tool_use_id, resume)
+                .await
+        }
+    }
 }
 
 /// Map an AG-UI tool result to a neutral resume, matching the pending tool's

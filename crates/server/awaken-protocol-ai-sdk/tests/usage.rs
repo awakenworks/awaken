@@ -57,7 +57,8 @@ impl RunApplication for UsageRuntime {
 }
 
 async fn frames(body: Value) -> Vec<Value> {
-    let app = awaken_protocol_ai_sdk::router::router(Arc::new(UsageRuntime));
+    let app =
+        awaken_protocol_ai_sdk::router::router(Arc::new(UsageRuntime), "test-workspace".into());
     let response = app
         .oneshot(
             Request::builder()
@@ -154,7 +155,10 @@ impl RunApplication for ResumeUsageRuntime {
 /// that a decision-only resume also carries `totalUsage` on its finish frame.
 #[tokio::test]
 async fn the_resume_path_also_attaches_total_usage() {
-    let app = awaken_protocol_ai_sdk::router::router(Arc::new(ResumeUsageRuntime));
+    let app = awaken_protocol_ai_sdk::router::router(
+        Arc::new(ResumeUsageRuntime),
+        "test-workspace".into(),
+    );
     // A decision-only body: the assistant `tool-*` part answers the awaiting `c1`,
     // and no new user/system message → `is_resume_only()` → the resume branch.
     let body = json!({

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
+    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
@@ -69,7 +69,7 @@ async fn post_frames_with_content_type(
     body: impl Into<String>,
     content_type: &str,
 ) -> Vec<Value> {
-    let response = awaken_protocol_ag_ui::router::router(runtime)
+    let response = awaken_protocol_ag_ui::router::router(runtime, "test-workspace".into())
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -252,6 +252,7 @@ async fn a_matching_tool_result_resumes_an_awaiting_run_to_completion() {
 /// because it is first in the request. Identity is behavior, not DTO shape.
 struct ExactResumeRuntime {
     resumed: Arc<AtomicBool>,
+    scoped: Arc<AtomicBool>,
 }
 
 #[async_trait::async_trait]
@@ -298,12 +299,41 @@ impl RunApplication for ExactResumeRuntime {
     }
 }
 
+#[async_trait::async_trait]
+impl OwnerScopedRunApplication for ExactResumeRuntime {
+    async fn run_streaming_for_owner(
+        &self,
+        _owner_scope: &str,
+        _operation_id: &str,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+        _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!("exact resume runtime never admits a new Run")
+    }
+
+    async fn resume_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        assert_eq!(owner_scope, "exact-workspace");
+        self.scoped.store(true, Ordering::SeqCst);
+        self.resume(operation_id, thread, tool_use_id, resume).await
+    }
+}
+
 #[tokio::test]
 async fn a_non_matching_tool_result_cannot_resume_the_awaiting_tool() {
     let resumed = Arc::new(AtomicBool::new(false));
     let frames = post_frames(
         Arc::new(ExactResumeRuntime {
             resumed: resumed.clone(),
+            scoped: Arc::new(AtomicBool::new(false)),
         }),
         "/v1/ag-ui",
         json!({
@@ -325,6 +355,42 @@ async fn a_non_matching_tool_result_cannot_resume_the_awaiting_tool() {
     );
 }
 
+#[tokio::test]
+async fn authenticated_workspace_scope_reaches_ag_ui_tool_resume() {
+    // Decision table: T1 exact pending tool + guarded WorkspaceScope => one
+    // owner-qualified resume and RUN_FINISHED; T2 another tool id => the
+    // adjacent negative case rejects without resume. The request's owner is
+    // never reconstructed from a process-local Session slot.
+    let resumed = Arc::new(AtomicBool::new(false));
+    let scoped = Arc::new(AtomicBool::new(false));
+    let app =
+        awaken_protocol_ag_ui::router::router_with_owner_scope(Arc::new(ExactResumeRuntime {
+            resumed: resumed.clone(),
+            scoped: scoped.clone(),
+        }));
+    let body = json!({
+        "threadId": "t1",
+        "runId": "r1",
+        "messages": [{ "role": "tool", "toolCallId": "c1", "content": "done" }]
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui")
+                .header("content-type", "application/json")
+                .extension(awaken_tenancy::WorkspaceScope("exact-workspace".into()))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let stream = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8_lossy(&stream).contains("RUN_FINISHED"));
+    assert!(resumed.load(Ordering::SeqCst), "T1 resume invoked");
+    assert!(scoped.load(Ordering::SeqCst), "T1 exact owner forwarded");
+}
+
 /// Unsupported-input admission behavior:
 ///
 /// ```text
@@ -344,6 +410,7 @@ async fn a_non_matching_tool_result_cannot_resume_the_awaiting_tool() {
 /// mistaken for support when the runtime cannot honor its semantics.
 struct AdmissionRecordingRuntime {
     ran: Arc<AtomicBool>,
+    scoped: Arc<AtomicBool>,
 }
 
 #[async_trait::async_trait]
@@ -385,10 +452,41 @@ impl RunApplication for AdmissionRecordingRuntime {
     }
 }
 
+#[async_trait::async_trait]
+impl OwnerScopedRunApplication for AdmissionRecordingRuntime {
+    async fn run_streaming_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+        _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        assert_eq!(owner_scope, "exact-workspace");
+        self.scoped.store(true, Ordering::SeqCst);
+        self.run(operation_id, thread, agent, messages).await
+    }
+
+    async fn resume_for_owner(
+        &self,
+        _owner_scope: &str,
+        _operation_id: &str,
+        _thread: &str,
+        _tool_use_id: &str,
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!("admission recorder never resumes")
+    }
+}
+
 async fn assert_admission_rejected_without_run(body: Value) {
     let ran = Arc::new(AtomicBool::new(false));
     let frames = post_frames(
-        Arc::new(AdmissionRecordingRuntime { ran: ran.clone() }),
+        Arc::new(AdmissionRecordingRuntime {
+            ran: ran.clone(),
+            scoped: Arc::new(AtomicBool::new(false)),
+        }),
         "/v1/ag-ui",
         body.to_string(),
     )
@@ -455,6 +553,46 @@ async fn the_scoped_agent_route_streams_a_fresh_turn() {
     .await;
     let types = frame_types(&frames);
     assert!(types.contains(&"RUN_FINISHED".to_string()), "{types:?}");
+}
+
+#[tokio::test]
+async fn authenticated_workspace_scope_reaches_the_same_ag_ui_run_admission() {
+    // Decision table: G1 authenticated scope + valid user turn => the exact
+    // scope and turn reach one Run port; G2 invalid payload => existing
+    // rejection tests prove no Run; G3 unscoped local call => existing route
+    // tests preserve compatibility. No protocol-specific execution state.
+    let ran = Arc::new(AtomicBool::new(false));
+    let scoped = Arc::new(AtomicBool::new(false));
+    let app = awaken_protocol_ag_ui::router::router_with_owner_scope(Arc::new(
+        AdmissionRecordingRuntime {
+            ran: ran.clone(),
+            scoped: scoped.clone(),
+        },
+    ));
+    let body = json!({
+        "threadId": "t1",
+        "runId": "r1",
+        "messages": [{ "role": "user", "content": "go" }]
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ag-ui")
+                .header("content-type", "application/json")
+                .extension(awaken_tenancy::WorkspaceScope("exact-workspace".into()))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let stream = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8_lossy(&stream).contains("RUN_FINISHED"));
+    assert!(ran.load(Ordering::SeqCst), "G1 Run reached");
+    assert!(
+        scoped.load(Ordering::SeqCst),
+        "G1 exact request scope forwarded"
+    );
 }
 
 /// A runtime awaiting on a built-in tool that records whether it was resumed denied.
