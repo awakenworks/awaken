@@ -318,6 +318,17 @@ async fn call(
     support::Call::new(status, value)
 }
 
+async fn realize_accepted_sessions(managed: &ManagedState) {
+    // Cause: Cloud create returns a complete frozen root before the Sandbox
+    // exists. Effect: the original supervisor, rather than HTTP create,
+    // delivers its exact network policy to Runtime. Rule E1.
+    let report = managed
+        .session_application()
+        .reconcile_session_realizations()
+        .await;
+    assert!(report.failures.is_empty(), "E1 accepted Session realizes");
+}
+
 #[tokio::test]
 async fn session_carries_the_exact_frozen_environment_network() {
     let (environment_authoring, environment_execution) =
@@ -332,7 +343,7 @@ async fn session_carries_the_exact_frozen_environment_network() {
     // Mounted the way the composition root does: one trusted edge stamp in
     // front of every merged surface, never a per-handler default.
     let app = support::edge_stamped(
-        awaken_protocol_managed::router(managed)
+        awaken_protocol_managed::router(managed.clone())
             .merge(environment_authoring_router(environment_authoring))
             .merge(environment_work_router(environment_execution)),
     );
@@ -356,6 +367,7 @@ async fn session_carries_the_exact_frozen_environment_network() {
     )
     .await
     .expect(StatusCode::OK);
+    realize_accepted_sessions(&managed).await;
     assert_eq!(
         egress.lock().unwrap().last(),
         Some(&awaken_session_configuration_contract::SessionNetworkPolicy::None)
@@ -378,6 +390,7 @@ async fn session_carries_the_exact_frozen_environment_network() {
     )
     .await
     .expect(StatusCode::OK);
+    realize_accepted_sessions(&managed).await;
     assert_eq!(
         egress.lock().unwrap().last(),
         Some(&awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted)
@@ -427,7 +440,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     // Mounted the way the composition root does: one trusted edge stamp in
     // front of every merged surface, never a per-handler default.
     let app = support::edge_stamped(
-        awaken_protocol_managed::router(managed)
+        awaken_protocol_managed::router(managed.clone())
             .merge(environment_authoring_router(environment_authoring))
             .merge(environment_work_router(environment_execution)),
     );
@@ -446,7 +459,12 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         .expect(StatusCode::OK);
         value["id"].as_str().unwrap().to_string()
     }
-    async fn create_session(app: &Router, environment_id: &str, with_mcp: bool) {
+    async fn create_session(
+        app: &Router,
+        managed: &ManagedState,
+        environment_id: &str,
+        with_mcp: bool,
+    ) {
         let mut body = json!({ "agent": "a", "environment_id": environment_id });
         if with_mcp {
             body["agent"] = json!({
@@ -463,6 +481,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         let _response = call(app, "POST", "/v1/sessions", Some(body))
             .await
             .expect_for(StatusCode::OK, "expected status");
+        realize_accepted_sessions(managed).await;
     }
 
     let disabled = environment(
@@ -474,7 +493,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         }),
     )
     .await;
-    create_session(&app, &disabled, true).await;
+    create_session(&app, &managed, &disabled, true).await;
     assert_eq!(
         egress.lock().unwrap().last(),
         Some(
@@ -490,7 +509,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         json!({ "type": "limited", "allow_mcp_servers": true }),
     )
     .await;
-    create_session(&app, &enabled, true).await;
+    create_session(&app, &managed, &enabled, true).await;
     assert_eq!(
         egress.lock().unwrap().last(),
         Some(
@@ -500,7 +519,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         ),
         "N2 only the exact normalized MCP host reaches Runtime"
     );
-    create_session(&app, &enabled, false).await;
+    create_session(&app, &managed, &enabled, false).await;
     assert_eq!(
         egress.lock().unwrap().last(),
         Some(&awaken_session_configuration_contract::SessionNetworkPolicy::None),
@@ -512,7 +531,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         json!({ "type": "limited", "allow_package_managers": true }),
     )
     .await;
-    create_session(&app, &packages, false).await;
+    create_session(&app, &managed, &packages, false).await;
     let expected = awaken_session_configuration_contract::SessionNetworkPolicy::Allowlist {
         hosts: awaken_environment_contract::PUBLIC_PACKAGE_REGISTRY_HOSTS
             .iter()

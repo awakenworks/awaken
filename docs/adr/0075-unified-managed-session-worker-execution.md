@@ -49,8 +49,8 @@ is required.
 ### D1: Session creation receives complete desired state
 
 Every caller supplies immutable mounts, environment values, prompts, network
-restriction, Resources, and initial MCP candidates before invoking
-`SessionApplication::create_session`. `SessionCreationIntent::finalize`
+restriction, Resources, and initial MCP candidates before invoking the one
+SessionApplication creation protocol. `SessionCreationIntent::finalize`
 normalizes MCP precedence and compiles the baseline before the root is inserted.
 
 The first durable insert already contains the consumed complete intent, frozen

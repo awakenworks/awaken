@@ -83,7 +83,7 @@ impl ManagedState {
             .session(&awaken_session_types::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
-        let persisted_status = Self::wire_session_status(persisted.execution);
+        let persisted_status = Self::wire_session_status(&persisted);
         // Snapshot the complete warm projection and its process-local CAS token
         // before asynchronous source reads. Every path below builds privately
         // and publishes through the same compare-and-swap owner.

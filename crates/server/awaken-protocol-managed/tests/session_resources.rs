@@ -1746,6 +1746,17 @@ async fn agent_default_environment_requires_the_exact_revision() {
         .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .unwrap();
+    // Cause: a Cloud create has accepted its exact Environment revision but
+    // Runtime realization is now asynchronous. Effect: the one existing
+    // supervisor installs the same frozen Environment before we inspect it.
+    let realized = state
+        .session_application()
+        .reconcile_session_realizations()
+        .await;
+    assert!(
+        realized.failures.is_empty(),
+        "accepted Environment realizes"
+    );
     assert_eq!(
         runtime.prepared.lock().unwrap()[0]
             .environment

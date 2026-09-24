@@ -1197,4 +1197,4 @@ This change extracts the existing policy from control flow for direct
 production use and bounded proof. It adds no create record, job store, phase,
 repository, scheduler, or compatibility path. Database atomicity, physical
 realization, and the wake delivery remain covered by their existing adapter and
-deployment boundaries rather than being claimed by the small receipt kernel.
+deployment boundaries; cloud Managed acceptance is specified in ADR-0083.

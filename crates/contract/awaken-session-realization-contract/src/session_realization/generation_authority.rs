@@ -5,6 +5,8 @@
 //! the live fence, never a state transition.
 
 use super::McpGenerationRef;
+#[cfg(kani)]
+use awaken_session_mcp_contract::{McpAttachmentContentDigest, McpAttachmentId, McpGeneration};
 
 /// Whether the current exact-generation fence is the asserted fence or a
 /// monotonic lease extension of it. Logical generation, owner incarnation, and
@@ -54,10 +56,10 @@ fn realization_generation_authority_requires_every_axis() {
     let same_incarnation: bool = kani::any();
     let current = McpGenerationRef {
         session_id: "a".into(),
-        generation: crate::McpGeneration::new(
-            crate::McpAttachmentId("a".into()),
+        generation: McpGeneration::new(
+            McpAttachmentId("a".into()),
             kani::any(),
-            crate::McpAttachmentContentDigest::proof_representative(true),
+            McpAttachmentContentDigest::proof_representative(true),
         ),
         runtime_incarnation: "a".into(),
         lease_epoch: kani::any(),
@@ -65,10 +67,10 @@ fn realization_generation_authority_requires_every_axis() {
     };
     let asserted = McpGenerationRef {
         session_id: if same_session { "a" } else { "b" }.into(),
-        generation: crate::McpGeneration::new(
-            crate::McpAttachmentId(if same_attachment { "a" } else { "b" }.into()),
+        generation: McpGeneration::new(
+            McpAttachmentId(if same_attachment { "a" } else { "b" }.into()),
             kani::any(),
-            crate::McpAttachmentContentDigest::proof_representative(same_digest),
+            McpAttachmentContentDigest::proof_representative(same_digest),
         ),
         runtime_incarnation: if same_incarnation { "a" } else { "b" }.into(),
         lease_epoch: kani::any(),
