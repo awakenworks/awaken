@@ -175,6 +175,31 @@ const chat = useChat({
 Keep the application token in memory. Never put a service API key in browser
 source, browser storage, a mobile bundle, or a public environment variable.
 
+## Frontend AG-UI
+
+The trusted backend uses the same Session creation and token-issuance flow,
+selecting `"protocols": ["ag-ui"]`. The official `HttpAgent` keeps the caller's
+external thread id on its wire; Awaken resolves the bound Managed Session only
+after authenticating the short-lived application token:
+
+```ts
+import { HttpAgent } from "@ag-ui/client";
+
+const { access_token, thread_id } = await fetch("/api/awaken-token")
+  .then((response) => response.json());
+
+const agent = new HttpAgent({
+  url: `${AWAKEN_URL}/v1/ag-ui/agents/assistant`,
+  threadId: thread_id,
+  headers: { Authorization: `Bearer ${access_token}` },
+});
+```
+
+On reload, obtain a new token for the *same* backend-owned binding, read
+`GET /v1/ag-ui/threads/{thread_id}/messages`, and supply those committed
+messages to the new client before its next Run. `RUN_STARTED` and
+`RUN_FINISHED` retain `thread_id`; they never substitute the internal Session id.
+
 ### Pre-uploaded Files
 
 AI SDK `FileUIPart` is reserved for a hosted URL or a data URL. It is not
