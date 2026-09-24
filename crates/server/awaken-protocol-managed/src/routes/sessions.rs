@@ -1343,7 +1343,10 @@ pub async fn release_profiled_session(
     ensure_session_scope(state.as_ref(), &id, Some(&request_scope)).await?;
 
     let Some(publication) = body.repository_publication else {
-        state.archive_session(&id).await.map_err(error_response)?;
+        state
+            .release_profiled_session_without_publication(&id)
+            .await
+            .map_err(error_response)?;
         return Ok(Json(awaken_protocol_awaken::ProfiledSessionReleased {
             id,
             repository_publication: None,

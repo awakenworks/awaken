@@ -6047,17 +6047,24 @@ async fn execution_evidence_http_reads_the_owned_frozen_root_without_mutation() 
 }
 
 #[tokio::test]
-async fn profiled_create_replays_activation_failed_root_without_restarting_effects() {
+async fn profiled_create_replays_and_releases_activation_failed_root_without_restarting_effects() {
     // Failed-replay cause/effect graph: C1 one atomic profiled-create receipt
     // exists; C2 its Session root has reached ActivationFailed with a durable
     // reason; C3 the private request fingerprint and owner are exact; C4 the
-    // target Runtime would stall if entered. Effects: E1 POST returns 202 with
+    // target Runtime would stall if entered; C5 the durable root is terminal
+    // or live; C6 verified cleanup is available. Effects: E1 POST returns 202 with
     // the same Session id; E2 failure state/reason remain byte-identical; E3 no
     // Runtime preparation, replacement operation, or second durable mutation.
     //
     // | rule | receipt | owner/hash | lifecycle | effect |
+    // E4 public idle archive rejects the terminal root; E5 existing profiled
+    // release joins verified cleanup and preserves the failure state; E6 exact
+    // retry is idempotent; E7 live execution remains rejected and unchanged.
     // | F1 | failed root | exact | ActivationFailed | 202 + E1+E2+E3 |
     // | F2 | failed root | mismatch | any | conflict, no effect (adjacent receipt tests) |
+    // | F3 | terminal root | exact | ActivationFailed | public archive E4, profiled E5+E6 |
+    // | F4 | live root | exact | Running | E7 |
+    // | F5 | terminal root | exact | Terminated | E5 |
     let request = json!({
         "session_id": "profiled-failed-replay",
         "mode": "work_unit",
@@ -6100,7 +6107,7 @@ async fn profiled_create_replays_activation_failed_root_without_restarting_effec
         payload_hash: awaken_agent_contract::stable_fingerprint(&typed),
     };
     sessions
-        .create("default", failed.clone(), receipt, Vec::new())
+        .create("default", failed.clone(), receipt.clone(), Vec::new())
         .await
         .expect("seed failed root and atomic receipt");
     // The repository, not the pre-admission candidate, owns the canonical
@@ -6136,6 +6143,146 @@ async fn profiled_create_replays_activation_failed_root_without_restarting_effec
         "F1/E2 failure state/reason and operation root are retained"
     );
     assert!(runtime.prepared.lock().unwrap().is_empty(), "F1/E3");
+
+    assert!(
+        state
+            .archive_session("profiled-failed-replay")
+            .await
+            .is_err(),
+        "F3/E4"
+    );
+    runtime
+        .stall_projection_install
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let released = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-failed-replay/release",
+        Some(json!({})),
+    )
+    .await
+    .expect_for(StatusCode::OK, "F3/E5");
+    assert_eq!(released["id"], "profiled-failed-replay", "F3/E5");
+    assert!(released.get("repository_publication").is_none(), "F3/E5");
+    let completed = sessions
+        .get(&SessionId::from("profiled-failed-replay"))
+        .await
+        .unwrap();
+    assert_eq!(
+        completed.execution,
+        awaken_session_contract::SessionExecutionState::ActivationFailed,
+        "F3/E5"
+    );
+    assert!(
+        completed
+            .verified_terminal_cleanup()
+            .unwrap()
+            .is_completed(),
+        "F3/E5"
+    );
+    assert!(
+        matches!(
+            completed.disposition,
+            awaken_session_contract::SessionDisposition::Archived { .. }
+        ),
+        "F3/E5"
+    );
+    let retry = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-failed-replay/release",
+        Some(json!({})),
+    )
+    .await
+    .expect_for(StatusCode::OK, "F3/E6");
+    assert_eq!(retry, released, "F3/E6");
+    assert_eq!(
+        sessions
+            .get(&SessionId::from("profiled-failed-replay"))
+            .await
+            .unwrap(),
+        completed,
+        "F3/E6"
+    );
+
+    let mut running = failed.clone();
+    running.execution = awaken_session_contract::SessionExecutionState::Running;
+    running.realization_progress.last_error = None;
+    running.revision = Default::default();
+    let running_sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("running Session repository"),
+    );
+    running_sessions
+        .create("default", running, receipt.clone(), Vec::new())
+        .await
+        .unwrap();
+    let before = running_sessions
+        .get(&SessionId::from("profiled-failed-replay"))
+        .await
+        .unwrap();
+    let running_state = std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_session_repo(running_sessions.clone())
+            .with_resource_registry(resource_registry().await),
+    );
+    let running_app = profiled_router(running_state, "default");
+    call(
+        &running_app,
+        "POST",
+        "/v1/awaken/sessions/profiled-failed-replay/release",
+        Some(json!({})),
+    )
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "F4/E7");
+    assert_eq!(
+        running_sessions
+            .get(&SessionId::from("profiled-failed-replay"))
+            .await
+            .unwrap(),
+        before,
+        "F4/E7"
+    );
+
+    let mut terminated = failed;
+    terminated.execution = awaken_session_contract::SessionExecutionState::Terminated;
+    terminated.revision = Default::default();
+    let terminal_sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("terminal Session repository"),
+    );
+    terminal_sessions
+        .create("default", terminated, receipt, Vec::new())
+        .await
+        .unwrap();
+    let terminal_state = std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_session_repo(terminal_sessions.clone())
+            .with_resource_registry(resource_registry().await),
+    );
+    let terminal_app = profiled_router(terminal_state, "default");
+    call(
+        &terminal_app,
+        "POST",
+        "/v1/awaken/sessions/profiled-failed-replay/release",
+        Some(json!({})),
+    )
+    .await
+    .expect_for(StatusCode::OK, "F5/E5");
+    let completed_terminal = terminal_sessions
+        .get(&SessionId::from("profiled-failed-replay"))
+        .await
+        .unwrap();
+    assert_eq!(
+        completed_terminal.execution,
+        awaken_session_contract::SessionExecutionState::Terminated,
+        "F5/E5"
+    );
+    assert!(
+        completed_terminal
+            .verified_terminal_cleanup()
+            .unwrap()
+            .is_completed(),
+        "F5/E5"
+    );
 }
 
 #[tokio::test]
@@ -6370,7 +6517,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     // evidence; C5 the canonical Environment receipt has durably established
     // one live source without changing the Resource generation; C6 the same
     // canonical recovery has made the accepted root exactly Idle. Effects: E1
-    // legacy release archives without publication; E2 an exact request returns
+    // ordinary release archives and verifies cleanup without publication; E2 an exact request returns
     // the provisioning receipt only after it is durable in the Session root;
     // E3 exact replay returns the same response and performs no second effect;
     // E4 wrong scope is 404; E5 wrong binding is 400; E6 changed expectation is
@@ -6547,6 +6694,16 @@ async fn profiled_release_projects_one_durable_repository_publication() {
     .await
     .expect_for(StatusCode::OK, "P1/E1");
     assert!(released.get("repository_publication").is_none(), "P1/E1");
+    assert!(
+        sessions
+            .get(&SessionId::from("profiled-legacy-release"))
+            .await
+            .unwrap()
+            .verified_terminal_cleanup()
+            .unwrap()
+            .is_completed(),
+        "P1/E1 verified cleanup"
+    );
     assert_eq!(
         runtime.published.lock().unwrap().len(),
         1,
