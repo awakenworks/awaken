@@ -46,7 +46,9 @@ pub struct DispatchServiceConfig {
 impl Default for DispatchServiceConfig {
     fn default() -> Self {
         Self {
-            poll_interval: Duration::from_millis(50),
+            // Cross-node wake drives prompt work; fallback reads need not hit
+            // the durable queue twenty times per second while it is idle.
+            poll_interval: Duration::from_millis(500),
             max_attempts: 5,
             dead_letter_ttl: None,
             terminal_reconciliation_interval: Some(Duration::from_secs(30)),
