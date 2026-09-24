@@ -137,14 +137,20 @@ async fn events_keep_commit_order_across_a_reopen() {
 
     let reopened = FsCommitCoordinator::open(&dir).await.expect("reopen");
     let scope = EventScope::Run(RunId("r1".to_string()));
-    let all = reopened.list_events(&scope, None, 10);
+    let all = reopened
+        .list_events(&scope, None, 10)
+        .await
+        .expect("events");
     assert_eq!(all.len(), 3, "three events survive the reopen");
     assert!(
         all[0].sequence < all[1].sequence && all[1].sequence < all[2].sequence,
         "monotone commit order after replay"
     );
     // Cursor paging is exclusive of the cursor sequence.
-    let page = reopened.list_events(&scope, Some(all[0].sequence), 10);
+    let page = reopened
+        .list_events(&scope, Some(all[0].sequence), 10)
+        .await
+        .expect("events");
     assert_eq!(page.len(), 2, "remainder after the first cursor");
     assert_eq!(page[0].sequence, all[1].sequence);
     let _ = std::fs::remove_dir_all(&dir);
@@ -164,6 +170,8 @@ async fn empty_store_reads_are_absent() {
     assert!(
         store
             .list_events(&EventScope::Run(RunId("nope".to_string())), None, 10)
+            .await
+            .expect("events")
             .is_empty()
     );
     let _ = std::fs::remove_dir_all(&dir);

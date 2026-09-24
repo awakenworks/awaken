@@ -208,6 +208,28 @@ cross-backend conformance suite.
 - **Let events/outbox stay side-writes.** Rejected (D3): violates G13 single-source
   commit.
 
+## 2026-09-25 amendment: asynchronous shared-authority reads
+
+D1's `CheckpointReader: CommittedThreadView` inheritance assumed that a shared
+SQL authority could afford a complete process-start projection to satisfy the
+synchronous methods. A PostgreSQL Cell with growing historical facts cannot:
+the full replay had a one-million-row startup guard and a process-wide memory
+cost. The execution `CommittedThreadView` remains synchronous and local to one
+active Thread. Its PostgreSQL instance is opened from the already-existing
+atomic `RunRecoverySource` snapshot; an inactive view can be released.
+
+`CheckpointReader` no longer inherits the execution view. Its committed-event
+page is asynchronous and propagates storage errors. PostgreSQL
+answers those reads directly from committed tables, including on a cold replica.
+`RunRecoverySource` remains the one atomic per-Thread recovery read, while the
+checkpoint reader owns event pagination; native PostgreSQL lifecycle SQL and
+the portable single-process lifecycle projection retain attribution. Neither
+is a second fact authority: the original commit transaction and tables still
+own truth. The other backends retain their existing local execution views and
+implement the same asynchronous event contract. This amendment supersedes only
+the synchronous inheritance in D1 and the corresponding projection requirement
+in the original D4 wording.
+
 ## References
 
 - [ADR-0006](0006-fact-authority-run-record-is-cache.md),

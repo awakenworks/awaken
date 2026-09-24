@@ -88,6 +88,42 @@ backend migration tests and actual query plans cover the new physical access
 path. Existing formal commit and migration invariants retain their prior proof
 boundaries and do not establish a performance guarantee.
 
+## Bounded fact inserts under the existing commit authority (2026-09-25)
+
+The PostgreSQL adapter now inserts one commit's Messages, StateCommands and
+Events in ordered chunks of at most 256 rows per statement. Message and state
+row ids continue to follow their source order through `WITH ORDINALITY`; event
+sequences remain the existing explicit lifecycle cursors. The transaction,
+global dense-sequence allocation, terminal check and rollback boundary are
+unchanged. A failure in a later chunk rolls back every earlier chunk and leaves
+the global successor available to the next successful commit.
+
+This reduces SQL round trips while the existing global commit-table lock is
+held. It does not remove that cross-Thread serial point or the full-history
+startup projection. The live PostgreSQL tests cover ordered replay across a
+chunk boundary, later-chunk rollback, reconnect and concurrent dense commits;
+the opt-in benchmark records throughput for minimal and multi-fact commits.
+
+## Bounded startup and asynchronous committed reads (2026-09-25)
+
+The original D4 full-database projection is retired for PostgreSQL. Startup now
+verifies the schema and reads only the indexed global commit fence. Coordinator
+opens a process-local execution view for an active Thread from the existing
+repeatable-read `RunRecoverySource` snapshot; it reuses the same single-flight
+registry and prunes inactive views with bounded work per new opening. The synchronous
+view remains an execution convenience, not a durable read authority. Scoped
+views reject a commit addressed to another Thread before SQL is written.
+
+`CheckpointReader::list_events` is now asynchronous and queries committed SQL;
+storage failure is an error rather than an empty event page. The portable
+single-process lifecycle reader retains its execution-view Run lookup;
+PostgreSQL uses its native SQL lifecycle feed. Cross-replica policy and public
+history continue to use the existing authoritative PostgreSQL queries. The
+fact log, dense commit sequence and receipt transaction are unchanged. A large
+single Thread still costs proportional time and memory when *that Thread* is
+opened; this change removes the whole-Cell startup dependency, not the need
+for bounded or incremental long-Thread recovery.
+
 ## References
 
 - [INVARIANTS.md](../INVARIANTS.md) — G1, G13, G31, G32 (the commit contract).

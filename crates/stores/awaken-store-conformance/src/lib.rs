@@ -1,6 +1,6 @@
 //! Trait-generic store conformance suite (ADR-0039 slice 2.6).
 //!
-//! Every persistence backend that implements `Coordinator + CheckpointReader`
+//! Every persistence backend that implements `Coordinator + CheckpointReader + CommittedThreadView`
 //! must pass the same behavioural checks — commit atomicity, fact-authority
 //! reads, committed-event order, and cursor paging (G1/G13). Backends call these
 //! from their own test crate, each with a freshly constructed store, so the suite
@@ -36,6 +36,7 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleEventKind, decode_run_lifecycle_cursor,
 };
@@ -157,7 +158,7 @@ fn state_checkpoint(thread: &ThreadId, run: &RunId, state: Vec<StateCommand>) ->
 
 /// A committed checkpoint is readable as facts: transcript, run record, latest
 /// run, and the committed event (ADR-0039 D1/D4).
-pub async fn commit_then_read<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn commit_then_read<S: Coordinator + CheckpointReader + CommittedThreadView>(store: &S) {
     let thread = ThreadId("conf-read".to_string());
     let run = RunId("conf-read-r".to_string());
     store
@@ -177,14 +178,20 @@ pub async fn commit_then_read<S: Coordinator + CheckpointReader>(store: &S) {
         "latest run"
     );
     assert_eq!(
-        store.list_events(&EventScope::Run(run), None, 10).len(),
+        store
+            .list_events(&EventScope::Run(run), None, 10)
+            .await
+            .expect("events")
+            .len(),
         1,
         "one event"
     );
 }
 
 /// Committed events are returned in commit order and can be paged by cursor.
-pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader + CommittedThreadView>(
+    store: &S,
+) {
     let thread = ThreadId("conf-events".to_string());
     let run = RunId("conf-events-r".to_string());
     let other_thread = ThreadId("conf-events-other".to_string());
@@ -207,10 +214,13 @@ pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: 
         .expect("commit 2");
 
     let scope = EventScope::Run(run);
-    let all = store.list_events(&scope, None, 10);
+    let all = store.list_events(&scope, None, 10).await.expect("events");
     assert_eq!(all.len(), 2, "both events");
     assert!(all[0].sequence < all[1].sequence, "commit order");
-    let partition = store.list_events(&EventScope::All, None, 10);
+    let partition = store
+        .list_events(&EventScope::All, None, 10)
+        .await
+        .expect("events");
     assert_eq!(partition.len(), 3, "all interleaved partition events");
     assert!(
         partition
@@ -220,9 +230,12 @@ pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: 
     );
 
     // Cursor paging: first page of one, then the remainder after that cursor.
-    let first = store.list_events(&scope, None, 1);
+    let first = store.list_events(&scope, None, 1).await.expect("events");
     assert_eq!(first.len(), 1, "first page");
-    let rest = store.list_events(&scope, Some(first[0].sequence), 10);
+    let rest = store
+        .list_events(&scope, Some(first[0].sequence), 10)
+        .await
+        .expect("events");
     assert_eq!(rest.len(), 1, "remainder after cursor");
     assert_eq!(rest[0].sequence, all[1].sequence, "cursor is exclusive");
 }
@@ -234,7 +247,9 @@ pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: 
 /// (in-memory scan / SQLite projection / fs pre-check), so it belongs in the
 /// shared suite: a backend that let a second terminal commit through, or mutated
 /// state while rejecting, would diverge here.
-pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader + CommittedThreadView>(
+    store: &S,
+) {
     // Cause/effect graph: C1=one terminal commit is durable; C2=a complete,
     // separately identifiable awaiting shape for the same Run is valid in
     // isolation; C3=C2 is submitted after C1. Effects: E1=C1 remains the exact
@@ -252,7 +267,10 @@ pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader>(store: &S
 
     let baseline_messages = store.committed_messages(&thread);
     let baseline_state = store.committed_state(&thread);
-    let baseline_events = store.list_events(&EventScope::Run(run.clone()), None, 100);
+    let baseline_events = store
+        .list_events(&EventScope::Run(run.clone()), None, 100)
+        .await
+        .expect("events");
     let baseline_run = store.run(&run);
     let baseline_latest = store.latest_run(&thread);
     assert!(store.resume_ticket(&run).is_none(), "R1/E1");
@@ -293,7 +311,10 @@ pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader>(store: &S
         "R2/E3 state region stutters"
     );
     assert_eq!(
-        store.list_events(&EventScope::Run(run.clone()), None, 100),
+        store
+            .list_events(&EventScope::Run(run.clone()), None, 100)
+            .await
+            .expect("events"),
         baseline_events,
         "R2/E3 event region stutters"
     );
@@ -311,7 +332,9 @@ pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader>(store: &S
 
 /// Successive commits accumulate transcript and retain historical Run identity;
 /// `latest_run` independently tracks the Thread head.
-pub async fn commits_accumulate<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn commits_accumulate<S: Coordinator + CheckpointReader + CommittedThreadView>(
+    store: &S,
+) {
     // Cause/effect graph: C1 the first Run is committed; C2 a distinct second
     // Run is committed on the same Thread; C3 an unknown Run is queried.
     // Effects: E1 transcript contains both commits in order; E2 both known Runs
@@ -362,7 +385,9 @@ pub async fn commits_accumulate<S: Coordinator + CheckpointReader>(store: &S) {
 /// a changed identity fails closed. This is the neutral window substrate used by
 /// Memory, Compact, Outcome, and inference without teaching the store those
 /// business consumers.
-pub async fn transcript_snapshots_freeze_append_only_prefix<S: Coordinator + CheckpointReader>(
+pub async fn transcript_snapshots_freeze_append_only_prefix<
+    S: Coordinator + CheckpointReader + CommittedThreadView,
+>(
     store: &S,
 ) {
     let thread = ThreadId("conf-transcript-snapshot".to_string());
@@ -410,7 +435,11 @@ pub async fn transcript_snapshots_freeze_append_only_prefix<S: Coordinator + Che
 /// nothing and fails closed (G5). Every backend awaits/clears the ticket atomically
 /// with the checkpoint, so a backend that leaked a cleared ticket — or dropped a
 /// live one — diverges here.
-pub async fn resume_ticket_awaits_then_clears<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn resume_ticket_awaits_then_clears<
+    S: Coordinator + CheckpointReader + CommittedThreadView,
+>(
+    store: &S,
+) {
     let thread = ThreadId("conf-wait".to_string());
     let run = RunId("conf-wait-r".to_string());
 
@@ -439,7 +468,11 @@ pub async fn resume_ticket_awaits_then_clears<S: Coordinator + CheckpointReader>
 /// Thread-level wait selection is one atomic committed-view query. Historical
 /// tickets remain addressable by Run for replay, but only the latest Awaiting
 /// Run may be selected for new thread-addressed input.
-pub async fn open_wait_selects_only_the_latest_run<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn open_wait_selects_only_the_latest_run<
+    S: Coordinator + CheckpointReader + CommittedThreadView,
+>(
+    store: &S,
+) {
     /* Cause/effect graph and decision table:
      * C1 an old Run is Awaiting with ticket T1; C2 a newer Run exists; C3 the
      * newer Run is terminal; C4 the newer Run is Awaiting with ticket T2.
@@ -498,7 +531,9 @@ pub async fn open_wait_selects_only_the_latest_run<S: Coordinator + CheckpointRe
 /// allocated the sequence non-atomically, or dropped an interleaved append, would
 /// diverge here. (Postgres additionally proves the cross-process race with its own
 /// dedicated test; this is the portable single-store invariant.)
-pub async fn concurrent_appends_are_dense_and_distinct<S: Coordinator + CheckpointReader>(
+pub async fn concurrent_appends_are_dense_and_distinct<
+    S: Coordinator + CheckpointReader + CommittedThreadView,
+>(
     store: &S,
 ) {
     let thread = ThreadId("conf-concurrent".to_string());
@@ -528,7 +563,11 @@ pub async fn concurrent_appends_are_dense_and_distinct<S: Coordinator + Checkpoi
 /// host many sessions in one store. All backends key committed truth by thread (the
 /// in-memory reference, and thus the filesystem store that reuses it as its read
 /// model, are thread-keyed too), so every backend runs this case.
-pub async fn two_threads_in_one_store_are_isolated<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn two_threads_in_one_store_are_isolated<
+    S: Coordinator + CheckpointReader + CommittedThreadView,
+>(
+    store: &S,
+) {
     let ta = ThreadId("conf-iso-a".to_string());
     let tb = ThreadId("conf-iso-b".to_string());
     let ra = RunId("conf-iso-ra".to_string());
@@ -805,7 +844,7 @@ pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>
 /// Operation receipts make an ambiguous acknowledgement retry exactly-once at
 /// the committed-fact boundary, while Thread CAS rejects stale recovery context.
 pub async fn commit_operation_is_idempotent_and_cas<
-    S: OperationCoordinator + CheckpointReader + RunRecoverySource,
+    S: OperationCoordinator + CheckpointReader + CommittedThreadView + RunRecoverySource,
 >(
     store: &S,
 ) {
@@ -902,7 +941,7 @@ pub async fn commit_operation_is_idempotent_and_cas<
 /// Two operations prepared from the same Thread prefix race: the Thread CAS
 /// admits exactly one, even when they target different Runs.
 pub async fn concurrent_operations_cas_one_winner<
-    S: OperationCoordinator + CheckpointReader + RunRecoverySource + Sync,
+    S: OperationCoordinator + CheckpointReader + CommittedThreadView + RunRecoverySource + Sync,
 >(
     store: &S,
 ) {
@@ -944,7 +983,11 @@ pub async fn concurrent_operations_cas_one_winner<
 /// no run record, no latest run, no events (by run or thread scope), no awaiting
 /// ticket, no committed state. A backend that pre-materialized a partial or
 /// default row would diverge here (G13).
-pub async fn empty_store_reads_are_absent<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn empty_store_reads_are_absent<
+    S: Coordinator + CheckpointReader + CommittedThreadView,
+>(
+    store: &S,
+) {
     let thread = ThreadId("conf-empty".to_string());
     let run = RunId("conf-empty-r".to_string());
 
@@ -957,12 +1000,16 @@ pub async fn empty_store_reads_are_absent<S: Coordinator + CheckpointReader>(sto
     assert!(
         store
             .list_events(&EventScope::Run(run.clone()), None, 10)
+            .await
+            .expect("events")
             .is_empty(),
         "no run-scoped events"
     );
     assert!(
         store
             .list_events(&EventScope::Thread(thread.clone()), None, 10)
+            .await
+            .expect("events")
             .is_empty(),
         "no thread-scoped events"
     );
@@ -984,7 +1031,9 @@ pub async fn empty_store_reads_are_absent<S: Coordinator + CheckpointReader>(sto
 /// (empty) would FAIL — that is the divergence this case exists to catch. Every
 /// backend now projects the port (inmem/fs from their read model, SQLite/Postgres
 /// from the durable `state_command` rows), so all of them run this case.
-pub async fn committed_state_replays<S: Coordinator + CheckpointReader>(store: &S) {
+pub async fn committed_state_replays<S: Coordinator + CheckpointReader + CommittedThreadView>(
+    store: &S,
+) {
     let thread = ThreadId("conf-state".to_string());
     let run = RunId("conf-state-r".to_string());
     let commands = vec![
@@ -1018,7 +1067,9 @@ pub async fn committed_state_replays<S: Coordinator + CheckpointReader>(store: &
 /// ThreadCommit state transition. This is the persistence-level refinement
 /// check for the production design: no independent delegation repository may
 /// advance (or survive a fenced terminal retry) apart from the ToolBatch cell.
-pub async fn delegation_and_tool_state_commit_atomically<S: Coordinator + CheckpointReader>(
+pub async fn delegation_and_tool_state_commit_atomically<
+    S: Coordinator + CheckpointReader + CommittedThreadView,
+>(
     store: &S,
 ) {
     let thread = ThreadId("conf-delegation-atomic".to_string());
