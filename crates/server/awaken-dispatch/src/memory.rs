@@ -51,6 +51,7 @@ use awaken_dispatch_contract::{
 };
 
 mod credential_binding;
+mod inbox;
 mod outbox;
 mod physical_attempt;
 mod settlement;
@@ -362,7 +363,7 @@ fn select_in_physical_band(
             && row.active_attempt.is_some() == occupied
             && classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
                 == ExactClaimMode::ReservationRecovery
-            && resolution_retry_is_due(row, now_ms)
+            && retry_deadline_is_due(row, now_ms)
             && !thread_has_claim_blocking_peer(state, run, false)
         {
             return Some(run.clone());
@@ -390,7 +391,7 @@ fn select_in_physical_band(
             && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Leased
             && crate::clock::deadline_has_passed(row.lease.as_ref().map(|l| l.expires_ms), now_ms)
-            && resolution_retry_is_due(row, now_ms)
+            && retry_deadline_is_due(row, now_ms)
             && compatible(row)
         {
             return Some(run.clone());
@@ -403,7 +404,7 @@ fn select_in_physical_band(
         if let Some(row) = state.rows.get(run)
             && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Awaiting
-            && resolution_retry_is_due(row, now_ms)
+            && retry_deadline_is_due(row, now_ms)
             && state
                 .pending
                 .iter()
@@ -421,7 +422,7 @@ fn select_in_physical_band(
         if let Some(row) = state.rows.get(run)
             && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Pending
-            && resolution_retry_is_due(row, now_ms)
+            && retry_deadline_is_due(row, now_ms)
             && !thread_has_claim_blocking_peer(state, run, true)
             && compatible(row)
             && best.is_none_or(|(_, p)| row.priority > p)
@@ -432,12 +433,8 @@ fn select_in_physical_band(
     best.map(|(run, _)| run.clone())
 }
 
-fn resolution_retry_is_due(row: &Row, now_ms: u64) -> bool {
-    crate::pool::resolution_retry_is_due(
-        row.cancellation_requested,
-        row.retry_not_before_ms,
-        now_ms,
-    )
+fn retry_deadline_is_due(row: &Row, now_ms: u64) -> bool {
+    crate::pool::retry_deadline_is_due(row.retry_not_before_ms, now_ms)
 }
 
 /// Whether one exact row is runnable under the same policy as [`select_where`]. The
@@ -445,7 +442,7 @@ fn resolution_retry_is_due(row: &Row, now_ms: u64) -> bool {
 fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
     let now_ms = crate::clock::normalize_millis(now_ms);
     let row = state.rows.get(run_id)?;
-    if !resolution_retry_is_due(row, now_ms) {
+    if !retry_deadline_is_due(row, now_ms) {
         return None;
     }
     if classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
@@ -535,7 +532,7 @@ fn claim_exact_with_mode(
                 return Ok(None);
             };
             let expired_recovery = row.state == DispatchState::ReservationLeased;
-            if !resolution_retry_is_due(row, now_ms)
+            if !retry_deadline_is_due(row, now_ms)
                 || classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
                     != ExactClaimMode::ReservationRecovery
                 || thread_has_claim_blocking_peer(state, requested_run, false)
@@ -1574,6 +1571,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let CancelTransition::Applied {
             state: next,
             revoked_lease,
+            clear_retry_deadline,
         } = transition
         else {
             return Ok(None);
@@ -1590,6 +1588,9 @@ impl DispatchQueue for MemoryDispatchStore {
                 None
             };
             row.apply_transition(next);
+            if clear_retry_deadline {
+                row.retry_not_before_ms = None;
+            }
             if was_reservation_claim && row.state == DispatchState::Reserved {
                 row.reservation_deadline_ms = Some(0);
             }
@@ -1940,68 +1941,5 @@ impl DispatchOperationalFeed for MemoryDispatchStore {
             events,
             next_cursor,
         })
-    }
-}
-
-#[async_trait]
-impl Inbox for MemoryDispatchStore {
-    async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
-        let mut state = lock(&self.state)?;
-        append_pending(&mut state, input)
-    }
-
-    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state
-            .pending
-            .iter()
-            .filter(|p| &p.input.thread_id == thread_id)
-            .map(|p| PendingRecord {
-                input: p.input.clone(),
-                revision: p.revision,
-            })
-            .collect())
-    }
-
-    async fn retract(
-        &self,
-        message_id: &str,
-        expected_revision: u64,
-    ) -> Result<CasOutcome, DispatchError> {
-        let mut state = lock(&self.state)?;
-        let Some(pos) = state
-            .pending
-            .iter()
-            .position(|p| p.input.message_id == message_id)
-        else {
-            return Ok(CasOutcome::NotFound);
-        };
-        if state.pending[pos].revision != expected_revision {
-            return Ok(CasOutcome::RevisionMismatch);
-        }
-        state.pending.remove(pos);
-        Ok(CasOutcome::Applied)
-    }
-
-    async fn edit(
-        &self,
-        message_id: &str,
-        expected_revision: u64,
-        result: ResumeResult,
-    ) -> Result<CasOutcome, DispatchError> {
-        let mut state = lock(&self.state)?;
-        let Some(row) = state
-            .pending
-            .iter_mut()
-            .find(|p| p.input.message_id == message_id)
-        else {
-            return Ok(CasOutcome::NotFound);
-        };
-        if row.revision != expected_revision {
-            return Ok(CasOutcome::RevisionMismatch);
-        }
-        row.input.result = result;
-        row.revision += 1;
-        Ok(CasOutcome::Applied)
     }
 }

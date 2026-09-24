@@ -835,31 +835,31 @@ async fn drain_loop<S: ControlDispatch + 'static>(
     }
 }
 
-/// Internal scheduling predicate for a transiently unresolved request.
-/// Cancellation is terminal control and never waits for this local deadline.
+/// Internal scheduling predicate for a transiently unresolved request. The
+/// first cancellation clears a prior deadline in the canonical row transition;
+/// later failed cancellation attempts must respect their new deadline.
 #[must_use]
 #[allow(
     dead_code,
     reason = "used by optional stores, executable tests, and the Kani admission proof"
 )]
-pub(crate) const fn resolution_retry_is_due(
-    cancellation_requested: bool,
-    retry_not_before_ms: Option<u64>,
-    now_ms: u64,
-) -> bool {
-    cancellation_requested
-        || match retry_not_before_ms {
-            None => true,
-            Some(deadline) => deadline <= now_ms,
-        }
+pub(crate) const fn retry_deadline_is_due(retry_not_before_ms: Option<u64>, now_ms: u64) -> bool {
+    match retry_not_before_ms {
+        None => true,
+        Some(deadline) => deadline <= now_ms,
+    }
 }
 
 #[test]
-fn resolution_retry_deadline_is_request_local_and_cancellation_bypasses_it() {
-    assert!(resolution_retry_is_due(false, None, 0));
-    assert!(!resolution_retry_is_due(false, Some(11), 10));
-    assert!(resolution_retry_is_due(false, Some(10), 10));
-    assert!(resolution_retry_is_due(true, Some(u64::MAX), 0));
+fn retry_deadline_blocks_repeated_cancellation_until_due() {
+    // Causes: C1 no deadline after the first cancellation; C2 a failed
+    // cancelled attempt installs a future deadline; C3 the deadline is due.
+    // Effects: E1 C1 is immediately runnable; E2 C2 cannot hot-loop; E3 C3
+    // becomes runnable again. Rule C1=>E1, C2=>E2, C3=>E3. The transition
+    // kernel owns clearing C1 on first cancellation.
+    assert!(retry_deadline_is_due(None, 0));
+    assert!(!retry_deadline_is_due(Some(11), 10));
+    assert!(retry_deadline_is_due(Some(10), 10));
 }
 
 /// Private pool control-flow classification. Resolution deferral is deliberately
@@ -887,7 +887,7 @@ fn drain_error_backoff(consecutive_errors: u32) -> Duration {
 
 /// The claim epoch is already the durable count of claims of this exact Run.
 /// Reuse its fence rather than adding a second retry counter or queue.
-fn claim_failure_backoff(epoch: u64) -> Duration {
+pub(crate) fn claim_failure_backoff(epoch: u64) -> Duration {
     bounded_exponential_backoff(Duration::from_millis(250), Duration::from_secs(30), epoch)
 }
 
@@ -947,19 +947,18 @@ mod drain_admission_proofs {
 
 #[cfg(kani)]
 mod drain_error_proofs {
-    use super::{DrainErrorState, drain_error_backoff, resolution_retry_is_due};
+    use super::{DrainErrorState, drain_error_backoff, retry_deadline_is_due};
     use std::time::Duration;
 
     #[kani::proof]
-    fn resolution_retry_admission_matches_only_deadline_or_cancellation() {
-        let cancellation_requested: bool = kani::any();
+    fn resolution_retry_admission_matches_only_the_persisted_deadline() {
         let deadline_present: bool = kani::any();
         let deadline: u64 = kani::any();
         let now_ms: u64 = kani::any();
         let retry_not_before_ms = deadline_present.then_some(deadline);
         assert_eq!(
-            resolution_retry_is_due(cancellation_requested, retry_not_before_ms, now_ms),
-            cancellation_requested || !deadline_present || deadline <= now_ms
+            retry_deadline_is_due(retry_not_before_ms, now_ms),
+            !deadline_present || deadline <= now_ms
         );
     }
 

@@ -2499,8 +2499,8 @@ pub async fn assert_defer_claim_is_request_local<
     clock: &dyn ConformanceClock,
 ) {
     use awaken_dispatch::{
-        DispatchCursor, DispatchOperation, LeaseLossReason, RunClaim, RunDispatch, SettleOutcome,
-        SubmitOptions,
+        DispatchCursor, DispatchOperation, DispatchOutcome, LeaseLossReason, RunClaim, RunDispatch,
+        SettleOutcome, SubmitOptions,
     };
 
     let deferred = RunDispatch::new(activation_on(
@@ -2557,20 +2557,77 @@ pub async fn assert_defer_claim_is_request_local<
         .unwrap()
         .expect("unrelated lower-priority dispatch remains claimable");
     assert_ne!(independent.lease.run_id, deferred_run);
+    assert_eq!(
+        store
+            .settle(
+                &independent.lease.run_id,
+                independent.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "the independent fixture is finished before the cancelled deadline check"
+    );
 
     assert_eq!(
         store.cancel(&deferred_run).await.unwrap(),
         Some(first.request.thread_id().clone()),
-        "cancellation remains terminal control while resolution is deferred"
+        "first cancellation clears a prior request-local deadline"
     );
     clock.set(2);
     let cancelled = store
         .claim("owner-c", 1_000, &Default::default())
         .await
         .unwrap()
-        .expect("cancellation bypasses request-local retry deadline");
+        .expect("first cancellation is claimable immediately");
     assert_eq!(cancelled.lease.run_id, deferred_run);
     assert!(cancelled.cancellation_requested);
+
+    // Causes: C1 a first cancellation clears the old delay; C2 the resulting
+    // cancelled claim fails and is deferred; C3 cancellation is repeated while
+    // that deadline is in the future. Effects: E1 C1 wakes promptly; E2 C2+C3
+    // cannot hot-loop; E3 the same cancellation becomes due exactly on time.
+    // Rules D1=C1=>E1, D2=C2+C3+before deadline=>E2,
+    // D3=C2+C3+at/after deadline=>E3. Exact equality is asserted only when
+    // the backend clock is controllable; PostgreSQL uses its live server clock.
+    assert_eq!(
+        store
+            .defer_claim(&RunClaim::from(&cancelled.lease), 1_000)
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "D2 cancelled failure uses the canonical defer"
+    );
+    assert_eq!(
+        store.cancel(&deferred_run).await.unwrap(),
+        Some(first.request.thread_id().clone()),
+        "D2 repeated cancellation is an applied stutter"
+    );
+    clock.set(1_001);
+    assert!(
+        store
+            .claim("owner-d", 1_000, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "D2 repeated cancellation retains the retry deadline"
+    );
+    if clock.exact_boundary_is_controllable() {
+        clock.set(1_002);
+    } else {
+        // awaken-wait: PostgreSQL owns a moving wall clock; wait past this
+        // test's persisted 1000ms retry expiry with a 100ms scheduling margin.
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    }
+    let retry = store
+        .claim("owner-d", 1_000, &Default::default())
+        .await
+        .unwrap()
+        .expect("D3 cancelled retry becomes due at the exact deadline");
+    assert_eq!(retry.lease.run_id, deferred_run, "D3");
+    assert!(retry.cancellation_requested, "D3");
 }
 
 pub async fn assert_defer_claim_deadline_edge<S: awaken_dispatch::ControlDispatch>(
