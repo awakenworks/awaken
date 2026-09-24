@@ -88,6 +88,22 @@ backend migration tests and actual query plans cover the new physical access
 path. Existing formal commit and migration invariants retain their prior proof
 boundaries and do not establish a performance guarantee.
 
+## Bounded fact inserts under the existing commit authority (2026-09-25)
+
+The PostgreSQL adapter now inserts one commit's Messages, StateCommands and
+Events in ordered chunks of at most 256 rows per statement. Message and state
+row ids continue to follow their source order through `WITH ORDINALITY`; event
+sequences remain the existing explicit lifecycle cursors. The transaction,
+global dense-sequence allocation, terminal check and rollback boundary are
+unchanged. A failure in a later chunk rolls back every earlier chunk and leaves
+the global successor available to the next successful commit.
+
+This reduces SQL round trips while the existing global commit-table lock is
+held. It does not remove that cross-Thread serial point or the full-history
+startup projection. The live PostgreSQL tests cover ordered replay across a
+chunk boundary, later-chunk rollback, reconnect and concurrent dense commits;
+the opt-in benchmark records throughput for minimal and multi-fact commits.
+
 ## References
 
 - [INVARIANTS.md](../INVARIANTS.md) — G1, G13, G31, G32 (the commit contract).

@@ -2895,6 +2895,7 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-store-conformance",
  "awaken-store-schema",
+ "serde",
  "serde_json",
  "sqlx",
  "thiserror",

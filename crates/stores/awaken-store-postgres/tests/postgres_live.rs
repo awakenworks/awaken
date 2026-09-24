@@ -124,7 +124,156 @@ async fn independent_thread_commit_throughput_observation() {
     // synchronous standby, so it diagnoses this store's lock path and cannot
     // establish fleet throughput. Decision rules: P1=C1+C2(1)+C3 -> E1+E2;
     // P2=C1+C2(8)+C3 -> E1+E2; P3=C1+C2(32)+C3 -> E1+E2.
-    let Some(pool) = schema_pool("t_pg_commit_perf").await else {
+    observe_commit_throughput("t_pg_commit_perf", CommitPayload::Minimal).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "live PostgreSQL throughput observation, run separately from correctness suites"]
+async fn multi_fact_commit_throughput_observation() {
+    // Causes: C1 each independent ThreadCommit carries eight ordered Messages,
+    // eight StateCommands and eight Events; C2 concurrency is 1, 8 or 32.
+    // Effects: E1 all facts remain atomically committed in order with dense
+    // global sequences; E2 print application commit rate for comparison with
+    // the same database, schema shape and client concurrency after bulk writes.
+    // Rules M1/M2/M3 are C1+C2(1/8/32) -> E1+E2. This tests transaction
+    // round trips and lock hold, not Worker/HTTP or a production Cell SLO.
+    observe_commit_throughput("t_pg_commit_many_perf", CommitPayload::Many).await;
+}
+
+#[tokio::test]
+async fn bulk_fact_chunks_replay_in_original_order_after_reconnect() {
+    // Causes: C1 one ThreadCommit has 257 facts of each kind, crossing the
+    // bounded SQL chunk; C2 a new coordinator rehydrates the committed prefix.
+    // Effects: E1 every Message, StateCommand and supplied Event retains source
+    // order alongside the Run's automatically staged lifecycle events;
+    // E2 there is one dense commit sequence and one terminal Run. Rule B1=
+    // C1+C2 -> E1+E2. This protects the portable row-id read order while the
+    // Postgres adapter changes only how it submits rows within one transaction.
+    let Some(pool) = schema_pool("t_pg_bulk_order").await else {
+        return;
+    };
+    let thread = ThreadId("bulk-order-thread".into());
+    let run = RunId("bulk-order-run".into());
+    let messages: Vec<_> = (0..257)
+        .map(|index| message(&format!("bulk-{index:03}"), "ordered"))
+        .collect();
+    let state: Vec<_> = (0..257)
+        .map(|index| {
+            StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                format!("bulk.state.{index:03}"),
+                serde_json::json!(index),
+            )
+        })
+        .collect();
+    let events: Vec<_> = (0..257)
+        .map(|index| Draft {
+            kind: EventKind::RunStateChanged,
+            payload: serde_json::json!({"index": index}),
+        })
+        .collect();
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let record = coordinator
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+            true,
+            messages.clone(),
+            state.clone(),
+            events,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(record.sequence, 1, "B1/E2");
+    drop(coordinator);
+    let reopened = PostgresCommitCoordinator::with_existing_pool(pool)
+        .await
+        .unwrap();
+    let recovered = reopened.recovery_snapshot(&thread, &run).await.unwrap();
+    assert_eq!(recovered.messages, messages, "B1/E1 messages");
+    assert_eq!(recovered.state, state, "B1/E1 state");
+    let supplied_events: Vec<_> = recovered
+        .events
+        .iter()
+        .filter(|event| event.payload.get("index").is_some())
+        .collect();
+    assert_eq!(supplied_events.len(), 257, "B1/E1 supplied events");
+    for (index, event) in supplied_events.iter().enumerate() {
+        assert_eq!(event.payload["index"], serde_json::json!(index), "B1/E1");
+    }
+    assert_eq!(reopened.commit_count(), 1, "B1/E2");
+}
+
+#[tokio::test]
+async fn later_bulk_chunk_failure_rolls_back_every_fact_and_reuses_sequence() {
+    // Causes: C1 the second Message chunk violates a database constraint
+    // after the first 256 rows were inserted; C2 the caller then retries one
+    // valid commit. Effects: E1 no partial facts or run survive C1; E2 C2 gets
+    // dense sequence one. Rules F1=C1 -> E1, F2=C1+C2 -> E2. A database error
+    // must not turn chunking into a partial public commit.
+    let Some(pool) = schema_pool("t_pg_bulk_rollback").await else {
+        return;
+    };
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    sqlx::query(
+        "ALTER TABLE runtime_message ADD CONSTRAINT reject_bulk_last \
+         CHECK (data->>'id' <> 'bulk-fail')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut messages: Vec<_> = (0..256)
+        .map(|index| message(&format!("bulk-{index:03}"), "before failure"))
+        .collect();
+    messages.push(message("bulk-fail", "rejected second chunk"));
+    assert!(
+        coordinator
+            .commit(ThreadCommit::assemble(
+                ThreadId("bulk-failed-thread".into()),
+                ended("bulk-failed-run"),
+                true,
+                messages,
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .is_err(),
+        "F1 constraint rejects second chunk"
+    );
+    for table in ["runtime_commit", "runtime_message", "runtime_run_record"] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "F1/E1 {table}");
+    }
+    let retry = coordinator
+        .commit(ThreadCommit::assemble(
+            ThreadId("bulk-retry-thread".into()),
+            ended("bulk-retry-run"),
+            true,
+            vec![message("bulk-good", "retry")],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(retry.sequence, 1, "F2/E2");
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommitPayload {
+    Minimal,
+    Many,
+}
+
+async fn observe_commit_throughput(schema: &'static str, payload: CommitPayload) {
+    let Some(pool) = schema_pool(schema).await else {
         panic!("explicit performance run requires PostgreSQL");
     };
     let store = Arc::new(
@@ -141,13 +290,35 @@ async fn independent_thread_commit_throughput_observation() {
             let store = store.clone();
             tasks.spawn(async move {
                 let run = RunId(format!("perf-run-{concurrency}-{index}"));
+                let facts = if payload == CommitPayload::Many { 8 } else { 0 };
                 let commit = ThreadCommit::assemble(
                     ThreadId(format!("perf-thread-{concurrency}-{index}")),
                     RunDisposition::ended(run, EndCause::NaturalEnd),
                     true,
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
+                    (0..facts)
+                        .map(|fact| {
+                            message(
+                                &format!("perf-message-{concurrency}-{index}-{fact}"),
+                                "benchmark message",
+                            )
+                        })
+                        .collect(),
+                    (0..facts)
+                        .map(|fact| {
+                            StateCommand::set(
+                                Scope::Thread,
+                                MergePolicy::Disjoint,
+                                format!("perf.state.{fact}"),
+                                serde_json::json!(fact),
+                            )
+                        })
+                        .collect(),
+                    (0..facts)
+                        .map(|fact| Draft {
+                            kind: EventKind::RunStateChanged,
+                            payload: serde_json::json!({"fact": fact}),
+                        })
+                        .collect(),
                 );
                 store.commit(commit).await.expect("independent commit")
             });
@@ -164,7 +335,12 @@ async fn independent_thread_commit_throughput_observation() {
         assert_eq!(sequences, (first..=last).collect::<Vec<_>>(), "P1-P3/E1");
         let elapsed = started.elapsed().as_secs_f64();
         println!(
-            "commit_perf independent_threads={} concurrency={concurrency} seconds={elapsed:.3} commits_per_s={:.1}",
+            "commit_perf profile={} independent_threads={} concurrency={concurrency} seconds={elapsed:.3} commits_per_s={:.1}",
+            if payload == CommitPayload::Many {
+                "many"
+            } else {
+                "minimal"
+            },
             COMMITS,
             COMMITS as f64 / elapsed
         );

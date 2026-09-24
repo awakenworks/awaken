@@ -722,42 +722,13 @@ async fn append_commit(
     .await
     .map_err(reject)?;
 
-    for message in &commit.messages {
-        sqlx::query(&format!(
-            "INSERT INTO {p}_message (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
-        ))
-        .bind(encode_authority(next)?)
-        .bind(&thread_id.0)
-        .bind(Json(message))
-        .execute(&mut **tx)
-        .await
-        .map_err(reject)?;
-    }
-    for command in &commit.state {
-        sqlx::query(&format!(
-            "INSERT INTO {p}_state_command (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
-        ))
-        .bind(encode_authority(next)?)
-        .bind(&thread_id.0)
-        .bind(Json(command))
-        .execute(&mut **tx)
-        .await
-        .map_err(reject)?;
-    }
+    append_ordered_thread_facts(tx, "message", next, thread_id, &commit.messages).await?;
+    append_ordered_thread_facts(tx, "state_command", next, thread_id, &commit.state).await?;
     let mut committed_events = Vec::with_capacity(commit.events.len());
     for (offset, draft) in commit.events.iter().enumerate() {
         let sequence = encode_run_lifecycle_cursor(next, offset)
             .map_err(|error| Error::Rejected(error.to_string()))?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES ($1, $2, $3, $4)"
-        ))
-        .bind(encode_authority(sequence.0)?)
-        .bind(&run_id.0)
-        .bind(Json(&draft.kind))
-        .bind(Json(&draft.payload))
-        .execute(&mut **tx)
-        .await
-        .map_err(reject)?;
+        let _ = encode_authority(sequence.0)?;
         committed_events.push(EventRecord {
             sequence: sequence.0,
             run_id: run_id.clone(),
@@ -765,6 +736,7 @@ async fn append_commit(
             payload: draft.payload.clone(),
         });
     }
+    append_ordered_events(tx, run_id, &committed_events).await?;
     sqlx::query(&format!(
         "INSERT INTO {p}_run_record (run_id, thread_id, phase) VALUES ($1, $2, $3) \
          ON CONFLICT (run_id) DO UPDATE \
@@ -798,6 +770,60 @@ async fn append_commit(
             .map_err(reject)?;
     }
     Ok((next, committed_events))
+}
+
+/// Keep one bounded SQL statement per fact kind instead of one round trip per
+/// row while the dense global commit lock is held. `WITH ORDINALITY` makes the
+/// source order explicit before PostgreSQL assigns the portable row ids used
+/// by transcript/state readers. The table name is a private static call-site
+/// choice, never input from a request or configuration.
+async fn append_ordered_thread_facts<T: serde::Serialize>(
+    tx: &mut Transaction<'_, Postgres>,
+    table: &'static str,
+    sequence: u64,
+    thread_id: &ThreadId,
+    facts: &[T],
+) -> Result<(), Error> {
+    const FACTS_PER_STATEMENT: usize = 256;
+    let sequence = encode_authority(sequence)?;
+    for chunk in facts.chunks(FACTS_PER_STATEMENT) {
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_{table} (commit_sequence, thread_id, data) \
+             SELECT $1, $2, entry.value \
+             FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS entry(value, ordinal) \
+             ORDER BY entry.ordinal"
+        ))
+        .bind(sequence)
+        .bind(&thread_id.0)
+        .bind(Json(chunk))
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
+    }
+    Ok(())
+}
+
+async fn append_ordered_events(
+    tx: &mut Transaction<'_, Postgres>,
+    run_id: &RunId,
+    events: &[EventRecord],
+) -> Result<(), Error> {
+    const EVENTS_PER_STATEMENT: usize = 256;
+    for chunk in events.chunks(EVENTS_PER_STATEMENT) {
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_event (sequence, run_id, kind, payload) \
+             SELECT (entry.value->>'sequence')::bigint, $1, \
+                    entry.value->'kind', entry.value->'payload' \
+             FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS entry(value, ordinal) \
+             ORDER BY entry.ordinal"
+        ))
+        .bind(&run_id.0)
+        .bind(Json(chunk))
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
+    }
+    Ok(())
 }
 
 fn advance_projection(
