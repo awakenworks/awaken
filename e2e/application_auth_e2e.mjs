@@ -1,6 +1,6 @@
 // Complete phase-one application-authentication flow over the production
 // management composition: service credential -> short-lived application token
-// -> explicit Managed Session binding -> official Anthropic and Vercel AI SDK
+// -> explicit Managed Session binding -> official Anthropic, AI SDK, and AG-UI
 // clients.
 
 import assert from 'node:assert/strict';
@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Chat } from '@ai-sdk/react';
+import { HttpAgent } from '@ag-ui/client';
 import Anthropic from '@anthropic-ai/sdk';
 import { DefaultChatTransport } from 'ai';
 import {
@@ -48,8 +49,8 @@ async function request(base, method, route, body, token) {
 }
 
 // Mint-helper cause/effect rule. C1 the trusted service bearer is valid; C2 the
-// exact existing Managed Session is supplied; C3 the AI SDK protocol, run/read
-// operations, and one explicit external-thread binding are supported; C4 the
+// exact existing Managed Session is supplied; C3 the selected application
+// protocol, run/read operations, and one external-thread binding are supported; C4 the
 // requested TTL is within policy. Effect E1 is one 201 response carrying the
 // short-lived `aat_` capability used by the remaining E2E assertions.
 //
@@ -58,13 +59,19 @@ async function request(base, method, route, body, token) {
 //
 // Negative issuance combinations remain owned by the route/store contract
 // tests; this production-composition E2E owns the successful boundary.
-async function mint(base, serviceToken, managedSessionId, externalThreadId = 'shared') {
+async function mint(
+  base,
+  serviceToken,
+  managedSessionId,
+  externalThreadId = 'shared',
+  protocols = ['ai-sdk'],
+) {
   const response = await request(
     base,
     'POST',
     '/v1/application-access-tokens',
     {
-      protocols: ['ai-sdk'],
+      protocols,
       operations: ['thread.run', 'thread.messages.read'],
       thread_bindings: [{
         external_thread_id: externalThreadId,
@@ -169,6 +176,23 @@ function assistantText(client) {
     .join('');
 }
 
+function agUiAssistantText(run) {
+  return (run?.newMessages ?? [])
+    .filter((message) => message.role === 'assistant')
+    .map((message) => typeof message.content === 'string'
+      ? message.content
+      : (message.content ?? []).map((part) => part.text ?? '').join(''))
+    .join('');
+}
+
+function agUiAgent(base, threadId, token) {
+  return new HttpAgent({
+    url: `${base}/v1/ag-ui/agents/assistant`,
+    threadId,
+    headers: { authorization: `Bearer ${token}` },
+  });
+}
+
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-app-auth-e2e-'));
   const upstream = await startUpstream('default');
@@ -236,6 +260,49 @@ async function main() {
     await clientB.sendMessage({ text: 'message from project B' });
     assert.match(assistantText(clientB), /message from project B/);
 
+    // Cross-protocol cause/effect table over the production authorization edge:
+    // C1 Managed Session A exists; C2 an AG-UI-only capability binds the same
+    // caller thread `shared` to A; C3 the official HttpAgent sends a user turn.
+    // A1 C1+C2+C3 -> one committed A Run and RUN_STARTED/RUN_FINISHED echo the
+    // *external* thread; A2 the same AG-UI token on AI SDK -> 403/no Run;
+    // A3 an unbound thread -> 403/no Session. The Managed Session id must not
+    // appear in AG-UI frames; history below proves shared committed truth.
+    const agToken = await mint(base, serviceToken, sessionA.id, 'shared', ['ag-ui']);
+    const ag = agUiAgent(base, 'shared', agToken.access_token);
+    ag.messages = [{ id: `ag-app-auth-${process.pid}`, role: 'user', content: 'message from AG-UI A' }];
+    const agEvents = [];
+    const agRun = await ag.runAgent({}, { onEvent: ({ event }) => agEvents.push(event) });
+    assert.match(agUiAssistantText(agRun), /message from AG-UI A/, 'A1 official HttpAgent reply');
+    for (const type of ['RUN_STARTED', 'RUN_FINISHED']) {
+      assert.ok(
+        agEvents.some((event) => event.type === type && event.threadId === 'shared'),
+        `A1 ${type} must retain the external thread: ${JSON.stringify(agEvents)}`,
+      );
+    }
+    assert.equal(ag.threadId, 'shared', 'A1 the SDK may reuse its external thread after a Run');
+    assert.ok(
+      !JSON.stringify(agEvents).includes(sessionA.id),
+      'A1 internal Managed Session id must not cross the AG-UI wire',
+    );
+    pass('official AG-UI HttpAgent runs on the existing Managed Session and retains its external id');
+
+    response = await request(
+      base,
+      'POST',
+      '/v1/ai-sdk/threads/shared/runs',
+      { threadId: 'shared', messages: [] },
+      agToken.access_token,
+    );
+    assert.equal(response.status, 403, 'A2 AG-UI token cannot invoke AI SDK');
+    response = await request(
+      base,
+      'POST',
+      '/v1/ag-ui',
+      { threadId: 'unbound', runId: 'ag-unbound', messages: [] },
+      agToken.access_token,
+    );
+    assert.equal(response.status, 403, 'A3 unbound AG-UI thread cannot create a Session');
+
     const historyA = await request(
       base,
       'GET',
@@ -253,10 +320,80 @@ async function main() {
     assert.equal(historyA.status, 200, historyA.text);
     assert.equal(historyB.status, 200, historyB.text);
     assert.match(historyA.text, /message from project A/);
+    assert.match(historyA.text, /message from AG-UI A/, 'A1 AG-UI input is in AI SDK history');
     assert.doesNotMatch(historyA.text, /message from project B/);
     assert.match(historyB.text, /message from project B/);
     assert.doesNotMatch(historyB.text, /message from project A/);
+    assert.doesNotMatch(historyB.text, /message from AG-UI A/);
+    const agHistory = await request(
+      base,
+      'GET',
+      '/v1/ag-ui/threads/shared/messages',
+      undefined,
+      agToken.access_token,
+    );
+    assert.equal(agHistory.status, 200, agHistory.text);
+    assert.match(agHistory.text, /message from project A/, 'A1 AI SDK input is in AG-UI history');
+    assert.doesNotMatch(agHistory.text, /message from project B/);
     pass('the same external thread id resolves to each token\'s explicit Managed Session binding');
+
+    // Reconnect cause/effect rules: R1 a fresh capability has the same exact
+    // external-thread -> Session binding; R2 the old AG-UI token is revoked.
+    // R1 -> a new official HttpAgent rehydrates committed history and continues
+    // the *same* Session; R2 -> old token returns 401 while the new one stays
+    // authorized. Neither reconnect nor revocation may mint a second Session.
+    const renewedAg = await mint(base, serviceToken, sessionA.id, 'shared', ['ag-ui']);
+    const renewedHistory = await request(
+      base,
+      'GET',
+      '/v1/ag-ui/threads/shared/messages',
+      undefined,
+      renewedAg.access_token,
+    );
+    assert.equal(renewedHistory.status, 200, renewedHistory.text);
+    const reloadedAgent = agUiAgent(base, 'shared', renewedAg.access_token);
+    reloadedAgent.messages = [
+      ...renewedHistory.body.items,
+      { id: `ag-reload-${process.pid}`, role: 'user', content: 'continued after reload' },
+    ];
+    const reloadedRun = await reloadedAgent.runAgent();
+    assert.match(agUiAssistantText(reloadedRun), /continued after reload/, 'R1 reload reply');
+    assert.equal(reloadedAgent.threadId, 'shared', 'R1 reload keeps caller id');
+    const afterReload = await request(
+      base,
+      'GET',
+      '/v1/ai-sdk/threads/shared/messages',
+      undefined,
+      projectA.access_token,
+    );
+    assert.equal(afterReload.status, 200, afterReload.text);
+    assert.match(afterReload.text, /continued after reload/, 'R1 AI SDK sees reloaded AG-UI turn');
+
+    response = await request(
+      base,
+      'DELETE',
+      `/v1/application-access-tokens/${agToken.id}`,
+      undefined,
+      serviceToken,
+    );
+    assert.equal(response.status, 204, response.text);
+    response = await request(
+      base,
+      'GET',
+      '/v1/ag-ui/threads/shared/messages',
+      undefined,
+      agToken.access_token,
+    );
+    assert.equal(response.status, 401, 'R2 revoked token fails');
+    response = await request(
+      base,
+      'GET',
+      '/v1/ag-ui/threads/shared/messages',
+      undefined,
+      renewedAg.access_token,
+    );
+    assert.equal(response.status, 200, 'R2 renewed token remains valid');
+    pass('AG-UI reload and capability renewal preserve one Session and revoke independently');
 
     const afterRuns = await managed.beta.sessions.list({ betas: BETAS });
     assert.deepEqual(
@@ -265,7 +402,7 @@ async function main() {
       'application protocol runs must not create a second Session',
     );
     assert.ok(afterRuns.data.every((session) => !session.id.startsWith('app_')));
-    pass('AI SDK runs reuse the two pre-existing Managed Sessions without app_* duplicates');
+    pass('AI SDK and AG-UI runs reuse the two pre-existing Managed Sessions without app_* duplicates');
 
     response = await request(
       base,
@@ -315,7 +452,7 @@ async function main() {
     assert.equal(response.status, 401);
     pass('revocation immediately invalidates the application token');
 
-    console.log('E2E PASS: service-key -> Managed Session -> bound application-token -> AI SDK.');
+    console.log('E2E PASS: service-key -> Managed Session -> bound application-token -> AI SDK + AG-UI.');
   } finally {
     await stopServer(server);
     upstream.close();
