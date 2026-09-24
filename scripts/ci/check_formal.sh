@@ -845,7 +845,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness physical_binding_cannot_change_on_admission_retry \
     --harness retired_epoch_cannot_admit_another_execution \
     --harness thread_physical_peer_vetoes_begin_and_handoff \
-    --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
+    --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair \
+    --harness quarantine_admission_never_widens_settlement_or_execution \
+    --harness quarantined_cancelled_row_can_never_re_enter_execution
   run_kani awaken-dispatch --no-default-features \
     --harness agent_message_completed_tombstone_replays_only_exact_dispatch_identity \
     --harness maintenance_schedule_exists_only_for_the_owning_adapter \

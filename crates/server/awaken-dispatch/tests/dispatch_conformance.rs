@@ -10,7 +10,8 @@ use awaken_dispatch_testkit::{
 };
 use awaken_dispatch_testkit::{
     assert_dispatch_operational_feed_conformance,
-    assert_dispatch_operational_feed_conformance_with_clock, record_dispatch_recovery_history,
+    assert_dispatch_operational_feed_conformance_with_clock,
+    assert_occupied_slot_quarantine_conformance_with_clock, record_dispatch_recovery_history,
 };
 
 mod harness;
@@ -36,6 +37,12 @@ async fn memory_dispatch_conforms() {
     assert_dispatch_operational_feed_conformance_with_clock(
         &store,
         "conformance-memory",
+        &set_clock,
+    )
+    .await;
+    assert_occupied_slot_quarantine_conformance_with_clock(
+        &store,
+        "conformance-memory-occupied",
         &set_clock,
     )
     .await;
@@ -77,6 +84,12 @@ async fn sqlite_dispatch_conforms() {
     assert_dispatch_operational_feed_conformance_with_clock(
         &store,
         "conformance-sqlite",
+        &set_clock,
+    )
+    .await;
+    assert_occupied_slot_quarantine_conformance_with_clock(
+        &store,
+        "conformance-sqlite-occupied",
         &set_clock,
     )
     .await;

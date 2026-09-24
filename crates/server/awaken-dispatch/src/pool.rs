@@ -797,47 +797,43 @@ async fn drain_loop<S: ControlDispatch + 'static>(
             // commit (terminal-is-final fence) never reaches here: `drive_claimed`
             // absorbs it as an already-done settle, so this only fires on genuine
             // faults.
-            Err(ClaimAndDriveFailure::ResolutionDeferred(err)) => {
-                // A recovery probe has returned. Ordinary Environment pressure
-                // must release its pool-wide probe ownership just like an idle
-                // or successful cycle; otherwise every future drain waits for
-                // a probe that no longer exists. This changes only retry
-                // admission, never the retained Run or physical execution slot.
-                admission.error_gate.record_success().await;
-                tracing::debug!(owner = %owner, error = %err, "request-local resolution retry deferred");
-                // Continue draining unrelated work immediately, including on a
-                // single-width pool. The persisted deadline remains the retry
-                // authority for the failed Dispatch.
+            Err(failure) => {
+                let (error, retry_after, shared_fault) = match failure {
+                    ClaimAndDriveFailure::ClaimDeferred(error, delay) => {
+                        (error, Some(delay), false)
+                    }
+                    ClaimAndDriveFailure::FaultDeferred(error, delay) => (error, Some(delay), true),
+                    ClaimAndDriveFailure::Fault(error) => (error, None, true),
+                };
+                if shared_fault {
+                    let (consecutive_errors, delay) = admission.error_gate.record_failure().await;
+                    tracing::warn!(owner = %owner, error = %error, consecutive_errors,
+                        retry_delay_ms = delay.as_millis(), "drain tick failed; retrying");
+                } else {
+                    // Request-local pressure releases a prior recovery probe,
+                    // so unrelated claims can run without a pool-wide delay.
+                    admission.error_gate.record_success().await;
+                    tracing::debug!(owner = %owner, error = %error,
+                        retry_delay_ms = retry_after.map(|delay| delay.as_millis()),
+                        "request-local dispatch retry deferred");
+                }
                 admission.wake.notify_one();
-                // This timer contributes only a latency hint after that deadline;
-                // it owns no claim state and a lost hint is recovered by polling.
-                let retry_admission = admission.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(RESOLUTION_RETRY_DELAY).await;
-                    retry_admission.wake.notify_one();
-                });
-            }
-            Err(ClaimAndDriveFailure::Fault(err)) => {
-                let (consecutive_errors, delay) = admission.error_gate.record_failure().await;
-                tracing::warn!(
-                    owner = %owner,
-                    error = %err,
-                    consecutive_errors,
-                    retry_delay_ms = delay.as_millis(),
-                    "drain tick failed; retrying"
-                );
-                // `wait_cycle` owns the bounded exponential delay, while this
-                // permit owns the retry edge. Without it, an observer that asks
-                // its canonical projection supervisor to converge still cannot
-                // revisit the retained dispatch until the coarse poll fallback.
-                // Notify coalescing keeps one retry outstanding across all drains.
-                admission.wake.notify_one();
+                if let Some(retry_after) = retry_after {
+                    // The persisted deadline owns eligibility; this cancellable
+                    // timer only wakes the existing pool when it becomes due.
+                    let retry_admission = admission.clone();
+                    let retry_shutdown = shutdown.clone();
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            _ = retry_shutdown.cancelled() => {},
+                            _ = tokio::time::sleep(retry_after) => retry_admission.wake.notify_one(),
+                        }
+                    });
+                }
             }
         }
     }
 }
-
-const RESOLUTION_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// Internal scheduling predicate for a transiently unresolved request.
 /// Cancellation is terminal control and never waits for this local deadline.
@@ -870,7 +866,8 @@ fn resolution_retry_deadline_is_request_local_and_cancellation_bypasses_it() {
 /// not added to the public Managed Agents or run-ingress error schema: callers
 /// keep seeing the established API while the drain loop avoids global backoff.
 enum ClaimAndDriveFailure {
-    ResolutionDeferred(Error),
+    ClaimDeferred(Error, Duration),
+    FaultDeferred(Error, Duration),
     Fault(Error),
 }
 
@@ -881,10 +878,26 @@ impl From<Error> for ClaimAndDriveFailure {
 }
 
 fn drain_error_backoff(consecutive_errors: u32) -> Duration {
-    const MIN: Duration = Duration::from_millis(100);
-    const MAX: Duration = Duration::from_secs(5);
-    let exponent = consecutive_errors.saturating_sub(1).min(31);
-    MIN.saturating_mul(1_u32 << exponent).min(MAX)
+    bounded_exponential_backoff(
+        Duration::from_millis(100),
+        Duration::from_secs(5),
+        u64::from(consecutive_errors),
+    )
+}
+
+/// The claim epoch is already the durable count of claims of this exact Run.
+/// Reuse its fence rather than adding a second retry counter or queue.
+fn claim_failure_backoff(epoch: u64) -> Duration {
+    bounded_exponential_backoff(Duration::from_millis(250), Duration::from_secs(30), epoch)
+}
+
+fn claim_failure_is_request_local(error: &Error) -> bool {
+    error.is_dispatch_conflict() || error.is_settlement_observation_pending()
+}
+
+fn bounded_exponential_backoff(minimum: Duration, maximum: Duration, ordinal: u64) -> Duration {
+    let exponent = ordinal.saturating_sub(1).min(31) as u32;
+    minimum.saturating_mul(1_u32 << exponent).min(maximum)
 }
 
 #[cfg(kani)]
@@ -1083,6 +1096,8 @@ async fn claim_and_drive<S: ControlDispatch + 'static>(
     // Session resolution can create/adopt a sandbox and materialize credentials
     // before `drive_claimed` installs its guard. Renew from queue exit onward.
     let claim = crate::RunClaim::from(&claimed.lease);
+    let retry_after = claim_failure_backoff(claim.epoch);
+    let retry_after_ms = retry_after.as_millis() as u64;
     let claim_renewal = renew_claim_while_active(store.clone(), &claim, lease_ms);
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
@@ -1122,51 +1137,25 @@ async fn claim_and_drive<S: ControlDispatch + 'static>(
                     .await
             }
             Err(error) => {
-                defer_after_resolution_failure(
-                    store.as_ref(),
-                    &claim,
-                    RESOLUTION_RETRY_DELAY.as_millis() as u64,
-                )
-                .await?;
-                return Err(ClaimAndDriveFailure::ResolutionDeferred(error));
+                defer_failed_claim(store.as_ref(), &claim, retry_after_ms).await?;
+                return Err(ClaimAndDriveFailure::ClaimDeferred(error, retry_after));
             }
         }
     };
     let settled = match settled {
         Ok(settled) => settled,
-        Err(error) if error.is_dispatch_conflict() => {
-            // A precise transport/store conflict proves this claim has already
-            // been fenced by another immutable identity. It is not a shared
-            // outage and must never close the pool-wide error gate.
-            relinquish_after_claim_failure(store.as_ref(), &claim).await;
-            tracing::debug!(run_id = %claim.run_id.0, %error, "stale dispatch claim was fenced");
-            return Ok(true);
-        }
-        Err(error) if error.is_settlement_observation_pending() => {
-            // The Run has already committed terminal truth. Only this
-            // Dispatch's Session projection is not yet observable, so give it
-            // a request-local retry deadline and let unrelated claims proceed.
-            // Re-entry remains fenced by committed truth and the physical slot.
-            defer_after_resolution_failure(
-                store.as_ref(),
-                &claim,
-                RESOLUTION_RETRY_DELAY.as_millis() as u64,
-            )
-            .await?;
-            return Err(ClaimAndDriveFailure::ResolutionDeferred(error));
-        }
         Err(error) => {
-            // Cause/effect decision table: C1 this exact mutation claim failed
-            // before/after a physical attempt; C2 an opaque physical slot still
-            // exists. R1 C1+!C2 => relinquish and retry immediately; R2 C1+C2 =>
-            // relinquish only the mutation lease while the independent physical
-            // slot continues to fence execution; a successor may observe but
-            // cannot re-enter until authoritative quiescence. Holding the
-            // mutation lease here added a 30-second availability delay without
-            // adding safety because the physical-attempt fence is the sole
-            // external-effect exclusion authority.
-            relinquish_after_claim_failure(store.as_ref(), &claim).await;
-            return Err(ClaimAndDriveFailure::Fault(error));
+            // Exact-claim deferral releases the mutation lease and retains an
+            // independent physical-attempt fence. Conflict, pending Session
+            // observation, and other claim-local failures therefore share one
+            // retry path; a stale claim is fenced by the same store operation.
+            let request_local = claim_failure_is_request_local(&error);
+            defer_failed_claim(store.as_ref(), &claim, retry_after_ms).await?;
+            return Err(if request_local {
+                ClaimAndDriveFailure::ClaimDeferred(error, retry_after)
+            } else {
+                ClaimAndDriveFailure::FaultDeferred(error, retry_after)
+            });
         }
     };
     if let Some((run_id, state)) = settled
@@ -1178,7 +1167,7 @@ async fn claim_and_drive<S: ControlDispatch + 'static>(
     Ok(true)
 }
 
-async fn defer_after_resolution_failure<S: ControlDispatch + 'static>(
+async fn defer_failed_claim<S: ControlDispatch + 'static>(
     store: &S,
     claim: &crate::RunClaim,
     retry_after_ms: u64,
@@ -1190,7 +1179,7 @@ async fn defer_after_resolution_failure<S: ControlDispatch + 'static>(
                 owner = %claim.owner,
                 epoch = claim.epoch,
                 retry_after_ms,
-                "deferred only the unresolved dispatch"
+                "deferred only the failed dispatch claim"
             );
             Ok(())
         }
@@ -1199,32 +1188,10 @@ async fn defer_after_resolution_failure<S: ControlDispatch + 'static>(
                 run_id = %claim.run_id.0,
                 owner = %claim.owner,
                 epoch = claim.epoch,
-                "resolution failure claim was already fenced before deferral"
+                "failed dispatch claim was already fenced before deferral"
             );
             Ok(())
         }
-    }
-}
-
-async fn relinquish_after_claim_failure<S: ControlDispatch + 'static>(
-    store: &S,
-    claim: &crate::RunClaim,
-) {
-    match store.relinquish_claim(claim).await {
-        Ok(crate::SettleOutcome::Applied) => {}
-        Ok(crate::SettleOutcome::Fenced) => tracing::debug!(
-            run_id = %claim.run_id.0,
-            owner = %claim.owner,
-            epoch = claim.epoch,
-            "resolution failure claim was already fenced before relinquish"
-        ),
-        Err(error) => tracing::warn!(
-            run_id = %claim.run_id.0,
-            owner = %claim.owner,
-            epoch = claim.epoch,
-            %error,
-            "failed to relinquish claim after resolution failure"
-        ),
     }
 }
 
@@ -1436,6 +1403,49 @@ mod in_flight_tests {
         assert_eq!(drain_error_backoff(2), Duration::from_millis(200), "E2");
         assert_eq!(drain_error_backoff(7), Duration::from_secs(5), "E3");
         assert_eq!(drain_error_backoff(u32::MAX), Duration::from_secs(5), "E3");
+    }
+
+    #[test]
+    fn failed_claims_back_off_by_the_existing_fence_epoch() {
+        // Causes: C1 first claim fails; C2 the same Run fails again; C3 its
+        // epoch is very large after prolonged unresolved physical quiescence.
+        // Effects: E1 first retry remains prompt; E2 only this Run backs off
+        // exponentially; E3 delay caps without overflow. The existing
+        // request-local defer store preserves cancellation and unrelated work.
+        // Rules F1=C1=>250ms, F2=C2=>500ms/1s, F3=C3=>30s.
+        for (epoch, expected) in [
+            (0, Duration::from_millis(250)),
+            (1, Duration::from_millis(250)),
+            (2, Duration::from_millis(500)),
+            (3, Duration::from_secs(1)),
+            (8, Duration::from_secs(30)),
+            (u64::MAX, Duration::from_secs(30)),
+        ] {
+            assert_eq!(claim_failure_backoff(epoch), expected, "epoch={epoch}");
+        }
+    }
+
+    #[test]
+    fn failed_claims_preserve_request_local_and_shared_fault_boundaries() {
+        // Causes: C1 exact stale claim; C2 pending Session projection; C3
+        // unavailable shared store; C4 general execution fault. Effects: E1
+        // C1/C2 defer only their claim and release the pool probe; E2 C3/C4
+        // defer that claim while retaining the shared fault gate. Rules:
+        // F4=C1|C2=>E1 and F5=C3|C4=>E2.
+        let stale = Error::Dispatch(crate::DispatchError::Conflict("stale".into()));
+        let pending = Error::SettlementObservationPending("pending".into());
+        let store = Error::Dispatch(crate::DispatchError::Unavailable("store".into()));
+        let execution = Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+            "attempt".into(),
+        ));
+        for (error, request_local) in [
+            (stale, true),
+            (pending, true),
+            (store, false),
+            (execution, false),
+        ] {
+            assert_eq!(claim_failure_is_request_local(&error), request_local);
+        }
     }
 
     #[tokio::test(start_paused = true)]
