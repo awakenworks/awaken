@@ -848,6 +848,7 @@ mod tests {
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
+    use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
 
     #[kani::proof]
     fn awaiting_constructor_cannot_create_a_terminal_or_failed_outcome() {

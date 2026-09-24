@@ -1568,46 +1568,100 @@ async fn cold_rehydrate_preserves_a_running_sessions_resource_generation() {
 
 #[test]
 fn wire_projection_preserves_the_durable_execution_state() {
-    // Session-status cause/effect decision table. C1 the durable activity
-    // aggregate is running; C2 it is rescheduling; C3 it is idle; C4 it is
-    // preparing/activating/failed; C5 it is terminal. E1 public GET reports running; E2 reports rescheduling;
-    // E3 reports idle; E4 maps internal nonterminal preparation to rescheduling
-    // and internal activation failure to the official terminated state;
-    // E5 reports terminated. Rules S1=C1=>E1, S2=C2=>E2, S3=C3=>E3,
-    // S4=C4=>E4, S5=C5=>E5. Unknown durable values fail during decoding
-    // instead of being projected as a healthy idle Session. This keeps
-    // the durable Session aggregate as the sole status truth; the wire cache
-    // owns no separate dispatch inference.
-    for (rule, durable, public) in [
-        ("S1", SessionExecutionState::Running, SessionStatus::Running),
+    // Causes: C1 a durable Running/Idle/Rescheduling/terminal state; C2 a
+    // local cloud root still Preparing/Activating with no active work or one
+    // admitted activity; C3 registered Worker placement still awaits physical
+    // acknowledgement. Effects: C1 projects its established official status;
+    // C2 projects idle/running from the same durable activity set rather than
+    // Sandbox readiness; C3 stays rescheduling. Rules S1-S10 below. The cache
+    // never invents activity or treats an unknown baseline as healthy.
+    for (rule, durable, active, worker, public) in [
+        (
+            "S1",
+            SessionExecutionState::Running,
+            false,
+            false,
+            SessionStatus::Running,
+        ),
         (
             "S2",
             SessionExecutionState::Rescheduling,
+            false,
+            false,
             SessionStatus::Rescheduling,
         ),
-        ("S3", SessionExecutionState::Idle, SessionStatus::Idle),
         (
-            "S4a",
+            "S3",
+            SessionExecutionState::Idle,
+            false,
+            false,
+            SessionStatus::Idle,
+        ),
+        (
+            "S4",
             SessionExecutionState::Preparing,
-            SessionStatus::Rescheduling,
-        ),
-        (
-            "S4b",
-            SessionExecutionState::Activating,
-            SessionStatus::Rescheduling,
-        ),
-        (
-            "S4c",
-            SessionExecutionState::ActivationFailed,
-            SessionStatus::Terminated,
+            false,
+            false,
+            SessionStatus::Idle,
         ),
         (
             "S5",
+            SessionExecutionState::Preparing,
+            true,
+            false,
+            SessionStatus::Running,
+        ),
+        (
+            "S6",
+            SessionExecutionState::Activating,
+            false,
+            false,
+            SessionStatus::Idle,
+        ),
+        (
+            "S7",
+            SessionExecutionState::Activating,
+            true,
+            false,
+            SessionStatus::Running,
+        ),
+        (
+            "S8",
+            SessionExecutionState::Preparing,
+            true,
+            true,
+            SessionStatus::Rescheduling,
+        ),
+        (
+            "S9",
+            SessionExecutionState::ActivationFailed,
+            false,
+            false,
+            SessionStatus::Terminated,
+        ),
+        (
+            "S10",
             SessionExecutionState::Terminated,
+            false,
+            false,
             SessionStatus::Terminated,
         ),
     ] {
-        assert_eq!(ManagedState::wire_session_status(durable), public, "{rule}");
+        let mut root = sample_persisted(rule);
+        root.execution = durable;
+        if active {
+            root.active_activity_epochs.insert(1);
+        }
+        if worker {
+            let awaken_session_configuration_contract::SessionBaselineState::Frozen(baseline) =
+                &mut root.baseline
+            else {
+                panic!("fixture has a frozen baseline")
+            };
+            baseline.runtime_placement =
+                awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+        }
+        assert_eq!(ManagedState::wire_session_status(&root), public, "{rule}");
     }
 }
 

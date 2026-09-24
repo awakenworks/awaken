@@ -28,6 +28,126 @@ async fn await_session_tombstone(
 }
 
 #[tokio::test]
+async fn cloud_create_returns_durable_root_before_sandbox_realization() {
+    // Causes: C1 cloud Session has no initial events or one user message;
+    // C2 Runtime projection has not acknowledged Sandbox readiness; C3 an
+    // exact Idempotency-Key replay follows. Effects: E1 the complete root and
+    // event/activity receipt commit before the HTTP-facing result; E2 the
+    // logical wire status is idle/running, while durable execution remains
+    // Preparing and no Runtime projection has run; E3 GET remains readable;
+    // E4 replay returns that one Session without another effect. Rules R1/R2
+    // per initial-event partition, R3 for GET and R4 for replay. The
+    // application owner tests cold recovery separately.
+    for initial_message in [false, true] {
+        let (environment_authoring, environment_execution) =
+            crate::test_support::environment_components();
+        let environment_id = environment_authoring
+            .application()
+            .create(awaken_environment_contract::CreateEnvironmentCommand {
+                command_id: format!("test:cloud-accept:{initial_message}"),
+                name: "cloud accept".into(),
+                description: None,
+                metadata: Default::default(),
+                scope: None,
+                config: awaken_environment_contract::EnvironmentConfig::Cloud {
+                    networking: awaken_environment_contract::EnvironmentNetworking::Unrestricted {},
+                    packages: Default::default(),
+                },
+                sandbox_policy: None,
+            })
+            .await
+            .expect("create exact cloud Environment")
+            .id;
+        let runtime = EndSessionRecorder::default();
+        let prepared = runtime.prepared.clone();
+        let block_prepare = runtime.block_prepare.clone();
+        block_prepare.store(true, std::sync::atomic::Ordering::SeqCst);
+        let state = ManagedState::new(runtime).with_environments(environment_execution);
+        let request = || {
+            serde_json::from_value(serde_json::json!({
+                "agent": "assistant",
+                "environment_id": environment_id,
+                "initial_events": if initial_message {
+                    serde_json::json!([{"type":"user.message","content":[{"type":"text","text":"hello"}]}])
+                } else {
+                    serde_json::json!([])
+                }
+            }))
+            .expect("valid Managed create")
+        };
+        let key = format!("cloud-accept-{initial_message}");
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            state.create_session_idempotent(request(), awaken_tenancy::DEFAULT_WORKSPACE_ID, &key),
+        )
+        .await
+        .expect("R1/R2 create cannot wait for Sandbox readiness")
+        .expect("R1/R2 durable root accepted");
+        assert_eq!(
+            created.status,
+            if initial_message {
+                SessionStatus::Running
+            } else {
+                SessionStatus::Idle
+            },
+            "R1/R2 logical status"
+        );
+        let root = state
+            .application
+            .session(&SessionId::from(&created.id))
+            .await
+            .unwrap();
+        assert_eq!(
+            root.execution,
+            SessionExecutionState::Preparing,
+            "R1/R2 durable phase"
+        );
+        assert_eq!(
+            root.event_batches.len(),
+            usize::from(initial_message),
+            "R1/R2 batch"
+        );
+        assert_eq!(
+            root.active_activity_epochs.len(),
+            usize::from(initial_message),
+            "R1/R2 wake"
+        );
+        assert!(
+            prepared.lock().unwrap().is_empty(),
+            "R1/R2 no physical projection"
+        );
+        let observed = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            state.refresh_committed_events_for_observation(&created.id, None),
+        )
+        .await
+        .expect("R1/R2 retrieve cannot wait for Sandbox readiness");
+        if let Err(error) = observed {
+            assert!(
+                error.is_projection_recovery_required(),
+                "R1/R2 durable root remains readable"
+            );
+        }
+        assert_eq!(
+            state.get_session(&created.id).unwrap().status,
+            created.status,
+            "R1/R2 GET retains the root-owned logical status"
+        );
+        let replayed = state
+            .create_session_idempotent(request(), awaken_tenancy::DEFAULT_WORKSPACE_ID, &key)
+            .await
+            .expect("R3 exact replay");
+        assert_eq!(replayed.id, created.id, "R3 one identity");
+        assert_eq!(replayed.status, created.status, "R3 one logical status");
+        assert!(
+            prepared.lock().unwrap().is_empty(),
+            "R3 no new Runtime effect"
+        );
+        block_prepare.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
 async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_worker_ack() {
     // Causes: the fixtures below establish `coordinator only creation reports durable preparing
     // without fabricated worker ack` with the concrete inputs, state, dependencies, and failure

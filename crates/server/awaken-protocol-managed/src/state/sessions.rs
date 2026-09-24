@@ -140,10 +140,36 @@ impl ManagedState {
         }))
     }
 
-    pub(super) const fn wire_session_status(execution: SessionExecutionState) -> SessionStatus {
-        match execution {
+    const fn is_local_cloud_session(
+        placement: awaken_session_configuration_contract::SessionRuntimePlacement,
+        self_hosted: bool,
+    ) -> bool {
+        matches!(
+            placement,
+            awaken_session_configuration_contract::SessionRuntimePlacement::Local
+        ) && !self_hosted
+    }
+
+    pub(super) fn wire_session_status(persisted: &PersistedSession) -> SessionStatus {
+        match persisted.execution {
             SessionExecutionState::Preparing | SessionExecutionState::Activating => {
-                SessionStatus::Rescheduling
+                // A cloud Session has already accepted its complete durable
+                // root. Its active Event epoch, rather than Sandbox readiness,
+                // determines the compatible logical status. Registered Worker
+                // placement retains the conservative pre-realization boundary.
+                let local_cloud = persisted.frozen_baseline().is_some_and(|baseline| {
+                    Self::is_local_cloud_session(
+                        baseline.runtime_placement,
+                        baseline.environment.self_hosted,
+                    )
+                });
+                if !local_cloud {
+                    SessionStatus::Rescheduling
+                } else if persisted.active_activity_epochs.is_empty() {
+                    SessionStatus::Idle
+                } else {
+                    SessionStatus::Running
+                }
             }
             SessionExecutionState::ActivationFailed => SessionStatus::Terminated,
             SessionExecutionState::Running => SessionStatus::Running,
@@ -161,7 +187,7 @@ impl ManagedState {
         persisted: &PersistedSession,
     ) {
         let mcp_servers = typed_mcp_servers(persisted.configured_mcp_servers());
-        record.session.status = Self::wire_session_status(persisted.execution);
+        record.session.status = Self::wire_session_status(persisted);
         record.session.created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
         record.session.updated_at = super::constants::persisted_time(persisted.updated_at_unix_ms);
         record.session.title = persisted.title.clone();
@@ -660,6 +686,10 @@ impl ManagedState {
                 &mcp_targets,
             )
             .await?;
+        let local_cloud = Self::is_local_cloud_session(
+            self.application.runtime_placement(),
+            environment.self_hosted,
+        );
         // Cause/effect layout gate: C1 the complete effective typed bindings,
         // frozen Environment, and exact publication-selected provider produce a
         // non-overlapping final Sandbox layout -> continue; C2 any projected
@@ -961,9 +991,12 @@ impl ManagedState {
             idempotency,
             initial_events,
         };
-        let persisted = Box::pin(self.application.create_session(creation))
-            .await
-            .map_err(Self::map_creation_error)?;
+        let persisted = if local_cloud {
+            Box::pin(self.application.accept_session(creation)).await
+        } else {
+            Box::pin(self.application.create_session(creation)).await
+        }
+        .map_err(Self::map_creation_error)?;
         let mut session = Session {
             id: id.clone(),
             kind: "session",
@@ -1006,7 +1039,7 @@ impl ManagedState {
             // A registered-Worker placement remains preparing until its claimed
             // realization acknowledges the exact frozen projection; hardcoding
             // non-Application creation to idle created a second, unsafe status.
-            status: Self::wire_session_status(persisted.execution),
+            status: Self::wire_session_status(&persisted),
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),
@@ -1106,6 +1139,7 @@ impl ManagedState {
             archived_at,
         ) = {
             let p = persisted;
+            let status = Self::wire_session_status(&p);
             let baseline = p.frozen_baseline().ok_or_else(|| {
                 StateError::Run(RunError::unavailable(
                     "Session root is not finalized and cannot be rehydrated",
@@ -1145,7 +1179,7 @@ impl ManagedState {
                 system_prompt,
                 agent_skills,
                 vault_ids,
-                Self::wire_session_status(p.execution),
+                status,
                 archived_at,
             )
         };

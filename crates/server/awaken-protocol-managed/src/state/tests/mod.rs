@@ -22,6 +22,7 @@ struct EndSessionRecorder {
     ended: Arc<std::sync::Mutex<Vec<String>>>,
     interrupted: Arc<std::sync::Mutex<Vec<String>>>,
     prepared: Arc<std::sync::Mutex<Vec<String>>>,
+    block_prepare: Arc<std::sync::atomic::AtomicBool>,
     delegated: Arc<std::sync::Mutex<Vec<awaken_session_application_contract::DelegatedRun>>>,
     block_quiesce: Arc<std::sync::atomic::AtomicBool>,
     quiesce_entered: Arc<tokio::sync::Notify>,
@@ -161,6 +162,9 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionRecorde
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
+        while self.block_prepare.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         if let Some(init) =
             crate::test_support::complete_session_projection_init(thread, &projection, &mode)?
         {
