@@ -178,6 +178,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                     &projection.workspace_id,
                     crate::host::CanonicalSessionProjection::Baseline(&projection.baseline),
                     published_snapshot.cloned(),
+                    Some(projection.resources.skills()),
                 )
                 .map_err(crate::managed_adapter_error::to_run_error)?;
             let a2a_only = canonical_publication.as_ref().is_some_and(|publication| {

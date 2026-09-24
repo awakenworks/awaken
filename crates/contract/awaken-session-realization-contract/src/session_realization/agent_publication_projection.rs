@@ -5,12 +5,14 @@ use crate::RunError;
 /// Project every Session-owned Agent override onto one immutable publication.
 ///
 /// This is the only lowering rule for Session-local model, inference, and
-/// system-prompt selection. Coordinator publication, co-located execution, and
+/// system-prompt selection. The Resource manifest owns the effective Skill
+/// pins. Coordinator publication, co-located execution, and
 /// cold Worker recovery must reuse the returned snapshot; Runtime adapters may
 /// validate its frozen coordinates but must not reconstruct it field by field.
 pub fn project_effective_agent_publication(
     model_override: Option<&crate::SessionModelOverride>,
     system_prompt: &crate::SessionSystemPromptSelection,
+    skill_pins: Option<&[awaken_session_resource_contract::ResolvedSkillBinding]>,
     workspace_id: &str,
     mut snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
 ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError> {
@@ -33,7 +35,17 @@ pub fn project_effective_agent_publication(
             .resolve(Some(snapshot.resolved_spec.instructions.clone()))
             .unwrap_or_default();
     }
-    if model_override.is_some() || !system_prompt.is_inherit() {
+    if let Some(pins) = skill_pins {
+        snapshot.resolved_spec.plugin_config.agent.skills = pins
+            .iter()
+            .map(|pin| awaken_agent_contract::AgentSkillBinding {
+                kind: pin.kind,
+                skill_id: pin.skill_id.clone(),
+                version: pin.version.to_string(),
+            })
+            .collect();
+    }
+    if model_override.is_some() || !system_prompt.is_inherit() || skill_pins.is_some() {
         snapshot.recompute_fingerprint().map_err(|error| {
             RunError::internal(format!(
                 "Session-local Agent publication is invalid: {error}"
@@ -296,15 +308,89 @@ mod tests {
                 true,
             ),
         ] {
-            let projected =
-                project_effective_agent_publication(None, &selection, "workspace", base.clone())
-                    .expect("valid effective publication");
+            let projected = project_effective_agent_publication(
+                None,
+                &selection,
+                None,
+                "workspace",
+                base.clone(),
+            )
+            .expect("valid effective publication");
             assert_eq!(projected.resolved_spec.instructions, expected);
             assert_eq!(projected.fingerprint != base.fingerprint, changed);
             assert_eq!(
                 projected.fingerprint,
                 projected.resolved_spec.catalog_fingerprint
             );
+        }
+    }
+
+    #[test]
+    fn effective_publication_uses_only_the_frozen_resource_skill_pins() {
+        // Causes: C1 a direct/legacy caller has no Resource projection; C2 a
+        // Managed Session pins no Skills after `skills: []`; C3 it pins one
+        // exact replacement version; C4 the published Agent selects a Skill.
+        // Effects: E1 C1 inherits; E2 C2 clears the published selection; E3
+        // C3 selects the pinned version; E4 replay preserves the fingerprint.
+        // Rules K1=C1+C4, K2=C2+C4, K3=C3+C4.
+        let published = awaken_agent_contract::AgentSkillBinding {
+            kind: awaken_agent_contract::AgentSkillKind::Custom,
+            skill_id: "published".into(),
+            version: "1".into(),
+        };
+        let pin = awaken_session_resource_contract::ResolvedSkillBinding {
+            kind: awaken_agent_contract::AgentSkillKind::Custom,
+            skill_id: "replacement".into(),
+            version: 2,
+            bundle_sha256: "sha256:replacement".into(),
+        };
+        let mut base = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
+            .model(
+                awaken_runtime_contract::resolved::ModelBinding::parse(
+                    "provider", "model", "genai",
+                )
+                .expect("complete model binding"),
+            )
+            .build();
+        base.resolved_spec.plugin_config.agent.skills = vec![published.clone()];
+        base.recompute_fingerprint().expect("valid published Skill");
+        let inherit = crate::SessionSystemPromptSelection::Inherit;
+        for (pins, expected, changed) in [
+            (None, vec![published], false),
+            (Some(Vec::new()), vec![], true),
+            (
+                Some(vec![pin]),
+                vec![awaken_agent_contract::AgentSkillBinding {
+                    kind: awaken_agent_contract::AgentSkillKind::Custom,
+                    skill_id: "replacement".into(),
+                    version: "2".into(),
+                }],
+                true,
+            ),
+        ] {
+            let projected = project_effective_agent_publication(
+                None,
+                &inherit,
+                pins.as_deref(),
+                "workspace",
+                base.clone(),
+            )
+            .expect("valid Resource Skill selection");
+            assert_eq!(projected.resolved_spec.plugin_config.agent.skills, expected);
+            assert_eq!(projected.fingerprint != base.fingerprint, changed);
+            assert_eq!(
+                projected.fingerprint,
+                projected.resolved_spec.catalog_fingerprint
+            );
+            let replayed = project_effective_agent_publication(
+                None,
+                &inherit,
+                pins.as_deref(),
+                "workspace",
+                projected.clone(),
+            )
+            .expect("valid replay");
+            assert_eq!(replayed, projected);
         }
     }
 
@@ -326,12 +412,14 @@ mod tests {
             let once = project_effective_agent_publication(
                 None,
                 &selection,
+                None,
                 "workspace",
                 base,
             ).expect("valid first projection");
             let twice = project_effective_agent_publication(
                 None,
                 &selection,
+                None,
                 "workspace",
                 once.clone(),
             ).expect("valid replay projection");

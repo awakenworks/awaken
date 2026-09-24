@@ -1497,6 +1497,7 @@ impl crate::ManagedHost {
                 &layout.workspace_id,
                 crate::host::CanonicalSessionProjection::Layout(layout),
                 None,
+                None,
             )
             .map_err(|error| {
                 awaken_session_error_contract::RunError::bad_request(error.to_string())

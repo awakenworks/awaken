@@ -1308,6 +1308,7 @@ impl crate::SharedHost {
             &projection.workspace_id,
             crate::host::CanonicalSessionProjection::Baseline(&projection.baseline),
             projection.agent_publication.clone(),
+            Some(projection.resources.skills()),
         )?;
         if let Some(asserted) = &publication
             && self

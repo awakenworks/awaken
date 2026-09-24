@@ -45,6 +45,7 @@ impl SharedHost {
         workspace: &str,
         coordinates: CanonicalSessionProjection<'_>,
         delivered: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        skill_pins: Option<&[awaken_session_resource_contract::ResolvedSkillBinding]>,
     ) -> Result<
         (
             Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
@@ -109,6 +110,7 @@ impl SharedHost {
                         awaken_session_realization_contract::project_effective_agent_publication(
                             baseline.model_override.as_ref(),
                             &baseline.system_prompt,
+                            skill_pins,
                             workspace,
                             snapshot,
                         )
@@ -117,6 +119,7 @@ impl SharedHost {
                         awaken_session_realization_contract::project_effective_agent_publication(
                             layout.model_override.as_ref(),
                             &awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
+                            None,
                             workspace,
                             snapshot,
                         )
@@ -180,12 +183,24 @@ impl SharedHost {
             .session_slots
             .read(thread, |slot| slot.baseline.clone())
             .flatten();
+        let skill_pins = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.resource_transition
+                    .as_ref()
+                    .map(|transition| transition.desired().resources.skills().to_vec())
+            })
+            .flatten();
         let coordinates = baseline.as_ref().map_or(
             CanonicalSessionProjection::LegacyAgent(selected_agent),
             CanonicalSessionProjection::Baseline,
         );
-        let (installed, model_candidate) =
-            self.resolve_canonical_session_projection(&workspace, coordinates, published_snapshot)?;
+        let (installed, model_candidate) = self.resolve_canonical_session_projection(
+            &workspace,
+            coordinates,
+            published_snapshot,
+            skill_pins.as_deref(),
+        )?;
         let published_backend_ref = model_candidate
             .as_ref()
             .map(|candidate| candidate.binding().backend_ref.clone());

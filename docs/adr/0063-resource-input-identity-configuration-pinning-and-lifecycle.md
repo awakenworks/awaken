@@ -68,9 +68,11 @@ The version rule is:
 An Agent does not pin a Memory or Repository configuration version. It names the
 resource identity. The `SessionInputResolver` reads the current published
 configuration version exactly once while creating the Session and persists the
-secret-free result in `ResolvedSessionResources`. A Session does not pin an Agent
-version; changes to Agent defaults affect later Sessions, not the effective
-inputs already recorded for an existing Session.
+secret-free result in `ResolvedSessionResources`. Current Managed Sessions also
+pin an exact executable Agent publication revision in their frozen baseline;
+that publication is distinct from the resource pins. Changes to Agent defaults
+affect later Sessions, not the effective inputs already recorded for an existing
+Session.
 
 Skills are capabilities rather than input mounts, so they are not added to
 `InputResourceId`. The same durable `ResolvedSessionResources` manifest carries a
