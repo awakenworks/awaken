@@ -13796,7 +13796,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 /// |---|---|---|---|---|
 /// | P1 | exact | Gateway mediated | absent | preserve source URL, stage Gateway transport + secret-free pin |
 /// | P2 | exact | Direct | any | reject; never fall back to Worker plaintext |
-/// | P3 | absent Coordinator staging | Direct | absent | reject; never erase the Platform pin into anonymous Git |
+/// | P3 | absent Coordinator staging | Direct | absent | retain exact check, defer Git activation without a claim |
 /// | P4 | exact, delayed use | Gateway mediated again | absent | refresh capability at Git operation edge |
 /// | P5 | exact, tampered source or target before use | Gateway mediated | absent | reject before verifier/I/O |
 /// | P6 | exact, delayed use | changes to Direct | any | reject; zero direct fallback |
@@ -13979,21 +13979,29 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         "P2"
     );
 
-    let coordinator_denied = direct_host
+    direct_host
         .install_dispatched_resources("platform-coordinator-stage", &direct_manifest, None)
         .await
-        .expect_err("P3 Coordinator staging cannot erase a Platform credential pin");
-    assert!(
-        coordinator_denied
-            .message
-            .contains("requires Gateway mediation"),
-        "P3"
-    );
+        .expect("P3 unclaimed Coordinator stages only the exact Repository binding");
     assert!(
         direct_host
             .thread_repository_activations("platform-coordinator-stage")
             .is_empty(),
-        "P3"
+        "P3 no Direct Git activation or anonymous fallback before a Run claim"
+    );
+    let staged = direct_host.thread_resources_snapshot("platform-coordinator-stage");
+    assert_eq!(staged.binding_checks.len(), 1, "P3 exact binding retained");
+    assert!(
+        matches!(
+            &staged.binding_checks[0],
+            crate::provisioning::ResourceBindingCheck::Repository {
+                repository_id,
+                credential_binding: Some(_),
+                authority: None,
+                ..
+            } if repository_id == "repo-platform"
+        ),
+        "P3 immutable Repository identity and credential binding survive staging"
     );
 }
 

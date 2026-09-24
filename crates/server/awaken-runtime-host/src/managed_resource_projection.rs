@@ -1890,6 +1890,24 @@ impl crate::ManagedHost {
                         credential_binding: config.credential_binding.clone(),
                         authority: repository_authority.cloned().map(Box::new),
                     });
+                // Coordinator staging has no Run claim and cannot authorize a
+                // Platform-held Git transport. Retain the exact binding check
+                // and immutable Session input; the claiming Worker recompiles
+                // it through the existing Gateway authorizer. No executable
+                // direct Repository activation may escape this stage.
+                if repository_authority.is_none()
+                    && let (Some(binding), Some(pin)) = (&config.credential_binding, credential_pin)
+                    && pin.selected_plaintext_holder.boundary
+                        == awaken_runtime_contract::PlaintextBoundary::Platform
+                {
+                    pin.validate_for_repository(binding, &config.remote_url)
+                        .map_err(|error| {
+                            RunError::bad_request(format!(
+                                "repository `{repository_id}` credential: {error}"
+                            ))
+                        })?;
+                    return Ok(staged);
+                }
                 let (transport_url, credential_pin) = match (
                     &config.credential_binding,
                     credential_pin,
