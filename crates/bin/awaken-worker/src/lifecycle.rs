@@ -22,6 +22,17 @@ pub(crate) use authority::authority_proof_started;
 const SESSION_REALIZATION_LEASE_TTL_MS: u64 = 20_000;
 pub(crate) const WORKER_REVOCATION_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Keep a cold cleanup claim inside the already-observed Worker Registry lease.
+/// Heartbeats renew at one third of that lease, so half leaves a full renewal
+/// interval of slack even when the cleanup cadence runs just before heartbeat.
+fn cold_cleanup_lease_ttl_ms(registry_timing: AuthorityLeaseTiming) -> u64 {
+    let registry_ttl_ms =
+        u64::try_from(registry_timing.lease_ttl().as_millis()).unwrap_or(u64::MAX);
+    SESSION_REALIZATION_LEASE_TTL_MS
+        .min(registry_ttl_ms / 2)
+        .max(1)
+}
+
 #[derive(Clone)]
 enum WarmCapacityDemand {
     Environment(Box<awaken_session_configuration_contract::EnvironmentSnapshot>),
@@ -621,9 +632,11 @@ async fn supervise_session_realization_reconciliation<Renewal, RenewalFuture, Co
 /// durable I/O.
 pub(crate) fn spawn_session_realization_reconciliation(
     lifecycle: Arc<WorkerSupervisor>,
+    registry_timing: AuthorityLeaseTiming,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let timing = AuthorityLeaseTiming::from_ttl_ms(SESSION_REALIZATION_LEASE_TTL_MS);
+        let cold_lease_ttl_ms = cold_cleanup_lease_ttl_ms(registry_timing);
         let renewal_lifecycle = lifecycle.clone();
         let cold_lifecycle = lifecycle;
         supervise_session_realization_reconciliation(
@@ -665,7 +678,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                         owner: lifecycle.identity.worker_id.clone(),
                         runtime_incarnation: lifecycle.identity.lease_owner(),
                         lease_expires_at_unix_ms: now
-                            .saturating_add(SESSION_REALIZATION_LEASE_TTL_MS),
+                            .saturating_add(cold_lease_ttl_ms),
                         reassign_existing_lease: false,
                     };
                     if let Err(error) = lifecycle
@@ -884,10 +897,41 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::{
-        WorkerRevocationOutcome, WorkerRevocationStage, complete_worker_capacity_before,
-        complete_worker_revocation_before, supervise_session_realization_reconciliation,
-        supervise_worker_authority,
+        WorkerRevocationOutcome, WorkerRevocationStage, cold_cleanup_lease_ttl_ms,
+        complete_worker_capacity_before, complete_worker_revocation_before,
+        supervise_session_realization_reconciliation, supervise_worker_authority,
     };
+
+    #[test]
+    fn cold_cleanup_claim_fits_the_registry_heartbeat_window() {
+        // Causes: C1 Registry TTL, C2 heartbeat age at the cold sweep, C3 a
+        // stalled heartbeat. Effect E1: the claim fits an ordinary heartbeat
+        // window; E2: an overdue Worker is still refused by the root gate.
+        // | Rule | TTL | age | claim | Worker expiry | Effect |
+        // | R1 | 30s | 10s+1ms | 15s | <20s | E1 |
+        // | R2 | 6s | 2s+1ms | 3s | <4s | E1 |
+        // | R3 | 30s | 20s | 15s | 10s | E2 |
+        // | R4 | 60s | 20s+1ms | 20s | <40s | E1 |
+        // The former fixed 20s claim fails R1 when the two 10s cadences align.
+        for (registry_ttl_ms, heartbeat_age_ms, expected_claim_ms, fits) in [
+            (30_000, 10_001, 15_000, true),
+            (6_000, 2_001, 3_000, true),
+            (30_000, 20_000, 15_000, false),
+            (60_000, 20_001, 20_000, true),
+        ] {
+            let claim_ms = cold_cleanup_lease_ttl_ms(
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                    registry_ttl_ms,
+                ),
+            );
+            assert_eq!(claim_ms, expected_claim_ms);
+            assert_eq!(
+                claim_ms <= registry_ttl_ms - heartbeat_age_ms,
+                fits,
+                "TTL {registry_ttl_ms}, heartbeat age {heartbeat_age_ms}"
+            );
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn bounded_revocation_retains_observation_and_never_converts_timeout_to_completion() {
