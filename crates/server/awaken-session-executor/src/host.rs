@@ -30,9 +30,8 @@ use awaken_ext_skills::{SkillRegistry, SkillSpec};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
 use awaken_dispatch::{
-    AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
-    DispatchServiceConfig, Inbox, PendingInput, RunDispatch, SubmitOptions, SystemClock,
-    WorkerResolver,
+    AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue, Inbox,
+    PendingInput, RunDispatch, SubmitOptions, SystemClock, WorkerResolver,
 };
 use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::CancellationToken;

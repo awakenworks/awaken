@@ -152,9 +152,11 @@ pub awaken_session_executor::DeploymentConfig::database_url: core::option::Optio
 pub awaken_session_executor::DeploymentConfig::disable_local_pool: bool
 pub awaken_session_executor::DeploymentConfig::dispatch_backend: awaken_session_executor::DispatchBackend
 pub awaken_session_executor::DeploymentConfig::dispatch_owner: alloc::string::String
+pub awaken_session_executor::DeploymentConfig::dispatch_poll_interval: core::time::Duration
 pub awaken_session_executor::DeploymentConfig::durable: bool
 pub awaken_session_executor::DeploymentConfig::nats_url: core::option::Option<alloc::string::String>
 pub awaken_session_executor::DeploymentConfig::postgres_max_connections: core::num::nonzero::NonZeroU32
+pub awaken_session_executor::DeploymentConfig::sample_dispatch_queue_depth: bool
 pub awaken_session_executor::DeploymentConfig::sandbox: awaken_session_executor::SandboxSettings
 pub awaken_session_executor::DeploymentConfig::sandbox_dir: core::option::Option<std::path::PathBuf>
 pub awaken_session_executor::DeploymentConfig::sandbox_tier: awaken_session_executor::SandboxTier

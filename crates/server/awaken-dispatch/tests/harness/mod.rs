@@ -736,6 +736,7 @@ pub struct RecordingMetrics {
     pub settled_done: AtomicUsize,
     pub settled_awaiting: AtomicUsize,
     pub queue_depth: AtomicU64,
+    pub queue_depth_samples: AtomicUsize,
     pub recovered: AtomicUsize,
     pub commits_applied: AtomicUsize,
     pub fenced: AtomicUsize,
@@ -760,6 +761,7 @@ impl MetricsRecorder for RecordingMetrics {
     }
     fn record_dispatch_queue_depth(&self, depth: u64) {
         self.queue_depth.store(depth, Ordering::SeqCst);
+        self.queue_depth_samples.fetch_add(1, Ordering::SeqCst);
     }
     fn record_dispatch_recovered(&self) {
         self.recovered.fetch_add(1, Ordering::SeqCst);
@@ -804,6 +806,9 @@ pub struct FlakyDispatchStore {
     maintenance_calls: [AtomicUsize; 2],
     fail_claims: AtomicUsize,
     claim_attempts: AtomicUsize,
+    depth_reads: AtomicUsize,
+    depth_entered: Option<Arc<tokio::sync::Notify>>,
+    depth_release: Option<Arc<tokio::sync::Semaphore>>,
     renewal_attempts: AtomicUsize,
     fail_renewals: AtomicUsize,
     renewal_gate: Option<Arc<tokio::sync::Semaphore>>,
@@ -832,6 +837,9 @@ impl FlakyDispatchStore {
             maintenance_calls: [AtomicUsize::new(0), AtomicUsize::new(0)],
             fail_claims: AtomicUsize::new(fail_claims),
             claim_attempts: AtomicUsize::new(0),
+            depth_reads: AtomicUsize::new(0),
+            depth_entered: None,
+            depth_release: None,
             renewal_attempts: AtomicUsize::new(0),
             fail_renewals: AtomicUsize::new(0),
             renewal_gate: None,
@@ -921,6 +929,20 @@ impl FlakyDispatchStore {
     /// Total ordinary queue claims, including injected failures and empty polls.
     pub fn claim_attempts(&self) -> usize {
         self.claim_attempts.load(Ordering::SeqCst)
+    }
+
+    pub fn depth_reads(&self) -> usize {
+        self.depth_reads.load(Ordering::SeqCst)
+    }
+
+    pub fn with_depth_gate(
+        mut self,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Semaphore>,
+    ) -> Self {
+        self.depth_entered = Some(entered);
+        self.depth_release = Some(release);
+        self
     }
 
     /// Total exact-claim renewal writes, used to prove one renewal task owns a
@@ -1358,6 +1380,17 @@ impl awaken_dispatch::ControlDispatchQueue for FlakyDispatchStore {
     }
 
     async fn runnable_depth(&self) -> Result<Option<u64>, awaken_dispatch::DispatchError> {
+        self.depth_reads.fetch_add(1, Ordering::SeqCst);
+        if let Some(entered) = &self.depth_entered {
+            entered.notify_one();
+        }
+        if let Some(release) = &self.depth_release {
+            release
+                .acquire()
+                .await
+                .expect("depth sample release")
+                .forget();
+        }
         self.inner.runnable_depth().await
     }
     async fn scan_dispatch_ids(

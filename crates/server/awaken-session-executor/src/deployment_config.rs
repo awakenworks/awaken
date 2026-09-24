@@ -592,6 +592,12 @@ pub struct DeploymentConfig {
     pub postgres_max_connections: NonZeroU32,
     /// The dispatch lease owner (`AWAKEN_DISPATCH_OWNER`), distinct per process/node.
     pub dispatch_owner: String,
+    /// Maximum fallback wait before a pool checks durable dispatch again after a
+    /// lost wake. The cross-node wake is only a hint; this is the recovery bound.
+    pub dispatch_poll_interval: std::time::Duration,
+    /// Hosted composition may provide the sole queue-depth observation used by
+    /// its scaler; standalone deployments retain the built-in sampler.
+    pub sample_dispatch_queue_depth: bool,
     /// The sandbox tier this worker realizes ACP agents on.
     pub sandbox_tier: SandboxTier,
     /// The ACP sandbox and per-Session configuration root.
@@ -704,9 +710,24 @@ const fn sandbox_support_projection(
 }
 
 impl DeploymentConfig {
+    /// Project the one deployment-owned fallback interval into the existing
+    /// dispatch service schedule for local pools and coordinator-only repair.
+    pub(crate) fn dispatch_service_config(&self) -> awaken_dispatch::DispatchServiceConfig {
+        awaken_dispatch::DispatchServiceConfig {
+            poll_interval: self.dispatch_poll_interval,
+            sample_dispatch_queue_depth: self.sample_dispatch_queue_depth,
+            ..awaken_dispatch::DispatchServiceConfig::default()
+        }
+    }
+
     /// One configuration admission rule, reused by Worker and direct Host
     /// construction. The capability projection remains independently qualified.
     pub fn validate_local_execution(&self) -> Result<(), String> {
+        if self.dispatch_poll_interval.is_zero()
+            || self.dispatch_poll_interval > std::time::Duration::from_secs(60)
+        {
+            return Err("dispatch_poll_interval_ms must be between 1 and 60000".into());
+        }
         if self.sandbox.trusted_host_scoped_execution
             && (!cfg!(target_os = "linux") || !self.trusted_host_enabled())
         {
@@ -799,6 +820,9 @@ impl DeploymentConfig {
             database_url: None,
             postgres_max_connections: default_postgres_max_connections(),
             dispatch_owner: "embedded-worker".to_string(),
+            dispatch_poll_interval: awaken_dispatch::DispatchServiceConfig::default()
+                .poll_interval,
+            sample_dispatch_queue_depth: true,
             sandbox_tier: SandboxTier::Namespace,
             sandbox_dir: None,
             sandbox: SandboxSettings::default(),
@@ -1075,6 +1099,53 @@ mod tests {
             dispatch_owner: "host-1".into(),
             ..DeploymentConfig::ephemeral()
         }
+    }
+
+    #[test]
+    fn direct_deployment_poll_interval_has_one_validated_projection() {
+        // C1 direct embedder supplies a positive interval within 60s; C2 it
+        // supplies zero or more than 60s. E1 the same value reaches the shared
+        // local-pool/reconciler schedule; E2 invalid values fail before a Host
+        // starts. Rules: D1=C1 -> E1, D2=C2 -> E2. CLI parsing is the parallel
+        // input path, not a second schedule owner.
+        let mut config = base();
+        config.dispatch_poll_interval = std::time::Duration::from_millis(750);
+        config.validate_local_execution().expect("D1 valid");
+        assert_eq!(
+            config.dispatch_service_config().poll_interval,
+            config.dispatch_poll_interval,
+            "D1/E1"
+        );
+        for invalid in [0, 60_001] {
+            config.dispatch_poll_interval = std::time::Duration::from_millis(invalid);
+            assert!(
+                config
+                    .validate_local_execution()
+                    .unwrap_err()
+                    .contains("dispatch_poll_interval_ms"),
+                "D2/E2"
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_depth_observation_choice_reaches_the_one_dispatch_schedule() {
+        // Causes: C1 a standalone deployment uses its default; C2 hosted
+        // composition supplies the single external queue observer. Effects:
+        // E1 the open sampler stays enabled by default; E2 both pool and
+        // coordinator-only reconciliation receive the disabled flag through
+        // their shared DispatchServiceConfig. Rules D1=C1 -> E1,
+        // D2=C2 -> E2. No lease or claim setting changes.
+        let mut config = base();
+        assert!(
+            config.dispatch_service_config().sample_dispatch_queue_depth,
+            "D1/E1"
+        );
+        config.sample_dispatch_queue_depth = false;
+        assert!(
+            !config.dispatch_service_config().sample_dispatch_queue_depth,
+            "D2/E2"
+        );
     }
 
     #[test]

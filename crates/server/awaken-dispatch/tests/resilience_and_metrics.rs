@@ -74,6 +74,168 @@ async fn a_transient_store_error_is_swallowed_and_the_daemon_recovers() {
     service.shutdown().await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn queue_depth_is_sampled_by_the_process_not_each_drive() {
+    // Causes: C1 two Runs are already pending at startup; C2 both drives finish
+    // before the 60-second sample interval; C3 that interval later elapses.
+    // Effects: E1 one startup observation runs independently of execution; E2 two claims and
+    // settlements cause no extra depth reads; E3 the next sample reports 0.
+    // Constraint: the operations query stays exact when called, but a failed
+    // or delayed gauge observation never participates in claim/commit. Decision
+    // table: R1=C1 -> E1; R2=C1+C2 -> E2; R3=C1+C2+C3 -> E3.
+    let metrics = Arc::new(RecordingMetrics::default());
+    let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
+    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    for run in ["sample-1", "sample-2"] {
+        store
+            .enqueue(RunDispatch::new(activation(run)))
+            .await
+            .unwrap();
+    }
+    let worker = Arc::new(DispatchWorker::new(
+        runtime,
+        store.clone(),
+        Arc::new(MemoryCommitCoordinator::new()),
+        "sampler",
+    ));
+    let service = DispatchService::spawn(
+        worker,
+        Arc::new(SystemClock),
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            terminal_reconciliation_interval: None,
+            ..Default::default()
+        },
+    );
+    for _ in 0..500 {
+        if metrics.claimed.load(Ordering::SeqCst) == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(metrics.claimed.load(Ordering::SeqCst), 2, "R2 claims");
+    assert_eq!(store.depth_reads(), 1, "R1/R2 one startup depth query");
+    assert_eq!(metrics.queue_depth_samples.load(Ordering::SeqCst), 1, "R1");
+    assert!(
+        metrics.queue_depth.load(Ordering::SeqCst) <= 2,
+        "R1/E1 snapshot"
+    );
+    tokio::time::advance(Duration::from_secs(60)).await;
+    for _ in 0..100 {
+        if store.depth_reads() == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(store.depth_reads(), 2, "R3 second timed observation");
+    assert_eq!(metrics.queue_depth.load(Ordering::SeqCst), 0, "R3/E3");
+    service.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn hosted_depth_owner_disables_only_the_open_sampler() {
+    // Causes: C1 a hosted composition owns queue-depth observation; C2 one
+    // runnable Run is submitted; C3 more than two default sample periods pass.
+    // Effects: E1 the open process issues no exact depth reads; E2 dispatch
+    // still claims and commits the Run. Rule H1=C1+C2+C3 -> E1+E2. The hosted
+    // observer reads the same queue through its existing ControlDispatch port;
+    // this flag grants no execution or fact authority.
+    let metrics = Arc::new(RecordingMetrics::default());
+    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(DispatchWorker::new(
+        text_runtime_with_metrics(metrics.clone() as Arc<_>),
+        store.clone(),
+        commit.clone(),
+        "hosted-observer",
+    ));
+    let service = DispatchService::spawn(
+        worker,
+        Arc::new(SystemClock),
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            terminal_reconciliation_interval: None,
+            sample_dispatch_queue_depth: false,
+            ..Default::default()
+        },
+    );
+    service
+        .submit(activation("hosted-depth-owner"))
+        .await
+        .unwrap();
+    for _ in 0..500 {
+        if metrics.claimed.load(Ordering::SeqCst) == 1 && commit.commit_count() >= 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(metrics.claimed.load(Ordering::SeqCst), 1, "H1/E2 one lease");
+    assert!(commit.commit_count() >= 1, "H1/E2 committed facts");
+    tokio::time::advance(Duration::from_secs(120)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(store.depth_reads(), 0, "H1/E1");
+    assert_eq!(
+        metrics.queue_depth_samples.load(Ordering::SeqCst),
+        0,
+        "H1/E1"
+    );
+    service.shutdown().await;
+}
+
+#[tokio::test]
+async fn blocked_depth_observation_cannot_delay_a_run_or_shutdown() {
+    // Causes: C1 the first exact depth read never returns; C2 a runnable Run
+    // exists; C3 shutdown arrives before the read is released. Effects: E1
+    // the ordinary Worker commits and settles C2; E2 shutdown joins without
+    // waiting for the metrics dependency. Rule B1=C1+C2 -> E1;
+    // B2=C1+C3 -> E2. The queue read has no claim, commit, or outbox authority.
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let store = Arc::new(
+        FlakyDispatchStore::new(0, Arc::new(SystemClock)).with_depth_gate(entered.clone(), release),
+    );
+    store
+        .enqueue(RunDispatch::new(activation("depth-blocked-run")))
+        .await
+        .unwrap();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(DispatchWorker::new(
+        text_runtime(),
+        store.clone(),
+        commit.clone(),
+        "depth-blocked-owner",
+    ));
+    let service = DispatchService::spawn(
+        worker,
+        Arc::new(SystemClock),
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            terminal_reconciliation_interval: None,
+            ..Default::default()
+        },
+    );
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .expect("B1 the metric read entered");
+    assert!(
+        wait_for(|| commit.commit_count() > 0).await,
+        "B1 commit progressed"
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if store.list_dispatches().await.unwrap().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("B1/E1 the Run settled while the metric read was blocked");
+    tokio::time::timeout(Duration::from_secs(2), service.shutdown())
+        .await
+        .expect("B2/E2 cancels the stuck metrics read");
+}
+
 // --- 15. The worker meters the dispatch lifecycle on every exit path --------
 
 #[tokio::test]

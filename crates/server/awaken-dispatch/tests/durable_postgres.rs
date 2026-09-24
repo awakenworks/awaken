@@ -23,13 +23,15 @@ use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
     ClaimedCommitCoordinator, ClaimedRunCommit, DEFAULT_LEASE_MS, DispatchQueue,
-    DispatchTestHarness, DispatchWorker, GuardedRunCommit, Inbox, PendingInput,
-    PostgresDispatchStore, PostgresStreamCheckpointStore, RunClaim, RunDispatch, SubmitOptions,
+    DispatchTestHarness, DispatchWorker, GuardedRunCommit, Inbox, LeastLoadedPolicy, PendingInput,
+    PlacementRequirements, PostgresDispatchStore, PostgresStreamCheckpointStore, RunClaim,
+    RunDispatch, SubmitOptions,
 };
 use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock};
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor as _;
+use sqlx::postgres::PgPoolOptions;
 
 use harness::{
     FailingCommit, THREAD, TICKET, activation, activation_on, blocking_tool_runtime, tool_runtime,
@@ -774,6 +776,237 @@ async fn two_workers_claim_distinct_runs_on_postgres() {
         .0
         .clone();
     assert_ne!(a, b, "two concurrent workers claim distinct runs");
+}
+
+#[tokio::test]
+async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
+    // Causes: C1 140 higher-priority, same-order candidates need GPU; C2 the
+    // registered requester lacks GPU; C3 a lower-priority compatible Run exists;
+    // C4 compatible vs placed broad claim; C5 compatible Run absent/present;
+    // C6 140 local candidates have an exhausted fencing epoch; C7 140 fresh
+    // peers share a Thread whose existing Run is still leased.
+    // Effects: E1 scan past the first 128-row page without returning a false
+    // None; E2 return only a compatible exact claim; E3 no compatible Run yields
+    // None after exhausting every page; E4 a later enqueue is found on a fresh
+    // call. Constraints: all rows have distinct Threads and the exact claim
+    // transaction remains the only mutation. Decision table: R1=C1+C2+!C3 ->
+    // E3; R2=C1+C2+C3+C4(compatible) -> E1+E2; R3=C1+C2+C3+C4(placed) ->
+    // E1+E2; R4=R1 then C5(present) -> E4; R5=C6+one fresh local Run -> E1+E2;
+    // R6=C7+one later independent Run -> E1+E2 without a second Thread writer.
+    // The existing shared conformance owns
+    // cancellation, reservation, recovery, priority and same-Thread partitions.
+    let Some(pool) = harness::schema_pool("t_pg_candidate_pages").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .expect("dispatch");
+    let (directory, identity) =
+        awaken_dispatch_testkit::worker_http::ready_worker("page-worker").await;
+    let worker = directory
+        .current(&identity.worker_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    let mut gpu = PlacementRequirements::remote_required();
+    gpu.required_capabilities.insert("gpu".into());
+    let template = serde_json::to_value(
+        RunDispatch::new(activation_on("template", "template-thread")).with_placement(gpu),
+    )
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO runtime_dispatch (run_id, thread_id, request, status, priority) \
+         SELECT 'page-incompatible-' || g, 'page-thread-' || g, \
+                jsonb_set(jsonb_set($1::jsonb, '{activation,run_id}', \
+                    to_jsonb('page-incompatible-' || g)), '{activation,thread_id}', \
+                    to_jsonb('page-thread-' || g)), 'pending', 100 \
+         FROM generate_series(1, 140) AS g",
+    )
+    .bind(sqlx::types::Json(&template))
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        store
+            .claim_compatible(&worker, 60_000)
+            .await
+            .unwrap()
+            .is_none(),
+        "R1/E3"
+    );
+
+    for (index, placed) in [false, true].into_iter().enumerate() {
+        let run = format!("page-compatible-{index}");
+        let request = RunDispatch::new(activation_on(&run, &format!("compatible-thread-{index}")))
+            .with_placement(PlacementRequirements::remote_required());
+        store.enqueue(request).await.unwrap();
+        let claimed = if placed {
+            store
+                .claim_placed(
+                    &worker,
+                    vec![worker.clone()],
+                    Arc::new(LeastLoadedPolicy),
+                    60_000,
+                )
+                .await
+                .unwrap()
+        } else {
+            store.claim_compatible(&worker, 60_000).await.unwrap()
+        }
+        .expect("R2/R3/R4 later compatible Run is discovered");
+        assert_eq!(claimed.lease.run_id.0, run, "R2/R3/E1+E2");
+    }
+
+    let local_template = serde_json::to_value(RunDispatch::new(activation_on(
+        "local-template",
+        "local-template",
+    )))
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO runtime_dispatch \
+         (run_id, thread_id, request, status, priority, lease_epoch) \
+         SELECT 'local-exhausted-' || g, 'local-exhausted-thread-' || g, \
+                jsonb_set(jsonb_set($1::jsonb, '{activation,run_id}', \
+                    to_jsonb('local-exhausted-' || g)), '{activation,thread_id}', \
+                    to_jsonb('local-exhausted-thread-' || g)), 'pending', 200, \
+                9223372036854775807 \
+         FROM generate_series(1, 140) AS g",
+    )
+    .bind(sqlx::types::Json(&local_template))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let local_run = "page-local-fresh";
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            local_run,
+            "page-local-thread",
+        )))
+        .await
+        .unwrap();
+    let local_claimed = store
+        .claim("local-owner", 60_000, &Default::default())
+        .await
+        .unwrap()
+        .expect("R5 scans past exhausted epoch candidates");
+    assert_eq!(local_claimed.lease.run_id.0, local_run, "R5/E1+E2");
+
+    let blocker = "page-thread-blocker";
+    store
+        .enqueue(RunDispatch::new(activation_on(blocker, "busy-thread")))
+        .await
+        .unwrap();
+    let blocked = store
+        .claim_run(
+            &RunId(blocker.into()),
+            "busy-owner",
+            60_000,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("R6 predecessor holds the Thread");
+    let blocked_template = serde_json::to_value(RunDispatch::new(activation_on(
+        "blocked-template",
+        "busy-thread",
+    )))
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO runtime_dispatch (run_id, thread_id, request, status, priority) \
+         SELECT 'page-blocked-' || g, 'busy-thread', \
+                jsonb_set($1::jsonb, '{activation,run_id}', \
+                    to_jsonb('page-blocked-' || g)), 'pending', 300 \
+         FROM generate_series(1, 140) AS g",
+    )
+    .bind(sqlx::types::Json(&blocked_template))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let independent = "page-independent";
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            independent,
+            "independent-thread",
+        )))
+        .await
+        .unwrap();
+    let next = store
+        .claim("local-owner", 60_000, &Default::default())
+        .await
+        .unwrap()
+        .expect("R6 skips blocked Thread pages");
+    assert_eq!(next.lease.run_id.0, independent, "R6/E1+E2");
+    assert_eq!(
+        blocked.lease.run_id.0, blocker,
+        "R6 original owner retained"
+    );
+}
+
+#[tokio::test]
+async fn deep_discovery_releases_its_stream_before_one_connection_exact_claim() {
+    // Causes: C1 the first 128 rows are local-incompatible; C2 one later local
+    // row exists; C3 the store has exactly one PostgreSQL connection. Effects:
+    // E1 the deep stream reaches C2; E2 it releases that connection before the
+    // existing exact claim transaction; E3 the claim completes without a pool
+    // self-deadlock. Decision table: S1=C1+C2+C3 -> E1+E2+E3. The ordinary
+    // multi-connection and no-compatible partitions live in the page test.
+    let schema = "t_pg_one_connection_deep";
+    let Some(pool) = harness::schema_pool(schema).await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .expect("migrated dispatch");
+    let template = serde_json::to_value(
+        RunDispatch::new(activation_on("remote-template", "remote-template-thread"))
+            .with_placement(PlacementRequirements::remote_required()),
+    )
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO runtime_dispatch (run_id, thread_id, request, status, priority) \
+         SELECT 'remote-' || g, 'remote-thread-' || g, \
+                jsonb_set(jsonb_set($1::jsonb, '{activation,run_id}', \
+                    to_jsonb('remote-' || g)), '{activation,thread_id}', \
+                    to_jsonb('remote-thread-' || g)), 'pending', 100 \
+         FROM generate_series(1, 129) AS g",
+    )
+    .bind(sqlx::types::Json(&template))
+    .execute(&pool)
+    .await
+    .unwrap();
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            "single-connection-local",
+            "single-connection-thread",
+        )))
+        .await
+        .unwrap();
+    pool.close().await;
+    let one = PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(move |conn, _| {
+            Box::pin(async move {
+                conn.execute("SET search_path=t_pg_one_connection_deep")
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&harness::database_url())
+        .await
+        .unwrap();
+    let one_store = PostgresDispatchStore::with_existing_pool(one)
+        .await
+        .expect("one-connection authority");
+    let claimed = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        one_store.claim("one-owner", 60_000, &Default::default()),
+    )
+    .await
+    .expect("S1/E3 no self-deadlock")
+    .unwrap()
+    .expect("S1/E1 compatible row");
+    assert_eq!(claimed.lease.run_id.0, "single-connection-local", "S1/E2");
 }
 
 #[tokio::test]

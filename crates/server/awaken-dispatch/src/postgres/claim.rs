@@ -1,5 +1,304 @@
 // PostgreSQL exact-claim transaction kernels. These remain private helpers of
 // the parent adapter and do not introduce a second claim policy.
+
+/// One read-only discovery order shared by local, compatible, and placed claims.
+/// The exact transaction below remains the only mutation/eligibility authority.
+const CANDIDATE_PAGE_SIZE: i64 = 128;
+
+#[derive(Clone, Copy)]
+enum CandidateAudience<'a> {
+    Local,
+    Compatible(&'a WorkerSnapshot),
+    Placed {
+        requester: &'a WorkerSnapshot,
+        workers: &'a [WorkerSnapshot],
+        policy: &'a dyn PlacementPolicy,
+    },
+}
+
+impl<'a> CandidateAudience<'a> {
+    fn local(self) -> bool {
+        matches!(self, Self::Local)
+    }
+
+    fn worker(self) -> Option<&'a WorkerSnapshot> {
+        match self {
+            Self::Local => None,
+            Self::Compatible(worker) => Some(worker),
+            Self::Placed { requester, .. } => Some(requester),
+        }
+    }
+}
+
+fn candidate_local_filter() -> &'static str {
+    "(d.cancel_requested = 1 OR (\
+        COALESCE(d.request #>> '{placement,location}', 'remote_preferred') \
+            <> 'remote_required' AND \
+        jsonb_array_length(COALESCE(\
+            d.request #> '{placement,required_credentials}', '[]'::jsonb)) = 0))"
+}
+
+fn candidate_state_rank(local: bool) -> &'static str {
+    if local {
+        "CASE WHEN d.cancel_requested = 1 THEN 0 \
+         WHEN d.status IN ('reserved', 'reservation_running') THEN 1 \
+         WHEN d.status = 'running' THEN 2 \
+         WHEN d.status = 'awaiting' THEN 3 ELSE 4 END"
+    } else {
+        "CASE WHEN d.cancel_requested = 1 THEN 0 \
+         WHEN d.status = 'running' THEN 1 \
+         WHEN d.status = 'awaiting' THEN 2 ELSE 3 END"
+    }
+}
+
+fn candidate_retry_due() -> &'static str {
+    "(d.retry_not_before IS NULL OR d.retry_not_before <= $1)"
+}
+
+/// Produce only one bounded page of payloads. The cheap, status-based inner
+/// selection precedes the per-Thread/JSON predicates: a large fresh queue need
+/// not evaluate those predicates for every row before its first candidate.
+/// The outer flags skip ineligible page members;
+/// the exact transaction remains the sole mutation/eligibility authority.
+fn candidate_page_sql(local: bool) -> String {
+    let p = NS;
+    let thread_available = thread_available_for_claim(p);
+    let local_filter = if local {
+        candidate_local_filter()
+    } else {
+        "TRUE"
+    };
+    let reservation_peer = no_running_peer(p);
+    let state_rank = candidate_state_rank(local);
+    let retry_due = candidate_retry_due();
+    format!(
+        "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, \
+                d.status, d.cancel_requested, d.lease_epoch, \
+                d.physical_rank, d.state_rank, d.priority, \
+                CASE WHEN d.status IN ('reserved', 'reservation_running') \
+                     THEN {reservation_peer} \
+                     WHEN d.status IN ('pending', 'awaiting') \
+                     THEN {thread_available} ELSE TRUE END AS thread_eligible, \
+                CASE WHEN d.status IN ('reserved', 'reservation_running') \
+                     THEN TRUE ELSE {local_filter} END AS local_eligible \
+         FROM (SELECT ranked.* FROM ( \
+             SELECT d.run_id, d.thread_id, d.request, d.sandbox, d.worker_assignment, \
+                    d.status, d.cancel_requested, d.lease_epoch, \
+                    d.priority, d.created_at, \
+                    (d.active_attempt_owner IS NOT NULL OR \
+                     d.active_attempt_epoch IS NOT NULL)::integer AS physical_rank, \
+                    {state_rank} AS state_rank \
+             FROM {p}_dispatch d WHERE \
+             ((d.status IN ('reserved', 'reservation_running') AND \
+               d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
+              (d.status = 'running' AND d.lease_until IS NOT NULL AND \
+               d.lease_until < $1) OR \
+              (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
+               SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND \
+               (pe.available_at IS NULL OR pe.available_at <= $1)))) OR \
+              d.status = 'pending') \
+             AND {retry_due} \
+         ) ranked \
+             ORDER BY ranked.physical_rank, ranked.state_rank, \
+                      ranked.priority DESC, ranked.created_at, ranked.run_id \
+             LIMIT $2 \
+         ) d ORDER BY d.physical_rank, d.state_rank, d.priority DESC, \
+                      d.created_at, d.run_id"
+    )
+}
+
+/// Once the first page proves a long incompatible prefix, use one streaming
+/// pass with the original database-side Thread/local pruning. It retains the
+/// same candidate order and never materializes the whole result in Rust.
+fn candidate_deep_sql(local: bool) -> String {
+    let p = NS;
+    let thread_available = thread_available_for_claim(p);
+    let reservation_peer = no_running_peer(p);
+    let local_filter = if local {
+        candidate_local_filter()
+    } else {
+        "TRUE"
+    };
+    let state_rank = candidate_state_rank(local);
+    let retry_due = candidate_retry_due();
+    format!(
+        "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, \
+                d.status, d.cancel_requested, d.lease_epoch, \
+                TRUE AS thread_eligible, TRUE AS local_eligible \
+         FROM {p}_dispatch d WHERE \
+         ((d.status IN ('reserved', 'reservation_running') AND \
+           d.lease_until IS NOT NULL AND d.lease_until < $1 AND {reservation_peer}) OR \
+          (d.status = 'running' AND d.lease_until IS NOT NULL AND \
+           d.lease_until < $1 AND {local_filter}) OR \
+          (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
+           SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND \
+           (pe.available_at IS NULL OR pe.available_at <= $1))) AND \
+           {thread_available} AND {local_filter}) OR \
+          (d.status = 'pending' AND {thread_available} AND {local_filter})) \
+         AND {retry_due} \
+         ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR \
+                       d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
+                  {state_rank}, d.priority DESC, d.created_at, d.run_id"
+    )
+}
+
+fn candidate_is_admissible(
+    row: &sqlx::postgres::PgRow,
+    audience: CandidateAudience<'_>,
+    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    now_ms: u64,
+) -> Result<bool, DispatchError> {
+    let thread_eligible: bool = row.try_get("thread_eligible").map_err(store_error)?;
+    let local_eligible: bool = row.try_get("local_eligible").map_err(store_error)?;
+    if !thread_eligible || !local_eligible {
+        return Ok(false);
+    }
+    let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+    let status: String = row.try_get("status").map_err(store_error)?;
+    let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(store_error)?;
+    let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
+    let terminal_resolution = matches!(status.as_str(), "reserved" | "reservation_running");
+    let operation = claim_credential_operation(terminal_resolution, cancellation_requested != 0);
+    let credentials_admitted = next_claim_epoch(lease_epoch).is_ok_and(|epoch| {
+        can_admit_claim_credentials(&request, capabilities, epoch, now_ms, operation)
+    });
+    match audience {
+        CandidateAudience::Local => Ok(credentials_admitted),
+        CandidateAudience::Compatible(worker) => {
+            let sandbox: Option<String> = row.try_get("sandbox").map_err(store_error)?;
+            let previous: Option<Json<WorkerAssignment>> =
+                row.try_get("worker_assignment").map_err(store_error)?;
+            Ok(terminal_resolution
+                || (cancellation_requested != 0 && credentials_admitted)
+                || (can_assign(
+                    worker,
+                    &request.placement,
+                    previous.as_ref().map(|value| &value.0),
+                    sandbox.is_some(),
+                    now_ms,
+                )
+                .is_ok()
+                    && credentials_admitted))
+        }
+        CandidateAudience::Placed {
+            requester,
+            workers,
+            policy,
+        } => {
+            let sandbox: Option<String> = row.try_get("sandbox").map_err(store_error)?;
+            let previous: Option<Json<WorkerAssignment>> =
+                row.try_get("worker_assignment").map_err(store_error)?;
+            Ok(terminal_resolution
+                || (cancellation_requested != 0 && credentials_admitted)
+                || (policy_selects_requester(
+                    &request,
+                    policy,
+                    DispatchPlacement {
+                        recovered: status == "running",
+                        previous: previous.as_ref().map(|value| &value.0),
+                        sandbox_bound: sandbox.is_some(),
+                        requester: &requester.identity,
+                        workers,
+                        now_ms,
+                    },
+                )? && credentials_admitted))
+        }
+    }
+}
+
+impl PostgresDispatchStore {
+    async fn try_claim_discovered(
+        &self,
+        run_id: String,
+        owner: &str,
+        lease_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        audience: CandidateAudience<'_>,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let claimed = claim_exact_transaction(
+            &mut tx,
+            &RunId(run_id),
+            owner,
+            lease_ms,
+            audience.worker(),
+            capabilities,
+        )
+        .await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(claimed)
+    }
+
+    async fn claim_discovered(
+        &self,
+        owner: &str,
+        lease_ms: u64,
+        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        audience: CandidateAudience<'_>,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
+        let first_sql = candidate_page_sql(audience.local());
+        let first = sqlx::query(&first_sql)
+            .bind(crate::clock::db_millis(now_ms))
+            .bind(CANDIDATE_PAGE_SIZE)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_error)?;
+        let first_len = first.len();
+        let mut attempted = std::collections::HashSet::new();
+        for row in first {
+            if !candidate_is_admissible(&row, audience, capabilities, now_ms)? {
+                continue;
+            }
+            let run_id: String = row.try_get("run_id").map_err(store_error)?;
+            attempted.insert(run_id.clone());
+            if let Some(claimed) = self
+                .try_claim_discovered(run_id, owner, lease_ms, capabilities, audience)
+                .await?
+            {
+                return Ok(Some(claimed));
+            }
+        }
+        if first_len < CANDIDATE_PAGE_SIZE as usize {
+            return Ok(None);
+        }
+
+        // The first page had no winner. Scan the complete read-only candidate
+        // order once, with the original database-side Thread/local pruning.
+        // Streaming bounds client memory even when every Worker-specific
+        // candidate is incompatible. Release its connection before any exact
+        // claim, so a one-connection pool cannot deadlock against itself.
+        let deep_sql = candidate_deep_sql(audience.local());
+        loop {
+            let mut stream = sqlx::query(&deep_sql)
+                .bind(crate::clock::db_millis(now_ms))
+                .fetch(&self.pool);
+            let mut selected = None;
+            while let Some(row) = stream.try_next().await.map_err(store_error)? {
+                let run_id: String = row.try_get("run_id").map_err(store_error)?;
+                if attempted.contains(&run_id)
+                    || !candidate_is_admissible(&row, audience, capabilities, now_ms)?
+                {
+                    continue;
+                }
+                selected = Some(run_id);
+                break;
+            }
+            drop(stream);
+            let Some(run_id) = selected else {
+                return Ok(None);
+            };
+            attempted.insert(run_id.clone());
+            if let Some(claimed) = self
+                .try_claim_discovered(run_id, owner, lease_ms, capabilities, audience)
+                .await?
+            {
+                return Ok(Some(claimed));
+            }
+        }
+    }
+}
+
 async fn lock_dispatch_thread(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     run_id: &RunId,

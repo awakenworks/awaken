@@ -963,12 +963,6 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         self.runtime.metrics().record_dispatch_in_flight(1);
         let _drive_timer = DriveTimer::new(self.runtime.metrics());
 
-        // Operations-only query: a metrics backend failure cannot reject a claim.
-        // Native authorities return an exact claimable count; remote/composed stores
-        // may report `None` until their transport exposes the query.
-        if let Ok(Some(depth)) = self.store.runnable_depth().await {
-            self.runtime.metrics().record_dispatch_queue_depth(depth);
-        }
         let claimed_snapshot = self
             .install_claimed_recovery_projection(&claimed, &thread_id)
             .await?;

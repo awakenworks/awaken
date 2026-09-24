@@ -113,6 +113,64 @@ fn ticket(run: &str, thread: &str) -> ResumeTicket {
     )
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "live PostgreSQL throughput observation, run separately from correctness suites"]
+async fn independent_thread_commit_throughput_observation() {
+    // Causes: C1 all commits target independent Threads; C2 client concurrency
+    // is 1, 8, or 32; C3 each commit carries only a terminal Run disposition.
+    // Effects: E1 every commit succeeds and allocates a unique dense sequence;
+    // E2 print the actual application commit rate for each concurrency level.
+    // Constraint: this is one local PostgreSQL primary without Worker/HTTP or
+    // synchronous standby, so it diagnoses this store's lock path and cannot
+    // establish fleet throughput. Decision rules: P1=C1+C2(1)+C3 -> E1+E2;
+    // P2=C1+C2(8)+C3 -> E1+E2; P3=C1+C2(32)+C3 -> E1+E2.
+    let Some(pool) = schema_pool("t_pg_commit_perf").await else {
+        panic!("explicit performance run requires PostgreSQL");
+    };
+    let store = Arc::new(
+        PostgresCommitCoordinator::with_pool(pool)
+            .await
+            .expect("commit coordinator"),
+    );
+    const COMMITS: usize = 128;
+    for (phase, concurrency) in [1, 8, 32].into_iter().enumerate() {
+        let started = std::time::Instant::now();
+        let mut tasks = tokio::task::JoinSet::new();
+        let mut sequences = Vec::with_capacity(COMMITS);
+        for index in 0..COMMITS {
+            let store = store.clone();
+            tasks.spawn(async move {
+                let run = RunId(format!("perf-run-{concurrency}-{index}"));
+                let commit = ThreadCommit::assemble(
+                    ThreadId(format!("perf-thread-{concurrency}-{index}")),
+                    RunDisposition::ended(run, EndCause::NaturalEnd),
+                    true,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                );
+                store.commit(commit).await.expect("independent commit")
+            });
+            if tasks.len() >= concurrency {
+                sequences.push(tasks.join_next().await.unwrap().unwrap().sequence);
+            }
+        }
+        while let Some(result) = tasks.join_next().await {
+            sequences.push(result.unwrap().sequence);
+        }
+        sequences.sort_unstable();
+        let first = (phase * COMMITS + 1) as u64;
+        let last = ((phase + 1) * COMMITS) as u64;
+        assert_eq!(sequences, (first..=last).collect::<Vec<_>>(), "P1-P3/E1");
+        let elapsed = started.elapsed().as_secs_f64();
+        println!(
+            "commit_perf independent_threads={} concurrency={concurrency} seconds={elapsed:.3} commits_per_s={:.1}",
+            COMMITS,
+            COMMITS as f64 / elapsed
+        );
+    }
+}
+
 /// Build a coordinator over a fresh, isolated Postgres schema, or `None` (skip)
 /// when no Postgres is reachable — the entry point every shared-conformance test
 /// below uses so pg runs the SAME suite as the other backends.

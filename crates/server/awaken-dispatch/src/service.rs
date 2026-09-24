@@ -24,6 +24,49 @@ use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::DispatchWorker;
 use awaken_dispatch_contract::RunDispatch;
 
+/// One process-level observation cadence, independent of execution throughput.
+/// An exact count can inspect a large queue, so keep it off every claim and at
+/// roughly the default metrics-export cadence. Operations callers may still
+/// request an exact `runnable_depth` observation explicitly.
+pub(crate) const QUEUE_DEPTH_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+
+pub(crate) fn spawn_dispatch_depth_sampler<S: ControlDispatch + 'static>(
+    store: Arc<S>,
+    report: Arc<dyn Fn(u64) + Send + Sync>,
+    shutdown: CancellationToken,
+    enabled: bool,
+) -> Option<JoinHandle<()>> {
+    // Database-less Workers do not poll upstream operations. The Coordinator
+    // samples its own queue; no second remote maintenance loop is installed.
+    if !enabled || !store.owns_local_maintenance() {
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(QUEUE_DEPTH_SAMPLE_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break,
+                _ = interval.tick() => {
+                    // Even a very large exact count cannot delay claim, outbox
+                    // relay, or terminal reconciliation. Cancellation interrupts
+                    // an in-flight metrics read without mutating dispatch truth.
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.cancelled() => break,
+                        result = store.runnable_depth() => {
+                            if let Ok(Some(depth)) = result {
+                                report(depth);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }))
+}
+
 /// How the daemon paces itself.
 #[derive(Debug, Clone, Copy)]
 pub struct DispatchServiceConfig {
@@ -41,6 +84,9 @@ pub struct DispatchServiceConfig {
     /// and reconciliation-claim crash gaps without polling every idle queue tick;
     /// `None` disables it.
     pub terminal_reconciliation_interval: Option<Duration>,
+    /// Disable this process's optional depth metric when a hosting adapter
+    /// already samples the same authoritative queue for its scaler.
+    pub sample_dispatch_queue_depth: bool,
 }
 
 impl Default for DispatchServiceConfig {
@@ -52,6 +98,7 @@ impl Default for DispatchServiceConfig {
             max_attempts: 5,
             dead_letter_ttl: None,
             terminal_reconciliation_interval: Some(Duration::from_secs(30)),
+            sample_dispatch_queue_depth: true,
         }
     }
 }
@@ -128,6 +175,7 @@ pub struct DispatchService<S> {
     wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     handle: JoinHandle<()>,
+    depth_sampler: Option<JoinHandle<()>>,
 }
 
 impl<S: ControlDispatch + 'static> DispatchService<S> {
@@ -149,6 +197,22 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
         wake: Arc<dyn WakeSignal>,
     ) -> Self {
         let shutdown = CancellationToken::new();
+        // The standalone service drives Runs on its main loop. Counting a large
+        // queue on that loop would reintroduce a claim-latency spike, so only
+        // the non-authoritative sampler gets a separate owned task.
+        let observer_worker = worker.clone();
+        let report = Arc::new(move |depth| {
+            observer_worker
+                .runtime()
+                .metrics()
+                .record_dispatch_queue_depth(depth);
+        });
+        let depth_sampler = spawn_dispatch_depth_sampler(
+            worker.store().clone(),
+            report,
+            shutdown.clone(),
+            config.sample_dispatch_queue_depth,
+        );
         let handle = tokio::spawn(run_loop(
             worker.clone(),
             clock.clone(),
@@ -161,6 +225,7 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
             wake,
             shutdown,
             handle,
+            depth_sampler,
         }
     }
 
@@ -200,6 +265,9 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
     pub async fn shutdown(self) {
         self.shutdown.cancel();
         let _ = self.handle.await;
+        if let Some(sampler) = self.depth_sampler {
+            let _ = sampler.await;
+        }
     }
 }
 

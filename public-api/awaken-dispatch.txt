@@ -300,6 +300,7 @@ pub struct awaken_dispatch::DispatchServiceConfig
 pub awaken_dispatch::DispatchServiceConfig::dead_letter_ttl: core::option::Option<core::time::Duration>
 pub awaken_dispatch::DispatchServiceConfig::max_attempts: u64
 pub awaken_dispatch::DispatchServiceConfig::poll_interval: core::time::Duration
+pub awaken_dispatch::DispatchServiceConfig::sample_dispatch_queue_depth: bool
 pub awaken_dispatch::DispatchServiceConfig::terminal_reconciliation_interval: core::option::Option<core::time::Duration>
 impl core::default::Default for awaken_dispatch::DispatchServiceConfig
 pub fn awaken_dispatch::DispatchServiceConfig::default() -> Self

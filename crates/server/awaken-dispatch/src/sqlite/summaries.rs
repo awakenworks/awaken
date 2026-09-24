@@ -1,4 +1,33 @@
 impl SqliteDispatchStore {
+    async fn query_runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        self.with_conn(move |conn, p| {
+            let thread_available = thread_available_for_claim(p);
+            let depth: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
+                         (d.status IN ('reserved', 'reservation_running') \
+                           AND d.lease_until IS NOT NULL AND d.lease_until < ?1 AND {}) OR \
+                         (d.status = 'pending' AND {thread_available}) OR \
+                         (d.status = 'running' AND d.lease_until < ?1) OR \
+                         (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
+                           SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
+                           AND (i.available_at IS NULL OR i.available_at <= ?1)\
+                         )) AND {thread_available})) \
+                         AND (d.retry_not_before IS NULL \
+                              OR d.retry_not_before <= ?1)",
+                        no_running_peer(p)
+                    ),
+                    params![crate::clock::db_millis(now_ms)],
+                    |row| row.get(0),
+                )
+                .map_err(store_error)?;
+            Ok(Some(durable_u64("runnable dispatch depth", depth)?))
+        })
+        .await
+    }
+
     async fn read_dispatch_summaries(
         &self,
         run_id: Option<String>,
