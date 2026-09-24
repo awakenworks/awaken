@@ -234,6 +234,11 @@ for inspection, but it does not constitute end-to-end verification.
 `distributed_control_e2e.sh` is the canonical black-box acceptance suite for
 ADR-0071 and P2-B. The test client knows only `svc/awaken-api`; Kubernetes and
 SQL access are used exclusively for fault injection and ownership evidence.
+The former three-replica scenario-host `scaling_e2e.sh` has been removed: its
+process-local frozen Session projection could not authorize a claim taken by a
+different replica. The production-role suite owns multi-replica pressure and
+fault acceptance; NATS wake and cold-start race suites still reuse the small
+durable-submission driver for their distinct checks.
 Its eleven stages cover build/deploy, the complete configuration-to-application
 path, the complete request-to-response path, Worker process isolation,
 Coordinator-total-outage recovery, Pod and in-flight Worker failure, K3D node
@@ -308,6 +313,18 @@ the configured request count (default 48, concurrency 12), audits every retained
 Session, and requires p95 ≤ 5 seconds. A failing window stops the run; no average
 or best-window selection masks it. The separate cold-start bound remains 30
 seconds. Record host pressure alongside the run when evaluating shared hosts.
+
+The 2026-09-25 local run on `awaken-adr71-cellscale-20260925` completed
+48/48 requests with zero errors, a 3.52-second warm p95, a 24.01-second
+maximum cold batch, synchronous PostgreSQL standby promotion, and the exact
+Native Worker hard-crash recovery. It required
+`ADR71_BATCH_CLEANUP_TIMEOUT_SECONDS=240` to allow all eleven auxiliary
+Session Pods and PVCs to disappear before the later fault stages. The first
+run with the unchanged 120-second default failed at that cleanup gate after
+all twelve Session responses succeeded; physical deletion continued after
+the timeout. The override changes only that diagnostic wait and leaves every
+deletion assertion intact. This is a passing diagnostic of the later stages,
+not a passing 120-second cleanup acceptance or a production RTO claim.
 
 The four logical owner databases share one disposable PostgreSQL primary and
 streaming standby to keep this topology affordable. Database names, role
