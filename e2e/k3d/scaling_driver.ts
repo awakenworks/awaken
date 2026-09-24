@@ -1,8 +1,7 @@
-// Horizontal-scaling driver (ADR-0019) — the TEST LOGIC half of `scaling_e2e.sh`.
-// Fires M concurrent durable submissions across the brain fleet (through the
-// load-balanced Service). Consistency is asserted authoritatively against Postgres
-// by the shell (the per-pod message projection is a cache and cannot be trusted for
-// a fleet); this driver only proves every submission was accepted and enqueued.
+// Durable-submission driver reused by the NATS wake and cold-start race suites.
+// Fires M concurrent submissions through their load-balanced Service. The
+// owning shell scenarios assert committed PostgreSQL truth; this driver only
+// proves that every input was accepted and enqueued with a distinct Run id.
 //
 // Run (node 22 strips the types natively):
 //   node e2e/k3d/scaling_driver.ts submit http://127.0.0.1:PORT 20
