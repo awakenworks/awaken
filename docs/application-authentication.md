@@ -18,6 +18,32 @@ There is no hash-derived `app_*` Session, application mapping table, chat proxy,
 or browser Artifact write path. The Managed Session repository is the resource
 authority; an application token is only an ephemeral capability projection.
 
+## One execution vocabulary across front doors
+
+The published Agent selects the executable configuration. One Managed Session
+owns its frozen execution context, primary Thread, optional child Threads, and
+durable Runs. A Run is one admitted execution; an exact tool result resumes it;
+committed Session/Thread facts, not an SSE connection, are the recovery truth.
+Managed Agents exposes the Session and Thread identities directly. AI SDK and
+AG-UI use the customer's `external_thread_id` as their client-visible
+conversation id; the application guard resolves it to that Session's primary
+Thread. It is an authorization alias, **not** a second Managed Thread or a
+Session id derived from the client string.
+
+The trusted backend persists its own conversation-to-Session relation and
+creates the Session before issuing the application token. A hosted AI SDK or
+AG-UI request with an unbound external id cannot implicitly create a Session.
+The lower-level Run application can create a default Session in explicit local
+composition, but that convenience is not the hosted application contract.
+After a reload or token expiry the backend reauthorizes the customer and mints
+a new token with the *same* binding; the browser keeps using the same external
+id and reads committed history. AG-UI `RUN_STARTED` and `RUN_FINISHED` echo that
+external id while execution, ownership checks, and persistence use only the
+resolved Managed Session id. AI SDK keeps the external id in its client and
+request path. Protocol event names and error envelopes stay adapter-owned;
+their terminal state, tool identity, and committed history have one authority
+([protocol adapter boundaries](design/protocol-adapter-boundaries.md)).
+
 ## Static authority and permissions
 
 The customer's backend remains authoritative for users, roles, memberships,
