@@ -106,6 +106,12 @@ pub struct ExecutionWorkspace(pub String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedResourceId(pub String);
 
+/// The caller-visible thread id already authorized by a trusted ingress.
+/// This request-local projection is for protocol output only: execution and
+/// persistence must use the separately resolved resource id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentedThreadId(pub String);
+
 /// An Agent id selected and allow-listed by a trusted ingress policy layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedAgentId(pub String);

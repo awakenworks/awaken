@@ -81,6 +81,7 @@ fn app(authenticator: Arc<dyn ApplicationAccessAuthenticator>) -> Router {
     async fn echo_run(
         Path(thread): Path<String>,
         resolved: Option<axum::Extension<awaken_tenancy::ResolvedResourceId>>,
+        presented: Option<axum::Extension<awaken_tenancy::PresentedThreadId>>,
         agent: Option<axum::Extension<awaken_tenancy::ResolvedAgentId>>,
         workspace: Option<axum::Extension<awaken_tenancy::WorkspaceScope>>,
         Json(body): Json<Value>,
@@ -88,6 +89,7 @@ fn app(authenticator: Arc<dyn ApplicationAccessAuthenticator>) -> Router {
         Json(json!({
             "thread": thread,
             "resolved": resolved.map(|axum::Extension(value)| value.0),
+            "presented": presented.map(|axum::Extension(value)| value.0),
             "agent": agent.map(|axum::Extension(value)| value.0),
             "workspace": workspace.map(|axum::Extension(value)| value.0),
             "body": body,
@@ -104,10 +106,12 @@ fn app(authenticator: Arc<dyn ApplicationAccessAuthenticator>) -> Router {
     }
     async fn echo_ag_ui(
         resolved: Option<axum::Extension<awaken_tenancy::ResolvedResourceId>>,
+        presented: Option<axum::Extension<awaken_tenancy::PresentedThreadId>>,
         Json(body): Json<Value>,
     ) -> Json<Value> {
         Json(json!({
             "resolved": resolved.map(|axum::Extension(value)| value.0),
+            "presented": presented.map(|axum::Extension(value)| value.0),
             "body": body,
         }))
     }
@@ -148,14 +152,19 @@ async fn json_body(response: axum::response::Response) -> Value {
 /// operation permission (C3), exact external-thread binding (C4), matching
 /// path/body thread (C5), and matching frozen Agent (C6) gate the sole effects:
 /// dispatch to the bound Managed Session (E1) or fail before dispatch (E2).
-/// Decision rules covered here: R1 all causes true -> E1 with exact rewrite;
-/// R2 C1 false -> 401/E2. Later tests cover R3-R7 for each other false cause.
+/// Decision rules covered here: R1 all causes true -> E1 with exact rewrite and
+/// a separate AG-UI presentation-only alias; R2 C1 false -> 401/E2. AI SDK
+/// and history GET need only the resolved Session and do not receive an unused
+/// alias. Later tests cover R3-R7 for each rejected cause.
 #[tokio::test]
 async fn exact_binding_rewrites_to_the_existing_managed_session() {
     let token = "valid-application-token"; // awaken-allow: secret -- inert test fixture
     let authenticator = authenticator(
         token,
-        grant(&["ai-sdk"], &["thread.run", "thread.messages.read"]),
+        grant(
+            &["ai-sdk", "ag-ui"],
+            &["thread.run", "thread.messages.read"],
+        ),
     );
     let router = app(authenticator);
 
@@ -173,11 +182,42 @@ async fn exact_binding_rewrites_to_the_existing_managed_session() {
     let body = json_body(response).await;
     assert_eq!(body["thread"], "customer-thread");
     assert_eq!(body["resolved"], "sesn_existing");
+    assert!(body["presented"].is_null());
     assert_eq!(body["body"]["threadId"], "sesn_existing");
     assert_eq!(body["body"]["agentId"], "support");
     assert_eq!(body["agent"], "support");
     assert_eq!(body["workspace"], "ws-1");
     assert!(!body["resolved"].as_str().unwrap().starts_with("app_"));
+
+    let ag_ui = router
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/v1/ag-ui",
+            Some(token),
+            json!({ "threadId": "customer-thread", "runId": "run-1", "messages": [] }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ag_ui.status(), StatusCode::OK);
+    let ag_ui = json_body(ag_ui).await;
+    assert_eq!(ag_ui["resolved"], "sesn_existing");
+    assert_eq!(ag_ui["presented"], "customer-thread");
+    assert_eq!(ag_ui["body"]["threadId"], "sesn_existing");
+
+    let history = router
+        .clone()
+        .oneshot(request(
+            "GET",
+            "/v1/ag-ui/threads/customer-thread/messages",
+            Some(token),
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(history.status(), StatusCode::OK);
+    let history = json_body(history).await;
+    assert_eq!(history["resolved"], "sesn_existing");
 
     let missing = router
         .clone()

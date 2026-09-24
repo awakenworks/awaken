@@ -932,11 +932,16 @@ pub fn build_vision_router() -> Router {
 
 /// A router with a client-executed tool `submit_answer` (the custom-tool e2e).
 pub fn build_custom_router() -> Router {
+    build_custom_router_and_host().0
+}
+
+/// The same custom-tool scenario with its owning Host for scope-aware tests.
+pub fn build_custom_router_and_host() -> (Router, Arc<SharedHost>) {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
     let (model, model_ref) = scenario_model(Arc::new(CustomToolModel), "custom");
     let host =
         resource_host(model, model_ref).map_host(|host| host.with_client_tools(client_tools));
-    mount(host)
+    build_router_and_host_from(host)
 }
 
 /// A router whose agent activates the tool state machine (the state-machine e2e).

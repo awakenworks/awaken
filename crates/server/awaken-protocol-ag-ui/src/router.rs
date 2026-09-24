@@ -28,7 +28,7 @@ use awaken_session_application_contract::{
     RunApplicationError, RunResume, StepOutcome, paginate_history,
 };
 use awaken_session_error_contract::RunErrorKind;
-use awaken_tenancy::{ResolvedAgentId, ResolvedResourceId, WorkspaceScope};
+use awaken_tenancy::{PresentedThreadId, ResolvedAgentId, ResolvedResourceId, WorkspaceScope};
 
 use crate::encoder::{AgUiEncoder, encode_history, encode_step};
 use crate::request::{ToolResultInput, process};
@@ -42,6 +42,11 @@ type RuntimeState = (Runtime, RunMode);
 enum RunMode {
     Local,
     OwnerScoped(ScopedRuntime),
+}
+
+struct ThreadIds {
+    runtime: String,
+    presented: String,
 }
 
 /// A JSON body extractor for the AG-UI routes. On a decode failure (malformed
@@ -126,6 +131,7 @@ async fn thread_messages(
 async fn run_agent(
     State((rt, mode)): State<RuntimeState>,
     resolved_agent: Option<Extension<ResolvedAgentId>>,
+    presented_thread: Option<Extension<PresentedThreadId>>,
     Extension(owner): Extension<WorkspaceScope>,
     AgUiJson(input): AgUiJson<RunAgentInput>,
 ) -> Response {
@@ -135,6 +141,7 @@ async fn run_agent(
         input,
         resolved_agent.map(|Extension(agent)| agent.0),
         owner.0,
+        presented_thread.map(|Extension(thread)| thread.0),
     )
     .await
 }
@@ -143,6 +150,7 @@ async fn run_agent_scoped(
     State((rt, mode)): State<RuntimeState>,
     Path(agent_id): Path<String>,
     resolved_agent: Option<Extension<ResolvedAgentId>>,
+    presented_thread: Option<Extension<PresentedThreadId>>,
     Extension(owner): Extension<WorkspaceScope>,
     AgUiJson(input): AgUiJson<RunAgentInput>,
 ) -> Response {
@@ -156,6 +164,7 @@ async fn run_agent_scoped(
                 .unwrap_or(agent_id),
         ),
         owner.0,
+        presented_thread.map(|Extension(thread)| thread.0),
     )
     .await
 }
@@ -166,6 +175,7 @@ async fn run(
     input: RunAgentInput,
     agent_id: Option<String>,
     owner_scope: String,
+    presented_thread: Option<String>,
 ) -> Response {
     let peek = input
         .thread_id
@@ -182,12 +192,19 @@ async fn run(
                     .map(str::trim)
                     .filter(|id| !id.is_empty())
                     .unwrap_or("unknown-run");
-                return sse_error(thread, error_run, error);
+                return sse_error(
+                    presented_thread.as_deref().unwrap_or(thread),
+                    error_run,
+                    error,
+                );
             }
         },
         None => HashSet::new(),
     };
-    let error_thread = peek.clone().unwrap_or_else(|| "unknown-thread".into());
+    let error_thread = presented_thread
+        .clone()
+        .or_else(|| peek.clone())
+        .unwrap_or_else(|| "unknown-thread".into());
     let error_run = input
         .run_id
         .as_deref()
@@ -207,6 +224,7 @@ async fn run(
         }
     };
     let thread = processed.thread_id.clone();
+    let wire_thread = presented_thread.unwrap_or_else(|| thread.clone());
     let run_id = processed.run_id.clone();
 
     if processed.messages.is_empty() {
@@ -221,15 +239,18 @@ async fn run(
         )
         .await
         {
-            Ok(outcome) => sse_response(encode_step(&outcome, &thread, &run_id)),
-            Err(err) => sse_error(&thread, &run_id, err),
+            Ok(outcome) => sse_response(encode_step(&outcome, &wire_thread, &run_id)),
+            Err(err) => sse_error(&wire_thread, &run_id, err),
         }
     } else {
         // A fresh turn: stream the engine's live progress, then the committed tail.
         stream_turn(
             rt,
             mode,
-            thread,
+            ThreadIds {
+                runtime: thread,
+                presented: wire_thread,
+            },
             run_id,
             processed.agent_id,
             processed.messages,
@@ -246,12 +267,16 @@ async fn run(
 fn stream_turn(
     rt: Runtime,
     mode: RunMode,
-    thread: String,
+    threads: ThreadIds,
     run_id: String,
     agent: Option<String>,
     messages: Vec<Message>,
     owner_scope: String,
 ) -> Response {
+    let ThreadIds {
+        runtime: thread,
+        presented: wire_thread,
+    } = threads;
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
         let (live_tx, mut live_rx) = mpsc::unbounded_channel::<AgentEvent>();
@@ -263,7 +288,7 @@ fn stream_turn(
         // One transcoder instance for both tiers (ADR-0058 Axis 9): live `delta()`
         // for increments + `fact(RunStarted)` to open the stream. The authoritative
         // the end comes from the committed tail, not the live channel (G10/G13).
-        let mut transcoder = AgUiEncoder::new(thread.clone(), run_id.clone());
+        let mut transcoder = AgUiEncoder::new(wire_thread, run_id.clone());
         let close_thread = thread.clone();
         // A handle kept out of the turn task so a client disconnect can cancel it.
         let rt_cancel = rt.clone();
