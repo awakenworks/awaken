@@ -173,3 +173,23 @@ cross-process and rich-topology physical availability gaps remain explicit
 rather than being hidden behind a successful receipt. Formal evidence states
 the bounds and assumptions; production physical conformance and downstream
 end-to-end acceptance are still required.
+
+## Amendment 2026-09-25: profiled release joins terminal cleanup
+
+The existing Workspace-scoped profiled Session release route is used by Flow to
+close a failed WorkUnit before it may retry. Its no-publication branch previously
+called the public idle-only archive, so an `ActivationFailed` or `Terminated`
+Session with unverified cleanup retried forever with “only an idle Session may
+be archived.” This was a transport-adapter mismatch, not permission to force
+terminate a live Session.
+
+That same profiled route now reads the durable Session root only to select the
+existing application command. An already-terminal root joins
+`release_terminal_session` and requires its verified cleanup receipt. An idle
+root still passes idle-only archive admission and then joins the same terminal
+cleanup; every other live state remains rejected. The application rechecks the
+root under its canonical CAS, and the route retains its existing exact
+Workspace ownership authorization. The ordinary public archive remains
+idle-only. No new route, cleanup queue, status authority, credential, or Run
+permission is introduced; this is the existing product release contract
+reusing the terminal-only Session owner.
