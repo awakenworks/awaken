@@ -16,5 +16,5 @@ pub mod router;
 pub mod types;
 
 pub use encoder::AgUiEncoder;
-pub use router::router;
+pub use router::{router, router_with_owner_scope};
 pub use types::{AgUiEvent, RunAgentInput};
