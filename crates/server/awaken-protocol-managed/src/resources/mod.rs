@@ -62,10 +62,6 @@ pub struct ResourcesRouterInput {
 /// independent aggregates and routes; this function only joins their HTTP routes.
 pub fn resources_router(input: ResourcesRouterInput) -> Router {
     files_router(input.files.clone())
-        .merge(
-            awaken_protocol_awaken::file_output_capture_router(files::read_output_capture)
-                .with_state(input.files),
-        )
         .merge(memory_stores_router(input.memories, input.memory_stores))
         .merge(repositories_router(input.repositories))
         .merge(skills_router(input.skills, input.purge))
@@ -100,7 +96,7 @@ mod tests {
     async fn one_resources_router_mounts_each_public_family_once() {
         // Cause/effect route table: with one trusted Workspace stamp, R1 File
         // path -> File adapter; R2 Memory path -> Memory adapter; R3 Skill path ->
-        // Skill adapter; R4 unrelated path -> 404. One merge point prevents
+        // Skill adapter; R4 removed extension -> 404. One merge point prevents
         // per-process route-family drift.
         use tower::ServiceExt;
 
@@ -133,7 +129,6 @@ mod tests {
         });
         for (path, rule) in [
             ("/v1/files", "R1"),
-            ("/v1/awaken/files/output-capture?scope_id=session", "R4"),
             ("/v1/memory_stores", "R2"),
             ("/v1/skills", "R3"),
         ] {
@@ -154,7 +149,7 @@ mod tests {
         let response = router
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/v1/not-a-resource")
+                    .uri("/v1/awaken/files/output-capture?scope_id=session")
                     .body(axum::body::Body::empty())
                     .unwrap(),
             )
