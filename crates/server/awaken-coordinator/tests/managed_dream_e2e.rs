@@ -3,7 +3,7 @@
 mod support;
 
 use awaken_protocol_managed::test_support::DurableFact;
-use awaken_scenario_host::build_dream_router;
+use awaken_scenario_host::build_dream_router_and_host;
 use awaken_service_lifecycle::run_composed_async_test;
 use axum::Router;
 use axum::body::Body;
@@ -78,8 +78,10 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
     // lifecycle supervisor reaches committed aggregate Idle (bounded yields,
     // never a request-local executor or timing sleep);
     // C2 ordinary MemoryStore + selected Session -> E2 asynchronous Dream;
-    // C3 frozen transcript export -> E3 transient JSONL Files are mounted and
-    // removed after execution; C4 consolidation execution -> E4 ordinary archived
+    // C3 frozen transcript export -> E3 JSONL bytes reach the auxiliary Session
+    // through InlineBytes and no transcript File record is created, including
+    // a tombstone hidden from the public Files list;
+    // C4 consolidation execution -> E4 ordinary archived
     // Session + an independent output MemoryStore reached through a real write
     // tool call; C5
     // source/output separation -> E5 source stays unchanged;
@@ -95,7 +97,7 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
     // Runtime authority.
     // Route/unit suites own invalid, default-basic, and nonterminal alternatives.
     run_composed_async_test(|| async {
-        let app = build_dream_router();
+        let (app, host) = build_dream_router_and_host();
 
         let session = ok(
             &app,
@@ -292,7 +294,18 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
             .cloned();
         assert!(
             transcript.is_none(),
-            "transient transcript Files must be deleted after terminal cleanup"
+            "Dream transcript inputs must not remain as workspace Files"
+        );
+        let all_records = host
+            .file_catalog()
+            .list_files_including_deleted("default", None)
+            .await
+            .expect("Dream File catalog remains readable");
+        assert!(
+            all_records
+                .iter()
+                .all(|file| file.filename != format!("{session_id}.jsonl")),
+            "Dream must not create a duplicate transcript File, even if later deleted"
         );
     });
 }

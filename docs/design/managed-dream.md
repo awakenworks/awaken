@@ -11,7 +11,7 @@ and runs an ordinary auxiliary Agent against a new, independent MemoryStore.
 POST /v1/dreams
   -> durable DreamProcess
   -> atomic source-memory snapshot + independent output clone
-  -> one Files JSONL artifact per selected Session
+  -> one JSONL InlineBytes mount per selected Session
   -> ordinary Managed Session and Run
        /mnt/dream/input-memory                    read-only
        /mnt/dream/session-transcripts/*.jsonl     read-only
@@ -48,7 +48,7 @@ path.
 | Managed Session/Event application | `awaken-protocol-managed::ManagedState` | validates Sessions, reads committed Messages, creates and archives the auxiliary Session |
 | ordinary Agent execution | `awaken-session-executor::SessionRuntime` | executes the Dream Agent through the normal Run path |
 | Memory file truth | `awaken-resource-contract::MemoryRepository` | reads and commits path-addressed Memory content |
-| Files data plane | `awaken-coordinator::SharedHost` | stores transient JSONL artifacts using the canonical File record and purge lifecycle |
+| Files data plane | `awaken-resource-contract::FileApplicationService` | deletes transcript Files still referenced by older durable Dream records |
 | Resource catalog | `ResourceCatalog` | validates source ownership |
 | Resources application | `MemoryStoreApplicationService` | is the sole output-store identity, lifecycle, retention, and purge command path |
 | mount realization | provisioning and sandbox providers | realizes InlineBytes and MemoryStore inputs for the ordinary Session |
@@ -102,7 +102,7 @@ BuiltInDreamAgent
     |---- MemoryStoreApplicationService: output identity/lifecycle fence
     |---- MemoryRepository.snapshot_heads: frozen source and independent clone
     |---- ManagedState: committed transcript + ordinary auxiliary Session
-    |---- SharedHost Files: transient JSONL evidence
+    |---- FileApplicationService: legacy transcript File cleanup only
     `---- provisioning: RO input/transcripts + strict write-through output
                     |
                     v
@@ -125,7 +125,7 @@ struct DreamRequest {
 struct DreamPreparation {
     result_memory_store_id: String,
     session_id: String,
-    transcript_file_ids: Vec<String>,
+    transcript_file_ids: Vec<String>, // legacy cleanup; new preparations use []
 }
 ```
 
@@ -253,14 +253,15 @@ tool-use inputs and tool-result payloads are retained in order; uncommitted
 streaming deltas and provider-hidden data are not part of this read model and
 are not exported. An empty Session produces an empty JSONL file.
 
-Exports are canonical transient Files artifacts (`application/x-ndjson`) and are mounted
-as `InlineBytes` under `/mnt/dream/session-transcripts`. They are not injected
-into the initial model context, so the Agent can `Glob`, `Grep`, and `Read` only
-the evidence it needs. Their File ids are stored with the durable preparation and
-deleted through the ordinary File lifecycle after terminal/cancel cleanup.
-`cleanup_pending` is the only Dream retry authority: transient cleanup failure
-re-enters the same idempotent cleanup path in-process, while a crash makes
-startup reattach that same path. There is no second receipt or cleanup queue.
+Exports are mounted directly as `InlineBytes` under
+`/mnt/dream/session-transcripts`. They are not injected into the initial model
+context, so the Agent can `Glob`, `Grep`, and `Read` only the evidence it needs.
+New Dreams create no transcript File record or duplicate blob. Older durable
+preparations may still contain `transcript_file_ids`; terminal/cancel cleanup
+deletes those Files through the ordinary File lifecycle. `cleanup_pending` is
+the only Dream retry authority: a transient cleanup failure re-enters the same
+idempotent path in-process, while a crash reattaches at startup. There is no
+second receipt or cleanup queue.
 
 ## Mount and Agent capability contract
 
@@ -310,7 +311,7 @@ worker
   -> reclaim an uncommitted partial clone, or reuse an existing prepared result
   -> atomically snapshot source; clone snapshot and result
   -> Resources application creates an active result for the ordinary Session binding
-  -> export JSONL Files
+  -> encode selected committed Session histories as JSONL bytes
   -> create/realize ordinary auxiliary Session with strict mounts
   -> persist output and Session references
   -> execute one idempotently identified ordinary user event
@@ -318,7 +319,7 @@ worker
   -> durably record terminal outcome with cleanup_pending
   -> force-archive auxiliary Session; require its exact terminal-cleanup receipt
   -> if a remote Worker still owns cleanup, retain cleanup_pending and retry
-  -> after the Session receipt, purge hidden snapshot and JSONL Files
+  -> after the Session receipt, purge hidden snapshot and any legacy transcript Files
   -> clear cleanup_pending; only now publish Completed or Failed
 ```
 
@@ -362,7 +363,7 @@ late worker completion cannot overwrite `canceled`.
 
 Archive is terminal-only and idempotent. It sets `archived_at` without changing
 status and does not delete the output MemoryStore or auxiliary Session history.
-Transient JSONL Files have already been purged at the terminal cleanup boundary.
+Any legacy transcript Files have already been purged at the terminal cleanup boundary.
 
 ## Failure and consistency boundaries
 
@@ -373,7 +374,8 @@ Transient JSONL Files have already been purged at the terminal cleanup boundary.
 - The same atomic Memory snapshot initializes both frozen input and result.
 - A result mount is write-through or the Agent never starts.
 - Failed/canceled Dreams retain a result that was successfully prepared and all writes already committed through it.
-- Dream state, Memory content, File bytes, and Session events each have one non-overlapping authority.
+- Dream state, Memory content, and Session events each have one non-overlapping authority;
+  any legacy transcript File remains owned by the ordinary File lifecycle.
 - SQLite/Postgres transitions use exact-version CAS; persistence failure or a concurrent replica never creates a second in-memory authority.
 - Workspace ownership is checked without revealing cross-Workspace resources.
 
@@ -415,7 +417,7 @@ oracle.
 | MEM-1 | snapshot then source update | frozen heads unchanged and path ordered; `snapshot_heads_conformance` |
 | MNT-1 | strict output with copy-only mounter | teardown and fail before Agent launch; `write_through_required_rejects_copy_before_agent_launch` |
 | JSONL-1 | committed text/tool-use/tool-result/empty history | exact ordered payload or empty file; `jsonl_export_preserves_every_committed_message_and_tool_payload_in_order` |
-| E2E-1 | Agent + Session + Events + Files + MemoryStore + Dream | one runtime/data plane, real restricted write tool call, transient JSONL cleanup, ordinary auxiliary Session, independent output/source; `agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane` |
+| E2E-1 | Agent + Session + Events + Files + MemoryStore + Dream | one runtime/data plane, real restricted write tool call, no transcript File record even among tombstones, ordinary auxiliary Session, independent output/source; `agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane` |
 | E2E-2 | official TypeScript SDK + Session + Files + MemoryStore + Dream | typed SDK creation/poll/list/cancel/archive across one process boundary; `managed_dream_e2e.ts` |
 
 ### P0-P6 completion evidence
@@ -429,7 +431,7 @@ cross-module acceptance design.
 |---|---|---|
 | P0 | current official SDK can create and decode a typed asynchronous Dream with the Managed and Dreaming capabilities | SDK `0.115.0`; `managed_dream_e2e.ts`; SDK-surface conformance gate |
 | P1 | one frozen source and selected committed Sessions produce a terminal Dream with stable output and auxiliary Session references | `DreamApplication`; `BuiltInDreamAgent`; Rust and TypeScript Dream E2Es |
-| P2 | each committed transcript is exported as valid JSONL, remains file input read on demand during execution, and is purged afterward | `SessionTranscriptJsonlExporter`; `jsonl_export_preserves_every_committed_message_and_tool_payload_in_order`; transient Files assertion |
+| P2 | each committed transcript is encoded as valid JSONL and mounted as InlineBytes for on-demand reads without a new File record | `SessionTranscriptJsonlExporter`; `jsonl_export_preserves_every_committed_message_and_tool_payload_in_order`; Dream E2E Files assertion |
 | P3 | input Dream store is read-only and unchanged; output Dream store is a distinct clone and the sole strict write-through target | `MemoryStoreContentSnapshot`; `WriteThroughRequired`; mount decision-table tests; both cross-module E2Es |
 | P4 | Dream execution is an ordinary restricted auxiliary Session, not an alternate Agent state | `ManagedState`; `BuiltInDreamAgent`; auxiliary Session origin/terminal assertions |
 | P5 | retrieve/list/filter/cancel/archive, durable recovery, Workspace selection, automatic policy, and shared periodic scheduling obey their state rules | protocol cause/decision-table tests; SQLite recovery tests; policy tests |
