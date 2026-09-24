@@ -1603,7 +1603,7 @@ impl SharedHost {
         let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(HostWorkerResolver {
             host: Arc::downgrade(self),
         });
-        let config = DispatchServiceConfig::default();
+        let config = self.deployment.dispatch_service_config();
         let concurrency = self.dispatch_pool_sizing.slots().get();
         // On the Postgres backend with `AWAKEN_DISPATCH_WAKE=pg-notify` or `=nats`,
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool

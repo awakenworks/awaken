@@ -238,6 +238,26 @@ Durable behavior is additive around the queue-less driver:
 - thread ownership is the durable input serialization boundary;
 - committed runtime facts remain the authoritative state.
 
+For PostgreSQL, broad local, compatible, and placed claims share one bounded,
+read-only candidate discovery. It orders an initial bounded page by the existing
+physical-slot, control/recovery, priority, and creation rules, then evaluates
+Thread and placement eligibility for that page. If it finds no winner, one
+streamed scan checks the complete remaining candidate order before returning
+`None`. The existing exact claim transaction still rechecks every authority
+condition and is the only operation that mints an epoch.
+
+`runnable_depth` remains an exact, on-demand operations query. By default the
+process-level service, pool, or coordinator-only reconciler samples it once at
+startup and then on a nominal 60-second cadence; an executing Run never waits
+for this count. A hosted composition that owns one scaler observation may
+disable this optional open sampler through `DeploymentConfig` while reading the
+same Dispatch authority. A failed sample does not affect claim or settlement.
+`dispatch_poll_interval_ms` configures the lost-wake
+fallback for local pools and coordinator-only reconciliation (1–60,000 ms;
+omission retains the current 500 ms default). The same interval also paces
+outbox relay and lease-expiry discovery, so deployments must choose it against
+their recovery-latency objective rather than treating it as a throughput knob.
+
 ## Simple Design And DDD Evaluation
 
 This design satisfies the simple-design target only while it keeps the following

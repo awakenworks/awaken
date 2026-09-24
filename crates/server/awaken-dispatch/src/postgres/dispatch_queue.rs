@@ -530,79 +530,8 @@ impl DispatchQueue for PostgresDispatchStore {
         lease_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let p = NS;
-        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
-        // Candidate discovery is deliberately read-only. The exact transition
-        // below is the sole claim algorithm and always acquires the per-Thread
-        // advisory lock before its row lock. Locking a candidate row here would
-        // invert that order against exact claimers and can deadlock active-active
-        // Postgres schedulers.
-        let local_eligible = "(d.cancel_requested = 1 OR (\
-            COALESCE(d.request #>> '{placement,location}', 'remote_preferred') \
-                <> 'remote_required' AND \
-            jsonb_array_length(COALESCE(\
-                d.request #> '{placement,required_credentials}', '[]'::jsonb)) = 0))";
-        // ADR-0022 single writer is an open-Run fence: an Awaiting Run keeps
-        // ownership until its exact reply/cancel resumes that same row. V0012
-        // remains the hard backstop for concurrent transitions into Running.
-        let thread_available = thread_available_for_claim(p);
-        let candidates = sqlx::query(&format!(
-            "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch, d.status FROM {p}_dispatch d WHERE \
-             ((d.status IN ('reserved', 'reservation_running') AND \
-               d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
-             (d.status = 'running' AND d.lease_until IS NOT NULL AND \
-               d.lease_until < $1 AND {local_eligible}) OR \
-             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
-               SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND \
-                 (pe.available_at IS NULL OR pe.available_at <= $1))) AND \
-               {thread_available} AND {local_eligible}) OR \
-             (d.status = 'pending' AND {thread_available} AND {local_eligible})) \
-             AND (d.retry_not_before IS NULL OR d.retry_not_before <= $1) \
-             ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
-               CASE WHEN d.cancel_requested = 1 THEN 0 \
-               WHEN d.status IN ('reserved', 'reservation_running') THEN 1 \
-               WHEN d.status = 'running' THEN 2 \
-               WHEN d.status = 'awaiting' THEN 3 ELSE 4 END, \
-               d.priority DESC, d.created_at",
-            no_running_peer(p)
-        ))
-        .bind(crate::clock::db_millis(now_ms))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_error)?;
-        for candidate in candidates {
-            let run_id: String = candidate.try_get("run_id").map_err(store_error)?;
-            let Json(request): Json<RunDispatch> =
-                candidate.try_get("request").map_err(store_error)?;
-            let cancellation_requested: i64 =
-                candidate.try_get("cancel_requested").map_err(store_error)?;
-            let lease_epoch: i64 = candidate.try_get("lease_epoch").map_err(store_error)?;
-            let status: String = candidate.try_get("status").map_err(store_error)?;
-            let terminal_resolution = matches!(status.as_str(), "reserved" | "reservation_running");
-            let operation =
-                claim_credential_operation(terminal_resolution, cancellation_requested != 0);
-            let admitted = next_claim_epoch(lease_epoch).is_ok_and(|epoch| {
-                can_admit_claim_credentials(&request, capabilities, epoch, now_ms, operation)
-            });
-            if !admitted {
-                continue;
-            }
-            let mut tx = self.pool.begin().await.map_err(store_error)?;
-            let claimed = claim_exact_transaction(
-                &mut tx,
-                &RunId(run_id),
-                owner,
-                lease_ms,
-                None,
-                capabilities,
-            )
-            .await?;
-            tx.commit().await.map_err(store_error)?;
-            if claimed.is_some() {
-                return Ok(claimed);
-            }
-        }
-        Ok(None)
+        self.claim_discovered(owner, lease_ms, capabilities, CandidateAudience::Local)
+            .await
     }
 
     async fn claim_compatible(
@@ -610,79 +539,14 @@ impl DispatchQueue for PostgresDispatchStore {
         worker: &WorkerSnapshot,
         lease_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let p = NS;
-        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
-        let thread_available = thread_available_for_claim(p);
-        let rows = sqlx::query(&format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
-             ((d.status IN ('reserved', 'reservation_running') AND \
-               d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
-             (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
-             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
-               WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
-               ) AND {thread_available}) OR \
-             (d.status = 'pending' AND {thread_available})) \
-             AND (d.retry_not_before IS NULL OR d.retry_not_before <= $1) \
-             ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
-                      CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
-                      d.priority DESC, d.created_at",
-            no_running_peer(p)
-        ))
-        .bind(crate::clock::db_millis(now_ms))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_error)?;
         let capabilities = installed_worker_credential_capabilities(worker)?;
-        let mut selected = Vec::new();
-        for row in rows {
-            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
-            let sandbox: Option<String> = row.try_get("sandbox").map_err(store_error)?;
-            let previous: Option<Json<WorkerAssignment>> =
-                row.try_get("worker_assignment").map_err(store_error)?;
-            let status: String = row.try_get("status").map_err(store_error)?;
-            let cancellation_requested: i64 =
-                row.try_get("cancel_requested").map_err(store_error)?;
-            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
-            let next_epoch = next_claim_epoch(lease_epoch)?;
-            let credentials_admitted = can_admit_claim_credentials(
-                &request,
-                &capabilities,
-                next_epoch,
-                now_ms,
-                claim_credential_operation(false, cancellation_requested != 0),
-            );
-            if matches!(status.as_str(), "reserved" | "reservation_running")
-                || (cancellation_requested != 0 && credentials_admitted)
-                || (can_assign(
-                    worker,
-                    &request.placement,
-                    previous.as_ref().map(|value| &value.0),
-                    sandbox.is_some(),
-                    now_ms,
-                )
-                .is_ok()
-                    && credentials_admitted)
-            {
-                selected.push(RunId(row.try_get("run_id").map_err(store_error)?));
-            }
-        }
-        for run_id in selected {
-            let mut tx = self.pool.begin().await.map_err(store_error)?;
-            let claimed = claim_exact_transaction(
-                &mut tx,
-                &run_id,
-                &worker.identity.lease_owner(),
-                lease_ms,
-                Some(worker),
-                &capabilities,
-            )
-            .await?;
-            tx.commit().await.map_err(store_error)?;
-            if claimed.is_some() {
-                return Ok(claimed);
-            }
-        }
-        Ok(None)
+        self.claim_discovered(
+            &worker.identity.lease_owner(),
+            lease_ms,
+            &capabilities,
+            CandidateAudience::Compatible(worker),
+        )
+        .await
     }
 
     async fn claim_run(
@@ -1707,82 +1571,18 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         policy: std::sync::Arc<dyn PlacementPolicy>,
         lease_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let p = NS;
-        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
-        let thread_available = thread_available_for_claim(p);
-        let rows = sqlx::query(&format!(
-            "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
-             ((d.status IN ('reserved', 'reservation_running') AND \
-               d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
-             (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
-             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
-               WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
-               ) AND {thread_available}) OR \
-             (d.status = 'pending' AND {thread_available})) \
-             AND (d.retry_not_before IS NULL OR d.retry_not_before <= $1) \
-             ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
-                      CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
-                      d.priority DESC, d.created_at",
-            no_running_peer(p)
-        ))
-        .bind(crate::clock::db_millis(now_ms))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_error)?;
         let capabilities = installed_worker_credential_capabilities(requester)?;
-        let mut selected = Vec::new();
-        for row in rows {
-            let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
-            let sandbox: Option<String> = row.try_get("sandbox").map_err(store_error)?;
-            let previous: Option<Json<WorkerAssignment>> =
-                row.try_get("worker_assignment").map_err(store_error)?;
-            let status: String = row.try_get("status").map_err(store_error)?;
-            let cancellation_requested: i64 =
-                row.try_get("cancel_requested").map_err(store_error)?;
-            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
-            let next_epoch = next_claim_epoch(lease_epoch)?;
-            let credentials_admitted = can_admit_claim_credentials(
-                &request,
-                &capabilities,
-                next_epoch,
-                now_ms,
-                claim_credential_operation(false, cancellation_requested != 0),
-            );
-            if matches!(status.as_str(), "reserved" | "reservation_running")
-                || (cancellation_requested != 0 && credentials_admitted)
-                || (policy_selects_requester(
-                    &request,
-                    policy.as_ref(),
-                    DispatchPlacement {
-                        recovered: status == "running",
-                        previous: previous.as_ref().map(|value| &value.0),
-                        sandbox_bound: sandbox.is_some(),
-                        requester: &requester.identity,
-                        workers: &workers,
-                        now_ms,
-                    },
-                )? && credentials_admitted)
-            {
-                selected.push(RunId(row.try_get("run_id").map_err(store_error)?));
-            }
-        }
-        for run_id in selected {
-            let mut tx = self.pool.begin().await.map_err(store_error)?;
-            let claimed = claim_exact_transaction(
-                &mut tx,
-                &run_id,
-                &requester.identity.lease_owner(),
-                lease_ms,
-                Some(requester),
-                &capabilities,
-            )
-            .await?;
-            tx.commit().await.map_err(store_error)?;
-            if claimed.is_some() {
-                return Ok(claimed);
-            }
-        }
-        Ok(None)
+        self.claim_discovered(
+            &requester.identity.lease_owner(),
+            lease_ms,
+            &capabilities,
+            CandidateAudience::Placed {
+                requester,
+                workers: &workers,
+                policy: policy.as_ref(),
+            },
+        )
+        .await
     }
 
     async fn claim_for_terminal_recovery(

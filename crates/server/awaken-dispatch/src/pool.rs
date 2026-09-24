@@ -26,6 +26,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_runtime_contract::metrics::MetricsRecorder;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -37,7 +38,8 @@ use crate::clock::Clock;
 use crate::dispatch::{Claimed, PendingInput};
 use crate::execution_capacity::ExecutionCapacity;
 use crate::service::{
-    DispatchServiceConfig, LocalMaintenanceSchedule, wait_for_terminal_reconciliation,
+    DispatchServiceConfig, LocalMaintenanceSchedule, spawn_dispatch_depth_sampler,
+    wait_for_terminal_reconciliation,
 };
 use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::{DispatchWorker, renew_claim_while_active};
@@ -142,7 +144,18 @@ pub struct DispatchPool<S> {
     drains: Vec<JoinHandle<()>>,
     wake_coordinator: JoinHandle<()>,
     reconciler: JoinHandle<()>,
+    depth_sampler: Option<JoinHandle<()>>,
     admission: Arc<PoolAdmission>,
+}
+
+fn spawn_observed_depth<S: ControlDispatch + 'static>(
+    store: Arc<S>,
+    shutdown: CancellationToken,
+    enabled: bool,
+) -> Option<JoinHandle<()>> {
+    let metrics = Arc::new(awaken_observability::OtelMetricsRecorder::new());
+    let report = Arc::new(move |depth| metrics.record_dispatch_queue_depth(depth));
+    spawn_dispatch_depth_sampler(store, report, shutdown, enabled)
 }
 
 /// Reconciles durable Dispatch state with already committed facts when a
@@ -157,6 +170,7 @@ pub struct DispatchPool<S> {
 pub struct DispatchReconciler {
     shutdown: CancellationToken,
     task: Option<JoinHandle<()>>,
+    depth_sampler: Option<JoinHandle<()>>,
 }
 
 impl DispatchReconciler {
@@ -169,6 +183,11 @@ impl DispatchReconciler {
         completion: Option<Arc<dyn CompletionSink>>,
     ) -> Self {
         let shutdown = CancellationToken::new();
+        let depth_sampler = spawn_observed_depth(
+            store.clone(),
+            shutdown.clone(),
+            config.sample_dispatch_queue_depth,
+        );
         let task = tokio::spawn(reconciliation_loop(ReconciliationContext {
             store,
             clock,
@@ -182,6 +201,7 @@ impl DispatchReconciler {
         Self {
             shutdown,
             task: Some(task),
+            depth_sampler,
         }
     }
 
@@ -189,6 +209,9 @@ impl DispatchReconciler {
         self.shutdown.cancel();
         if let Some(task) = self.task.take() {
             let _ = task.await;
+        }
+        if let Some(sampler) = self.depth_sampler.take() {
+            let _ = sampler.await;
         }
     }
 }
@@ -556,6 +579,11 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     ) -> Self {
         let owner = owner.into();
         let shutdown = CancellationToken::new();
+        let depth_sampler = spawn_observed_depth(
+            store.clone(),
+            shutdown.clone(),
+            config.sample_dispatch_queue_depth,
+        );
         let admission = Arc::new(PoolAdmission::new(config.max_attempts));
         let reconciliation_wake = Arc::new(LocalWakeSignal::new());
         let drains = (0..concurrency.max(1))
@@ -596,6 +624,7 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
             drains,
             wake_coordinator,
             reconciler,
+            depth_sampler,
             admission,
         }
     }
@@ -739,6 +768,9 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
         }
         let _ = self.wake_coordinator.await;
         let _ = self.reconciler.await;
+        if let Some(sampler) = self.depth_sampler {
+            let _ = sampler.await;
+        }
     }
 }
 

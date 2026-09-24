@@ -15,6 +15,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_runtime_contract::resume::ResumeResult;
+use futures_util::TryStreamExt;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;

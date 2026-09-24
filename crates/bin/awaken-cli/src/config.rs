@@ -336,6 +336,13 @@ impl ResolvedDeployment {
             database_url: dispatch_url.clone(),
             postgres_max_connections,
             dispatch_owner,
+            dispatch_poll_interval: file
+                .dispatch_poll_interval_ms
+                .map(std::time::Duration::from_millis)
+                .unwrap_or_else(|| {
+                    awaken_dispatch::DispatchServiceConfig::default().poll_interval
+                }),
+            sample_dispatch_queue_depth: true,
             sandbox_tier: runtime_settings.sandbox_tier,
             sandbox_dir: file.sandbox_dir.clone(),
             sandbox: runtime_settings.sandbox,
@@ -848,6 +855,48 @@ mod tests {
         )
         .expect_err("R3");
         assert!(error.contains("postgres_max_connections"), "R3: {error}");
+    }
+
+    #[test]
+    fn dispatch_fallback_poll_is_resolved_once_and_bounded() {
+        // Causes: C1 TOML value absent/present; C2 present value is zero,
+        // within 1..=60000, or above 60000. Effects: E1 omission retains the
+        // dispatch owner's existing 500ms default; E2 a valid value reaches the
+        // sole DeploymentConfig; E3 either invalid bound fails before startup;
+        // E4 an ordinary CLI process keeps its built-in depth sampler enabled.
+        // Decision table: P1=!C1 -> E1; P2=C1+valid -> E2;
+        // P3=C1+(zero|above maximum) -> E3. Local pool and coordinator-only
+        // reconciler consume the same later deployment projection.
+        let defaulted = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert_eq!(
+            defaulted.runtime.dispatch_poll_interval,
+            awaken_dispatch::DispatchServiceConfig::default().poll_interval,
+            "P1"
+        );
+        assert!(defaulted.runtime.sample_dispatch_queue_depth, "P1/E4");
+        let configured = resolve(
+            toml::from_str("dispatch_poll_interval_ms = 750")
+                .expect("P2 TOML key reaches the existing file schema"),
+            ConfigOverrides::default(),
+        );
+        assert_eq!(
+            configured.runtime.dispatch_poll_interval,
+            std::time::Duration::from_millis(750),
+            "P2"
+        );
+        for invalid in [0, 60_001] {
+            let error = ResolvedDeployment::resolve_file(
+                ConfigOverrides::default(),
+                Some(PathBuf::from("/home/dev")),
+                PathBuf::from("/home/dev/.awaken/config.toml"),
+                FileConfig {
+                    dispatch_poll_interval_ms: Some(invalid),
+                    ..Default::default()
+                },
+            )
+            .expect_err("P3 rejects invalid fallback interval");
+            assert!(error.contains("dispatch_poll_interval_ms"), "P3: {error}");
+        }
     }
 
     #[test]
