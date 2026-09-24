@@ -58,6 +58,9 @@ use transcript_projection::{
 // can still choose a tighter bound with `with_idle_timeout`.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
+mod live_delta;
+use live_delta::{BufferedLiveDelta, LiveDelta};
+
 #[cfg(test)]
 mod default_timeout_tests {
     use super::DEFAULT_IDLE_TIMEOUT;
@@ -275,53 +278,74 @@ impl LlmExecutor for GenaiExecutor {
         let mut tool_sent: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         let deadline = started + self.timeout;
-        let mut progress_deadline = Instant::now() + self.idle_timeout;
+        let mut progress_deadline = started + self.idle_timeout;
+        let mut live = BufferedLiveDelta::default();
 
-        let end = loop {
+        let end: Result<_> = loop {
             // Two independent bounds share the one configured call timeout.
             // The fixed deadline caps the complete reasoning response; the
             // progress deadline ignores transport/no-op activity and requires
             // actual text, reasoning, tool progress, or a terminal event. This
             // prevents provider heartbeats and empty choices from occupying the
             // full reasoning budget while retaining one stream parser/authority.
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let observed_at = Instant::now();
+            let remaining = deadline.saturating_duration_since(observed_at);
             if remaining.is_zero() {
-                return Err(Error::Timeout(
+                break Err(Error::Timeout(
                     "model stream exceeded total timeout".to_string(),
                 ));
             }
-            let progress_remaining = progress_deadline.saturating_duration_since(Instant::now());
+            let progress_remaining = progress_deadline.saturating_duration_since(observed_at);
             if progress_remaining.is_zero() {
-                return Err(Error::Timeout(format!(
+                break Err(Error::Timeout(format!(
                     "model stream stalled: no useful event within {:?}",
                     self.idle_timeout
                 )));
             }
-            let wait = progress_remaining.min(remaining);
+            if live
+                .remaining(observed_at)
+                .is_some_and(|remaining| remaining.is_zero())
+            {
+                live.flush(sink).await;
+                continue;
+            }
+            let wait = live
+                .remaining(observed_at)
+                .map_or(progress_remaining.min(remaining), |live_remaining| {
+                    progress_remaining.min(remaining).min(live_remaining)
+                });
             let event = match tokio::time::timeout(wait, stream.next()).await {
-                Ok(Some(event)) => event,
+                Ok(Some(Ok(event))) => event,
+                Ok(Some(Err(error))) => break Err(classify_genai_error(error)),
                 Ok(None) => {
-                    return Err(Error::Provider(
+                    break Err(Error::Provider(
                         "model stream ended before protocol completion".to_string(),
                     ));
                 }
-                Err(_) if Instant::now() >= deadline => {
-                    return Err(Error::Timeout(
-                        "model stream exceeded total timeout".to_string(),
-                    ));
-                }
                 Err(_) => {
-                    return Err(Error::Timeout(format!(
-                        "model stream stalled: no useful event within {:?}",
-                        self.idle_timeout
-                    )));
+                    let after_wait = Instant::now();
+                    if after_wait >= deadline {
+                        break Err(Error::Timeout(
+                            "model stream exceeded total timeout".to_string(),
+                        ));
+                    }
+                    if after_wait >= progress_deadline {
+                        break Err(Error::Timeout(format!(
+                            "model stream stalled: no useful event within {:?}",
+                            self.idle_timeout
+                        )));
+                    }
+                    live.flush(sink).await;
+                    continue;
                 }
             };
+            let event_at = Instant::now();
             let mut made_progress = false;
-            match event.map_err(classify_genai_error)? {
+            match event {
                 // Live text: forward each chunk as it arrives (valid UTF-8 by type).
                 ChatStreamEvent::Chunk(chunk) if !chunk.content.is_empty() => {
-                    sink.on_text(&chunk.content).await;
+                    live.push(LiveDelta::Text(chunk.content), sink, event_at)
+                        .await;
                     made_progress = true;
                 }
                 // Live tool-call progress: genai hands incremental, string-encoded
@@ -342,8 +366,16 @@ impl LlmExecutor for GenaiExecutor {
                         && cum.len() > *sent
                         && cum.is_char_boundary(*sent)
                     {
-                        sink.on_tool_call_delta(&call.call_id, &call.fn_name, &cum[*sent..])
-                            .await;
+                        live.push(
+                            LiveDelta::Tool {
+                                call_id: call.call_id.clone(),
+                                name: call.fn_name.clone(),
+                                args: cum[*sent..].to_string(),
+                            },
+                            sink,
+                            event_at,
+                        )
+                        .await;
                         *sent = cum.len();
                         made_progress = true;
                     }
@@ -354,7 +386,8 @@ impl LlmExecutor for GenaiExecutor {
                 // The completed form still becomes the committed `Thinking` block.
                 ChatStreamEvent::ReasoningChunk(chunk) => {
                     if !chunk.content.is_empty() {
-                        sink.on_reasoning(&chunk.content).await;
+                        live.push(LiveDelta::Reasoning(chunk.content), sink, event_at)
+                            .await;
                         made_progress = true;
                     }
                 }
@@ -366,14 +399,18 @@ impl LlmExecutor for GenaiExecutor {
                     // case leaves an otherwise complete run stuck until the
                     // idle timeout. Do not let connection reuse redefine model
                     // completion.
-                    break end;
+                    break Ok(end);
                 }
                 _ => {}
             }
             if made_progress {
-                progress_deadline = Instant::now() + self.idle_timeout;
+                progress_deadline = event_at + self.idle_timeout;
             }
         };
+        // A provider failure still exposes the exact partial prefix to the
+        // continuation sink; terminal truth remains the captured SDK response.
+        live.flush(sink).await;
+        let end = end?;
 
         // The loop above breaks ONLY on `ChatStreamEvent::End`, the streaming
         // protocol's own end-of-response frame. A socket EOF before that frame,
@@ -1673,10 +1710,10 @@ mod hermetic_tests {
     async fn streaming_tool_args_de_accumulate_into_suffix_deltas() {
         // Test design — Causes: an Anthropic SSE stream sends cumulative tool
         // argument snapshots split across multibyte characters. Effects: live
-        // output emits suffix deltas that concatenate to the committed JSON tool
-        // call. Constraints/invariants: the adapter is the sole de-accumulation
-        // owner and slices only UTF-8 boundaries. Decision rule A1: cumulative
-        // snapshots=>exact suffix sequence, one identical committed object.
+        // output emits coalesced, non-overlapping suffixes that concatenate to
+        // the committed JSON tool call. Constraints: the adapter alone removes
+        // cumulative prefixes and slices only UTF-8 boundaries. Rule A1:
+        // cumulative snapshots=>exact concatenation, one committed object.
         let base_url = spawn_sse_server(tool_stream_body()).await;
         let executor =
             GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
@@ -1717,10 +1754,9 @@ mod hermetic_tests {
         assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
 
         // The live plane: the adapter is the single de-accumulation owner. The
-        // recorded deltas are the exact per-event suffixes (the leading empty
-        // snapshot from content_block_start emits nothing), and they concatenate
-        // back to the full argument JSON — proving the suffix-diff / is_char_boundary
-        // path handled the multi-byte splits correctly.
+        // adjacent suffixes may share one live emission, but never repeat a
+        // cumulative prefix. Their concatenation must still reconstruct the
+        // full JSON, including the multi-byte characters.
         let deltas = recorder.tool_deltas.lock().unwrap().clone();
         assert!(
             !deltas.is_empty(),
@@ -1731,16 +1767,7 @@ mod hermetic_tests {
             assert_eq!(tool_id, "get_weather");
         }
         let suffixes: Vec<String> = deltas.iter().map(|(_, _, d)| d.clone()).collect();
-        assert_eq!(
-            suffixes,
-            vec![
-                "{\"city\":\"S".to_string(),
-                "ão Pa".to_string(),
-                "ulo ".to_string(),
-                "😀\"}".to_string(),
-            ],
-            "each delta is the newly-appended suffix, never a re-sent cumulative snapshot"
-        );
+        assert_eq!(suffixes.len(), 1, "A1 adjacent tool suffixes coalesce");
         let joined: String = suffixes.concat();
         assert_eq!(joined, "{\"city\":\"São Paulo 😀\"}");
         let reparsed: serde_json::Value =
