@@ -1447,7 +1447,8 @@ impl WorkerNode {
             self.credential_observation_ttl,
         );
         let environment_warmups = spawn_environment_warmup_reconciliation(lifecycle.clone());
-        let session_realizations = spawn_session_realization_reconciliation(lifecycle.clone());
+        let session_realizations =
+            spawn_session_realization_reconciliation(lifecycle.clone(), heartbeat_timing);
         let mut heartbeat = spawn_heartbeat(
             lifecycle.clone(),
             2,
