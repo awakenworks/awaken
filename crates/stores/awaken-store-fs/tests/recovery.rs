@@ -63,7 +63,14 @@ async fn reopen_replays_committed_facts() {
         store.run(&run).map(|record| record.state),
         Some(RunState::Ended(EndCause::NaturalEnd)),
     );
-    assert_eq!(store.list_events(&EventScope::Run(run), None, 10).len(), 1);
+    assert_eq!(
+        store
+            .list_events(&EventScope::Run(run), None, 10)
+            .await
+            .expect("events")
+            .len(),
+        1
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -138,7 +138,7 @@ impl<S> LocalCommitAdapter<S, ProjectedQueries> {
 #[async_trait::async_trait]
 impl<S> LocalCommitQueries<S> for ProjectedQueries
 where
-    S: CheckpointReader + Send + Sync,
+    S: CheckpointReader + CommittedThreadView + Send + Sync,
 {
     async fn authoritative_run(
         &self,
@@ -186,7 +186,7 @@ where
         cursor: RunLifecycleCursor,
         limit: usize,
     ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
-        checkpoint_lifecycle_events_after(store, cursor, limit)
+        checkpoint_lifecycle_events_after(store, cursor, limit).await
     }
 }
 

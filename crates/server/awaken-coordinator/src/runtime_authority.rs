@@ -5,7 +5,7 @@
 //! Host receives the resulting capability through `RuntimeAuthority` and never
 //! opens a database itself.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -39,10 +39,9 @@ pub struct DurableRuntimeAuthority {
     dispatch: Arc<AnyDispatchStore>,
     wake: Option<Arc<dyn WakeSignal>>,
     postgres_commit: Option<Arc<PostgresCommitCoordinator>>,
-    postgres_local_commit: Option<Arc<dyn LocalCommit>>,
-    /// One live projection per local Thread. Reopening the same SQLite/FS
-    /// authority would create competing in-memory projections over one durable
-    /// log, so the Coordinator owns and reuses the handle here.
+    /// One live execution projection per Thread, opened only on demand. The
+    /// registry prunes idle handles so historic Threads do not accumulate
+    /// in Coordinator memory after their Hosts are released.
     local_commits: Arc<LocalCommitInitialization>,
 }
 
@@ -54,26 +53,59 @@ type LocalCommitSlot = Arc<Mutex<Option<Arc<dyn LocalCommit>>>>;
 /// not share the expensive durable-open critical section.
 #[derive(Default)]
 struct LocalCommitSlots {
-    slots: Mutex<HashMap<String, LocalCommitSlot>>,
+    slots: Mutex<LocalCommitSlotRegistry>,
+}
+
+#[derive(Default)]
+struct LocalCommitSlotRegistry {
+    by_thread: HashMap<String, LocalCommitSlot>,
+    cleanup_order: VecDeque<String>,
 }
 
 impl LocalCommitSlots {
     fn slot(&self, thread: String) -> Result<LocalCommitSlot, RuntimeAuthorityError> {
-        let mut slots = self.slots.lock().map_err(|_| {
+        let mut registry = self.slots.lock().map_err(|_| {
             RuntimeAuthorityError::unavailable("local commit slot registry was poisoned")
         })?;
-        Ok(slots
-            .entry(thread)
-            .or_insert_with(|| Arc::new(Mutex::new(None)))
-            .clone())
+        if let Some(slot) = registry.by_thread.get(&thread) {
+            return Ok(slot.clone());
+        }
+        // At most sixteen cheap non-blocking probes per new Thread. A full
+        // HashMap sweep on every Nth insertion is quadratic when a Cell has a
+        // million simultaneously active Threads.
+        for _ in 0..16 {
+            let Some(candidate) = registry.cleanup_order.pop_front() else {
+                break;
+            };
+            let retain = registry.by_thread.get(&candidate).is_some_and(|slot| {
+                if Arc::strong_count(slot) > 1 {
+                    return true;
+                }
+                match slot.try_lock() {
+                    Ok(value) => value
+                        .as_ref()
+                        .is_some_and(|commit| Arc::strong_count(commit) > 1),
+                    Err(_) => true,
+                }
+            });
+            if retain {
+                registry.cleanup_order.push_back(candidate);
+            } else {
+                registry.by_thread.remove(&candidate);
+            }
+        }
+        let slot = Arc::new(Mutex::new(None));
+        registry.by_thread.insert(thread.clone(), slot.clone());
+        registry.cleanup_order.push_back(thread);
+        Ok(slot)
     }
 
     fn ready(&self, thread: &str) -> Result<Option<Arc<dyn LocalCommit>>, RuntimeAuthorityError> {
         let slot = {
-            let slots = self.slots.lock().map_err(|_| {
+            let registry = self.slots.lock().map_err(|_| {
                 RuntimeAuthorityError::unavailable("local commit slot registry was poisoned")
             })?;
-            slots.get(thread).cloned()
+            registry.by_thread.get(thread).cloned()
         };
         slot.map_or(Ok(None), |slot| match slot.try_lock() {
             Ok(commit) => Ok(commit.clone()),
@@ -104,8 +136,8 @@ impl LocalCommitSlots {
         let mut commit = slot.lock().map_err(|_| {
             RuntimeAuthorityError::unavailable("local commit initialization slot was poisoned")
         })?;
-        if let Some(commit) = commit.as_ref() {
-            return Ok(commit.clone());
+        if let Some(existing) = commit.as_ref() {
+            return Ok(existing.clone());
         }
         let opened = initialize().await?;
         *commit = Some(opened.clone());
@@ -220,13 +252,11 @@ impl DurableRuntimeAuthority {
         } else {
             None
         };
-        let postgres_local_commit = postgres_commit.clone().map(postgres_local_commit);
         Ok(Arc::new(Self {
             commit: CommitAuthorityConfig::from(deployment),
             dispatch,
             wake,
             postgres_commit,
-            postgres_local_commit,
             local_commits: Arc::new(LocalCommitInitialization::new(
                 MAX_CONCURRENT_LOCAL_COMMIT_INITIALIZATIONS,
             )),
@@ -371,11 +401,21 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
         thread: &str,
     ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError> {
         match self.commit.store {
-            StoreKind::Postgres => self.postgres_local_commit.clone().ok_or_else(|| {
-                RuntimeAuthorityError::misconfigured(
-                    "Postgres commit authority was not opened at startup",
-                )
-            }),
+            StoreKind::Postgres => {
+                let store = self.postgres_commit.clone().ok_or_else(|| {
+                    RuntimeAuthorityError::misconfigured(
+                        "Postgres commit authority was not opened at startup",
+                    )
+                })?;
+                let thread_id = ThreadId(thread.to_owned());
+                self.local_commits
+                    .open(thread.to_owned(), move || async move {
+                        postgres_local_commit(store, thread_id)
+                            .await
+                            .map_err(RuntimeAuthorityError::unavailable)
+                    })
+                    .await
+            }
             StoreKind::Fs | StoreKind::Sqlite => {
                 let path = self
                     .commit_path(thread)
@@ -513,16 +553,27 @@ fn thread_path_stem(thread: &str) -> String {
 
 struct PostgresQueries;
 
-/// Erase an already-open PostgreSQL commit coordinator behind the canonical
+/// Open one PostgreSQL Thread execution view behind the canonical
 /// Coordinator-owned [`LocalCommit`] query policy.
 ///
 /// Product compositions use this inlet when they own process-pool startup but
 /// must retain authoritative cross-process reads. The concrete query policy
 /// stays private so there is one PostgreSQL read path and no downstream SQL or
 /// projection fallback to synchronize.
-#[must_use]
-pub fn postgres_local_commit(store: Arc<PostgresCommitCoordinator>) -> Arc<dyn LocalCommit> {
-    Arc::new(LocalCommitAdapter::with_queries(store, PostgresQueries))
+pub async fn postgres_local_commit(
+    store: Arc<PostgresCommitCoordinator>,
+    thread_id: ThreadId,
+) -> Result<Arc<dyn LocalCommit>, String> {
+    let view = Arc::new(
+        store
+            .open_thread_projection(&thread_id)
+            .await
+            .map_err(|error| error.to_string())?,
+    );
+    Ok(Arc::new(LocalCommitAdapter::with_queries(
+        view,
+        PostgresQueries,
+    )))
 }
 
 #[async_trait::async_trait]
@@ -606,9 +657,7 @@ mod tests {
         // This compile-time signature test deliberately needs no database: the
         // store integration suite owns SQL behavior, while this test owns the
         // public composition boundary and prevents leaking PostgresQueries.
-        let factory: fn(Arc<PostgresCommitCoordinator>) -> Arc<dyn LocalCommit> =
-            postgres_local_commit;
-        let _ = factory;
+        let _factory = postgres_local_commit;
     }
 
     #[test]
@@ -755,6 +804,35 @@ mod tests {
         Arc::new(LocalCommitAdapter::projected(
             awaken_store_inmem::MemoryCommitCoordinator::new(),
         ))
+    }
+
+    #[test]
+    fn local_commit_registry_prunes_idle_views_and_retains_live_owners() {
+        // Causes: C1 an idle Thread has only the registry reference; C2 an
+        // active Thread has a Host reference; C3 new keys arrive after both.
+        // Effects: E1 the idle handle and empty slots are removed; E2 the live
+        // handle remains pointer-identical; E3 the map does not grow with old
+        // inactive Threads. Rules P1=C1+C3 -> E1+E3, P2=C2+C3 -> E2.
+        let registry = LocalCommitSlots::default();
+        let idle_slot = registry.slot("idle".into()).unwrap();
+        *idle_slot.lock().unwrap() = Some(test_local_commit());
+        drop(idle_slot);
+        let active = test_local_commit();
+        let active_slot = registry.slot("active".into()).unwrap();
+        *active_slot.lock().unwrap() = Some(active.clone());
+        drop(active_slot);
+        for index in 0..32 {
+            drop(registry.slot(format!("cold-{index}")).unwrap());
+        }
+        let slots = registry.slots.lock().unwrap();
+        assert!(!slots.by_thread.contains_key("idle"), "P1/E1");
+        assert!(slots.by_thread.contains_key("active"), "P2/E2");
+        assert!(slots.by_thread.len() < 32, "P1/E3");
+        drop(slots);
+        assert!(
+            Arc::ptr_eq(&active, &registry.ready("active").unwrap().unwrap()),
+            "P2/E2"
+        );
     }
 
     /// Initialization cause/effect graph: C1 callers address the same or

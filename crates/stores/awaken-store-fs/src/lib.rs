@@ -461,9 +461,15 @@ impl CommittedThreadView for FsCommitCoordinator {
     }
 }
 
+#[async_trait]
 impl CheckpointReader for FsCommitCoordinator {
-    fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
-        self.inner.list_events(scope, from, limit)
+    async fn list_events(
+        &self,
+        scope: &EventScope,
+        from: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<EventRecord>, String> {
+        self.inner.list_events(scope, from, limit).await
     }
 }
 

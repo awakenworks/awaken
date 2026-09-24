@@ -179,7 +179,14 @@ async fn reopen_file_resumes_from_committed_facts() {
         store.latest_run(&thread).map(|record| record.id),
         Some(run.clone())
     );
-    assert_eq!(store.list_events(&EventScope::Run(run), None, 10).len(), 1);
+    assert_eq!(
+        store
+            .list_events(&EventScope::Run(run), None, 10)
+            .await
+            .expect("events")
+            .len(),
+        1
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

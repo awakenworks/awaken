@@ -331,14 +331,20 @@ impl CommittedThreadView for SqliteCommitCoordinator {
 
 /// The merged read repository (ADR-0039 D1), served from the fact-derived
 /// projection that `hydrate` rebuilt from the durable tables (D4).
+#[async_trait]
 impl CheckpointReader for SqliteCommitCoordinator {
-    fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
+    async fn list_events(
+        &self,
+        scope: &EventScope,
+        from: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<EventRecord>, String> {
         let after = from.unwrap_or(0);
         let projection = match self.projection.lock() {
             Ok(projection) => projection,
-            Err(_) => return Vec::new(),
+            Err(_) => return Err("commit projection poisoned".to_owned()),
         };
-        projection
+        Ok(projection
             .events
             .iter()
             .filter(|event| event.sequence > after)
@@ -353,7 +359,7 @@ impl CheckpointReader for SqliteCommitCoordinator {
             })
             .take(limit)
             .cloned()
-            .collect()
+            .collect())
     }
 }
 

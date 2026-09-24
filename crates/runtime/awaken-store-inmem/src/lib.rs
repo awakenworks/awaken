@@ -433,12 +433,18 @@ impl CommittedThreadView for MemoryCommitCoordinator {
 /// The merged after-commit read repository (ADR-0039 D1): the run record and
 /// committed-event reads, on top of [`CommittedThreadView`]. Reads derive from committed
 /// facts, so a fresh reader over the same state resumes correctly (ADR-0039 D4).
+#[async_trait]
 impl CheckpointReader for MemoryCommitCoordinator {
-    fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
+    async fn list_events(
+        &self,
+        scope: &EventScope,
+        from: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<EventRecord>, String> {
         let after = from.unwrap_or(0);
         let state = match self.state.lock() {
             Ok(state) => state,
-            Err(_) => return Vec::new(),
+            Err(_) => return Err("commit store poisoned".to_owned()),
         };
         let mut events: Vec<EventRecord> = match scope {
             EventScope::All => state
@@ -465,11 +471,11 @@ impl CheckpointReader for MemoryCommitCoordinator {
         // events span threads (never, in practice) or a thread scope still reads in
         // commit order.
         events.sort_by_key(|event| event.sequence);
-        events
+        Ok(events
             .into_iter()
             .filter(|event| event.sequence > after)
             .take(limit)
-            .collect()
+            .collect())
     }
 }
 

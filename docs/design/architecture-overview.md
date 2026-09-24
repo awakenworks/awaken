@@ -129,8 +129,9 @@ The Host can therefore distinguish only local injected authority from a
 claim-fenced remote Worker projection; it cannot reopen or reselect a backend.
 
 A product composition that already owns an opened
-`PostgresCommitCoordinator` uses the Coordinator-owned
-`postgres_local_commit` factory to erase it behind `LocalCommit`. The factory
+`PostgresCommitCoordinator` uses the asynchronous Coordinator-owned
+`postgres_local_commit` factory with a Thread id to open a scoped execution
+view and erase it behind `LocalCommit`. The factory
 retains the same private authoritative-query policy used by
 `DurableRuntimeAuthority`: Run, committed-message, open-wait, and lifecycle
 reads go to PostgreSQL rather than an in-process projection. The concrete query
@@ -141,7 +142,7 @@ not a second backend selector or persistence owner.
 Every claimed Worker drive, including an in-process SQLite/filesystem/PostgreSQL
 Worker, installs one `RunRecoverySnapshot` before consulting committed execution
 state. Subsequent claim-fenced commits advance that snapshot. A local Worker
-therefore never treats the PostgreSQL coordinator's process-start projection as
+therefore never treats a PostgreSQL process-local Thread view as
 cross-replica truth; terminal-race reconciliation refreshes the same snapshot
 from the authoritative recovery source before deciding whether to settle or
 re-raise. The database-independent Worker obtains the identical snapshot through

@@ -778,3 +778,14 @@
 - Promoted the previously dormant provider-neutral Repository credential
   endpoint to the sole active per-operation Sandbox transport and removed the
   stale activation-not-implemented fact.
+
+## 2026-09-25 — Bound PostgreSQL runtime startup to active Threads
+
+- Retired the PostgreSQL whole-Cell history projection at startup; only the
+  commit fence is read before serving, and active Thread views open from the
+  existing atomic recovery snapshot.
+- Changed the existing checkpoint read port to asynchronous, error-bearing
+  event pages. PostgreSQL uses committed SQL directly;
+  the synchronous view remains process-local execution state.
+- Reused Coordinator single-flight initialization with bounded idle-slot
+  pruning, retaining live view identity while historical Sessions release memory.
