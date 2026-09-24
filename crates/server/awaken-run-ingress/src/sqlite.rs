@@ -488,6 +488,7 @@ impl SqliteDispatchStore {
 include!("sqlite/physical_attempt.rs");
 include!("sqlite/release_claim.rs");
 include!("sqlite/dispatch_queue.rs");
+include!("sqlite/control_dispatch.rs");
 include!("sqlite/summaries.rs");
 include!("sqlite/message_ports.rs");
 include!("sqlite/pending_rows.rs");

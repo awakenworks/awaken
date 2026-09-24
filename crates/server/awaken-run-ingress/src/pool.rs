@@ -887,7 +887,7 @@ fn drain_error_backoff(consecutive_errors: u32) -> Duration {
 
 /// The claim epoch is already the durable count of claims of this exact Run.
 /// Reuse its fence rather than adding a second retry counter or queue.
-fn claim_failure_backoff(epoch: u64) -> Duration {
+pub(crate) fn claim_failure_backoff(epoch: u64) -> Duration {
     bounded_exponential_backoff(Duration::from_millis(250), Duration::from_secs(30), epoch)
 }
 

@@ -127,11 +127,12 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                 // predecessor-exclusion authority. Retain that slot while
                 // releasing the mutation claim behind its durable retry
                 // deadline so an unprovable predecessor cannot consume one
-                // of the Pool's execution permits indefinitely. Cancellation
-                // bypasses retry_not_before in the queue and is observed by
-                // a fresh exact claim.
+                // of the Pool's execution permits indefinitely. Share the
+                // Pool's exact-claim backoff instead of retrying this occupied
+                // slot on every lease-renewal interval. A first cancellation
+                // clears a prior deadline; failed cancellation retries do not.
                 let retry_after_ms =
-                    timing.retry_delay().as_millis().min(u128::from(u64::MAX)) as u64;
+                    crate::pool::claim_failure_backoff(claim.epoch).as_millis() as u64;
                 match self.store.defer_claim(&claim, retry_after_ms).await? {
                     SettleOutcome::Applied | SettleOutcome::Fenced => {
                         return Ok(PhysicalAttemptOutcome::Deferred);
