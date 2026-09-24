@@ -38,8 +38,18 @@
 
 mod support;
 
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use awaken_authz_enforce::{
+    ApplicationAccessAuthenticator, ApplicationAuthenticationError, ApplicationGrant,
+    ApplicationIdentity, ApplicationThreadBinding, application_guard,
+};
 use awaken_protocol_managed::test_support::DurableFact;
-use awaken_scenario_host::{build_custom_router, build_echo_router};
+use awaken_scenario_host::{
+    EchoModel, build_custom_router, build_custom_router_and_host, build_echo_router,
+    build_router_and_host,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -65,6 +75,72 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+struct BoundApplicationAuthenticator {
+    managed_session_id: String,
+    workspace_id: String,
+}
+
+#[async_trait::async_trait]
+impl ApplicationAccessAuthenticator for BoundApplicationAuthenticator {
+    async fn authenticate(
+        &self,
+        presented: &str,
+    ) -> Result<ApplicationIdentity, ApplicationAuthenticationError> {
+        if presented != "bound-application-token" {
+            return Err(ApplicationAuthenticationError::Invalid);
+        }
+        Ok(ApplicationIdentity {
+            workspace_id: self.workspace_id.clone(),
+            grant: ApplicationGrant {
+                protocols: HashSet::from(["ai-sdk".into(), "ag-ui".into()]),
+                operations: HashSet::from(["thread.run".into(), "thread.messages.read".into()]),
+                thread_bindings: HashMap::from([(
+                    "customer-thread".into(),
+                    ApplicationThreadBinding {
+                        managed_session_id: self.managed_session_id.clone(),
+                        agent_id: "assistant".into(),
+                    },
+                )]),
+            },
+        })
+    }
+}
+
+async fn call_application(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Value,
+) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer bound-application-token")
+        .body(if body.is_null() {
+            Body::empty()
+        } else {
+            Body::from(serde_json::to_vec(&body).unwrap())
+        })
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+fn guard_application(app: Router, managed_session_id: String, workspace_id: String) -> Router {
+    let authenticator: Arc<dyn ApplicationAccessAuthenticator> =
+        Arc::new(BoundApplicationAuthenticator {
+            managed_session_id,
+            workspace_id,
+        });
+    app.layer(axum::middleware::from_fn_with_state(
+        authenticator,
+        application_guard,
+    ))
 }
 
 /// Parse the JSON events out of a UI Message Stream SSE body.
@@ -342,6 +418,218 @@ async fn ag_ui_echo_run_streams_run_events() {
         events.iter().any(|e| e["type"] == "RUN_FINISHED"),
         "stream should close with RUN_FINISHED: {body}"
     );
+}
+
+/// Cause/effect decision table for the real application guard plus both protocol
+/// routers: C1 a Managed Session exists; C2 the application grant binds a
+/// different caller-visible thread id to it; C3 both protocols are permitted.
+/// R1 C1+C2+C3 -> both Runs commit to that Session, AG-UI brackets use only the
+/// caller id, and both history reads see the same transcript. R2 a syntactically
+/// valid but unsupported AG-UI input -> RUN_STARTED(caller id)+RUN_ERROR with
+/// no canonical Session id in the wire. The guard alone cannot satisfy these
+/// effects: this test crosses the guard, adapters, and committed Runtime.
+#[tokio::test(flavor = "multi_thread")]
+async fn guarded_application_protocols_keep_the_external_thread_identity() {
+    let (app, host) = build_router_and_host(Arc::new(EchoModel), "echo-model");
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "Managed create: {created}");
+    let session_id = serde_json::from_str::<Value>(&created).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let guarded = guard_application(app, session_id.clone(), host.thread_workspace(&session_id));
+
+    let (status, body) = call_application(
+        &guarded,
+        "POST",
+        "/v1/ag-ui",
+        json!({
+            "threadId": "customer-thread",
+            "runId": "ag-run-1",
+            "messages": [ag_user_msg("ag-user-1", "hello")],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R1 AG-UI: {body}");
+    let frames = sse_events(&body);
+    for kind in ["RUN_STARTED", "RUN_FINISHED"] {
+        assert!(
+            frames.iter().any(|event| event["type"] == kind
+                && event["threadId"] == "customer-thread"
+                && event["runId"] == "ag-run-1"),
+            "R1 {kind}: {body}"
+        );
+    }
+    assert!(!body.contains(&session_id), "R1 internal id reached AG-UI");
+
+    let (status, body) = call_application(
+        &guarded,
+        "POST",
+        "/v1/ai-sdk/threads/customer-thread/runs",
+        json!({
+            "threadId": "customer-thread",
+            "messages": [user_msg("ai-user-1", "again")],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R1 AI SDK: {body}");
+    assert!(
+        sse_events(&body)
+            .iter()
+            .any(|event| event["type"] == "finish"),
+        "R1 AI SDK terminates: {body}"
+    );
+
+    for protocol in ["ag-ui", "ai-sdk"] {
+        let (status, body) = call_application(
+            &guarded,
+            "GET",
+            &format!("/v1/{protocol}/threads/customer-thread/messages"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "R1 {protocol} history: {body}");
+        let items = serde_json::from_str::<Value>(&body).unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(items.len() >= 4, "R1 both turns are committed: {body}");
+        assert!(
+            body.contains("hello") && body.contains("again"),
+            "R1 same inputs: {body}"
+        );
+    }
+
+    let (status, body) = call_application(
+        &guarded,
+        "POST",
+        "/v1/ag-ui",
+        json!({
+            "threadId": "customer-thread",
+            "runId": "ag-rejected-1",
+            "messages": [ag_user_msg("ag-user-rejected", "unsupported")],
+            "tools": [{ "name": "unsupported", "description": "not admitted", "parameters": {} }],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R2 AG-UI error stream: {body}");
+    let frames = sse_events(&body);
+    assert!(
+        frames
+            .iter()
+            .any(|event| event["type"] == "RUN_STARTED" && event["threadId"] == "customer-thread"),
+        "R2 bracket: {body}"
+    );
+    assert!(
+        frames.iter().any(|event| event["type"] == "RUN_ERROR"),
+        "R2 error: {body}"
+    );
+    assert!(!body.contains(&session_id), "R2 internal id reached AG-UI");
+}
+
+/// Cause/effect rules for the second AG-UI router branch: C1 an exact bound
+/// Session awaits client tool c1; C2 the caller sends c1's result through the
+/// same external thread; C3 the Session remains owned by the token Workspace.
+/// T1 C1+C2+C3 -> one exact resume and a committed answer, with the caller id
+/// in both terminal brackets. T2 a different tool id -> RUN_ERROR without
+/// consuming c1; the subsequent exact result still succeeds. Hosted
+/// owner-qualified forwarding is covered by the AG-UI router tests. This case
+/// proves presentation aliasing cannot change canonical pending-tool lookup.
+#[tokio::test(flavor = "multi_thread")]
+async fn guarded_ag_ui_resume_keeps_the_external_thread_identity() {
+    let (app, host) = build_custom_router_and_host();
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "Managed create: {created}");
+    let session_id = serde_json::from_str::<Value>(&created).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let guarded = guard_application(app, session_id.clone(), host.thread_workspace(&session_id));
+
+    let (status, body) = call_application(
+        &guarded,
+        "POST",
+        "/v1/ag-ui",
+        json!({
+            "threadId": "customer-thread",
+            "runId": "ag-await-1",
+            "messages": [ag_user_msg("ag-await-user", "answer please")],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "T1 await: {body}");
+    assert!(
+        sse_events(&body)
+            .iter()
+            .any(|event| event["type"] == "TOOL_CALL_END" && event["toolCallId"] == "c1"),
+        "T1 client tool awaited: {body}"
+    );
+
+    let (status, body) = call_application(
+        &guarded,
+        "POST",
+        "/v1/ag-ui",
+        json!({
+            "threadId": "customer-thread",
+            "runId": "ag-wrong-1",
+            "messages": [{ "role": "tool", "toolCallId": "wrong", "content": "42" }],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "T2 wrong result: {body}");
+    let frames = sse_events(&body);
+    assert!(
+        frames
+            .iter()
+            .any(|event| event["type"] == "RUN_STARTED" && event["threadId"] == "customer-thread"),
+        "T2 bracket: {body}"
+    );
+    assert!(
+        frames.iter().any(|event| event["type"] == "RUN_ERROR"),
+        "T2 rejected: {body}"
+    );
+    assert!(!body.contains(&session_id), "T2 internal id reached AG-UI");
+
+    let (status, body) = call_application(
+        &guarded,
+        "POST",
+        "/v1/ag-ui",
+        json!({
+            "threadId": "customer-thread",
+            "runId": "ag-resume-1",
+            "messages": [{ "role": "tool", "toolCallId": "c1", "content": "42" }],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "T1 resume: {body}");
+    let frames = sse_events(&body);
+    for kind in ["RUN_STARTED", "RUN_FINISHED"] {
+        assert!(
+            frames.iter().any(|event| event["type"] == kind
+                && event["threadId"] == "customer-thread"
+                && event["runId"] == "ag-resume-1"),
+            "T1 {kind}: {body}"
+        );
+    }
+    assert!(!body.contains(&session_id), "T1 internal id reached AG-UI");
 }
 
 /// The three-protocol case: AG-UI drives a Run that awaits on a client tool, the

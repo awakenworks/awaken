@@ -386,6 +386,7 @@ async fn scope_application_request<'a>(
         })?;
         let binding = resolve_binding(identity, external)?;
         authorize_bound_agent(route.path_agent, object, binding)?;
+        let presented_thread = (route.protocol == "ag-ui").then(|| external.to_string());
 
         if let Some(key) = thread_key {
             object.insert(
@@ -403,6 +404,11 @@ async fn scope_application_request<'a>(
         parts.extensions.insert(awaken_tenancy::ResolvedResourceId(
             binding.managed_session_id.clone(),
         ));
+        if let Some(presented_thread) = presented_thread {
+            parts
+                .extensions
+                .insert(awaken_tenancy::PresentedThreadId(presented_thread));
+        }
         parts
             .extensions
             .insert(awaken_tenancy::ResolvedAgentId(binding.agent_id.clone()));

@@ -43,6 +43,11 @@ Adapters may share mapping helpers only below the public DTO layer. Public event
 names, request schemas, error schemas, headers, replay ids, and conformance
 fixtures remain one adapter at a time.
 
+For browser application credentials and the external-thread-to-Managed-Session
+binding, [Application authentication](../application-authentication.md) owns the
+single identity and permission contract. A presentation id in an AG-UI event
+never selects Runtime or grants access to a Session.
+
 ## Adapter Contract
 
 Every public adapter must name the following mapping before implementation:
