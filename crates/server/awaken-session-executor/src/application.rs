@@ -1014,7 +1014,8 @@ impl crate::SharedHost {
     }
 
     /// Claim every currently discoverable cold terminal assignment, then enter
-    /// the canonical cleanup driver. The driver alone installs the current
+    /// the canonical cleanup driver for at most four independent Sessions at a
+    /// time. The driver alone installs the current
     /// aggregate readback; the claim is routing and
     /// ownership input, not a second projection-installation path. This is the
     /// sole recovery selector; ordinary terminal settlement stays on the
@@ -1026,6 +1027,7 @@ impl crate::SharedHost {
         target: awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<usize, crate::HostError> {
         const MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP: usize = 64;
+        const MAX_CONCURRENT_TERMINAL_CLEANUPS: usize = 4;
 
         let control = self.terminal_cleanup_control.as_ref().ok_or_else(|| {
             crate::HostError::internal(
@@ -1034,41 +1036,59 @@ impl crate::SharedHost {
         })?;
         let mut recovered = 0;
         let mut terminal_error = None;
-        for _ in 0..MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP {
-            let assignment = match control.claim_next_terminal_cleanup(target.clone()).await {
-                Ok(Some(assignment)) => assignment,
-                Ok(None) => break,
-                Err(error) => {
-                    terminal_error.get_or_insert_with(|| {
-                        crate::HostError::internal(format!(
-                            "cold Session terminal cleanup claim remained pending: {error}"
-                        ))
-                    });
-                    break;
-                }
-            };
-            recovered += 1;
-            match self
-                .reconcile_terminal_cleanup_for_lease(
-                    control.as_ref(),
-                    &assignment.session_id,
-                    &assignment.authority.lease,
-                )
-                .await
+        let mut claims_exhausted = false;
+        while recovered < MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP && !claims_exhausted {
+            let mut assignments = Vec::with_capacity(MAX_CONCURRENT_TERMINAL_CLEANUPS);
+            for _ in 0..MAX_CONCURRENT_TERMINAL_CLEANUPS
+                .min(MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP - recovered)
             {
-                Ok(true) => {}
-                Ok(false) => {
-                    // Another actor completed the operation between claim and
-                    // poll. This projection has no ordinary Run authority.
-                    if let Err(error) = self
-                        .revoke_session_realization(assignment.session_id.as_str(), None)
-                        .await
-                    {
-                        terminal_error.get_or_insert(error);
+                match control.claim_next_terminal_cleanup(target.clone()).await {
+                    Ok(Some(assignment)) => assignments.push(assignment),
+                    Ok(None) => {
+                        claims_exhausted = true;
+                        break;
+                    }
+                    Err(error) => {
+                        terminal_error.get_or_insert_with(|| {
+                            crate::HostError::internal(format!(
+                                "cold Session terminal cleanup claim remained pending: {error}"
+                            ))
+                        });
+                        claims_exhausted = true;
+                        break;
                     }
                 }
-                Err(error) => {
-                    terminal_error.get_or_insert(error);
+            }
+            recovered += assignments.len();
+            let results = futures_util::future::join_all(assignments.into_iter().map(
+                |assignment| async move {
+                    let result = self
+                        .reconcile_terminal_cleanup_for_lease(
+                            control.as_ref(),
+                            &assignment.session_id,
+                            &assignment.authority.lease,
+                        )
+                        .await;
+                    (assignment.session_id, result)
+                },
+            ))
+            .await;
+            for (session_id, result) in results {
+                match result {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        // Another actor completed the operation between claim and
+                        // poll. This projection has no ordinary Run authority.
+                        if let Err(error) = self
+                            .revoke_session_realization(session_id.as_str(), None)
+                            .await
+                        {
+                            terminal_error.get_or_insert(error);
+                        }
+                    }
+                    Err(error) => {
+                        terminal_error.get_or_insert(error);
+                    }
                 }
             }
         }

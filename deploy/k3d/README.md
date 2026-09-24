@@ -326,6 +326,17 @@ the timeout. The override changes only that diagnostic wait and leaves every
 deletion assertion intact. This is a passing diagnostic of the later stages,
 not a passing 120-second cleanup acceptance or a production RTO claim.
 
+After bounding the existing Host recovery sweep to four concurrent independent
+Session cleanups, the 2026-09-25 run on `awaken-adr71-cleanup-20260925`
+passed the unchanged 120-second Pod/PVC cleanup gate for all eleven auxiliary
+Sessions. All twelve Session responses completed, and the remaining fault
+stages passed, including synchronous PostgreSQL standby promotion and exact
+Native Worker hard-crash recovery. Its load stage completed 48/48 requests
+with zero errors, a 2.73-second warm p95 and a 22.34-second maximum cold batch.
+These are two local topology observations, not a controlled production capacity
+comparison; the supported cleanup conclusion is that the earlier >120-second
+gate failure became a pass under the original deadline.
+
 The four logical owner databases share one disposable PostgreSQL primary and
 streaming standby to keep this topology affordable. Database names, role
 configuration, Worker environment inspection, and socket inspection enforce
