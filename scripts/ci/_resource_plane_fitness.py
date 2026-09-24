@@ -240,15 +240,16 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
     dream_source = _crate_boundary_workspace.production_rust(
         dream_source_path.read_text(encoding="utf-8")
     )
-    # FMECA cause/effect rules (RPN 240): C1 Dream needs transcript persistence
-    # and C2 product Host hides resource stores -> E1 Coordinator must inject the
-    # exact File application; C3 any `host.file_application()` lookup -> E2 a
-    # feature-unification-only build and a second resource ownership path. R1
-    # accepts the explicit capability; R2 rejects the hidden Host lookup.
+    # FMECA cause/effect rules (RPN 240): C1 older durable Dream records may
+    # retain transcript File ids and C2 product Host hides resource stores ->
+    # E1 Coordinator must inject the exact File application for legacy cleanup;
+    # C3 any `host.file_application()` lookup -> E2 a feature-unification-only
+    # build and a second resource ownership path. R1 accepts the explicit
+    # capability; R2 rejects the hidden Host lookup.
     if "files: Arc<dyn FileApplicationService>" not in dream_source:
         errors.append(
-            "crates/server/awaken-coordinator/src/dream.rs: Dream must receive the exact "
-            "Resources File application"
+            "crates/server/awaken-coordinator/src/dream.rs: Dream legacy cleanup must "
+            "receive the exact Resources File application"
         )
     if re.search(r"\.host\s*\.file_application\s*\(", dream_source):
         errors.append(
