@@ -46,7 +46,9 @@ Environment build jobs. The canonical builder first publishes the production
 sandbox base locally as `awaken-sandbox:local`; deployment then resolves that
 artifact's real OCI digest and uses the same immutable reference for capacity
 admission, node import, Session Pods, and the trusted Sandbox control forwarder.
-No mutable tag enters the Worker configuration and no Registry pull is needed:
+For an Environment without packages, node-local import needs no Registry pull.
+An Environment with packages requires a Registry-qualified Sandbox digest:
+BuildKit resolves its `FROM` image independently of the node-local import.
 
 The product overlay selects `container_hand_residency = "resident"`. The
 existing Pod channel is the single ACP transport for these Kubernetes Sessions;
@@ -112,18 +114,19 @@ product ServiceAccount receives only PVC `create`, `get`, and `delete`, matching
 the runtime's allocation, exact rebuild, and terminal disposal boundaries.
 
 ```bash
+# Package-free, node-local baseline.
 deploy/images/sandbox/build.sh awaken-sandbox:local
 . e2e/k3d/harness.sh
 SANDBOX_IMAGE=$(k3d_image_digest awaken-sandbox:local)
 k3d_import_images awaken-product "$SANDBOX_IMAGE"
-k3d_render_sandbox_image deploy/k3d/product-backend "$SANDBOX_IMAGE" \
+k3d_render_sandbox_image deploy/k3d/product-backend "$SANDBOX_IMAGE" 2 \
   | kubectl apply -f -
 ```
 
-Both production-like overlays retain exactly one
-`__AWAKEN_SANDBOX_IMAGE__` deployment placeholder. Always render them through
-`k3d_render_sandbox_image`; applying either source overlay directly leaves the
-required immutable identity unresolved and is rejected by the Runtime.
+The product overlay has two `__AWAKEN_SANDBOX_IMAGE__` placeholders (product
+and Worker); the distributed-control overlay has one. Pass the exact expected
+count to `k3d_render_sandbox_image`. Applying either source overlay directly
+leaves the required immutable identity unresolved and is rejected by Runtime.
 
 Package-bearing Environments still require a Registry for the immutable derived
 images built by the Kubernetes BuildKit Jobs. Create and attach that Registry
@@ -142,6 +145,24 @@ docker tag moby/buildkit:v0.30.0-rootless \
   localhost:5111/system/buildkit:v0.30.0-rootless
 docker push localhost:5111/system/buildkit:v0.30.0-rootless
 ```
+
+Build the product binaries with the Kubernetes feature on both the launcher
+and Worker before assembling `awaken-product` from `deploy/k3d/Dockerfile`:
+
+```bash
+cargo build --release -p awaken-cli --bins -p awaken-worker \
+  --features awaken-cli/container-k8s,awaken-worker/container-k8s
+```
+
+Publish `awaken-sandbox:local` to the attached Registry and use its **Registry
+manifest digest** as the two `__AWAKEN_SANDBOX_IMAGE__` replacements, for
+example `k3d-awaken-registry.localhost:5000/system/awaken-sandbox@sha256:<digest>`.
+The local `awaken-sandbox@sha256:…` reference is insufficient for a BuildKit
+Job, even if the same bytes were imported into the node. Verify the digest at
+the Registry before rendering the overlay. On a fresh product PVC, run the
+same image's `database migrate` once with `--initialize-installation` and an
+operator `--initialization-reference` before ordinary `all-in-one` startup;
+ordinary startup deliberately refuses unbound empty storage.
 
 `5111` is only the host-published port used by Docker push. Kubernetes Pods and
 BuildKit use the Registry container's internal `:5000` endpoint; putting the
