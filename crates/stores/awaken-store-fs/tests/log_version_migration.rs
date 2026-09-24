@@ -112,7 +112,11 @@ async fn old_and_nested_wire_shapes_migrate_to_the_current_log_version() {
         .await
         .expect("migrate historical log");
     assert_eq!(
-        migrated.list_events(&EventScope::Run(RunId("direct-run".into())), None, 10)[0].kind,
+        migrated
+            .list_events(&EventScope::Run(RunId("direct-run".into())), None, 10)
+            .await
+            .expect("events")[0]
+            .kind,
         Kind::RunStateChanged,
         "R1/E3 direct commit"
     );

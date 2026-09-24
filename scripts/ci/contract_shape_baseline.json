@@ -10,10 +10,10 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4918,
+      "production_lines": 4930,
       "catch_all_errors": 5,
       "growth_reasons": {
-        "production_lines": "The existing RunRecoverySnapshot gains a 43-line borrow-only lifecycle projection over its own audit facts, sharing the existing classifier and cursor kernel. This removes the Session-level global lifecycle read and forwarding port rather than adding another IO port, store, cache, or parallel projector. ADR-0081 types vocabulary owns this pure algebra; a separate crate or repeated caller fold would increase duplication."
+        "production_lines": "The existing RunRecoverySnapshot borrow-only lifecycle projection remains the canonical fold. CheckpointReader now returns asynchronous error-bearing pages while its portable lifecycle adapter retains the execution view, avoiding a duplicate durable Run lookup."
       }
     },
     "awaken-credential-contract": {

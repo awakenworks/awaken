@@ -12,6 +12,7 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 #[tokio::test]
@@ -41,7 +42,8 @@ async fn fresh_reader_resumes_from_committed_facts() {
     // A separate reader handle over the same committed log — the read model is
     // rebuilt from committed facts, never from a live run object.
     let reader = store.clone();
-    let reader: &dyn CheckpointReader = &reader;
+    let events: &dyn CheckpointReader = &reader;
+    let reader: &dyn CommittedThreadView = &reader;
 
     assert_eq!(reader.committed_messages(&thread).len(), 1);
     assert_eq!(
@@ -52,10 +54,19 @@ async fn fresh_reader_resumes_from_committed_facts() {
         reader.latest_run(&thread).map(|record| record.id),
         Some(run.clone())
     );
-    assert_eq!(reader.list_events(&EventScope::Run(run), None, 10).len(), 1);
     assert_eq!(
-        reader
+        events
+            .list_events(&EventScope::Run(run), None, 10)
+            .await
+            .expect("events")
+            .len(),
+        1
+    );
+    assert_eq!(
+        events
             .list_events(&EventScope::Thread(thread), None, 10)
+            .await
+            .expect("events")
             .len(),
         1
     );

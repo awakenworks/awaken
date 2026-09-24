@@ -7,11 +7,9 @@
 //! fact log is the authority; the `run_record` table is a derived cache equal to
 //! the latest fact (G32).
 //!
-//! The `CommittedThreadView` read port is synchronous, so the
-//! coordinator keeps an in-memory projection of committed truth that it rebuilds
-//! from Postgres on construction (durable across restart) and updates in lockstep
-//! with each commit. The projection is never an independent authority — it always
-//! equals what replay would derive from the log.
+//! Startup reads only the global commit fence. Coordinator opens a Thread's
+//! process-local execution view on demand from one consistent recovery snapshot;
+//! durable event, lifecycle and policy reads query committed SQL directly.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -154,8 +152,8 @@ pub enum StoreError {
     Hydrate(String),
 }
 
-/// In-memory projection of committed truth, rebuilt from Postgres on construction
-/// and advanced with every commit. Serves the synchronous read ports.
+/// Process-local execution view. A Coordinator creates one for an active Thread
+/// from a committed recovery snapshot and advances it after its own commits.
 #[derive(Debug, Default)]
 struct Projection {
     sequence: u64,
@@ -178,15 +176,11 @@ struct Projection {
 /// Built in, not configured.
 const NS: &str = "runtime";
 
-/// The synchronous execution projection retains complete transcript/state/event
-/// facts. Refuse startup before allocating an unbounded fact history; large
-/// authorities must use compaction/snapshot export rather than risking OOM.
-const MAX_HYDRATED_FACT_ROWS: u64 = 1_000_000;
-
-/// A Postgres-backed [`Coordinator`] plus the read ports it serves.
+/// A Postgres-backed [`Coordinator`] plus asynchronous durable read ports.
 pub struct PostgresCommitCoordinator {
     pool: PgPool,
     projection: Mutex<Projection>,
+    projection_thread: Option<ThreadId>,
 }
 
 impl PostgresCommitCoordinator {
@@ -245,7 +239,7 @@ impl PostgresCommitCoordinator {
         Self::migrate_pool(&pool).await
     }
 
-    /// Connect, apply the commit-schema migrations, and hydrate the projection.
+    /// Connect and apply the commit-schema migrations without loading history.
     ///
     /// Pool sizing is an explicit composition input, not store-owned process
     /// configuration.
@@ -255,38 +249,76 @@ impl PostgresCommitCoordinator {
     }
 
     /// Connect to commit schemas applied by the deployment migration phase.
-    /// The ledger is verified before the durable projection is hydrated; no DDL
+    /// The ledger is verified before the bounded commit fence is read; no DDL
     /// is executed on this path.
     pub async fn connect_existing(url: &str, max_connections: u32) -> Result<Self, StoreError> {
         let pool = Self::pool(url, max_connections).await?;
         Self::with_existing_pool(pool).await
     }
 
-    /// Build from an existing pool: apply migrations and hydrate the projection
-    /// under the runtime namespace.
+    /// Build from an existing pool: apply migrations and read the global fence.
     pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
         Self::migrate_pool(&pool).await?;
-        Self::hydrate_pool(pool).await
+        Self::open_pool(pool).await
     }
 
     /// Build from an existing pool after verifying both the portable commit
     /// bundle and the Postgres-only sequence bundle.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
         Self::verify_pool(&pool).await?;
-        Self::hydrate_pool(pool).await
+        Self::open_pool(pool).await
     }
 
-    async fn hydrate_pool(pool: PgPool) -> Result<Self, StoreError> {
-        let projection = hydrate(&pool)
-            .await
-            .map_err(|err| StoreError::Hydrate(err.to_string()))?;
+    async fn open_pool(pool: PgPool) -> Result<Self, StoreError> {
+        let sequence: i64 = sqlx::query_scalar(&format!(
+            "SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"
+        ))
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| StoreError::Read(error.to_string()))?;
+        let sequence =
+            decode_authority(sequence).map_err(|error| StoreError::Read(error.to_string()))?;
         Ok(Self {
             pool,
-            projection: Mutex::new(projection),
+            projection: Mutex::new(Projection {
+                sequence,
+                ..Projection::default()
+            }),
+            projection_thread: None,
         })
     }
 
-    /// Number of commits applied so far (the durable fence).
+    /// Open one active Thread's synchronous execution view from a single
+    /// repeatable-read recovery prefix. The returned handle shares the database
+    /// pool but owns only this Thread's disposable process-local projection.
+    pub async fn open_thread_projection(&self, thread_id: &ThreadId) -> Result<Self, StoreError> {
+        let snapshot = self
+            .recovery_snapshot(thread_id, &RunId("__projection_read__".to_owned()))
+            .await
+            .map_err(|error| StoreError::Hydrate(error.to_string()))?;
+        Ok(Self {
+            pool: self.pool.clone(),
+            projection: Mutex::new(projection_from_snapshot(snapshot)),
+            projection_thread: Some(thread_id.clone()),
+        })
+    }
+
+    fn require_projection_thread(&self, thread_id: &ThreadId) -> Result<(), Error> {
+        if self
+            .projection_thread
+            .as_ref()
+            .is_some_and(|opened| opened != thread_id)
+        {
+            return Err(Error::Rejected(format!(
+                "Thread {} does not match this execution view",
+                thread_id.0
+            )));
+        }
+        Ok(())
+    }
+
+    /// Last global commit fence observed by this process or execution view.
+    /// Cross-replica decisions must query SQL, not use this diagnostic value.
     pub fn commit_count(&self) -> u64 {
         self.projection.lock().map(|p| p.sequence).unwrap_or(0)
     }
@@ -313,10 +345,9 @@ impl PostgresCommitCoordinator {
             .and_then(|p| p.resume_tickets.get(run_id).cloned())
     }
 
-    /// Committed state commands for a thread, in commit order — served from the
-    /// durable `state_command` rows the projection rebuilt on connect, so a resumed
-    /// run replays its accumulated state (and usage/compaction accounting) from
-    /// durable truth (G1/G13).
+    /// Committed state commands in this process-local execution view. A scoped
+    /// view is opened from one durable recovery prefix; cross-replica decisions
+    /// use [`Self::authoritative_committed_state`] instead.
     pub fn committed_state(&self, thread_id: &ThreadId) -> Vec<StateCommand> {
         self.projection
             .lock()
@@ -510,6 +541,7 @@ impl PostgresCommitCoordinator {
 #[async_trait]
 impl CommitCoordinator for PostgresCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
+        self.require_projection_thread(&commit.thread_id)?;
         commit
             .validate()
             .map_err(|e| Error::Rejected(e.to_string()))?;
@@ -536,6 +568,7 @@ impl CommitCoordinator for PostgresCommitCoordinator {
 #[async_trait]
 impl OperationCoordinator for PostgresCommitCoordinator {
     async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
+        self.require_projection_thread(&operation.commit.thread_id)?;
         operation
             .commit
             .validate()
@@ -722,42 +755,13 @@ async fn append_commit(
     .await
     .map_err(reject)?;
 
-    for message in &commit.messages {
-        sqlx::query(&format!(
-            "INSERT INTO {p}_message (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
-        ))
-        .bind(encode_authority(next)?)
-        .bind(&thread_id.0)
-        .bind(Json(message))
-        .execute(&mut **tx)
-        .await
-        .map_err(reject)?;
-    }
-    for command in &commit.state {
-        sqlx::query(&format!(
-            "INSERT INTO {p}_state_command (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
-        ))
-        .bind(encode_authority(next)?)
-        .bind(&thread_id.0)
-        .bind(Json(command))
-        .execute(&mut **tx)
-        .await
-        .map_err(reject)?;
-    }
+    append_ordered_thread_facts(tx, "message", next, thread_id, &commit.messages).await?;
+    append_ordered_thread_facts(tx, "state_command", next, thread_id, &commit.state).await?;
     let mut committed_events = Vec::with_capacity(commit.events.len());
     for (offset, draft) in commit.events.iter().enumerate() {
         let sequence = encode_run_lifecycle_cursor(next, offset)
             .map_err(|error| Error::Rejected(error.to_string()))?;
-        sqlx::query(&format!(
-            "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES ($1, $2, $3, $4)"
-        ))
-        .bind(encode_authority(sequence.0)?)
-        .bind(&run_id.0)
-        .bind(Json(&draft.kind))
-        .bind(Json(&draft.payload))
-        .execute(&mut **tx)
-        .await
-        .map_err(reject)?;
+        let _ = encode_authority(sequence.0)?;
         committed_events.push(EventRecord {
             sequence: sequence.0,
             run_id: run_id.clone(),
@@ -765,6 +769,7 @@ async fn append_commit(
             payload: draft.payload.clone(),
         });
     }
+    append_ordered_events(tx, run_id, &committed_events).await?;
     sqlx::query(&format!(
         "INSERT INTO {p}_run_record (run_id, thread_id, phase) VALUES ($1, $2, $3) \
          ON CONFLICT (run_id) DO UPDATE \
@@ -798,6 +803,93 @@ async fn append_commit(
             .map_err(reject)?;
     }
     Ok((next, committed_events))
+}
+
+/// Keep one bounded SQL statement per fact kind instead of one round trip per
+/// row while the dense global commit lock is held. `WITH ORDINALITY` makes the
+/// source order explicit before PostgreSQL assigns the portable row ids used
+/// by transcript/state readers. The table name is a private static call-site
+/// choice, never input from a request or configuration.
+async fn append_ordered_thread_facts<T: serde::Serialize>(
+    tx: &mut Transaction<'_, Postgres>,
+    table: &'static str,
+    sequence: u64,
+    thread_id: &ThreadId,
+    facts: &[T],
+) -> Result<(), Error> {
+    const FACTS_PER_STATEMENT: usize = 256;
+    let sequence = encode_authority(sequence)?;
+    for chunk in facts.chunks(FACTS_PER_STATEMENT) {
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_{table} (commit_sequence, thread_id, data) \
+             SELECT $1, $2, entry.value \
+             FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS entry(value, ordinal) \
+             ORDER BY entry.ordinal"
+        ))
+        .bind(sequence)
+        .bind(&thread_id.0)
+        .bind(Json(chunk))
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
+    }
+    Ok(())
+}
+
+async fn append_ordered_events(
+    tx: &mut Transaction<'_, Postgres>,
+    run_id: &RunId,
+    events: &[EventRecord],
+) -> Result<(), Error> {
+    const EVENTS_PER_STATEMENT: usize = 256;
+    for chunk in events.chunks(EVENTS_PER_STATEMENT) {
+        sqlx::query(&format!(
+            "INSERT INTO {NS}_event (sequence, run_id, kind, payload) \
+             SELECT (entry.value->>'sequence')::bigint, $1, \
+                    entry.value->'kind', entry.value->'payload' \
+             FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY AS entry(value, ordinal) \
+             ORDER BY entry.ordinal"
+        ))
+        .bind(&run_id.0)
+        .bind(Json(chunk))
+        .execute(&mut **tx)
+        .await
+        .map_err(reject)?;
+    }
+    Ok(())
+}
+
+fn projection_from_snapshot(snapshot: RunRecoverySnapshot) -> Projection {
+    let thread_id = snapshot.thread_id;
+    let mut projection = Projection {
+        sequence: snapshot.store_cursor,
+        messages: snapshot
+            .messages
+            .into_iter()
+            .map(|message| (thread_id.clone(), message))
+            .collect(),
+        state: snapshot
+            .state
+            .into_iter()
+            .map(|command| (thread_id.clone(), command))
+            .collect(),
+        events: snapshot.events,
+        ..Projection::default()
+    };
+    if let Some(latest_id) = snapshot.latest_run_id
+        && let Some(latest) = snapshot.runs.iter().find(|record| record.id == latest_id)
+    {
+        projection
+            .latest_by_thread
+            .insert(thread_id.clone(), latest.clone());
+    }
+    for record in snapshot.runs {
+        projection.run_records.insert(record.id.clone(), record);
+    }
+    for entry in snapshot.resume_tickets {
+        projection.resume_tickets.insert(entry.run_id, entry.ticket);
+    }
+    projection
 }
 
 fn advance_projection(
@@ -884,30 +976,64 @@ impl CommittedThreadView for PostgresCommitCoordinator {
     }
 }
 
-/// The merged read repository (ADR-0039 D1), served from the fact-derived
-/// projection that `hydrate` rebuilt from the durable tables (D4).
+/// The durable event read port queries committed SQL directly. The process-local
+/// execution view cannot be used for a cross-replica or cold-reader cursor.
+#[async_trait]
 impl CheckpointReader for PostgresCommitCoordinator {
-    fn list_events(&self, scope: &EventScope, from: Option<u64>, limit: usize) -> Vec<EventRecord> {
-        let after = from.unwrap_or(0);
-        let projection = match self.projection.lock() {
-            Ok(projection) => projection,
-            Err(_) => return Vec::new(),
+    async fn list_events(
+        &self,
+        scope: &EventScope,
+        from: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<EventRecord>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let after = encode_authority(from.unwrap_or(0)).map_err(|error| error.to_string())?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let (source, predicate, scope_id) = match scope {
+            EventScope::All => (format!("{NS}_event AS event"), "", ""),
+            EventScope::Run(run_id) => (
+                format!("{NS}_event AS event"),
+                "AND event.run_id = $3",
+                run_id.0.as_str(),
+            ),
+            EventScope::Thread(thread_id) => (
+                format!(
+                    "(SELECT DISTINCT run_id FROM {NS}_commit WHERE thread_id = $3) AS run \
+                     JOIN {NS}_event AS event ON event.run_id = run.run_id"
+                ),
+                "",
+                thread_id.0.as_str(),
+            ),
         };
-        projection
-            .events
-            .iter()
-            .filter(|event| event.sequence > after)
-            .filter(|event| match scope {
-                EventScope::All => true,
-                EventScope::Run(run_id) => &event.run_id == run_id,
-                EventScope::Thread(thread_id) => projection
-                    .run_records
-                    .get(&event.run_id)
-                    .map(|record| &record.thread_id == thread_id)
-                    .unwrap_or(false),
+        let statement = format!(
+            "SELECT event.sequence, event.run_id, event.kind, event.payload \
+             FROM {source} WHERE event.sequence > $1 {predicate} \
+             ORDER BY event.sequence LIMIT $2"
+        );
+        let query = sqlx::query(&statement).bind(after).bind(limit);
+        let rows = match scope {
+            EventScope::All => query.fetch_all(&self.pool).await,
+            EventScope::Run(_) | EventScope::Thread(_) => {
+                query.bind(scope_id).fetch_all(&self.pool).await
+            }
+        }
+        .map_err(|error| error.to_string())?;
+        rows.into_iter()
+            .map(|row| {
+                let sequence: i64 = row.try_get("sequence").map_err(|error| error.to_string())?;
+                let Json(kind): Json<AuditKind> =
+                    row.try_get("kind").map_err(|error| error.to_string())?;
+                let Json(payload): Json<serde_json::Value> =
+                    row.try_get("payload").map_err(|error| error.to_string())?;
+                Ok(EventRecord {
+                    sequence: decode_authority(sequence).map_err(|error| error.to_string())?,
+                    run_id: RunId(row.try_get("run_id").map_err(|error| error.to_string())?),
+                    kind,
+                    payload,
+                })
             })
-            .take(limit)
-            .cloned()
             .collect()
     }
 }
@@ -1256,164 +1382,6 @@ fn decode_resume_ticket(
     }
 }
 
-/// Rebuild the read projection from the committed log in Postgres.
-async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
-    // Hydration is one logical read. Without a shared snapshot, a commit can land
-    // between the sequence/messages/run queries and produce a projection that
-    // never existed in durable truth (for example sequence N with rows from N+1).
-    let mut tx = pool.begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *tx)
-        .await?;
-    let projection = hydrate_snapshot(&mut tx).await?;
-    tx.commit().await?;
-    Ok(projection)
-}
-
-async fn hydrate_snapshot(tx: &mut Transaction<'_, Postgres>) -> Result<Projection, sqlx::Error> {
-    let counts = sqlx::query(&format!(
-        "SELECT \
-            (SELECT COUNT(*) FROM {NS}_message) AS messages, \
-            (SELECT COUNT(*) FROM {NS}_state_command) AS states, \
-            (SELECT COUNT(*) FROM {NS}_commit) AS commits, \
-            (SELECT COUNT(*) FROM {NS}_event) AS events, \
-            (SELECT COUNT(*) FROM {NS}_waiting) AS waiting"
-    ))
-    .fetch_one(&mut **tx)
-    .await?;
-    enforce_hydration_bound([
-        counts.try_get("messages")?,
-        counts.try_get("states")?,
-        counts.try_get("commits")?,
-        counts.try_get("events")?,
-        counts.try_get("waiting")?,
-    ])?;
-
-    let mut projection = Projection::default();
-
-    let sequence: i64 = sqlx::query_scalar(&format!(
-        "SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"
-    ))
-    .fetch_one(&mut **tx)
-    .await?;
-    projection.sequence = StoredU64::try_from(sequence)
-        .map_err(|error| sqlx::Error::Decode(Box::new(error)))?
-        .domain_value();
-
-    let message_rows = sqlx::query(&format!(
-        "SELECT thread_id, data FROM {NS}_message ORDER BY id"
-    ))
-    .fetch_all(&mut **tx)
-    .await?;
-    for row in message_rows {
-        let thread_id: String = row.try_get("thread_id")?;
-        let Json(message): Json<Message> = row.try_get("data")?;
-        projection.messages.push((ThreadId(thread_id), message));
-    }
-
-    // Rebuild the committed state-command log per thread, in commit order, so a
-    // resumed run replays its accumulated state from durable truth (G1/G13).
-    let state_rows = sqlx::query(&format!(
-        "SELECT thread_id, data FROM {NS}_state_command ORDER BY id"
-    ))
-    .fetch_all(&mut **tx)
-    .await?;
-    for row in state_rows {
-        let thread_id: String = row.try_get("thread_id")?;
-        let Json(command): Json<StateCommand> = row.try_get("data")?;
-        projection.state.push((ThreadId(thread_id), command));
-    }
-
-    // Fold the commit log in order so the latest fact per run wins (G32).
-    let commit_rows = sqlx::query(&format!(
-        "SELECT run_id, thread_id, phase FROM {NS}_commit ORDER BY sequence"
-    ))
-    .fetch_all(&mut **tx)
-    .await?;
-    for row in commit_rows {
-        let run_id: String = row.try_get("run_id")?;
-        let thread_id: String = row.try_get("thread_id")?;
-        let Json(state): Json<RunState> = row.try_get("phase")?;
-        let record = RunRecord {
-            id: RunId(run_id.clone()),
-            thread_id: ThreadId(thread_id.clone()),
-            state,
-        };
-        projection.run_records.insert(RunId(run_id), record.clone());
-        projection
-            .latest_by_thread
-            .insert(ThreadId(thread_id), record);
-    }
-
-    // Rebuild the committed event cache from the durable event log, in order.
-    let event_rows = sqlx::query(&format!(
-        "SELECT sequence, run_id, kind, payload FROM {NS}_event ORDER BY sequence"
-    ))
-    .fetch_all(&mut **tx)
-    .await?;
-    for row in event_rows {
-        let sequence: i64 = row.try_get("sequence")?;
-        let run_id: String = row.try_get("run_id")?;
-        let Json(kind) =
-            row.try_get::<Json<awaken_agent_contract::audit::kind::Kind>, _>("kind")?;
-        let Json(payload) = row.try_get::<Json<serde_json::Value>, _>("payload")?;
-        projection.events.push(EventRecord {
-            sequence: StoredU64::try_from(sequence)
-                .map_err(|error| sqlx::Error::Decode(Box::new(error)))?
-                .domain_value(),
-            run_id: RunId(run_id),
-            kind,
-            payload,
-        });
-    }
-
-    let resume_ticket_rows = sqlx::query(&format!("SELECT run_id, ticket FROM {NS}_waiting"))
-        .fetch_all(&mut **tx)
-        .await?;
-    for row in resume_ticket_rows {
-        let run_id: String = row.try_get("run_id")?;
-        let run_id = RunId(run_id);
-        let Some(record) = projection.run_records.get(&run_id) else {
-            tracing::error!(
-                awaken.run.id = %run_id.0,
-                "quarantining a waiting row whose Run record is absent"
-            );
-            continue;
-        };
-        if !matches!(&record.state, RunState::Awaiting) {
-            tracing::error!(
-                awaken.run.id = %run_id.0,
-                awaken.thread.id = %record.thread_id.0,
-                "quarantining a stale waiting row whose Run is not Awaiting"
-            );
-            continue;
-        }
-        let Json(ticket): Json<serde_json::Value> = row.try_get("ticket")?;
-        if let Some(ticket) = decode_resume_ticket(&run_id, &record.thread_id, ticket) {
-            projection.resume_tickets.insert(run_id, ticket);
-        }
-    }
-
-    Ok(projection)
-}
-
-fn enforce_hydration_bound(counts: [i64; 5]) -> Result<(), sqlx::Error> {
-    let total = counts.into_iter().try_fold(0_u64, |total, count| {
-        let count = u64::try_from(count)
-            .map_err(|_| sqlx::Error::Protocol("negative hydration row count".into()))?;
-        total
-            .checked_add(count)
-            .ok_or_else(|| sqlx::Error::Protocol("hydration row count overflow".into()))
-    })?;
-    if total > MAX_HYDRATED_FACT_ROWS {
-        return Err(sqlx::Error::Protocol(format!(
-            "runtime projection has {total} facts, exceeding the safe startup limit of \
-             {MAX_HYDRATED_FACT_ROWS}; compact/export a snapshot before restart"
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod migration_tests {
     use super::*;
@@ -1431,16 +1399,5 @@ mod migration_tests {
         assert_eq!(bundle.migrations()[1].version(), 2);
         assert!(COMMIT_PG_FILES[1].1.contains("ROW_NUMBER()"));
         assert!(COMMIT_PG_FILES[1].1.contains("DROP SEQUENCE"));
-    }
-
-    #[test]
-    fn hydration_bound_accepts_the_limit_and_rejects_the_next_fact() {
-        // Test design — boundary-value resource-safety contract: a projection
-        // containing exactly MAX facts may start; MAX+1 must fail before any
-        // fetch_all allocation. Negative/overflowed backend counts also fail
-        // closed instead of wrapping into a small allocation estimate.
-        assert!(enforce_hydration_bound([1_000_000, 0, 0, 0, 0]).is_ok());
-        assert!(enforce_hydration_bound([1_000_000, 1, 0, 0, 0]).is_err());
-        assert!(enforce_hydration_bound([-1, 0, 0, 0, 0]).is_err());
     }
 }

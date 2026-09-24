@@ -1,7 +1,7 @@
 //! Live Postgres tests for the durable commit boundary.
 //!
-//! They run against a real Postgres (the commit transaction and projection
-//! hydration cannot be exercised otherwise). The URL comes from
+//! They run against a real Postgres (the commit transaction and scoped recovery
+//! reads cannot be exercised otherwise). The URL comes from
 //! `AWAKEN_TEST_DATABASE_URL`, defaulting to the local dev container. If no
 //! Postgres is reachable the test prints a skip notice and returns, so the suite
 //! still passes on a machine without a database.
@@ -26,6 +26,7 @@ use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, CommitPayloadHash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed};
@@ -113,6 +114,187 @@ fn ticket(run: &str, thread: &str) -> ResumeTicket {
     )
 }
 
+#[tokio::test]
+async fn cold_event_reader_queries_committed_scopes_and_fails_closed() {
+    // Cause/effect decision table: C1 cold reader after a peer commits two
+    // Threads; C2 scope All/Thread/Run and an exclusive cursor; C3 cursor beyond
+    // SQL BIGINT or unavailable pool. R1=C1+C2 -> E1 exact ordered committed
+    // partition and E2 cursor excludes its predecessor; R2=C3 -> E3 error,
+    // never an indistinguishable empty page. The SQL store remains the owner.
+    let Some(pool) = schema_pool("t_pg_cold_event_reader").await else {
+        return;
+    };
+    let writer = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("writer");
+    for (thread, run) in [("cold-a", "cold-run-a"), ("cold-b", "cold-run-b")] {
+        writer
+            .commit(ThreadCommit::assemble(
+                ThreadId(thread.into()),
+                ended(run),
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .expect("commit");
+    }
+    let cold = PostgresCommitCoordinator::with_existing_pool(pool.clone())
+        .await
+        .expect("cold reader");
+    let all = cold
+        .list_events(&EventScope::All, None, 10)
+        .await
+        .expect("R1 all");
+    assert_eq!(all.len(), 2, "R1/E1");
+    assert!(all[0].sequence < all[1].sequence, "R1/E1 order");
+    let thread = cold
+        .list_events(&EventScope::Thread(ThreadId("cold-a".into())), None, 10)
+        .await
+        .expect("R1 thread");
+    assert_eq!(thread, all[..1], "R1/E1 thread partition");
+    let run = cold
+        .list_events(&EventScope::Run(RunId("cold-run-b".into())), None, 10)
+        .await
+        .expect("R1 run");
+    assert_eq!(run, all[1..], "R1/E1 run partition");
+    let page = cold
+        .list_events(&EventScope::All, Some(all[0].sequence), 10)
+        .await
+        .expect("R1 exclusive page");
+    assert_eq!(page, all[1..], "R1/E2");
+    assert!(
+        cold.list_events(&EventScope::All, Some(i64::MAX as u64 + 1), 10)
+            .await
+            .is_err(),
+        "R2/E3 out-of-range cursor"
+    );
+    pool.close().await;
+    assert!(
+        cold.list_events(&EventScope::All, None, 10).await.is_err(),
+        "R2/E3 closed pool"
+    );
+}
+
+#[tokio::test]
+#[ignore = "million-fact PostgreSQL startup and scoped-open performance observation"]
+async fn million_historical_facts_do_not_gate_startup_or_unrelated_thread_open() {
+    // Causes: C1 over one million committed Message rows belong to one old
+    // Thread; C2 a Coordinator restarts; C3 an unrelated Thread opens for
+    // execution. Effects: E1 startup succeeds without full-history allocation;
+    // E2 the old Thread still has a durable fact and its messages remain in SQL;
+    // E3 the unrelated execution view contains only its own prefix. Rules:
+    // M1=C1+C2 -> E1+E2, M2=C1+C2+C3 -> E1+E2+E3. The printed timings describe
+    // this local primary and cannot establish a production restart SLO.
+    let Some(pool) = schema_pool("t_pg_million_history").await else {
+        panic!("explicit performance run requires PostgreSQL");
+    };
+    let writer = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("writer");
+    writer
+        .commit(ThreadCommit::assemble(
+            ThreadId("old-thread".into()),
+            ended("old-run"),
+            true,
+            vec![message("old-first", "historic")],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("old commit");
+    writer
+        .commit(ThreadCommit::assemble(
+            ThreadId("active-thread".into()),
+            ended("active-run"),
+            true,
+            vec![message("active-first", "recent")],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("active commit");
+    sqlx::query(
+        "INSERT INTO runtime_message (commit_sequence, thread_id, data) \
+         SELECT 1, 'old-thread', $1::jsonb \
+         FROM generate_series(1, 1000001)",
+    )
+    .bind(Json(message("old-bulk", "historic")))
+    .execute(&pool)
+    .await
+    .expect("historical fact fixture");
+    drop(writer);
+
+    let started = std::time::Instant::now();
+    let restarted = PostgresCommitCoordinator::with_existing_pool(pool.clone())
+        .await
+        .expect("M1/E1 restart above former bound");
+    let startup = started.elapsed();
+    assert_eq!(restarted.commit_count(), 2, "M1/E2 durable commit fence");
+    let old_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runtime_message WHERE thread_id = 'old-thread'")
+            .fetch_one(&pool)
+            .await
+            .expect("M1/E2 old SQL facts");
+    assert_eq!(old_count, 1_000_002, "M1/E2");
+
+    let started = std::time::Instant::now();
+    let active = restarted
+        .open_thread_projection(&ThreadId("active-thread".into()))
+        .await
+        .expect("M2/E3 scoped open");
+    let scoped_open = started.elapsed();
+    assert_eq!(
+        CommittedThreadView::committed_messages(&active, &ThreadId("active-thread".into())).len(),
+        1,
+        "M2/E3"
+    );
+    assert!(
+        CommittedThreadView::committed_messages(&active, &ThreadId("old-thread".into())).is_empty(),
+        "M2/E3 unrelated history absent"
+    );
+    println!(
+        "million_history startup_ms={:.3} scoped_open_ms={:.3} facts={old_count}",
+        startup.as_secs_f64() * 1000.0,
+        scoped_open.as_secs_f64() * 1000.0
+    );
+}
+
+#[tokio::test]
+async fn scoped_execution_view_rejects_another_thread_before_writing() {
+    // C1 a view was opened for Thread A; C2 a caller submits Thread B's commit.
+    // R1=C1+C2 -> E1 rejection before SQL, E2 no B fact and A remains intact.
+    let Some(pool) = schema_pool("t_pg_scoped_view").await else {
+        return;
+    };
+    let root = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let view = root
+        .open_thread_projection(&ThreadId("thread-a".into()))
+        .await
+        .unwrap();
+    assert!(
+        view.commit(ThreadCommit::assemble(
+            ThreadId("thread-b".into()),
+            ended("run-b"),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .is_err(),
+        "R1/E1"
+    );
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "R1/E2");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "live PostgreSQL throughput observation, run separately from correctness suites"]
 async fn independent_thread_commit_throughput_observation() {
@@ -124,7 +306,156 @@ async fn independent_thread_commit_throughput_observation() {
     // synchronous standby, so it diagnoses this store's lock path and cannot
     // establish fleet throughput. Decision rules: P1=C1+C2(1)+C3 -> E1+E2;
     // P2=C1+C2(8)+C3 -> E1+E2; P3=C1+C2(32)+C3 -> E1+E2.
-    let Some(pool) = schema_pool("t_pg_commit_perf").await else {
+    observe_commit_throughput("t_pg_commit_perf", CommitPayload::Minimal).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "live PostgreSQL throughput observation, run separately from correctness suites"]
+async fn multi_fact_commit_throughput_observation() {
+    // Causes: C1 each independent ThreadCommit carries eight ordered Messages,
+    // eight StateCommands and eight Events; C2 concurrency is 1, 8 or 32.
+    // Effects: E1 all facts remain atomically committed in order with dense
+    // global sequences; E2 print application commit rate for comparison with
+    // the same database, schema shape and client concurrency after bulk writes.
+    // Rules M1/M2/M3 are C1+C2(1/8/32) -> E1+E2. This tests transaction
+    // round trips and lock hold, not Worker/HTTP or a production Cell SLO.
+    observe_commit_throughput("t_pg_commit_many_perf", CommitPayload::Many).await;
+}
+
+#[tokio::test]
+async fn bulk_fact_chunks_replay_in_original_order_after_reconnect() {
+    // Causes: C1 one ThreadCommit has 257 facts of each kind, crossing the
+    // bounded SQL chunk; C2 a new coordinator reads the committed Thread prefix.
+    // Effects: E1 every Message, StateCommand and supplied Event retains source
+    // order alongside the Run's automatically staged lifecycle events;
+    // E2 there is one dense commit sequence and one terminal Run. Rule B1=
+    // C1+C2 -> E1+E2. This protects the portable row-id read order while the
+    // Postgres adapter changes only how it submits rows within one transaction.
+    let Some(pool) = schema_pool("t_pg_bulk_order").await else {
+        return;
+    };
+    let thread = ThreadId("bulk-order-thread".into());
+    let run = RunId("bulk-order-run".into());
+    let messages: Vec<_> = (0..257)
+        .map(|index| message(&format!("bulk-{index:03}"), "ordered"))
+        .collect();
+    let state: Vec<_> = (0..257)
+        .map(|index| {
+            StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                format!("bulk.state.{index:03}"),
+                serde_json::json!(index),
+            )
+        })
+        .collect();
+    let events: Vec<_> = (0..257)
+        .map(|index| Draft {
+            kind: EventKind::RunStateChanged,
+            payload: serde_json::json!({"index": index}),
+        })
+        .collect();
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let record = coordinator
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+            true,
+            messages.clone(),
+            state.clone(),
+            events,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(record.sequence, 1, "B1/E2");
+    drop(coordinator);
+    let reopened = PostgresCommitCoordinator::with_existing_pool(pool)
+        .await
+        .unwrap();
+    let recovered = reopened.recovery_snapshot(&thread, &run).await.unwrap();
+    assert_eq!(recovered.messages, messages, "B1/E1 messages");
+    assert_eq!(recovered.state, state, "B1/E1 state");
+    let supplied_events: Vec<_> = recovered
+        .events
+        .iter()
+        .filter(|event| event.payload.get("index").is_some())
+        .collect();
+    assert_eq!(supplied_events.len(), 257, "B1/E1 supplied events");
+    for (index, event) in supplied_events.iter().enumerate() {
+        assert_eq!(event.payload["index"], serde_json::json!(index), "B1/E1");
+    }
+    assert_eq!(reopened.commit_count(), 1, "B1/E2");
+}
+
+#[tokio::test]
+async fn later_bulk_chunk_failure_rolls_back_every_fact_and_reuses_sequence() {
+    // Causes: C1 the second Message chunk violates a database constraint
+    // after the first 256 rows were inserted; C2 the caller then retries one
+    // valid commit. Effects: E1 no partial facts or run survive C1; E2 C2 gets
+    // dense sequence one. Rules F1=C1 -> E1, F2=C1+C2 -> E2. A database error
+    // must not turn chunking into a partial public commit.
+    let Some(pool) = schema_pool("t_pg_bulk_rollback").await else {
+        return;
+    };
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    sqlx::query(
+        "ALTER TABLE runtime_message ADD CONSTRAINT reject_bulk_last \
+         CHECK (data->>'id' <> 'bulk-fail')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut messages: Vec<_> = (0..256)
+        .map(|index| message(&format!("bulk-{index:03}"), "before failure"))
+        .collect();
+    messages.push(message("bulk-fail", "rejected second chunk"));
+    assert!(
+        coordinator
+            .commit(ThreadCommit::assemble(
+                ThreadId("bulk-failed-thread".into()),
+                ended("bulk-failed-run"),
+                true,
+                messages,
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .is_err(),
+        "F1 constraint rejects second chunk"
+    );
+    for table in ["runtime_commit", "runtime_message", "runtime_run_record"] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "F1/E1 {table}");
+    }
+    let retry = coordinator
+        .commit(ThreadCommit::assemble(
+            ThreadId("bulk-retry-thread".into()),
+            ended("bulk-retry-run"),
+            true,
+            vec![message("bulk-good", "retry")],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(retry.sequence, 1, "F2/E2");
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommitPayload {
+    Minimal,
+    Many,
+}
+
+async fn observe_commit_throughput(schema: &'static str, payload: CommitPayload) {
+    let Some(pool) = schema_pool(schema).await else {
         panic!("explicit performance run requires PostgreSQL");
     };
     let store = Arc::new(
@@ -141,13 +472,35 @@ async fn independent_thread_commit_throughput_observation() {
             let store = store.clone();
             tasks.spawn(async move {
                 let run = RunId(format!("perf-run-{concurrency}-{index}"));
+                let facts = if payload == CommitPayload::Many { 8 } else { 0 };
                 let commit = ThreadCommit::assemble(
                     ThreadId(format!("perf-thread-{concurrency}-{index}")),
                     RunDisposition::ended(run, EndCause::NaturalEnd),
                     true,
-                    Vec::new(),
-                    Vec::new(),
-                    Vec::new(),
+                    (0..facts)
+                        .map(|fact| {
+                            message(
+                                &format!("perf-message-{concurrency}-{index}-{fact}"),
+                                "benchmark message",
+                            )
+                        })
+                        .collect(),
+                    (0..facts)
+                        .map(|fact| {
+                            StateCommand::set(
+                                Scope::Thread,
+                                MergePolicy::Disjoint,
+                                format!("perf.state.{fact}"),
+                                serde_json::json!(fact),
+                            )
+                        })
+                        .collect(),
+                    (0..facts)
+                        .map(|fact| Draft {
+                            kind: EventKind::RunStateChanged,
+                            payload: serde_json::json!({"fact": fact}),
+                        })
+                        .collect(),
                 );
                 store.commit(commit).await.expect("independent commit")
             });
@@ -164,7 +517,12 @@ async fn independent_thread_commit_throughput_observation() {
         assert_eq!(sequences, (first..=last).collect::<Vec<_>>(), "P1-P3/E1");
         let elapsed = started.elapsed().as_secs_f64();
         println!(
-            "commit_perf independent_threads={} concurrency={concurrency} seconds={elapsed:.3} commits_per_s={:.1}",
+            "commit_perf profile={} independent_threads={} concurrency={concurrency} seconds={elapsed:.3} commits_per_s={:.1}",
+            if payload == CommitPayload::Many {
+                "many"
+            } else {
+                "minimal"
+            },
             COMMITS,
             COMMITS as f64 / elapsed
         );
@@ -295,7 +653,7 @@ async fn conformance_empty_store_reads_are_absent() {
 }
 
 // Postgres projects committed state commands back through the `committed_state`
-// read port (rebuilt from the durable `runtime_state_command` rows), so a resumed
+// read port (built from durable `runtime_state_command` rows on demand), so a resumed
 // run replays its accumulated state from durable truth — it runs the shared
 // `committed_state_replays` conformance case (as inmem/fs/sqlite do).
 #[tokio::test]
@@ -315,9 +673,8 @@ async fn conformance_delegation_and_tool_state_commit_atomically() {
 }
 
 // Durable state replay across a reconnect: committed state commands are served back
-// through `committed_state` from a fresh coordinator over the same schema, proving
-// the projection rebuilt from the durable `runtime_state_command` rows (not just an
-// in-process advance).
+// through a scoped execution view opened by a fresh coordinator, proving the
+// projection derives from durable `runtime_state_command` rows.
 #[tokio::test]
 async fn reconnect_replays_committed_state() {
     let Some(pool) = schema_pool("t_c_state_reopen").await else {
@@ -362,19 +719,23 @@ async fn reconnect_replays_committed_state() {
         .expect("count state rows");
     assert_eq!(rows, 2, "both state commands persisted");
 
-    // ...and a fresh coordinator rehydrates and serves them back through the port.
+    // ...and a fresh authority reads them without loading unrelated history.
     let reopened = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("reconnect");
+    let view = reopened
+        .open_thread_projection(&thread)
+        .await
+        .expect("Thread view");
     assert_eq!(
-        CommittedThreadView::committed_state(&reopened, &thread),
+        CommittedThreadView::committed_state(&view, &thread),
         commands,
         "committed state replays from durable truth after a reconnect"
     );
 }
 
 #[tokio::test]
-async fn reconnect_hydrates_a_valid_persisted_optional_resume_ticket() {
+async fn reconnect_reads_a_valid_persisted_optional_resume_ticket() {
     let Some(pool) = schema_pool("t_legacy_resume_reopen").await else {
         return;
     };
@@ -404,7 +765,7 @@ async fn reconnect_hydrates_a_valid_persisted_optional_resume_ticket() {
     // Cause/effect rule: a valid pre-closed-shape ticket is durable committed
     // truth. A fresh process must converge it to the one closed AwaitTarget;
     // malformed products remain rejected by the contract test. This exercises
-    // the production hydrate path rather than adding a Postgres-only decoder.
+    // the production scoped recovery path rather than adding a second decoder.
     let legacy = serde_json::json!({
         "correlation_id": "corr-1",
         "run_id": "run-legacy-resume",
@@ -427,7 +788,11 @@ async fn reconnect_hydrates_a_valid_persisted_optional_resume_ticket() {
     let reopened = PostgresCommitCoordinator::with_pool(pool)
         .await
         .expect("reconnect");
-    let ticket = CommittedThreadView::resume_ticket(&reopened, &run).expect("resume ticket");
+    let view = reopened
+        .open_thread_projection(&thread)
+        .await
+        .expect("Thread view");
+    let ticket = CommittedThreadView::resume_ticket(&view, &run).expect("resume ticket");
     assert_eq!(
         ticket.target(),
         &AwaitTarget::ToolCall {
@@ -446,13 +811,13 @@ async fn reconnect_hydrates_a_valid_persisted_optional_resume_ticket() {
 async fn corrupt_waiting_ticket_is_isolated_from_postgres_restart_and_recovery() {
     // Cause/effect graph: C1=Awaiting ThreadCommit stores complete Run facts;
     // C2=only its JSONB waiting ticket becomes semantically invalid; C3=a cold
-    // coordinator hydrates, reads authoritative open-wait, and takes a recovery
-    // snapshot. Effects: E1=hydrate succeeds; E2=Run/transcript/state/audit and
+    // coordinator opens, reads authoritative open-wait, and takes a recovery
+    // snapshot. Effects: E1=startup succeeds; E2=Run/transcript/state/audit and
     // fences survive; E3=no reply authority is exposed; E4=the corrupt row is
     // retained for canonical Runtime interruption to consume atomically.
     // Decision table: PG1 valid facts+valid ticket=>ordinary recovery; PG2 valid
-    // facts+corrupt ticket+C3=>E1-E4; PG3 corrupt non-ticket fact=>existing
-    // fail-closed hydration. Constraint: this adapter never deletes waiting rows.
+    // facts+corrupt ticket+C3=>E1-E4; PG3 corrupt non-ticket fact=>scoped
+    // recovery fails closed. Constraint: this adapter never deletes waiting rows.
     let Some(pool) = schema_pool("t_corrupt_waiting_recovery").await else {
         return;
     };
@@ -877,7 +1242,7 @@ async fn authoritative_latest_and_wait_track_cross_replica_runs() {
 async fn authoritative_state_tracks_cross_replica_commits() {
     /*
      * State-read cause/effect decision table.
-     * Causes: C1 an observer hydrates before a peer commit; C2 the peer commits
+     * Causes: C1 an observer opens before a peer commit; C2 the peer commits
      * one Thread-scoped cumulative-usage state command; C3 no local commit ever
      * advances the observer projection. Effects: E1 the compatibility view
      * remains empty, proving the stale-replica precondition; E2 the authoritative
@@ -930,8 +1295,8 @@ async fn migration_phase_applies_schema_then_runtime_verifies_and_commits() {
     // Cause/effect decision table for schema access:
     // R1 empty schema + migrate -> portable and PG-only bundles are applied
     // without hydrating a runtime projection.
-    // R2 R1 ledger + connect_existing -> both bundles are verified, projection
-    // hydration succeeds, and commits remain writable without startup DDL.
+    // R2 R1 ledger + connect_existing -> both bundles are verified, bounded
+    // startup succeeds, and commits remain writable without startup DDL.
     // R3 either bundle missing/drifted -> connect_existing fails closed (the
     // shared scoped-migration verify suite owns those ledger failure cases).
     let schema = "t_connect";
@@ -991,11 +1356,11 @@ async fn commit_maps_a_storage_failure_to_a_rejection() {
 }
 
 #[tokio::test]
-async fn projection_rehydrates_from_postgres_after_reconnect() {
+async fn thread_projection_opens_from_postgres_after_reconnect() {
     // Test design — restart state-machine contract:
-    // Empty --atomic commit(M,Run,Wait)/ack--> Durable(1) --drop/reconnect-->
-    // Projection(1,M,Run,Wait). The complete aggregate must cross restart; a
-    // sequence-only or partial-table projection is forbidden.
+    // C1 a committed Message/Run/Wait survives restart; C2 one Thread view is
+    // opened on demand. E1 startup reads only the fence; E2 the scoped view
+    // contains the complete atomic prefix. R1=C1+C2 -> E1+E2.
     let Some(pool) = schema_pool("t_hydrate").await else {
         return;
     };
@@ -1016,32 +1381,36 @@ async fn projection_rehydrates_from_postgres_after_reconnect() {
             .expect("commit");
     } // coordinator A dropped — simulate a restart
 
-    // A fresh coordinator on the same database hydrates committed truth.
+    // A fresh coordinator opens without history, then loads just one Thread.
     let restarted = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("coordinator b");
     assert_eq!(restarted.commit_count(), 1, "fence survives restart");
     let thread = ThreadId("thread-1".to_string());
+    let view = restarted
+        .open_thread_projection(&thread)
+        .await
+        .expect("Thread view");
     assert_eq!(
-        CommittedThreadView::committed_messages(&restarted, &thread)[0]
+        CommittedThreadView::committed_messages(&view, &thread)[0]
             .id
             .0,
         "m1"
     );
     assert!(
-        CommittedThreadView::run(&restarted, &RunId("run-1".to_string())).is_some(),
+        CommittedThreadView::run(&view, &RunId("run-1".to_string())).is_some(),
         "run record rehydrated"
     );
     assert!(
-        CommittedThreadView::resume_ticket(&restarted, &RunId("run-1".to_string())).is_some(),
+        CommittedThreadView::resume_ticket(&view, &RunId("run-1".to_string())).is_some(),
         "active ticket rehydrated"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_hydration_observes_one_complete_postgres_snapshot() {
+async fn concurrent_thread_open_observes_one_complete_postgres_snapshot() {
     // Test design — repeated concurrency history test for snapshot isolation:
-    // race one atomic commit against hydration. The only legal observations are
+    // race one atomic commit against Thread open. The only legal observations are
     // the complete prefix before the commit or the complete prefix after it.
     // A mixed result (old sequence with new message/run, or new sequence with a
     // missing fact) represents no serial database state and fails immediately.
@@ -1065,10 +1434,10 @@ async fn concurrent_hydration_observes_one_complete_postgres_snapshot() {
         };
         let (committed, hydrated) = tokio::join!(
             writer.commit(commit),
-            PostgresCommitCoordinator::with_existing_pool(pool.clone()),
+            writer.open_thread_projection(&thread),
         );
         committed.expect("writer commit");
-        let hydrated = hydrated.expect("hydrate concurrent snapshot");
+        let hydrated = hydrated.expect("open concurrent snapshot");
         let observed = hydrated.commit_count();
         let has_message = !CommittedThreadView::committed_messages(&hydrated, &thread).is_empty();
         let has_run = CommittedThreadView::run(&hydrated, &run).is_some();
@@ -1131,7 +1500,9 @@ async fn operation_receipt_survives_reconnect() {
     );
     assert_eq!(
         reopened
-            .committed_messages(&ThreadId("receipt-thread".into()))
+            .authoritative_committed_messages(&ThreadId("receipt-thread".into()))
+            .await
+            .expect("committed transcript")
             .len(),
         1
     );

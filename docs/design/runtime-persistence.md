@@ -80,10 +80,11 @@ trait CommittedThreadView {
     fn open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)>;
 }
 
-// durable read repository: extends that same view only with committed events.
-trait CheckpointReader: CommittedThreadView {
-    fn list_events(&self, scope: EventScope, from: Option<Cursor>, limit: usize) -> Vec<EventRecord>;
+// durable event read repository: SQL backends read committed tables directly.
+trait CheckpointReader {
+    async fn list_events(&self, scope: EventScope, from: Option<Cursor>, limit: usize) -> Result<Vec<EventRecord>>;
 }
+// Atomic per-Thread recovery remains the existing RunRecoverySource port.
 
 // live: best-effort progress (G10), reconciled by committed history.
 trait StreamSink { async fn send(&self, event: StreamEvent) -> Result<()>; }
@@ -129,7 +130,9 @@ Backend mechanisms (per ADR-0039 slices):
 - **fs** — temp-file + `rename` + a write-ahead checkpoint journal; crash recovery
   replays the journal on open; events are a per-scope append-only numbered index.
 - **postgres / sqlite** — staged writes in one SQL transaction (stronger than the
-  inmem snapshot); reads come from committed tables, not an in-process cache (D4).
+  inmem snapshot). PostgreSQL committed event and policy reads come from SQL;
+  its synchronous execution view is opened per active Thread from one recovery
+  snapshot. SQLite retains its local projection and native lifecycle SQL feed.
 
 ## Two invariants every backend must uphold
 
@@ -137,11 +140,12 @@ Backend mechanisms (per ADR-0039 slices):
    become visible in the same transaction as messages/state/run, or are derived
    after commit — never through a parallel writer. The old `EventLog::append`
    side-write is removed. `CheckpointReader::list_events` is the read side.
-2. **Fact-authority reads (D4, ADR-0006).** `CheckpointReader` reads committed
-   tables / the fact log, so a durable run resumes after a process restart. Serving
-   reads from an in-process projection cache (as the current SQL backends do) is a
-   bug: the cache is empty in a fresh process and resume fails. A `FactCheckpointReader`
-   that rebuilds the read model from the fact log is an internal helper, not a port.
+2. **Fact-authority reads (D4, ADR-0006).** Shared-authority PostgreSQL reads
+   query committed SQL. Its process-local synchronous view is only for execution
+   and is opened from a consistent per-Thread recovery snapshot; startup does
+   not replay the whole Cell. `RunRecoverySource` is the atomic recovery read,
+   while `CheckpointReader` pages durable events. The portable local lifecycle
+   reader reuses `CommittedThreadView`; PostgreSQL keeps its native SQL feed.
 
 ## Conformance
 

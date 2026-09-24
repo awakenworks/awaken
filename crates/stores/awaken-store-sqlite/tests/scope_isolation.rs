@@ -110,7 +110,10 @@ async fn event_scope_thread_isolates_across_threads() {
         .await
         .expect("a2");
 
-    let a_events = store.list_events(&EventScope::Thread(ThreadId("t-a".to_string())), None, 10);
+    let a_events = store
+        .list_events(&EventScope::Thread(ThreadId("t-a".to_string())), None, 10)
+        .await
+        .expect("events");
     assert_eq!(a_events.len(), 2, "thread A has two events");
     assert!(
         a_events
@@ -123,7 +126,10 @@ async fn event_scope_thread_isolates_across_threads() {
         "thread-scoped events keep commit order"
     );
 
-    let b_events = store.list_events(&EventScope::Thread(ThreadId("t-b".to_string())), None, 10);
+    let b_events = store
+        .list_events(&EventScope::Thread(ThreadId("t-b".to_string())), None, 10)
+        .await
+        .expect("events");
     assert_eq!(b_events.len(), 1, "thread B has one event");
     assert_eq!(b_events[0].run_id, RunId("r-b".to_string()));
 }
@@ -173,11 +179,15 @@ async fn empty_store_event_reads_are_absent() {
     assert!(
         store
             .list_events(&EventScope::Run(RunId("r1".to_string())), None, 10)
+            .await
+            .expect("events")
             .is_empty()
     );
     assert!(
         store
             .list_events(&EventScope::Thread(ThreadId("t1".to_string())), None, 10)
+            .await
+            .expect("events")
             .is_empty()
     );
     assert!(store.latest_run(&ThreadId("t1".to_string())).is_none());

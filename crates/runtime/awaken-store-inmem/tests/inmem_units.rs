@@ -380,7 +380,10 @@ async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
         .await
         .expect("commit 2");
 
-    let events = store.list_events(&EventScope::Run(RunId("r".to_string())), None, 10);
+    let events = store
+        .list_events(&EventScope::Run(RunId("r".to_string())), None, 10)
+        .await
+        .expect("events");
     let seqs: Vec<u64> = events.iter().map(|e| e.sequence).collect();
     assert_eq!(
         seqs,
@@ -391,6 +394,7 @@ async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
 
     let lifecycle =
         checkpoint_lifecycle_events_after(&store, RunLifecycleCursor::default(), usize::MAX)
+            .await
             .expect("M3 checkpoint lifecycle feed");
     assert_eq!(
         lifecycle
@@ -411,11 +415,15 @@ async fn list_events_on_empty_store_is_empty() {
     assert!(
         store
             .list_events(&EventScope::Run(RunId("nope".to_string())), None, 10)
+            .await
+            .expect("events")
             .is_empty()
     );
     assert!(
         store
             .list_events(&EventScope::Thread(ThreadId("nope".to_string())), None, 10)
+            .await
+            .expect("events")
             .is_empty()
     );
 }
@@ -441,6 +449,8 @@ async fn list_events_run_scope_filters_by_run_thread_scope_spans_runs() {
     assert_eq!(
         store
             .list_events(&EventScope::Run(RunId("r1".to_string())), None, 10)
+            .await
+            .expect("events")
             .len(),
         1
     );
@@ -448,12 +458,16 @@ async fn list_events_run_scope_filters_by_run_thread_scope_spans_runs() {
     assert!(
         store
             .list_events(&EventScope::Run(RunId("ghost".to_string())), None, 10)
+            .await
+            .expect("events")
             .is_empty()
     );
     // Thread scope spans both runs on the thread.
     assert_eq!(
         store
             .list_events(&EventScope::Thread(ThreadId("t".to_string())), None, 10)
+            .await
+            .expect("events")
             .len(),
         2
     );
@@ -461,12 +475,16 @@ async fn list_events_run_scope_filters_by_run_thread_scope_spans_runs() {
     assert!(
         store
             .list_events(&EventScope::Thread(ThreadId("other".to_string())), None, 10)
+            .await
+            .expect("events")
             .is_empty()
     );
     // Limit truncates.
     assert_eq!(
         store
             .list_events(&EventScope::Thread(ThreadId("t".to_string())), None, 1)
+            .await
+            .expect("events")
             .len(),
         1
     );

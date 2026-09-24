@@ -14,6 +14,7 @@ use crate::agent::run::{EndCause, Id as RunId, RunState};
 use crate::agent::thread::Id as ThreadId;
 use crate::audit::kind::Kind as AuditKind;
 use crate::thread::read::checkpoint::{CheckpointReader, EventScope};
+use crate::thread::read::committed_thread_view::CommittedThreadView;
 
 /// Exclusive cursor in one committed-truth feed partition.
 #[derive(
@@ -143,13 +144,13 @@ pub trait RunLifecycleFeed: Send + Sync {
 /// lifecycle prefix to distinguish an initial `Running` transition from a
 /// post-`Awaiting` resume. P2 may replace that fold with a durable lifecycle
 /// index/changefeed without changing this port.
-pub struct CheckpointRunLifecycleFeed {
-    reader: Arc<dyn CheckpointReader>,
+pub struct CheckpointRunLifecycleFeed<R: CheckpointReader + CommittedThreadView + ?Sized> {
+    reader: Arc<R>,
 }
 
-impl CheckpointRunLifecycleFeed {
+impl<R: CheckpointReader + CommittedThreadView + ?Sized> CheckpointRunLifecycleFeed<R> {
     #[must_use]
-    pub fn new(reader: Arc<dyn CheckpointReader>) -> Self {
+    pub fn new(reader: Arc<R>) -> Self {
         Self { reader }
     }
 }
@@ -208,13 +209,15 @@ pub fn classify_run_lifecycle_record(
 }
 
 #[async_trait]
-impl RunLifecycleFeed for CheckpointRunLifecycleFeed {
+impl<R: CheckpointReader + CommittedThreadView + ?Sized> RunLifecycleFeed
+    for CheckpointRunLifecycleFeed<R>
+{
     async fn events_after(
         &self,
         cursor: RunLifecycleCursor,
         limit: usize,
     ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
-        checkpoint_lifecycle_events_after(self.reader.as_ref(), cursor, limit)
+        checkpoint_lifecycle_events_after(self.reader.as_ref(), cursor, limit).await
     }
 }
 
@@ -222,13 +225,13 @@ impl RunLifecycleFeed for CheckpointRunLifecycleFeed {
 /// Store adapters with a native cross-process feed override this at their
 /// application boundary; all other backends reuse this exact classifier and
 /// cursor algorithm without growing another projection path.
-pub fn checkpoint_lifecycle_events_after<R>(
+pub async fn checkpoint_lifecycle_events_after<R>(
     reader: &R,
     cursor: RunLifecycleCursor,
     limit: usize,
 ) -> Result<RunLifecyclePage, RunLifecycleFeedError>
 where
-    R: CheckpointReader + ?Sized,
+    R: CheckpointReader + CommittedThreadView + ?Sized,
 {
     if limit == 0 {
         return Ok(RunLifecyclePage {
@@ -236,7 +239,10 @@ where
             next_cursor: cursor,
         });
     }
-    let records = reader.list_events(&EventScope::All, None, usize::MAX);
+    let records = reader
+        .list_events(&EventScope::All, None, usize::MAX)
+        .await
+        .map_err(RunLifecycleFeedError::Rejected)?;
     project_lifecycle_records(records.iter(), cursor, limit, |run_id| {
         reader.run(run_id).map(|run| run.thread_id)
     })
@@ -394,21 +400,23 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl CheckpointReader for Reader {
-        fn list_events(
+        async fn list_events(
             &self,
             scope: &EventScope,
             from: Option<u64>,
             limit: usize,
-        ) -> Vec<EventRecord> {
+        ) -> Result<Vec<EventRecord>, String> {
             assert_eq!(scope, &EventScope::All);
             let after = from.unwrap_or_default();
-            self.events
+            Ok(self
+                .events
                 .iter()
                 .filter(|event| event.sequence > after)
                 .take(limit)
                 .cloned()
-                .collect()
+                .collect())
         }
     }
 
