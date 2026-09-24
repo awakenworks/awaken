@@ -857,7 +857,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness pending_signal_is_deliverable_only_without_consuming_commit \
     --harness dispatch_claim_preserves_every_frozen_binding \
     --harness pool_draining_state_is_absorbing_and_claim_closed \
-    --harness resolution_retry_admission_matches_only_deadline_or_cancellation \
+    --harness resolution_retry_admission_matches_only_the_persisted_deadline \
     --harness shared_error_gate_admits_exactly_one_probe_after_the_deadline \
     --harness probe_release_is_exact_and_preserves_backoff \
     --harness drain_error_backoff_is_bounded_monotonic_and_saturating \
