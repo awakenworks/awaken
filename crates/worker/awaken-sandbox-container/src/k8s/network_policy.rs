@@ -24,13 +24,15 @@ const SANDBOX_ALLOWLIST_POLICY: &str = "awaken-sandbox-allowlist-egress";
 pub(super) struct Attestation {
     network_none: AtomicBool,
     network_allowlist: AtomicBool,
+    expected_repository_port: Option<u16>,
 }
 
 impl Attestation {
-    pub(super) const fn new() -> Self {
+    pub(super) const fn new(expected_repository_port: Option<u16>) -> Self {
         Self {
             network_none: AtomicBool::new(false),
             network_allowlist: AtomicBool::new(false),
+            expected_repository_port,
         }
     }
 
@@ -47,7 +49,7 @@ impl Attestation {
         client: &kube::Client,
         namespace: &str,
     ) -> Result<(), RuntimeError> {
-        let attested = match attest(client, namespace).await {
+        let attested = match attest(client, namespace, self.expected_repository_port).await {
             Ok(attested) => attested,
             Err(error) => {
                 self.network_none.store(false, Ordering::Release);
@@ -78,6 +80,7 @@ pub(super) struct Evidence {
 pub(super) async fn attest(
     client: &kube::Client,
     namespace: &str,
+    expected_repository_port: Option<u16>,
 ) -> Result<Evidence, RuntimeError> {
     let policies: Api<NetworkPolicy> = Api::namespaced(client.clone(), namespace);
     let policies = policies
@@ -86,7 +89,7 @@ pub(super) async fn attest(
         .map_err(backend)?;
     Ok(Evidence {
         network_none: attests_contract(&policies.items),
-        network_allowlist: attests_allowlist_contract(&policies.items),
+        network_allowlist: attests_allowlist_contract(&policies.items, expected_repository_port),
     })
 }
 
@@ -190,7 +193,10 @@ fn attests_contract(policies: &[NetworkPolicy]) -> bool {
     deny.is_some() && open_allow.is_some() && restricted_is_not_widened
 }
 
-fn attests_allowlist_contract(policies: &[NetworkPolicy]) -> bool {
+fn attests_allowlist_contract(
+    policies: &[NetworkPolicy],
+    expected_repository_port: Option<u16>,
+) -> bool {
     let allowlist = super::sandbox_network_labels(Some("allowlist"));
     let exact = policies.iter().find(|policy| {
         policy.metadata.name.as_deref() == Some(SANDBOX_ALLOWLIST_POLICY)
@@ -214,12 +220,15 @@ fn attests_allowlist_contract(policies: &[NetworkPolicy]) -> bool {
                                     })
                             })
                             && rules[0].ports.as_ref().is_some_and(|ports| {
-                                (1..=2).contains(&ports.len())
+                                ports.len() == 1 + usize::from(expected_repository_port.is_some())
                                     && ports.iter().all(|port| {
                                         port.protocol.as_deref() == Some("TCP")
-                                            && port.port.is_some()
+                                            && matches!(port.port.as_ref(), Some(k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(value)) if *value > 0)
                                     })
-                                    && (ports.len() == 1 || ports[0].port != ports[1].port)
+                                    && expected_repository_port.is_none_or(|expected| {
+                                        ports[1].port.as_ref() == Some(&k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(i32::from(expected)))
+                                            && ports[0].port != ports[1].port
+                                    })
                             })
                     })
             })
@@ -336,7 +345,7 @@ mod tests {
         // exclusion preserves E1.
         let canonical = canonical();
         assert!(attests_contract(&canonical), "P1");
-        assert!(attests_allowlist_contract(&canonical), "P1 allowlist");
+        assert!(attests_allowlist_contract(&canonical, None), "P1 allowlist");
         assert!(!attests_contract(&canonical[1..]), "P2");
 
         let mut widened = canonical.clone();
@@ -347,7 +356,7 @@ mod tests {
             Some(vec![NetworkPolicyEgressRule::default()]),
         ));
         assert!(!attests_contract(&widened), "P3");
-        assert!(!attests_allowlist_contract(&widened), "P3 allowlist");
+        assert!(!attests_allowlist_contract(&widened, None), "P3 allowlist");
 
         let mut wildcard_namespace = canonical.clone();
         wildcard_namespace[2]
@@ -362,7 +371,7 @@ mod tests {
             .unwrap()[0]
             .namespace_selector = Some(LabelSelector::default());
         assert!(
-            !attests_allowlist_contract(&wildcard_namespace),
+            !attests_allowlist_contract(&wildcard_namespace, None),
             "a wildcard namespace can select an attacker-controlled gateway"
         );
 
@@ -379,7 +388,7 @@ mod tests {
             .unwrap()[0]
             .namespace_selector = None;
         assert!(
-            !attests_allowlist_contract(&missing_namespace),
+            !attests_allowlist_contract(&missing_namespace, None),
             "P4 an absent namespace selector spans every namespace"
         );
 
@@ -414,24 +423,35 @@ mod tests {
                 .unwrap()
         }
         let mut policies = canonical();
-        assert!(attests_allowlist_contract(&policies), "G1");
+        assert!(attests_allowlist_contract(&policies, None), "G1");
         ports(&mut policies).push(NetworkPolicyPort {
             protocol: Some("TCP".into()),
             port: Some(IntOrString::Int(8444)),
             end_port: None,
         });
-        assert!(attests_allowlist_contract(&policies), "G2");
+        assert!(attests_allowlist_contract(&policies, Some(8444)), "G2");
+        assert!(!attests_allowlist_contract(&policies, None), "G3 no trust");
+        assert!(
+            !attests_allowlist_contract(&policies, Some(8090)),
+            "G3 wrong port"
+        );
         ports(&mut policies)[1].port = Some(IntOrString::Int(8081));
-        assert!(!attests_allowlist_contract(&policies), "G3 duplicate");
+        assert!(
+            !attests_allowlist_contract(&policies, Some(8444)),
+            "G3 duplicate"
+        );
         ports(&mut policies)[1].port = Some(IntOrString::Int(8444));
         ports(&mut policies)[1].protocol = Some("UDP".into());
-        assert!(!attests_allowlist_contract(&policies), "G3 UDP");
+        assert!(!attests_allowlist_contract(&policies, Some(8444)), "G3 UDP");
         ports(&mut policies)[1].protocol = Some("TCP".into());
         ports(&mut policies).push(NetworkPolicyPort {
             protocol: Some("TCP".into()),
             port: Some(IntOrString::Int(9000)),
             end_port: None,
         });
-        assert!(!attests_allowlist_contract(&policies), "G3 third port");
+        assert!(
+            !attests_allowlist_contract(&policies, Some(8444)),
+            "G3 third port"
+        );
     }
 }

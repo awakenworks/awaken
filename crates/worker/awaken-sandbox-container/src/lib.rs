@@ -1835,6 +1835,49 @@ pub mod k8s;
 /// Public internal-CA path mounted by the hosted Kubernetes Repository transport.
 /// Only the exact Repository clone/push process opts into this trust root.
 pub const REPOSITORY_GATEWAY_CA_PATH: &str = "/var/run/awaken/repository-trust/ca.crt";
+
+/// Deployment-owned public trust and exact network coordinate for hosted
+/// Repository Git. It carries no credential or Repository authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct K8sRepositoryGatewayTrust {
+    pub(crate) host: String,
+    pub(crate) address: std::net::IpAddr,
+    pub(crate) port: u16,
+    pub(crate) ca_secret_name: String,
+    pub(crate) ca_secret_key: String,
+}
+
+impl K8sRepositoryGatewayTrust {
+    pub fn new(
+        host: impl Into<String>,
+        address: std::net::IpAddr,
+        port: u16,
+        ca_secret_name: impl Into<String>,
+        ca_secret_key: impl Into<String>,
+    ) -> Result<Self, RuntimeError> {
+        let host = host.into();
+        let ca_secret_name = ca_secret_name.into();
+        let ca_secret_key = ca_secret_key.into();
+        if normalize_hostname(&host).ok().as_deref() != Some(host.as_str())
+            || port == 0
+            || ca_secret_name.trim().is_empty()
+            || ca_secret_name.contains('/')
+            || ca_secret_key.trim().is_empty()
+            || ca_secret_key.contains('/')
+        {
+            return Err(RuntimeError::Backend(
+                "invalid Kubernetes Repository Gateway trust configuration".into(),
+            ));
+        }
+        Ok(Self {
+            host,
+            address,
+            port,
+            ca_secret_name,
+            ca_secret_key,
+        })
+    }
+}
 /// Real Kubernetes backend (kube). Gated behind the `k8s` feature; compile-verified
 /// here, running requires a cluster.
 #[cfg(feature = "k8s")]

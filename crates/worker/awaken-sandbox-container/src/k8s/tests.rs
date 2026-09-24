@@ -1313,9 +1313,14 @@ fn repository_gateway_trust_is_exact_pod_transport_not_a_second_credential() {
     );
 
     let host = "gateway.awaken-full.svc";
-    let trust =
-        K8sRepositoryGatewayTrust::new(host, "10.1.2.3".parse().unwrap(), "internal-ca", "ca.crt")
-            .unwrap();
+    let trust = K8sRepositoryGatewayTrust::new(
+        host,
+        "10.1.2.3".parse().unwrap(),
+        8444,
+        "internal-ca",
+        "ca.crt",
+    )
+    .unwrap();
     plan.env.extend([
         ("HTTPS_PROXY".into(), "http://10.1.2.3:8091".into()),
         ("NO_PROXY".into(), "localhost,127.0.0.1".into()),
@@ -1392,6 +1397,7 @@ fn repository_gateway_trust_is_exact_pod_transport_not_a_second_credential() {
         K8sRepositoryGatewayTrust::new(
             "gateway.invalid/path",
             "10.1.2.3".parse().unwrap(),
+            8444,
             "internal-ca",
             "ca.crt"
         )
