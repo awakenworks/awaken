@@ -330,9 +330,6 @@ fn resource_pep_maps_only_resource_routes_and_is_total_by_method() {
     for (path, read, write) in [
         ("/v1/files", FILE_READ, FILE_WRITE),
         ("/v1/files/file_1/content", FILE_READ, FILE_WRITE),
-        // File capture is a read projection of the same resource authority,
-        // after the existing Workspace path rewrite; it grants no Run mutation.
-        ("/v1/awaken/files/output-capture", FILE_READ, FILE_WRITE),
         ("/v1/skills", SKILL_READ, SKILL_WRITE),
         ("/v1/skills/skill_1/versions/1", SKILL_READ, SKILL_WRITE),
         ("/v1/memory_stores", WORKSPACE_READ, WORKSPACE_WRITE),
@@ -541,44 +538,6 @@ fn guarded_app(iam: Arc<ManagementAuthz>) -> Router {
         .merge(token_router(iam.clone()))
         .fallback(echo)
         .layer(axum::middleware::from_fn_with_state(iam, management_guard))
-}
-
-#[tokio::test]
-async fn output_capture_uses_the_existing_file_read_pep() {
-    // P1 no credential ->401; P2 existing workspace_user file.read grant ->200;
-    // P3 same reader attempts mutation ->403; P4 a rewritten foreign Workspace
-    // selection ->403. The existing PEP and role catalog own every decision;
-    // a route echo proves admission only, while File HTTP tests own 405/no writes.
-    let (_dir, iam) = fresh_iam();
-    let token = mint(
-        &iam,
-        "tok_capture_reader",
-        BOOTSTRAP_WORKSPACE,
-        "workspace_user",
-    );
-    let app = guarded_app(iam);
-    let uri = "/v1/awaken/files/output-capture?scope_id=session";
-    for (method, credential, expected) in [
-        ("GET", None, StatusCode::UNAUTHORIZED),
-        ("GET", Some(token.as_str()), StatusCode::OK),
-        ("POST", Some(token.as_str()), StatusCode::FORBIDDEN),
-    ] {
-        assert_eq!(call(&app, method, uri, credential, None).await.0, expected);
-    }
-    let mut request = Request::builder()
-        .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    request
-        .extensions_mut()
-        .insert(awaken_authz_enforce::RequestTenancy {
-            workspace_id: "foreign".into(),
-        });
-    assert_eq!(
-        app.oneshot(request).await.unwrap().status(),
-        StatusCode::FORBIDDEN
-    );
 }
 
 // Cause/effect decision table:

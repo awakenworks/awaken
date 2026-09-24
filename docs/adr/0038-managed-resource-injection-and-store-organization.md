@@ -884,3 +884,19 @@ versions, escaped identity data and absolute/relative views. This change adds
 no authority transition or persistent state machine; those executable tests
 complement the existing projection models without claiming formal proof of
 model interpretation or filesystem availability.
+
+## Amendment — 2026-09-24: retire the public output-capture read
+
+The namespaced `GET /v1/awaken/files/output-capture` projection described in
+A5 is removed after its Cowork consumer switches to the standard scoped Files
+history. The product deliberately stops presenting a current output set or an
+observation revision; neither Files list order nor a same-name File substitutes
+for that fact. Old browser bundles must be invalidated before the route is
+removed in a deployment.
+
+`ArtifactCapture`, its FileCatalog persistence, CAS reducer and Runtime harvest
+remain the internal authority for complete scans, response-loss replay and
+terminal recovery. Removing the HTTP adapter neither rewrites historical V6
+rows nor turns an unobserved output into an observed empty set. Internal store
+and harvest tests continue to own those distinctions; public clients can only
+claim that a File appeared in the Session's historical catalog.
