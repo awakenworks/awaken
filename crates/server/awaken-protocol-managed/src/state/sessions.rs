@@ -1450,6 +1450,24 @@ impl ManagedState {
     /// events. Idempotent: a re-archive observes the same fact and emits no
     /// duplicate event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
+        self.archive_session_with_cleanup(id, false).await
+    }
+
+    /// The existing profiled release joins verified cleanup for an already
+    /// terminal Session; it never turns a live Run outcome into termination.
+    /// Public archive keeps its strict idle-only admission.
+    pub async fn release_profiled_session_without_publication(
+        &self,
+        id: &str,
+    ) -> Result<Session, StateError> {
+        self.archive_session_with_cleanup(id, true).await
+    }
+
+    async fn archive_session_with_cleanup(
+        &self,
+        id: &str,
+        verified_cleanup: bool,
+    ) -> Result<Session, StateError> {
         self.ensure_session_for_frozen_control(id).await?;
         let owner = self.resolve_owner(id).await?;
         let observed_at = self.application.now_unix_ms();
@@ -1461,10 +1479,33 @@ impl ManagedState {
             observed_at,
         );
         let archived_at = awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at);
-        self.application
-            .terminate_session(id, &archived_at, terminated_fact)
-            .await
-            .map_err(Self::map_preparation_error)?;
+        if verified_cleanup {
+            // This read selects a safe command, not a second status authority.
+            // Both application commands reload and recheck the durable root.
+            let terminal = self
+                .application
+                .session_repository_handle()
+                .get(&awaken_session_types::SessionId::from(id))
+                .await
+                .map_err(StateError::from)?
+                .execution
+                .is_terminal();
+            if !terminal {
+                self.application
+                    .terminate_session(id, &archived_at, terminated_fact.clone())
+                    .await
+                    .map_err(Self::map_preparation_error)?;
+            }
+            self.application
+                .release_terminal_session(id, &archived_at, terminated_fact)
+                .await
+                .map_err(Self::map_preparation_error)?;
+        } else {
+            self.application
+                .terminate_session(id, &archived_at, terminated_fact)
+                .await
+                .map_err(Self::map_preparation_error)?;
+        }
         // No direct cache mutation or bespoke terminal append belongs here. The
         // canonical refresh rereads PersistedSession and projects root + every
         // derived child terminal with identical warm/restart behavior.
