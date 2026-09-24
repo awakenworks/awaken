@@ -214,9 +214,12 @@ fn attests_allowlist_contract(policies: &[NetworkPolicy]) -> bool {
                                     })
                             })
                             && rules[0].ports.as_ref().is_some_and(|ports| {
-                                ports.len() == 1
-                                    && ports[0].protocol.as_deref() == Some("TCP")
-                                    && ports[0].port.is_some()
+                                (1..=2).contains(&ports.len())
+                                    && ports.iter().all(|port| {
+                                        port.protocol.as_deref() == Some("TCP")
+                                            && port.port.is_some()
+                                    })
+                                    && (ports.len() == 1 || ports[0].port != ports[1].port)
                             })
                     })
             })
@@ -395,5 +398,40 @@ mod tests {
             Some(vec![NetworkPolicyEgressRule::default()]),
         ));
         assert!(attests_contract(&excluded), "P5");
+    }
+
+    #[test]
+    fn private_repository_port_must_share_the_one_gateway_peer() {
+        // Causes: C1=proxy-only vs proxy+private-Git ports; C2=both ports TCP,
+        // distinct and on the same exact Gateway peer; C3=third, duplicate,
+        // UDP, or separate peer. Effects: E1=one-port standalone admitted;
+        // E2=two-port hosted admitted; E3=widened graph rejected.
+        // Rules: G1(1,exact)->E1; G2(2,C2)->E2; G3(C3)->E3.
+        fn ports(policies: &mut [NetworkPolicy]) -> &mut Vec<NetworkPolicyPort> {
+            policies[2].spec.as_mut().unwrap().egress.as_mut().unwrap()[0]
+                .ports
+                .as_mut()
+                .unwrap()
+        }
+        let mut policies = canonical();
+        assert!(attests_allowlist_contract(&policies), "G1");
+        ports(&mut policies).push(NetworkPolicyPort {
+            protocol: Some("TCP".into()),
+            port: Some(IntOrString::Int(8444)),
+            end_port: None,
+        });
+        assert!(attests_allowlist_contract(&policies), "G2");
+        ports(&mut policies)[1].port = Some(IntOrString::Int(8081));
+        assert!(!attests_allowlist_contract(&policies), "G3 duplicate");
+        ports(&mut policies)[1].port = Some(IntOrString::Int(8444));
+        ports(&mut policies)[1].protocol = Some("UDP".into());
+        assert!(!attests_allowlist_contract(&policies), "G3 UDP");
+        ports(&mut policies)[1].protocol = Some("TCP".into());
+        ports(&mut policies).push(NetworkPolicyPort {
+            protocol: Some("TCP".into()),
+            port: Some(IntOrString::Int(9000)),
+            end_port: None,
+        });
+        assert!(!attests_allowlist_contract(&policies), "G3 third port");
     }
 }

@@ -149,7 +149,17 @@ pub fn pod_for_plan_with_control_forwarder(
     plan: &ContainerPlan,
     forwarder: &K8sSandboxControlForwarder,
 ) -> Pod {
-    build_pod_with_continuation(id, plan, &None, None, &[], None, None, Some(forwarder))
+    build_pod_with_continuation(
+        id,
+        plan,
+        &None,
+        None,
+        &[],
+        None,
+        None,
+        Some(forwarder),
+        None,
+    )
 }
 
 pub(super) fn pod_incarnation(
