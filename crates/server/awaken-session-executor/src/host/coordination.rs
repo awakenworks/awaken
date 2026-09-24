@@ -715,6 +715,7 @@ impl SharedHost {
             snapshot = awaken_session_realization_contract::project_effective_agent_publication(
                 baseline.model_override.as_ref(),
                 &baseline.system_prompt,
+                Some(resources.resources.skills()),
                 &resources.workspace_id,
                 snapshot,
             )

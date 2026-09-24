@@ -25233,6 +25233,7 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
     let projected = awaken_session_realization_contract::project_effective_agent_publication(
         Some(&frozen),
         &inherit,
+        None,
         "workspace",
         base.clone(),
     )
@@ -25249,6 +25250,7 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
     let replayed = awaken_session_realization_contract::project_effective_agent_publication(
         Some(&frozen),
         &inherit,
+        None,
         "workspace",
         projected.clone(),
     )
@@ -25262,6 +25264,7 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
     let reused = awaken_session_realization_contract::project_effective_agent_publication(
         Some(&inference_only),
         &inherit,
+        None,
         "workspace",
         base.clone(),
     )
@@ -25283,6 +25286,7 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
         awaken_session_realization_contract::project_effective_agent_publication(
             Some(&malformed),
             &inherit,
+            None,
             "workspace",
             base,
         )
@@ -25790,6 +25794,27 @@ fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             .to_string()
             .contains("has neither frozen version bytes nor a deferred aggregate binding"),
         "M5/E3: {missing}"
+    );
+    // M5a: the same published Agent with an explicit empty Resource manifest
+    // selects no Skill. This must admit a Skill-free Managed Session while M5
+    // still rejects a published Skill whose frozen bytes are missing.
+    let cleared = awaken_session_realization_contract::project_effective_agent_publication(
+        None,
+        &awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
+        Some(&[]),
+        "workspace",
+        selected_snapshot.clone(),
+    )
+    .expect("M5a canonical Resource projection");
+    assert!(
+        empty_host
+            .select_content_delivery(
+                "managed-missing-freeze",
+                Some(&cleared),
+                SkillDeliveryEvidence::Materialized(Some(&[])),
+            )
+            .is_ok(),
+        "M5a empty Skill manifest clears the published selection"
     );
 
     let binding = awaken_session_resource_contract::ResolvedSkillBinding {

@@ -467,7 +467,7 @@ async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
             )))
             .with_session_repo(repo.clone());
         let app = router(std::sync::Arc::new(state));
-        let _ = call(&app, "POST", "/v1/sessions", Some(request))
+        let created = call(&app, "POST", "/v1/sessions", Some(request))
             .await
             .expect_for(expected, "expected status");
         if expected == StatusCode::BAD_REQUEST {
@@ -479,6 +479,23 @@ async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
             );
         } else {
             assert_eq!(prepared.lock().unwrap().len(), 1, "{rule}");
+            if rule == "G3" {
+                // Cause: an official empty Skill override replaces 500 Agent
+                // defaults. Effect: the one durable Resource manifest is empty;
+                // the executable publication must project from that manifest.
+                // Rule G3, without a second baseline Skill authority.
+                let persisted = repo
+                    .get(&SessionId::from(created["id"].as_str().unwrap()))
+                    .await
+                    .unwrap();
+                assert!(persisted.resources.active.skills().is_empty());
+                assert!(
+                    serde_json::to_value(persisted.frozen_baseline().unwrap())
+                        .unwrap()
+                        .get("skills")
+                        .is_none()
+                );
+            }
         }
     }
 }
