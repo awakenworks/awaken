@@ -385,10 +385,11 @@ pub async fn build_container_environment_for_realization(
             // Exec-attached Session environments do not publish an ACP port. Keep the
             // constructor's legacy address inert until that adapter parameter is removed.
             let inert = "127.0.0.1:1".parse().expect("literal socket address");
-            let mut runtime = awaken_sandbox_container::k8s::K8sRuntime::connect_for_realization(
+            let mut runtime = awaken_sandbox_container::k8s::K8sRuntime::connect_for_realization_with_repository_gateway_trust(
                 namespace,
                 realization_namespace,
                 inert,
+                settings.k8s_repository_gateway_trust.clone(),
             )
             .await
             .map_err(|error| format!("k8s runtime: {error}"))?
@@ -397,9 +398,6 @@ pub async fn build_container_environment_for_realization(
                 runtime = runtime
                     .with_image_prewarm(policy)
                     .map_err(|error| error.to_string())?;
-            }
-            if let Some(trust) = &settings.k8s_repository_gateway_trust {
-                runtime = runtime.with_repository_gateway_trust(trust.clone());
             }
             runtime = runtime
                 .with_sandbox_control_forwarder(k8s_sandbox_control_forwarder(image, settings)?);

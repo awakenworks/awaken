@@ -83,7 +83,6 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .clone()
             .unwrap_or_else(|| "default".to_owned()),
         k8s_image_pull_secrets: Vec::new(),
-        #[cfg(feature = "container-k8s")]
         k8s_repository_gateway_trust: None,
         // The operator selects the existing retained-PVC policy. Omission
         // preserves ephemeral roots and cannot advertise retained Session support.
