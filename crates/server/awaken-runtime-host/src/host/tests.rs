@@ -22607,6 +22607,11 @@ pub(crate) struct RemoteTerminalCleanupControl {
     events: Mutex<Vec<String>>,
     disposal_response_loss_once: AtomicBool,
     authorization_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    terminal_work_block_for: Mutex<Option<String>>,
+    terminal_work_started: tokio::sync::Notify,
+    terminal_work_release: tokio::sync::Notify,
+    terminal_work_seen: Mutex<Vec<String>>,
+    terminal_work_fail_for: Mutex<Option<String>>,
     renewal_failure:
         Mutex<Option<awaken_session_realization_contract::SessionRealizationControlFailure>>,
     claim_targets: Mutex<Vec<awaken_session_realization_contract::SessionRealizationTarget>>,
@@ -22801,6 +22806,23 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
         awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.events.lock().unwrap().push("cleanup:poll".into());
+        self.terminal_work_seen
+            .lock()
+            .unwrap()
+            .push(session_id.to_string());
+        let blocked =
+            self.terminal_work_block_for.lock().unwrap().as_deref() == Some(session_id.as_str());
+        if blocked {
+            self.terminal_work_started.notify_one();
+            self.terminal_work_release.notified().await;
+        }
+        if self.terminal_work_fail_for.lock().unwrap().as_deref() == Some(session_id.as_str()) {
+            return Err(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                    "injected terminal work failure".into(),
+                ),
+            );
+        }
         if self
             .renewals
             .lock()
@@ -24546,6 +24568,96 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         "R1-R2 one exact claim plus the terminating empty scan"
     );
     drop(managed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_terminal_cleanup_overlaps_independent_assignments_with_a_four_slot_bound() {
+    // Cause/effect graph: C1 five distinct terminal assignments are offered by
+    // the sole Control queue; C2 the first canonical work poll blocks; C3 one
+    // sibling poll fails; C4 the first is released. E1 the other three polls
+    // proceed while C2 is blocked; E2 no fifth claim crosses the four-slot
+    // bound; E3 the failure does not cancel the other claimed work; E4 the
+    // fifth assignment is claimed after C4 and the sweep reports the error.
+    // Constraint: each assignment has its own Session lease; the mock returns
+    // completed work so existing tests remain the authority for physical effects.
+    //
+    // | Rule | offered | first poll | sibling failure | Effect |
+    // | R1 | five | blocked | yes | E1 + E2 |
+    // | R2 | five | released | yes | E3 + E4 |
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+    );
+    let lease = awaken_session_resource_contract::SessionRealizationLease {
+        owner: "remote-worker".into(),
+        runtime_incarnation: "remote-worker:incarnation".into(),
+        epoch: 3,
+        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+    };
+    let target = awaken_session_realization_contract::SessionRealizationTarget {
+        owner: lease.owner.clone(),
+        runtime_incarnation: lease.runtime_incarnation.clone(),
+        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+        reassign_existing_lease: false,
+    };
+    for index in 0..5 {
+        let session_id = format!("bounded-terminal-{index}");
+        control.assignments.lock().unwrap().push_back(
+            awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                session_id: session_id.clone().into(),
+                projection: remote_terminal_cleanup_projection(),
+                authority: crate::session_slot::test_lease_receipt(lease.clone()),
+            },
+        );
+        control
+            .renewals
+            .lock()
+            .unwrap()
+            .insert(session_id, lease.clone());
+    }
+    *control.terminal_work_block_for.lock().unwrap() = Some("bounded-terminal-0".into());
+    *control.terminal_work_fail_for.lock().unwrap() = Some("bounded-terminal-2".into());
+    let recovery = tokio::spawn({
+        let host = host.clone();
+        let target = target.clone();
+        async move { host.recover_terminal_cleanup_assignments(target).await }
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        control.terminal_work_started.notified(),
+    )
+    .await
+    .expect("R1/C2 first canonical poll blocks");
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if control.terminal_work_seen.lock().unwrap().len() == 4 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("R1/E1 all four independent polls run");
+    assert_eq!(control.claim_targets.lock().unwrap().len(), 4, "R1/E2");
+    assert!(!recovery.is_finished(), "R1/C2");
+
+    control.terminal_work_release.notify_one();
+    let error = tokio::time::timeout(std::time::Duration::from_secs(2), recovery)
+        .await
+        .expect("R2/E3 sweep completes after release")
+        .expect("R2/E3 recovery task joins")
+        .expect_err("R2/E4 sibling failure remains visible");
+    assert!(error.to_string().contains("injected terminal work failure"));
+    assert_eq!(control.terminal_work_seen.lock().unwrap().len(), 5, "R2/E3");
+    assert_eq!(control.claim_targets.lock().unwrap().len(), 6, "R2/E4");
+    assert!(control.assignments.lock().unwrap().is_empty(), "R2/E4");
+    assert_eq!(
+        host.recover_terminal_cleanup_assignments(target)
+            .await
+            .unwrap(),
+        0,
+        "R2/E4 completed assignments are not replayed"
+    );
 }
 
 #[tokio::test]
