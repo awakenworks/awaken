@@ -1292,6 +1292,115 @@ fn empty_memory_tar() -> Vec<u8> {
 }
 
 #[test]
+fn repository_gateway_trust_is_exact_pod_transport_not_a_second_credential() {
+    // Causes: C1=private trust absent/present; C2=proxy absent/present;
+    // C3=host/Secret config valid/invalid. Effects: E1=default Pod unchanged;
+    // E2=public CA read-only, exact host alias, Git TLS trust, proxy bypass only
+    // for the Gateway; E3=invalid config rejected before Pod creation.
+    // Rules: T1(0,any,valid)->E1; T2(1,1,valid)->E2;
+    // T3(1,0,valid)->E2 without NO_PROXY; T4(1,any,invalid)->E3.
+    let mut plan = plan_with_memory(Vec::new());
+    let plain = build_pod("plain", &plan, &None, None, &[]);
+    let plain_spec = plain.spec.unwrap();
+    assert!(plain_spec.host_aliases.is_none(), "T1");
+    assert!(
+        !plain_spec
+            .volumes
+            .unwrap_or_default()
+            .iter()
+            .any(|volume| { volume.name == "repository-gateway-trust" }),
+        "T1"
+    );
+
+    let host = "gateway.awaken-full.svc";
+    let trust =
+        K8sRepositoryGatewayTrust::new(host, "10.1.2.3".parse().unwrap(), "internal-ca", "ca.crt")
+            .unwrap();
+    plan.env.extend([
+        ("HTTPS_PROXY".into(), "http://10.1.2.3:8091".into()),
+        ("NO_PROXY".into(), "localhost,127.0.0.1".into()),
+    ]);
+    let pod = build_pod_with_continuation(
+        "mediated",
+        &plan,
+        &None,
+        None,
+        &[],
+        None,
+        None,
+        None,
+        Some(&trust),
+    );
+    let spec = pod.spec.unwrap();
+    assert_eq!(
+        spec.host_aliases.unwrap()[0].hostnames.as_ref().unwrap(),
+        &[host],
+        "T2"
+    );
+    let volume = spec
+        .volumes
+        .unwrap()
+        .into_iter()
+        .find(|volume| volume.name == "repository-gateway-trust")
+        .unwrap();
+    assert_eq!(
+        volume.secret.unwrap().secret_name.as_deref(),
+        Some("internal-ca"),
+        "T2"
+    );
+    let agent = &spec.containers[0];
+    assert!(
+        agent.volume_mounts.as_ref().unwrap().iter().any(|mount| {
+            mount.mount_path == "/var/run/awaken/repository-trust" && mount.read_only == Some(true)
+        }),
+        "T2"
+    );
+    let env = agent.env.as_ref().unwrap();
+    assert!(
+        !env.iter().any(|variable| variable.name == "GIT_SSL_CAINFO"),
+        "T2 only Repository clone/push processes select the private CA"
+    );
+    assert!(
+        env.iter().any(|variable| variable.name == "NO_PROXY"
+            && variable.value.as_deref() == Some("localhost,127.0.0.1,gateway.awaken-full.svc")),
+        "T2"
+    );
+
+    plan.env.retain(|(name, _)| name != "HTTPS_PROXY");
+    let direct = build_pod_with_continuation(
+        "direct",
+        &plan,
+        &None,
+        None,
+        &[],
+        None,
+        None,
+        None,
+        Some(&trust),
+    );
+    assert!(
+        direct.spec.unwrap().containers[0]
+            .env
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|variable| variable.name == "NO_PROXY"
+                && variable.value.as_deref() == Some("localhost,127.0.0.1")),
+        "T3"
+    );
+    assert!(
+        K8sRepositoryGatewayTrust::new(
+            "gateway.invalid/path",
+            "10.1.2.3".parse().unwrap(),
+            "internal-ca",
+            "ca.crt"
+        )
+        .is_err(),
+        "T4"
+    );
+}
+
+#[test]
 fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
     /* Memory projection cause/effect decision table — KM1:
      * C1 the canonical MemoryMounter produced a bounded snapshot; C2 access is
@@ -1331,6 +1440,7 @@ fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
         &[],
         None,
         Some(&effect_fence),
+        None,
         None,
     );
     let spec = pod.spec.unwrap();

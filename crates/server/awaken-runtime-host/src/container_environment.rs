@@ -398,6 +398,9 @@ pub async fn build_container_environment_for_realization(
                     .with_image_prewarm(policy)
                     .map_err(|error| error.to_string())?;
             }
+            if let Some(trust) = &settings.k8s_repository_gateway_trust {
+                runtime = runtime.with_repository_gateway_trust(trust.clone());
+            }
             runtime = runtime
                 .with_sandbox_control_forwarder(k8s_sandbox_control_forwarder(image, settings)?);
             if let Some(continuation) = settings.k8s_continuation_volume.clone() {

@@ -1604,6 +1604,7 @@ mod tests {
             Some("awc-session-1"),
             None,
             None,
+            None,
         );
         let spec = pod.spec.unwrap();
         let continuation = spec
@@ -1666,6 +1667,7 @@ mod tests {
             None,
             &[],
             Some("awc-session-1"),
+            None,
             None,
             None,
         );

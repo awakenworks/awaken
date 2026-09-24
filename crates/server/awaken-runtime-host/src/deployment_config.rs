@@ -378,6 +378,11 @@ pub struct SandboxSettings {
     pub k8s_namespace: String,
     /// Existing namespace-local Secrets used by kubelet for private image pulls.
     pub k8s_image_pull_secrets: Vec<String>,
+    /// Public CA and exact host alias for the hosted private Repository Gateway.
+    /// This is transport trust, not a credential or Repository authority.
+    #[cfg(feature = "container-k8s")]
+    pub k8s_repository_gateway_trust:
+        Option<awaken_sandbox_container::k8s::K8sRepositoryGatewayTrust>,
     /// Optional retained active-filesystem PVC policy. Association is derived
     /// from the existing Session Sandbox realization; this is provisioning
     /// policy, not a second lifecycle registry.
@@ -436,6 +441,8 @@ impl Default for SandboxSettings {
             container_mcp_relay: None,
             k8s_namespace: "default".to_owned(),
             k8s_image_pull_secrets: Vec::new(),
+            #[cfg(feature = "container-k8s")]
+            k8s_repository_gateway_trust: None,
             k8s_continuation_volume: None,
             k8s_image_prewarm: None,
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),

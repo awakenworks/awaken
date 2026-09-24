@@ -13,6 +13,27 @@ use awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
 
 const CREDENTIAL_OPERATION_TTL: Duration = Duration::from_secs(120);
 
+fn repository_git_tls_env(
+    remote_url: &str,
+    credential: Option<&pc::RepositoryHttpBasicCredential>,
+) -> Vec<pc::EnvVar> {
+    let private_gateway = credential
+        .is_some_and(pc::RepositoryHttpBasicCredential::is_gateway_capability)
+        && url::Url::parse(remote_url)
+            .ok()
+            .is_some_and(|url| url.host_str().is_some_and(|host| host.ends_with(".svc")));
+    if !private_gateway {
+        return Vec::new();
+    }
+    vec![pc::EnvVar {
+        name: "GIT_SSL_CAINFO".into(),
+        value: pc::EnvValue::Inline {
+            value: awaken_sandbox_container::REPOSITORY_GATEWAY_CA_PATH.into(),
+        },
+        visibility: pc::EnvVisibility::Process,
+    }]
+}
+
 struct OperationRepositoryCredential {
     protocol: String,
     host: String,
@@ -129,7 +150,10 @@ pub(super) async fn provision(
 ) -> Result<(), pc::SandboxError> {
     plan.validate_mount_path()?;
     let publication = publish_credential(sandbox, &plan.transport_url, credential).await?;
-    let command = repository_clone_command(plan, publisher_bin, uuid::Uuid::new_v4())?;
+    let mut command = repository_clone_command(plan, publisher_bin, uuid::Uuid::new_v4())?;
+    command
+        .env
+        .extend(repository_git_tls_env(&plan.transport_url, credential));
     let result = match sandbox.spawn(command).await {
         Ok(process) => process.wait().await,
         Err(error) => Err(error),
@@ -226,9 +250,11 @@ pub(super) async fn push(
     let publication = publish_credential(sandbox, &plan.transport_url, credential)
         .await
         .map_err(pc::RepositoryPublicationError::Unavailable)?;
-    let process = sandbox
-        .spawn_agent_process(repository_push_command(plan, expectation, helper_bin))
-        .await;
+    let mut command = repository_push_command(plan, expectation, helper_bin);
+    command
+        .env
+        .extend(repository_git_tls_env(&plan.transport_url, credential));
+    let process = sandbox.spawn_agent_process(command).await;
     let result = match process {
         Ok(process) => process.process.wait().await,
         Err(error) => Err(error),
@@ -300,6 +326,40 @@ fn repository_push_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_private_gateway_git_operations_select_the_internal_ca() {
+        // Causes: C1=Gateway capability vs upstream/no credential; C2=private
+        // Service DNS vs public host. Effects: E1=the single Git operation
+        // receives the public internal CA; E2=all other Git processes retain
+        // their normal system trust. Rules: T1(gateway,svc)->E1;
+        // T2(gateway,public|upstream,any|absent,any)->E2.
+        let gateway =
+            pc::RepositoryHttpBasicCredential::gateway_capability("signed-capability".to_owned());
+        let upstream =
+            pc::RepositoryHttpBasicCredential::new("user".to_owned(), "password".to_owned());
+        let private =
+            repository_git_tls_env("https://gateway.awaken.svc:8444/git/repo", Some(&gateway));
+        assert_eq!(private.len(), 1, "T1");
+        assert_eq!(private[0].name, "GIT_SSL_CAINFO", "T1");
+        assert_eq!(
+            private[0].value,
+            pc::EnvValue::Inline {
+                value: awaken_sandbox_container::REPOSITORY_GATEWAY_CA_PATH.into()
+            },
+            "T1"
+        );
+        for (url, credential) in [
+            ("https://gateway.example.com/git/repo", Some(&gateway)),
+            ("https://gateway.awaken.svc:8444/git/repo", Some(&upstream)),
+            ("https://gateway.awaken.svc:8444/git/repo", None),
+        ] {
+            assert!(
+                repository_git_tls_env(url, credential).is_empty(),
+                "T2 {url}"
+            );
+        }
+    }
 
     fn plan() -> pc::RepositoryRealizationPlan {
         pc::RepositoryRealizationPlan {
