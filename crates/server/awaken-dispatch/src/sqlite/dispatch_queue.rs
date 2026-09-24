@@ -1127,11 +1127,13 @@ impl DispatchQueue for SqliteDispatchStore {
             let candidates = {
                 let mut statement = tx
                     .prepare(&format!(
-                        "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested \
+                        "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested, \
+                         active_attempt_owner, active_attempt_epoch \
                          FROM {p}_dispatch WHERE status = 'running' \
                          AND lease_until IS NOT NULL AND lease_until < ?1 \
                          AND attempt_count >= ?2 \
-                         AND active_attempt_epoch IS NULL ORDER BY created_at"
+                         AND (active_attempt_epoch IS NULL OR cancel_requested <> 0) \
+                         ORDER BY created_at"
                     ))
                     .map_err(store_error)?;
                 let rows = statement
@@ -1144,6 +1146,8 @@ impl DispatchQueue for SqliteDispatchStore {
                                 row.get::<_, i64>(2)?,
                                 row.get::<_, i64>(3)?,
                                 row.get::<_, i64>(4)?,
+                                row.get::<_, Option<String>>(5)?,
+                                row.get::<_, Option<i64>>(6)?,
                             ))
                         },
                     )
@@ -1151,13 +1155,35 @@ impl DispatchQueue for SqliteDispatchStore {
                 rows.collect::<Result<Vec<_>, _>>().map_err(store_error)?
             };
             let mut quarantined = 0;
-            for (run_id, owner, epoch, attempt_count, cancellation_requested) in candidates {
+            for (
+                run_id,
+                owner,
+                epoch,
+                attempt_count,
+                cancellation_requested,
+                active_attempt_owner,
+                active_attempt_epoch,
+            ) in candidates
+            {
                 let Some(owner) = owner else {
                     return Err(DispatchError::Rejected(
                         "expired running dispatch has no persisted lease owner".to_string(),
                     ));
                 };
                 let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
+                // The SQL above only prefilters. The slot disposition is decided
+                // here, on the locked row, by the one kernel every backend shares.
+                let slot = awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
+                    active_attempt_owner.is_some(),
+                    active_attempt_epoch.is_some(),
+                    active_attempt_owner.as_deref() == Some(owner.as_str()),
+                    active_attempt_epoch == Some(epoch),
+                );
+                if !slot.permits_settlement()
+                    && !slot.quarantine_admits_occupation(cancellation_requested != 0)
+                {
+                    continue;
+                }
                 let current = crate::persisted_dispatch_transition(
                     "running",
                     epoch,

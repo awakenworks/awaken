@@ -3790,13 +3790,17 @@ async fn successive_resolution_failures_preserve_multi_drain_progress() {
 }
 
 async fn assert_successive_resolution_failures_retry(concurrency: usize) {
+    use awaken_dispatch::{DispatchCursor, DispatchOperation, DispatchOperationalFeed};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // C1 generic resolution fails before execution; C2 its request-local retry
     // reaches ordinary Environment pressure; C3 the next retry resolves.
-    // E1 neither C1 nor C2 opens the pool-wide infrastructure-error gate; E2 C3
-    // executes the retained request exactly once without another enqueue,
-    // external wake, queue fallback, or lease-expiry recovery.
+    // E1 neither C1 nor C2 opens the pool-wide infrastructure-error gate; E2
+    // the second exact claim waits 500ms rather than hot-looping at the first
+    // 250ms interval; E3 C3 executes the retained request exactly once without
+    // another enqueue, external wake, queue fallback, or lease-expiry recovery.
+    // Rule S1=C1+C2 before 500ms=>E1+E2; S2=C3 at 750ms=>E3. Each clock
+    // advance follows the durable release receipt, not a resolver call count.
     let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     store
@@ -3832,16 +3836,41 @@ async fn assert_successive_resolution_failures_retry(concurrency: usize) {
     clock.set(250);
     tokio::time::advance(Duration::from_millis(250)).await;
     assert!(yield_until(|| calls.load(Ordering::SeqCst) == 2).await);
+    let mut second_release = false;
+    for _ in 0..100 {
+        let operations = store.events_after(DispatchCursor(0), 100).await.unwrap();
+        if operations
+            .events
+            .iter()
+            .filter(|event| matches!(&event.operation, DispatchOperation::LeaseLost { .. }))
+            .count()
+            >= 2
+        {
+            second_release = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(second_release, "S1 second claim reached durable deferral");
+    clock.set(500);
+    tokio::time::advance(Duration::from_millis(250)).await;
     for _ in 0..10 {
         tokio::task::yield_now().await;
     }
-    clock.set(500);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "S1/E2 second defer remains active"
+    );
+    clock.set(750);
     tokio::time::advance(Duration::from_millis(250)).await;
     let completed = yield_until(|| store.dispatch_count() == 0).await;
     pool.shutdown().await;
     assert!(
         completed,
-        "successive request-local resolution failures must not strand the pool"
+        "successive request-local resolution failures must not strand the pool: calls={} rows={:?}",
+        calls.load(Ordering::SeqCst),
+        store.list_dispatches().await.unwrap()
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),

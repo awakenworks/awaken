@@ -1148,11 +1148,12 @@ impl DispatchQueue for PostgresDispatchStore {
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let rows = sqlx::query(&format!(
-            "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested \
+            "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested, \
+             active_attempt_owner, active_attempt_epoch \
              FROM {p}_dispatch WHERE status = 'running' \
              AND lease_until IS NOT NULL AND lease_until < $1 \
              AND attempt_count >= $2 \
-             AND active_attempt_epoch IS NULL FOR UPDATE"
+             AND (active_attempt_epoch IS NULL OR cancel_requested <> 0) FOR UPDATE"
         ))
         .bind(crate::clock::db_millis(expired_before_ms))
         .bind(max_attempts_i64)
@@ -1176,6 +1177,23 @@ impl DispatchQueue for PostgresDispatchStore {
             let cancellation_requested: i64 =
                 row.try_get("cancel_requested").map_err(store_error)?;
             let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
+            // The SQL above only prefilters. The slot disposition is decided here,
+            // on the locked row, by the one kernel every backend shares.
+            let active_attempt_owner: Option<String> =
+                row.try_get("active_attempt_owner").map_err(store_error)?;
+            let active_attempt_epoch: Option<i64> =
+                row.try_get("active_attempt_epoch").map_err(store_error)?;
+            let slot = PhysicalAttemptSlot::from_facts(
+                active_attempt_owner.is_some(),
+                active_attempt_epoch.is_some(),
+                active_attempt_owner.as_deref() == Some(owner.as_str()),
+                active_attempt_epoch == Some(epoch),
+            );
+            if !slot.permits_settlement()
+                && !slot.quarantine_admits_occupation(cancellation_requested != 0)
+            {
+                continue;
+            }
             let current = crate::persisted_dispatch_transition(
                 "running",
                 epoch,
