@@ -125,7 +125,7 @@ pub(super) fn claim_exact_transaction_with_mode(
                SELECT 1 FROM {prefix}_pending pe WHERE pe.run_id = d.run_id \
                AND (pe.available_at IS NULL OR pe.available_at <= ?2))) AND {thread_available}) \
              OR (d.status = 'pending' AND {thread_available})) \
-             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL \
+             AND (d.retry_not_before IS NULL \
                   OR d.retry_not_before <= ?2) AND ?3 IS NULL"
         ),
         ExactClaimMode::ReservationRecovery => format!(

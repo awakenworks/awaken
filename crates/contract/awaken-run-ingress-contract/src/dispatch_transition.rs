@@ -26,6 +26,9 @@ pub enum CancelTransition {
     Applied {
         state: DispatchTransition,
         revoked_lease: bool,
+        /// Only the first cancellation makes a deferred row runnable now.
+        /// Later failed attempts keep their request-local retry deadline.
+        clear_retry_deadline: bool,
     },
 }
 
@@ -416,12 +419,15 @@ impl DispatchTransition {
         match self.state {
             crate::DispatchState::Reserved
             | crate::DispatchState::Pending
-            | crate::DispatchState::Awaiting => Ok(CancelTransition::Applied {
+            | crate::DispatchState::Awaiting
+            // A dead letter only receives the cancellation bit; its phase stays sealed.
+            | crate::DispatchState::DeadLetter => Ok(CancelTransition::Applied {
                 state: Self {
                     cancellation_requested: true,
                     ..self
                 },
                 revoked_lease: false,
+                clear_retry_deadline: !self.cancellation_requested,
             }),
             crate::DispatchState::ReservationLeased | crate::DispatchState::Leased => {
                 let lease_epoch = self
@@ -439,19 +445,9 @@ impl DispatchTransition {
                         cancellation_requested: true,
                     },
                     revoked_lease: true,
+                    clear_retry_deadline: !self.cancellation_requested,
                 })
             }
-            // DeadLetter retains its pending input and can ordinarily be
-            // requeued. A terminal Session fence therefore seals that existing
-            // row by reusing the durable cancellation bit without making it
-            // runnable or inventing another terminal state.
-            crate::DispatchState::DeadLetter => Ok(CancelTransition::Applied {
-                state: Self {
-                    cancellation_requested: true,
-                    ..self
-                },
-                revoked_lease: false,
-            }),
             crate::DispatchState::Superseded => Ok(CancelTransition::NotCancellable),
         }
     }
@@ -840,11 +836,16 @@ mod tests {
         let CancelTransition::Applied {
             state: cancelled,
             revoked_lease,
+            clear_retry_deadline,
         } = old.cancel().unwrap()
         else {
             panic!("leased row must be cancellable")
         };
         assert!(revoked_lease);
+        assert!(
+            clear_retry_deadline,
+            "first cancellation wakes a deferred row"
+        );
         assert_eq!(cancelled.state, crate::DispatchState::Pending);
         assert_eq!(cancelled.lease_epoch, 9);
         assert_eq!(
@@ -860,6 +861,7 @@ mod tests {
             CancelTransition::Applied {
                 state: cancelled,
                 revoked_lease: false,
+                clear_retry_deadline: false,
             }
         );
     }
@@ -1271,7 +1273,8 @@ mod proofs {
         // Effects: E1 superseded rows reject cancellation; E2 a live lease returns
         // to its non-leased phase, advances exactly one epoch, and fences the old
         // claim; E3 other cancellable phases retain phase/epoch and set the flag;
-        // E4 a repeat is an applied state stutter with no second revocation.
+        // E4 a repeat is an applied state stutter with no second revocation or
+        // retry-deadline reset; E5 the first request clears any prior deadline.
         // Constraint/invariant: the epoch remains the sole claim fence and
         // cancellation neither reopens terminal rows nor mints an extra owner.
         // Decision rules: R1 terminal=>E1; R2 leased+C2=>E2; R3 other=>E3;
@@ -1286,8 +1289,10 @@ mod proofs {
             CancelTransition::Applied {
                 state: cancelled,
                 revoked_lease,
+                clear_retry_deadline,
             } => {
                 assert!(cancelled.cancellation_requested);
+                assert_eq!(clear_retry_deadline, !state.cancellation_requested);
                 if matches!(
                     state.state,
                     crate::DispatchState::ReservationLeased | crate::DispatchState::Leased
@@ -1329,6 +1334,7 @@ mod proofs {
                     CancelTransition::Applied {
                         state: cancelled,
                         revoked_lease: false,
+                        clear_retry_deadline: false,
                     }
                 );
             }

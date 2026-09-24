@@ -390,7 +390,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         <> 'remote_required' AND \
                     COALESCE(json_array_length(json_extract(\
                         d.request, '$.placement.required_credentials')), 0) = 0))";
-                let retry_due = "(d.cancel_requested = 1 OR d.retry_not_before IS NULL \
+                let retry_due = "(d.retry_not_before IS NULL \
                     OR d.retry_not_before <= ?1)";
                 let reservation_recovery = format!(
                     "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
@@ -517,7 +517,7 @@ impl DispatchQueue for SqliteDispatchStore {
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
                    ) AND {thread_available}) OR \
                  (d.status = 'pending' AND {thread_available})) \
-                 AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL OR d.retry_not_before <= ?1) \
+                 AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?1) \
                  ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
                           CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                           d.priority DESC, d.created_at",
@@ -1335,6 +1335,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 let awaken_run_ingress_contract::CancelTransition::Applied {
                     state: next,
                     revoked_lease,
+                    clear_retry_deadline,
                 } = transition.cancel().map_err(crate::transition_error)?
                 else {
                     tx.commit().map_err(store_error)?;
@@ -1345,7 +1346,8 @@ impl DispatchQueue for SqliteDispatchStore {
                         "UPDATE {p}_dispatch SET cancel_requested = ?2, lease_epoch = ?3, \
                          lease_owner = CASE WHEN ?4 THEN NULL ELSE lease_owner END, \
                          lease_until = CASE WHEN ?4 AND ?5 = 'reserved' THEN 0 \
-                           WHEN ?4 THEN NULL ELSE lease_until END, status = ?5 \
+                           WHEN ?4 THEN NULL ELSE lease_until END, status = ?5, \
+                         retry_not_before = CASE WHEN ?6 THEN NULL ELSE retry_not_before END \
                          WHERE run_id = ?1"
                     ),
                     params![
@@ -1353,7 +1355,8 @@ impl DispatchQueue for SqliteDispatchStore {
                         i64::from(next.cancellation_requested),
                         durable_i64("dispatch lease epoch", next.lease_epoch)?,
                         revoked_lease,
-                        crate::dispatch_state_db(next.state)
+                        crate::dispatch_state_db(next.state),
+                        clear_retry_deadline,
                     ],
                 )
                 .map_err(store_error)?;
@@ -1747,7 +1750,7 @@ impl ControlDispatchQueue for SqliteDispatchStore {
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
                    ) AND {thread_available}) OR \
                  (d.status = 'pending' AND {thread_available})) \
-                 AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL OR d.retry_not_before <= ?1) \
+                 AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?1) \
                  ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
                           CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                           d.priority DESC, d.created_at",
@@ -1877,7 +1880,7 @@ impl ControlDispatchQueue for SqliteDispatchStore {
                            SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
                            AND (i.available_at IS NULL OR i.available_at <= ?1)\
                          )) AND {thread_available})) \
-                         AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL \
+                         AND (d.retry_not_before IS NULL \
                               OR d.retry_not_before <= ?1)",
                         no_running_peer(p)
                     ),
