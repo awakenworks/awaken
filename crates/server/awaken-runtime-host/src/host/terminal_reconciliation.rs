@@ -154,7 +154,7 @@ impl SharedHost {
             store,
             Arc::new(awaken_run_ingress::SystemClock),
             wake,
-            awaken_run_ingress::DispatchServiceConfig::default(),
+            self.deployment.dispatch_service_config(),
             resolver,
             Some(self.completion.clone()),
         );

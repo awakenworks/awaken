@@ -19,6 +19,7 @@ awaken-runtime = { workspace = true }
 # dispatched run continues the admitting request's trace across the queue boundary.
 awaken-observability = { workspace = true }
 tracing = "0.1"
+futures-util = "0.3"
 async-trait.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
@@ -99,6 +100,10 @@ required-features = ["test-support"]
 # is explicit -> compile and run the real-PostgreSQL test normally.
 [[test]]
 name = "durable_postgres"
+required-features = ["test-support"]
+
+[[test]]
+name = "dispatch_claim_perf"
 required-features = ["test-support"]
 
 [[test]]

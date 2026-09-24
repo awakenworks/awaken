@@ -59,7 +59,8 @@ pub trait MetricsRecorder: Send + Sync {
         let _ = duration;
     }
 
-    /// Exact claimable backlog observed from the dispatch authority.
+    /// Periodic, exact-at-observation claimable backlog from the dispatch
+    /// authority. The gauge may lag between samples; it is not claim authority.
     fn record_dispatch_queue_depth(&self, depth: u64) {
         let _ = depth;
     }

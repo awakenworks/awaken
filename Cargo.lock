@@ -1985,6 +1985,7 @@ dependencies = [
  "awaken-store-postgres",
  "awaken-store-sqlite",
  "futures-lite",
+ "futures-util",
  "rusqlite",
  "serde",
  "serde_json",

@@ -1196,6 +1196,56 @@ async fn idle_pool_uses_one_fallback_poller_independent_of_execution_capacity() 
     pool.shutdown().await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn queue_depth_sampling_is_independent_of_pool_width_and_fallback_poll() {
+    // Causes: C1 a width-16 idle pool starts; C2 fallback poll is 120s; C3 the
+    // independent depth-sample deadline reaches 60s. Effects: E1 one startup
+    // exact depth read for the whole pool; E2 no extra claim or depth read from
+    // its width; E3 a second depth read at 60s without an ordinary claim tick.
+    // Decision table: R1=C1+C2+!C3 -> E1+E2; R2=C1+C2+C3 -> E3. A remote
+    // adapter's maintenance-disabled partition is covered by the existing
+    // maintenance ownership test; the sampled gauge owns no queue state.
+    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    let worker = Arc::new(DispatchWorker::new(
+        text_runtime(),
+        store.clone(),
+        Arc::new(MemoryCommitCoordinator::new()),
+        "depth-pool",
+    ));
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "depth-pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(120),
+            terminal_reconciliation_interval: None,
+            ..Default::default()
+        },
+        Arc::new(FlakyResolver { worker }),
+        16,
+        Arc::new(BlackholeWake),
+    );
+    for _ in 0..200 {
+        if store.depth_reads() == 1 && store.claim_attempts() >= 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(store.depth_reads(), 1, "R1/E1");
+    assert_eq!(store.claim_attempts(), 1, "R1/E2");
+    tokio::time::advance(Duration::from_secs(60)).await;
+    for _ in 0..100 {
+        if store.depth_reads() == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(store.depth_reads(), 2, "R2/E3");
+    assert_eq!(store.claim_attempts(), 1, "R2/E3 no fallback claim poll");
+    pool.shutdown().await;
+}
+
 #[tokio::test]
 async fn settled_predecessor_rearms_a_same_thread_successor_after_a_peer_consumes_the_edge() {
     use std::sync::atomic::Ordering;

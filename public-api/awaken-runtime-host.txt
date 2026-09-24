@@ -152,6 +152,7 @@ pub awaken_runtime_host::DeploymentConfig::database_url: core::option::Option<al
 pub awaken_runtime_host::DeploymentConfig::disable_local_pool: bool
 pub awaken_runtime_host::DeploymentConfig::dispatch_backend: awaken_runtime_host::DispatchBackend
 pub awaken_runtime_host::DeploymentConfig::dispatch_owner: alloc::string::String
+pub awaken_runtime_host::DeploymentConfig::dispatch_poll_interval: core::time::Duration
 pub awaken_runtime_host::DeploymentConfig::durable: bool
 pub awaken_runtime_host::DeploymentConfig::nats_url: core::option::Option<alloc::string::String>
 pub awaken_runtime_host::DeploymentConfig::postgres_max_connections: core::num::nonzero::NonZeroU32

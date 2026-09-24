@@ -128,4 +128,5 @@ pub(super) struct FileConfig {
     pub(super) dispatch_wake_channel: Option<String>,
     pub(super) nats_url: Option<String>,
     pub(super) dispatch_owner: Option<String>,
+    pub(super) dispatch_poll_interval_ms: Option<u64>,
 }
