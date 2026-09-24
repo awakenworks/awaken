@@ -180,11 +180,11 @@ async fn cold_event_reader_queries_committed_scopes_and_fails_closed() {
 #[tokio::test]
 #[ignore = "million-fact PostgreSQL startup and scoped-open performance observation"]
 async fn million_historical_facts_do_not_gate_startup_or_unrelated_thread_open() {
-    // Causes: C1 over one million committed Message rows belong to one old
-    // Thread; C2 a Coordinator restarts; C3 an unrelated Thread opens for
-    // execution. Effects: E1 startup succeeds without full-history allocation;
-    // E2 the old Thread still has a durable fact and its messages remain in SQL;
-    // E3 the unrelated execution view contains only its own prefix. Rules:
+    // Causes: C1 over one million Message rows plus State/Event/Run facts
+    // belong to one old Thread; C2 a Coordinator restarts; C3 an unrelated
+    // Thread opens for execution. Effects: E1 startup succeeds without a
+    // full-history allocation; E2 the old Thread's durable fact and event
+    // remain queryable; E3 the unrelated view contains only its own prefix. Rules:
     // M1=C1+C2 -> E1+E2, M2=C1+C2+C3 -> E1+E2+E3. The printed timings describe
     // this local primary and cannot establish a production restart SLO.
     let Some(pool) = schema_pool("t_pg_million_history").await else {
@@ -199,8 +199,16 @@ async fn million_historical_facts_do_not_gate_startup_or_unrelated_thread_open()
             ended("old-run"),
             true,
             vec![message("old-first", "historic")],
-            Vec::new(),
-            Vec::new(),
+            vec![StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                "historic.state",
+                serde_json::json!(true),
+            )],
+            vec![Draft {
+                kind: EventKind::RunStateChanged,
+                payload: serde_json::json!({"historic": true}),
+            }],
         ))
         .await
         .expect("old commit");
@@ -238,6 +246,16 @@ async fn million_historical_facts_do_not_gate_startup_or_unrelated_thread_open()
             .await
             .expect("M1/E2 old SQL facts");
     assert_eq!(old_count, 1_000_002, "M1/E2");
+    let old_events = restarted
+        .list_events(&EventScope::Thread(ThreadId("old-thread".into())), None, 10)
+        .await
+        .expect("M1/E2 old committed event");
+    assert!(
+        old_events
+            .iter()
+            .any(|event| event.payload["historic"] == true),
+        "M1/E2 historic event remains queryable without loading messages"
+    );
 
     let started = std::time::Instant::now();
     let active = restarted
@@ -391,61 +409,123 @@ async fn bulk_fact_chunks_replay_in_original_order_after_reconnect() {
 
 #[tokio::test]
 async fn later_bulk_chunk_failure_rolls_back_every_fact_and_reuses_sequence() {
-    // Causes: C1 the second Message chunk violates a database constraint
-    // after the first 256 rows were inserted; C2 the caller then retries one
-    // valid commit. Effects: E1 no partial facts or run survive C1; E2 C2 gets
-    // dense sequence one. Rules F1=C1 -> E1, F2=C1+C2 -> E2. A database error
-    // must not turn chunking into a partial public commit.
-    let Some(pool) = schema_pool("t_pg_bulk_rollback").await else {
-        return;
-    };
-    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
-        .await
-        .unwrap();
-    sqlx::query(
-        "ALTER TABLE runtime_message ADD CONSTRAINT reject_bulk_last \
-         CHECK (data->>'id' <> 'bulk-fail')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    let mut messages: Vec<_> = (0..256)
-        .map(|index| message(&format!("bulk-{index:03}"), "before failure"))
-        .collect();
-    messages.push(message("bulk-fail", "rejected second chunk"));
-    assert!(
-        coordinator
+    // Cause/effect graph: C1 a later chunk fails in Message, StateCommand, or
+    // Event after all earlier statements in that transaction succeeded; C2 a
+    // valid independent commit follows. Effects: E1 every fact and derived
+    // cache/receipt is rolled back; E2 C2 receives dense sequence one.
+    // Decision rules F1/F2/F3=C1(message/state/event)->E1; each followed by
+    // C2->E2. The three kinds are mutually exclusive fixture constraints;
+    // existing successful replay covers the 257-row boundary for every kind.
+    for (schema, stage) in [
+        ("t_pg_bulk_rollback_message", "message"),
+        ("t_pg_bulk_rollback_state", "state"),
+        ("t_pg_bulk_rollback_event", "event"),
+    ] {
+        let Some(pool) = schema_pool(schema).await else {
+            return;
+        };
+        let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
+            .await
+            .unwrap();
+        let (messages, state, events, constraint) = match stage {
+            "message" => (
+                (0..257)
+                    .map(|index| {
+                        let id = if index == 256 {
+                            "bulk-fail".to_owned()
+                        } else {
+                            format!("bulk-{index:03}")
+                        };
+                        message(&id, "rollback")
+                    })
+                    .collect(),
+                vec![],
+                vec![],
+                "ALTER TABLE runtime_message ADD CONSTRAINT reject_bulk_last \
+                 CHECK (data->>'id' <> 'bulk-fail')",
+            ),
+            "state" => (
+                vec![message("prior-message", "rollback")],
+                (0..257)
+                    .map(|index| {
+                        StateCommand::set(
+                            Scope::Thread,
+                            MergePolicy::Disjoint,
+                            if index == 256 {
+                                "bulk-fail".to_owned()
+                            } else {
+                                format!("bulk.state.{index:03}")
+                            },
+                            serde_json::json!(index),
+                        )
+                    })
+                    .collect(),
+                vec![],
+                "ALTER TABLE runtime_state_command ADD CONSTRAINT reject_bulk_last \
+                 CHECK (data::text NOT LIKE '%bulk-fail%')",
+            ),
+            "event" => (
+                vec![message("prior-message", "rollback")],
+                vec![StateCommand::set(
+                    Scope::Thread,
+                    MergePolicy::Disjoint,
+                    "prior.state",
+                    serde_json::json!(true),
+                )],
+                (0..257)
+                    .map(|index| Draft {
+                        kind: EventKind::RunStateChanged,
+                        payload: serde_json::json!({"index": index}),
+                    })
+                    .collect(),
+                "ALTER TABLE runtime_event ADD CONSTRAINT reject_bulk_last \
+                 CHECK (payload->>'index' <> '256')",
+            ),
+            _ => unreachable!("closed fixture stage"),
+        };
+        sqlx::query(constraint).execute(&pool).await.unwrap();
+        assert!(
+            coordinator
+                .commit(ThreadCommit::assemble(
+                    ThreadId(format!("bulk-failed-{stage}")),
+                    ended(&format!("bulk-failed-run-{stage}")),
+                    true,
+                    messages,
+                    state,
+                    events,
+                ))
+                .await
+                .is_err(),
+            "F1-F3 second {stage} chunk rejects"
+        );
+        for table in [
+            "runtime_commit",
+            "runtime_message",
+            "runtime_state_command",
+            "runtime_event",
+            "runtime_run_record",
+            "runtime_waiting",
+            "runtime_commit_receipt",
+        ] {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 0, "F1-F3/E1 {stage} {table}");
+        }
+        let retry = coordinator
             .commit(ThreadCommit::assemble(
-                ThreadId("bulk-failed-thread".into()),
-                ended("bulk-failed-run"),
+                ThreadId(format!("bulk-retry-{stage}")),
+                ended(&format!("bulk-retry-run-{stage}")),
                 true,
-                messages,
+                vec![message("bulk-good", "retry")],
                 Vec::new(),
                 Vec::new(),
             ))
             .await
-            .is_err(),
-        "F1 constraint rejects second chunk"
-    );
-    for table in ["runtime_commit", "runtime_message", "runtime_run_record"] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(&pool)
-            .await
             .unwrap();
-        assert_eq!(count, 0, "F1/E1 {table}");
+        assert_eq!(retry.sequence, 1, "F1-F3/E2 {stage}");
     }
-    let retry = coordinator
-        .commit(ThreadCommit::assemble(
-            ThreadId("bulk-retry-thread".into()),
-            ended("bulk-retry-run"),
-            true,
-            vec![message("bulk-good", "retry")],
-            Vec::new(),
-            Vec::new(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(retry.sequence, 1, "F2/E2");
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1461,9 +1541,36 @@ async fn concurrent_thread_open_observes_one_complete_postgres_snapshot() {
 
 #[tokio::test]
 async fn operation_receipt_survives_reconnect() {
+    // Causes: C1 an operation contains 257 ordered facts of each kind and
+    // crosses every 256-row SQL chunk; C2 its committed response is lost; C3
+    // a fresh Coordinator replays the exact operation; C4 the same operation id
+    // is reused with a different hash. Effects: E1 one durable prefix and one
+    // receipt survive restart; E2 C3 returns the original receipt as duplicate
+    // without another fact; E3 C4 is rejected without changing that prefix.
+    // Decision rules: R1=C1+C2+C3 -> E1+E2; R2=R1+C4 -> E3. Small-payload
+    // idempotency and CAS rules remain in shared backend conformance.
     let Some(pool) = schema_pool("t_operation_receipt_reconnect").await else {
         return;
     };
+    let messages = (0..257)
+        .map(|index| message(&format!("receipt-message-{index:03}"), "once"))
+        .collect::<Vec<_>>();
+    let state = (0..257)
+        .map(|index| {
+            StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                format!("receipt.state.{index:03}"),
+                serde_json::json!(index),
+            )
+        })
+        .collect::<Vec<_>>();
+    let events = (0..257)
+        .map(|index| Draft {
+            kind: EventKind::RunStateChanged,
+            payload: serde_json::json!({"index": index}),
+        })
+        .collect::<Vec<_>>();
     let operation = CommitOperation {
         operation_id: CommitOperationId::new(RunId("receipt-run".into()), 0),
         expected_thread_version: 0,
@@ -1471,41 +1578,66 @@ async fn operation_receipt_survives_reconnect() {
         commit: ThreadCommit {
             thread_id: ThreadId("receipt-thread".into()),
             run: RunDisposition::running(RunId("receipt-run".into())),
-            messages: vec![message("receipt-message", "once")],
-            state: Vec::new(),
-            events: Vec::new(),
+            messages: messages.clone(),
+            state: state.clone(),
+            events,
         },
     };
     {
         let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
             .await
             .expect("coordinator a");
-        assert!(
-            !coordinator
-                .commit_operation(operation.clone())
-                .await
-                .unwrap()
-                .duplicate
-        );
+        let receipt = coordinator
+            .commit_operation(operation.clone())
+            .await
+            .unwrap();
+        assert!(!receipt.duplicate, "R1 first application");
+        assert_eq!(receipt.commit_sequence, 1, "R1/E1");
+        // Deliberately discard the response: the caller may retry after a
+        // transport loss even though PostgreSQL already committed it.
     }
-    let reopened = PostgresCommitCoordinator::with_pool(pool)
+    let reopened = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("coordinator b");
-    assert!(
-        reopened
-            .commit_operation(operation)
-            .await
-            .expect("durable duplicate receipt")
-            .duplicate
-    );
+    let replay = reopened
+        .commit_operation(operation.clone())
+        .await
+        .expect("R1/E2 durable duplicate receipt");
+    assert!(replay.duplicate, "R1/E2");
+    assert_eq!(replay.commit_sequence, 1, "R1/E2 original commit");
+    assert_eq!(replay.thread_version, 1, "R1/E2 original version");
     assert_eq!(
         reopened
             .authoritative_committed_messages(&ThreadId("receipt-thread".into()))
             .await
-            .expect("committed transcript")
-            .len(),
-        1
+            .expect("committed transcript"),
+        messages,
+        "R1/E1 ordered messages"
     );
+    let snapshot = reopened
+        .recovery_snapshot(
+            &ThreadId("receipt-thread".into()),
+            &RunId("receipt-run".into()),
+        )
+        .await
+        .expect("R1/E1 recovered prefix");
+    assert_eq!(snapshot.state, state, "R1/E1 ordered state");
+    assert_eq!(snapshot.events.len(), 257, "R1/E1 ordered events");
+    for (index, event) in snapshot.events.iter().enumerate() {
+        assert_eq!(event.payload["index"], serde_json::json!(index), "R1/E1");
+    }
+    let mut conflict = operation;
+    conflict.payload_hash = CommitPayloadHash("sha256:changed".into());
+    assert!(reopened.commit_operation(conflict).await.is_err(), "R2/E3");
+    let commit_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let receipt_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_commit_receipt")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!((commit_count, receipt_count), (1, 1), "R1/R2 E1-E3");
 }
 
 #[tokio::test]

@@ -79,11 +79,6 @@ UNSELECTED_EXECUTABLES: dict[str, str] = {
         "lock tests and by pg_tests.sh's awaken-store-schema apply suite. "
         "Registered rather than deleted so the concurrency gap is written down."
     ),
-    "e2e/k3d/scaling_e2e.sh": (
-        "Needs a multi-node k3d cluster; no lane provisions one. The commit "
-        "sequence allocation it drove is covered by the Postgres commit and "
-        "claim guards in pg_tests.sh; the horizontal drain is not covered here."
-    ),
     "e2e/k3d/failover_e2e.sh": (
         "Needs a multi-node k3d cluster; no lane provisions one. Cross-node "
         "history service is exercised by the distributed control runner the k3d "

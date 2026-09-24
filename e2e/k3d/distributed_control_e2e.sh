@@ -31,7 +31,17 @@ CLUSTER_CREATED=0
 NATIVE_CRASH_OLD="native-crash-old"
 NATIVE_CRASH_NEXT="native-crash-next"
 NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"
+BATCH_CLEANUP_TIMEOUT_SECONDS="${ADR71_BATCH_CLEANUP_TIMEOUT_SECONDS:-120}"
 export CARGO_CACHE_AUTOCLEAN=0
+
+# Test budget decision table: C1 no diagnostic override -> retain the original
+# 120-second physical cleanup gate; C2 a positive override -> change only the
+# observation deadline, never the exact Pod/PVC deletion assertions. Invalid
+# values fail before any cluster mutation. R1=C1->120s, R2=C2->that deadline.
+k3d_validate_deadline "$BATCH_CLEANUP_TIMEOUT_SECONDS" || {
+  echo "ADR71_BATCH_CLEANUP_TIMEOUT_SECONDS must be a positive integer" >&2
+  exit 2
+}
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
 
@@ -606,8 +616,8 @@ for auxiliary_session in "${BATCH_AUXILIARY_IDS[@]}"; do
   BATCH_AUXILIARY_CLAIM_TARGETS+=("pvc/$auxiliary_claim")
 done
 node "$DRIVER" dispose-batch "$API_URL" "$BATCH_AUXILIARY"
-kubectl -n "$NS" wait --for=delete "${BATCH_AUXILIARY_POD_TARGETS[@]}" --timeout=120s
-kubectl -n "$NS" wait --for=delete "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}" --timeout=120s
+kubectl -n "$NS" wait --for=delete "${BATCH_AUXILIARY_POD_TARGETS[@]}" --timeout="${BATCH_CLEANUP_TIMEOUT_SECONDS}s"
+kubectl -n "$NS" wait --for=delete "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}" --timeout="${BATCH_CLEANUP_TIMEOUT_SECONDS}s"
 wait_roles || { diagnostics; exit 1; }
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=provider -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-PROVIDER-LOSS
