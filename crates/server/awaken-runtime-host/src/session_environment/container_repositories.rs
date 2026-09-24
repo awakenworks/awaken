@@ -246,6 +246,12 @@ pub(super) async fn push(
         Some(42) => Err(pc::RepositoryPublicationError::Unavailable(
             pc::SandboxError::invalid("container Repository publication coordinate was rejected"),
         )),
+        Some(43) => Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::backend(
+                "ls-remote",
+                "container Repository remote observation was unavailable",
+            ),
+        )),
         code => Err(pc::RepositoryPublicationError::Unavailable(
             pc::SandboxError::backend("push", format!("container Repository push exited {code:?}")),
         )),
@@ -267,7 +273,10 @@ fn repository_push_command(
                 "git check-ref-format --branch \"$branch\" >/dev/null 2>&1 || exit 42; ",
                 "test \"$(git -C \"$repo\" symbolic-ref --quiet --short HEAD)\" = \"$branch\" || exit 42; ",
                 "test \"$(git -C \"$repo\" rev-parse HEAD)\" = \"$commit\" || exit 42; ",
-                "remote_commit=$(git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" ls-remote --refs \"$remote\" \"refs/heads/$branch\" | awk 'NR == 1 { print $1 }'); ",
+                "remote_refs=; for attempt in 1 2 3; do ",
+                "if remote_refs=$(git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" ls-remote --refs \"$remote\" \"refs/heads/$branch\"); then break; fi; ",
+                "if test \"$attempt\" = 3; then exit 43; fi; sleep 1; done; ",
+                "remote_commit=$(printf '%s\\n' \"$remote_refs\" | awk 'NR == 1 { print $1 }'); ",
                 "if test \"$remote_commit\" = \"$commit\"; then exit 0; fi; ",
                 "if test \"$remote_commit\" != \"$prior\"; then exit 42; fi; ",
                 "git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" -C \"$repo\" push --porcelain --force-with-lease=\"refs/heads/$branch:$prior\" \"$remote\" \"$commit:refs/heads/$branch\""
@@ -333,11 +342,92 @@ mod tests {
         let script = &command.argv[2];
         assert!(script.contains("git check-ref-format --branch"));
         assert!(script.contains("ls-remote --refs"));
+        assert!(script.contains("if remote_refs=$(git"));
+        assert!(script.contains("exit 43"));
         assert!(script.contains("--force-with-lease="));
         assert!(script.contains("credential.helper=$credential_helper"));
         assert!(script.contains("exit 42"));
         assert_eq!(command.argv[9], "/opt/custom/awaken-sandbox");
         assert!(!format!("{command:?}").contains("password"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn push_observation_failure_cannot_masquerade_as_an_absent_remote_ref() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // Cause/effect table: R1 first remote read fails, then exact prior is
+        // observed -> one leased push; R2 every read fails -> unavailable (43),
+        // zero push; R3 observed third commit -> coordinate refusal (42), zero
+        // push; R4 absent create lease and absent ref -> one create; R5 desired
+        // already remote -> replay without push. Network failure is never an
+        // empty ref, especially when the expected prior commit is nonempty.
+        let root = tempfile::tempdir().unwrap();
+        let git = root.path().join("git");
+        std::fs::write(
+            &git,
+            r#"#!/bin/sh
+case " $* " in
+  *" check-ref-format "*) exit 0 ;;
+  *" symbolic-ref "*) printf 'awf/work\n'; exit 0 ;;
+  *" rev-parse "*) printf '%s\n' "$FAKE_LOCAL_COMMIT"; exit 0 ;;
+  *" ls-remote "*)
+    count=$(cat "$FAKE_COUNT_FILE" 2>/dev/null || printf 0)
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$FAKE_COUNT_FILE"
+    if test "$count" -le "$FAKE_FAILS"; then exit 128; fi
+    if test -n "$FAKE_REMOTE_SHA"; then printf '%s\trefs/heads/awf/work\n' "$FAKE_REMOTE_SHA"; fi
+    exit 0 ;;
+  *" push "*) : > "$FAKE_PUSH_FILE"; exit 0 ;;
+esac
+exit 99
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let desired = "1".repeat(40);
+        let prior = "2".repeat(40);
+        let third = "3".repeat(40);
+        for (rule, failures, remote, expected_prior, code, pushes, reads) in [
+            ("R1", 1, prior.as_str(), Some(prior.as_str()), 0, true, 2),
+            ("R2", 3, prior.as_str(), Some(prior.as_str()), 43, false, 3),
+            ("R3", 0, third.as_str(), Some(prior.as_str()), 42, false, 1),
+            ("R4", 0, "", None, 0, true, 1),
+            ("R5", 0, desired.as_str(), Some(prior.as_str()), 0, false, 1),
+        ] {
+            let count_file = root.path().join(format!("{rule}-count"));
+            let push_file = root.path().join(format!("{rule}-push"));
+            let expectation = pc::RepositoryPublicationExpectation {
+                branch: "awf/work".into(),
+                commit: desired.clone(),
+                expected_prior_commit: expected_prior.map(str::to_owned),
+            };
+            let command = repository_push_command(&plan(), &expectation, "/unused/helper");
+            let output = std::process::Command::new("sh")
+                .args(command.argv.iter().skip(1))
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        root.path().display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .env("FAKE_LOCAL_COMMIT", &desired)
+                .env("FAKE_REMOTE_SHA", remote)
+                .env("FAKE_FAILS", failures.to_string())
+                .env("FAKE_COUNT_FILE", &count_file)
+                .env("FAKE_PUSH_FILE", &push_file)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(code), "{rule}: {output:?}");
+            assert_eq!(push_file.exists(), pushes, "{rule}");
+            assert_eq!(
+                std::fs::read_to_string(count_file).unwrap().trim(),
+                reads.to_string(),
+                "{rule}"
+            );
+        }
     }
 
     #[tokio::test]
