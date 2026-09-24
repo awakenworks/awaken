@@ -80,6 +80,33 @@ pub trait RunApplication: Send + Sync {
     }
 }
 
+/// Required capability for a protocol whose authenticated request binds an
+/// exact Workspace and an already-existing Session. A composition root must
+/// install this port explicitly; an unscoped Run port cannot silently accept
+/// or downgrade such a request. Both methods reuse the Session application's
+/// ordinary admission and resume state machines.
+#[async_trait]
+pub trait OwnerScopedRunApplication: RunApplication {
+    async fn run_streaming_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+        sink: Arc<dyn StreamSink>,
+    ) -> Result<StepOutcome, RunApplicationError>;
+
+    async fn resume_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError>;
+}
+
 /// Narrow application port for an explicit newest-wins Session Run.
 ///
 /// Operational HTTP may expose this command, but only the Session application

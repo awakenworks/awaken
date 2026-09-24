@@ -774,6 +774,146 @@ async fn cold_replica_recovers_projection_before_reusing_exact_activity_receipt(
 }
 
 #[tokio::test]
+async fn authenticated_protocol_scope_survives_a_cold_replica_and_replays_one_activity() {
+    // Cause/effect graph: C1 the profiled Session is durable in `workspace`;
+    // C2 this Coordinator has no Session slot, so its local fallback is wrong;
+    // C3 the authenticated request carries `workspace`; C4 the same message is
+    // replayed; C5 a request asserts another owner, for Run or tool resume.
+    // Effects: E1 C1+C2+C3
+    // recovers and admits through the existing Session application; E2 C4
+    // reuses the exact activity epoch; E3 C5 or no request scope rejects before
+    // another reservation. The scope is an assertion, not a cache mutation.
+    //
+    // | Rule | durable owner | local fallback | request owner | operation | Effect |
+    // | R1   | workspace     | wrong          | workspace     | fresh     | E1     |
+    // | R2   | workspace     | wrong          | workspace     | replay    | E2     |
+    // | R3   | workspace     | wrong          | foreign       | replay    | E3     |
+    // | R4   | workspace     | wrong          | absent        | replay    | E3     |
+    // | R5   | workspace     | wrong          | foreign       | resume    | E3     |
+    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(
+        repository.as_ref(),
+        persisted("cold-protocol-scope", false, "idle"),
+    )
+    .await;
+    let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+    let sessions = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let protocol = SessionRunApplication::new(
+        Arc::new(ProtocolProjectionRuntime),
+        sessions,
+        |_| "wrong-local-workspace".into(),
+        |_| Some("agent".into()),
+    );
+    let message = || {
+        vec![awaken_agent_contract::agent::message::Message::text(
+            awaken_agent_contract::agent::message::Id("cold-input".into()),
+            awaken_agent_contract::agent::message::Role::User,
+            "continue",
+        )]
+    };
+    let sink = || {
+        Arc::new(awaken_session_application_contract::EventForwardingSink::new(|_| Ok(())))
+            as Arc<dyn awaken_agent_contract::stream::sink::Sink>
+    };
+    awaken_session_application_contract::OwnerScopedRunApplication::run_streaming_for_owner(
+        &protocol,
+        "workspace",
+        "cold-operation",
+        "cold-protocol-scope",
+        None,
+        message(),
+        sink(),
+    )
+    .await
+    .expect("R1/E1 authenticated cold admission");
+    let first_epoch = repository
+        .get(&SessionId::from("cold-protocol-scope"))
+        .await
+        .expect("R1 durable Session")
+        .activity_epoch;
+    assert_eq!(runtime.reservations.lock().unwrap().len(), 1, "R1/E1");
+
+    runtime.already_reserved.store(true, Ordering::SeqCst);
+    awaken_session_application_contract::OwnerScopedRunApplication::run_streaming_for_owner(
+        &protocol,
+        "workspace",
+        "cold-operation",
+        "cold-protocol-scope",
+        None,
+        message(),
+        sink(),
+    )
+    .await
+    .expect("R2/E2 same operation replay");
+    assert_eq!(
+        repository
+            .get(&SessionId::from("cold-protocol-scope"))
+            .await
+            .expect("R2 durable Session")
+            .activity_epoch,
+        first_epoch,
+        "R2/E2",
+    );
+    let reservations_before_rejection = runtime.reservations.lock().unwrap().len();
+
+    assert!(
+        awaken_session_application_contract::OwnerScopedRunApplication::run_streaming_for_owner(
+            &protocol,
+            "foreign-workspace",
+            "cold-operation",
+            "cold-protocol-scope",
+            None,
+            message(),
+            sink(),
+        )
+        .await
+        .is_err(),
+        "R3/E3",
+    );
+    assert!(
+        awaken_session_application_contract::RunApplication::run_streaming(
+            &protocol,
+            "cold-operation",
+            "cold-protocol-scope",
+            None,
+            message(),
+            sink(),
+        )
+        .await
+        .is_err(),
+        "R4/E3",
+    );
+    assert!(
+        awaken_session_application_contract::OwnerScopedRunApplication::resume_for_owner(
+            &protocol,
+            "foreign-workspace",
+            "cold-resume",
+            "cold-protocol-scope",
+            "tool-call",
+            awaken_session_application_contract::RunResume::ClientResult {
+                content: Vec::new(),
+                is_error: false,
+            },
+        )
+        .await
+        .is_err(),
+        "R5/E3",
+    );
+    assert_eq!(
+        runtime.reservations.lock().unwrap().len(),
+        reservations_before_rejection,
+        "R3-R5/E3 no reservation under a wrong owner",
+    );
+}
+
+#[tokio::test]
 async fn background_attention_uses_canonical_session_admission_without_observing() {
     // Cause/effect decision table: C1 a durable Session exists; C2 the caller
     // requests background observation; C3 reservation succeeds; C4 the exact

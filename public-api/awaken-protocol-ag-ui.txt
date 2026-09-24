@@ -35,7 +35,8 @@ pub awaken_protocol_ag_ui::request::ToolResultInput::error: core::option::Option
 pub awaken_protocol_ag_ui::request::ToolResultInput::tool_call_id: alloc::string::String
 pub fn awaken_protocol_ag_ui::request::process(awaken_protocol_ag_ui::types::RunAgentInput, core::option::Option<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>) -> core::result::Result<awaken_protocol_ag_ui::request::Processed, awaken_protocol_ag_ui::request::ProcessError>
 pub mod awaken_protocol_ag_ui::router
-pub fn awaken_protocol_ag_ui::router::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>) -> axum::routing::Router
+pub fn awaken_protocol_ag_ui::router::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>, alloc::string::String) -> axum::routing::Router
+pub fn awaken_protocol_ag_ui::router::router_with_owner_scope<T>(alloc::sync::Arc<T>) -> axum::routing::Router where T: awaken_session_application_contract::run_application::OwnerScopedRunApplication + 'static
 pub mod awaken_protocol_ag_ui::types
 pub enum awaken_protocol_ag_ui::types::AgUiContent
 pub awaken_protocol_ag_ui::types::AgUiContent::Parts(alloc::vec::Vec<awaken_protocol_ag_ui::types::InputContentPart>)
@@ -201,4 +202,5 @@ pub awaken_protocol_ag_ui::RunAgentInput::run_id: core::option::Option<alloc::st
 pub awaken_protocol_ag_ui::RunAgentInput::state: serde_json::value::Value
 pub awaken_protocol_ag_ui::RunAgentInput::thread_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_ag_ui::RunAgentInput::tools: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiTool>
-pub fn awaken_protocol_ag_ui::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>) -> axum::routing::Router
+pub fn awaken_protocol_ag_ui::router(alloc::sync::Arc<dyn awaken_session_application_contract::run_application::RunApplication>, alloc::string::String) -> axum::routing::Router
+pub fn awaken_protocol_ag_ui::router_with_owner_scope<T>(alloc::sync::Arc<T>) -> axum::routing::Router where T: awaken_session_application_contract::run_application::OwnerScopedRunApplication + 'static

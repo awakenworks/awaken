@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_session_application_contract::{
-    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome, blocks_text,
+    OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume,
+    StepOutcome, blocks_text,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
@@ -55,6 +56,7 @@ impl RunApplication for NoAwaitingRuntime {
 #[derive(Default)]
 struct ReplayRecordingRuntime {
     runs: Mutex<Vec<(String, Vec<Message>)>>,
+    owners: Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -99,12 +101,42 @@ impl RunApplication for ReplayRecordingRuntime {
     }
 }
 
+#[async_trait::async_trait]
+impl OwnerScopedRunApplication for ReplayRecordingRuntime {
+    async fn run_streaming_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+        _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.owners.lock().unwrap().push(owner_scope.to_string());
+        self.run(operation_id, thread, agent, messages).await
+    }
+
+    async fn resume_for_owner(
+        &self,
+        _owner_scope: &str,
+        _operation_id: &str,
+        _thread: &str,
+        _tool_use_id: &str,
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!("replay recording never resumes")
+    }
+}
+
 async fn frames(body: Value) -> Vec<Value> {
     frames_at("/v1/ai-sdk/chat", body).await
 }
 
 async fn frames_at(uri: &str, body: Value) -> Vec<Value> {
-    let app = awaken_protocol_ai_sdk::router::router(Arc::new(NoAwaitingRuntime));
+    let app = awaken_protocol_ai_sdk::router::router(
+        Arc::new(NoAwaitingRuntime),
+        "test-workspace".into(),
+    );
     let response = app
         .oneshot(
             Request::builder()
@@ -162,7 +194,7 @@ async fn a_known_operation_replays_the_run_while_history_only_fails_closed() {
     // operation whose durable equality check is downstream. Rules: R1=C1=>E1;
     // R2=!C1+!C2=>E2; R3=!C1+C2=>E3 (the adjacent resume tests own R3).
     let runtime = Arc::new(ReplayRecordingRuntime::default());
-    let app = awaken_protocol_ai_sdk::router::router(runtime.clone());
+    let app = awaken_protocol_ai_sdk::router::router(runtime.clone(), "test-workspace".into());
     let replay = json!({
         "threadId": "t1",
         "messages": [{
@@ -236,6 +268,68 @@ async fn a_known_operation_replays_the_run_while_history_only_fails_closed() {
     assert_eq!(blocks_text(&runs[0].1[0].content), "original", "R1/E1");
 }
 
+#[tokio::test]
+async fn authenticated_workspace_scope_reaches_the_same_ai_sdk_run_admission() {
+    // Cause/effect rules: A1 a guarded request has an exact WorkspaceScope and
+    // a known user operation => forward both to the one Run port; A2 no scope
+    // => existing unscoped protocol behavior (covered by the adjacent replay
+    // test). The scope must not be inferred from the Thread id or body text.
+    let runtime = Arc::new(ReplayRecordingRuntime::default());
+    let app = awaken_protocol_ai_sdk::router::router_with_owner_scope(runtime.clone());
+    let body = json!({
+        "threadId": "t1",
+        "messages": [{
+            "id": "u1",
+            "role": "user",
+            "parts": [{ "type": "text", "text": "original" }]
+        }]
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/threads/t1/runs")
+                .header("content-type", "application/json")
+                .extension(awaken_tenancy::WorkspaceScope("exact-workspace".into()))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let stream = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8_lossy(&stream).contains("\"type\":\"finish\""));
+    assert_eq!(
+        runtime.owners.lock().unwrap().as_slice(),
+        ["exact-workspace"]
+    );
+    assert_eq!(runtime.runs.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn guarded_router_without_workspace_scope_fails_closed() {
+    // D1 hosted router + no authenticated WorkspaceScope => required extractor
+    // rejects before Run; D2 local router => its composition supplies an
+    // explicit Workspace, covered by the adjacent unscoped protocol tests.
+    let runtime = Arc::new(ReplayRecordingRuntime::default());
+    let app = awaken_protocol_ai_sdk::router::router_with_owner_scope(runtime.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/threads/t1/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(user_turn().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !response.status().is_success(),
+        "D1 missing scope must reject"
+    );
+    assert!(runtime.runs.lock().unwrap().is_empty(), "D1 no Run");
+}
+
 fn user_turn() -> serde_json::Value {
     json!({ "messages": [{ "id": "u1", "role": "user", "parts": [{ "type": "text", "text": "go" }] }] })
 }
@@ -259,7 +353,10 @@ async fn the_agent_scoped_run_route_streams_a_turn() {
 }
 
 /// A runtime awaiting on a built-in tool `c1`; resume drives it to completion.
-struct AwaitingRuntime;
+#[derive(Default)]
+struct AwaitingRuntime {
+    owners: Option<Arc<Mutex<Vec<String>>>>,
+}
 
 #[async_trait::async_trait]
 impl RunApplication for AwaitingRuntime {
@@ -305,17 +402,42 @@ impl RunApplication for AwaitingRuntime {
     }
 }
 
+#[async_trait::async_trait]
+impl OwnerScopedRunApplication for AwaitingRuntime {
+    async fn run_streaming_for_owner(
+        &self,
+        _owner_scope: &str,
+        _operation_id: &str,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<Message>,
+        _sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!("awaiting runtime never admits a new Run")
+    }
+
+    async fn resume_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        if let Some(owners) = &self.owners {
+            owners.lock().unwrap().push(owner_scope.to_string());
+        }
+        self.resume(operation_id, thread, tool_use_id, resume).await
+    }
+}
+
 #[tokio::test]
 async fn a_matching_tool_decision_resumes_an_awaiting_run_to_a_finish() {
-    let app = awaken_protocol_ai_sdk::router::router(Arc::new(AwaitingRuntime));
-    let body = json!({
-        "threadId": "t1",
-        "messages": [{
-            "id": "a1",
-            "role": "assistant",
-            "parts": [{ "type": "tool-write", "toolCallId": "c1", "state": "output-available", "output": "ok" }]
-        }]
-    });
+    let app = awaken_protocol_ai_sdk::router::router(
+        Arc::new(AwaitingRuntime::default()),
+        "test-workspace".into(),
+    );
+    let body = matching_tool_decision_body();
     let response = app
         .oneshot(
             Request::builder()
@@ -327,17 +449,59 @@ async fn a_matching_tool_decision_resumes_an_awaiting_run_to_a_finish() {
         )
         .await
         .unwrap();
-    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let text = String::from_utf8(bytes.to_vec()).unwrap();
-    let types: Vec<String> = text
-        .lines()
-        .filter_map(|l| l.strip_prefix("data: "))
-        .filter(|d| *d != "[DONE]")
-        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
-        .filter_map(|f| f["type"].as_str().map(str::to_string))
-        .collect();
+    let types = response_frame_types(response).await;
     assert!(types.contains(&"finish".to_string()), "{types:?}");
     assert!(!types.contains(&"error".to_string()), "{types:?}");
+}
+
+fn matching_tool_decision_body() -> Value {
+    json!({
+        "threadId": "t1",
+        "messages": [{
+            "id": "a1",
+            "role": "assistant",
+            "parts": [{ "type": "tool-write", "toolCallId": "c1", "state": "output-available", "output": "ok" }]
+        }]
+    })
+}
+
+async fn response_frame_types(response: axum::response::Response) -> Vec<String> {
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    text.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .filter_map(|frame| frame["type"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[tokio::test]
+async fn authenticated_workspace_scope_reaches_ai_sdk_tool_resume() {
+    // Cause/effect rule S1: a guarded request carries exact WorkspaceScope
+    // and one matching tool result => resume under that same owner; S2: a
+    // missing/mismatched decision => the adjacent fail-closed tests reject
+    // before resume. The adapter never caches a second owner for the Thread.
+    let owners = Arc::new(Mutex::new(Vec::new()));
+    let app = awaken_protocol_ai_sdk::router::router_with_owner_scope(Arc::new(AwaitingRuntime {
+        owners: Some(owners.clone()),
+    }));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/threads/t1/runs")
+                .header("content-type", "application/json")
+                .extension(awaken_tenancy::WorkspaceScope("exact-workspace".into()))
+                .body(Body::from(matching_tool_decision_body().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let types = response_frame_types(response).await;
+    assert!(types.contains(&"finish".to_string()), "{types:?}");
+    assert!(!types.contains(&"error".to_string()), "{types:?}");
+    assert_eq!(owners.lock().unwrap().as_slice(), ["exact-workspace"]);
 }
 
 /// A runtime whose turn panics, so the spawned turn task dies (JoinError).
@@ -378,7 +542,8 @@ impl RunApplication for PanickingRuntime {
 async fn a_dead_turn_task_surfaces_an_error_frame_not_a_hang() {
     // The turn runs on its own task; if it dies (panic/cancel → JoinError) the
     // stream must still close with an `error` frame rather than hanging.
-    let app = awaken_protocol_ai_sdk::router::router(Arc::new(PanickingRuntime));
+    let app =
+        awaken_protocol_ai_sdk::router::router(Arc::new(PanickingRuntime), "test-workspace".into());
     let body = json!({ "messages": [{ "id": "u1", "role": "user", "parts": [{ "type": "text", "text": "go" }] }] });
     let response = app
         .oneshot(
@@ -514,7 +679,7 @@ fn approval(call_id: &str, approved: bool) -> Value {
 #[tokio::test]
 async fn an_approval_for_another_tool_call_cannot_resume_the_awaiting_one() {
     let runtime = Arc::new(AwaitingC2Runtime::new());
-    let app = awaken_protocol_ai_sdk::router::router(runtime.clone());
+    let app = awaken_protocol_ai_sdk::router::router(runtime.clone(), "test-workspace".into());
     let text = decide(app, json!([approval("c1", true)])).await;
 
     assert!(
@@ -535,7 +700,7 @@ async fn an_approval_for_another_tool_call_cannot_resume_the_awaiting_one() {
 #[tokio::test]
 async fn the_matching_decision_wins_even_when_it_is_not_first() {
     let runtime = Arc::new(AwaitingC2Runtime::new());
-    let app = awaken_protocol_ai_sdk::router::router(runtime.clone());
+    let app = awaken_protocol_ai_sdk::router::router(runtime.clone(), "test-workspace".into());
     let text = decide(app, json!([approval("c1", true), approval("c2", false)])).await;
 
     assert!(

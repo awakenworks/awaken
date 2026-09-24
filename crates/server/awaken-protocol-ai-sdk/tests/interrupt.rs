@@ -117,7 +117,7 @@ async fn a_client_hangup_fires_interrupt_for_the_thread() {
         finished: finished.clone(),
     });
 
-    let app = awaken_protocol_ai_sdk::router(rt);
+    let app = awaken_protocol_ai_sdk::router(rt, "test-workspace".into());
     let response = app
         .oneshot(
             Request::builder()

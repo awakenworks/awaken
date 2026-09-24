@@ -87,7 +87,7 @@ fn runtime(messages: Vec<Message>) -> Arc<PersistedRuntime> {
 }
 
 async fn get(rt: Arc<PersistedRuntime>, uri: &str) -> (StatusCode, HeaderMap, Value) {
-    let app = awaken_protocol_ai_sdk::router::router(rt);
+    let app = awaken_protocol_ai_sdk::router::router(rt, "test-workspace".into());
     let response = app
         .oneshot(
             Request::builder()

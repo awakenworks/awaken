@@ -25,16 +25,38 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
 use awaken_session_application_contract::{
-    CursorParams, EventForwardingSink, Pending, RunApplication, RunApplicationError, RunResume,
-    StepOutcome, paginate_history,
+    CursorParams, EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication,
+    RunApplicationError, RunResume, StepOutcome, paginate_history,
 };
-use awaken_tenancy::ResolvedResourceId;
+use awaken_tenancy::{ResolvedResourceId, WorkspaceScope};
 
 use crate::encoder::{AiSdkEncoder, encode_history, encode_step};
 use crate::request::{DecisionKind, process_request, result_text};
 use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 
 type Runtime = Arc<dyn RunApplication>;
+type ScopedRuntime = Arc<dyn OwnerScopedRunApplication>;
+type RuntimeState = (Runtime, RunMode);
+
+#[derive(Clone)]
+enum RunMode {
+    Local,
+    OwnerScoped(ScopedRuntime),
+}
+
+struct RequestOwner {
+    scope: String,
+    mode: RunMode,
+}
+
+impl RequestOwner {
+    fn new(Extension(scope): Extension<WorkspaceScope>, mode: RunMode) -> Self {
+        Self {
+            scope: scope.0,
+            mode,
+        }
+    }
+}
 
 const STREAM_KEEP_ALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -66,7 +88,22 @@ where
 
 /// Build the AI SDK router. Mount it alongside other protocol routers; the paths
 /// are the `/v1/ai-sdk/...` surface the `useChat` transport expects.
-pub fn router(runtime: Runtime) -> Router {
+pub fn router(runtime: Runtime, local_workspace: String) -> Router {
+    router_with_ports(runtime, RunMode::Local).layer(Extension(WorkspaceScope(local_workspace)))
+}
+
+/// Hosted composition requires the owner-qualified Run capability at startup;
+/// all handlers below remain the same protocol and Session admission path.
+pub fn router_with_owner_scope<T>(runtime: Arc<T>) -> Router
+where
+    T: OwnerScopedRunApplication + 'static,
+{
+    let unscoped: Runtime = runtime.clone();
+    let scoped: ScopedRuntime = runtime;
+    router_with_ports(unscoped, RunMode::OwnerScoped(scoped))
+}
+
+fn router_with_ports(runtime: Runtime, mode: RunMode) -> Router {
     Router::new()
         .route("/v1/ai-sdk/chat", post(chat))
         .route("/v1/ai-sdk/threads/{thread_id}/runs", post(chat_threaded))
@@ -75,20 +112,22 @@ pub fn router(runtime: Runtime) -> Router {
             "/v1/ai-sdk/threads/{thread_id}/messages",
             get(thread_messages),
         )
-        .with_state(runtime)
+        .with_state((runtime, mode))
 }
 
 async fn chat(
-    State(rt): State<Runtime>,
+    State((rt, mode)): State<RuntimeState>,
+    owner: Extension<WorkspaceScope>,
     AiSdkJson(payload): AiSdkJson<AiSdkChatRequest>,
 ) -> Response {
-    run(rt, payload).await
+    run(rt, payload, RequestOwner::new(owner, mode)).await
 }
 
 async fn chat_threaded(
-    State(rt): State<Runtime>,
+    State((rt, mode)): State<RuntimeState>,
     Path(thread_id): Path<String>,
     resolved: Option<Extension<ResolvedResourceId>>,
+    owner: Extension<WorkspaceScope>,
     AiSdkJson(mut payload): AiSdkJson<AiSdkChatRequest>,
 ) -> Response {
     payload.thread_id = Some(
@@ -96,20 +135,21 @@ async fn chat_threaded(
             .map(|Extension(thread)| thread.0)
             .unwrap_or(thread_id),
     );
-    run(rt, payload).await
+    run(rt, payload, RequestOwner::new(owner, mode)).await
 }
 
 async fn chat_agent_scoped(
-    State(rt): State<Runtime>,
+    State((rt, mode)): State<RuntimeState>,
     Path(agent_id): Path<String>,
+    owner: Extension<WorkspaceScope>,
     AiSdkJson(mut payload): AiSdkJson<AiSdkChatRequest>,
 ) -> Response {
     payload.agent_id = Some(agent_id);
-    run(rt, payload).await
+    run(rt, payload, RequestOwner::new(owner, mode)).await
 }
 
 /// The core chat handler: decode, drive one step, project to an SSE stream.
-async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
+async fn run(rt: Runtime, payload: AiSdkChatRequest, owner: RequestOwner) -> Response {
     // Peek the thread id so history dedup can run before decoding.
     let peek = payload
         .thread_id
@@ -134,7 +174,7 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
     if processed.is_resume_only() {
         // RunResume answers an awaiting tool decision — a single committed step, framed
         // whole (no in-flight model output to stream).
-        match resume_step(&rt, &operation_id, &thread, &processed.decisions).await {
+        match resume_step(&rt, &owner, &operation_id, &thread, &processed.decisions).await {
             Ok(outcome) => {
                 let mut events = encode_step(&outcome);
                 let usage = match rt.usage(&thread).await {
@@ -156,6 +196,7 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
             thread,
             processed.agent_id,
             processed.messages,
+            owner,
         )
     } else {
         sse_error(RunApplicationError::bad_request(
@@ -175,6 +216,7 @@ fn stream_turn(
     thread: String,
     agent: Option<String>,
     messages: Vec<Message>,
+    owner: RequestOwner,
 ) -> Response {
     stream_turn_with_keep_alive(
         rt,
@@ -182,6 +224,7 @@ fn stream_turn(
         thread,
         agent,
         messages,
+        owner,
         STREAM_KEEP_ALIVE_INTERVAL,
     )
 }
@@ -192,6 +235,7 @@ fn stream_turn_with_keep_alive(
     thread: String,
     agent: Option<String>,
     messages: Vec<Message>,
+    owner: RequestOwner,
     keep_alive_interval: std::time::Duration,
 ) -> Response {
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
@@ -214,8 +258,23 @@ fn stream_turn_with_keep_alive(
         // sink lives inside that future; when the turn ends it drops, closing
         // `live_rx` and ending the drain loop.
         let mut turn = tokio::spawn(async move {
-            rt.run_streaming(&operation_id, &thread, agent, messages, sink)
-                .await
+            match &owner.mode {
+                RunMode::OwnerScoped(port) => {
+                    port.run_streaming_for_owner(
+                        &owner.scope,
+                        &operation_id,
+                        &thread,
+                        agent,
+                        messages,
+                        sink,
+                    )
+                    .await
+                }
+                RunMode::Local => {
+                    rt.run_streaming(&operation_id, &thread, agent, messages, sink)
+                        .await
+                }
+            }
         });
         let mut keep_alive = tokio::time::interval(keep_alive_interval);
         keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -312,6 +371,7 @@ fn forward_live_event(
 /// parallel-tool race — is never substituted for the one the runtime awaits.
 async fn resume_step(
     rt: &Runtime,
+    owner: &RequestOwner,
     operation_id: &str,
     thread: &str,
     decisions: &crate::request::Decisions,
@@ -331,9 +391,23 @@ async fn resume_step(
             )))
         })?;
     let resume = to_resume(&decision.kind, &pending);
-    rt.resume(operation_id, thread, &pending.tool_use_id, resume)
-        .await
-        .map_err(sse_error)
+    match &owner.mode {
+        RunMode::OwnerScoped(port) => {
+            port.resume_for_owner(
+                &owner.scope,
+                operation_id,
+                thread,
+                &pending.tool_use_id,
+                resume,
+            )
+            .await
+        }
+        RunMode::Local => {
+            rt.resume(operation_id, thread, &pending.tool_use_id, resume)
+                .await
+        }
+    }
+    .map_err(sse_error)
 }
 
 /// Map a client decision to a neutral resume, choosing the variant that matches
@@ -374,7 +448,7 @@ fn to_resume(kind: &DecisionKind, pending: &Pending) -> RunResume {
 }
 
 async fn thread_messages(
-    State(rt): State<Runtime>,
+    State((rt, _)): State<RuntimeState>,
     Path(thread_id): Path<String>,
     resolved: Option<Extension<ResolvedResourceId>>,
     Query(params): Query<CursorParams>,
@@ -566,6 +640,10 @@ mod tests {
                 awaken_agent_contract::agent::message::Role::User,
                 "go",
             )],
+            RequestOwner {
+                scope: "test-workspace".into(),
+                mode: RunMode::Local,
+            },
             std::time::Duration::from_millis(5),
         );
         assert_eq!(

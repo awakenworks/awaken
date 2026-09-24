@@ -124,7 +124,7 @@ async fn frames() -> Vec<Value> {
 }
 
 async fn frames_for(runtime: Arc<dyn RunApplication>) -> Vec<Value> {
-    let app = awaken_protocol_ag_ui::router::router(runtime);
+    let app = awaken_protocol_ag_ui::router::router(runtime, "test-workspace".into());
     let body = json!({
         "threadId": "t1",
         "runId": "r1",
@@ -438,7 +438,7 @@ async fn a_client_hangup_mid_stream_stops_the_producer_without_hanging() {
         observed_close: observed_close.clone(),
         finished: finished.clone(),
     });
-    let app = awaken_protocol_ag_ui::router::router(rt);
+    let app = awaken_protocol_ag_ui::router::router(rt, "test-workspace".into());
     let response = app
         .oneshot(
             Request::builder()
