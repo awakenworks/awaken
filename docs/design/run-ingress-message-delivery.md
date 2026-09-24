@@ -246,10 +246,13 @@ streamed scan checks the complete remaining candidate order before returning
 `None`. The existing exact claim transaction still rechecks every authority
 condition and is the only operation that mints an epoch.
 
-`runnable_depth` remains an exact, on-demand operations query. The process-level
-service or pool samples it once at startup and then on a nominal 60-second cadence;
-an executing Run never waits for this count. A failed sample does not affect
-claim or settlement. `dispatch_poll_interval_ms` configures the lost-wake
+`runnable_depth` remains an exact, on-demand operations query. By default the
+process-level service, pool, or coordinator-only reconciler samples it once at
+startup and then on a nominal 60-second cadence; an executing Run never waits
+for this count. A hosted composition that owns one scaler observation may
+disable this optional open sampler through `DeploymentConfig` while reading the
+same Dispatch authority. A failed sample does not affect claim or settlement.
+`dispatch_poll_interval_ms` configures the lost-wake
 fallback for local pools and coordinator-only reconciliation (1–60,000 ms;
 omission retains the current 500 ms default). The same interval also paces
 outbox relay and lease-expiry discovery, so deployments must choose it against

@@ -151,10 +151,11 @@ pub struct DispatchPool<S> {
 fn spawn_observed_depth<S: ControlDispatch + 'static>(
     store: Arc<S>,
     shutdown: CancellationToken,
+    enabled: bool,
 ) -> Option<JoinHandle<()>> {
     let metrics = Arc::new(awaken_observability::OtelMetricsRecorder::new());
     let report = Arc::new(move |depth| metrics.record_dispatch_queue_depth(depth));
-    spawn_dispatch_depth_sampler(store, report, shutdown)
+    spawn_dispatch_depth_sampler(store, report, shutdown, enabled)
 }
 
 /// Reconciles durable Dispatch state with already committed facts when a
@@ -182,7 +183,11 @@ impl DispatchReconciler {
         completion: Option<Arc<dyn CompletionSink>>,
     ) -> Self {
         let shutdown = CancellationToken::new();
-        let depth_sampler = spawn_observed_depth(store.clone(), shutdown.clone());
+        let depth_sampler = spawn_observed_depth(
+            store.clone(),
+            shutdown.clone(),
+            config.sample_dispatch_queue_depth,
+        );
         let task = tokio::spawn(reconciliation_loop(ReconciliationContext {
             store,
             clock,
@@ -574,7 +579,11 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     ) -> Self {
         let owner = owner.into();
         let shutdown = CancellationToken::new();
-        let depth_sampler = spawn_observed_depth(store.clone(), shutdown.clone());
+        let depth_sampler = spawn_observed_depth(
+            store.clone(),
+            shutdown.clone(),
+            config.sample_dispatch_queue_depth,
+        );
         let admission = Arc::new(PoolAdmission::new(config.max_attempts));
         let reconciliation_wake = Arc::new(LocalWakeSignal::new());
         let drains = (0..concurrency.max(1))

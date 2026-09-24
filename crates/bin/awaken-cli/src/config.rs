@@ -342,6 +342,7 @@ impl ResolvedDeployment {
                 .unwrap_or_else(|| {
                     awaken_run_ingress::DispatchServiceConfig::default().poll_interval
                 }),
+            sample_dispatch_queue_depth: true,
             sandbox_tier: runtime_settings.sandbox_tier,
             sandbox_dir: file.sandbox_dir.clone(),
             sandbox: runtime_settings.sandbox,
@@ -861,7 +862,8 @@ mod tests {
         // Causes: C1 TOML value absent/present; C2 present value is zero,
         // within 1..=60000, or above 60000. Effects: E1 omission retains the
         // dispatch owner's existing 500ms default; E2 a valid value reaches the
-        // sole DeploymentConfig; E3 either invalid bound fails before startup.
+        // sole DeploymentConfig; E3 either invalid bound fails before startup;
+        // E4 an ordinary CLI process keeps its built-in depth sampler enabled.
         // Decision table: P1=!C1 -> E1; P2=C1+valid -> E2;
         // P3=C1+(zero|above maximum) -> E3. Local pool and coordinator-only
         // reconciler consume the same later deployment projection.
@@ -871,6 +873,7 @@ mod tests {
             awaken_run_ingress::DispatchServiceConfig::default().poll_interval,
             "P1"
         );
+        assert!(defaulted.runtime.sample_dispatch_queue_depth, "P1/E4");
         let configured = resolve(
             toml::from_str("dispatch_poll_interval_ms = 750")
                 .expect("P2 TOML key reaches the existing file schema"),

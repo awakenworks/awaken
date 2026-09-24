@@ -34,10 +34,11 @@ pub(crate) fn spawn_dispatch_depth_sampler<S: ControlDispatch + 'static>(
     store: Arc<S>,
     report: Arc<dyn Fn(u64) + Send + Sync>,
     shutdown: CancellationToken,
+    enabled: bool,
 ) -> Option<JoinHandle<()>> {
     // Database-less Workers do not poll upstream operations. The Coordinator
     // samples its own queue; no second remote maintenance loop is installed.
-    if !store.owns_local_maintenance() {
+    if !enabled || !store.owns_local_maintenance() {
         return None;
     }
     Some(tokio::spawn(async move {
@@ -83,6 +84,9 @@ pub struct DispatchServiceConfig {
     /// and reconciliation-claim crash gaps without polling every idle queue tick;
     /// `None` disables it.
     pub terminal_reconciliation_interval: Option<Duration>,
+    /// Disable this process's optional depth metric when a hosting adapter
+    /// already samples the same authoritative queue for its scaler.
+    pub sample_dispatch_queue_depth: bool,
 }
 
 impl Default for DispatchServiceConfig {
@@ -94,6 +98,7 @@ impl Default for DispatchServiceConfig {
             max_attempts: 5,
             dead_letter_ttl: None,
             terminal_reconciliation_interval: Some(Duration::from_secs(30)),
+            sample_dispatch_queue_depth: true,
         }
     }
 }
@@ -202,8 +207,12 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
                 .metrics()
                 .record_dispatch_queue_depth(depth);
         });
-        let depth_sampler =
-            spawn_dispatch_depth_sampler(worker.store().clone(), report, shutdown.clone());
+        let depth_sampler = spawn_dispatch_depth_sampler(
+            worker.store().clone(),
+            report,
+            shutdown.clone(),
+            config.sample_dispatch_queue_depth,
+        );
         let handle = tokio::spawn(run_loop(
             worker.clone(),
             clock.clone(),

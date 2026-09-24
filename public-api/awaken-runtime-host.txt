@@ -156,6 +156,7 @@ pub awaken_runtime_host::DeploymentConfig::dispatch_poll_interval: core::time::D
 pub awaken_runtime_host::DeploymentConfig::durable: bool
 pub awaken_runtime_host::DeploymentConfig::nats_url: core::option::Option<alloc::string::String>
 pub awaken_runtime_host::DeploymentConfig::postgres_max_connections: core::num::nonzero::NonZeroU32
+pub awaken_runtime_host::DeploymentConfig::sample_dispatch_queue_depth: bool
 pub awaken_runtime_host::DeploymentConfig::sandbox: awaken_runtime_host::SandboxSettings
 pub awaken_runtime_host::DeploymentConfig::sandbox_dir: core::option::Option<std::path::PathBuf>
 pub awaken_runtime_host::DeploymentConfig::sandbox_tier: awaken_runtime_host::SandboxTier

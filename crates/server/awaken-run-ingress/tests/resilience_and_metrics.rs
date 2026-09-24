@@ -132,6 +132,56 @@ async fn queue_depth_is_sampled_by_the_process_not_each_drive() {
     service.shutdown().await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn hosted_depth_owner_disables_only_the_open_sampler() {
+    // Causes: C1 a hosted composition owns queue-depth observation; C2 one
+    // runnable Run is submitted; C3 more than two default sample periods pass.
+    // Effects: E1 the open process issues no exact depth reads; E2 dispatch
+    // still claims and commits the Run. Rule H1=C1+C2+C3 -> E1+E2. The hosted
+    // observer reads the same queue through its existing ControlDispatch port;
+    // this flag grants no execution or fact authority.
+    let metrics = Arc::new(RecordingMetrics::default());
+    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(DispatchWorker::new(
+        text_runtime_with_metrics(metrics.clone() as Arc<_>),
+        store.clone(),
+        commit.clone(),
+        "hosted-observer",
+    ));
+    let service = DispatchService::spawn(
+        worker,
+        Arc::new(SystemClock),
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            terminal_reconciliation_interval: None,
+            sample_dispatch_queue_depth: false,
+            ..Default::default()
+        },
+    );
+    service
+        .submit(activation("hosted-depth-owner"))
+        .await
+        .unwrap();
+    for _ in 0..500 {
+        if metrics.claimed.load(Ordering::SeqCst) == 1 && commit.commit_count() >= 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(metrics.claimed.load(Ordering::SeqCst), 1, "H1/E2 one lease");
+    assert!(commit.commit_count() >= 1, "H1/E2 committed facts");
+    tokio::time::advance(Duration::from_secs(120)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(store.depth_reads(), 0, "H1/E1");
+    assert_eq!(
+        metrics.queue_depth_samples.load(Ordering::SeqCst),
+        0,
+        "H1/E1"
+    );
+    service.shutdown().await;
+}
+
 #[tokio::test]
 async fn blocked_depth_observation_cannot_delay_a_run_or_shutdown() {
     // Causes: C1 the first exact depth read never returns; C2 a runnable Run

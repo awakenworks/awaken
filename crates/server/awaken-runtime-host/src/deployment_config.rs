@@ -595,6 +595,9 @@ pub struct DeploymentConfig {
     /// Maximum fallback wait before a pool checks durable dispatch again after a
     /// lost wake. The cross-node wake is only a hint; this is the recovery bound.
     pub dispatch_poll_interval: std::time::Duration,
+    /// Hosted composition may provide the sole queue-depth observation used by
+    /// its scaler; standalone deployments retain the built-in sampler.
+    pub sample_dispatch_queue_depth: bool,
     /// The sandbox tier this worker realizes ACP agents on.
     pub sandbox_tier: SandboxTier,
     /// The ACP sandbox and per-Session configuration root.
@@ -712,6 +715,7 @@ impl DeploymentConfig {
     pub(crate) fn dispatch_service_config(&self) -> awaken_run_ingress::DispatchServiceConfig {
         awaken_run_ingress::DispatchServiceConfig {
             poll_interval: self.dispatch_poll_interval,
+            sample_dispatch_queue_depth: self.sample_dispatch_queue_depth,
             ..awaken_run_ingress::DispatchServiceConfig::default()
         }
     }
@@ -818,6 +822,7 @@ impl DeploymentConfig {
             dispatch_owner: "embedded-worker".to_string(),
             dispatch_poll_interval: awaken_run_ingress::DispatchServiceConfig::default()
                 .poll_interval,
+            sample_dispatch_queue_depth: true,
             sandbox_tier: SandboxTier::Namespace,
             sandbox_dir: None,
             sandbox: SandboxSettings::default(),
@@ -1121,6 +1126,26 @@ mod tests {
                 "D2/E2"
             );
         }
+    }
+
+    #[test]
+    fn hosted_depth_observation_choice_reaches_the_one_dispatch_schedule() {
+        // Causes: C1 a standalone deployment uses its default; C2 hosted
+        // composition supplies the single external queue observer. Effects:
+        // E1 the open sampler stays enabled by default; E2 both pool and
+        // coordinator-only reconciliation receive the disabled flag through
+        // their shared DispatchServiceConfig. Rules D1=C1 -> E1,
+        // D2=C2 -> E2. No lease or claim setting changes.
+        let mut config = base();
+        assert!(
+            config.dispatch_service_config().sample_dispatch_queue_depth,
+            "D1/E1"
+        );
+        config.sample_dispatch_queue_depth = false;
+        assert!(
+            !config.dispatch_service_config().sample_dispatch_queue_depth,
+            "D2/E2"
+        );
     }
 
     #[test]
