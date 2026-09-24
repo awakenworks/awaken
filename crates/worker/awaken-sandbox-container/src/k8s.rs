@@ -13,7 +13,7 @@
 //! a rendezvous is set, by **reverse dial** (the egress-fenced Pod dials the host
 //! out) — all via [`crate::net`]. Compile-verified here; running requires a cluster.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -44,7 +44,7 @@ use crate::{
     BindPlan, ContainerCreateAttempt, ContainerEffectFence, ContainerObservationExpectation,
     ContainerObservationPurpose, ContainerPlan, ContainerRealizationContext,
     ContainerRealizationIntent, ContainerRealizationNamespace, ContainerRuntime, ContainerState,
-    RuntimeAgentProcess, RuntimeError, SandboxControlBindingRequest,
+    K8sRepositoryGatewayTrust, RuntimeAgentProcess, RuntimeError, SandboxControlBindingRequest,
     container_effect_fence_from_values, sandbox_scope_identity,
 };
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
@@ -133,45 +133,6 @@ fn ephemeral_plan() -> ContainerPlan {
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Deployment-owned, public trust for the private HTTPS Repository Gateway.
-/// The address is resolved by the trusted Worker; Session Pods use a host alias
-/// so a restricted Pod has no general DNS egress channel.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct K8sRepositoryGatewayTrust {
-    host: String,
-    address: IpAddr,
-    ca_secret_name: String,
-    ca_secret_key: String,
-}
-
-impl K8sRepositoryGatewayTrust {
-    pub fn new(
-        host: impl Into<String>,
-        address: IpAddr,
-        ca_secret_name: impl Into<String>,
-        ca_secret_key: impl Into<String>,
-    ) -> Result<Self, RuntimeError> {
-        let host = host.into();
-        let ca_secret_name = ca_secret_name.into();
-        let ca_secret_key = ca_secret_key.into();
-        if crate::normalize_hostname(&host).ok().as_deref() != Some(host.as_str())
-            || ca_secret_name.trim().is_empty()
-            || ca_secret_name.contains('/')
-            || ca_secret_key.trim().is_empty()
-            || ca_secret_key.contains('/')
-        {
-            return Err(backend(
-                "invalid Kubernetes Repository Gateway trust configuration",
-            ));
-        }
-        Ok(Self {
-            host,
-            address,
-            ca_secret_name,
-            ca_secret_key,
-        })
-    }
-}
 const SANDBOX_REALIZATION_ANNOTATION: &str = "awaken.dev/sandbox-realization";
 const SANDBOX_ADOPTION_ANNOTATION: &str = "awaken.dev/sandbox-adoption";
 const SANDBOX_EFFECT_ANNOTATION: &str = "awaken.dev/sandbox-effect";
@@ -652,8 +613,26 @@ impl K8sRuntime {
         realization_namespace: ContainerRealizationNamespace,
         agent_addr: SocketAddr,
     ) -> Result<Self, RuntimeError> {
+        Self::connect_for_realization_with_repository_gateway_trust(
+            namespace,
+            realization_namespace,
+            agent_addr,
+            None,
+        )
+        .await
+    }
+
+    /// Apply the exact private Git TLS egress contract before the first live
+    /// NetworkPolicy attestation, so no weaker startup window is advertised.
+    pub async fn connect_for_realization_with_repository_gateway_trust(
+        namespace: impl Into<String>,
+        realization_namespace: ContainerRealizationNamespace,
+        agent_addr: SocketAddr,
+        repository_gateway_trust: Option<K8sRepositoryGatewayTrust>,
+    ) -> Result<Self, RuntimeError> {
         let clients = K8sClients::infer().await?;
         let namespace = namespace.into();
+        let expected_repository_port = repository_gateway_trust.as_ref().map(|trust| trust.port);
         let runtime = Self {
             clients,
             namespace,
@@ -663,8 +642,8 @@ impl K8sRuntime {
             owner_id: crate::runtime_owner_id(),
             rendezvous: None,
             image_pull_secrets: Vec::new(),
-            repository_gateway_trust: None,
-            network_policy_attestation: network_policy::Attestation::new(),
+            repository_gateway_trust,
+            network_policy_attestation: network_policy::Attestation::new(expected_repository_port),
             pod_channel_port: None,
             sandbox_control_forwarder: None,
             continuation_volume: None,
@@ -707,12 +686,6 @@ impl K8sRuntime {
     }
 
     #[must_use]
-    pub fn with_repository_gateway_trust(mut self, trust: K8sRepositoryGatewayTrust) -> Self {
-        self.repository_gateway_trust = Some(trust);
-        self
-    }
-
-    #[must_use]
     pub fn with_pod_channel_port(mut self, port: u16) -> Self {
         self.pod_channel_port = Some(port);
         self
@@ -751,7 +724,7 @@ impl K8sRuntime {
             rendezvous: None,
             image_pull_secrets: Vec::new(),
             repository_gateway_trust: None,
-            network_policy_attestation: network_policy::Attestation::new(),
+            network_policy_attestation: network_policy::Attestation::new(None),
             pod_channel_port: None,
             sandbox_control_forwarder: None,
             continuation_volume: None,
@@ -1628,15 +1601,15 @@ fn build_pod_with_continuation(
                 value_from: None,
             })
             .collect();
-        if let Some(trust) = repository_gateway_trust {
-            if plan.env.iter().any(|(key, _)| key == "HTTPS_PROXY") {
-                agent_env.retain(|variable| variable.name != "NO_PROXY");
-                agent_env.push(EnvVar {
-                    name: "NO_PROXY".into(),
-                    value: Some(format!("localhost,127.0.0.1,{}", trust.host)),
-                    value_from: None,
-                });
-            }
+        if let Some(trust) = repository_gateway_trust
+            && plan.env.iter().any(|(key, _)| key == "HTTPS_PROXY")
+        {
+            agent_env.retain(|variable| variable.name != "NO_PROXY");
+            agent_env.push(EnvVar {
+                name: "NO_PROXY".into(),
+                value: Some(format!("localhost,127.0.0.1,{}", trust.host)),
+                value_from: None,
+            });
         }
         if let Some(addr) = rendezvous {
             agent_env.push(EnvVar {
