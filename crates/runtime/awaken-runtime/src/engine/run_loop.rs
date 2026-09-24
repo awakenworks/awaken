@@ -55,6 +55,10 @@ pub(crate) async fn run_agent_loop(
     let run_input: std::sync::Arc<[Message]> = activation.input.clone().into();
     let (committed, fresh_input) =
         committed_history_and_fresh_input(&context, &thread_id, activation.input);
+    // A reclaimed physical attempt can re-enter this path after earlier steps
+    // of the same Run were committed. Share the resume path's transcript-owned
+    // step classifier so its new Message ids cannot alias those earlier steps.
+    let step_base = awaken_agent_contract::agent::message::next_assistant_step(&committed, &run_id);
     let mut transcript = model_transcript(
         &context,
         committed,
@@ -163,7 +167,7 @@ pub(crate) async fn run_agent_loop(
         transcript,
         fresh_input,
         run_input,
-        0,
+        step_base,
         store,
         seed_state,
         Vec::new(),

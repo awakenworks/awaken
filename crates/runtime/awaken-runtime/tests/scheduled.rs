@@ -12,8 +12,10 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::Runtime;
+use awaken_runtime_contract::CommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -218,6 +220,96 @@ fn activation() -> RunActivation {
 
 fn context(commit: &Arc<MemoryCommitCoordinator>) -> RuntimeRunContext {
     RuntimeRunContext::new().with_commit(commit.clone())
+}
+
+/// Reclaimed Run assistant identity decision table. C1 a fresh Run has no
+/// committed assistant; C2 the same Running Run already committed step 0 and
+/// its input; C3 the Worker re-enters with that input again; C4 the model now
+/// calls a tool. Effects: E1 fresh execution starts at step 0 (covered by the
+/// scheduled tests below); E2 C2+C3+C4 commits steps 1 and 2, one correlated
+/// tool result and input, and no duplicate message identity. Rule
+/// R2=C2+C3+C4=>E2. The committed transcript is the sole step
+/// authority; a new worker's local step counter is not.
+#[tokio::test]
+async fn reclaimed_running_run_advances_assistant_id_from_committed_history() {
+    let activation = activation();
+    let run_id = activation.run_id.clone();
+    let thread_id = activation.thread_id.clone();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    commit
+        .commit(ThreadCommit::assemble(
+            thread_id.clone(),
+            RunDisposition::running(run_id.clone()),
+            true,
+            vec![
+                activation.input[0].clone(),
+                Message::text(
+                    MessageId::assistant(&run_id, 0),
+                    Role::Assistant,
+                    "prior step",
+                ),
+            ],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("prior Running prefix commits");
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ToolThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }));
+    let state = runtime
+        .execute(activation, context(&commit).with_reader(commit.clone()))
+        .await
+        .expect("reclaimed execution completes");
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    let messages = commit.committed_messages(&thread_id);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.role == Role::Assistant)
+            .map(|message| message.id.0.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "run-1-assistant-0",
+            "run-1-assistant-1",
+            "run-1-assistant-2"
+        ],
+        "R2/E2 resumed assistant occurrence is unique"
+    );
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "R2/E2 one tool effect");
+    assert!(
+        messages.iter().any(|message| {
+            message.id == MessageId::assistant(&run_id, 1)
+                && message.content.iter().any(
+                    |block| matches!(block, ContentBlock::ToolUse { id, .. } if id == "call-1"),
+                )
+        }),
+        "R2/E2 assistant step 1 owns the tool use"
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| {
+                message.role == Role::Tool
+                    && message.content.iter().any(|block| {
+                        matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call-1")
+                    })
+            })
+            .count(),
+        1,
+        "R2/E2 one correlated tool result"
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.id.0 == "m1")
+            .count(),
+        1,
+        "R2/E2 accepted input is not replayed"
+    );
 }
 
 /// Test design for committed scheduled commands.
