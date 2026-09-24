@@ -223,19 +223,6 @@ impl FileApplicationService for CountingFileApplication {
             .await
     }
 
-    async fn create_generated_file(
-        &self,
-        workspace_id: &str,
-        filename: String,
-        mime_type: String,
-        bytes: &[u8],
-        idempotency_key: String,
-    ) -> Result<FileRecord, ResourcePurgeError> {
-        self.inner
-            .create_generated_file(workspace_id, filename, mime_type, bytes, idempotency_key)
-            .await
-    }
-
     async fn create_artifact(
         &self,
         publication: &ArtifactPublication<()>,

@@ -256,28 +256,6 @@ impl FileApplication {
         .await
     }
 
-    pub async fn create_generated_file(
-        &self,
-        workspace_id: &str,
-        filename: String,
-        mime_type: String,
-        bytes: &[u8],
-        idempotency_key: String,
-    ) -> Result<FileRecord, ResourcePurgeError> {
-        self.create(CreateFileCommand {
-            workspace_id,
-            filename,
-            mime_type,
-            bytes,
-            downloadable: true,
-            expires_at: None,
-            scope_id: None,
-            logical_path: None,
-            idempotency_key: Some(idempotency_key),
-        })
-        .await
-    }
-
     pub async fn create_artifact(
         &self,
         publication: &ArtifactPublication<()>,
@@ -390,25 +368,6 @@ impl FileApplicationService for FileApplication {
             mime_type,
             bytes,
             expires_at,
-            idempotency_key,
-        )
-        .await
-    }
-
-    async fn create_generated_file(
-        &self,
-        workspace_id: &str,
-        filename: String,
-        mime_type: String,
-        bytes: &[u8],
-        idempotency_key: String,
-    ) -> Result<FileRecord, ResourcePurgeError> {
-        FileApplication::create_generated_file(
-            self,
-            workspace_id,
-            filename,
-            mime_type,
-            bytes,
             idempotency_key,
         )
         .await

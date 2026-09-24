@@ -116,9 +116,8 @@ impl BuiltInDreamAgent {
     async fn export_transcripts(
         &self,
         request: &DreamRequest,
-    ) -> Result<(Vec<(String, Vec<u8>)>, Vec<String>), DreamFailure> {
+    ) -> Result<Vec<(String, Vec<u8>)>, DreamFailure> {
         let mut exports = Vec::with_capacity(request.session_ids.len());
-        let mut file_ids = Vec::with_capacity(request.session_ids.len());
         for session_id in &request.session_ids {
             let messages = self
                 .sessions
@@ -133,21 +132,9 @@ impl BuiltInDreamAgent {
             let bytes = SessionTranscriptJsonlExporter::encode(session_id.as_str(), &messages)
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             let filename = format!("{session_id}.jsonl");
-            let file = self
-                .files
-                .create_generated_file(
-                    &request.workspace_id,
-                    filename.clone(),
-                    "application/x-ndjson".into(),
-                    &bytes,
-                    format!("dream\0{}\0{session_id}", request.job_id),
-                )
-                .await
-                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             exports.push((filename, bytes));
-            file_ids.push(file.id);
         }
-        Ok((exports, file_ids))
+        Ok(exports)
     }
 
     async fn make_session(
@@ -282,12 +269,6 @@ impl BuiltInDreamAgent {
             .purge_store(&format!("mem_snapshot_{}", request.job_id))
             .await;
     }
-
-    async fn delete_transcript_files(&self, workspace_id: &str, file_ids: &[String]) {
-        for file_id in file_ids {
-            let _ = self.files.delete(workspace_id, file_id, now_ms()).await;
-        }
-    }
 }
 
 fn dream_tool_configuration() -> SessionToolConfiguration {
@@ -370,20 +351,15 @@ impl DreamExecutor for BuiltInDreamAgent {
                 .await
                 .is_ok();
             let session_id = expected_session_id;
-            let (transcripts, transcript_file_ids) = self.export_transcripts(request).await?;
-            if !session_exists
-                && let Err(error) = self
-                    .make_session(request, &snapshot_id, &result_id, transcripts)
-                    .await
-            {
-                self.delete_transcript_files(&request.workspace_id, &transcript_file_ids)
-                    .await;
-                return Err(error);
+            let transcripts = self.export_transcripts(request).await?;
+            if !session_exists {
+                self.make_session(request, &snapshot_id, &result_id, transcripts)
+                    .await?;
             }
             return Ok(DreamPreparation {
                 result_memory_store_id: result_id,
                 session_id,
-                transcript_file_ids,
+                transcript_file_ids: Vec::new(),
             });
         }
         // A crash before the result catalog record commits may leave a partial
@@ -468,22 +444,14 @@ impl DreamExecutor for BuiltInDreamAgent {
                     DreamFailure::new("memory_store_org_limit_exceeded", error.to_string())
                 })?;
         }
-        let (transcripts, transcript_file_ids) = self.export_transcripts(request).await?;
-        let session_id = match self
+        let transcripts = self.export_transcripts(request).await?;
+        let session_id = self
             .make_session(request, &snapshot_id, &result_id, transcripts)
-            .await
-        {
-            Ok(session_id) => session_id,
-            Err(error) => {
-                self.delete_transcript_files(&request.workspace_id, &transcript_file_ids)
-                    .await;
-                return Err(error);
-            }
-        };
+            .await?;
         Ok(DreamPreparation {
             result_memory_store_id: result_id,
             session_id,
-            transcript_file_ids,
+            transcript_file_ids: Vec::new(),
         })
     }
 
@@ -553,6 +521,8 @@ impl DreamExecutor for BuiltInDreamAgent {
                 .force_terminate_session(&preparation.session_id, &archived_at, fact)
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+            // Older durable Dream records may still own generated transcript
+            // Files. New preparations mount the encoded bytes directly.
             for file_id in &preparation.transcript_file_ids {
                 self.files
                     .delete(&request.workspace_id, file_id, now_ms())

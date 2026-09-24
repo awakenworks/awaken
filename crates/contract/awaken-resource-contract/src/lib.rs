@@ -418,15 +418,6 @@ pub trait FileApplicationService: Send + Sync {
             .await
     }
 
-    async fn create_generated_file(
-        &self,
-        workspace_id: &str,
-        filename: String,
-        mime_type: String,
-        bytes: &[u8],
-        idempotency_key: String,
-    ) -> Result<FileRecord, ResourcePurgeError>;
-
     /// Create or atomically associate a terminal operation with the same
     /// canonical artifact File. The existing [`ArtifactPublication`] is the
     /// sole command value for ordinary and terminal artifacts; execution

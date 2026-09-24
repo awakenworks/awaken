@@ -36,6 +36,7 @@ pub struct DreamProcessRecord {
     pub agent_id: String,
     pub result_memory_store_id: Option<String>,
     pub session_id: Option<SessionId>,
+    /// Files created by older Dream versions; retained for durable cleanup.
     #[serde(default)]
     pub transcript_file_ids: Vec<String>,
     #[serde(default)]

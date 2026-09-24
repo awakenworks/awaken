@@ -46,9 +46,8 @@ pub struct DreamRequest {
 pub struct DreamPreparation {
     pub result_memory_store_id: String,
     pub session_id: String,
-    /// Generated Files backing the frozen JSONL transcript inputs. They are
-    /// implementation artifacts, not Dream outputs, and are deleted by the
-    /// worker cleanup lifecycle.
+    /// Generated transcript Files from older durable Dream preparations. New
+    /// preparations mount JSONL bytes directly; cleanup still deletes old Files.
     pub transcript_file_ids: Vec<String>,
 }
 
@@ -189,7 +188,7 @@ impl DreamProcess {
     fn project(&self, usage: DreamUsage) -> Dream {
         // The durable terminal decision is written before resource cleanup so a
         // crash can resume cleanup. Do not publish that terminal state until the
-        // output store is released and transient transcript Files are removed.
+        // output store is released and any legacy transcript Files are removed.
         let public_status = self.status.public_projection(self.cleanup_pending);
         let public_terminal_pending = public_status != self.status;
         Dream {
