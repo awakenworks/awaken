@@ -689,10 +689,11 @@ async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
     // Cause/effect decision table BP1. C1 an old physical Attempt remains
     // occupied without complete stop evidence; C2 its mutation claim is
     // reclaimable; C3 an unrelated Thread is pending; C4 Pool concurrency is
-    // one. Effects: E1 retain the old physical slot; E2 defer only its mutation
-    // claim; E3 release the Pool permit; E4 execute and settle the unrelated
-    // Thread exactly once. Rule BP1=C1+C2+C3+C4=>E1+E2+E3+E4. This distinguishes
-    // safe fail-closed occupancy from a process-wide capacity leak.
+    // one; C5 the replacement has claim epoch 2. Effects: E1 retain the old
+    // physical slot; E2 defer only its mutation claim for the shared 500ms
+    // backoff; E3 release the Pool permit; E4 execute and settle the unrelated
+    // Thread exactly once. Rule BP1=C1+C2+C3+C4+C5=>E1+E2+E3+E4. This
+    // distinguishes safe occupancy from a process-wide capacity leak.
     let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -723,7 +724,7 @@ async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
     clock.set(91);
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        clock,
+        clock.clone(),
         "pool",
         90,
         DispatchServiceConfig {
@@ -796,6 +797,27 @@ async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
         "BP1/E2"
     );
     pool.shutdown().await;
+    clock.set(590);
+    assert!(
+        store
+            .claim("probe", 90, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "BP1/E2 blocked predecessor waits for the shared backoff"
+    );
+    clock.set(591);
+    assert_eq!(
+        store
+            .claim("probe", 90, &Default::default())
+            .await
+            .unwrap()
+            .expect("BP1/E2 retry is due at the exact deadline")
+            .lease
+            .run_id,
+        RunId("blocked-old".into()),
+        "BP1/E2"
+    );
 }
 
 struct RejectingResolver {
