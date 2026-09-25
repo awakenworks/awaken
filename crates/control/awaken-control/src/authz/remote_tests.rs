@@ -110,7 +110,7 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
     ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     let base_url = format!("http://{address}");
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let (token, rotated_token) = runtime.block_on(async {
+    let (token, rotated_token, service_token) = runtime.block_on(async {
         let now = now_unix();
         let authority = AccessTokenAuthority::new(LocalSeedSigner::new(KID, SEED));
         let token = authority
@@ -139,7 +139,20 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
             })
             .await
             .unwrap();
-        (token, rotated_token)
+        let service_token = authority
+            .mint(&AccessTokenClaims {
+                iss: ISSUER.into(),
+                sub: "system:serviceaccount:flow:flow-cell".into(),
+                subject_kind: awaken_iam_host::AccessTokenSubjectKind::Service,
+                aud: AUDIENCE.into(),
+                exp: now + 3600,
+                iat: now,
+                jti: "flow-runtime-readiness".into(),
+                scope: vec!["workspace:ws_cloud".into()],
+            })
+            .await
+            .unwrap();
+        (token, rotated_token, service_token)
     });
     let current_token = Arc::new(Mutex::new(token.clone()));
     let token_source: Arc<awaken_agent_contract::RedactedStringSource> = {
@@ -218,9 +231,13 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
         projected_token,
     )
     .unwrap();
-    let hosted_app = Router::new().route("/v1/config/catalog", get(ok)).layer(
-        axum::middleware::from_fn_with_state(hosted, cloud_management_guard),
-    );
+    let hosted_app = Router::new()
+        .route("/v1/config/catalog", get(ok))
+        .route("/v1/workers/readiness", get(ok))
+        .layer(axum::middleware::from_fn_with_state(
+            hosted,
+            cloud_management_guard,
+        ));
     runtime.block_on(async {
         let request = |bearer: Option<&str>| {
             let mut builder = Request::builder().uri("/v1/config/catalog");
@@ -244,7 +261,41 @@ fn cloud_guard_tracks_login_rotation_and_explicit_bearer_override() {
         );
         assert_eq!(
             hosted_app
+                .clone()
                 .oneshot(request(Some(&token)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        // Cause/effect rules for the internal readiness route: R1 a Flow
+        // service bearer with the resolved Workspace and an IAM Allow reaches
+        // the Coordinator handler; R2 no bearer never falls back to the
+        // projected service credential. The route-policy test separately
+        // covers an unmapped Worker path and absence from public route export.
+        let fleet_request = |bearer: Option<&str>| {
+            let mut builder = Request::builder().uri("/v1/workers/readiness");
+            if let Some(bearer) = bearer {
+                builder = builder.header("authorization", format!("Bearer {bearer}"));
+            }
+            let mut request = builder.body(Body::empty()).unwrap();
+            request
+                .extensions_mut()
+                .insert(awaken_tenancy::WorkspaceScope("ws_cloud".into()));
+            request
+        };
+        assert_eq!(
+            hosted_app
+                .clone()
+                .oneshot(fleet_request(None))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            hosted_app
+                .oneshot(fleet_request(Some(&service_token)))
                 .await
                 .unwrap()
                 .status(),

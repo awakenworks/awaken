@@ -4,6 +4,14 @@ use super::*;
 
 pub(super) const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     RoutePolicyDescriptor::hosted_runtime("/v1/sessions", HOSTED_RUN_POLICY),
+    // Fleet readiness is an internal Flow-to-Coordinator read of a
+    // deployment-wide projection. It still requires the caller's hosted Run
+    // authority, but must not enter the public hosted-runtime route export.
+    RoutePolicyDescriptor {
+        prefix: "/v1/workers/readiness",
+        policy: HOSTED_RUN_POLICY,
+        hosted_runtime_route: None,
+    },
     RoutePolicyDescriptor::hosted_runtime(
         "/v1/dreams",
         RouteFamilyPolicy::Resource {
@@ -295,6 +303,29 @@ pub(super) const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internal_worker_readiness_uses_run_read_without_exporting_fleet_routes() {
+        // Cause/effect rules: R1 exact GET readiness + hosted Run authority ->
+        // E1 the canonical guard selects run.read at the token Workspace;
+        // R2 an unrelated Worker path -> E2 unmapped/denied; R3 registered
+        // internal readiness -> E3 no public hosted-runtime route projection.
+        // This is one policy table, not a second allowlist in Cloud or Flow.
+        use axum::http::Method;
+        assert!(matches!(
+            action_for(&Method::GET, "/v1/workers/readiness"),
+            Some(RouteAuthz::HostedRuntime {
+                action: RUN_READ,
+                scope: ScopeClass::Workspace,
+                ..
+            })
+        ));
+        assert!(action_for(&Method::GET, "/v1/workers/identities").is_none());
+        assert!(ROUTE_POLICIES.iter().any(|descriptor| {
+            descriptor.prefix == "/v1/workers/readiness"
+                && descriptor.hosted_runtime_route.is_none()
+        }));
+    }
 
     #[test]
     fn mcp_configuration_routes_keep_catalog_and_credential_permissions_separate() {
