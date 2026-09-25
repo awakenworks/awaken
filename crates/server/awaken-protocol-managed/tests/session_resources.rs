@@ -40,6 +40,7 @@ use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{
     OutcomeDrive, SessionEnvironmentBindingSink, SessionRuntime, ToolPermissionDecision,
 };
+use awaken_session_state_contract::{SessionDisposition, SessionExecutionState};
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
@@ -6170,7 +6171,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
         .unwrap();
     assert_eq!(
         completed.execution,
-        awaken_session_contract::SessionExecutionState::ActivationFailed,
+        SessionExecutionState::ActivationFailed,
         "F3/E5"
     );
     assert!(
@@ -6181,10 +6182,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
         "F3/E5"
     );
     assert!(
-        matches!(
-            completed.disposition,
-            awaken_session_contract::SessionDisposition::Archived { .. }
-        ),
+        matches!(completed.disposition, SessionDisposition::Archived { .. }),
         "F3/E5"
     );
     let retry = call(
@@ -6206,7 +6204,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
     );
 
     let mut running = failed.clone();
-    running.execution = awaken_session_contract::SessionExecutionState::Running;
+    running.execution = SessionExecutionState::Running;
     running.realization_progress.last_error = None;
     running.revision = Default::default();
     let running_sessions = std::sync::Arc::new(
@@ -6244,7 +6242,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
     );
 
     let mut terminated = failed;
-    terminated.execution = awaken_session_contract::SessionExecutionState::Terminated;
+    terminated.execution = SessionExecutionState::Terminated;
     terminated.revision = Default::default();
     let terminal_sessions = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("terminal Session repository"),
@@ -6273,7 +6271,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
         .unwrap();
     assert_eq!(
         completed_terminal.execution,
-        awaken_session_contract::SessionExecutionState::Terminated,
+        SessionExecutionState::Terminated,
         "F5/E5"
     );
     assert!(

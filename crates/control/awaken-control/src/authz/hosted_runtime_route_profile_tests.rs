@@ -86,6 +86,12 @@ fn hosted_runtime_routes_are_projected_from_the_authorization_table() {
                 || matches!(route, HostedRuntimePathMatch::PathTemplate { path_template } if path_template.ends_with(control_path))
         }));
     }
+    // R3 above: Flow may read global fleet readiness with its service token,
+    // but a per-Workspace public route must not publish that global fact.
+    assert!(!first.routes.iter().any(|route| {
+        matches!(route, HostedRuntimePathMatch::PathPrefix { path } if path == "/v1/workers/readiness")
+            || matches!(route, HostedRuntimePathMatch::PathTemplate { path_template } if path_template.ends_with("/workers/readiness"))
+    }));
     assert!(
         first
             .routes
