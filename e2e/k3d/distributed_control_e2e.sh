@@ -71,6 +71,16 @@ wait_roles() {
   done
 }
 
+batch_cleanup_wait_until() {
+  local deadline="$1" remaining; shift
+  remaining=$((deadline - SECONDS))
+  if ((remaining <= 0)); then
+    err "auxiliary Session Pod/PVC cleanup exceeded the shared ${BATCH_CLEANUP_TIMEOUT_SECONDS}s deadline"
+    return 1
+  fi
+  kubectl -n "$NS" wait --for=delete "$@" --timeout="${remaining}s"
+}
+
 if [[ "${1:-}" = "--self-test" ]]; then
   # Cause/effect decision table: R0 all five roles Ready => success and five
   # observations; R1..R5 failure at each respective role => that exact status,
@@ -91,6 +101,32 @@ if [[ "${1:-}" = "--self-test" ]]; then
     fi
   done
   ok "role rollout failures propagate at every position"
+  # Cleanup deadline decision table: C1 a public disposal starts with one
+  # 100-second budget; C2 the Pod wait consumes 30 seconds; C3 the shared
+  # deadline expires. Effects: E1 the Pod wait receives the full budget;
+  # E2 the PVC wait receives only the remaining budget; E3 no third kubectl
+  # call occurs after expiry. R1=C1->E1, R2=C1+C2->E2, R3=C1+C3->E3.
+  start_seconds=$SECONDS
+  cleanup_deadline=$((SECONDS + 100))
+  calls=0
+  observed_timeouts=()
+  kubectl() {
+    local argument
+    calls=$((calls + 1))
+    for argument in "$@"; do
+      [[ "$argument" != --timeout=* ]] || observed_timeouts+=("${argument#--timeout=}")
+    done
+    [[ "$calls" != 1 ]] || SECONDS=$((SECONDS + 30))
+  }
+  batch_cleanup_wait_until "$cleanup_deadline" pod/test
+  batch_cleanup_wait_until "$cleanup_deadline" pvc/test
+  [[ "$calls" = 2 && "${observed_timeouts[0]}" = 100s && "${observed_timeouts[1]}" = 70s ]]
+  SECONDS=$cleanup_deadline
+  result=0
+  batch_cleanup_wait_until "$cleanup_deadline" pod/expired >/dev/null 2>&1 || result=$?
+  [[ "$result" = 1 && "$calls" = 2 ]]
+  SECONDS=$start_seconds
+  ok "Pod and PVC waits share one physical cleanup deadline"
   # The deployment contract test is hermetic (it stubs docker/k3d/kubectl and
   # evaluates this file's own initialization prefix), and formal/coverage.json
   # names it as the evidence for the realization-scope requirement. Evidence a
@@ -615,9 +651,12 @@ for auxiliary_session in "${BATCH_AUXILIARY_IDS[@]}"; do
   BATCH_AUXILIARY_POD_TARGETS+=("pod/$auxiliary_pod")
   BATCH_AUXILIARY_CLAIM_TARGETS+=("pvc/$auxiliary_claim")
 done
+BATCH_CLEANUP_STARTED=$SECONDS
+BATCH_CLEANUP_DEADLINE=$((SECONDS + BATCH_CLEANUP_TIMEOUT_SECONDS))
 node "$DRIVER" dispose-batch "$API_URL" "$BATCH_AUXILIARY"
-kubectl -n "$NS" wait --for=delete "${BATCH_AUXILIARY_POD_TARGETS[@]}" --timeout="${BATCH_CLEANUP_TIMEOUT_SECONDS}s"
-kubectl -n "$NS" wait --for=delete "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}" --timeout="${BATCH_CLEANUP_TIMEOUT_SECONDS}s"
+batch_cleanup_wait_until "$BATCH_CLEANUP_DEADLINE" "${BATCH_AUXILIARY_POD_TARGETS[@]}"
+batch_cleanup_wait_until "$BATCH_CLEANUP_DEADLINE" "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}"
+ok "all auxiliary Pod/PVC objects disappeared in $((SECONDS - BATCH_CLEANUP_STARTED))s of one ${BATCH_CLEANUP_TIMEOUT_SECONDS}s budget"
 wait_roles || { diagnostics; exit 1; }
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=provider -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-PROVIDER-LOSS

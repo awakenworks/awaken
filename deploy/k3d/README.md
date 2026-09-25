@@ -328,14 +328,24 @@ not a passing 120-second cleanup acceptance or a production RTO claim.
 
 After bounding the existing Host recovery sweep to four concurrent independent
 Session cleanups, the 2026-09-25 run on `awaken-adr71-cleanup-20260925`
-passed the unchanged 120-second Pod/PVC cleanup gate for all eleven auxiliary
+passed the then-current 120-second Pod and PVC waits for all eleven auxiliary
 Sessions. All twelve Session responses completed, and the remaining fault
 stages passed, including synchronous PostgreSQL standby promotion and exact
 Native Worker hard-crash recovery. Its load stage completed 48/48 requests
 with zero errors, a 2.73-second warm p95 and a 22.34-second maximum cold batch.
 These are two local topology observations, not a controlled production capacity
-comparison; the supported cleanup conclusion is that the earlier >120-second
-gate failure became a pass under the original deadline.
+comparison. Those two waits each received a fresh 120-second timeout, so that
+run did not establish a combined 120-second physical-recovery bound.
+
+The follow-up run on `awaken-adr71-closure-20260925` used one deadline starting
+before public disposal. All eleven auxiliary Pods and PVCs disappeared in 51
+seconds of that shared 120-second budget. The same run passed all eleven fault
+stages, including synchronous PostgreSQL standby promotion and exact Native
+Worker hard-crash recovery; 48/48 load requests completed without error at a
+3.35-second warm p95 and 22.36-second maximum cold batch. The Host now
+replenishes a completed cleanup slot while another is slow, with no more than
+four in flight. This is one local topology sample, not a production RTO or
+million-Agent capacity result.
 
 The four logical owner databases share one disposable PostgreSQL primary and
 streaming standby to keep this topology affordable. Database names, role

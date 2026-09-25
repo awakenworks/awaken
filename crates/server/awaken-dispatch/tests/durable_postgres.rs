@@ -778,13 +778,14 @@ async fn two_workers_claim_distinct_runs_on_postgres() {
     assert_ne!(a, b, "two concurrent workers claim distinct runs");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     // Causes: C1 140 higher-priority, same-order candidates need GPU; C2 the
     // registered requester lacks GPU; C3 a lower-priority compatible Run exists;
     // C4 compatible vs placed broad claim; C5 compatible Run absent/present;
     // C6 140 local candidates have an exhausted fencing epoch; C7 140 fresh
-    // peers share a Thread whose existing Run is still leased.
+    // peers share a Thread whose existing Run is still leased; C8 two eligible
+    // successors sit behind the incompatible prefix while claimers race.
     // Effects: E1 scan past the first 128-row page without returning a false
     // None; E2 return only a compatible exact claim; E3 no compatible Run yields
     // None after exhausting every page; E4 a later enqueue is found on a fresh
@@ -792,7 +793,9 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     // transaction remains the only mutation. Decision table: R1=C1+C2+!C3 ->
     // E3; R2=C1+C2+C3+C4(compatible) -> E1+E2; R3=C1+C2+C3+C4(placed) ->
     // E1+E2; R4=R1 then C5(present) -> E4; R5=C6+one fresh local Run -> E1+E2;
-    // R6=C7+one later independent Run -> E1+E2 without a second Thread writer.
+    // R6=C7+one later independent Run -> E1+E2 without a second Thread writer;
+    // R7=C1+C2+C8 -> two distinct exact claims, no false empty result after
+    // one contender loses its first exact transaction.
     // The existing shared conformance owns
     // cancellation, reservation, recovery, priority and same-Thread partitions.
     let Some(pool) = harness::schema_pool("t_pg_candidate_pages").await else {
@@ -857,6 +860,31 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
         .expect("R2/R3/R4 later compatible Run is discovered");
         assert_eq!(claimed.lease.run_id.0, run, "R2/R3/E1+E2");
     }
+
+    for index in 0..2 {
+        store
+            .enqueue(
+                RunDispatch::new(activation_on(
+                    &format!("page-raced-{index}"),
+                    &format!("page-raced-thread-{index}"),
+                ))
+                .with_placement(PlacementRequirements::remote_required()),
+            )
+            .await
+            .unwrap();
+    }
+    let (first, second) = tokio::join!(
+        store.claim_compatible(&worker, 60_000),
+        store.claim_compatible(&worker, 60_000),
+    );
+    let first = first.unwrap().expect("R7 first deep claim");
+    let second = second.unwrap().expect("R7 second deep claim");
+    assert_ne!(
+        first.lease.run_id, second.lease.run_id,
+        "R7 distinct winners"
+    );
+    assert!(first.lease.run_id.0.starts_with("page-raced-"), "R7");
+    assert!(second.lease.run_id.0.starts_with("page-raced-"), "R7");
 
     let local_template = serde_json::to_value(RunDispatch::new(activation_on(
         "local-template",
