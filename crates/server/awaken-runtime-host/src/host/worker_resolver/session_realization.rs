@@ -919,9 +919,10 @@ mod tests {
         assert!(preparing.to_string().contains("Skill"), "M3: {preparing}");
     }
 
-    /// Dynamic-publication cause/effect graph: C1 the Coordinator projects the
-    /// exact publication before any Run can be claimed; C2 a compatibility
-    /// renewal omits it; C3 a claimed Run carries a Session-effective overlay
+    /// Dynamic-publication cause/effect graph: C0 a test fixture changes the
+    /// model binding and recomputes its canonical fingerprint; C1 the Coordinator
+    /// projects the exact publication before any Run can be claimed; C2 a
+    /// compatibility renewal omits it; C3 a claimed Run carries a Session-effective overlay
     /// with the same frozen coordinates; C4 claimed coordinates differ. E1
     /// retain the immutable publication; E2 reuse it; E3 accept the overlay
     /// without replacing E1; E4 reject the foreign Run and preserve E1.
@@ -942,6 +943,9 @@ mod tests {
         binding.backend_ref = "acp:claude".into();
         snapshot.resolved_spec.model_binding =
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
+        snapshot
+            .recompute_fingerprint()
+            .expect("P1 frozen publication has a canonical fingerprint");
         projection.agent_publication = Some(snapshot.clone());
         let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: "worker-a".into(),

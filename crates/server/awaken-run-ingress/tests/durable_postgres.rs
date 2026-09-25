@@ -783,7 +783,8 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     // Causes: C1 140 higher-priority, same-order candidates need GPU; C2 the
     // registered requester lacks GPU; C3 a lower-priority compatible Run exists;
     // C4 compatible vs placed broad claim; C5 compatible Run absent/present;
-    // C6 140 local candidates have an exhausted fencing epoch; C7 140 fresh
+    // C6 140 local candidates have an exhausted fencing epoch and one has the
+    // largest still-claimable epoch; C7 140 fresh
     // peers share a Thread whose existing Run is still leased; C8 two eligible
     // successors sit behind the incompatible prefix while claimers race.
     // Effects: E1 scan past the first 128-row page without returning a false
@@ -793,6 +794,7 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     // transaction remains the only mutation. Decision table: R1=C1+C2+!C3 ->
     // E3; R2=C1+C2+C3+C4(compatible) -> E1+E2; R3=C1+C2+C3+C4(placed) ->
     // E1+E2; R4=R1 then C5(present) -> E4; R5=C6+one fresh local Run -> E1+E2;
+    // R5a=C6+near-limit epoch -> the final valid epoch is claimed exactly;
     // R6=C7+one later independent Run -> E1+E2 without a second Thread writer;
     // R7=C1+C2+C8 -> two distinct exact claims, no false empty result after
     // one contender loses its first exact transaction.
@@ -905,6 +907,22 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     .execute(&pool)
     .await
     .unwrap();
+    let near_limit = "page-near-limit";
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            near_limit,
+            "page-near-limit-thread",
+        )))
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE runtime_dispatch SET lease_epoch = 9223372036854775806, priority = 201 \
+         WHERE run_id = $1",
+    )
+    .bind(near_limit)
+    .execute(&pool)
+    .await
+    .unwrap();
     let local_run = "page-local-fresh";
     store
         .enqueue(RunDispatch::new(activation_on(
@@ -913,6 +931,13 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
         )))
         .await
         .unwrap();
+    let near_limit_claimed = store
+        .claim("local-owner", 60_000, &Default::default())
+        .await
+        .unwrap()
+        .expect("R5a final valid epoch remains discoverable");
+    assert_eq!(near_limit_claimed.lease.run_id.0, near_limit, "R5a/E2");
+    assert_eq!(near_limit_claimed.lease.epoch, i64::MAX as u64, "R5a");
     let local_claimed = store
         .claim("local-owner", 60_000, &Default::default())
         .await

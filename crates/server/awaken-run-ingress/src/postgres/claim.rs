@@ -55,6 +55,14 @@ fn candidate_retry_due() -> &'static str {
     "(d.retry_not_before IS NULL OR d.retry_not_before <= $1)"
 }
 
+/// An exhausted epoch cannot pass the existing discovery admission check.
+/// Prune that permanent front from the deep fallback instead of decoding the
+/// whole prefix on every broad claim. The first cheap page and other malformed
+/// epochs retain their existing handling.
+fn candidate_epoch_not_exhausted() -> &'static str {
+    "d.lease_epoch < 9223372036854775807"
+}
+
 /// Produce only one bounded page of payloads. The cheap, status-based inner
 /// selection precedes the per-Thread/JSON predicates: a large fresh queue need
 /// not evaluate those predicates for every row before its first candidate.
@@ -121,6 +129,7 @@ fn candidate_deep_sql(local: bool) -> String {
     };
     let state_rank = candidate_state_rank(local);
     let retry_due = candidate_retry_due();
+    let epoch_not_exhausted = candidate_epoch_not_exhausted();
     format!(
         "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, \
                 d.status, d.cancel_requested, d.lease_epoch, \
@@ -135,7 +144,7 @@ fn candidate_deep_sql(local: bool) -> String {
            (pe.available_at IS NULL OR pe.available_at <= $1))) AND \
            {thread_available} AND {local_filter}) OR \
           (d.status = 'pending' AND {thread_available} AND {local_filter})) \
-         AND {retry_due} \
+         AND {retry_due} AND {epoch_not_exhausted} \
          ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR \
                        d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
                   {state_rank}, d.priority DESC, d.created_at, d.run_id"

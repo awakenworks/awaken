@@ -280,6 +280,60 @@ pub(crate) fn frozen_skill_version(
     }
 }
 
+/// One Managed Skill test setup through the Resource pin and immutable version
+/// owner. A test may omit the bytes to exercise the same fail-closed path; it
+/// never authors a process-local slot as a second selection source.
+async fn install_pinned_managed_skill_session(
+    host: &Arc<SharedHost>,
+    managed: &crate::ManagedHost,
+    thread: &str,
+    agent: &str,
+    environment: awaken_session_configuration_contract::EnvironmentSnapshot,
+    version: &awaken_skill_store::SkillVersion,
+    seed_version: bool,
+) -> Result<(), awaken_session_error_contract::RunError> {
+    let workspace = host.local_workspace().to_string();
+    if seed_version {
+        host.skills
+            .create(
+                awaken_skill_store::SkillDefinition {
+                    id: version.skill_id.clone(),
+                    workspace_id: workspace.clone(),
+                    display_title: None,
+                    latest_version: version.version,
+                    last_version: version.version,
+                    timestamps: Default::default(),
+                },
+                version.clone(),
+            )
+            .await
+            .expect("test SkillStore")
+            .expect("create immutable selected Skill version");
+    }
+    let resources = awaken_session_resource_contract::ResolvedSessionResources::default()
+        .with_skills(vec![
+            awaken_session_resource_contract::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: version.skill_id.to_string(),
+                version: version.version,
+                bundle_sha256: version.bundle_sha256.clone(),
+            },
+        ])
+        .expect("exact Skill Resource binding");
+    let mut init = bare_session(agent, &workspace);
+    init.environment = environment;
+    init.resources = resources.clone();
+    install_complete_test_session_for_realization(managed, thread, init).await?;
+    managed
+        .environment()
+        .expect("Managed Environment runtime")
+        .apply_session_inputs(
+            thread,
+            &resource_transition(&workspace, 0, Default::default(), 0, resources),
+        )
+        .await
+}
+
 /// Test-only proof that a Managed Session was composed with its required
 /// SessionApplication port. Individual coordination adapters have their own
 /// behavioral fakes; this one admits the ordinary unlimited model-request path
@@ -7495,11 +7549,12 @@ impl LlmExecutor for BrainSkillModel {
 /// | S1 | yes | yes | E1 + E2 + E3 |
 /// | S2 | yes | no | fail closed before inference/materialization/read |
 /// | S3 | no | yes | no unselected Skill projection/read |
+/// S3 is owned by `managed_session_ignores_unbound_host_skill_sources`; this
+/// test supplies the exact Resource pin for S1 and withholds its bytes for S2.
 #[tokio::test]
 async fn published_agent_receives_managed_filesystem_skill_discovery() {
     use awaken_runtime_contract::StaticPublishedAgentSnapshots;
     use awaken_runtime_contract::agent_bindings::AgentBindings;
-    use awaken_skill_store::{SkillBundleFile, SkillVersion, bundle_sha256};
 
     #[derive(Clone, Default)]
     struct ToolFaceRecorder(Arc<Mutex<Vec<ChatRequest>>>);
@@ -7567,40 +7622,29 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
     );
     let recorder = ToolFaceRecorder::default();
     let observed = recorder.0.clone();
+    let storage = tempfile::tempdir().expect("selected Skill fixture storage");
     let host = Arc::new(
-        SharedHost::new(Arc::new(recorder), "stub").with_agent_publications(publications.clone()),
+        SharedHost::new(Arc::new(recorder), "stub")
+            .with_skill_store(storage.path().join("skills"))
+            .with_store_dir(storage.path())
+            .with_agent_publications(publications.clone()),
     );
-    install_test_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
-    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
+    let managed = managed_with_resource_source(host.clone());
+    let version = frozen_skill_version(selected, selected, "release", "Say READY.", &[]);
+    install_pinned_managed_skill_session(
+        &host,
         &managed,
         "published-skill-thread",
-        host.local_workspace(),
+        "published-skill",
         session_environment(
             awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             serde_json::json!({}),
         ),
-        &snapshot,
+        &version,
+        true,
     )
-    .await;
-    let files = vec![SkillBundleFile {
-        path: "SKILL.md".into(),
-        content: b"---\nname: release-signal\ndescription: release\n---\nSay READY.".to_vec(),
-        executable: false,
-    }];
-    host.session_slots.update("published-skill-thread", |slot| {
-        slot.skills = Some(vec![SkillVersion {
-            id: "skver-release-signal-1".into(),
-            skill_id: selected.into(),
-            version: 1,
-            name: selected.into(),
-            description: "release".into(),
-            directory: "/skills/release-signal".into(),
-            bundle_sha256: bundle_sha256(&files),
-            files,
-            created_unix_nanos: 0,
-        }]);
-    });
+    .await
+    .expect("S1 exact Resource pin and Skill bytes");
 
     run_prepared_session_messages(
         &managed,
@@ -7672,36 +7716,30 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
 
     let missing_recorder = ToolFaceRecorder::default();
     let missing_observed = missing_recorder.0.clone();
+    let missing_storage = tempfile::tempdir().expect("missing Skill fixture storage");
     let missing_host = Arc::new(
-        SharedHost::new(Arc::new(missing_recorder), "stub").with_agent_publications(publications),
+        SharedHost::new(Arc::new(missing_recorder), "stub")
+            .with_skill_store(missing_storage.path().join("skills"))
+            .with_store_dir(missing_storage.path())
+            .with_agent_publications(publications),
     );
-    install_test_session_application(&missing_host);
-    let missing_managed = install_test_dispatch_runtime(&missing_host);
-    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
+    let missing_managed = managed_with_resource_source(missing_host.clone());
+    let missing = install_pinned_managed_skill_session(
+        &missing_host,
         &missing_managed,
         "selected-without-delivery",
-        missing_host.local_workspace(),
+        "published-skill",
         session_environment(
             awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             serde_json::json!({}),
         ),
-        &snapshot,
-    )
-    .await;
-    let missing = run_prepared_session_messages(
-        &missing_managed,
-        "published-skill",
-        "selected-without-delivery",
-        vec![Message::text(
-            MessageId("selected-without-delivery-user".into()),
-            Role::User,
-            "Release signal",
-        )],
+        &version,
+        false,
     )
     .await
-    .expect_err("S2 selected Skill without frozen bytes fails closed");
+    .expect_err("S2 bound Skill without frozen bytes fails closed before execution");
     assert!(
-        missing.message.contains("neither frozen version bytes"),
+        missing.message.contains("not found in this Workspace"),
         "S2: {missing}"
     );
     let missing_system = missing_observed
@@ -7720,81 +7758,6 @@ async fn published_agent_receives_managed_filesystem_skill_discovery() {
             .await
             .is_none(),
         "S2 fails before exposing a partial Environment"
-    );
-
-    let unselected_snapshot =
-        awaken_runtime_contract::ExecutableAgentSnapshot::builder("unselected-skill")
-            .model(test_model_binding())
-            .agent_bindings(AgentBindings {
-                toolsets: vec![awaken_agent_contract::ToolsetPolicy {
-                    source: awaken_agent_contract::ToolsetSource::Agent,
-                    default: awaken_agent_contract::ToolExecutionPolicy::default(),
-                    overrides: Vec::new(),
-                }],
-                ..Default::default()
-            })
-            .build();
-    let unselected_publications =
-        StaticPublishedAgentSnapshots::try_new([unselected_snapshot.clone()])
-            .expect("one immutable unselected Agent");
-    let unselected_recorder = ToolFaceRecorder::default();
-    let unselected_observed = unselected_recorder.0.clone();
-    let unselected_host = Arc::new(
-        SharedHost::new(Arc::new(unselected_recorder), "stub")
-            .with_agent_publications(Arc::new(unselected_publications)),
-    );
-    install_test_session_application(&unselected_host);
-    let unselected_managed = install_test_dispatch_runtime(&unselected_host);
-    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
-        &unselected_managed,
-        "unselected-delivery",
-        unselected_host.local_workspace(),
-        session_environment(
-            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-            serde_json::json!({}),
-        ),
-        &unselected_snapshot,
-    )
-    .await;
-    unselected_host
-        .session_slots
-        .update("unselected-delivery", |slot| {
-            slot.skills = host
-                .session_slots
-                .read("published-skill-thread", |slot| slot.skills.clone())
-                .flatten();
-        });
-    run_prepared_session_messages(
-        &unselected_managed,
-        "unselected-skill",
-        "unselected-delivery",
-        vec![Message::text(
-            MessageId("unselected-delivery-user".into()),
-            Role::User,
-            "Release signal",
-        )],
-    )
-    .await
-    .expect("S3 unselected delivery stays unavailable");
-    let unselected_system = unselected_observed
-        .lock()
-        .unwrap()
-        .iter()
-        .flat_map(|request| request.messages.iter())
-        .filter(|message| message.role == Role::System)
-        .map(|message| block_text(&message.content))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(!unselected_system.contains("release-signal"), "S3");
-    assert!(
-        unselected_host
-            .session_environment("unselected-delivery")
-            .await
-            .expect("S3 sandbox")
-            .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
-            .unwrap()
-            .is_empty(),
-        "S3"
     );
 }
 
@@ -8132,38 +8095,31 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
 /// the Managed read-disabled rejection. L2 is direct compatibility only.
 #[tokio::test]
 async fn managed_filesystem_skill_path_survives_deferred_reservation() {
-    use awaken_session_configuration_contract::SessionInit;
-
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    install_test_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
-    install_complete_test_session_for_realization(
+    let storage = tempfile::tempdir().expect("deferred Skill fixture storage");
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_skill_store(storage.path().join("skills"))
+            .with_store_dir(storage.path()),
+    );
+    let managed = managed_with_resource_source(host.clone());
+    let version = frozen_skill_version(
+        "release-signal",
+        "Release signal",
+        "release safely",
+        "RESERVATION-SKILL-BODY",
+        &[],
+    );
+    install_pinned_managed_skill_session(
+        &host,
         &managed,
         "deferred-managed-filesystem-skill",
-        SessionInit {
-            workspace_id: host.local_workspace().into(),
-            agent_id: "assistant".into(),
-            delegate_ids: Vec::new(),
-            tools: None,
-            resource_revision: 0,
-            resources: Default::default(),
-            model: None,
-            runtime: None,
-            environment: on_tool_use_environment(),
-        },
+        "assistant",
+        on_tool_use_environment(),
+        &version,
+        true,
     )
     .await
-    .expect("prepare lazy Session");
-    host.session_slots
-        .update("deferred-managed-filesystem-skill", |slot| {
-            slot.skills = Some(vec![frozen_skill_version(
-                "release-signal",
-                "Release signal",
-                "release safely",
-                "RESERVATION-SKILL-BODY",
-                &[],
-            )]);
-        });
+    .expect("prepare exact bound Skill on lazy Session");
 
     let provisional = host
         .ctx_for_session_coordination("deferred-managed-filesystem-skill", Some("assistant"))
