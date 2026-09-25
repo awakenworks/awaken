@@ -280,6 +280,80 @@ async fn million_historical_facts_do_not_gate_startup_or_unrelated_thread_open()
 }
 
 #[tokio::test]
+#[ignore = "hot-Thread PostgreSQL recovery cost observation; requires an explicit live fixture"]
+async fn hot_thread_history_open_reports_its_scoped_cost() {
+    // Causes: C1 one legitimate committed Thread has a large Message prefix;
+    // C2 an unrelated Thread opens first; C3 the hot Thread opens after restart.
+    // Effects: E1 C2 remains scoped and fast independent of C1; E2 C3 restores
+    // the complete ordered prefix, and prints its separate open cost. Rules
+    // H1=C1+C2->E1, H2=C1+C3->E2. This is a capacity observation, not a latency
+    // pass threshold: the current view still materializes that one Thread.
+    let Some(pool) = schema_pool("t_pg_hot_thread_history").await else {
+        panic!("explicit hot-history run requires PostgreSQL");
+    };
+    let rows: i64 = std::env::var("AWAKEN_HOT_THREAD_PERF_ROWS")
+        .ok()
+        .map(|value| value.parse().expect("hot-history row count"))
+        .unwrap_or(100_000);
+    assert!((10_000..=1_000_000).contains(&rows));
+    let thread = ThreadId("hot-history-thread".into());
+    let writer = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .unwrap();
+    writer
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            ended("hot-history-run"),
+            true,
+            vec![message("hot-first", "historic")],
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO runtime_message (commit_sequence, thread_id, data) \
+         SELECT 1, 'hot-history-thread', \
+                jsonb_set($1::jsonb, '{id}', to_jsonb('hot-' || g)) \
+         FROM generate_series(1, $2::bigint) AS g",
+    )
+    .bind(Json(message("hot-template", "historic")))
+    .bind(rows)
+    .execute(&pool)
+    .await
+    .unwrap();
+    drop(writer);
+    let reopened = PostgresCommitCoordinator::with_existing_pool(pool)
+        .await
+        .unwrap();
+    let unrelated_started = std::time::Instant::now();
+    let unrelated = reopened
+        .open_thread_projection(&ThreadId("unrelated-thread".into()))
+        .await
+        .unwrap();
+    let unrelated_ms = unrelated_started.elapsed().as_secs_f64() * 1_000.0;
+    assert!(
+        CommittedThreadView::committed_messages(&unrelated, &thread).is_empty(),
+        "H1/E1 unrelated view has no hot history"
+    );
+    let hot_started = std::time::Instant::now();
+    let hot = reopened.open_thread_projection(&thread).await.unwrap();
+    let hot_ms = hot_started.elapsed().as_secs_f64() * 1_000.0;
+    let messages = CommittedThreadView::committed_messages(&hot, &thread);
+    assert_eq!(messages.len(), rows as usize + 1, "H2/E2 full prefix");
+    assert_eq!(messages.first().unwrap().id.0, "hot-first", "H2/E2 order");
+    assert_eq!(
+        messages.last().unwrap().id.0,
+        format!("hot-{rows}"),
+        "H2/E2 order"
+    );
+    println!(
+        "hot_thread_history facts={} unrelated_open_ms={unrelated_ms:.3} hot_open_ms={hot_ms:.3}",
+        rows + 1
+    );
+}
+
+#[tokio::test]
 async fn scoped_execution_view_rejects_another_thread_before_writing() {
     // C1 a view was opened for Thread A; C2 a caller submits Thread B's commit.
     // R1=C1+C2 -> E1 rejection before SQL, E2 no B fact and A remains intact.

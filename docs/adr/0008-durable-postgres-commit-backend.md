@@ -124,6 +124,13 @@ single Thread still costs proportional time and memory when *that Thread* is
 opened; this change removes the whole-Cell startup dependency, not the need
 for bounded or incremental long-Thread recovery.
 
+The opt-in hot-Thread observation makes that remaining cost visible without
+changing the read authority. On one local PostgreSQL primary, opening a Thread
+with 100,001 historical Messages took 632 ms; 1,000,001 took 4,222 ms. Opening
+an unrelated Thread in those runs took 4–5 ms. These are single samples, not
+latency targets or production capacity evidence; a long-Thread acceptance SLO
+and an incremental recovery design remain separate work.
+
 ## References
 
 - [INVARIANTS.md](../INVARIANTS.md) — G1, G13, G31, G32 (the commit contract).

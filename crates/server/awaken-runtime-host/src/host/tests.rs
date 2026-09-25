@@ -22612,6 +22612,10 @@ pub(crate) struct RemoteTerminalCleanupControl {
     terminal_work_release: tokio::sync::Notify,
     terminal_work_seen: Mutex<Vec<String>>,
     terminal_work_fail_for: Mutex<Option<String>>,
+    terminal_work_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    terminal_work_active: AtomicUsize,
+    max_terminal_work_active: AtomicUsize,
+    claim_failure_on_call: Mutex<Option<usize>>,
     renewal_failure:
         Mutex<Option<awaken_session_realization_contract::SessionRealizationControlFailure>>,
     claim_targets: Mutex<Vec<awaken_session_realization_contract::SessionRealizationTarget>>,
@@ -22631,9 +22635,9 @@ pub(crate) struct RemoteTerminalCleanupControl {
     >,
 }
 
-struct ActiveRenewalGuard<'a>(&'a AtomicUsize);
+struct ActiveControlCallGuard<'a>(&'a AtomicUsize);
 
-impl Drop for ActiveRenewalGuard<'_> {
+impl Drop for ActiveControlCallGuard<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
@@ -22666,7 +22670,7 @@ impl awaken_session_realization_contract::SessionRealizationControl
         use std::sync::atomic::Ordering;
 
         let active = self.renewals_active.fetch_add(1, Ordering::SeqCst) + 1;
-        let _active = ActiveRenewalGuard(&self.renewals_active);
+        let _active = ActiveControlCallGuard(&self.renewals_active);
         self.max_renewals_active.fetch_max(active, Ordering::SeqCst);
         self.renewal_sessions
             .lock()
@@ -22786,7 +22790,18 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
         Option<awaken_session_realization_contract::SessionTerminalCleanupAssignment>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
-        self.claim_targets.lock().unwrap().push(target);
+        let call = {
+            let mut targets = self.claim_targets.lock().unwrap();
+            targets.push(target);
+            targets.len()
+        };
+        if *self.claim_failure_on_call.lock().unwrap() == Some(call) {
+            return Err(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                    "injected terminal claim failure".into(),
+                ),
+            );
+        }
         let assignment = self.assignments.lock().unwrap().pop_front();
         if let Some(assignment) = &assignment {
             *self.authority.lock().unwrap() = Some((
@@ -22810,6 +22825,17 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
             .lock()
             .unwrap()
             .push(session_id.to_string());
+        let active = self.terminal_work_active.fetch_add(1, Ordering::SeqCst) + 1;
+        let _active = ActiveControlCallGuard(&self.terminal_work_active);
+        self.max_terminal_work_active
+            .fetch_max(active, Ordering::SeqCst);
+        let gate = self.terminal_work_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.acquire_owned()
+                .await
+                .expect("terminal work gate remains open")
+                .forget();
+        }
         let blocked =
             self.terminal_work_block_for.lock().unwrap().as_deref() == Some(session_id.as_str());
         if blocked {
@@ -24570,38 +24596,14 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     drop(managed);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cold_terminal_cleanup_overlaps_independent_assignments_with_a_four_slot_bound() {
-    // Cause/effect graph: C1 five distinct terminal assignments are offered by
-    // the sole Control queue; C2 the first canonical work poll blocks; C3 one
-    // sibling poll fails; C4 the first is released. E1 the other three polls
-    // proceed while C2 is blocked; E2 no fifth claim crosses the four-slot
-    // bound; E3 the failure does not cancel the other claimed work; E4 the
-    // fifth assignment is claimed after C4 and the sweep reports the error.
-    // Constraint: each assignment has its own Session lease; the mock returns
-    // completed work so existing tests remain the authority for physical effects.
-    //
-    // | Rule | offered | first poll | sibling failure | Effect |
-    // | R1 | five | blocked | yes | E1 + E2 |
-    // | R2 | five | released | yes | E3 + E4 |
-    let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
-    );
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
-        owner: "remote-worker".into(),
-        runtime_incarnation: "remote-worker:incarnation".into(),
-        epoch: 3,
-        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
-    };
-    let target = awaken_session_realization_contract::SessionRealizationTarget {
-        owner: lease.owner.clone(),
-        runtime_incarnation: lease.runtime_incarnation.clone(),
-        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
-        reassign_existing_lease: false,
-    };
-    for index in 0..5 {
-        let session_id = format!("bounded-terminal-{index}");
+fn enqueue_completed_terminal_assignments(
+    control: &RemoteTerminalCleanupControl,
+    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    prefix: &str,
+    count: usize,
+) {
+    for index in 0..count {
+        let session_id = format!("{prefix}-{index}");
         control.assignments.lock().unwrap().push_back(
             awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 session_id: session_id.clone().into(),
@@ -24615,6 +24617,49 @@ async fn cold_terminal_cleanup_overlaps_independent_assignments_with_a_four_slot
             .unwrap()
             .insert(session_id, lease.clone());
     }
+}
+
+fn completed_terminal_test_lease() -> awaken_session_resource_contract::SessionRealizationLease {
+    awaken_session_resource_contract::SessionRealizationLease {
+        owner: "remote-worker".into(),
+        runtime_incarnation: "remote-worker:incarnation".into(),
+        epoch: 3,
+        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+    }
+}
+
+fn terminal_target_for(
+    lease: &awaken_session_resource_contract::SessionRealizationLease,
+) -> awaken_session_realization_contract::SessionRealizationTarget {
+    awaken_session_realization_contract::SessionRealizationTarget {
+        owner: lease.owner.clone(),
+        runtime_incarnation: lease.runtime_incarnation.clone(),
+        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+        reassign_existing_lease: false,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked() {
+    // Cause/effect graph: C1 five distinct terminal assignments are offered by
+    // the sole Control queue; C2 the first canonical work poll blocks; C3 one
+    // sibling poll fails; C4 the first is released. E1 the other three polls
+    // proceed while C2 is blocked; E2 a freed slot claims and completes the
+    // fifth assignment before C4; E3 the failure does not cancel sibling work;
+    // E4 the sweep reports the error after C4.
+    // Constraint: each assignment has its own Session lease; the mock returns
+    // completed work so existing tests remain the authority for physical effects.
+    //
+    // | Rule | offered | first poll | sibling failure | Effect |
+    // | R1 | five | blocked | yes | E1 + E2 + E3 |
+    // | R2 | five | released | yes | E4 |
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+    );
+    let lease = completed_terminal_test_lease();
+    let target = terminal_target_for(&lease);
+    enqueue_completed_terminal_assignments(&control, &lease, "bounded-terminal", 5);
     *control.terminal_work_block_for.lock().unwrap() = Some("bounded-terminal-0".into());
     *control.terminal_work_fail_for.lock().unwrap() = Some("bounded-terminal-2".into());
     let recovery = tokio::spawn({
@@ -24630,22 +24675,22 @@ async fn cold_terminal_cleanup_overlaps_independent_assignments_with_a_four_slot
     .expect("R1/C2 first canonical poll blocks");
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            if control.terminal_work_seen.lock().unwrap().len() == 4 {
+            if control.terminal_work_seen.lock().unwrap().len() == 5 {
                 break;
             }
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("R1/E1 all four independent polls run");
-    assert_eq!(control.claim_targets.lock().unwrap().len(), 4, "R1/E2");
+    .expect("R1/E2 fifth Session proceeds despite blocked first");
+    assert!(control.claim_targets.lock().unwrap().len() >= 5, "R1/E2");
     assert!(!recovery.is_finished(), "R1/C2");
 
     control.terminal_work_release.notify_one();
     let error = tokio::time::timeout(std::time::Duration::from_secs(2), recovery)
         .await
-        .expect("R2/E3 sweep completes after release")
-        .expect("R2/E3 recovery task joins")
+        .expect("R2/E4 sweep completes after release")
+        .expect("R2/E4 recovery task joins")
         .expect_err("R2/E4 sibling failure remains visible");
     assert!(error.to_string().contains("injected terminal work failure"));
     assert_eq!(control.terminal_work_seen.lock().unwrap().len(), 5, "R2/E3");
@@ -24658,6 +24703,149 @@ async fn cold_terminal_cleanup_overlaps_independent_assignments_with_a_four_slot
         0,
         "R2/E4 completed assignments are not replayed"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_terminal_cleanup_never_drives_more_than_four_assignments() {
+    // Causes: C1 five independent assignments exist; C2 four polls block at
+    // their canonical Control port; C3 one poll is released. Effects: E1 no
+    // fifth claim occurs while four are active; E2 C3 admits the fifth while
+    // the other three remain blocked; E3 active calls never exceed four and
+    // every claimed assignment completes. Rules B1=C1+C2->E1,
+    // B2=B1+C3->E2+E3. The gate changes only test I/O timing, not lease truth.
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
+    );
+    let lease = completed_terminal_test_lease();
+    let target = terminal_target_for(&lease);
+    enqueue_completed_terminal_assignments(&control, &lease, "bounded-active", 5);
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    *control.terminal_work_gate.lock().unwrap() = Some(gate.clone());
+    let recovery =
+        tokio::spawn(async move { host.recover_terminal_cleanup_assignments(target).await });
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if control.terminal_work_active.load(Ordering::SeqCst) == 4 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("B1 four calls reached the test gate");
+    assert_eq!(control.claim_targets.lock().unwrap().len(), 4, "B1/E1");
+    assert_eq!(control.terminal_work_seen.lock().unwrap().len(), 4, "B1/E1");
+
+    gate.add_permits(1);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if control.terminal_work_seen.lock().unwrap().len() == 5 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("B2/E2 fifth call starts after one finishes");
+    assert_eq!(
+        control.terminal_work_active.load(Ordering::SeqCst),
+        4,
+        "B2/E3"
+    );
+    assert_eq!(
+        control.max_terminal_work_active.load(Ordering::SeqCst),
+        4,
+        "B2/E3"
+    );
+
+    gate.add_permits(4);
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), recovery)
+            .await
+            .expect("B2/E3 recovery completes")
+            .expect("B2/E3 recovery task joins")
+            .expect("B2/E3 every call succeeds"),
+        5,
+        "B2/E3"
+    );
+}
+
+#[tokio::test]
+async fn cold_terminal_claim_failure_drains_claimed_work_and_retries_the_remainder() {
+    // Causes: C1 three independent assignments exist; C2 claim call three
+    // fails after two leases have been returned; C3 the next sweep retries.
+    // Effects: E1 both claimed Sessions finish through the canonical poll;
+    // E2 the claim error remains visible; E3 the unclaimed third assignment
+    // finishes once on C3, with no replay of E1. Rules P1=C1+C2->E1+E2 and
+    // P2=P1+C3->E3. A failed claim never removes an assignment from Control.
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
+    let lease = completed_terminal_test_lease();
+    let target = terminal_target_for(&lease);
+    enqueue_completed_terminal_assignments(&control, &lease, "partial-claim", 3);
+    *control.claim_failure_on_call.lock().unwrap() = Some(3);
+
+    let error = host
+        .recover_terminal_cleanup_assignments(target.clone())
+        .await
+        .expect_err("P1/E2 claim failure is reported");
+    assert!(
+        error
+            .to_string()
+            .contains("injected terminal claim failure")
+    );
+    assert_eq!(control.terminal_work_seen.lock().unwrap().len(), 2, "P1/E1");
+    assert_eq!(control.assignments.lock().unwrap().len(), 1, "P1/E3");
+
+    *control.claim_failure_on_call.lock().unwrap() = None;
+    assert_eq!(
+        host.recover_terminal_cleanup_assignments(target)
+            .await
+            .unwrap(),
+        1,
+        "P2/E3 only the remaining assignment is claimed"
+    );
+    let seen = control.terminal_work_seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 3, "P2/E3");
+    assert_eq!(
+        seen.iter().collect::<std::collections::HashSet<_>>().len(),
+        3
+    );
+    assert!(control.assignments.lock().unwrap().is_empty(), "P2/E3");
+}
+
+#[tokio::test]
+async fn cold_terminal_recovery_preserves_the_sixty_four_assignment_sweep_cap() {
+    // Causes: C1 sixty-five independently completed assignments are offered;
+    // C2 one bounded sweep ends; C3 a later sweep runs. Effects: E1 C2 claims
+    // exactly sixty-four without dropping the final assignment; E2 C3 claims
+    // exactly one and reaches the empty queue. R1=C1+C2->E1, R2=R1+C3->E2.
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
+    let lease = completed_terminal_test_lease();
+    let target = terminal_target_for(&lease);
+    enqueue_completed_terminal_assignments(&control, &lease, "sweep-cap", 65);
+    assert_eq!(
+        host.recover_terminal_cleanup_assignments(target.clone())
+            .await
+            .unwrap(),
+        64,
+        "R1/E1"
+    );
+    assert_eq!(control.assignments.lock().unwrap().len(), 1, "R1/E1");
+    assert_eq!(
+        host.recover_terminal_cleanup_assignments(target)
+            .await
+            .unwrap(),
+        1,
+        "R2/E2"
+    );
+    assert_eq!(control.terminal_work_seen.lock().unwrap().len(), 65);
+    assert!(control.assignments.lock().unwrap().is_empty(), "R2/E2");
 }
 
 #[tokio::test]

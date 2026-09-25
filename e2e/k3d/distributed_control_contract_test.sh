@@ -274,11 +274,15 @@ grep -q 'ADR71_PROVIDER_REQUEST' "$REPO_ROOT/crates/devtools/awaken-scenario-hos
 # Session; C3 public disposal is followed by exact backend deletion joins.
 # E1 C1+C2+C3 removes the dead fixture load before Stage 8, while missing either
 # terminal intent or one physical join rejects the static scenario contract.
+# Both joins must consume one absolute 120-second budget, not sequential full
+# budgets that could admit nearly 240 seconds; the runner self-test owns the
+# deadline arithmetic and this contract owns the exact Stage 7 call sites.
 # The live lane establishes that these commands actually converge.
 STAGE7="$(sed -n '/log "7\/11/,/log "8\/11/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
 grep -q 'dispose-batch' <<<"$STAGE7"
-grep -Fq 'wait --for=delete "${BATCH_AUXILIARY_POD_TARGETS[@]}"' <<<"$STAGE7"
-grep -Fq 'wait --for=delete "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}"' <<<"$STAGE7"
+grep -Fq 'BATCH_CLEANUP_DEADLINE=$((SECONDS + BATCH_CLEANUP_TIMEOUT_SECONDS))' <<<"$STAGE7"
+grep -Fq 'batch_cleanup_wait_until "$BATCH_CLEANUP_DEADLINE" "${BATCH_AUXILIARY_POD_TARGETS[@]}"' <<<"$STAGE7"
+grep -Fq 'batch_cleanup_wait_until "$BATCH_CLEANUP_DEADLINE" "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}"' <<<"$STAGE7"
 grep -q "get endpoints kubernetes" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # Promotion decision table: P1 the old synchronous writer dies and its standby
 # is promoted -> clear the inherited dead-peer requirement before publication;
