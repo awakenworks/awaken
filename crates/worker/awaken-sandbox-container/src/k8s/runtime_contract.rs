@@ -1012,4 +1012,61 @@ mod unmaterialized_absence_tests {
             "late retry cannot cross the closed attempt"
         );
     }
+
+    #[tokio::test]
+    async fn replacement_runtime_does_not_inherit_an_unproven_creation_gate() {
+        // Causes: C1 Worker A admits one exact Pod-create attempt; C2 Worker B
+        // starts with the same scope and fence while A may still have a delayed
+        // API request; C3 A later leaves its own gate. Effects: E1 B cannot
+        // certify closure before or after C3; E2 only A may close its observed
+        // attempt. Rules X1=C1+C2->E1, X2=X1+C3->E1+E2. This pins the current
+        // cross-process fail-closed limit until a durable physical proof exists.
+        let old = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+        let replacement = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+        let fence = ContainerEffectFence::new(
+            "create-operation",
+            "worker-owner",
+            "worker-boot",
+            7,
+            u64::MAX,
+        )
+        .unwrap();
+        let fingerprint: pc::SandboxRealizationFingerprint =
+            serde_json::from_value(serde_json::json!("fingerprint")).unwrap();
+        let intent = ContainerRealizationIntent::Create;
+        let attempt = ContainerCreateAttempt::fresh();
+        let context = ContainerRealizationContext::new(
+            "scope",
+            &fingerprint,
+            Some(&fence),
+            &intent,
+            &attempt,
+        );
+        let admitted = old
+            .admit_observed_creation_attempt(&context, &ephemeral_plan())
+            .await
+            .unwrap()
+            .expect("X1 old Worker has an admitted attempt");
+        assert!(
+            replacement
+                .close_observed_creation_attempt("scope", &fence)
+                .await
+                .is_none(),
+            "X1/E1 a new process cannot infer the old API request closed"
+        );
+        drop(admitted);
+        assert!(
+            replacement
+                .close_observed_creation_attempt("scope", &fence)
+                .await
+                .is_none(),
+            "X2/E1 old in-memory completion is not a durable witness"
+        );
+        assert!(
+            old.close_observed_creation_attempt("scope", &fence)
+                .await
+                .is_some(),
+            "X2/E2 the original process can close what it observed"
+        );
+    }
 }
