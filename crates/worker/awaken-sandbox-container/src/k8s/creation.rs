@@ -158,21 +158,24 @@ pub(super) async fn converge(
     if let Some(effect_fence) = context.effect_fence {
         crate::runtime::validate_runtime_effect_fence(effect_fence)?;
     }
-    if !plan.memory_mounts.is_empty() {
-        let effect_fence = context.effect_fence.ok_or_else(|| {
-            backend("Kubernetes Memory convergence requires an Environment effect fence")
-        })?;
-        if memory::projection_complete(runtime, pod_name, effect_fence).await? {
+    if let Some(effect_fence) = context.effect_fence {
+        if projection::projection_complete(runtime, pod_name, effect_fence).await? {
             return Ok(());
         }
-        // The Agent/Hand command is still blocked on the projection marker.
-        // Replaying an interrupted projection is therefore safe: no workload
-        // can observe or mutate the tree before both Memory and initial Files
-        // have converged under this exact physical-effect fence.
-        memory::project_snapshots(runtime, pod_name, plan, effect_fence).await?;
+        // The Agent/Hand command is still blocked on this same marker. Once
+        // it exists, a replay cannot clear Files added by a later generation.
+        // An interrupted first projection remains safe to retry while blocked.
+        if !plan.memory_mounts.is_empty() {
+            memory::project_snapshots(runtime, pod_name, plan, effect_fence).await?;
+        }
         live_inputs::project_manifest(runtime, pod_name, plan).await?;
-        memory::mark_projection_complete(runtime, pod_name, effect_fence).await
+        projection::mark_projection_complete(runtime, pod_name, effect_fence).await
     } else {
+        if !plan.memory_mounts.is_empty() {
+            return Err(backend(
+                "Kubernetes Memory convergence requires an Environment effect fence",
+            ));
+        }
         live_inputs::project_manifest(runtime, pod_name, plan).await
     }
 }

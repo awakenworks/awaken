@@ -282,12 +282,32 @@ impl SessionEnvironment {
     /// provider's Ready receipt already owns create-time Bind/Copy participants
     /// and reacquires its exact FUSE participants during adoption; only late
     /// mounts absent from that receipt flow through the ordinary attach port.
-    /// Workdir late File copies are replayed from the same manifest; container
-    /// runtimes retain their own mount namespace across ownership changes.
+    /// Workdir late File copies are replayed from the same manifest. A container
+    /// retains its Pod, but a recovered live-input tree must still be projected
+    /// from the current manifest: a durable binding alone proves owned paths,
+    /// not that the runtime-only projector still holds their bytes.
     pub(crate) async fn reconcile_adopted_mounts(
         &self,
         requirements: &[pc::MountRequirement],
     ) -> Result<(), pc::SandboxError> {
+        if let Self::Container { sandbox, .. } = self {
+            for requirement in requirements {
+                if awaken_sandbox_container::live_input_relative_path(&requirement.mount_path)
+                    .is_some()
+                    && requirement.access == pc::MountAccess::ReadOnly
+                    && matches!(
+                        requirement.source,
+                        pc::MountSource::File { .. }
+                            | pc::MountSource::Resource { .. }
+                            | pc::MountSource::Inline { .. }
+                            | pc::MountSource::InlineBytes { .. }
+                    )
+                {
+                    sandbox.attach(requirement.clone()).await?;
+                }
+            }
+            return Ok(());
+        }
         if matches!(self, Self::Namespace { .. } | Self::Workdir { .. }) {
             let sandbox = self.sandbox();
             for requirement in requirements {

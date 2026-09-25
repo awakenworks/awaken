@@ -1352,7 +1352,7 @@ fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
     assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3 + 1 + 1);
     assert_eq!(
         agent.command.as_ref().unwrap(),
-        &memory::gated_agent_command(&plan.command, &effect_fence),
+        &projection::gated_agent_command(&plan.command, &effect_fence),
         "KM1/E4"
     );
     let mounts = agent.volume_mounts.as_ref().unwrap();
@@ -1380,8 +1380,14 @@ fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
     );
     assert_eq!(
         spec.containers[1].volume_mounts.as_ref().unwrap().len(),
-        3,
-        "one projector owns the writable Memory sides and completion marker"
+        2,
+        "the Memory projector owns only its two writable snapshots"
+    );
+    assert_eq!(spec.containers[2].name, live_inputs::PROJECTOR);
+    assert_eq!(
+        spec.containers[2].volume_mounts.as_ref().unwrap().len(),
+        2,
+        "the input projector owns Files and the shared completion marker"
     );
     assert_eq!(
         spec.containers[1]
@@ -1389,9 +1395,9 @@ fn build_pod_realizes_memory_mounts_from_one_authoritative_snapshot_path() {
             .as_ref()
             .unwrap()
             .iter()
-            .find(|env| env.name == memory::PROJECTION_FENCE_ENV)
+            .find(|env| env.name == projection::PROJECTION_FENCE_ENV)
             .and_then(|env| env.value.as_deref()),
-        Some(memory::projection_fence_value(&effect_fence).as_str()),
+        Some(projection::projection_fence_value(&effect_fence).as_str()),
         "KM1/E5-E6"
     );
 }

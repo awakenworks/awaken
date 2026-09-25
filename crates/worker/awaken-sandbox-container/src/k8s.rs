@@ -65,6 +65,7 @@ mod pod_projection;
 mod pod_security;
 mod process;
 mod process_termination;
+mod projection;
 pub(crate) mod realization;
 mod restore;
 mod runtime_contract;
@@ -1593,30 +1594,13 @@ fn build_pod_with_continuation(
             let effect_fence = effect_fence.expect(
                 "canonical Kubernetes Memory projection requires an Environment effect fence",
             );
-            volumes.push(Volume {
-                name: memory::PROJECTION_VOLUME.into(),
-                empty_dir: Some(EmptyDirVolumeSource::default()),
-                ..Default::default()
-            });
-            agent_mounts.push(VolumeMount {
-                name: memory::PROJECTION_VOLUME.into(),
-                mount_path: memory::PROJECTION_ROOT.into(),
-                read_only: Some(true),
-                ..Default::default()
-            });
-            memory_projector_mounts.push(VolumeMount {
-                name: memory::PROJECTION_VOLUME.into(),
-                mount_path: memory::PROJECTION_ROOT.into(),
-                read_only: Some(false),
-                ..Default::default()
-            });
             sidecars.push(Container {
                 name: memory::PROJECTOR.into(),
                 image: Some(plan.image.clone()),
                 command: Some(crate::environment_keepalive_command()),
                 env: Some(vec![EnvVar {
-                    name: memory::PROJECTION_FENCE_ENV.into(),
-                    value: Some(memory::projection_fence_value(effect_fence)),
+                    name: projection::PROJECTION_FENCE_ENV.into(),
+                    value: Some(projection::projection_fence_value(effect_fence)),
                     value_from: None,
                 }]),
                 volume_mounts: Some(memory_projector_mounts),
@@ -1632,7 +1616,13 @@ fn build_pod_with_continuation(
             &mut agent_mounts,
         );
         continuation::append_init_container(plan, &continuation_subpaths, &mut init_containers);
-        live_inputs::append_projection(plan, &mut volumes, &mut agent_mounts, &mut sidecars);
+        live_inputs::append_projection(
+            plan,
+            effect_fence,
+            &mut volumes,
+            &mut agent_mounts,
+            &mut sidecars,
+        );
         if plan
             .control_services
             .contains(&SandboxControlServiceKind::RepositoryGitCredential)
@@ -1742,12 +1732,10 @@ fn build_pod_with_continuation(
             });
         }
 
-        let agent_command = effect_fence
-            .filter(|_| !plan.memory_mounts.is_empty())
-            .map_or_else(
-                || plan.command.clone(),
-                |effect_fence| memory::gated_agent_command(&plan.command, effect_fence),
-            );
+        let agent_command = effect_fence.map_or_else(
+            || plan.command.clone(),
+            |effect_fence| projection::gated_agent_command(&plan.command, effect_fence),
+        );
         let mut containers = vec![Container {
             name: "agent".into(),
             image: Some(plan.image.clone()),

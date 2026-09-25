@@ -8,6 +8,7 @@ pub(super) const PROJECTOR: &str = "input-projector";
 
 pub(super) fn append_projection(
     plan: &ContainerPlan,
+    effect_fence: Option<&ContainerEffectFence>,
     volumes: &mut Vec<Volume>,
     agent_mounts: &mut Vec<VolumeMount>,
     sidecars: &mut Vec<Container>,
@@ -28,16 +29,46 @@ pub(super) fn append_projection(
         read_only: Some(true),
         ..Default::default()
     });
+    let mut projector_mounts = vec![VolumeMount {
+        name: VOLUME.into(),
+        mount_path: crate::LIVE_INPUTS_ROOT.into(),
+        read_only: Some(false),
+        ..Default::default()
+    }];
+    if effect_fence.is_some() {
+        // Reuse the existing Environment projection completion marker for
+        // File-only Pods too. A create replay must not clear a later live File
+        // generation after the first create has published its binding.
+        volumes.push(Volume {
+            name: super::projection::PROJECTION_VOLUME.into(),
+            empty_dir: Some(EmptyDirVolumeSource::default()),
+            ..Default::default()
+        });
+        agent_mounts.push(VolumeMount {
+            name: super::projection::PROJECTION_VOLUME.into(),
+            mount_path: super::projection::PROJECTION_ROOT.into(),
+            read_only: Some(true),
+            ..Default::default()
+        });
+        projector_mounts.push(VolumeMount {
+            name: super::projection::PROJECTION_VOLUME.into(),
+            mount_path: super::projection::PROJECTION_ROOT.into(),
+            read_only: Some(false),
+            ..Default::default()
+        });
+    }
     sidecars.push(Container {
         name: PROJECTOR.into(),
         image: Some(plan.image.clone()),
         command: Some(crate::environment_keepalive_command()),
-        volume_mounts: Some(vec![VolumeMount {
-            name: VOLUME.into(),
-            mount_path: crate::LIVE_INPUTS_ROOT.into(),
-            read_only: Some(false),
-            ..Default::default()
-        }]),
+        env: effect_fence.map(|fence| {
+            vec![EnvVar {
+                name: super::projection::PROJECTION_FENCE_ENV.into(),
+                value: Some(super::projection::projection_fence_value(fence)),
+                value_from: None,
+            }]
+        }),
+        volume_mounts: Some(projector_mounts),
         security_context: Some(hardened_security_context()),
         ..Default::default()
     });
@@ -262,5 +293,71 @@ mod tests {
                 .all(|volume| volume.config_map.is_none())
         );
         assert!(spec.init_containers.is_none());
+    }
+
+    #[test]
+    fn effect_fenced_file_only_pod_uses_the_existing_projection_gate() {
+        /* Initial projection replay table. Causes: C1 a Managed File has no
+         * Memory mount; C2 create has an exact physical effect fence; C3 a
+         * later File generation may replace the initial tree. Effects: C1+C2
+         * gives one marker volume, a gated Agent, and one input projector that
+         * alone writes the marker; C3 makes same-effect create replay observe
+         * that marker before clearing any live File. Rule G1=C1+C2+C3. The
+         * separate Memory test covers the same marker with snapshots present.
+         */
+        let fence =
+            ContainerEffectFence::new("file-create", "owner", "runtime", 1, u64::MAX).unwrap();
+        let pod = build_pod_with_continuation(
+            "file-only",
+            &plan(),
+            &None,
+            None,
+            &[],
+            None,
+            Some(&fence),
+            None,
+        );
+        let spec = pod.spec.unwrap();
+        let volumes = spec.volumes.as_ref().unwrap();
+        assert_eq!(
+            volumes
+                .iter()
+                .filter(|volume| volume.name == super::projection::PROJECTION_VOLUME)
+                .count(),
+            1
+        );
+        assert_eq!(spec.containers.len(), 2);
+        let agent = &spec.containers[0];
+        assert_eq!(
+            agent.command.as_ref(),
+            Some(&super::projection::gated_agent_command(
+                &plan().command,
+                &fence
+            ))
+        );
+        assert!(
+            agent
+                .volume_mounts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|mount| mount.name == super::projection::PROJECTION_VOLUME
+                    && mount.read_only == Some(true))
+        );
+        let projector = &spec.containers[1];
+        assert_eq!(projector.name, PROJECTOR);
+        assert!(
+            projector
+                .volume_mounts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|mount| mount.name == super::projection::PROJECTION_VOLUME
+                    && mount.read_only == Some(false))
+        );
+        assert_eq!(
+            projector.env.as_ref().unwrap()[0].value.as_deref(),
+            Some(super::projection::projection_fence_value(&fence).as_str())
+        );
     }
 }
