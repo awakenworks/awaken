@@ -246,6 +246,17 @@ streamed scan checks the complete remaining candidate order before returning
 `None`. The existing exact claim transaction still rechecks every authority
 condition and is the only operation that mints an epoch.
 
+The opt-in local PostgreSQL comparison used the same 20,000-row pending queue
+and 20 warm claims on the pre-discovery commit `d49a99e597` and current code.
+Across three alternating runs, broad-queue claim medians were 157–173 ms
+before and 26–31 ms after. With 5,000 higher-priority incompatible rows ahead
+of ten eligible Runs, the medians were 151–153 ms before and 164–206 ms after:
+the initial bounded page adds work before the deep scan. This is a measured
+worst-case regression to retain in capacity reviews, not a fleet latency SLO.
+One exact depth query remained about 63–67 ms; the separate sampling cadence
+reduces its call frequency rather than its SQL cost. No second claim policy or
+Worker-side depth authority is introduced.
+
 `runnable_depth` remains an exact, on-demand operations query. By default the
 process-level service, pool, or coordinator-only reconciler samples it once at
 startup and then on a nominal 60-second cadence; an executing Run never waits
