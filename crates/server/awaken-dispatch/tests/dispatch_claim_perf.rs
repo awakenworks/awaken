@@ -128,23 +128,12 @@ async fn incompatible_front_queue_claim_latency() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(5_000);
-    let template = serde_json::to_value(RunDispatch::new(harness::activation("template")))
-        .expect("serializable dispatch");
-    sqlx::query(
-        "INSERT INTO runtime_dispatch \
-         (run_id, thread_id, request, status, priority, lease_epoch) \
-         SELECT 'incompatible-' || g, 'incompatible-thread-' || g, \
-                jsonb_set(jsonb_set($1::jsonb, '{activation,run_id}', \
-                    to_jsonb('incompatible-' || g)), '{activation,thread_id}', \
-                    to_jsonb('incompatible-thread-' || g)), 'pending', 100, \
-                9223372036854775807 \
-         FROM generate_series(1, $2::bigint) AS g",
+    harness::seed_exhausted_candidate_prefix(
+        &pool,
+        RunDispatch::new(harness::activation("template")),
+        rows,
     )
-    .bind(Json(&template))
-    .bind(rows)
-    .execute(&pool)
-    .await
-    .expect("seed unclaimable high-priority rows");
+    .await;
     for index in 0..10 {
         store
             .enqueue(RunDispatch::new(harness::activation_on(
@@ -176,4 +165,95 @@ async fn incompatible_front_queue_claim_latency() {
         samples[0],
         samples[samples.len() - 1],
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires a live PostgreSQL fixture and compares 1/8/32 simultaneous claimers"]
+async fn concurrent_incompatible_front_claim_throughput() {
+    // Causes: C1 the same exhausted high-priority prefix for every case;
+    // C2 exactly N independent eligible Runs; C3 N claimers start behind one
+    // barrier with N in {1,8,32}. Effects: E1 every Run gets one distinct
+    // current claim; E2 print per-call p95 and whole-window claim/s under the
+    // same database/pool. Rules T1=C1+C2+C3->E1+E2 for each N. No numeric
+    // timing assertion is made in CI: old/new runs must alternate on one fixed
+    // host, PostgreSQL image and pool before any performance claim is issued.
+    let rows: i64 = std::env::var("AWAKEN_DISPATCH_PERF_INCOMPATIBLE_ROWS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(5_000);
+    assert!(
+        rows >= 128,
+        "deep comparison needs at least one full first page"
+    );
+    for (claimers, schema) in [
+        (1, "t_pg_claim_concurrent_1"),
+        (8, "t_pg_claim_concurrent_8"),
+        (32, "t_pg_claim_concurrent_32"),
+    ] {
+        let pool = harness::schema_pool(schema)
+            .await
+            .expect("explicit performance run requires PostgreSQL");
+        let store = std::sync::Arc::new(
+            PostgresDispatchStore::with_pool(pool.clone())
+                .await
+                .expect("migrated dispatch store"),
+        );
+        harness::seed_exhausted_candidate_prefix(
+            &pool,
+            RunDispatch::new(harness::activation("template")),
+            rows,
+        )
+        .await;
+        for index in 0..claimers {
+            store
+                .enqueue(RunDispatch::new(harness::activation_on(
+                    &format!("valid-{index}"),
+                    &format!("valid-thread-{index}"),
+                )))
+                .await
+                .unwrap();
+        }
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(claimers + 1));
+        let mut tasks = tokio::task::JoinSet::new();
+        for index in 0..claimers {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            tasks.spawn(async move {
+                barrier.wait().await;
+                let started = Instant::now();
+                let claimed = store
+                    .claim(&format!("perf-owner-{index}"), 60_000, &Default::default())
+                    .await
+                    .expect("concurrent exact claim")
+                    .expect("one eligible Run per claimant");
+                (
+                    claimed.lease.run_id.0,
+                    started.elapsed().as_secs_f64() * 1_000.0,
+                )
+            });
+        }
+        let window = Instant::now();
+        barrier.wait().await;
+        let mut winners = std::collections::HashSet::new();
+        let mut samples = Vec::new();
+        while let Some(result) =
+            tokio::time::timeout(std::time::Duration::from_secs(60), tasks.join_next())
+                .await
+                .expect("concurrent claim window terminates")
+        {
+            let (run_id, elapsed_ms) = result.unwrap();
+            assert!(winners.insert(run_id), "T1/E1 no duplicate winner");
+            samples.push(elapsed_ms);
+        }
+        let window_s = window.elapsed().as_secs_f64();
+        assert_eq!(winners.len(), claimers, "T1/E1 every Run is claimed");
+        samples.sort_by(f64::total_cmp);
+        println!(
+            "dispatch_claim_concurrent_perf rows={rows} claimers={claimers} \
+             median_ms={:.3} p95_ms={:.3} claim_per_s={:.3}",
+            samples[samples.len() / 2],
+            samples[samples.len() * 95 / 100],
+            claimers as f64 / window_s,
+        );
+    }
 }

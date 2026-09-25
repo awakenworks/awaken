@@ -888,25 +888,12 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     assert!(first.lease.run_id.0.starts_with("page-raced-"), "R7");
     assert!(second.lease.run_id.0.starts_with("page-raced-"), "R7");
 
-    let local_template = serde_json::to_value(RunDispatch::new(activation_on(
-        "local-template",
-        "local-template",
-    )))
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO runtime_dispatch \
-         (run_id, thread_id, request, status, priority, lease_epoch) \
-         SELECT 'local-exhausted-' || g, 'local-exhausted-thread-' || g, \
-                jsonb_set(jsonb_set($1::jsonb, '{activation,run_id}', \
-                    to_jsonb('local-exhausted-' || g)), '{activation,thread_id}', \
-                    to_jsonb('local-exhausted-thread-' || g)), 'pending', 200, \
-                9223372036854775807 \
-         FROM generate_series(1, 140) AS g",
+    harness::seed_exhausted_candidate_prefix(
+        &pool,
+        RunDispatch::new(activation_on("local-template", "local-template")),
+        140,
     )
-    .bind(sqlx::types::Json(&local_template))
-    .execute(&pool)
-    .await
-    .unwrap();
+    .await;
     let near_limit = "page-near-limit";
     store
         .enqueue(RunDispatch::new(activation_on(
@@ -993,6 +980,192 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     assert_eq!(
         blocked.lease.run_id.0, blocker,
         "R6 original owner retained"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_candidate_page_boundary_preserves_the_exact_tail_under_contention() {
+    // Causes: C1 exhausted high-priority prefixes of 127, 128, or 129 rows;
+    // C2 no lower-priority Run, then exactly one eligible Run; C3 one claimant
+    // for the first two sizes and eight simultaneous claimants for the last.
+    // Effects: E1 absence returns None; E2 the tail is found on both sides of
+    // the 128-row boundary; E3 only one contender owns it and the remaining
+    // calls return None. Rules B1=C1+!C2->E1, B2=C1+C2+!C3->E2,
+    // B3=C1(129)+C2+C3->E2+E3. Every Run has its own Thread; the existing
+    // exact transaction remains the sole mutation and fencing authority.
+    for (count, schema) in [
+        (127, "t_pg_candidate_boundary_127"),
+        (128, "t_pg_candidate_boundary_128"),
+        (129, "t_pg_candidate_boundary_129"),
+    ] {
+        let Some(pool) = harness::schema_pool(schema).await else {
+            return;
+        };
+        let store = Arc::new(
+            PostgresDispatchStore::with_pool(pool.clone())
+                .await
+                .unwrap(),
+        );
+        harness::seed_exhausted_candidate_prefix(
+            &pool,
+            RunDispatch::new(activation_on(
+                "boundary-template",
+                "boundary-template-thread",
+            )),
+            count,
+        )
+        .await;
+        assert!(
+            store
+                .claim("boundary-owner", 60_000, &Default::default())
+                .await
+                .unwrap()
+                .is_none(),
+            "B1 no eligible Run after {count} exhausted rows"
+        );
+        let tail = format!("boundary-valid-{count}");
+        store
+            .enqueue(RunDispatch::new(activation_on(
+                &tail,
+                &format!("tail-thread-{count}"),
+            )))
+            .await
+            .unwrap();
+        if count < 129 {
+            let claimed = store
+                .claim("boundary-owner", 60_000, &Default::default())
+                .await
+                .unwrap()
+                .expect("B2 tail remains discoverable");
+            assert_eq!(claimed.lease.run_id.0, tail, "B2/E2 count={count}");
+        } else {
+            let barrier = Arc::new(tokio::sync::Barrier::new(9));
+            let mut claimers = tokio::task::JoinSet::new();
+            for index in 0..8 {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                claimers.spawn(async move {
+                    barrier.wait().await;
+                    store
+                        .claim(
+                            &format!("boundary-owner-{index}"),
+                            60_000,
+                            &Default::default(),
+                        )
+                        .await
+                });
+            }
+            barrier.wait().await;
+            let mut winners = Vec::new();
+            while let Some(result) =
+                tokio::time::timeout(std::time::Duration::from_secs(30), claimers.join_next())
+                    .await
+                    .expect("B3 every contender terminates")
+            {
+                if let Some(claimed) = result.unwrap().unwrap() {
+                    winners.push(claimed.lease.run_id.0);
+                }
+            }
+            assert_eq!(winners, vec![tail], "B3/E2+E3 one exact owner");
+        }
+        assert!(
+            store
+                .claim("boundary-final", 60_000, &Default::default())
+                .await
+                .unwrap()
+                .is_none(),
+            "E3 no duplicate successor at count={count}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn exhausted_epoch_deep_discovery_preserves_remote_audiences_and_expired_runs() {
+    // Causes: C1 129 remote high-priority Pending rows have epoch MAX; C2 one
+    // lower-priority remote Run has epoch MAX-1; C3 one fresh remote Run follows;
+    // C4 the first winner later has an expired Running lease at epoch MAX.
+    // Effects: E1 compatible discovery claims C2 at epoch MAX; E2 placed
+    // discovery claims C3 at epoch one; E3 C4 cannot be reclaimed or make a
+    // false successor. Rules A1=C1+C2->E1, A2=C1+C3->E2, A3=C1+C4->E3.
+    // Shared conformance owns ordinary status transitions and placement policy.
+    let Some(pool) = harness::schema_pool("t_pg_candidate_epoch_audiences").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let remote = PlacementRequirements::remote_required();
+    harness::seed_exhausted_candidate_prefix(
+        &pool,
+        RunDispatch::new(activation_on(
+            "boundary-template",
+            "boundary-template-thread",
+        ))
+        .with_placement(remote.clone()),
+        129,
+    )
+    .await;
+    let (directory, identity) =
+        awaken_dispatch_testkit::worker_http::ready_worker("boundary-remote-worker").await;
+    let worker = directory
+        .current(&identity.worker_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    let near_limit = "boundary-remote-near-limit";
+    store
+        .enqueue(
+            RunDispatch::new(activation_on(near_limit, "boundary-remote-near-thread"))
+                .with_placement(remote.clone()),
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE runtime_dispatch SET lease_epoch = $1 WHERE run_id = $2")
+        .bind(i64::MAX - 1)
+        .bind(near_limit)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let first = store
+        .claim_compatible(&worker, 60_000)
+        .await
+        .unwrap()
+        .expect("A1 last valid remote epoch");
+    assert_eq!(first.lease.run_id.0, near_limit, "A1/E1");
+    assert_eq!(first.lease.epoch, i64::MAX as u64, "A1/E1");
+    sqlx::query("UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = $1")
+        .bind(near_limit)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let fresh = "boundary-remote-fresh";
+    store
+        .enqueue(
+            RunDispatch::new(activation_on(fresh, "boundary-remote-fresh-thread"))
+                .with_placement(remote),
+        )
+        .await
+        .unwrap();
+    let second = store
+        .claim_placed(
+            &worker,
+            vec![worker.clone()],
+            Arc::new(LeastLoadedPolicy),
+            60_000,
+        )
+        .await
+        .unwrap()
+        .expect("A2 placed candidate remains discoverable");
+    assert_eq!(second.lease.run_id.0, fresh, "A2/E2");
+    assert_eq!(second.lease.epoch, 1, "A2/E2");
+    assert!(
+        store
+            .claim_compatible(&worker, 60_000)
+            .await
+            .unwrap()
+            .is_none(),
+        "A3/E3 expired exhausted Run cannot be reclaimed"
     );
 }
 

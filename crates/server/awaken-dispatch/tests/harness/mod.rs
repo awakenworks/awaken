@@ -404,6 +404,7 @@ struct BlockingEcho {
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Semaphore>,
     first_seen: std::sync::atomic::AtomicBool,
+    hold_all: bool,
 }
 #[async_trait::async_trait]
 impl RawTool for BlockingEcho {
@@ -417,9 +418,10 @@ impl RawTool for BlockingEcho {
         self.entered.notify_one();
         // Only the first-ever invocation blocks; a later re-drive runs straight
         // through, so the test observes the second (double) execution.
-        if !self
-            .first_seen
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        if self.hold_all
+            || !self
+                .first_seen
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
             let _permit = self.release.acquire().await;
         }
@@ -493,12 +495,32 @@ fn blocking_tool_runtime_parts_with_calls(
     release: Arc<tokio::sync::Semaphore>,
     calls_per_batch: usize,
 ) -> BlockingToolRuntimeParts {
+    blocking_tool_runtime_parts_with_options(release, calls_per_batch, false, None)
+}
+
+/// Keep every real Worker drive inside the existing tool barrier while the
+/// in-flight metric and queued-versus-active distinction are observed.
+pub fn all_calls_blocking_tool_runtime_with_metrics(
+    release: Arc<tokio::sync::Semaphore>,
+    metrics: Arc<dyn MetricsRecorder>,
+) -> (Arc<Runtime>, Arc<AtomicUsize>) {
+    let (runtime, ran, _entered, _active, _maximum) =
+        blocking_tool_runtime_parts_with_options(release, 1, true, Some(metrics));
+    (runtime, ran)
+}
+
+fn blocking_tool_runtime_parts_with_options(
+    release: Arc<tokio::sync::Semaphore>,
+    calls_per_batch: usize,
+    hold_all: bool,
+    metrics: Option<Arc<dyn MetricsRecorder>>,
+) -> BlockingToolRuntimeParts {
     assert!(calls_per_batch > 0, "a ToolBatch fixture must not be empty");
     let ran = Arc::new(AtomicUsize::new(0));
     let active = Arc::new(AtomicUsize::new(0));
     let maximum = Arc::new(AtomicUsize::new(0));
     let entered = Arc::new(tokio::sync::Notify::new());
-    let runtime = tool_until_result_runtime(
+    let runtime = tool_until_result_runtime_with_metrics(
         Arc::new(BlockingEcho {
             ran: ran.clone(),
             active: active.clone(),
@@ -506,19 +528,31 @@ fn blocking_tool_runtime_parts_with_calls(
             entered: entered.clone(),
             release,
             first_seen: std::sync::atomic::AtomicBool::new(false),
+            hold_all,
         }),
         calls_per_batch,
+        metrics,
     );
     (runtime, ran, entered, active, maximum)
 }
 
 /// Share the transcript-driven model without registering competing tool ids.
 pub fn tool_until_result_runtime(tool: Arc<dyn RawTool>, calls_per_batch: usize) -> Arc<Runtime> {
-    Arc::new(
-        Runtime::new()
-            .with_llm(Arc::new(ToolUntilResult { calls_per_batch }))
-            .with_tool(tool),
-    )
+    tool_until_result_runtime_with_metrics(tool, calls_per_batch, None)
+}
+
+fn tool_until_result_runtime_with_metrics(
+    tool: Arc<dyn RawTool>,
+    calls_per_batch: usize,
+    metrics: Option<Arc<dyn MetricsRecorder>>,
+) -> Arc<Runtime> {
+    let mut runtime = Runtime::new()
+        .with_llm(Arc::new(ToolUntilResult { calls_per_batch }))
+        .with_tool(tool);
+    if let Some(metrics) = metrics {
+        runtime = runtime.with_metrics(metrics);
+    }
+    Arc::new(runtime)
 }
 
 /// Build a pending input for the test thread. The one place the `PendingInput`
@@ -1547,6 +1581,31 @@ pub async fn schema_pool(schema: &'static str) -> Option<PgPool> {
             .await
             .expect("a reachable PostgreSQL fixture must open its isolated schema"),
     )
+}
+
+/// One SQL fixture for exhausted high-priority discovery, shared by semantic
+/// boundary tests and opt-in performance observations. The template retains
+/// each caller's placement requirements while Run and Thread ids stay unique.
+pub async fn seed_exhausted_candidate_prefix(
+    pool: &PgPool,
+    template: awaken_dispatch::RunDispatch,
+    count: i64,
+) {
+    let template = serde_json::to_value(template).expect("serializable candidate template");
+    sqlx::query(
+        "INSERT INTO runtime_dispatch (run_id, thread_id, request, status, priority, lease_epoch) \
+         SELECT 'incompatible-' || g, 'incompatible-thread-' || g, \
+                jsonb_set(jsonb_set($1::jsonb, '{activation,run_id}', \
+                    to_jsonb('incompatible-' || g)), '{activation,thread_id}', \
+                    to_jsonb('incompatible-thread-' || g)), 'pending', 100, \
+                9223372036854775807 \
+         FROM generate_series(1, $2::bigint) AS g",
+    )
+    .bind(sqlx::types::Json(&template))
+    .bind(count)
+    .execute(pool)
+    .await
+    .expect("seed exhausted exact claim epochs");
 }
 
 /// Shared spec for revision-guarded pending edit/retract (M3a): every backend
