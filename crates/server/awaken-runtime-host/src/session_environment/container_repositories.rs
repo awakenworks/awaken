@@ -10,6 +10,7 @@ use awaken_sandbox_control::{
     SandboxControlResponse, SandboxControlSecret,
 };
 use awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
+use tokio::io::AsyncReadExt;
 
 const CREDENTIAL_OPERATION_TTL: Duration = Duration::from_secs(120);
 
@@ -256,32 +257,70 @@ pub(super) async fn push(
         .extend(repository_git_tls_env(&plan.transport_url, credential));
     let process = sandbox.spawn_agent_process(command).await;
     let result = match process {
-        Ok(process) => process.process.wait().await,
+        Ok(process) => {
+            let mut observation = String::new();
+            let mut channel = process.channel.take(64);
+            let (read, status) = tokio::join!(
+                channel.read_to_string(&mut observation),
+                process.process.wait()
+            );
+            match read {
+                Ok(_) => status.map(|status| (status, observation)),
+                Err(error) => Err(pc::SandboxError::backend(
+                    "push-observation",
+                    error.to_string(),
+                )),
+            }
+        }
         Err(error) => Err(error),
     };
     if let Some(publication) = publication {
         publication.close().await;
     }
-    let status = result.map_err(pc::RepositoryPublicationError::Unavailable)?;
+    let (status, observation) = result.map_err(pc::RepositoryPublicationError::Unavailable)?;
     match status.code {
-        Some(0) => Ok(pc::RepositoryPublicationReceipt::new(plan, expectation)),
-        // The in-Sandbox command deliberately emits no remote coordinate over
-        // its process channel. Without typed conflict evidence the outer port
-        // must classify a failed CAS as unavailable, never invent a permanent
-        // rejection that could close a retryable Session effect.
-        Some(42) => Err(pc::RepositoryPublicationError::Unavailable(
-            pc::SandboxError::invalid("container Repository publication coordinate was rejected"),
+        Some(0) if observation.is_empty() => {
+            Ok(pc::RepositoryPublicationReceipt::new(plan, expectation))
+        }
+        Some(0) => Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::invalid("container Repository success emitted unexpected output"),
         )),
+        Some(42) => match decode_publication_rejection(&observation, expectation) {
+            Ok(rejection) => Err(pc::RepositoryPublicationError::Rejected(rejection)),
+            Err(error) => Err(pc::RepositoryPublicationError::Unavailable(error)),
+        },
         Some(43) => Err(pc::RepositoryPublicationError::Unavailable(
             pc::SandboxError::backend(
-                "ls-remote",
-                "container Repository remote observation was unavailable",
+                "repository-publication",
+                "container Repository observation or push remained unavailable",
             ),
         )),
         code => Err(pc::RepositoryPublicationError::Unavailable(
             pc::SandboxError::backend("push", format!("container Repository push exited {code:?}")),
         )),
     }
+}
+
+fn decode_publication_rejection(
+    observation: &str,
+    expectation: &pc::RepositoryPublicationExpectation,
+) -> Result<pc::RepositoryPublicationRejection, pc::SandboxError> {
+    let rejection = match observation {
+        "ABSENT\n" => pc::RepositoryPublicationRejection::RemoteRefAbsent,
+        value => pc::RepositoryPublicationRejection::RemoteRefChanged {
+            observed_commit: value
+                .strip_prefix("REF:")
+                .and_then(|value| value.strip_suffix('\n'))
+                .ok_or_else(|| {
+                    pc::SandboxError::invalid(
+                        "container Repository conflict has no exact remote observation",
+                    )
+                })?
+                .to_owned(),
+        },
+    };
+    rejection.verify(expectation)?;
+    Ok(rejection)
 }
 
 fn repository_push_command(
@@ -299,13 +338,25 @@ fn repository_push_command(
                 "git check-ref-format --branch \"$branch\" >/dev/null 2>&1 || exit 42; ",
                 "test \"$(git -C \"$repo\" symbolic-ref --quiet --short HEAD)\" = \"$branch\" || exit 42; ",
                 "test \"$(git -C \"$repo\" rev-parse HEAD)\" = \"$commit\" || exit 42; ",
-                "remote_refs=; for attempt in 1 2 3; do ",
-                "if remote_refs=$(git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" ls-remote --refs \"$remote\" \"refs/heads/$branch\"); then break; fi; ",
-                "if test \"$attempt\" = 3; then exit 43; fi; sleep 1; done; ",
-                "remote_commit=$(printf '%s\\n' \"$remote_refs\" | awk 'NR == 1 { print $1 }'); ",
+                "observe_remote() { remote_refs=; for attempt in 1 2 3; do ",
+                "if remote_refs=$(git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" ls-remote --refs \"$remote\" \"refs/heads/$branch\" 2>/dev/null); then break; fi; ",
+                "if test \"$attempt\" = 3; then return 1; fi; sleep 1; done; ",
+                "test \"$(printf '%s\\n' \"$remote_refs\" | awk 'END { print NR }')\" -eq 1 || return 1; ",
+                "remote_commit=$(printf '%s\\n' \"$remote_refs\" | awk -v expected=\"refs/heads/$branch\" 'NF == 2 && $2 == expected { print $1 }'); ",
+                "if test -n \"$remote_refs\" && test -z \"$remote_commit\"; then return 1; fi; }; ",
+                "reject_stale() { if test -z \"$remote_commit\"; then printf 'ABSENT\\n'; exit 42; fi; ",
+                "test \"${#remote_commit}\" -eq 40 || exit 43; ",
+                "case \"$remote_commit\" in *[!0123456789abcdef]*) exit 43 ;; esac; ",
+                "printf 'REF:%s\\n' \"$remote_commit\"; exit 42; }; ",
+                "observe_remote || exit 43; ",
                 "if test \"$remote_commit\" = \"$commit\"; then exit 0; fi; ",
-                "if test \"$remote_commit\" != \"$prior\"; then exit 42; fi; ",
-                "git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" -C \"$repo\" push --porcelain --force-with-lease=\"refs/heads/$branch:$prior\" \"$remote\" \"$commit:refs/heads/$branch\""
+                "if test \"$remote_commit\" != \"$prior\"; then reject_stale; fi; ",
+                "before=$remote_commit; ",
+                "if git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" -C \"$repo\" push --porcelain --force-with-lease=\"refs/heads/$branch:$prior\" \"$remote\" \"$commit:refs/heads/$branch\" >/dev/null 2>&1; then exit 0; fi; ",
+                "observe_remote || exit 43; ",
+                "if test \"$remote_commit\" = \"$commit\"; then exit 0; fi; ",
+                "if test \"$remote_commit\" != \"$before\"; then reject_stale; fi; ",
+                "exit 43"
             )
             .into(),
             "awaken-repo-push".into(),
@@ -319,7 +370,7 @@ fn repository_push_command(
         ],
         cwd: pc::WorkspaceLayout::ROOT.into(),
         env: Vec::new(),
-        stdio: pc::Stdio::Null,
+        stdio: pc::Stdio::Piped,
     }
 }
 
@@ -407,8 +458,61 @@ mod tests {
         assert!(script.contains("--force-with-lease="));
         assert!(script.contains("credential.helper=$credential_helper"));
         assert!(script.contains("exit 42"));
+        assert_eq!(command.stdio, pc::Stdio::Piped);
+        assert!(script.contains("printf 'REF:%s"));
+        assert!(script.contains("push --porcelain"));
+        assert!(script.contains(">/dev/null 2>&1"));
         assert_eq!(command.argv[9], "/opt/custom/awaken-sandbox");
         assert!(!format!("{command:?}").contains("password"));
+    }
+
+    #[test]
+    fn container_conflict_channel_accepts_only_verified_remote_ref_evidence() {
+        // Causes: C1 exact 40-hex third ref, C2 absent ref with update prior,
+        // C3 desired/prior/malformed or untrusted channel text. Effects: E1/E2
+        // reuse the existing permanent rejection contract; E3 remains
+        // unavailable and can never close the terminal Session as rejected.
+        // | Rule | observation | expectation | effect |
+        // | P1 | third ref | create/update | E1 |
+        // | P2 | absent | update | E2 |
+        // | P3 | desired/prior/invalid | any | E3 |
+        let desired = "1".repeat(40);
+        let prior = "2".repeat(40);
+        let third = "3".repeat(40);
+        let create = pc::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: desired.clone(),
+            expected_prior_commit: None,
+        };
+        let update = pc::RepositoryPublicationExpectation {
+            expected_prior_commit: Some(prior.clone()),
+            ..create.clone()
+        };
+        assert_eq!(
+            decode_publication_rejection(&format!("REF:{third}\n"), &create).unwrap(),
+            pc::RepositoryPublicationRejection::RemoteRefChanged {
+                observed_commit: third.clone()
+            },
+            "P1"
+        );
+        assert_eq!(
+            decode_publication_rejection("ABSENT\n", &update).unwrap(),
+            pc::RepositoryPublicationRejection::RemoteRefAbsent,
+            "P2"
+        );
+        for (wire, expectation) in [
+            (format!("REF:{desired}\n"), &create),
+            (format!("REF:{prior}\n"), &update),
+            ("ABSENT\n".into(), &create),
+            ("REF:short\n".into(), &update),
+            ("REF:3\nBearer token".into(), &update),
+            (String::new(), &update),
+        ] {
+            assert!(
+                decode_publication_rejection(&wire, expectation).is_err(),
+                "P3"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -416,12 +520,16 @@ mod tests {
     fn push_observation_failure_cannot_masquerade_as_an_absent_remote_ref() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        // Cause/effect table: R1 first remote read fails, then exact prior is
-        // observed -> one leased push; R2 every read fails -> unavailable (43),
-        // zero push; R3 observed third commit -> coordinate refusal (42), zero
-        // push; R4 absent create lease and absent ref -> one create; R5 desired
-        // already remote -> replay without push. Network failure is never an
-        // empty ref, especially when the expected prior commit is nonempty.
+        // Cause/effect table: R1 transient read then prior -> one leased push;
+        // R2 every read fails -> unavailable (43); R3 third commit -> bounded
+        // exact ref evidence (42); R4 absent create lease -> one create; R5
+        // already desired -> replay; R6 failed push then desired -> response-
+        // loss success; R7 failed push then third -> exact rejection evidence;
+        // R8 failed push with unchanged prior -> unavailable; R9 absent update
+        // prior -> typed absent evidence; R10 malformed OID and R11 multiple
+        // ref lines -> unavailable.
+        // Git diagnostic output is suppressed; only the bounded observation
+        // marker may cross the Sandbox channel.
         let root = tempfile::tempdir().unwrap();
         let git = root.path().join("git");
         std::fs::write(
@@ -436,9 +544,11 @@ case " $* " in
     count=$((count + 1))
     printf '%s\n' "$count" > "$FAKE_COUNT_FILE"
     if test "$count" -le "$FAKE_FAILS"; then exit 128; fi
-    if test -n "$FAKE_REMOTE_SHA"; then printf '%s\trefs/heads/awf/work\n' "$FAKE_REMOTE_SHA"; fi
+    sha=$FAKE_REMOTE_SHA
+    if test -e "$FAKE_PUSH_FILE" && test -n "$FAKE_AFTER_SHA"; then sha=$FAKE_AFTER_SHA; fi
+    if test -n "$sha"; then printf '%s\trefs/heads/awf/work\n' "$sha"; fi
     exit 0 ;;
-  *" push "*) : > "$FAKE_PUSH_FILE"; exit 0 ;;
+  *" push "*) : > "$FAKE_PUSH_FILE"; exit "${FAKE_PUSH_CODE:-0}" ;;
 esac
 exit 99
 "#,
@@ -448,12 +558,110 @@ exit 99
         let desired = "1".repeat(40);
         let prior = "2".repeat(40);
         let third = "3".repeat(40);
-        for (rule, failures, remote, expected_prior, code, pushes, reads) in [
-            ("R1", 1, prior.as_str(), Some(prior.as_str()), 0, true, 2),
-            ("R2", 3, prior.as_str(), Some(prior.as_str()), 43, false, 3),
-            ("R3", 0, third.as_str(), Some(prior.as_str()), 42, false, 1),
-            ("R4", 0, "", None, 0, true, 1),
-            ("R5", 0, desired.as_str(), Some(prior.as_str()), 0, false, 1),
+        let malformed = format!("{}X", "3".repeat(39));
+        let multiple = format!("{third}\n{prior}");
+        for (rule, failures, remote, after, expected_prior, push_code, code, pushes, reads) in [
+            (
+                "R1",
+                1,
+                prior.as_str(),
+                "",
+                Some(prior.as_str()),
+                0,
+                0,
+                true,
+                2,
+            ),
+            (
+                "R2",
+                3,
+                prior.as_str(),
+                "",
+                Some(prior.as_str()),
+                0,
+                43,
+                false,
+                3,
+            ),
+            (
+                "R3",
+                0,
+                third.as_str(),
+                "",
+                Some(prior.as_str()),
+                0,
+                42,
+                false,
+                1,
+            ),
+            ("R4", 0, "", "", None, 0, 0, true, 1),
+            (
+                "R5",
+                0,
+                desired.as_str(),
+                "",
+                Some(prior.as_str()),
+                0,
+                0,
+                false,
+                1,
+            ),
+            (
+                "R6",
+                0,
+                prior.as_str(),
+                desired.as_str(),
+                Some(prior.as_str()),
+                128,
+                0,
+                true,
+                2,
+            ),
+            (
+                "R7",
+                0,
+                prior.as_str(),
+                third.as_str(),
+                Some(prior.as_str()),
+                128,
+                42,
+                true,
+                2,
+            ),
+            (
+                "R8",
+                0,
+                prior.as_str(),
+                prior.as_str(),
+                Some(prior.as_str()),
+                128,
+                43,
+                true,
+                2,
+            ),
+            ("R9", 0, "", "", Some(prior.as_str()), 0, 42, false, 1),
+            (
+                "R10",
+                0,
+                malformed.as_str(),
+                "",
+                Some(prior.as_str()),
+                0,
+                43,
+                false,
+                1,
+            ),
+            (
+                "R11",
+                0,
+                multiple.as_str(),
+                "",
+                Some(prior.as_str()),
+                0,
+                43,
+                false,
+                1,
+            ),
         ] {
             let count_file = root.path().join(format!("{rule}-count"));
             let push_file = root.path().join(format!("{rule}-push"));
@@ -475,12 +683,24 @@ exit 99
                 )
                 .env("FAKE_LOCAL_COMMIT", &desired)
                 .env("FAKE_REMOTE_SHA", remote)
+                .env("FAKE_AFTER_SHA", after)
+                .env("FAKE_PUSH_CODE", push_code.to_string())
                 .env("FAKE_FAILS", failures.to_string())
                 .env("FAKE_COUNT_FILE", &count_file)
                 .env("FAKE_PUSH_FILE", &push_file)
                 .output()
                 .unwrap();
             assert_eq!(output.status.code(), Some(code), "{rule}: {output:?}");
+            let expected_output = match rule {
+                "R3" | "R7" => format!("REF:{third}\n"),
+                "R9" => "ABSENT\n".to_owned(),
+                _ => String::new(),
+            };
+            assert_eq!(
+                output.stdout,
+                expected_output.as_bytes(),
+                "{rule}: safe wire"
+            );
             assert_eq!(push_file.exists(), pushes, "{rule}");
             assert_eq!(
                 std::fs::read_to_string(count_file).unwrap().trim(),
