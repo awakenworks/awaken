@@ -77,7 +77,12 @@ async fn live_runtime() -> Option<K8sRuntime> {
         return None;
     }
     let addr = "127.0.0.1:8080".parse().unwrap();
-    let runtime = match K8sRuntime::connect("default", addr).await {
+    // The other live Kubernetes suites already use this one namespace setting.
+    // C1 absent -> the documented default; C2 explicit -> a policy-ready,
+    // isolated test namespace. Both paths must still pass the runtime's
+    // canonical NetworkPolicy admission before any Pod is created.
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let runtime = match K8sRuntime::connect(&namespace, addr).await {
         Ok(runtime) => runtime,
         Err(error) => panic!("AWAKEN_K8S_E2E=1 requires a kube client: {error}"),
     };
@@ -274,6 +279,110 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         .await
         .expect("K1c/E5 delete the exact Pod UID");
     assert_eq!(runtime.inspect(&id).await.unwrap(), ContainerState::Gone);
+}
+
+#[tokio::test]
+async fn create_replay_keeps_a_later_managed_file_generation() {
+    /* Live File projection decision table. Causes: C1 an exact fenced Create
+     * finishes with no initial File; C2 the same Pod receives a read-only File
+     * through the canonical live attach port; C3 the original Create is replayed
+     * after that later Resource generation. Effects: C1+C2 makes the bytes
+     * visible to the Agent; C1+C2+C3 retains both the Pod UID and exact bytes,
+     * instead of clearing the uploads tree from the stale creation plan. Rule
+     * KLI3. The existing KLI2 test owns replacement/removal; this test owns
+     * only late attach followed by a delayed Create replay.
+     */
+    let Some(runtime) = live_runtime().await else {
+        return;
+    };
+    let runtime = Arc::new(runtime);
+    let scope = format!("k8s-file-create-replay-{}", std::process::id());
+    let image = fixture_image();
+    let provider = ContainerProvider::new(runtime.clone(), image.clone());
+    let desired = spec_with_command(&scope, image, command(&["sleep", "30"]));
+    let create_fence = effect_fence(&scope, "create", "file-owner", 1);
+    let first = ContainerEnvironmentProvider::create_environment_for_effect(
+        &provider,
+        &desired,
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
+        ContainerRealizationIntent::Create,
+    )
+    .await
+    .expect("KLI3 initial fenced Create");
+    let original = first.handle();
+    let pod = container_id(&original);
+    let path = "/mnt/session/uploads/customer/evidence.txt";
+    pc::Sandbox::attach(
+        first.as_ref(),
+        pc::MountRequirement {
+            mount_id: "customer-evidence".into(),
+            source: pc::MountSource::Inline {
+                contents: "later-resource-generation".into(),
+            },
+            mount_path: path.into(),
+            access: pc::MountAccess::ReadOnly,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        },
+    )
+    .await
+    .expect("KLI3 late File projection");
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let read = || {
+        let output = std::process::Command::new("kubectl")
+            .args([
+                "-n",
+                namespace.as_str(),
+                "exec",
+                pod.as_str(),
+                "-c",
+                "agent",
+                "--",
+                "cat",
+                path,
+            ])
+            .output()
+            .expect("KLI3 independent Pod read");
+        assert!(
+            output.status.success(),
+            "KLI3 read: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    };
+    assert_eq!(read(), b"later-resource-generation", "KLI3 before replay");
+
+    let replay = ContainerEnvironmentProvider::create_environment_for_effect(
+        &provider,
+        &desired,
+        &create_fence,
+        &EffectAuthority::new(&create_fence),
+        ContainerRealizationIntent::Create,
+    )
+    .await
+    .expect("KLI3 same-effect Create replay");
+    assert_eq!(replay.handle(), original, "KLI3 one Pod and physical UID");
+    assert_eq!(
+        read(),
+        b"later-resource-generation",
+        "KLI3 later File retained"
+    );
+
+    let terminal_fence = effect_fence(&scope, "terminal", "file-owner", 2);
+    replay
+        .prepare_disposal_for_effect(&terminal_fence, &EffectAuthority::new(&terminal_fence))
+        .await
+        .expect("KLI3 preserve the source before disposal");
+    let authorization = disposal_authorization(&terminal_fence);
+    replay
+        .dispose_for_effect(
+            &authorization,
+            &EffectAuthority::new(authorization.effect_fence()),
+        )
+        .await
+        .expect("KLI3 delete only its Pod");
+    assert_eq!(runtime.inspect(&pod).await.unwrap(), ContainerState::Gone);
 }
 
 #[tokio::test]
