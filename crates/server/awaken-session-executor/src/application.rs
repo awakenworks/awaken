@@ -13,6 +13,8 @@ mod resource_transition;
 
 use std::sync::Arc;
 
+use futures_util::StreamExt as _;
+
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_dispatch::RunClaim;
@@ -1013,10 +1015,10 @@ impl crate::SharedHost {
         }
     }
 
-    /// Claim every currently discoverable cold terminal assignment, then enter
-    /// the canonical cleanup driver for at most four independent Sessions at a
-    /// time. The driver alone installs the current
-    /// aggregate readback; the claim is routing and
+    /// Claim every currently discoverable cold terminal assignment and drive
+    /// at most four independent Sessions at a time. A completed slot admits
+    /// the next claim without waiting for a slow sibling. The driver alone
+    /// installs the current aggregate readback; the claim is routing and
     /// ownership input, not a second projection-installation path. This is the
     /// sole recovery selector; ordinary terminal settlement stays on the
     /// initiating command path. The bound prevents one recovery sweep from
@@ -1037,16 +1039,28 @@ impl crate::SharedHost {
         let mut recovered = 0;
         let mut terminal_error = None;
         let mut claims_exhausted = false;
-        while recovered < MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP && !claims_exhausted {
-            let mut assignments = Vec::with_capacity(MAX_CONCURRENT_TERMINAL_CLEANUPS);
-            for _ in 0..MAX_CONCURRENT_TERMINAL_CLEANUPS
-                .min(MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP - recovered)
+        let mut in_flight = futures_util::stream::FuturesUnordered::new();
+        loop {
+            while in_flight.len() < MAX_CONCURRENT_TERMINAL_CLEANUPS
+                && recovered < MAX_ASSIGNMENTS_PER_RECOVERY_SWEEP
+                && !claims_exhausted
             {
                 match control.claim_next_terminal_cleanup(target.clone()).await {
-                    Ok(Some(assignment)) => assignments.push(assignment),
+                    Ok(Some(assignment)) => {
+                        recovered += 1;
+                        in_flight.push(async move {
+                            let result = self
+                                .reconcile_terminal_cleanup_for_lease(
+                                    control.as_ref(),
+                                    &assignment.session_id,
+                                    &assignment.authority.lease,
+                                )
+                                .await;
+                            (assignment.session_id, result)
+                        });
+                    }
                     Ok(None) => {
                         claims_exhausted = true;
-                        break;
                     }
                     Err(error) => {
                         terminal_error.get_or_insert_with(|| {
@@ -1055,40 +1069,26 @@ impl crate::SharedHost {
                             ))
                         });
                         claims_exhausted = true;
-                        break;
                     }
                 }
             }
-            recovered += assignments.len();
-            let results = futures_util::future::join_all(assignments.into_iter().map(
-                |assignment| async move {
-                    let result = self
-                        .reconcile_terminal_cleanup_for_lease(
-                            control.as_ref(),
-                            &assignment.session_id,
-                            &assignment.authority.lease,
-                        )
-                        .await;
-                    (assignment.session_id, result)
-                },
-            ))
-            .await;
-            for (session_id, result) in results {
-                match result {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        // Another actor completed the operation between claim and
-                        // poll. This projection has no ordinary Run authority.
-                        if let Err(error) = self
-                            .revoke_session_realization(session_id.as_str(), None)
-                            .await
-                        {
-                            terminal_error.get_or_insert(error);
-                        }
-                    }
-                    Err(error) => {
+            let Some((session_id, result)) = in_flight.next().await else {
+                break;
+            };
+            match result {
+                Ok(true) => {}
+                Ok(false) => {
+                    // Another actor completed the operation between claim and
+                    // poll. This projection has no ordinary Run authority.
+                    if let Err(error) = self
+                        .revoke_session_realization(session_id.as_str(), None)
+                        .await
+                    {
                         terminal_error.get_or_insert(error);
                     }
+                }
+                Err(error) => {
+                    terminal_error.get_or_insert(error);
                 }
             }
         }
