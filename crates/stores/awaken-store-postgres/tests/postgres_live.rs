@@ -414,6 +414,19 @@ async fn multi_fact_commit_throughput_observation() {
     observe_commit_throughput("t_pg_commit_many_perf", CommitPayload::Many).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "live PostgreSQL cross-chunk throughput observation"]
+async fn chunk_boundary_commit_throughput_observation() {
+    // Causes: C1 every independent commit carries 257 Messages, StateCommands
+    // and Events, forcing a second SQL chunk for each kind; C2 client
+    // concurrency is 1, 8 or 32. Effects: E1 all 32 commits per phase retain
+    // dense sequences; E2 print the application commit rate under the exact
+    // payload shape that the batching change targets. Rules B1/B2/B3 are
+    // C1+C2(1/8/32)->E1+E2. Ordered fact replay and later-chunk rollback are
+    // verified by the non-ignored tests; this observation adds no second oracle.
+    observe_commit_throughput("t_pg_commit_chunk_perf", CommitPayload::ChunkBoundary).await;
+}
+
 #[tokio::test]
 async fn bulk_fact_chunks_replay_in_original_order_after_reconnect() {
     // Causes: C1 one ThreadCommit has 257 facts of each kind, crossing the
@@ -606,6 +619,29 @@ async fn later_bulk_chunk_failure_rolls_back_every_fact_and_reuses_sequence() {
 enum CommitPayload {
     Minimal,
     Many,
+    ChunkBoundary,
+}
+
+impl CommitPayload {
+    fn facts(self) -> usize {
+        match self {
+            Self::Minimal => 0,
+            Self::Many => 8,
+            Self::ChunkBoundary => 257,
+        }
+    }
+
+    fn commits(self) -> usize {
+        if self == Self::ChunkBoundary { 32 } else { 128 }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Minimal => "minimal",
+            Self::Many => "many",
+            Self::ChunkBoundary => "chunk",
+        }
+    }
 }
 
 async fn observe_commit_throughput(schema: &'static str, payload: CommitPayload) {
@@ -617,16 +653,16 @@ async fn observe_commit_throughput(schema: &'static str, payload: CommitPayload)
             .await
             .expect("commit coordinator"),
     );
-    const COMMITS: usize = 128;
+    let commits = payload.commits();
     for (phase, concurrency) in [1, 8, 32].into_iter().enumerate() {
         let started = std::time::Instant::now();
         let mut tasks = tokio::task::JoinSet::new();
-        let mut sequences = Vec::with_capacity(COMMITS);
-        for index in 0..COMMITS {
+        let mut sequences = Vec::with_capacity(commits);
+        for index in 0..commits {
             let store = store.clone();
             tasks.spawn(async move {
                 let run = RunId(format!("perf-run-{concurrency}-{index}"));
-                let facts = if payload == CommitPayload::Many { 8 } else { 0 };
+                let facts = payload.facts();
                 let commit = ThreadCommit::assemble(
                     ThreadId(format!("perf-thread-{concurrency}-{index}")),
                     RunDisposition::ended(run, EndCause::NaturalEnd),
@@ -666,19 +702,15 @@ async fn observe_commit_throughput(schema: &'static str, payload: CommitPayload)
             sequences.push(result.unwrap().sequence);
         }
         sequences.sort_unstable();
-        let first = (phase * COMMITS + 1) as u64;
-        let last = ((phase + 1) * COMMITS) as u64;
+        let first = (phase * commits + 1) as u64;
+        let last = ((phase + 1) * commits) as u64;
         assert_eq!(sequences, (first..=last).collect::<Vec<_>>(), "P1-P3/E1");
         let elapsed = started.elapsed().as_secs_f64();
         println!(
             "commit_perf profile={} independent_threads={} concurrency={concurrency} seconds={elapsed:.3} commits_per_s={:.1}",
-            if payload == CommitPayload::Many {
-                "many"
-            } else {
-                "minimal"
-            },
-            COMMITS,
-            COMMITS as f64 / elapsed
+            payload.label(),
+            commits,
+            commits as f64 / elapsed
         );
     }
 }

@@ -104,6 +104,15 @@ startup projection. The live PostgreSQL tests cover ordered replay across a
 chunk boundary, later-chunk rollback, reconnect and concurrent dense commits;
 the opt-in benchmark records throughput for minimal and multi-fact commits.
 
+The cross-chunk benchmark uses 32 independent commits per phase, each with 257
+Messages, 257 StateCommands and 257 supplied Events. In three alternating
+local runs against one PostgreSQL container, the pre-batch implementation at
+`a944a6c9e3` measured 12.8–15.0 commit/s at 1/8/32 client concurrency; the
+current implementation measured 73.2–96.3 commit/s. Minimal commits were
+roughly flat, and eight-fact results varied across runs. These figures isolate
+the local store path, not Worker, synchronous standby or Cell throughput; the
+global commit lock remains the cross-Thread serial point.
+
 ## Bounded startup and asynchronous committed reads (2026-09-25)
 
 The original D4 full-database projection is retired for PostgreSQL. Startup now
