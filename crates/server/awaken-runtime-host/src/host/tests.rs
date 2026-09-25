@@ -24295,10 +24295,12 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     // exact preparation and disposal evidence return to Control in order; E4
     // the failed disposal call retains the exact projection; E5 the completed
     // readback retires it without replaying live preparation, physical disposal,
-    // or entering renewal/revoke. No resident scan or second scheduler exists.
+    // or entering renewal/revoke; E6 the failed assignment reports its exact
+    // Session without changing the first error classification. No resident scan
+    // or second scheduler exists.
     //
     // | Rule | cleanup | renewal due | Effect |
-    // | R1 | claimed prepare then disposal/response lost | no | E1 + E2 + E3 + E4 |
+    // | R1 | claimed prepare then disposal/response lost | no | E1 + E2 + E3 + E4 + E6 |
     // | R2 | re-claimed Completed readback | no | E5 |
     // | R3 | fenced empty | any | retain (covered by application table) |
     // R1 receipt observation is scoped and released before the asynchronous R2
@@ -24412,9 +24414,15 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         .disposal_response_loss_once
         .store(true, Ordering::SeqCst);
 
-    host.recover_terminal_cleanup_assignments(target.clone())
+    let pending = host
+        .recover_terminal_cleanup_assignments(target.clone())
         .await
         .expect_err("R1/C4 reports the ambiguous completion response");
+    assert_eq!(pending.kind, crate::HostErrorKind::Internal, "R1/E6");
+    assert!(
+        pending.message.contains("remote-terminal-worker"),
+        "R1/E6 identifies the failing assignment"
+    );
     assert!(
         host.session_slots.contains("remote-terminal-worker"),
         "R1/E4 keeps the exact projection for aggregate readback"
@@ -24669,13 +24677,14 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
     // sibling poll fails; C4 the first is released. E1 the other three polls
     // proceed while C2 is blocked; E2 a freed slot claims and completes the
     // fifth assignment before C4; E3 the failure does not cancel sibling work;
-    // E4 the sweep reports the error after C4.
+    // E4 the sweep reports the error after C4; E5 the report names the failed
+    // sibling even though another Session was blocked and the rest succeeded.
     // Constraint: each assignment has its own Session lease; the mock returns
     // completed work so existing tests remain the authority for physical effects.
     //
     // | Rule | offered | first poll | sibling failure | Effect |
     // | R1 | five | blocked | yes | E1 + E2 + E3 |
-    // | R2 | five | released | yes | E4 |
+    // | R2 | five | released | yes | E4 + E5 |
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone()),
@@ -24716,6 +24725,7 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
         .expect("R2/E4 recovery task joins")
         .expect_err("R2/E4 sibling failure remains visible");
     assert!(error.to_string().contains("injected terminal work failure"));
+    assert!(error.to_string().contains("bounded-terminal-2"), "R2/E5");
     assert_eq!(control.terminal_work_seen.lock().unwrap().len(), 5, "R2/E3");
     assert_eq!(control.claim_targets.lock().unwrap().len(), 6, "R2/E4");
     assert!(control.assignments.lock().unwrap().is_empty(), "R2/E4");
