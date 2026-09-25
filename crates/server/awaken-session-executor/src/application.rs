@@ -1088,7 +1088,22 @@ impl crate::SharedHost {
                     }
                 }
                 Err(error) => {
-                    terminal_error.get_or_insert(error);
+                    // The sweep retains its first classified failure, but
+                    // another pending Session must not hide this assignment's
+                    // own cause from Worker diagnostics.
+                    tracing::warn!(
+                        session_id = %session_id,
+                        code = %error.code,
+                        %error,
+                        "cold Session terminal cleanup assignment remained pending"
+                    );
+                    terminal_error.get_or_insert_with(|| crate::HostError {
+                        message: format!(
+                            "Session `{session_id}` terminal cleanup remained pending: {}",
+                            error.message
+                        ),
+                        ..error
+                    });
                 }
             }
         }

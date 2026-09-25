@@ -533,7 +533,21 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
                 let _ = theirs.write_all(&bytes).await;
             });
         } else if repository_export {
-            drop(theirs);
+            let observation = self
+                .shared
+                .lock()
+                .unwrap()
+                .get("__repository_export_observation")
+                .cloned();
+            if let Some(observation) = observation {
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    let mut theirs = theirs;
+                    let _ = theirs.write_all(&observation).await;
+                });
+            } else {
+                drop(theirs);
+            }
         } else {
             tokio::spawn(async move {
                 use tokio::io::AsyncReadExt;
@@ -550,6 +564,14 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
                 .contains_key("__fail_repository_export")
         {
             19
+        } else if repository_export
+            && self
+                .shared
+                .lock()
+                .unwrap()
+                .contains_key("__repository_export_observation")
+        {
+            42
         } else {
             0
         };
@@ -3016,6 +3038,38 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
             .to_string()
             .contains("container Repository push exited Some(19)")
     );
+
+    // Container rejection decision table: C1 the process exits 42 with a
+    // bounded third-ref observation, C2 the frozen create-only expectation
+    // differs from that ref. E1 only the existing typed durable rejection is
+    // returned; the preceding generic exit-19 failure remains unavailable.
+    // | Rule | status | channel | result |
+    // | R6 | 42 | canonical conflicting ref | Rejected(RemoteRefChanged) |
+    // | R7 | 19 | empty | Unavailable (asserted above) |
+    let third = "3".repeat(40);
+    {
+        let mut state = shared.lock().unwrap();
+        state.remove("__fail_repository_export");
+        state.insert(
+            "__repository_export_observation".into(),
+            format!("REF:{third}\n").into_bytes(),
+        );
+    }
+    let rejected = container_repositories::push(
+        &container,
+        "/opt/custom/awaken-sandbox",
+        &plan,
+        &expectation,
+        None,
+    )
+    .await
+    .expect_err("R6 exact remote conflict is durable rejection evidence");
+    assert!(matches!(
+        rejected,
+        pc::RepositoryPublicationError::Rejected(
+            pc::RepositoryPublicationRejection::RemoteRefChanged { observed_commit }
+        ) if observed_commit == third
+    ));
 }
 
 struct RestartMemoryMounter {
