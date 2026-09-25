@@ -9,8 +9,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore};
 
 struct ApiState {
+    server_addr: std::net::SocketAddr,
     pod: Option<Pod>,
     claim: Option<PersistentVolumeClaim>,
+    pod_posted: Arc<Semaphore>,
     calls: Vec<String>,
     writes: Vec<String>,
     projected: std::collections::HashSet<String>,
@@ -29,6 +31,21 @@ impl ApiState {
             )
         };
         match (method, resource) {
+            ("POST", "pods") => {
+                if self.pod.is_some() {
+                    return (
+                        409,
+                        json!({"kind":"Status", "apiVersion":"v1", "status":"Failure", "reason":"AlreadyExists", "message":"occupied", "code":409}),
+                    );
+                }
+                let mut pod: Pod = serde_json::from_value(body).unwrap();
+                pod.metadata.uid = Some("delayed-create-uid".into());
+                pod.metadata.resource_version = Some("1".into());
+                self.pod = Some(pod.clone());
+                self.writes.push(call);
+                self.pod_posted.add_permits(1);
+                (201, json!(pod))
+            }
             ("GET", "pods") => self
                 .pod
                 .as_ref()
@@ -173,6 +190,20 @@ async fn fixture(
     Arc<Semaphore>,
     tokio::task::JoinHandle<()>,
 ) {
+    fixture_with_cut(cut, conflict, false).await
+}
+
+async fn fixture_with_cut(
+    cut: usize,
+    conflict: bool,
+    pause_before_effect: bool,
+) -> (
+    K8sRuntime,
+    Arc<Mutex<ApiState>>,
+    Arc<Notify>,
+    Arc<Semaphore>,
+    tokio::task::JoinHandle<()>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut runtime = K8sRuntime::for_test(addr);
@@ -191,8 +222,10 @@ async fn fixture(
     continuation::bind_claim_uid(&mut pod, "claim-uid");
     runtime.continuation_volume = Some(volume);
     let state = Arc::new(Mutex::new(ApiState {
+        server_addr: addr,
         pod: Some(pod),
         claim: Some(claim),
+        pod_posted: Arc::new(Semaphore::new(0)),
         calls: vec![],
         writes: vec![],
         projected: ["configmaps-0", "configmaps-1", "secrets-0", "secrets-1"]
@@ -208,12 +241,16 @@ async fn fixture(
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
             let (method, path, body) = request(&mut stream).await;
+            if pause_before_effect && serving.lock().unwrap().calls.len() + 1 == cut {
+                notify.notify_one();
+                let _permit = resume.acquire().await.unwrap();
+            }
             let (status, response, count) = {
                 let mut state = serving.lock().unwrap();
                 let (status, response) = state.response(&method, &path, body);
                 (status, response.to_string(), state.calls.len())
             };
-            if count == cut {
+            if !pause_before_effect && count == cut {
                 notify.notify_one();
                 let _permit = resume.acquire().await.unwrap();
             }
@@ -226,6 +263,115 @@ async fn fixture(
         }
     });
     (runtime, state, reached, release, server)
+}
+
+#[tokio::test]
+async fn delayed_pod_create_cannot_be_closed_by_a_replacement_runtime() {
+    // Cause/effect table for the real kube HTTP edge. C1 the original runtime
+    // sends Pod POST under its exact attempt gate; C2 the API pauses before
+    // accepting POST or after accepting it but before returning the response;
+    // C3 the Worker process dies without persisting a handle; C4 a replacement
+    // runtime observes the same scope/fence. E1 C1+C2+C4 cannot certify
+    // absence; E2 C1+C2+C3 later permits the old POST to materialize despite
+    // the replacement's earlier observation; E3 no cleanup write is forged.
+    // The existing durable-handle and rich-topology tests own their separate
+    // completion rules. The child executes the production K8sRuntime request
+    // in another OS process against this test's controlled kube HTTP edge.
+    // This establishes the fail-closed cut, not a durable closure witness.
+    if let Ok(addr) = std::env::var("AWAKEN_K8S_CREATE_CHILD_ADDR") {
+        let addr: std::net::SocketAddr = addr.parse().unwrap();
+        let mut runtime = K8sRuntime::for_test(addr);
+        runtime.clients.control =
+            Client::try_from(kube::Config::new(format!("http://{addr}").parse().unwrap())).unwrap();
+        let fingerprint: pc::SandboxRealizationFingerprint =
+            serde_json::from_value(json!("delayed-create-fingerprint")).unwrap();
+        let fence = pc::SandboxEffectFence::new(
+            "create-operation",
+            "worker-owner",
+            "worker-boot",
+            7,
+            u64::MAX,
+        )
+        .unwrap();
+        let intent = ContainerRealizationIntent::Create;
+        let attempt = ContainerCreateAttempt::fresh();
+        let context = ContainerRealizationContext::new(
+            "scope",
+            &fingerprint,
+            Some(&fence),
+            &intent,
+            &attempt,
+        );
+        runtime
+            .prepare_for_effect(&context, &ephemeral_plan(), &fingerprint)
+            .await
+            .expect("child API request");
+        panic!("the child unexpectedly completed before its forced process death");
+    }
+    for pause_before_effect in [true, false] {
+        let (runtime, state, reached, release, server) =
+            fixture_with_cut(2, false, pause_before_effect).await;
+        let (posted, server_addr) = {
+            let mut state = state.lock().unwrap();
+            state.pod = None;
+            state.claim = None;
+            state.projected.clear();
+            (state.pod_posted.clone(), state.server_addr)
+        };
+        let mut replacement = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+        replacement.clients.control = runtime.clients.control.clone();
+        drop(runtime);
+        let fence = pc::SandboxEffectFence::new(
+            "create-operation",
+            "worker-owner",
+            "worker-boot",
+            7,
+            u64::MAX,
+        )
+        .unwrap();
+        let mut creating = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "k8s::cleanup_tests::delayed_pod_create_cannot_be_closed_by_a_replacement_runtime",
+                "--nocapture",
+            ])
+            .env("AWAKEN_K8S_CREATE_CHILD_ADDR", server_addr.to_string())
+            .spawn()
+            .expect("C3 start one disposable Worker process");
+        tokio::time::timeout(Duration::from_secs(5), reached.notified())
+            .await
+            .expect("C1 actual Pod POST reached the selected API cut");
+        assert_eq!(
+            state.lock().unwrap().pod.is_some(),
+            !pause_before_effect,
+            "C2 API acceptance and response delivery are separate cuts"
+        );
+        assert!(
+            !replacement
+                .prove_unmaterialized_absence("scope", &ephemeral_plan(), Some(&fence))
+                .await
+                .unwrap(),
+            "E1 replacement has no observed-attempt closure witness"
+        );
+        creating.kill().expect("C3 force-stop Worker process");
+        assert!(
+            !creating.wait().unwrap().success(),
+            "C3 Worker process died"
+        );
+        release.add_permits(1);
+        let permit = tokio::time::timeout(Duration::from_secs(5), posted.acquire())
+            .await
+            .expect("E2 delayed API POST eventually applies")
+            .unwrap();
+        drop(permit);
+        {
+            let state = state.lock().unwrap();
+            assert!(state.pod.is_some(), "E2 late Pod exists after Worker loss");
+            assert_eq!(state.writes, vec!["POST pods"], "E3 no cleanup was forged");
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
 }
 
 #[derive(Clone)]

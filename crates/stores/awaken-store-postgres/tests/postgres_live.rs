@@ -283,11 +283,13 @@ async fn million_historical_facts_do_not_gate_startup_or_unrelated_thread_open()
 #[ignore = "hot-Thread PostgreSQL recovery cost observation; requires an explicit live fixture"]
 async fn hot_thread_history_open_reports_its_scoped_cost() {
     // Causes: C1 one legitimate committed Thread has a large Message prefix;
-    // C2 an unrelated Thread opens first; C3 the hot Thread opens after restart.
-    // Effects: E1 C2 remains scoped and fast independent of C1; E2 C3 restores
-    // the complete ordered prefix, and prints its separate open cost. Rules
-    // H1=C1+C2->E1, H2=C1+C3->E2. This is a capacity observation, not a latency
-    // pass threshold: the current view still materializes that one Thread.
+    // C2 an unrelated Thread opens first; C3 the hot Thread opens after restart;
+    // C4 sixteen independent Threads commit while C3 is opening. Effects:
+    // E1 C2 remains scoped; E2 C3 restores the complete ordered prefix;
+    // E3 C4 commits remain exact, are absent from C3, and report their p95
+    // alongside hot-open cost. Rules H1=C1+C2->E1, H2=C1+C3->E2,
+    // H3=C1+C3+C4->E2+E3. This is a capacity observation, not a latency pass
+    // threshold: the current view still materializes that one Thread.
     let Some(pool) = schema_pool("t_pg_hot_thread_history").await else {
         panic!("explicit hot-history run requires PostgreSQL");
     };
@@ -323,9 +325,11 @@ async fn hot_thread_history_open_reports_its_scoped_cost() {
     .await
     .unwrap();
     drop(writer);
-    let reopened = PostgresCommitCoordinator::with_existing_pool(pool)
-        .await
-        .unwrap();
+    let reopened = Arc::new(
+        PostgresCommitCoordinator::with_existing_pool(pool)
+            .await
+            .unwrap(),
+    );
     let unrelated_started = std::time::Instant::now();
     let unrelated = reopened
         .open_thread_projection(&ThreadId("unrelated-thread".into()))
@@ -336,9 +340,37 @@ async fn hot_thread_history_open_reports_its_scoped_cost() {
         CommittedThreadView::committed_messages(&unrelated, &thread).is_empty(),
         "H1/E1 unrelated view has no hot history"
     );
-    let hot_started = std::time::Instant::now();
-    let hot = reopened.open_thread_projection(&thread).await.unwrap();
-    let hot_ms = hot_started.elapsed().as_secs_f64() * 1_000.0;
+    let gate = Arc::new(tokio::sync::Barrier::new(2));
+    let hot_gate = gate.clone();
+    let peer_gate = gate.clone();
+    let ((hot, hot_ms), mut peer_samples) = tokio::join!(
+        async {
+            hot_gate.wait().await;
+            let started = std::time::Instant::now();
+            let hot = reopened.open_thread_projection(&thread).await.unwrap();
+            (hot, started.elapsed().as_secs_f64() * 1_000.0)
+        },
+        async {
+            peer_gate.wait().await;
+            let mut samples = Vec::new();
+            for index in 0..16 {
+                let started = std::time::Instant::now();
+                reopened
+                    .commit(ThreadCommit::assemble(
+                        ThreadId(format!("peer-thread-{index}")),
+                        ended(&format!("peer-run-{index}")),
+                        true,
+                        vec![message(&format!("peer-message-{index}"), "independent")],
+                        Vec::new(),
+                        Vec::new(),
+                    ))
+                    .await
+                    .expect("H3 independent commit succeeds during hot open");
+                samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+            }
+            samples
+        }
+    );
     let messages = CommittedThreadView::committed_messages(&hot, &thread);
     assert_eq!(messages.len(), rows as usize + 1, "H2/E2 full prefix");
     assert_eq!(messages.first().unwrap().id.0, "hot-first", "H2/E2 order");
@@ -347,9 +379,21 @@ async fn hot_thread_history_open_reports_its_scoped_cost() {
         format!("hot-{rows}"),
         "H2/E2 order"
     );
+    let peer = reopened
+        .open_thread_projection(&ThreadId("peer-thread-0".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        CommittedThreadView::committed_messages(&peer, &ThreadId("peer-thread-0".into())).len(),
+        1,
+        "H3/E3 independent fact remains queryable"
+    );
+    peer_samples.sort_by(f64::total_cmp);
     println!(
-        "hot_thread_history facts={} unrelated_open_ms={unrelated_ms:.3} hot_open_ms={hot_ms:.3}",
-        rows + 1
+        "hot_thread_history facts={} unrelated_open_ms={unrelated_ms:.3} \
+         hot_open_ms={hot_ms:.3} peer_commit_p95_ms={:.3}",
+        rows + 1,
+        peer_samples[peer_samples.len() * 95 / 100],
     );
 }
 

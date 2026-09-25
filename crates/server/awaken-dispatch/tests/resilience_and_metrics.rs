@@ -14,13 +14,14 @@ use std::sync::atomic::Ordering;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
-    DispatchQueue, DispatchService, DispatchServiceConfig, DispatchWorker, MemoryDispatchStore,
-    RunDispatch, SystemClock,
+    ControlDispatchQueue, DispatchQueue, DispatchService, DispatchServiceConfig, DispatchWorker,
+    MemoryDispatchStore, RunDispatch, SystemClock,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
-    FlakyDispatchStore, RecordingMetrics, activation, text_runtime, text_runtime_with_metrics,
+    FlakyDispatchStore, RecordingMetrics, activation, activation_on,
+    all_calls_blocking_tool_runtime_with_metrics, text_runtime, text_runtime_with_metrics,
     tool_runtime_with_metrics,
 };
 use std::time::Duration;
@@ -237,6 +238,77 @@ async fn blocked_depth_observation_cannot_delay_a_run_or_shutdown() {
 }
 
 // --- 15. The worker meters the dispatch lifecycle on every exit path --------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn held_worker_drives_count_only_current_executions_not_queued_runs() {
+    // Causes: C1 four independent Threads enter the existing blocking tool
+    // barrier under four current Run claims; C2 one fifth Run is only queued;
+    // C3 all four tool calls are released. Effects: E1 the shared Worker metric
+    // counts four in-flight drives, not five accepted Runs; E2 the exact queue
+    // depth counts only the fifth runnable Run; E3 four distinct terminal Runs
+    // settle and the in-flight count returns to zero. Decision rules:
+    // A1=C1->E1, A2=C1+C2->E1+E2, A3=C1+C2+C3->E2+E3.
+    // The deployed Provider hold/SQL observer owns the cross-process partition;
+    // this test pins the open runtime's metric meaning without another ledger.
+    let metrics = Arc::new(RecordingMetrics::default());
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, entered) =
+        all_calls_blocking_tool_runtime_with_metrics(release.clone(), metrics.clone() as Arc<_>);
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    for index in 0..4 {
+        store
+            .enqueue(RunDispatch::new(activation_on(
+                &format!("active-{index}"),
+                &format!("active-thread-{index}"),
+            )))
+            .await
+            .unwrap();
+    }
+    let mut drives = tokio::task::JoinSet::new();
+    for index in 0..4 {
+        // One direct Worker drive owns one claim; independent owners exercise
+        // the same aggregate metric without assuming a single tick loops four
+        // times while its first call is blocked.
+        let worker = DispatchWorker::new(
+            runtime.clone(),
+            store.clone(),
+            commit.clone(),
+            format!("held-worker-{index}"),
+        );
+        drives.spawn(async move { worker.tick(harness::clock(0)).await });
+    }
+    assert!(
+        wait_for(|| entered.load(Ordering::SeqCst) == 4).await,
+        "A1 four real tool entries"
+    );
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 4, "A1/E1");
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            "queued-fifth",
+            "queued-thread",
+        )))
+        .await
+        .unwrap();
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 4, "A2/E1");
+    assert_eq!(store.runnable_depth().await.unwrap(), Some(1), "A2/E2");
+    release.add_permits(4);
+    let mut winners = std::collections::HashSet::new();
+    while let Some(result) = tokio::time::timeout(Duration::from_secs(10), drives.join_next())
+        .await
+        .expect("A3 held drives terminate")
+    {
+        let (run_id, state) = result.unwrap().unwrap().expect("A3 one claim per drive");
+        assert!(
+            matches!(state, RunState::Ended(EndCause::NaturalEnd)),
+            "A3 terminal"
+        );
+        assert!(winners.insert(run_id.0), "A3 no duplicate execution");
+    }
+    assert_eq!(winners.len(), 4, "A3/E3");
+    assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0, "A3/E3");
+    assert_eq!(store.runnable_depth().await.unwrap(), Some(1), "A3/E2");
+}
 
 #[tokio::test]
 async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
