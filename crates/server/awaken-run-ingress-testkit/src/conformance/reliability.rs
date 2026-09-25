@@ -426,8 +426,11 @@ pub async fn record_dispatch_recovery_history(
      * R3=C5->E4-E6. Retry dimension C6 duplicates begin/finish after a lost
      * response. R4=C2+C6 -> AlreadyApplied, without a second execution slot;
      * R5=C5+C6 before B enters -> Applied (empty-slot ACK is idempotent);
-     * R6=C5+C6 after B enters -> Fenced, preserving B's slot. This is one
-     * shared trace for durable store adapters, not another state model. */
+     * R6=C5+C6 after B enters -> Fenced, preserving B's slot. C7 is a slow
+     * live backend: B's lease must cover the deliberate R2-R6 trace, or an
+     * unrelated expiry would turn R6 into a different rule. The recovery lease
+     * is long only for this shared test history; the first lease remains short
+     * so the real PostgreSQL clock still proves expiration and reclaim. */
     let request = dispatch(namespace, "history", "history-thread");
     let run_id = request.run_id().clone();
     clock.set(0);
@@ -456,7 +459,7 @@ pub async fn record_dispatch_recovery_history(
     clock.advance_past(first.lease.expires_ms).await;
     clock.set(recovery_now);
     let recovered = store
-        .claim_run(&run_id, "history-b", LEASE_MS, &Default::default())
+        .claim_run(&run_id, "history-b", LEASE_MS * 60, &Default::default())
         .await
         .expect("R2 recover")
         .expect("R2 expired claim recovers");

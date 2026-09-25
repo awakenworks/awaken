@@ -110,6 +110,26 @@ pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 #[cfg(test)]
 pub(crate) type PodSpecMutation = (&'static str, fn(&mut k8s_openapi::api::core::v1::PodSpec));
 
+#[cfg(test)]
+fn ephemeral_plan() -> ContainerPlan {
+    ContainerPlan {
+        image: "sandbox:1".into(),
+        command: vec!["sleep".into(), "30".into()],
+        env: Vec::new(),
+        control_services: Default::default(),
+        packages: Default::default(),
+        binds: Vec::new(),
+        outputs_volume: "/mnt/session/outputs".into(),
+        network: crate::NetworkMode::Open,
+        egress_identity: Default::default(),
+        requests: pc::ResourceRequests::default(),
+        limits: pc::ResourceLimits::default(),
+        filesystem_continuity: pc::FilesystemContinuity::Ephemeral,
+        memory_mounts: Vec::new(),
+        rootfs: crate::RootfsPlan::Image("sandbox:1".into()),
+    }
+}
+
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const SANDBOX_REALIZATION_ANNOTATION: &str = "awaken.dev/sandbox-realization";
 const SANDBOX_ADOPTION_ANNOTATION: &str = "awaken.dev/sandbox-adoption";
