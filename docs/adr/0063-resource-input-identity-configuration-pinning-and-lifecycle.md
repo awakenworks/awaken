@@ -712,3 +712,24 @@ Session application, Runtime Host, registered Worker, and ingress/control plane
 to the same contract floor before either value is emitted. A pre-floor request
 continues to omit the prior and can only use the historical create-only path;
 mixed old/new writers are not a compatibility mode.
+
+### 2026-09-25 amendment: container Git retains exact stale-ref evidence
+
+The container Repository adapter already executes the sole Git CAS inside the
+Sandbox, but its process exit 42 combined local-coordinate and remote-ref
+conflicts and discarded the observed ref. A create-only publication against an
+already-present branch then retried forever, although the existing terminal
+sidecar can durably accept a typed `RemoteRefChanged` rejection.
+
+The same in-Sandbox command now emits only a bounded, canonical, secret-free
+remote observation through its existing process channel. Git stdout/stderr,
+credentials, URLs, and branch names do not cross that channel. The Host accepts
+only an exact 40-lowercase-hex OID or the absent-ref marker, verifies the
+existing `RepositoryPublicationRejection` against the frozen expectation, and
+returns it through the existing Repository realizer/Session root CAS. Missing,
+malformed, or unsupported observations remain unavailable. A process-level
+push failure reobserves the exact ref before classification; already-desired
+means replayed success, unchanged means retryable, changed means verified
+rejection. This changes no aggregate, route, queue, Git writer, or cleanup
+ordering. A deployment must still keep the Session/Worker contract floor
+aligned before running the effect.
