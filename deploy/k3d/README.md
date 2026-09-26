@@ -378,3 +378,26 @@ not a second P2-B acceptance path: it assigns one run per thread through the
 scenario host and isolates lease reclaim/commit fencing. The distributed-control
 suite alone owns the public product flow, production CLI Worker, materialization,
 service ownership, and full chaos/load claim.
+
+## Native pinned Skill startup with real DeepSeek
+
+`npm --prefix e2e run test:real:skill-lazy:k3d` creates a unique, disposable
+cluster for Sandbox execution and runs the shipped CLI with its separate Worker
+in an owned container with host networking. This explicitly separates the
+developer Docker bridge's egress from the Kubernetes Sandbox under test.
+It reuses `harness.sh` for cluster/image/storage lifecycle and the existing
+provider-connection and exact Event-receipt helpers for SDK traffic.
+Supply `DEEPSEEK_API_KEY_FILE` (or `DEEPSEEK_API_KEY`) and
+`AWAKEN_LAZY_SANDBOX_IMAGE` as an immutable Registry digest. An optional
+`AWAKEN_LAZY_RUNTIME_IMAGE` must carry the current commit's revision label;
+otherwise the wrapper builds the Kubernetes-enabled binaries and canonical
+K3D runtime image. No existing cluster or customer Session is changed.
+
+The driver owns cold/warm reads, the same Session after a service container
+restart, first physical execution, and an independently observed unschedulable
+Pod. Its comments own the cause/effect rules. `evidence.json` records first
+nonempty SDK text, complete-turn latency, scoped Pod observations and public
+events. The default first-text budget is 30 seconds, configurable through
+`AWAKEN_LAZY_REPLY_BUDGET_MS`; these individual samples are not a percentile
+capacity claim. Missing credentials, missing observations and failed cleanup
+fail the test. The wrapper preserves evidence and removes only its own cluster.

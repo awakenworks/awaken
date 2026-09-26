@@ -65,7 +65,7 @@
     "test:mcp": "tsx mcp_official_sdk_e2e.ts && tsx managed_mcp_e2e.ts && tsx managed_mcp_hot_swap_e2e.ts && tsx managed_mcp_recovery_e2e.ts && tsx management_mcp_e2e.mjs && tsx managed_mcp_refresh_e2e.mjs",
     "check:mcp-injection-compat": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck --allowImportingTsExtensions managed_mcp_e2e.ts managed_mcp_hot_swap_e2e.ts managed_mcp_recovery_e2e.ts mcp_official_sdk_e2e.ts",
     "test:real": "node provider_connection_matrix_real_e2e.mjs && cross-env E2E_LIVE=1 node managed_real_e2e.mjs && tsx managed_content_blocks_real_e2e.ts && cross-env E2E_LIVE=1 node ai_sdk_real_e2e.mjs && cross-env E2E_LIVE=1 node managed_resolved_real_e2e.mjs && cross-env E2E_LIVE=1 node management_validate_e2e.mjs && cross-env E2E_LIVE=1 node managed_resources_e2e.mjs && node managed_dream_real_eval_e2e.mjs && cross-env E2E_LIVE=1 node managed_real_tool_loop_e2e.mjs && cross-env E2E_LIVE=1 node managed_real_multiturn_e2e.mjs && cross-env E2E_LIVE=1 node managed_real_thinking_e2e.mjs && node acp_real_mcp_kimi_e2e.mjs && node acp_runtime_memory_matrix_e2e.mjs && node managed_compaction_gemini_e2e.mjs && node managed_compaction_model_window_e2e.mjs && node managed_compaction_real_e2e.mjs && node managed_config_resolve_real_e2e.mjs && node managed_reconnect_real_e2e.mjs",
-    "test:real:managed-evals": "node managed_resources_e2e.mjs && node managed_dream_real_eval_e2e.mjs && node acp_runtime_memory_matrix_e2e.mjs",
+    "test:real:managed-evals": "node managed_resources_e2e.mjs && node managed_dream_real_eval_e2e.mjs && node acp_runtime_memory_matrix_e2e.mjs && npm run test:real:skill-lazy:k3d",
     "test:real:providers": "node provider_connection_matrix_real_e2e.mjs",
     "test:templates": "node --test fixtures/template_scenarios.test.mjs",
     "test:mcp-config": "node mcp_configuration_e2e.mjs",
@@ -110,7 +110,9 @@
     "test:environment-packages-registry": "node managed_package_registry_e2e.mjs",
     "test:extended": "node management_environments_e2e.mjs && node management_deployments_e2e.mjs && node management_agents_e2e.mjs && node management_user_profiles_e2e.mjs && node management_memory_stores_e2e.mjs && node management_memory_tenancy_e2e.mjs && node management_env_work_persistence_e2e.mjs && node management_skills_e2e.mjs && node management_vaults_family_e2e.mjs && node management_files_models_e2e.mjs && node management_egress_bind_e2e.mjs && node managed_full_lifecycle_e2e.mjs && node managed_system_message_e2e.mjs && node managed_terminated_e2e.mjs && node managed_reconnect_e2e.mjs && node managed_concurrency_e2e.mjs && node managed_contract_guard_e2e.mjs && node managed_processed_at_e2e.mjs && node managed_post_idle_race_e2e.mjs && node acp_jsonrpc_e2e.mjs && node acp_sandboxed_e2e.mjs && node managed_error_recovery_e2e.mjs && node management_session_threads_e2e.mjs && node management_sessions_family_e2e.mjs && node acp_gateway_e2e.mjs && node acp_managed_mcp_e2e.mjs && node management_deployment_schedule_e2e.mjs && tsx managed_dream_e2e.ts && tsx managed_dream_restart_sdk_e2e.ts",
     "test:claude-aliases": "node --test fixtures/fake_anthropic_fixture.test.mjs fixtures/mcp_calc_fixture.test.mjs && node claude_sdk_alias_e2e.mjs && node claude_acp_alias_e2e.mjs",
-    "test:cowork-topologies": "node acp_awaken_tool_bridge_e2e.mjs && node worker_transport_e2e.mjs && tsx remote_worker_recovery_e2e.ts && node acp_projected_local_e2e.mjs && node acp_projected_container_e2e.mjs"
+    "test:cowork-topologies": "node acp_awaken_tool_bridge_e2e.mjs && node worker_transport_e2e.mjs && tsx remote_worker_recovery_e2e.ts && node acp_projected_local_e2e.mjs && node acp_projected_container_e2e.mjs",
+    "test:real:skill-lazy:k3d": "bash k3d/managed_skill_lazy_real_e2e.sh",
+    "test:real:skill-lazy:driver": "node managed_skill_lazy_real_e2e.mjs"
   },
   "dependencies": {
     "@a2a-js/sdk": "^0.3.13",

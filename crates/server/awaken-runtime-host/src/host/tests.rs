@@ -293,6 +293,30 @@ async fn install_pinned_managed_skill_session(
     version: &awaken_skill_store::SkillVersion,
     seed_version: bool,
 ) -> Result<(), awaken_session_error_contract::RunError> {
+    install_pinned_managed_skill_session_with_tools(
+        host,
+        managed,
+        thread,
+        agent,
+        environment,
+        version,
+        seed_version,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn install_pinned_managed_skill_session_with_tools(
+    host: &Arc<SharedHost>,
+    managed: &crate::ManagedHost,
+    thread: &str,
+    agent: &str,
+    environment: awaken_session_configuration_contract::EnvironmentSnapshot,
+    version: &awaken_skill_store::SkillVersion,
+    seed_version: bool,
+    tools: Option<awaken_session_configuration_contract::SessionToolConfiguration>,
+) -> Result<(), awaken_session_error_contract::RunError> {
     let workspace = host.local_workspace().to_string();
     if seed_version {
         host.skills
@@ -311,19 +335,11 @@ async fn install_pinned_managed_skill_session(
             .expect("test SkillStore")
             .expect("create immutable selected Skill version");
     }
-    let resources = awaken_session_resource_contract::ResolvedSessionResources::default()
-        .with_skills(vec![
-            awaken_session_resource_contract::ResolvedSkillBinding {
-                kind: awaken_agent_contract::AgentSkillKind::Custom,
-                skill_id: version.skill_id.to_string(),
-                version: version.version,
-                bundle_sha256: version.bundle_sha256.clone(),
-            },
-        ])
-        .expect("exact Skill Resource binding");
+    let resources = pinned_skill_resources(version);
     let mut init = bare_session(agent, &workspace);
     init.environment = environment;
     init.resources = resources.clone();
+    init.tools = tools;
     install_complete_test_session_for_realization(managed, thread, init).await?;
     managed
         .environment()
@@ -333,6 +349,21 @@ async fn install_pinned_managed_skill_session(
             &resource_transition(&workspace, 0, Default::default(), 0, resources),
         )
         .await
+}
+
+fn pinned_skill_resources(
+    version: &awaken_skill_store::SkillVersion,
+) -> awaken_session_resource_contract::ResolvedSessionResources {
+    awaken_session_resource_contract::ResolvedSessionResources::default()
+        .with_skills(vec![
+            awaken_session_resource_contract::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: version.skill_id.to_string(),
+                version: version.version,
+                bundle_sha256: version.bundle_sha256.clone(),
+            },
+        ])
+        .expect("exact Skill Resource binding")
 }
 
 /// Test-only proof that a Managed Session was composed with its required
