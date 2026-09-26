@@ -24,6 +24,11 @@ def fixture(mode='valid'):
     index = {'schemaVersion': 2, 'manifests': [{'digest': DIGEST, 'size': len(ROOT)}]}
     if mode == 'wrong-root':
         index['manifests'][0]['digest'] = 'sha256:' + '0' * 64
+    if mode == 'duplicate-descriptor':
+        index['manifests'].append(dict(index['manifests'][0]))
+    if mode == 'provenance':
+        index['manifests'].insert(0, {'digest': 'sha256:' + '1' * 64,
+                                    'annotations': {'io.containerd.manifest.subject': DIGEST}})
     entries = [('index.json', json.dumps(index).encode()), (BLOB, ROOT), ('layer', b'unchanged')]
     if mode == 'missing-index': entries.pop(0)
     if mode == 'missing-root': entries.pop(1)
@@ -41,6 +46,24 @@ def fixture(mode='valid'):
 
 
 class ImageArchiveTests(unittest.TestCase):
+    def test_exact_descriptor_is_selected_beside_provenance(self):
+        # I13: multiple outer descriptors + exactly one requested digest =>
+        # select that descriptor and canonical name, preserve root/layer bytes.
+        # I14: multiple matching descriptors => reject ambiguous transport;
+        # I2/I7 still reject absent requested digest or corrupted exact root.
+        output = io.BytesIO()
+        retain_digest_name(io.BytesIO(fixture('provenance')), output, REFERENCE)
+        with tarfile.open(fileobj=io.BytesIO(output.getvalue())) as archive:
+            self.assertEqual(archive.extractfile(BLOB).read(), ROOT)
+            self.assertEqual(archive.extractfile('layer').read(), b'unchanged')
+            descriptors = json.load(archive.extractfile('index.json'))['manifests']
+            self.assertEqual(len(descriptors), 1)
+            self.assertEqual(descriptors[0]['digest'], DIGEST)
+            self.assertEqual(descriptors[0]['annotations']['io.containerd.image.name'],
+                             'docker.io/library/' + REFERENCE)
+        with self.assertRaisesRegex(ValueError, 'ambiguous OCI transport root'):
+            retain_digest_name(io.BytesIO(fixture('duplicate-descriptor')), io.BytesIO(), REFERENCE)
+
     def test_exact_root_is_preserved_and_only_transport_name_changes(self):
         # I1: requested digest matches one OCI index entry and actual root bytes
         # => retain every content blob, add the canonical CRI reference only to
@@ -99,6 +122,7 @@ raise SystemExit(int(os.environ['STATUS']))
             binary.chmod(0o755)
             source, output, calls = root / 'input.tar', root / 'output.tar', root / 'calls'
             for reference, status, mode in (('sandbox:local', 0, 'valid'), (REFERENCE, 0, 'valid'),
+                                            (REFERENCE, 0, 'provenance'), (REFERENCE, 0, 'duplicate-descriptor'),
                                             (REFERENCE, 17, 'valid'), (REFERENCE, 0, 'wrong-root')):
                 with self.subTest(reference=reference, status=status, mode=mode):
                     source.write_bytes(fixture(mode))
@@ -108,7 +132,7 @@ raise SystemExit(int(os.environ['STATUS']))
                     ], env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
                                 ARCHIVE=str(source), CALLS=str(calls), STATUS=str(status)),
                        capture_output=True, text=True, timeout=5)
-                    success = status == 0 and mode == 'valid'
+                    success = status == 0 and mode in ('valid', 'provenance')
                     self.assertEqual(result.returncode == 0, success, result.stderr)
                     self.assertEqual(output.exists(), success)
                     arguments = json.loads(calls.read_text())
