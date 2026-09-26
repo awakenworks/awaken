@@ -39,6 +39,22 @@ enum WarmCapacityDemand {
     Default,
 }
 
+/// Cache retirement requires a fresh complete demand observation. The physical
+/// pool's fallback receipts can omit retained Environments and are not that
+/// observation; a failed Control fetch must never erase their image holders.
+async fn prepare_current_environment_images<'a, E, F>(
+    fetched: &'a Result<Vec<awaken_session_configuration_contract::EnvironmentSnapshot>, String>,
+    prepare: impl FnOnce(&'a [awaken_session_configuration_contract::EnvironmentSnapshot]) -> F,
+) -> Result<(), E>
+where
+    F: std::future::Future<Output = Result<(), E>>,
+{
+    match fetched {
+        Ok(desired) => prepare(desired).await,
+        Err(_) => Ok(()),
+    }
+}
+
 #[derive(Clone)]
 struct WarmCapacityTarget {
     shape: awaken_provisioning_contract::SandboxCapacityShapeId,
@@ -241,15 +257,17 @@ impl WorkerSupervisor {
             .control
             .current_environment_warmups(&self.identity)
             .await;
+        if let Err(error) = prepare_current_environment_images(&fetched, |desired| {
+            self.host.prewarm_environment_images(desired)
+        })
+        .await
+        {
+            eprintln!("Environment image prewarm failed; cold path retained: {error}");
+        }
         let (desired, fetch_error) = match fetched {
             Ok(desired) => (desired, None),
             Err(error) => (previous.values().cloned().collect(), Some(error)),
         };
-        // The same fetched authority drives image and physical capacity. Image
-        // failures do not suppress existing capacity reconciliation or admission.
-        if let Err(error) = self.host.prewarm_environment_images(&desired).await {
-            eprintln!("Environment image prewarm failed; cold path retained: {error}");
-        }
         let plan = WarmCapacityPlan::build(&self.host, desired);
         let selected_shapes = plan.shapes();
 
@@ -906,6 +924,33 @@ mod tests {
         complete_worker_capacity_before, complete_worker_revocation_before,
         supervise_session_realization_reconciliation, supervise_worker_authority,
     };
+
+    #[tokio::test]
+    async fn image_retirement_never_uses_incomplete_fallback_receipts() {
+        // F1 fresh Control demand => provider invoked once, including an empty
+        // set; F2 failed fetch => no provider call (existing holders survive);
+        // F3 provider fails => propagate error, never fabricate readiness.
+        for (fresh, succeeds) in [(true, true), (false, true), (true, false)] {
+            let fetched = if fresh {
+                Ok(Vec::new())
+            } else {
+                Err("Control unavailable".into())
+            };
+            let calls = AtomicUsize::new(0);
+            let result = super::prepare_current_environment_images(&fetched, |desired| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                assert!(desired.is_empty());
+                if succeeds {
+                    Ok(())
+                } else {
+                    Err("provider failed")
+                }
+            })
+            .await;
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(fresh));
+            assert_eq!(result.is_ok(), !fresh || succeeds);
+        }
+    }
 
     #[test]
     fn cold_cleanup_claim_fits_the_registry_heartbeat_window() {

@@ -146,13 +146,7 @@ fn image_check_observation(job: Option<Job>) -> ImageCheckObservation {
 }
 
 fn immutable_registry_identity(identity: Option<String>) -> Option<String> {
-    identity.filter(|reference| {
-        reference
-            .rsplit_once("@sha256:")
-            .is_some_and(|(_, digest)| {
-                digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
-            })
-    })
+    identity.filter(|reference| crate::k8s_package_realization::immutable_image(reference).is_ok())
 }
 
 fn package_image_matches_stored_identity(observed: Option<String>, stored: &str) -> bool {
@@ -1411,6 +1405,23 @@ mod tests {
             None,
             "R2: a malformed digest must fail closed"
         );
+    }
+
+    #[test]
+    fn immutable_identity_uses_the_shared_strict_realization_parser() {
+        // IP1 canonical digest => accepted by the existing realization owner;
+        // IP2 absent repository, extra @, uppercase digest or control bytes =>
+        // no reusable identity. Both image availability and node preparation
+        // use this owner; no looser parallel digest recognition remains.
+        let digest = "a".repeat(64);
+        for reference in [
+            format!("@sha256:{digest}"),
+            format!("repo@other@sha256:{digest}"),
+            format!("repo@sha256:{}", "A".repeat(64)),
+            format!("repo\n@sha256:{digest}"),
+        ] {
+            assert!(immutable_registry_identity(Some(reference)).is_none());
+        }
     }
 
     #[test]

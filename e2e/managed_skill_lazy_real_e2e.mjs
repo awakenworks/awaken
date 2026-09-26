@@ -224,10 +224,10 @@ async function main() {
   const normalEnv = await environment();
   if (imagePrewarm) {
     const started = performance.now();
-    const jobs = await waitForValue(async () => JSON.parse(await kube('get', 'imagepulljobs', '-o', 'json')).items,
-      (jobs) => jobs.some((job) => job.metadata.labels?.['awaken.dev/image-warmup'] === 'true' && job.spec.image === process.env.AWAKEN_LAZY_SANDBOX_IMAGE && job.status?.succeeded > 0 && !job.status?.failed),
-      'actual OpenKruise node image pull completes', { timeoutMs: 180_000, pollMs: 500 });
-    record({ label: 'image-prewarm', duration_ms: performance.now() - started, jobs });
+    const holders = await waitForValue(async () => JSON.parse(await kube('get', 'daemonsets', '-l', 'awaken.dev/image-warmup=true', '-o', 'json')).items,
+      (holders) => holders.some((holder) => holder.metadata.labels?.['awaken.dev/image-warmup'] === 'true' && holder.spec.template.spec.containers.some((container) => container.image === process.env.AWAKEN_LAZY_SANDBOX_IMAGE) && holder.status?.desiredNumberScheduled > 0 && holder.status?.numberReady === holder.status?.desiredNumberScheduled && holder.status?.observedGeneration >= holder.metadata.generation),
+      'actual native node image cache holder is Ready', { timeoutMs: 180_000, pollMs: 500 });
+    record({ label: 'image-prewarm', duration_ms: performance.now() - started, holders });
   }
   if (startupSamples) {
     for (let index = 0; index < startupSamples; index += 1) {

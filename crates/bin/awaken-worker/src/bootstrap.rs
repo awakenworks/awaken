@@ -241,7 +241,7 @@ struct WorkerFileConfig {
     sandbox_allow_local_fallback: Option<bool>,
     k8s_namespace: Option<String>,
     k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
-    k8s_image_pull_jobs: Option<awaken_sandbox_container::K8sImagePullJobs>,
+    k8s_image_prewarm: Option<awaken_sandbox_container::K8sImagePrewarm>,
     k8s_image_pull_secrets: Option<Vec<String>>,
     acp_clis: Option<Vec<String>>,
     container_image: Option<String>,
@@ -334,12 +334,12 @@ impl WorkerDaemonConfig {
             }
             runtime.sandbox.k8s_namespace = namespace;
         }
-        if let Some(policy) = file.k8s_image_pull_jobs {
+        if let Some(policy) = file.k8s_image_prewarm {
             policy.validate()?;
             if runtime.sandbox_tier != awaken_session_executor::SandboxTier::K8s {
-                return Err("k8s_image_pull_jobs requires sandbox_tier=k8s".into());
+                return Err("k8s_image_prewarm requires sandbox_tier=k8s".into());
             }
-            runtime.sandbox.k8s_image_pull_jobs = Some(policy);
+            runtime.sandbox.k8s_image_prewarm = Some(policy);
         }
         if let Some(policy) = file.k8s_continuation_volume {
             policy.validate().map_err(|error| error.to_string())?;
@@ -532,7 +532,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn standalone_image_pull_jobs_preserve_policy_and_reject_invalid_inputs() {
+    fn standalone_image_prewarm_preserve_policy_and_reject_invalid_inputs() {
         // Same cause/effect rules as Control CLI configuration: omitted=>disabled;
         // valid+k8s=>exact policy; zero budgets/foreign backend/unknown key=>error.
         // A temp file exercises the actual standalone strict reader, no network.
@@ -540,9 +540,9 @@ mod tests {
         let path = directory.path().join("worker.toml");
         for (tier, policy, accepts) in [
             ("k8s", None, true),
-            ("k8s", Some("{parallelism=2,max_images=8}"), true),
-            ("k8s", Some("{parallelism=0}"), false),
+            ("k8s", Some("{max_images=8}"), true),
             ("k8s", Some("{max_images=0}"), false),
+            ("k8s", Some("{max_images=257}"), false),
             ("docker", Some("{}"), false),
             ("k8s", Some("{unknown=true}"), false),
         ] {
@@ -550,14 +550,14 @@ mod tests {
                 "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='{tier}'\n"
             );
             if let Some(policy) = policy {
-                source.push_str(&format!("k8s_image_pull_jobs={policy}\n"));
+                source.push_str(&format!("k8s_image_prewarm={policy}\n"));
             }
             std::fs::write(&path, source).unwrap();
             let result = WorkerDaemonConfig::load(&path, None);
             assert_eq!(result.is_ok(), accepts, "{tier}/{policy:?}");
             if let Ok(config) = result {
                 assert_eq!(
-                    config.runtime.sandbox.k8s_image_pull_jobs.is_some(),
+                    config.runtime.sandbox.k8s_image_prewarm.is_some(),
                     policy.is_some()
                 );
             }

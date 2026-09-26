@@ -73,7 +73,6 @@ LAZY_CREATED=1
 k3d_create_cluster "$LAZY_CLUSTER" 0 128Mi k3d-awaken-registry.localhost:5000 "$LAZY_IMAGE"
 k3d_import_images "$LAZY_CLUSTER" "$LAZY_IMAGE"
 k3d_import_storage_images "$LAZY_CLUSTER"
-if [[ "$LAZY_PREWARM" = 1 ]]; then k3d_install_image_prewarm_operator "$LAZY_CLUSTER" "$LAZY_OUTPUT/operator"; fi
 kubectl --context "$LAZY_CONTEXT" config view --minify --raw --flatten > "$LAZY_TEMP/kubeconfig"
 export LAZY_POD LAZY_IMAGE LAZY_SANDBOX_IMAGE LAZY_TEMP LAZY_CONTEXT LAZY_PORT LAZY_PREWARM
 python3 - <<'PY'
@@ -88,7 +87,7 @@ config='\n'.join([
  'admin_listen = \"127.0.0.1:'+str(int(os.environ['LAZY_PORT'])+2)+'\"',
  'control_seal_key = '+json.dumps(os.urandom(32).hex()),
 ])+'\n'
-if os.environ['LAZY_PREWARM']=='1':config+='k8s_image_pull_jobs = { parallelism = 2, max_images = 8 }\n'
+if os.environ['LAZY_PREWARM']=='1':config+='k8s_image_prewarm = { max_images = 8 }\n'
 # RBAC and network policy remain owned by the canonical product overlay.
 rendered=subprocess.check_output(['kubectl','kustomize','deploy/k3d/product-backend'])
 converted=subprocess.check_output(['kubectl','--context',os.environ['LAZY_CONTEXT'],'create','--dry-run=client','--validate=false','-f','-','-o','json'],input=rendered)
