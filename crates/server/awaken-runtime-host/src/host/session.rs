@@ -43,6 +43,10 @@ pub(crate) struct AuthorizedSessionEnvironmentEffect {
     pub(crate) intent: awaken_session_state_contract::SessionEnvironmentEffectIntent,
     pub(crate) authorization: awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
     pub(crate) provider_fence: Option<awaken_provisioning_contract::SandboxEffectFence>,
+    /// Captured before provider I/O; renewal can advance expiry but cannot
+    /// lend this operation another slot allocation or Worker generation.
+    pub(crate) provider_authority:
+        Option<Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -132,7 +132,7 @@ async function bashTurn(sessionId, failure = false) {
   const beforeMetrics = await metrics();
 
   const start = performance.now();
-  const id = await send(sessionId, `请实际执行一次脚本，不复用历史结果。只用 bash 执行绝对路径 /workspace/.skills/${owned.skill}/scripts/verify.sh，不切换工作目录。成功时告诉我这次实际输出；工具失败时停止重试。`);
+  const id = await send(sessionId, `请实际执行一次脚本，不复用历史结果。调用 bash 工具执行命令 bash /workspace/.skills/${owned.skill}/scripts/verify.sh，不切换工作目录。成功时告诉我这次实际输出；工具失败时停止重试。`);
   const seen = new Map();
   const seenHelpers = new Map();
   let monitorFailure;

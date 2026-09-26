@@ -298,9 +298,10 @@ k3d_install_image_prewarm_operator() {
   local cluster="$1" output="$2" context="k3d-$1" chart image
   k3d_validate_name "$cluster" || return 2
   command -v helm >/dev/null || return 2
+  [[ "$K3D_PLATFORM" = linux/amd64 ]] || { echo "image prewarm fixture pins linux/amd64" >&2; return 2; }
   mkdir -p "$output"
   chart="$output/kruise-1.9.0.tgz"
-  image='docker.io/openkruise/kruise-manager@sha256:2e4c7aaeb6e1f3b6f19929ae0d649837b36e4fc4cfaf598962c7ee5b6a1187eb'
+  image='docker.io/openkruise/kruise-manager@sha256:120b3d48d8ea76abe2959a7a6939ae4cb8d0474baafa7c8d565bc3198a534a08'
   python3 - "$chart" <<'PYCHART'
 import hashlib,pathlib,sys,urllib.request
 p=pathlib.Path(sys.argv[1])

@@ -390,3 +390,17 @@ real-SDK Skill startup fixture supports paired node-image-prewarming samples,
 records actual tool/model/Hand metrics and exact Pod/PVC events, and verifies no
 Sandbox-image download occurs on the optimized tool path. These are local samples,
 not production percentile or capacity guarantees.
+
+
+### Slow realization retains current receipt authority
+
+Provider I/O can outlive the lease captured in an Environment effect intent even
+while the existing renewal sweep extends the same generation. The Host retains
+one pre-I/O authority source in AuthorizedSessionEnvironmentEffect, forwards it
+to physical creation, and re-enters it before building the persistence receipt.
+The receipt uses current Control expiry under unchanged owner/incarnation/epoch,
+operation, binding and Environment context; its canonical fingerprint is rebuilt
+through the existing constructor. Worker loss, closed/expired proof, slot ABA or
+reassignment rejects before persistence. No TTL increase or second renewal task
+is introduced. This closes the real cold-pull failure where remote receipt
+admission correctly rejected the stale pre-create expiry.
