@@ -363,21 +363,29 @@ Environment snapshots; pending package requirements and customer mounts never
 enter an alternate builder or Session realization. This step runs even when the
 container pool is disabled or a retained filesystem cannot enter that pool.
 
-Kubernetes deployments may opt into `k8s_image_pull_jobs`. The container adapter
-creates bounded, deduplicated OpenKruise `ImagePullJob` demands using the exact
-image digest, namespace, node selector and existing pull-secret references.
-OpenKruise owns download, retry, status and TTL. No Awaken image cache catalog,
-second controller, Session Pod/PVC allocation or public protocol is added.
-Submission success is not a Ready receipt and never advertises physical warm
-capacity. Missing CRDs, forbidden APIs and unavailable images retain the ordinary
-cold execution path without blocking model-only conversation.
+Kubernetes deployments may opt into `k8s_image_prewarm`. The adapter creates
+bounded, deduplicated native DaemonSets using the exact image digest, namespace,
+node selector and existing pull-secret references. Each node's sleep-only cache
+holder has no Session identity, PVC, Hand, customer mount or ServiceAccount token.
+Kubernetes' existing DaemonSet controller owns placement, pull retries and new-node
+coverage. No image cache catalog, second controller or public protocol is added.
+Submission is not a Sandbox Ready receipt and never advertises warm execution
+capacity. Preparation errors preserve the cold execution path and do not block
+model-only conversation.
 
-Jobs have immutable, spec-derived names. Exact owned jobs are reused without
-resetting status; a concurrent create conflict re-observes and validates ownership
-and spec. Unknown create completion is recovered by the same read, not blind
-mutation. Foreign jobs are rejected. Completed demands expire through Kruise TTL;
-subsequent periodic reconciliation recreates them. Node replacement/cache eviction
-can still incur a cold pull before the next preparation completes.
+Desired holders have immutable spec-derived identities and reuse the existing
+realization fingerprint/create-conflict recovery boundary. Owner and actual
+projection checks reject foreign/tampered objects, while API defaults are allowed.
+Unknown create completion is recovered by exact observation. The same current
+Environment snapshot bounds desired images; obsolete holders in the exact policy
+scope are deleted only with their validated projection and UID/resourceVersion
+preconditions. Disabling reconciliation does not delete remaining holders.
+
+The evaluated OpenKruise 1.9.0 ImagePullJob path failed real qualification: its
+node daemon joined a sha256 digest using ':' instead of '@'. It is removed rather
+than relaxing immutable image identity or keeping an unqualified parallel path.
+Native DaemonSets cost one lightweight Pod per selected image per eligible node;
+this trade-off buys direct digest support and uses the built-in controller.
 
 Retained Session PVC identity, incarnation fencing, rebuild and cleanup remain
 unchanged. The measured local-path supply delay includes an upstream helper Pod

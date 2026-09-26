@@ -668,7 +668,7 @@ fn destination_repository<'a>(
     Ok(repository)
 }
 
-fn immutable_image(value: &str) -> Result<(&str, &str), K8sPackageRealizationError> {
+pub(crate) fn immutable_image(value: &str) -> Result<(&str, &str), K8sPackageRealizationError> {
     if !bounded_text(value) {
         return Err(K8sPackageRealizationError::invalid(
             "immutable image is empty or unbounded",

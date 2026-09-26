@@ -403,27 +403,30 @@ capacity claim. Missing credentials, missing observations and failed cleanup
 fail the test. The wrapper preserves evidence and removes only its own cluster.
 
 
-### Node image prewarming with OpenKruise
+### Native node image prewarming
 
-Install OpenKruise with `ImagePullJobGate=true` and the K3s runtime socket location
-before enabling `k8s_image_pull_jobs = { parallelism = 2, max_images = 16 }` in the
-actual Worker configuration. Add `node_selector` to limit preparation to the
-Sandbox node pool. This optional setting is independent of `sandbox_warm_pool_size`;
-it acknowledges image demand, not Sandbox readiness. The shipped Worker role
-allows only create/get of ImagePullJobs; Kruise retains status and cleanup authority.
+Enable `k8s_image_prewarm = { max_images = 16 }` in the actual Worker
+configuration. Optional `node_selector` limits preparation to the Sandbox pool.
+No operator/CRD installation is needed. The existing Worker reconciliation
+creates one immutable DaemonSet per selected image; Kubernetes pulls that exact
+digest on eligible nodes. Its sleep-only cache holders have no Session scope,
+PVC, Hand, customer mounts or ServiceAccount token. Each requests 1m CPU/8Mi
+memory and limits memory to 16Mi. Holders remain while their image is desired;
+obsolete demands are removed with exact realization and UID/resourceVersion
+checks. This is independent of `sandbox_warm_pool_size` and is not a Sandbox
+Ready receipt. Disabling the policy stops reconciliation; operators may remove
+its remaining labelled DaemonSets explicitly.
 
-The existing isolated live fixture can compare this path with a cold baseline:
+The canonical isolated live fixture compares a cold baseline with real prewarming:
 
 ```bash
 AWAKEN_LAZY_STARTUP_SAMPLES=3 AWAKEN_LAZY_IMAGE_PREWARM=0 npm --prefix e2e run test:real:skill-lazy:k3d
 AWAKEN_LAZY_STARTUP_SAMPLES=3 AWAKEN_LAZY_IMAGE_PREWARM=1 npm --prefix e2e run test:real:skill-lazy:k3d
 ```
 
-Both commands require the existing DeepSeek key and immutable Sandbox image inputs.
-The optimized fixture installs the frozen OpenKruise chart/image through the shared
-k3d harness, waits for its real node pull result, and then samples new Sessions and
-same-Session repeats. Distinct `AWAKEN_EVAL_ARTIFACT_DIR` values preserve each run.
-It keeps retained PVCs and emits tool/model/Hand metrics plus PVC and helper-Pod
-observations; no fake model or substitute filesystem is used. Operator installation
-and prewarming time are recorded outside the timed tool call, not hidden as a
-claim that an immediately submitted tool can never wait.
+Both require the existing DeepSeek key and immutable Sandbox image inputs.
+The optimized fixture waits for real cache-holder readiness before sampling new
+Sessions and same-Session repeats. Distinct `AWAKEN_EVAL_ARTIFACT_DIR` values
+preserve each run. It retains PVCs and emits tool/model/Hand metrics plus PVC and
+helper-Pod observations. Prewarming time is recorded outside the timed tool call;
+an immediately submitted tool can still wait until preparation finishes.

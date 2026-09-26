@@ -35,7 +35,7 @@ mod egress;
 mod exec_attempts;
 mod files;
 mod image_warmup;
-pub use image_warmup::K8sImagePullJobs;
+pub use image_warmup::K8sImagePrewarm;
 mod handle;
 mod live_inputs;
 mod packages;

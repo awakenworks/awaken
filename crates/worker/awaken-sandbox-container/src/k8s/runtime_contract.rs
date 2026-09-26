@@ -74,7 +74,7 @@ pub(super) fn deletion_incarnation(
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
     async fn prewarm_images(&self, images: &[String]) -> Result<(), RuntimeError> {
-        self.reconcile_image_pull_jobs(images).await
+        self.reconcile_image_prewarm(images).await
     }
 
     async fn checkpoint_upload(

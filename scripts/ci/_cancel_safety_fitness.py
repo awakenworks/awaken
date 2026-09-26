@@ -88,6 +88,13 @@ EFFECT_METHODS: dict[str, str] = {
 # despite matching none of the three shapes — name the owner that survives the
 # caller, so a later reader can retire the entry when the code changes.
 CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
+    "crates/worker/awaken-sandbox-container/src/k8s/image_warmup.rs::reconcile_image_prewarm": (
+        "Kubernetes owns the persisted DaemonSet and its Pods; the existing Worker "
+        "Environment reconciliation re-observes its deterministic identity with "
+        "the canonical realization fingerprint/projection, then retires obsolete "
+        "holders through exact policy scope and UID/resourceVersion preconditions. "
+        "No Session root or unattached provider environment is created."
+    ),
     "crates/worker/awaken-sandbox-container/src/pool.rs::prewarm_to": (
         "delegates to WarmContainerPool::prewarm, which claims the warm scope"
     ),

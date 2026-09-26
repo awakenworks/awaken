@@ -351,10 +351,10 @@ pub async fn build_container_environment_for_realization(
     image: Option<&str>,
     settings: &crate::deployment_config::SandboxSettings,
 ) -> Result<ContainerEnvironmentComponents, String> {
-    if let Some(policy) = &settings.k8s_image_pull_jobs {
+    if let Some(policy) = &settings.k8s_image_prewarm {
         policy.validate()?;
         if tier != SandboxTier::K8s {
-            return Err("k8s_image_pull_jobs requires the Kubernetes backend".into());
+            return Err("k8s_image_prewarm requires the Kubernetes backend".into());
         }
     }
     if settings.container_hand_residency == ContainerHandResidency::Resident
@@ -393,9 +393,9 @@ pub async fn build_container_environment_for_realization(
             .await
             .map_err(|error| format!("k8s runtime: {error}"))?
             .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone());
-            if let Some(policy) = settings.k8s_image_pull_jobs.clone() {
+            if let Some(policy) = settings.k8s_image_prewarm.clone() {
                 runtime = runtime
-                    .with_image_pull_jobs(policy)
+                    .with_image_prewarm(policy)
                     .map_err(|error| error.to_string())?;
             }
             runtime = runtime
