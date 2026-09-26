@@ -3,7 +3,7 @@
 
 Tagged dependencies keep platform filtering. An exact digest instead preserves
 its OCI root: filtering an index changes identity, and Docker's digest-only save
-omits the name containerd needs. Only the outer transport index is annotated;
+omits the name containerd needs. Only the outer transport index is selected and annotated;
 the content-addressed root is checked and never rewritten.
 """
 
@@ -47,9 +47,16 @@ def retain_digest_name(source, destination, reference):
                 seen_index = True
                 index = json.load(content)
                 roots = index.get('manifests', [])
-                if len(roots) != 1 or roots[0].get('digest') != digest:
+                exact = [root for root in roots if root.get('digest') == digest]
+                if not exact:
                     raise ValueError("export changed the requested image digest")
-                roots[0].setdefault('annotations', {})['io.containerd.image.name'] = canonical
+                if len(exact) != 1:
+                    raise ValueError("ambiguous OCI transport root")
+                # Docker may also export provenance manifests beside the exact
+                # requested image. Select its one descriptor, preserving every
+                # content-addressed blob byte; never substitute a config ID/tag.
+                index['manifests'] = exact
+                exact[0].setdefault('annotations', {})['io.containerd.image.name'] = canonical
                 encoded = json.dumps(index, separators=(',', ':')).encode()
                 member.size = len(encoded)
                 content = io.BytesIO(encoded)
