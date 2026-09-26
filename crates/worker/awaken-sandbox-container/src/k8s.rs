@@ -559,7 +559,7 @@ pub struct K8sRuntime {
     pod_channel_port: Option<u16>,
     sandbox_control_forwarder: Option<K8sSandboxControlForwarder>,
     continuation_volume: Option<crate::K8sContinuationVolume>,
-    image_pull_jobs: Option<crate::K8sImagePullJobs>,
+    image_prewarm: Option<crate::K8sImagePrewarm>,
     creation_attempts:
         Mutex<std::collections::HashMap<K8sCreationAttemptKey, Arc<K8sCreationAttemptGate>>>,
 }
@@ -626,7 +626,7 @@ impl K8sRuntime {
             pod_channel_port: None,
             sandbox_control_forwarder: None,
             continuation_volume: None,
-            image_pull_jobs: None,
+            image_prewarm: None,
             creation_attempts: Mutex::new(Default::default()),
         };
         runtime
@@ -706,7 +706,7 @@ impl K8sRuntime {
             pod_channel_port: None,
             sandbox_control_forwarder: None,
             continuation_volume: None,
-            image_pull_jobs: None,
+            image_prewarm: None,
             creation_attempts: Mutex::new(Default::default()),
         }
     }

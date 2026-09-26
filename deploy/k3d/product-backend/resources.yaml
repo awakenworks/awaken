@@ -126,10 +126,10 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["create", "get", "list", "delete"]
-  # Optional node-image preparation: OpenKruise owns execution, status and TTL.
-  - apiGroups: ["apps.kruise.io"]
-    resources: ["imagepulljobs"]
-    verbs: ["create", "get"]
+  # Optional node-image preparation: the native DaemonSet controller owns Pods.
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["create", "get", "list", "delete"]
   # Read-only evidence for the canonical K8sRuntime policy attestor. Mutation
   # remains outside the runtime ServiceAccount's authority.
   - apiGroups: ["networking.k8s.io"]
