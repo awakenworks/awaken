@@ -302,7 +302,7 @@ k3d_install_image_prewarm_operator() {
   mkdir -p "$output"
   chart="$output/kruise-1.9.0.tgz"
   image='docker.io/openkruise/kruise-manager@sha256:120b3d48d8ea76abe2959a7a6939ae4cb8d0474baafa7c8d565bc3198a534a08'
-  python3 - "$chart" <<'PYCHART'
+  python3 - "$chart" <<'PYCHART' || return "$?"
 import hashlib,pathlib,sys,urllib.request
 p=pathlib.Path(sys.argv[1])
 if not p.exists():
@@ -311,15 +311,21 @@ if hashlib.sha256(p.read_bytes()).hexdigest() != '96c0a60361e4d48bfcb20f817419d8
 PYCHART
   k3d_ensure_images "$image" || return "$?"
   k3d_import_images "$cluster" "$image" || return "$?"
-  # Helm owns the component manifest; only its exact reviewed image is pinned.
+  # Helm owns the component manifest. The offline fixture pins its reviewed
+  # digest and uses imported bytes without an external Registry revalidation.
   helm template awaken-image-warmup "$chart" --namespace kruise-system \
     --set manager.replicas=1 --set featureGates=ImagePullJobGate=true \
     --set daemon.socketLocation=/run/k3s --no-hooks > "$output/kruise-rendered.yaml" || return "$?"
-  python3 - "$output/kruise-rendered.yaml" "$image" <<'PYPIN'
+  python3 - "$output/kruise-rendered.yaml" "$image" <<'PYPIN' || return "$?"
 import pathlib,sys
 p=pathlib.Path(sys.argv[1]);text=p.read_text();old='openkruise/kruise-manager:v1.9.0'
 if text.count(old)!=2:raise SystemExit('OpenKruise image pin count drift')
-p.write_text(text.replace(old,sys.argv[2]))
+text=text.replace(old,sys.argv[2])
+import re
+pattern=re.escape('image: '+sys.argv[2])+r'(\n\s+imagePullPolicy:) Always'
+text,count=re.subn(pattern,r'image: '+sys.argv[2]+r'\1 IfNotPresent',text)
+if count!=2:raise SystemExit('OpenKruise pull policy count drift')
+p.write_text(text)
 PYPIN
   kubectl --context "$context" apply --server-side -f "$output/kruise-rendered.yaml" >/dev/null || return "$?"
   kubectl --context "$context" -n kruise-system rollout status deployment/kruise-controller-manager --timeout=180s || return "$?"
@@ -770,6 +776,41 @@ resolve_cargo_executable() {
 k3d_harness_selftest() (
   python3 "$(dirname "${BASH_SOURCE[0]}")/capacity.py" --self-test
   python3 "$(dirname "${BASH_SOURCE[0]}")/test_image_archive.py"
+  # Operator fixture table O1: two known Helm image/policy pairs => pin both,
+  # keep unrelated policy, then apply/roll out. O2 image count drift or O3 pull
+  # policy drift => reject before apply. Only the canonical renderer runs;
+  # fixture functions replace infrastructure, not its pinning implementation.
+  (
+    local output mode applied=0
+    output="$(mktemp -d)"
+    trap 'rm -rf "$output"' EXIT
+    K3D_PLATFORM=linux/amd64
+    k3d_ensure_images() { return 0; }
+    k3d_import_images() { return 0; }
+    python3() {
+      if [[ "${2:-}" = *.tgz ]]; then cat >/dev/null; else command python3 "$@"; fi
+    }
+    helm() {
+      printf 'image: openkruise/kruise-manager:v1.9.0\n  imagePullPolicy: Always\n'
+      if [[ "$mode" != image-drift ]]; then
+        printf 'image: openkruise/kruise-manager:v1.9.0\n  imagePullPolicy: %s\n' "$([[ "$mode" = policy-drift ]] && echo Never || echo Always)"
+      fi
+      printf 'image: unrelated:latest\n  imagePullPolicy: Always\n'
+    }
+    kubectl() { applied=$((applied + 1)); }
+    for mode in valid image-drift policy-drift; do
+      applied=0
+      if [[ "$mode" = valid ]]; then
+        k3d_install_image_prewarm_operator awaken-test "$output"
+        [[ "$applied" = 3 ]]
+        [[ "$(rg -c 'imagePullPolicy: IfNotPresent' "$output/kruise-rendered.yaml")" = 2 ]]
+        [[ "$(rg -c 'imagePullPolicy: Always' "$output/kruise-rendered.yaml")" = 1 ]]
+      else
+        ! k3d_install_image_prewarm_operator awaken-test "$output" >/dev/null 2>&1
+        [[ "$applied" = 0 ]]
+      fi
+    done
+  )
   # Digest cause/effect table: C1 inspected image has real RepoDigests;
   # C2 Docker observation succeeds; C3 reference has an exact SHA-256 shape.
   # I1 C1+C2+C3 => immutable manifest reference, stable under alias order;
