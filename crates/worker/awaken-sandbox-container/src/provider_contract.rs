@@ -536,6 +536,12 @@ impl<'a> ContainerEffect<'a> {
 /// There is no `Option` fence: an unfenced path is a separately named method.
 #[async_trait]
 pub trait ContainerEnvironmentProvider: Send + Sync {
+    /// Prepare only immutable images from canonical mount-less specs. No Session
+    /// filesystem is allocated and success acknowledges demand, not readiness.
+    async fn prewarm_images(&self, _specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
+        Ok(())
+    }
+
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         pc::SandboxCapabilities::default()
     }

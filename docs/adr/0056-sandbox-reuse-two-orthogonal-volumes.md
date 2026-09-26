@@ -353,3 +353,54 @@ The rule in one line: **keep the judgement pure, the machinery separate.**
 4. Worker lifecycle warms before Ready and drains unused capacity after claims.
 5. Environment image registration/build/readiness continues through the one
    `awaken-environment-image-build` demand path.
+
+
+## Amendment 2026-09-26: prepare node images independently of retained capacity
+
+The existing Worker Environment-warmup reconciliation also submits immutable
+image preparation. It uses the same canonical provider plan and current
+Environment snapshots; pending package requirements and customer mounts never
+enter an alternate builder or Session realization. This step runs even when the
+container pool is disabled or a retained filesystem cannot enter that pool.
+
+Kubernetes deployments may opt into `k8s_image_pull_jobs`. The container adapter
+creates bounded, deduplicated OpenKruise `ImagePullJob` demands using the exact
+image digest, namespace, node selector and existing pull-secret references.
+OpenKruise owns download, retry, status and TTL. No Awaken image cache catalog,
+second controller, Session Pod/PVC allocation or public protocol is added.
+Submission success is not a Ready receipt and never advertises physical warm
+capacity. Missing CRDs, forbidden APIs and unavailable images retain the ordinary
+cold execution path without blocking model-only conversation.
+
+Jobs have immutable, spec-derived names. Exact owned jobs are reused without
+resetting status; a concurrent create conflict re-observes and validates ownership
+and spec. Unknown create completion is recovered by the same read, not blind
+mutation. Foreign jobs are rejected. Completed demands expire through Kruise TTL;
+subsequent periodic reconciliation recreates them. Node replacement/cache eviction
+can still incur a cold pull before the next preparation completes.
+
+Retained Session PVC identity, incarnation fencing, rebuild and cleanup remain
+unchanged. The measured local-path supply delay includes an upstream helper Pod
+and its one-second completion polling; image prewarming does not imply that this
+storage delay has been removed. WarmContainerPool remains limited to unused,
+mount-less Ephemeral capacity.
+
+Validation rules live with the policy/projection/transport tests. The existing
+real-SDK Skill startup fixture supports paired node-image-prewarming samples,
+records actual tool/model/Hand metrics and exact Pod/PVC events, and verifies no
+Sandbox-image download occurs on the optimized tool path. These are local samples,
+not production percentile or capacity guarantees.
+
+
+### Slow realization retains current receipt authority
+
+Provider I/O can outlive the lease captured in an Environment effect intent even
+while the existing renewal sweep extends the same generation. The Host retains
+one pre-I/O authority source in AuthorizedSessionEnvironmentEffect, forwards it
+to physical creation, and re-enters it before building the persistence receipt.
+The receipt uses current Control expiry under unchanged owner/incarnation/epoch,
+operation, binding and Environment context; its canonical fingerprint is rebuilt
+through the existing constructor. Worker loss, closed/expired proof, slot ABA or
+reassignment rejects before persistence. No TTL increase or second renewal task
+is introduced. This closes the real cold-pull failure where remote receipt
+admission correctly rejected the stale pre-create expiry.

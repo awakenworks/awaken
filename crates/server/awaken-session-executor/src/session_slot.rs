@@ -511,7 +511,8 @@ pub(crate) struct SessionRuntimeSlot {
     /// embedded Session has no frozen Skill manifest.
     pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
     /// Managed-filesystem Skill discovery metadata. Full instructions remain
-    /// in each materialized `SKILL.md` and are read on demand by file tools.
+    /// in the exact frozen bundle (and its later filesystem projection) and
+    /// are read on demand by the ordinary `read` tool.
     pub skill_prompt: Option<crate::skills::FilesystemSkillPrompt>,
     pub resources: StagedResources,
     pub manifest: Option<awaken_session_resource_contract::SessionResourceManifest>,

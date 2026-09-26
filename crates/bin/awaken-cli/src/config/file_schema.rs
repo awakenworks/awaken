@@ -106,6 +106,7 @@ pub(super) struct FileConfig {
     pub(super) container_mcp_relay_url: Option<String>,
     pub(super) k8s_namespace: Option<String>,
     pub(super) k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
+    pub(super) k8s_image_pull_jobs: Option<awaken_sandbox_container::K8sImagePullJobs>,
     pub(super) k8s_image_pull_secrets: Option<Vec<String>>,
     pub(super) container_hand_bin: Option<String>,
     pub(super) container_hand_residency: Option<String>,

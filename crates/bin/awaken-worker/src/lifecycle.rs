@@ -245,6 +245,11 @@ impl WorkerSupervisor {
             Ok(desired) => (desired, None),
             Err(error) => (previous.values().cloned().collect(), Some(error)),
         };
+        // The same fetched authority drives image and physical capacity. Image
+        // failures do not suppress existing capacity reconciliation or admission.
+        if let Err(error) = self.host.prewarm_environment_images(&desired).await {
+            eprintln!("Environment image prewarm failed; cold path retained: {error}");
+        }
         let plan = WarmCapacityPlan::build(&self.host, desired);
         let selected_shapes = plan.shapes();
 

@@ -946,6 +946,13 @@ impl crate::ManagedHost {
             None => None,
         };
         if let Some(environment) = &live_environment {
+            // A Resource generation can advance without changing its Skill
+            // pins. Preserve that completed tree; replay actual replacements
+            // and cold/fresh/adopted realization through the same installer.
+            let reconcile_skills = previous_manifest.resources.skills()
+                != desired_manifest.resources.skills()
+                || installed_manifest.is_none()
+                || reconciliation != crate::session_slot::EnvironmentResourceReconciliation::None;
             // Transition replay cause/effect table:
             // C1 desired path differs from the aggregate's previous generation;
             // C2 reservation CAS succeeds; C3 physical removal/attach/Git
@@ -960,11 +967,13 @@ impl crate::ManagedHost {
             // manifest. Every operation is idempotent, so a failed attempt leaves
             // the prior manifest authoritative and the persisted pending generation
             // can safely retry without mistaking an unrealized mount for success.
-            if projection_change.removes_previous() {
+            if reconcile_skills {
                 environment
                     .remove_projection_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?;
+            }
+            if projection_change.removes_previous() {
                 for input in previous_manifest.resources.inputs() {
                     if !desired_manifest
                         .resources
@@ -990,6 +999,25 @@ impl crate::ManagedHost {
             if projection_change.installs_desired()
                 || reconciliation != crate::session_slot::EnvironmentResourceReconciliation::None
             {
+                // Physical Skill installation belongs to this same Resource
+                // completion edge for eager, lazy and adopted Environments.
+                // Context construction only derives the Managed registry; it
+                // must not reinstall a second projection after publication.
+                if reconcile_skills {
+                    let versions = self
+                        .host
+                        .session_slots
+                        .read(thread, |slot| slot.skills.clone())
+                        .flatten()
+                        .ok_or_else(|| {
+                            RunError::internal("compiled pinned Skill bytes are missing")
+                        })?;
+                    for version in &versions {
+                        crate::skills::materialize_delivered_skill(environment, version)
+                            .await
+                            .map_err(RunError::internal)?;
+                    }
+                }
                 for input in desired_manifest.resources.inputs() {
                     if installed_manifest.is_some()
                         && matches!(

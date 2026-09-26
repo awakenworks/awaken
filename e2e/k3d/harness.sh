@@ -290,6 +290,42 @@ COMMIT"
   [[ "$state" = "$desired" ]]
 }
 
+# Community-owned node image preparation. A frozen chart/image is rendered
+# and installed only in the explicitly named fixture cluster. P1 bad target or
+# chart digest => no mutation; P2 successful install => real controller/daemon
+# readiness; P3 missing backend => fail, never replace with a fake cache.
+k3d_install_image_prewarm_operator() {
+  local cluster="$1" output="$2" context="k3d-$1" chart image
+  k3d_validate_name "$cluster" || return 2
+  command -v helm >/dev/null || return 2
+  [[ "$K3D_PLATFORM" = linux/amd64 ]] || { echo "image prewarm fixture pins linux/amd64" >&2; return 2; }
+  mkdir -p "$output"
+  chart="$output/kruise-1.9.0.tgz"
+  image='docker.io/openkruise/kruise-manager@sha256:120b3d48d8ea76abe2959a7a6939ae4cb8d0474baafa7c8d565bc3198a534a08'
+  python3 - "$chart" <<'PYCHART'
+import hashlib,pathlib,sys,urllib.request
+p=pathlib.Path(sys.argv[1])
+if not p.exists():
+    with urllib.request.urlopen('https://github.com/openkruise/charts/releases/download/kruise-1.9.0/kruise-1.9.0.tgz',timeout=30) as response:p.write_bytes(response.read())
+if hashlib.sha256(p.read_bytes()).hexdigest() != '96c0a60361e4d48bfcb20f817419d8e2f016ae41ed32cfce55f5308c182bd301':raise SystemExit('OpenKruise chart digest mismatch')
+PYCHART
+  k3d_ensure_images "$image" || return "$?"
+  k3d_import_images "$cluster" "$image" || return "$?"
+  # Helm owns the component manifest; only its exact reviewed image is pinned.
+  helm template awaken-image-warmup "$chart" --namespace kruise-system \
+    --set manager.replicas=1 --set featureGates=ImagePullJobGate=true \
+    --set daemon.socketLocation=/run/k3s --no-hooks > "$output/kruise-rendered.yaml" || return "$?"
+  python3 - "$output/kruise-rendered.yaml" "$image" <<'PYPIN'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1]);text=p.read_text();old='openkruise/kruise-manager:v1.9.0'
+if text.count(old)!=2:raise SystemExit('OpenKruise image pin count drift')
+p.write_text(text.replace(old,sys.argv[2]))
+PYPIN
+  kubectl --context "$context" apply --server-side -f "$output/kruise-rendered.yaml" >/dev/null || return "$?"
+  kubectl --context "$context" -n kruise-system rollout status deployment/kruise-controller-manager --timeout=180s || return "$?"
+  kubectl --context "$context" -n kruise-system rollout status daemonset/kruise-daemon --timeout=180s
+}
+
 k3d_require_tools() {
   command -v k3d >/dev/null 2>&1
   command -v kubectl >/dev/null 2>&1

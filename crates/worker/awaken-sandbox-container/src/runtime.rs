@@ -1400,6 +1400,11 @@ pub trait PackageImageProvisioner: Send + Sync {
 /// or the test fake. It owns no Session or application policy.
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync {
+    /// Submit best-effort node-cache preparation, never a Sandbox/Ready receipt.
+    async fn prewarm_images(&self, _images: &[String]) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
     /// Stable non-secret deployment facts that change the immutable runtime
     /// object but are not represented by the neutral SandboxSpec.
     fn realization_configuration(

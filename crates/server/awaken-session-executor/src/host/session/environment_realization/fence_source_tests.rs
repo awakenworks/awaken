@@ -550,8 +550,10 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     Some(lease()),
                 )
                 .from_binding(&binding);
+                let initial = lease().sandbox_effect_fence(intent.effect_id()).unwrap();
                 let effect = AuthorizedSessionEnvironmentEffect {
-                    provider_fence: Some(lease().sandbox_effect_fence(intent.effect_id()).unwrap()),
+                    provider_authority: Some(Arc::new(host.session_environment_effect_fence_source("session", &initial).unwrap())),
+                    provider_fence: Some(initial),
                     intent,
                     authorization:
                         awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
@@ -665,14 +667,20 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
                 required: true,
             });
         let initial = lease().sandbox_effect_fence("create").unwrap();
+        let authority = (rule != "provider_unfenced").then(|| {
+            host.session_environment_effect_fence_source("session", &initial)
+                .unwrap()
+        });
         if rule == "initial_closed" {
             host.session_slots.close_realization("session", None);
         }
         let create = host.create_session_environment_with_provider_effect(
-            "session",
             &provider,
             &spec,
             (rule != "provider_unfenced").then_some(&initial),
+            authority
+                .as_ref()
+                .map(|source| source as &dyn CurrentExecutionAuthority),
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         );
@@ -745,6 +753,129 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             let mut current = lease();
             current.expires_at_unix_ms += 30_000;
             assert_eq!(*reply, current.sandbox_effect_fence("create").unwrap());
+        }
+    }
+}
+
+#[test]
+fn environment_receipt_refreshes_only_the_captured_live_generation() {
+    // Cause/effect graph: C1 direct/registered Worker; C2 exact/renewed lease;
+    // C3 owner/incarnation/epoch/expiry changed; C4 closed/removed/ABA slot;
+    // C5 Worker closed/zero. E1 exact or monotonic renewal => fresh receipt,
+    // identical effect/binding/context; E2 all loss/reassignment rows => reject.
+    // R1 exact, R2 renewed (old Control expiry can already be stale), R3 each
+    // independent negated authority predicate; no sleeps or wall-clock guesses.
+    for registered in [false, true] {
+        for rule in [
+            "exact",
+            "renewed",
+            "owner",
+            "incarnation",
+            "epoch",
+            "regressed",
+            "closed",
+            "removed",
+            "aba",
+            "worker_zero",
+        ] {
+            if !registered && rule == "worker_zero" {
+                continue;
+            }
+            let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
+            let mut host = host();
+            if registered {
+                host = host.with_execution_authority(worker.clone());
+            }
+            install(&host, lease());
+            let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                "session",
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                Some(lease()),
+            )
+            .for_environment("immutable-config");
+            let initial = lease().sandbox_effect_fence(intent.effect_id()).unwrap();
+            let authority = host
+                .session_environment_effect_fence_source("session", &initial)
+                .unwrap();
+            let effect = AuthorizedSessionEnvironmentEffect {
+                intent,
+                authorization:
+                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
+                provider_fence: Some(initial),
+                provider_authority: Some(Arc::new(authority)),
+            };
+            let mut current = lease();
+            match rule {
+                "renewed" => {
+                    current.expires_at_unix_ms = 120_000;
+                    install(&host, current.clone());
+                }
+                "owner" => {
+                    current.owner = "other".into();
+                    install(&host, current);
+                }
+                "incarnation" => {
+                    current.runtime_incarnation = "other".into();
+                    install(&host, current);
+                }
+                "epoch" => {
+                    current.epoch += 1;
+                    install(&host, current);
+                }
+                "regressed" => {
+                    current.expires_at_unix_ms -= 1;
+                    install(&host, current);
+                }
+                "closed" => {
+                    host.session_slots.close_realization("session", None);
+                }
+                "removed" => {
+                    host.session_slots.remove("session");
+                }
+                "aba" => {
+                    let old = host.session_slots.remove("session").unwrap();
+                    host.session_slots.update("session", |slot| {
+                        slot.realization_authority = old.realization_authority;
+                    });
+                }
+                "worker_zero" => {
+                    *worker.0.lock().unwrap() = Some(Duration::ZERO);
+                }
+                _ => {}
+            }
+            let receipt = host.current_environment_receipt("binding".into(), &effect);
+            assert_eq!(
+                receipt.is_ok(),
+                rule == "exact" || rule == "renewed",
+                "{registered}/{rule}"
+            );
+            if let Ok(receipt) = receipt {
+                receipt.verify().unwrap();
+                assert_eq!(receipt.effect_id, effect.intent.effect_id());
+                assert_eq!(receipt.binding, "binding");
+                assert_eq!(
+                    receipt.environment_fingerprint.as_deref(),
+                    Some("immutable-config")
+                );
+                assert_eq!(
+                    receipt.realization.as_ref().unwrap().expires_at_unix_ms,
+                    if rule == "renewed" { 120_000 } else { 60_000 }
+                );
+                if rule == "renewed" {
+                    assert!(
+                        !awaken_session_resource_contract::realization_lease_is_live_at(
+                            60_000, 90_000
+                        )
+                    );
+                    assert!(
+                        awaken_session_resource_contract::realization_lease_authorizes(
+                            receipt.realization.as_ref().unwrap(),
+                            effect.intent.realization().unwrap(),
+                            90_000
+                        )
+                    );
+                }
+            }
         }
     }
 }
