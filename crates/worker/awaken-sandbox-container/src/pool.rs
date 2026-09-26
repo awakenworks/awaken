@@ -825,6 +825,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentCapacity for WarmContain
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContainerPool<R> {
+    async fn prewarm_images(&self, specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
+        self.inner.prewarm_images(specs).await
+    }
+
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         self.inner.sandbox_capabilities()
     }
@@ -1007,6 +1011,7 @@ mod tests {
 
     pub(super) struct RecordingRuntime {
         pub(super) creates: AtomicUsize,
+        image_demands: Mutex<Vec<Vec<String>>>,
         fenced_creates: AtomicUsize,
         realization_phases: Mutex<Vec<RealizationPhase>>,
         pub(super) removes: AtomicUsize,
@@ -1025,6 +1030,7 @@ mod tests {
         pub(super) fn ready() -> Self {
             Self {
                 creates: AtomicUsize::new(0),
+                image_demands: Mutex::new(Vec::new()),
                 fenced_creates: AtomicUsize::new(0),
                 realization_phases: Mutex::new(Vec::new()),
                 removes: AtomicUsize::new(0),
@@ -1037,8 +1043,52 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn image_preparation_passes_retained_specs_through_pool_without_allocating_capacity() {
+        // Causes: C1 ephemeral/retained; C2 duplicated specs; C3 pending packages
+        // or customer mounts. Effects W1 C1 doesn't gate image demand (unlike
+        // capacity); W2 duplicates dedup; W3 unprepared/packages/mounts do not
+        // trigger alternate building/materialization; W4 zero physical creates.
+        let runtime = Arc::new(RecordingRuntime::ready());
+        let provider = Arc::new(ContainerProvider::new(runtime.clone(), "sandbox:default"));
+        let pool = WarmContainerPool::new(provider, 2);
+        for continuity in [
+            pc::FilesystemContinuity::Ephemeral,
+            pc::FilesystemContinuity::Retained,
+        ] {
+            let mut input = spec("image-only", &[]);
+            input.filesystem_continuity = continuity;
+            pool.prewarm_images(&[input.clone(), input.clone()])
+                .await
+                .unwrap();
+            assert_eq!(
+                runtime.image_demands.lock().unwrap().last().unwrap(),
+                &["sandbox:default"]
+            );
+            input
+                .packages
+                .managers
+                .insert("pip".into(), vec!["package==1".into()]);
+            pool.prewarm_images(&[input]).await.unwrap();
+            assert!(
+                runtime
+                    .image_demands
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert_eq!(runtime.creates.load(Ordering::SeqCst), 0, "W4");
+    }
+
     #[async_trait]
     impl ContainerRuntime for RecordingRuntime {
+        async fn prewarm_images(&self, images: &[String]) -> Result<(), crate::RuntimeError> {
+            self.image_demands.lock().unwrap().push(images.to_vec());
+            Ok(())
+        }
         async fn probe_ready(&self) -> Result<(), crate::RuntimeError> {
             self.ready
                 .load(Ordering::SeqCst)

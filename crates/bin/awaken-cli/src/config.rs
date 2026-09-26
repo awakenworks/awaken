@@ -605,6 +605,54 @@ mod tests {
     }
 
     #[test]
+    fn image_pull_jobs_follow_one_typed_configuration_boundary() {
+        // Causes C1 omitted/valid/invalid policy; C2 k8s/other backend. Rules
+        // C1 omitted => legacy disabled; valid+k8s => exact typed policy;
+        // invalid or configured non-k8s => reject before backend effects.
+        assert!(
+            resolve(FileConfig::default(), ConfigOverrides::default())
+                .runtime
+                .sandbox
+                .k8s_image_pull_jobs
+                .is_none()
+        );
+        for (tier, policy, accepts) in [
+            (
+                "k8s",
+                "{ parallelism=2, max_images=8, node_selector={pool='sandbox'} }",
+                true,
+            ),
+            ("k8s", "{ parallelism=0 }", false),
+            ("k8s", "{ max_images=0 }", false),
+            ("docker", "{}", false),
+        ] {
+            let file: FileConfig = toml::from_str(&format!(
+                "sandbox_tier='{tier}'\nk8s_image_pull_jobs={policy}\n"
+            ))
+            .unwrap();
+            let result = ResolvedDeployment::resolve_file(
+                ConfigOverrides::default(),
+                Some(PathBuf::from("/home/dev")),
+                PathBuf::from("/home/dev/.awaken/config.toml"),
+                file,
+            );
+            assert_eq!(result.is_ok(), accepts, "{tier}/{policy}");
+            if let Ok(config) = result {
+                assert_eq!(
+                    config
+                        .runtime
+                        .sandbox
+                        .k8s_image_pull_jobs
+                        .unwrap()
+                        .max_images,
+                    8
+                );
+            }
+        }
+        assert!(toml::from_str::<FileConfig>("k8s_image_pull_jobs={unknown=true}").is_err());
+    }
+
+    #[test]
     fn observability_is_explicit_typed_deployment_policy() {
         // Cause/effect graph:
         // config.toml observability fields -> one ResolvedDeployment value ->

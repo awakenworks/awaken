@@ -27,6 +27,9 @@ const namespace = process.env.AWAKEN_LAZY_KUBE_NAMESPACE ?? 'awaken-system';
 const serviceContainer = process.env.AWAKEN_LAZY_SERVICE_CONTAINER;
 const output = path.resolve(process.env.AWAKEN_EVAL_ARTIFACT_DIR ?? 'target/test-evidence/skill-lazy-live');
 const replyBudget = Number(process.env.AWAKEN_LAZY_REPLY_BUDGET_MS ?? 30_000);
+const startupSamples = Number(process.env.AWAKEN_LAZY_STARTUP_SAMPLES ?? 0);
+const imagePrewarm = process.env.AWAKEN_LAZY_IMAGE_PREWARM === '1';
+assert.ok(Number.isSafeInteger(startupSamples) && startupSamples >= 0 && startupSamples <= 20, 'startup samples 0..20');
 const key = process.env.DEEPSEEK_API_KEY || (process.env.DEEPSEEK_API_KEY_FILE
   ? fs.readFileSync(process.env.DEEPSEEK_API_KEY_FILE, 'utf8').trim() : null);
 assert.ok(baseURL && context && serviceContainer?.startsWith('awaken-skill-lazy-') && key, 'explicit owned service, Kubernetes context and DeepSeek key required');
@@ -40,7 +43,7 @@ const recoveryMarker = `RECOVERY_${tag}`;
 const evidence = { model_source: 'live-deepseek', context, namespace, service_container: serviceContainer,
   runtime_placement: 'production-cli-and-worker-in-host-network-container', sandbox_placement: 'k3d-pod',
   source_commit: process.env.AWAKEN_LAZY_SOURCE_COMMIT, reply_budget_ms: replyBudget,
-  observations: [], passed: false };
+  image_prewarm: imagePrewarm, startup_samples: startupSamples, observations: [], passed: false };
 const owned = { sessions: [], environments: [], agent: null, skill: null };
 function record(observation) {
   evidence.observations.push(observation);
@@ -57,7 +60,9 @@ async function scopedPods(sessionId) {
     .map((pod) => ({ name: pod.metadata.name, uid: pod.metadata.uid, phase: pod.status?.phase,
       ready: pod.status?.conditions?.some((condition) => condition.type === 'Ready' && condition.status === 'True') ?? false,
       scheduled: pod.status?.conditions?.find((condition) => condition.type === 'PodScheduled'),
-      created_at: pod.metadata.creationTimestamp }));
+      created_at: pod.metadata.creationTimestamp, observed_at: new Date().toISOString(),
+      conditions: pod.status?.conditions, containers: pod.status?.containerStatuses, init_containers: pod.status?.initContainerStatuses,
+      resources: pod.spec?.containers?.map((container) => ({ name: container.name, resources: container.resources })), volumes: pod.spec?.volumes }));
 }
 async function send(sessionId, text) {
   const receipt = await client.beta.sessions.events.send(sessionId, {
@@ -118,38 +123,70 @@ async function session(environmentId) {
   return value.id;
 }
 async function bashTurn(sessionId, failure = false) {
+  const metrics = async () => {
+    if (!startupSamples) return null;
+    const url = new URL(baseURL); url.port = String(Number(url.port) + 2); url.pathname = '/metrics';
+    const response = await fetch(url); assert.ok(response.ok, 'real runtime metrics required');
+    return (await response.text()).split('\n').filter((line) => /awaken_hand_lifecycle|awaken_tool_execution|gen_ai_client/.test(line)).join('\n');
+  };
+  const beforeMetrics = await metrics();
+
   const start = performance.now();
-  const id = await send(sessionId, '现在按 Skill 指引，只用 bash 执行 scripts/verify.sh。成功时告诉我脚本实际输出；工具失败时停止重试，简短说明失败。');
+  const id = await send(sessionId, `请实际执行一次脚本，不复用历史结果。只用 bash 执行绝对路径 /workspace/.skills/${owned.skill}/scripts/verify.sh，不切换工作目录。成功时告诉我这次实际输出；工具失败时停止重试。`);
   const seen = new Map();
+  const seenHelpers = new Map();
   let monitorFailure;
-  let finished = false;
-  const monitor = (async () => {
-    while (!finished) {
+  let settledReceipt = null;
+  const monitor = waitForValue(async () => {
       try {
-        for (const pod of await scopedPods(sessionId)) seen.set(`${pod.uid}:${pod.phase}:${pod.ready}`, pod);
+        for (const pod of await scopedPods(sessionId)) seen.set(`${pod.uid}:${pod.phase}:${pod.ready}:${JSON.stringify(pod.containers?.map((container) => container.state))}`, pod);
+        if (startupSamples) {
+          for (const pod of JSON.parse(await kube('get', 'pods', '-n', 'kube-system', '-o', 'json')).items.filter((pod) => pod.metadata.name.startsWith('helper-pod-'))) {
+            seenHelpers.set(`${pod.metadata.uid}:${JSON.stringify(pod.status?.containerStatuses)}`, { name: pod.metadata.name, uid: pod.metadata.uid, created_at: pod.metadata.creationTimestamp, observed_at: new Date().toISOString(), status: pod.status });
+          }
+        }
       } catch (error) {
         // Read-only transport observations may be retried. Preserve the exact
         // failure; never manufacture an empty successful Pod observation.
         record({ label: 'pod-observation-error', session_id: sessionId, error: String(error) });
         if (!/TLS handshake timeout|Unable to connect to the server|i\/o timeout|connection reset/iu.test(String(error))) {
           monitorFailure = error;
-          return;
+          return id;
         }
       }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-  })();
+      return settledReceipt;
+  }, (receipt) => receipt === id, 'exact input receipt settled while collecting Pod observations',
+  { timeoutMs: 230_000, pollMs: startupSamples ? 250 : 1000 });
   let delta;
   try {
     ({ delta } = await waitForSessionEventReceipt(client, sessionId, id, betas,
       ({ delta }) => delta.some((event) => event.type === 'session.status_idle')
         && delta.some((event) => event.type === 'agent.tool_result' || event.type === 'session.error'),
       'first physical tool settles', { timeoutMs: 210_000, pollMs: 100 }));
-  } finally { finished = true; await monitor; }
+  } finally { settledReceipt = id; await monitor; }
   const pods = [...seen.values()];
   record({ label: failure ? 'unschedulable-startup' : 'first-bash', session_id: sessionId,
     input_receipt: id, elapsed_ms: performance.now() - start, pods, events: delta });
   if (monitorFailure) throw monitorFailure;
+  if (startupSamples) {
+    // Cause/effect sampling rules T1 cold node; T2 cached image/new Session;
+    // T3 same Session repeat. Collect real clocks, exact Pod/PVC UID events,
+    // Hand/tool/model metric deltas and actual script stdout; never infer a
+    // successful execution from assistant prose or rounded history timestamps.
+    const currentPods = JSON.parse(await kube('get', 'pods', '-o', 'json')).items.filter((pod) => pods.some((observed) => observed.uid === pod.metadata.uid));
+    const claimNames = new Set(currentPods.flatMap((pod) => pod.spec.volumes ?? []).map((volume) => volume.persistentVolumeClaim?.claimName).filter(Boolean));
+    const claims = JSON.parse(await kube('get', 'pvc', '-o', 'json')).items.filter((claim) => claimNames.has(claim.metadata.name));
+    const uids = new Set([...pods.map((pod) => pod.uid), ...claims.map((claim) => claim.metadata.uid)]);
+    const events = JSON.parse(await kube('get', 'events', '-o', 'json')).items.filter((event) => uids.has(event.involvedObject?.uid));
+    const helpers = JSON.parse(await kube('get', 'pods', '-n', 'kube-system', '-o', 'json')).items.filter((pod) => pod.metadata.name.startsWith('helper-pod-'));
+    const logs = [];
+    for (const pod of currentPods) logs.push({ pod: pod.metadata.name, text: await kube('logs', pod.metadata.name, '-c', 'agent', '--timestamps', '--tail=100') });
+    record({ label: 'startup-details', session_id: sessionId, metrics_before: beforeMetrics, metrics_after: await metrics(), events,
+      pods: await scopedPods(sessionId), claims: claims.map((claim) => ({ uid: claim.metadata.uid, created_at: claim.metadata.creationTimestamp, status: claim.status })),
+      helper_pods: [...seenHelpers.values(), ...helpers.map((pod) => ({ name: pod.metadata.name, created_at: pod.metadata.creationTimestamp, status: pod.status }))], logs });
+    if (imagePrewarm) assert.ok(!events.some((event) => event.reason === 'Pulled' && /Successfully pulled image/.test(event.message)), 'T2 prewarmed node must not download Sandbox image in first tool');
+  }
+
   assert.ok(delta.some((event) => event.type === 'agent.tool_use' && event.name === 'bash'), 'live model requested Bash');
   if (failure) {
     assert.ok(pods.some((pod) => pod.scheduled?.status === 'False' && pod.scheduled?.reason === 'Unschedulable'), 'independent scheduler failure evidence');
@@ -176,7 +213,7 @@ async function main() {
   const form = managedFileUploadForm('---\nname: startup-diagnosis\ndescription: 家具招商诊断，先阅读参考资料再提问\n---\nBefore answering, read references/facts.md. Include its reference marker with one brief Chinese question.\nWhen explicitly asked to execute, use bash to run scripts/verify.sh from this Skill directory. Never retry a failed tool.\n', 'SKILL.md');
   form.append('file', new Blob([`${referenceMarker}\n产品是家具，客户计划招经销商。\n`]), 'references/facts.md');
   form.append('file', new Blob([`${recoveryMarker}\n现在需要澄清合作门店是否已经开业。\n`]), 'references/recovery.md');
-  form.append('file', new Blob([`#!/bin/sh\nprintf '%s\\n' '${executionMarker}'\n`]), 'scripts/verify.sh');
+  form.append('file', new Blob([`#!/bin/sh\nprintf 'SCRIPT_BEGIN '; date -u +%s%N\nprintf '%s\\n' '${executionMarker}'\nprintf 'SCRIPT_END '; date -u +%s%N\n`]), 'scripts/verify.sh');
   const upload = await fetch(`${baseURL}/v1/skills`, { method: 'POST', headers: { 'anthropic-beta': SKILLS_BETA }, body: form });
   assert.ok(upload.ok); const skill = await upload.json(); owned.skill = skill.id;
   const agent = await client.beta.agents.create({ name: `Skill lazy qualification ${tag}`, model: supplied.model,
@@ -185,6 +222,27 @@ async function main() {
     tools: [{ type: 'agent_toolset_20260401', default_config: { enabled: false, permission_policy: { type: 'always_allow' } }, configs: [{ name: 'read', enabled: true }, { name: 'bash', enabled: true }] }], betas });
   owned.agent = agent.id;
   const normalEnv = await environment();
+  if (imagePrewarm) {
+    const started = performance.now();
+    const jobs = await waitForValue(async () => JSON.parse(await kube('get', 'imagepulljobs', '-o', 'json')).items,
+      (jobs) => jobs.some((job) => job.metadata.labels?.['awaken.dev/image-warmup'] === 'true' && job.spec.image === process.env.AWAKEN_LAZY_SANDBOX_IMAGE && job.status?.succeeded > 0 && !job.status?.failed),
+      'actual OpenKruise node image pull completes', { timeoutMs: 180_000, pollMs: 500 });
+    record({ label: 'image-prewarm', duration_ms: performance.now() - started, jobs });
+  }
+  if (startupSamples) {
+    for (let index = 0; index < startupSamples; index += 1) {
+      const id = await session(normalEnv);
+      record({ label: 'startup-sample', sample: index + 1, session_id: id, repeat: false });
+      await bashTurn(id);
+      if (index === 0 || index === startupSamples - 1) {
+        record({ label: 'startup-sample', sample: index + 1, session_id: id, repeat: true });
+        await bashTurn(id);
+      }
+    }
+    evidence.passed = true;
+    return;
+  }
+
   const cold = await session(normalEnv); await readTurn(cold, 'cold-session');
   const warm = await session(normalEnv); await readTurn(warm, 'warm-session');
   const before = JSON.parse((await execute('docker', ['inspect', serviceContainer], { timeout: 15_000 })).stdout)[0];

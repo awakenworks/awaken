@@ -86,6 +86,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
         // The operator selects the existing retained-PVC policy. Omission
         // preserves ephemeral roots and cannot advertise retained Session support.
         k8s_continuation_volume: file.k8s_continuation_volume.clone(),
+        k8s_image_pull_jobs: file.k8s_image_pull_jobs.clone(),
         container_hand_bin: file
             .container_hand_bin
             .clone()
@@ -138,6 +139,12 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
     }
     if let Some(policy) = sandbox.k8s_continuation_volume.as_ref() {
         policy.validate().map_err(|error| error.to_string())?;
+    }
+    if let Some(policy) = &sandbox.k8s_image_pull_jobs {
+        policy.validate()?;
+        if sandbox_tier != SandboxTier::K8s {
+            return Err("k8s_image_pull_jobs requires sandbox_tier=k8s".into());
+        }
     }
     if sandbox.warm_pool_size > 0
         && (sandbox.warm_pool_total_size < sandbox.warm_pool_size

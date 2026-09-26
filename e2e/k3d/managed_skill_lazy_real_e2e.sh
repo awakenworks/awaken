@@ -17,6 +17,8 @@ LAZY_CLUSTER="awaken-skill-lazy-$$"
 LAZY_POD="$LAZY_CLUSTER"
 LAZY_CONTEXT="k3d-$LAZY_CLUSTER"
 LAZY_PORT="${AWAKEN_LAZY_API_PORT:-18441}"
+LAZY_PREWARM="${AWAKEN_LAZY_IMAGE_PREWARM:-0}"
+[[ "$LAZY_PREWARM" = 0 || "$LAZY_PREWARM" = 1 ]] || { echo "AWAKEN_LAZY_IMAGE_PREWARM must be 0 or 1" >&2; exit 2; }
 LAZY_COMMIT="$(git rev-parse HEAD)"
 LAZY_IMAGE="${AWAKEN_LAZY_RUNTIME_IMAGE:-awaken-skill-lazy:$LAZY_COMMIT}"
 LAZY_OUTPUT="${AWAKEN_EVAL_ARTIFACT_DIR:-$LAZY_REPO_ROOT/target/test-evidence/skill-lazy-live}"
@@ -71,8 +73,9 @@ LAZY_CREATED=1
 k3d_create_cluster "$LAZY_CLUSTER" 0 128Mi k3d-awaken-registry.localhost:5000 "$LAZY_IMAGE"
 k3d_import_images "$LAZY_CLUSTER" "$LAZY_IMAGE"
 k3d_import_storage_images "$LAZY_CLUSTER"
+if [[ "$LAZY_PREWARM" = 1 ]]; then k3d_install_image_prewarm_operator "$LAZY_CLUSTER" "$LAZY_OUTPUT/operator"; fi
 kubectl --context "$LAZY_CONTEXT" config view --minify --raw --flatten > "$LAZY_TEMP/kubeconfig"
-export LAZY_POD LAZY_IMAGE LAZY_SANDBOX_IMAGE LAZY_TEMP LAZY_CONTEXT LAZY_PORT
+export LAZY_POD LAZY_IMAGE LAZY_SANDBOX_IMAGE LAZY_TEMP LAZY_CONTEXT LAZY_PORT LAZY_PREWARM
 python3 - <<'PY'
 import json,os,subprocess
 pod,image,sandbox=(os.environ[k] for k in ['LAZY_POD','LAZY_IMAGE','LAZY_SANDBOX_IMAGE'])
@@ -82,8 +85,10 @@ config='\n'.join([
  'sandbox_tier = "k8s"', 'k8s_namespace = "awaken-system"',
  'k8s_continuation_volume = { storage_class_name = "local-path", size = "1Gi" }',
  'container_hand_residency = "resident"', 'container_image = '+json.dumps(sandbox),
+ 'admin_listen = \"127.0.0.1:'+str(int(os.environ['LAZY_PORT'])+2)+'\"',
  'control_seal_key = '+json.dumps(os.urandom(32).hex()),
 ])+'\n'
+if os.environ['LAZY_PREWARM']=='1':config+='k8s_image_pull_jobs = { parallelism = 2, max_images = 8 }\n'
 # RBAC and network policy remain owned by the canonical product overlay.
 rendered=subprocess.check_output(['kubectl','kustomize','deploy/k3d/product-backend'])
 converted=subprocess.check_output(['kubectl','--context',os.environ['LAZY_CONTEXT'],'create','--dry-run=client','--validate=false','-f','-','-o','json'],input=rendered)
@@ -95,7 +100,7 @@ open(os.environ['LAZY_TEMP']+'/config.toml','w').write(config)
 json.dump({'apiVersion':'v1','kind':'List','items':items},open(os.environ['LAZY_TEMP']+'/fixture.json','w'))
 PY
 kubectl --context "$LAZY_CONTEXT" apply -f "$LAZY_TEMP/fixture.json"
-# The production CLI and separate Worker use host networking; their filesystem
+# The production AllInOne and its Worker use host networking; their filesystem
 # is isolated in this owned container. Only Sandbox execution runs in K3D.
 # This avoids inheriting a developer Docker bridge's DNS/egress failures while
 # preserving the same production runtime, official SDK and Kubernetes provider.

@@ -1363,6 +1363,30 @@ impl SharedHost {
         self.cache_volume_prewarmer.prewarm(volume).await
     }
 
+    /// Reuse current Environment demand for node-image preparation, independently
+    /// of physical warm capacity (which cannot transfer retained filesystems).
+    pub async fn prewarm_environment_images(
+        &self,
+        environments: &[awaken_session_configuration_contract::EnvironmentSnapshot],
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        let mut specs = vec![crate::provisioning::default_session_sandbox_spec(
+            "image-warmup",
+        )];
+        specs.extend(
+            environments
+                .iter()
+                .filter(|environment| !environment.self_hosted)
+                .map(|environment| {
+                    crate::provisioning::environment_capacity_projection(
+                        environment,
+                        self.session_provider.capabilities().network_isolation,
+                    )
+                    .spec
+                }),
+        );
+        self.session_provider.prewarm_images(&specs).await
+    }
+
     /// Warm the deployment's canonical empty Session shape to the target selected
     /// by the Worker's one global capacity plan.
     pub async fn prewarm_default_environment_capacity(

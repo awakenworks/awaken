@@ -1159,6 +1159,22 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerProvider<R> {
+    async fn prewarm_images(&self, specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
+        let mut images = std::collections::BTreeSet::new();
+        for spec in specs {
+            let (plan, _) = self.adoption_plan(spec)?;
+            // Coordinator must prepare package images first. Cache warmup never
+            // becomes another package builder or materializes customer mounts.
+            if plan.packages.is_empty() && spec.mounts.is_empty() {
+                images.insert(plan.image);
+            }
+        }
+        self.runtime
+            .prewarm_images(&images.into_iter().collect::<Vec<_>>())
+            .await
+            .map_err(pc::SandboxError::from)
+    }
+
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         self.runtime_sandbox_capabilities()
     }

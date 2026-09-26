@@ -527,6 +527,20 @@ impl SessionEnvironmentProvider {
         Ok(environment)
     }
 
+    pub(crate) async fn prewarm_images(
+        &self,
+        specs: &[pc::SandboxSpec],
+    ) -> Result<(), pc::SandboxError> {
+        if let Self::Container { provider, .. } = self {
+            let specs = specs
+                .iter()
+                .map(|spec| self.effective_spec(spec))
+                .collect::<Result<Vec<_>, _>>()?;
+            provider.prewarm_images(&specs).await?;
+        }
+        Ok(())
+    }
+
     /// Pre-create never-used capacity for the same exact normalized container
     /// shape that [`Self::create`] will request. Non-container and direct-provider
     /// deployments have no capacity owner and return zero.
