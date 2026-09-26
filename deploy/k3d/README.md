@@ -378,3 +378,52 @@ not a second P2-B acceptance path: it assigns one run per thread through the
 scenario host and isolates lease reclaim/commit fencing. The distributed-control
 suite alone owns the public product flow, production CLI Worker, materialization,
 service ownership, and full chaos/load claim.
+
+## Native pinned Skill startup with real DeepSeek
+
+`npm --prefix e2e run test:real:skill-lazy:k3d` creates a unique, disposable
+cluster for Sandbox execution and runs the shipped CLI with its separate Worker
+in an owned container with host networking. This explicitly separates the
+developer Docker bridge's egress from the Kubernetes Sandbox under test.
+It reuses `harness.sh` for cluster/image/storage lifecycle and the existing
+provider-connection and exact Event-receipt helpers for SDK traffic.
+Supply `DEEPSEEK_API_KEY_FILE` (or `DEEPSEEK_API_KEY`) and
+`AWAKEN_LAZY_SANDBOX_IMAGE` as an immutable Registry digest. An optional
+`AWAKEN_LAZY_RUNTIME_IMAGE` must carry the current commit's revision label;
+otherwise the wrapper builds the Kubernetes-enabled binaries and canonical
+K3D runtime image. No existing cluster or customer Session is changed.
+
+The driver owns cold/warm reads, the same Session after a service container
+restart, first physical execution, and an independently observed unschedulable
+Pod. Its comments own the cause/effect rules. `evidence.json` records first
+nonempty SDK text, complete-turn latency, scoped Pod observations and public
+events. The default first-text budget is 30 seconds, configurable through
+`AWAKEN_LAZY_REPLY_BUDGET_MS`; these individual samples are not a percentile
+capacity claim. Missing credentials, missing observations and failed cleanup
+fail the test. The wrapper preserves evidence and removes only its own cluster.
+
+
+### Node image prewarming with OpenKruise
+
+Install OpenKruise with `ImagePullJobGate=true` and the K3s runtime socket location
+before enabling `k8s_image_pull_jobs = { parallelism = 2, max_images = 16 }` in the
+actual Worker configuration. Add `node_selector` to limit preparation to the
+Sandbox node pool. This optional setting is independent of `sandbox_warm_pool_size`;
+it acknowledges image demand, not Sandbox readiness. The shipped Worker role
+allows only create/get of ImagePullJobs; Kruise retains status and cleanup authority.
+
+The existing isolated live fixture can compare this path with a cold baseline:
+
+```bash
+AWAKEN_LAZY_STARTUP_SAMPLES=3 AWAKEN_LAZY_IMAGE_PREWARM=0 npm --prefix e2e run test:real:skill-lazy:k3d
+AWAKEN_LAZY_STARTUP_SAMPLES=3 AWAKEN_LAZY_IMAGE_PREWARM=1 npm --prefix e2e run test:real:skill-lazy:k3d
+```
+
+Both commands require the existing DeepSeek key and immutable Sandbox image inputs.
+The optimized fixture installs the frozen OpenKruise chart/image through the shared
+k3d harness, waits for its real node pull result, and then samples new Sessions and
+same-Session repeats. Distinct `AWAKEN_EVAL_ARTIFACT_DIR` values preserve each run.
+It keeps retained PVCs and emits tool/model/Hand metrics plus PVC and helper-Pod
+observations; no fake model or substitute filesystem is used. Operator installation
+and prewarming time are recorded outside the timed tool call, not hidden as a
+claim that an immediately submitted tool can never wait.

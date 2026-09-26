@@ -44,6 +44,19 @@ impl ToolExecutor for DeferredSandboxExecutor {
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
         let host = self.host()?;
+        if call.tool_id == "read" {
+            let args: awaken_ext_builtin_tools::ReadArgs =
+                awaken_runtime_contract::tool::parse_tool_args(call.arguments.clone())?;
+            if let Some(result) = host
+                .session_slots
+                .read(&self.thread, |slot| {
+                    crate::skills::read_pinned_skill(slot, &args)
+                })
+                .flatten()
+            {
+                return result.map(|content| ToolOutput::ok(&call.call_id, content));
+            }
+        }
         let environment = host
             .ensure_session_environment_for_tool(&self.thread)
             .await

@@ -438,10 +438,21 @@ impl SharedHost {
         } else {
             None
         };
+        let provider_authority = provider_fence
+            .as_ref()
+            .map(|fence| {
+                self.session_environment_effect_fence_source(thread, fence)
+                    .map(|source| {
+                        Arc::new(source)
+                            as Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>
+                    })
+            })
+            .transpose()?;
         Ok(AuthorizedSessionEnvironmentEffect {
             intent,
             authorization,
             provider_fence,
+            provider_authority,
         })
     }
 
@@ -465,6 +476,53 @@ impl SharedHost {
             .await
     }
 
+    /// Re-enter the captured authority after provider I/O, and submit current
+    /// Control lease coordinates under the same stable operation identity.
+    fn current_environment_receipt(
+        &self,
+        binding: String,
+        effect: &AuthorizedSessionEnvironmentEffect,
+    ) -> Result<awaken_session_state_contract::SessionEnvironmentReceipt, HostError> {
+        let intent = match (&effect.provider_fence, &effect.provider_authority) {
+            (Some(initial), Some(authority)) => {
+                let current = authority
+                    .current_effect_fence(initial)
+                    .map_err(|error| HostError::internal(error.to_string()))?;
+                let lease = awaken_session_resource_contract::SessionRealizationLease {
+                    owner: current.owner,
+                    runtime_incarnation: current.runtime_incarnation,
+                    epoch: current.epoch,
+                    expires_at_unix_ms: current.expires_at_unix_ms,
+                };
+                let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                    effect.intent.session_id().clone(),
+                    effect.intent.kind().clone(),
+                    Some(lease),
+                );
+                if let Some(environment) = effect.intent.environment_fingerprint() {
+                    intent = intent.for_environment(environment);
+                }
+                if let Some(source) = effect.intent.source_binding() {
+                    intent = intent.from_binding(source);
+                }
+                if intent.effect_id() != effect.intent.effect_id() {
+                    return Err(HostError::internal(
+                        "renewal changed Environment operation identity",
+                    ));
+                }
+                intent
+            }
+            (None, None) => effect.intent.clone(),
+            _ => {
+                return Err(HostError::internal(
+                    "Environment effect lacks its captured authority",
+                ));
+            }
+        };
+        awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(&intent, binding)
+            .map_err(|error| HostError::internal(error.to_string()))
+    }
+
     pub(crate) async fn persist_authorized_environment_binding(
         &self,
         thread: &str,
@@ -474,14 +532,12 @@ impl SharedHost {
         crate::session_slot::BoundSessionEnvironmentIdentity,
         EnvironmentBindingPersistenceError,
     > {
-        let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
-            &effect.intent,
-            binding.clone(),
-        )
-        .map_err(|error| EnvironmentBindingPersistenceError {
-            error: HostError::internal(error.to_string()),
-            committed_identity: None,
-        })?;
+        let receipt = self
+            .current_environment_receipt(binding.clone(), effect)
+            .map_err(|error| EnvironmentBindingPersistenceError {
+                error,
+                committed_identity: None,
+            })?;
         // A Resource reservation extends the already-published Environment
         // handle under the Session root. It is not a Run placement and must not
         // rewrite `RunDispatch.sandbox`: the slot can legitimately retain the
@@ -775,7 +831,7 @@ impl SharedHost {
         .map_err(|error| HostError::internal(error.to_string()))?;
         let spec = self.sandbox_substrate_spec_for_provider(thread, provider);
         let environment = Arc::new(
-            self.create_session_environment_for_effect(thread, provider, &spec, &effect)
+            self.create_session_environment_for_effect(provider, &spec, &effect)
                 .await?,
         );
         for input in transition.desired().resources.inputs() {
@@ -920,9 +976,9 @@ impl SharedHost {
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
         self.create_session_environment_with_provider_effect(
-            &spec.scope,
             provider,
             spec,
+            None,
             None,
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
@@ -932,7 +988,6 @@ impl SharedHost {
 
     async fn create_session_environment_for_effect(
         &self,
-        thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
         effect: &AuthorizedSessionEnvironmentEffect,
@@ -977,10 +1032,10 @@ impl SharedHost {
             awaken_sandbox_container::ContainerRealizationIntent::Create
         };
         self.create_session_environment_with_provider_effect(
-            thread,
             provider,
             spec,
             effect.provider_fence.as_ref(),
+            effect.provider_authority.as_deref(),
             source_handle.as_ref(),
             intent,
         )
@@ -989,21 +1044,25 @@ impl SharedHost {
 
     async fn create_session_environment_with_provider_effect(
         &self,
-        thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+        authority: Option<&dyn awaken_provisioning_contract::CurrentExecutionAuthority>,
         source_handle: Option<&awaken_provisioning_contract::SandboxHandle>,
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
-        use awaken_provisioning_contract::CurrentExecutionAuthority;
-
         let spec = self.validate_session_environment_capabilities(provider, spec)?;
         // Capture before any preparation await. A same-byte replacement slot
         // must not lend its proof to this in-flight creation or its retries.
-        let current_fence = effect_fence
-            .map(|fence| self.session_environment_effect_fence_source(thread, fence))
-            .transpose()?;
+        let current_fence = match (effect_fence, authority) {
+            (Some(_), Some(authority)) => Some(authority),
+            (None, None) => None,
+            _ => {
+                return Err(HostError::internal(
+                    "Environment create lacks captured authority",
+                ));
+            }
+        };
         if let (Some(source), Some(fence)) = (&current_fence, effect_fence) {
             source
                 .current_effect_fence(fence)
@@ -1020,13 +1079,9 @@ impl SharedHost {
                 .current_effect_fence(fence)
                 .map_err(|error| HostError::internal(error.to_string()))?;
         }
-        let effect = crate::session_environment::ProviderEffect::from_parts(
-            effect_fence,
-            current_fence.as_ref().map(|source| {
-                source as &dyn awaken_provisioning_contract::CurrentExecutionAuthority
-            }),
-        )
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        let effect =
+            crate::session_environment::ProviderEffect::from_parts(effect_fence, current_fence)
+                .map_err(|error| HostError::internal(error.to_string()))?;
         provider
             .create_effective_for_effect(&spec, effect, source_handle, intent)
             .await

@@ -314,12 +314,17 @@ impl SharedHost {
                         .iter()
                         .any(|version| is_selected(version.skill_id.as_str()))
                 });
-                let frozen_requires = slot.skills.as_ref().is_some_and(|versions| {
-                    versions.iter().any(|version| {
-                        is_selected(version.skill_id.as_str())
-                            && crate::skills::version_requires_environment(version)
-                    })
-                });
+                // Managed attached bundles are immutable Resource bytes. The
+                // deferred `read` executor can disclose them before Hand exists;
+                // executing scripts still follows ordinary Sandbox demand.
+                // Direct semantic/fork compatibility retains its eager rule.
+                let frozen_requires = !slot.session_dispatch
+                    && slot.skills.as_ref().is_some_and(|versions| {
+                        versions.iter().any(|version| {
+                            is_selected(version.skill_id.as_str())
+                                && crate::skills::version_requires_environment(version)
+                        })
+                    });
                 let mount_requires_environment =
                     |mount: &awaken_provisioning_contract::MountRequirement| {
                         filesystem_delivery
@@ -341,12 +346,12 @@ impl SharedHost {
             })
             .unwrap_or((false, false, false));
         let workspace = self.thread_workspace(thread);
-        let filesystem_skill_projection = filesystem_delivery
+        let filesystem_skill_projection = !managed_session
+            && filesystem_delivery
             && (frozen_has_selected
-                || (!managed_session
-                    && self
-                        .skills
-                        .has_selected_in(&workspace, selected_skills.as_ref())));
+                || self
+                    .skills
+                    .has_selected_in(&workspace, selected_skills.as_ref()));
         slot_requires
             || filesystem_skill_projection
             || (!managed_session
