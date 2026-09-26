@@ -19,7 +19,7 @@ condition inside that profile.
 
 | Profile and selection | Filesystem capability | Skill projection | Outcome |
 |---|---|---|---|
-| Managed + frozen selected Skill | enabled | `ManagedFilesystem` | metadata/path prompt; model reads exact materialized `SKILL.md` bytes |
+| Managed + frozen selected Skill | enabled | `ManagedFilesystem` | metadata/path prompt; ordinary `read` returns exact pinned `SKILL.md` bytes |
 | Managed + realized repository Skill | exact `read` enabled | `ManagedFilesystem` | scan the frozen checkout once at `.claude/skills/<name>/SKILL.md`; disclose metadata/path |
 | Managed + realized repository Skill | exact `read` disabled | none | repository remains mounted as code input; no repository Skill projection |
 | Managed + frozen selected Skill | disabled | none | fail before inference |
@@ -31,7 +31,7 @@ There is one authority and one projection for each profile:
 
 - An attached Managed Skill is selected by `AgentSkillBinding`, resolved to an
   exact `ResolvedSkillBinding`, and loaded as hash-verified `SkillVersion` bytes.
-  The runtime materializes those bytes under its read-only `.skills` projection.
+  The runtime exposes those bytes under its read-only `.skills` projection.
 - A `github_repository` is already a resolved Session Resource and is realized
   once into the Session Environment before Skill construction. When the exact
   `read` capability is enabled, the runtime scans only that frozen checkout's
@@ -76,6 +76,39 @@ instead wrap its registry in the compatibility adapter. Repository realization
 failure, unsafe mount, missing attached bytes, hash mismatch, missing filesystem
 capability, unsupported lazy prompt source, or attempted mode change fails
 closed before the model receives a competing surface.
+
+### 2026-09-26 amendment: Native pinned reads do not require Sandbox readiness
+
+For Native Managed Sessions with `OnToolUse`, attached Skill files alone no
+longer force eager Environment realization. Session construction still loads
+the exact pins, verifies the bundle through the existing registry, and advertises
+only metadata and paths. The existing `DeferredSandboxExecutor` first resolves
+an ordinary `read` of an advertised `.skills/<stem>/<bundle-path>` against the
+Session's already loaded immutable bytes. Both relative and canonical workspace
+paths use the same namespace. The built-in `ReadArgs` owns UTF-8, size and line
+range semantics for both immutable bytes and physical files.
+
+The desired Resource manifest owns selection; the slot's Skill bytes and prompt
+are derived projections. A missing file, unadvertised Skill, ambiguous stem,
+workspace mismatch, traversal, or mismatched version/hash fails without a Store
+latest lookup or Sandbox fallback. Runtime tool admission and permission gates
+remain upstream of this adapter. Reading a script as text is not execution.
+
+An ordinary workspace read, `bash`, write/edit, or other physical tool still
+calls the single `ensure_session_environment_for_tool` lifecycle. It creates or
+adopts one fenced Environment and materializes the same pinned bundle before
+dispatch. Physical manifest completion is never published by a text-only read.
+Managed physical Skill installation now belongs exclusively to that Resource
+completion edge; registry construction does not clear or install it again.
+Advancing a Resource generation with identical Skill pins preserves the existing
+tree; actual replacement and cold/fresh/adopted realization reuse the installer.
+Direct compatibility construction reuses the same bundle installer.
+Once resident, the existing Hand executor serves reads from that projection.
+Cold recovery reuses the canonical pinned bundle loader rather than a new Skill
+cache. Repository Skills, mounted files/memory, baseline environment variables,
+ACP, delegation, eager provisioning, and direct semantic/fork compatibility
+retain their existing realization requirements. No public protocol, Skill tool,
+or virtual workspace is added.
 
 Skill metadata retains its name, description and materialized directory until
 the attempt builds its model request. The Session's existing `AgentPathView`

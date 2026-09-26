@@ -944,6 +944,7 @@ impl SharedHost {
                 &authored_skills_subdir,
                 skill_source_roots.as_deref(),
                 content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
+                session_dispatch,
             )
             .await
             .map_err(HostError::internal)?

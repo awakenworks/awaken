@@ -4,6 +4,7 @@ use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_runtime_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
 use awaken_session_types::SessionId;
 mod mcp_relay_lease;
+mod pinned_skill_read;
 mod projection_convergence;
 mod resource_staging_lease;
 use crate::config::block_text;
@@ -8021,75 +8022,25 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
     );
 }
 
-/// L7: a capability that needs filesystem state defeats `on_tool_use`; context
-/// construction must eagerly provide the real Environment rather than expose a
-/// broken `${SKILL_DIR}`.
-#[tokio::test]
-async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
-    // Test design. Causes: C1 a Managed Resource projection contains an exact
-    // frozen Skill version with a supporting file. Effects: E1 the Environment
-    // is realized before Skill execution. Constraint/Invariant: filesystem
-    // demand comes from frozen version bytes, never a host-static compatibility
-    // spec, and cannot run against an absent or partial sandbox. Decision rule:
-    // execute C1 and require one eager materialization.
-    use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    install_test_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
-    install_complete_test_session_for_realization(
-        &managed,
-        "deferred-filesystem-skill",
-        SessionInit {
-            workspace_id: host.local_workspace().into(),
-            agent_id: "assistant".into(),
-            delegate_ids: Vec::new(),
-            tools: None,
-            resource_revision: 0,
-            resources: Default::default(),
-            model: None,
-            runtime: None,
-            environment: on_tool_use_environment(),
-        },
-    )
-    .await
-    .unwrap();
-    host.session_slots
-        .update("deferred-filesystem-skill", |slot| {
-            slot.skills = Some(vec![frozen_skill_version(
-                "files",
-                "Files",
-                "inspect files",
-                "Read the guide.",
-                &[("references/guide.md", "guide")],
-            )]);
-        });
-
-    let ctx = host
-        .ctx_for("deferred-filesystem-skill", Some("assistant"))
-        .await
-        .unwrap();
-    assert!(ctx.env.is_some());
-    assert!(
-        host.session_environment("deferred-filesystem-skill")
-            .await
-            .is_some()
-    );
-}
-
 /// Managed-filesystem reservation cause/effect graph: C1 the Session permits
-/// `read`; C2 its Resource projection contains an exact frozen instruction-only
+/// `read`; C2 its Resource projection contains an exact frozen bundle with a script;
 /// Skill version; C3 reservation must remain side-effect free; C4 the
-/// claimed/local execution context is built afterward.
+/// claimed/local execution context is built afterward; C5 an ordinary Hand
+/// command follows the pinned read; C6 a Resource generation advances with
+/// identical Skill pins.
 /// Effects: E1 C1+C2+C3 projects the stable `SKILL.md` path without creating an
 /// Environment; E2 C1+C2+C4 rejects the resident coordination envelope as an
-/// execution cache hit, eagerly creates the Environment, and materializes that
-/// exact path. Constraint: reservation and execution share one Skill projection;
+/// execution cache hit and reads that exact path without an Environment; E3 C5
+/// creates the Environment and executes its pinned script. Constraint:
+/// reservation and execution share one Skill projection;
 /// semantic tools are never a fallback for a missing provisional directory.
 ///
 /// | Rule | read | selected Skill | phase | Environment | path/body |
 /// |---|---|---|---|---|---|
 /// | L9 | yes | yes | reservation | absent | path only |
-/// | L10 | yes | yes | execution | present | same path + body |
+/// | L10 | yes | yes | execution/read | absent | same path + exact body |
+/// | L11 | yes | yes | ordinary command | present | identical materialized body |
+/// | L12 | yes | same pins | resource revision | same | no Skill tree rewrite |
 ///
 /// M3 in `skill_delivery_profile_uses_one_managed_filesystem_projection` covers
 /// the Managed read-disabled rejection. L2 is direct compatibility only.
@@ -8107,7 +8058,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "Release signal",
         "release safely",
         "RESERVATION-SKILL-BODY",
-        &[],
+        &[("scripts/check.sh", "#!/bin/sh\nprintf PINNED-RUN")],
     );
     install_pinned_managed_skill_session(
         &host,
@@ -8169,7 +8120,47 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         !Arc::ptr_eq(&provisional, &executable),
         "L10/E2 execution must replace the resident coordination envelope"
     );
-    let environment = executable.env.as_ref().expect("L10/E2 eager Environment");
+    assert!(
+        executable.env.is_none(),
+        "L10/E2 Skill reads remain sandbox-free"
+    );
+    let deferred = host
+        .session_slots
+        .read("deferred-managed-filesystem-skill", |slot| {
+            slot.deferred_executor.clone()
+        })
+        .flatten()
+        .unwrap();
+    let read = deferred
+        .invoke(&awaken_runtime_contract::tool::ToolCall {
+            call_id: "read-pinned".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({"file_path": ".skills/release-signal/SKILL.md"}),
+        })
+        .await
+        .expect("L10/E2 exact pinned read");
+    assert_eq!(read.text().as_bytes(), version.skill_md().unwrap());
+    assert!(
+        host.session_environment("deferred-managed-filesystem-skill")
+            .await
+            .is_none()
+    );
+    let script = deferred
+        .invoke(&awaken_runtime_contract::tool::ToolCall {
+            call_id: "first-hand".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "sh .skills/release-signal/scripts/check.sh"}),
+        })
+        .await
+        .expect("L11/E3 ordinary command materializes Hand");
+    assert!(
+        script.text().contains("PINNED-RUN"),
+        "L11 executes the pinned script after materialization"
+    );
+    let environment = host
+        .session_environment("deferred-managed-filesystem-skill")
+        .await
+        .expect("L11/E3 materialized Environment");
     let files = environment
         .scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR)
         .unwrap();
@@ -8177,7 +8168,11 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .iter()
         .find(|file| file.id == "release-signal")
         .expect("L10/E2 exact Skill path materialized");
-    assert!(materialized.content.contains("RESERVATION-SKILL-BODY"));
+    assert_eq!(
+        materialized.content,
+        read.text(),
+        "L11 exact pre/post materialization bytes"
+    );
     assert_eq!(
         host.session_slots
             .read("deferred-managed-filesystem-skill", |slot| {
@@ -8186,6 +8181,39 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
             .flatten(),
         Some(provisional_metadata),
         "L10/E2 execution retains metadata while projecting its realized path"
+    );
+    // L12 measures the real file independently of the projection helper. A
+    // fixed mtime is an observation marker, not a delay or timing assumption.
+    let skill_path = storage
+        .path()
+        .join("sandboxes/deferred-managed-filesystem-skill/.skills/release-signal/SKILL.md");
+    let marker = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
+    std::fs::File::open(&skill_path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(marker))
+        .unwrap();
+    let active = host
+        .thread_resource_manifest("deferred-managed-filesystem-skill")
+        .unwrap();
+    managed
+        .environment()
+        .unwrap()
+        .apply_session_inputs(
+            "deferred-managed-filesystem-skill",
+            &resource_transition(
+                &active.workspace_id,
+                active.revision,
+                active.resources.clone(),
+                active.revision + 1,
+                active.resources,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(skill_path).unwrap().modified().unwrap(),
+        marker,
+        "L12 no redundant Skill installation"
     );
 }
 

@@ -446,8 +446,17 @@ fn regular_file(
             "{operation}: {input} is not a regular file"
         )));
     }
+    check_file_size(operation, input, metadata.len(), limit)
+}
+
+fn check_file_size(
+    operation: &str,
+    input: &str,
+    size: u64,
+    limit: Option<u64>,
+) -> Result<(), ToolError> {
     if let Some(limit) = limit
-        && metadata.len() > limit
+        && size > limit
     {
         let advice = if operation == "read" {
             "Use bash (head/tail/sed) to read a slice."
@@ -455,8 +464,7 @@ fn regular_file(
             "Use bash (sed/awk) to edit a large file."
         };
         return Err(ToolError::DefinitiveFailure(format!(
-            "{operation}: {input} is {} bytes, exceeds {limit}-byte limit. {advice}",
-            metadata.len()
+            "{operation}: {input} is {size} bytes, exceeds {limit}-byte limit. {advice}"
         )));
     }
     Ok(())
@@ -490,6 +498,9 @@ fn atomic_write(path: &ConfinedPath, content: &str) -> std::io::Result<()> {
 pub struct ReadTool(FileContext);
 
 impl ReadTool {
+    /// The same default limit applies to filesystem and immutable Resource reads.
+    pub const DEFAULT_MAX_FILE_BYTES: u64 = DEFAULT_MAX_FILE_BYTES;
+
     pub fn new(context: &HandToolContext) -> Self {
         Self(FileContext::new(context))
     }
@@ -504,6 +515,36 @@ pub struct ReadArgs {
     /// Inclusive one-based start and end line; a non-positive end reads to EOF.
     #[serde(default)]
     pub view_range: Option<[i64; 2]>,
+}
+
+impl ReadArgs {
+    /// Decode and slice bytes independently of their storage. Path authority is
+    /// checked by the caller; this is the one text-read semantics for Hand and
+    /// a frozen Skill bundle served before Hand exists.
+    pub fn read_content(&self, bytes: &[u8], limit: Option<u64>) -> Result<String, ToolError> {
+        check_file_size("read", &self.path, bytes.len() as u64, limit)?;
+        let content = std::str::from_utf8(bytes).map_err(|_| {
+            file_error(
+                "read",
+                &self.path,
+                &std::io::Error::from(std::io::ErrorKind::InvalidData),
+            )
+        })?;
+        let Some(range) = self.view_range else {
+            return Ok(content.to_owned());
+        };
+        let lines = content.split('\n').collect::<Vec<_>>();
+        let start = usize::try_from(range[0].saturating_sub(1).max(0)).unwrap_or(usize::MAX);
+        let end = if range[1] > 0 {
+            usize::try_from(range[1]).unwrap_or(usize::MAX)
+        } else {
+            lines.len()
+        };
+        Ok(lines
+            .get(start..end.min(lines.len()))
+            .unwrap_or(&[])
+            .join("\n"))
+    }
 }
 
 #[async_trait]
@@ -522,22 +563,10 @@ impl Tool for ReadTool {
         let path = self.0.resolve(&args.path)?;
         regular_file(&path, &args.path, "read", self.0.max_file_bytes())?;
         let content = path
-            .read_to_string()
+            .directory
+            .read(&path.relative)
             .map_err(|error| file_error("read", &args.path, &error))?;
-        let Some(range) = args.view_range else {
-            return Ok(content);
-        };
-        let lines = content.split('\n').collect::<Vec<_>>();
-        let start = usize::try_from((range[0] - 1).max(0)).unwrap_or(usize::MAX);
-        let end = if range[1] > 0 {
-            usize::try_from(range[1]).unwrap_or(usize::MAX)
-        } else {
-            lines.len()
-        };
-        Ok(lines
-            .get(start..end.min(lines.len()))
-            .unwrap_or(&[])
-            .join("\n"))
+        args.read_content(&content, self.0.max_file_bytes())
     }
 }
 

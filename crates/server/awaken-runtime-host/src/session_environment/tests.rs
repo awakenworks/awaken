@@ -1620,6 +1620,7 @@ async fn managed_skill_refresh_propagates_container_read_failure() {
         crate::skills::MANAGED_SKILLS_SUBDIR,
         Some(&roots),
         true,
+        true,
     )
     .await
     {
@@ -1785,6 +1786,7 @@ async fn managed_skill_refresh_rejects_invalid_container_skill_bytes() {
         Some(environment.clone()),
         crate::skills::MANAGED_SKILLS_SUBDIR,
         Some(&roots),
+        true,
         true,
     )
     .await

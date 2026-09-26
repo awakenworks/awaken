@@ -96,6 +96,70 @@ async fn read_returns_file_contents() {
 }
 
 #[tokio::test]
+async fn filesystem_and_frozen_read_share_range_and_size_semantics() {
+    // Cause/effect table: R4 UTF-8 + full/range (negative, reversed, EOF,
+    // i64 extremes) => exact expected text in both storage adapters;
+    // R5 >limit, even with range => fail before returning any slice;
+    // R6 invalid UTF-8 => typed failure. A range does not bypass the file limit.
+    use awaken_ext_builtin_tools::{ReadArgs, ReadTool};
+    let dir = tempfile::tempdir().unwrap();
+    let reader = tool_at("read", dir.path());
+    let bytes = "一\r\n二\n三\n".as_bytes();
+    std::fs::write(dir.path().join("guide.md"), bytes).unwrap();
+    for (range, expected) in [
+        (None, "一\r\n二\n三\n"),
+        (Some([i64::MIN, 1]), "一\r"),
+        (Some([2, 2]), "二"),
+        (Some([2, 0]), "二\n三\n"),
+        (Some([3, 1]), ""),
+        (Some([i64::MAX, i64::MAX]), ""),
+    ] {
+        let args = ReadArgs {
+            path: "guide.md".into(),
+            view_range: range,
+        };
+        assert_eq!(
+            args.read_content(bytes, Some(ReadTool::DEFAULT_MAX_FILE_BYTES))
+                .unwrap(),
+            expected
+        );
+        let result = reader
+            .invoke(call(
+                "read",
+                serde_json::json!({"file_path": "guide.md", "view_range": range}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.text(), expected, "R4 {range:?}");
+    }
+    for bytes in [
+        vec![b'a'; ReadTool::DEFAULT_MAX_FILE_BYTES as usize + 1],
+        vec![0xff],
+    ] {
+        std::fs::write(dir.path().join("guide.md"), &bytes).unwrap();
+        let args = ReadArgs {
+            path: "guide.md".into(),
+            view_range: Some([1, 1]),
+        };
+        let frozen = args
+            .read_content(&bytes, Some(ReadTool::DEFAULT_MAX_FILE_BYTES))
+            .unwrap_err();
+        let file = reader
+            .invoke(call(
+                "read",
+                serde_json::json!({"file_path": "guide.md", "view_range": [1,1]}),
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            frozen.to_string(),
+            file.to_string(),
+            "R5/R6 same error contract"
+        );
+    }
+}
+
+#[tokio::test]
 async fn read_does_not_decode_non_utf8_files() {
     // R3 invalid UTF-8 bytes -> typed failure, never a lossy successful text
     // result; the input remains unchanged. Format-specific extraction belongs

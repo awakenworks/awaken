@@ -31,6 +31,134 @@ pub(crate) const MANAGED_SKILLS_SUBDIR: &str = ".claude/skills";
 pub(crate) const DELIVERED_SKILLS_SUBDIR: &str =
     awaken_provisioning_contract::WorkspaceLayout::DELIVERED_SKILLS_SUBDIR;
 
+fn delivered_skill_directory(id: &str) -> String {
+    format!(
+        "{DELIVERED_SKILLS_SUBDIR}/{}",
+        awaken_resource_contract::skill_stem(id)
+    )
+}
+
+fn delivered_skill_content(version: &SkillVersion) -> Result<&str, String> {
+    if awaken_resource_contract::skill_bundle_sha256(&version.files) != version.bundle_sha256 {
+        return Err(format!(
+            "Skill {} version {} bundle hash mismatch",
+            version.skill_id, version.version
+        ));
+    }
+    version
+        .skill_md()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .ok_or_else(|| {
+            format!(
+                "Skill {} version {} has no UTF-8 SKILL.md",
+                version.skill_id, version.version
+            )
+        })
+}
+
+/// One physical bundle installer. Managed Resource realization owns its call;
+/// direct compatibility construction calls the same installer when necessary.
+pub(crate) async fn materialize_delivered_skill(
+    env: &crate::session_environment::SessionEnvironment,
+    version: &SkillVersion,
+) -> Result<(), String> {
+    delivered_skill_content(version)?;
+    let files = version
+        .files
+        .iter()
+        .map(|file| (file.path.clone(), file.content.clone(), file.executable))
+        .collect::<Vec<_>>();
+    env.materialize_read_only_tree(
+        &delivered_skill_directory(version.skill_id.as_str()),
+        &files,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Serve only the advertised, exact Managed bundle while its filesystem is
+/// absent. This is an adapter over the existing frozen projection, not another
+/// catalog or virtual workspace. `None` leaves ordinary files to lazy Hand.
+pub(crate) fn read_pinned_skill(
+    slot: &crate::session_slot::SessionRuntimeSlot,
+    args: &awaken_ext_builtin_tools::ReadArgs,
+) -> Option<Result<String, ToolError>> {
+    use awaken_provisioning_contract::WorkspaceLayout;
+    use std::path::Component;
+
+    if !slot.session_dispatch || slot.environment_owner.resident().is_some() {
+        return None;
+    }
+    let relative = WorkspaceLayout::relative(&args.path).unwrap_or(&args.path);
+    let mut components = std::path::Path::new(relative).components().peekable();
+    while components.peek() == Some(&Component::CurDir) {
+        components.next();
+    }
+    if components.next() != Some(Component::Normal(DELIVERED_SKILLS_SUBDIR.as_ref())) {
+        return None;
+    }
+    Some((|| {
+        let failure = || {
+            ToolError::DefinitiveFailure(format!(
+                "read: {}: no advertised pinned Skill file",
+                args.path
+            ))
+        };
+        let parts = components
+            .map(|component| match component {
+                Component::Normal(part) => part.to_str().ok_or_else(failure),
+                _ => Err(failure()),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (stem, file_parts) = parts.split_first().ok_or_else(failure)?;
+        let directory = format!("{DELIVERED_SKILLS_SUBDIR}/{stem}");
+        if !slot
+            .skill_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.exposes_directory(&directory))
+        {
+            return Err(failure());
+        }
+        let manifest = slot.dispatch_resource_manifest().ok_or_else(failure)?;
+        if slot.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
+            return Err(failure());
+        }
+        let mut bindings = manifest
+            .resources
+            .skills()
+            .iter()
+            .filter(|binding| delivered_skill_directory(&binding.skill_id) == directory);
+        let binding = bindings.next().ok_or_else(failure)?;
+        if bindings.next().is_some() {
+            return Err(failure());
+        }
+        let version = slot
+            .skills
+            .as_ref()
+            .and_then(|versions| {
+                versions.iter().find(|version| {
+                    version.skill_id.as_str() == binding.skill_id
+                        && version.version == binding.version
+                        && version.bundle_sha256 == binding.bundle_sha256
+                })
+            })
+            .ok_or_else(failure)?;
+        // Registry construction already verifies the bundle hash. Compare its
+        // exact pin with current desired truth rather than consulting latest or
+        // reloading the Store on each read. Ingested paths are bundle-relative.
+        let file_path = file_parts.join("/");
+        let file = version
+            .files
+            .iter()
+            .find(|file| file.path == file_path)
+            .ok_or_else(failure)?;
+        args.read_content(
+            &file.content,
+            Some(awaken_ext_builtin_tools::ReadTool::DEFAULT_MAX_FILE_BYTES),
+        )
+    })())
+}
+
 /// Placement policy for Skill `context: fork` auxiliary Runs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SkillForkPlacement {
@@ -202,7 +330,7 @@ impl RawTool for ForkAgentTool {
 
 /// A compatibility projection of one already-built registry onto the legacy
 /// semantic Skill tools. Managed Sessions never construct this adapter: their
-/// selected, pinned bytes are disclosed only through the materialized filesystem.
+/// selected, pinned bytes are disclosed only through the ordinary file tool.
 pub(crate) struct SemanticSkillAdapter {
     pub descriptors: Vec<ToolDescriptor>,
     pub list_tool: Arc<dyn RawTool>,
@@ -211,9 +339,10 @@ pub(crate) struct SemanticSkillAdapter {
 }
 
 /// Build the one Skill registry for a thread, or `None` when no Skills are
-/// offered. Filesystem delivery materializes the exact same registry inputs that
-/// its progressive-disclosure prompt later reads; it does not construct a second
-/// semantic executor.
+/// offered. Managed construction derives metadata from already verified pins;
+/// its Resource projection owns physical installation. Direct compatibility
+/// construction installs the same inputs when it needs filesystem delivery.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_skill_registry(
     configured: &[SkillSpec],
     external_registries: Vec<Arc<dyn SkillRegistry>>,
@@ -222,6 +351,7 @@ pub(crate) async fn build_skill_registry(
     authored_skills_subdir: &str,
     skill_source_roots: Option<&[String]>,
     filesystem_delivery: bool,
+    managed_session: bool,
 ) -> Result<Option<Arc<dyn SkillRegistry>>, String> {
     if let (Some(env), Some(roots)) = (&env, skill_source_roots) {
         // `Some([])` is the direct live-authored compatibility source. An
@@ -273,10 +403,10 @@ pub(crate) async fn build_skill_registry(
             skill.id
         ));
     }
-    // `.skills` is one complete runtime-owned projection. Clear it before a
-    // rebuild that carries either frozen bundles or config-only Skills, then
-    // repopulate every selected Skill through this same projection path.
-    if (delivered.is_some() || (filesystem_delivery && !configured.is_empty()))
+    // Direct compatibility owns its complete `.skills` projection here.
+    // Managed clearing/installation belongs exclusively to Resource realization.
+    if !managed_session
+        && (delivered.is_some() || (filesystem_delivery && !configured.is_empty()))
         && let Some(env) = env.as_ref()
     {
         env.remove_projection_path(DELIVERED_SKILLS_SUBDIR)
@@ -289,10 +419,7 @@ pub(crate) async fn build_skill_registry(
             if skill.dir.is_some() {
                 continue;
             }
-            let directory = format!(
-                "{DELIVERED_SKILLS_SUBDIR}/{}",
-                awaken_resource_contract::skill_stem(&skill.id)
-            );
+            let directory = delivered_skill_directory(&skill.id);
             let name = serde_json::to_string(&skill.name)
                 .map_err(|error| format!("serialize Skill name: {error}"))?;
             let description = serde_json::to_string(&skill.description)
@@ -324,46 +451,12 @@ pub(crate) async fn build_skill_registry(
     if let Some(delivered) = delivered {
         let mut files = Vec::with_capacity(delivered.len());
         for version in delivered {
-            if awaken_resource_contract::skill_bundle_sha256(&version.files)
-                != version.bundle_sha256
-            {
-                return Err(format!(
-                    "Skill {} version {} bundle hash mismatch",
-                    version.skill_id, version.version
-                ));
-            }
-            let content = version
-                .skill_md()
-                .and_then(|bytes| std::str::from_utf8(bytes).ok())
-                .ok_or_else(|| {
-                    format!(
-                        "Skill {} version {} has no UTF-8 SKILL.md",
-                        version.skill_id, version.version
-                    )
-                })?
-                .to_string();
-            // For the direct semantic adapter, a SKILL.md-only bundle stays in
-            // the host snapshot unless it declares a filesystem requirement.
-            // Managed delivery materializes every selected bundle because its
-            // only disclosure contract is the advertised path. Any supporting
-            // file also makes materialization objective regardless of metadata.
-            let directory =
-                (filesystem_delivery || requires_filesystem(&version, &content)).then(|| {
-                    format!(
-                        "{DELIVERED_SKILLS_SUBDIR}/{}",
-                        awaken_resource_contract::skill_stem(version.skill_id.as_str())
-                    )
-                });
-            if let Some(directory) = &directory {
+            let content = delivered_skill_content(&version)?.to_string();
+            let directory = (filesystem_delivery || requires_filesystem(&version, &content))
+                .then(|| delivered_skill_directory(version.skill_id.as_str()));
+            if directory.is_some() && !managed_session {
                 if let Some(env) = env.as_ref() {
-                    let materialized = version
-                        .files
-                        .iter()
-                        .map(|file| (file.path.clone(), file.content.clone(), file.executable))
-                        .collect::<Vec<_>>();
-                    env.materialize_read_only_tree(directory, &materialized)
-                        .await
-                        .map_err(|error| error.to_string())?;
+                    materialize_delivered_skill(env, &version).await?;
                 } else if !filesystem_delivery {
                     return Err(format!(
                         "filesystem Skill `{}` requires a materialized Session environment",
@@ -459,6 +552,10 @@ pub(crate) struct FilesystemSkillPrompt {
 }
 
 impl FilesystemSkillPrompt {
+    pub(crate) fn exposes_directory(&self, directory: &str) -> bool {
+        self.entries.iter().any(|(_, _, entry)| entry == directory)
+    }
+
     pub(crate) fn render(
         &self,
         path_view: &crate::managed_resource_projection::AgentPathView,
@@ -475,8 +572,8 @@ impl FilesystemSkillPrompt {
                             .skill_directory_path(directory)
                             .map_err(|error| error.to_string())?,
                     )),
-                    // A reservation has no filesystem yet. Actual execution reads
-                    // this same metadata again after the Environment is realized.
+                    // Native OnToolUse reads this stable path from the exact
+                    // frozen bundle until the Environment is materialized.
                     None => format!("{directory}/SKILL.md"),
                 };
                 Ok(format!("- {name}: {description} (`{path}`)"))
@@ -490,7 +587,7 @@ impl FilesystemSkillPrompt {
 }
 
 /// Anthropic-compatible progressive-disclosure metadata; ordinary file tools
-/// read the full instructions from the later projected `SKILL.md` path.
+/// read the full instructions from the pinned or materialized `SKILL.md` path.
 pub(crate) fn filesystem_skill_prompt(
     registry: &dyn SkillRegistry,
 ) -> Result<Option<FilesystemSkillPrompt>, String> {
@@ -659,6 +756,7 @@ mod tests {
             DEFAULT_SKILLS_SUBDIR,
             Some(&live_roots),
             false,
+            false,
         )
         .await
         .expect("LA1 live source is readable")
@@ -724,6 +822,12 @@ mod tests {
             executable: false,
         }]);
 
+        // R9 registry construction is metadata-only for Managed: it cannot
+        // clear another Resource projection or install files as a second owner.
+        let projected = base.join("t").join(DELIVERED_SKILLS_SUBDIR);
+        std::fs::create_dir_all(&projected).unwrap();
+        std::fs::write(projected.join("resource-owned"), "PRESERVE").unwrap();
+
         let registry = build_skill_registry(
             &[],
             Vec::new(),
@@ -731,6 +835,7 @@ mod tests {
             Some(env.clone()),
             MANAGED_SKILLS_SUBDIR,
             None,
+            true,
             true,
         )
         .await
@@ -747,6 +852,15 @@ mod tests {
         assert!(
             prompt.contains("Frozen") && !prompt.contains("Unbound"),
             "R3/R7"
+        );
+        assert_eq!(
+            std::fs::read_to_string(projected.join("resource-owned")).unwrap(),
+            "PRESERVE",
+            "R9 no second clearing owner"
+        );
+        assert!(
+            !projected.join("test/SKILL.md").exists(),
+            "R9 no second installation owner"
         );
 
         env.dispose().await.unwrap();
@@ -778,19 +892,20 @@ mod tests {
             .join("source");
         std::fs::create_dir_all(&repository_dir).unwrap();
         std::fs::write(repository_dir.join("SKILL.md"), repository_body).unwrap();
+        let frozen = version_with(vec![awaken_skill_store::SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: body.to_vec(),
+            executable: false,
+        }]);
+        materialize_delivered_skill(&env, &frozen).await.unwrap();
         let registry = build_skill_registry(
             &[],
             Vec::new(),
-            Some(vec![version_with(vec![
-                awaken_skill_store::SkillBundleFile {
-                    path: "SKILL.md".into(),
-                    content: body.to_vec(),
-                    executable: false,
-                },
-            ])]),
+            Some(vec![frozen]),
             Some(env.clone()),
             MANAGED_SKILLS_SUBDIR,
             Some(&[repository_root]),
+            true,
             true,
         )
         .await
@@ -990,6 +1105,7 @@ mod tests {
             MANAGED_SKILLS_SUBDIR,
             Some(&roots),
             true,
+            true,
         )
         .await
         .unwrap()
@@ -1054,6 +1170,7 @@ mod tests {
             MANAGED_SKILLS_SUBDIR,
             Some(&roots),
             true,
+            true,
         )
         .await
         .unwrap()
@@ -1097,6 +1214,7 @@ mod tests {
             MANAGED_SKILLS_SUBDIR,
             Some(std::slice::from_ref(&root)),
             true,
+            true,
         )
         .await
         .expect("SS1 an absent repository Skill root is an empty snapshot");
@@ -1112,6 +1230,7 @@ mod tests {
             Some(env.clone()),
             MANAGED_SKILLS_SUBDIR,
             Some(std::slice::from_ref(&root)),
+            true,
             true,
         )
         .await
@@ -1164,6 +1283,7 @@ mod tests {
             Some(env.clone()),
             MANAGED_SKILLS_SUBDIR,
             Some(&[root]),
+            true,
             true,
         )
         .await

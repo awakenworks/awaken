@@ -18,23 +18,28 @@
 // plus each Session's frozen pin own version selection.
 // Decision rules: S1=C1=>E1(v1); S2=C1+C2=>old-v1/new-v2;
 // S3=S2+C3=>E2; S4=C4=>E3; S5=C1+filesystem tools=>E4; S6=C5=>E5.
+// S7=S1/S2/S3 + native OnToolUse => reply through `read` while the durable
+// Environment remains unmaterialized, including a bundle with binary support.
+// The exact Session aggregate is observed after the receipt-scoped Run settles;
+// a fast HTTP create or a stale earlier reply cannot satisfy this rule.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { pass, spawnServer, stopServer, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
+import { SKILLS_BETA, pass, spawnServer, stopServer, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
+import { sqliteScalar } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38237);
 const BETAS = ['managed-agents-2026-04-01'];
-const SKILLS_BETA = 'skills-2025-10-02';
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const AGENT = 'skill-pin-agent';
 const V1 = 'PINNED_SKILL_V1_7119';
 const V2 = 'CURRENT_SKILL_V2_8120';
 const BINARY = Uint8Array.from([0, 159, 146, 150, 255, 13, 0, 10]);
 let adminToken = '';
+let environmentId;
 
 function skillMarkdown(marker) {
   return `---\nname: greet\ndescription: deterministic pinned skill\n---\n${marker}`;
@@ -104,7 +109,7 @@ async function createSession(client, skillSelection = undefined) {
       type: 'agent_with_overrides',
       skills: skillSelection,
     },
-    environment_id: 'env_local',
+    environment_id: environmentId,
     betas: BETAS,
   });
 }
@@ -189,6 +194,26 @@ async function main() {
     adminToken = fs.readFileSync(path.join(managementDir, 'admin-token'), 'utf8').trim();
     let client = new Anthropic({ apiKey: adminToken, baseURL: first.baseUrl });
 
+    const environment = await client.beta.environments.create({
+      name: 'pinned-skill-on-tool-use', config: { type: 'self_hosted' }, betas: BETAS,
+    });
+    environmentId = environment.id;
+
+    const policy = await request(first.baseUrl, 'POST', '/v1/awaken/sandbox-execution-policies', {
+      id: `skill-lazy-${process.pid}`, config: {}, provisioning: 'on_tool_use', disabled: false,
+    });
+    assert.equal(policy.status, 201, JSON.stringify(policy.body));
+    const bound = await request(first.baseUrl, 'POST', `/v1/awaken/environments/${environmentId}/sandbox-execution-policy`, {
+      policy_id: policy.body.id, version: policy.body.version,
+    });
+    assert.equal(bound.status, 200, JSON.stringify(bound.body));
+    const assertNoSandbox = (sessionId) => {
+      const phase = sqliteScalar(path.join(managementDir, 'sessions.db'),
+        "SELECT json_extract(aggregate_json, '$.aggregate.environment.phase') FROM managed_session WHERE session_id = ?",
+        sessionId);
+      assert.equal(phase, 'unmaterialized', `S7 pinned read must not create Sandbox for ${sessionId}`);
+    };
+
     const created = await uploadBundle(first.baseUrl, '/v1/skills', V1, BINARY);
     const skillId = created.id;
     assert.match(skillId, /^skill_[0-9a-f]{16}$/u, 'multipart upload returned a stable catalog id');
@@ -213,6 +238,7 @@ async function main() {
     assert.deepEqual(firstToolNames, ['read'], 'filesystem Skill is loaded through its advertised path');
     assert.ok(!firstToolNames.includes('list_skills') && !firstToolNames.includes('Skill'),
       'filesystem Skill delivery exposes no parallel semantic activation path');
+    assertNoSandbox(pinned.id);
 
     const version2 = await uploadBundle(
       first.baseUrl,
@@ -231,6 +257,7 @@ async function main() {
     const { reply: exactReply } = await runAndReadLastReply(client, exactV1.id, 'use exact version one');
     assert.ok(exactReply.includes(V1), `P2 exact selector resolved v1 after v2 existed: ${exactReply}`);
     assert.ok(!exactReply.includes(V2), 'P2 exact selector did not drift to latest');
+    assertNoSandbox(exactV1.id);
     pass('create-time exact custom Skill selector replaces latest and pins v1');
 
     const retired = await request(
@@ -254,11 +281,14 @@ async function main() {
     const { reply: restoredReply } = await runAndReadLastReply(client, pinned.id, 'use it again after restart');
     assert.ok(restoredReply.includes(V1), 'rehydrated old Session still loads retained v1 bytes');
     assert.ok(!restoredReply.includes(V2), 'old Session did not drift to current v2');
+    assertNoSandbox(pinned.id);
 
     const current = await createSession(client);
     const { reply: currentReply } = await runAndReadLastReply(client, current.id, 'use the current skill');
     assert.ok(currentReply.includes(V2), 'new Session resolves current v2');
     assert.ok(!currentReply.includes(V1), 'new Session does not select retired v1');
+    assertNoSandbox(current.id);
+    pass('S7 exact and latest Skill reads complete before Sandbox, including cold restart');
     pass('restart preserves old Session pin while a new Session selects v2');
 
     // The repository must reject damaged durable state before either its API or
