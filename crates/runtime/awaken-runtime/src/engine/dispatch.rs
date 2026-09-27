@@ -695,9 +695,14 @@ async fn run_concurrent_tool_calls(
         )
         .await;
         let mut invocations = invocations.into_iter();
+        let mut deferred_exit: Option<Result<Option<RunDisposition>>> = None;
 
         // Consume results in model order. Hooks and state application therefore
         // remain deterministic even when executor completion order differs.
+        // Every entered invocation already returned. A logical fatal result
+        // must not discard later siblings' known outcomes; record them through
+        // the same batch owner before returning the first disposition. Recorder
+        // persistence/fence failures still abort rather than invent a receipt.
         for (position, call) in wave_calls.iter().enumerate() {
             let output = if let Some(output) = immediate_outputs[position].take() {
                 output
@@ -706,7 +711,11 @@ async fn run_concurrent_tool_calls(
                     .next()
                     .expect("every entered call produced one invocation result")
                 {
-                    ConcurrentInvocation::Regular(result) => result?,
+                    ConcurrentInvocation::Regular(Ok(output)) => output,
+                    ConcurrentInvocation::Regular(Err(error)) => {
+                        deferred_exit.get_or_insert(Err(error));
+                        continue;
+                    }
                     ConcurrentInvocation::Delegation(Some(Ok(DelegationInvocation {
                         id,
                         step: DelegationStep::Ended { text, usage },
@@ -744,19 +753,27 @@ async fn run_concurrent_tool_calls(
                             &mut ledger.staged_state,
                         )?;
                         stage_batch(&batch, ledger, store);
-                        return Ok(Some(RunDisposition::ended(
+                        deferred_exit.get_or_insert(Ok(Some(RunDisposition::ended(
                             run_id.clone(),
                             EndCause::Indeterminate,
-                        )));
+                        ))));
+                        continue;
                     }
                     ConcurrentInvocation::Delegation(Some(Err(error))) => {
-                        delegation_error_output(resolved, call, error)?
+                        match delegation_error_output(resolved, call, error) {
+                            Ok(output) => output,
+                            Err(error) => {
+                                deferred_exit.get_or_insert(Err(error));
+                                continue;
+                            }
+                        }
                     }
                     ConcurrentInvocation::Delegation(None) => {
-                        return Err(Error::Execution(
+                        deferred_exit.get_or_insert(Err(Error::Execution(
                             "concurrent delegation call was not handled by its executor"
                                 .to_string(),
-                        ));
+                        )));
+                        continue;
                     }
                 }
             };
@@ -778,6 +795,9 @@ async fn run_concurrent_tool_calls(
                 store,
             )
             .await?;
+        }
+        if let Some(exit) = deferred_exit {
+            return exit;
         }
     }
 
