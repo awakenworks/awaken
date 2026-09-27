@@ -849,6 +849,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness quarantine_admission_never_widens_settlement_or_execution \
     --harness quarantined_cancelled_row_can_never_re_enter_execution
   run_kani awaken-dispatch --no-default-features \
+    --harness pending_input_mutation_plan_is_exact_revision_fenced_and_nonwrapping \
     --harness agent_message_completed_tombstone_replays_only_exact_dispatch_identity \
     --harness maintenance_schedule_exists_only_for_the_owning_adapter \
     --harness recovery_snapshot_admission_requires_exact_claim_identity \

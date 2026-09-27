@@ -1,5 +1,8 @@
 // SQLite durable Inbox/Outbox and operational-feed ports. Included by
 // `sqlite.rs`; the shared connection/transaction authority stays on the parent store.
+use crate::inbox_mutation::{
+    PendingInputMutation, PendingInputMutationPlan, plan_pending_input_mutation,
+};
 #[async_trait]
 impl Inbox for SqliteDispatchStore {
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError> {
@@ -77,10 +80,16 @@ impl Inbox for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(store_error)?;
-            let outcome = match current_revision(&tx, p, &message_id)? {
-                None => CasOutcome::NotFound,
-                Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
-                Some(_) => {
+            let outcome = match plan_pending_input_mutation(
+                current_revision(&tx, p, &message_id)?,
+                expected_revision,
+                PendingInputMutation::Retract,
+                i64::MAX as u64,
+            )
+            .map_err(|error| DispatchError::Rejected(error.to_string()))?
+            {
+                PendingInputMutationPlan::Unchanged(outcome) => outcome,
+                PendingInputMutationPlan::Retract => {
                     tx.execute(
                         &format!("DELETE FROM {p}_pending WHERE message_id = ?1"),
                         params![message_id],
@@ -88,6 +97,7 @@ impl Inbox for SqliteDispatchStore {
                     .map_err(store_error)?;
                     CasOutcome::Applied
                 }
+                PendingInputMutationPlan::Edit { .. } => unreachable!("retract cannot plan edit"),
             };
             tx.commit().map_err(store_error)?;
             Ok(outcome)
@@ -107,25 +117,112 @@ impl Inbox for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(store_error)?;
-            let outcome = match current_revision(&tx, p, &message_id)? {
-                None => CasOutcome::NotFound,
-                Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
-                Some(_) => {
+            let outcome = match plan_pending_input_mutation(
+                current_revision(&tx, p, &message_id)?,
+                expected_revision,
+                PendingInputMutation::Edit,
+                i64::MAX as u64,
+            )
+            .map_err(|error| DispatchError::Rejected(error.to_string()))?
+            {
+                PendingInputMutationPlan::Unchanged(outcome) => outcome,
+                PendingInputMutationPlan::Edit { next_revision } => {
                     tx.execute(
                         &format!(
-                            "UPDATE {p}_pending SET result = ?1, revision = revision + 1 \
+                            "UPDATE {p}_pending SET result = ?1, revision = ?3 \
                              WHERE message_id = ?2"
                         ),
-                        params![result_json, message_id],
+                        params![
+                            result_json,
+                            message_id,
+                            durable_i64("pending input revision", next_revision)?
+                        ],
                     )
                     .map_err(store_error)?;
                     CasOutcome::Applied
                 }
+                PendingInputMutationPlan::Retract => unreachable!("edit cannot plan retract"),
             };
             tx.commit().map_err(store_error)?;
             Ok(outcome)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod inbox_revision_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sqlite_pending_edit_never_promotes_exhausted_integer_to_real() {
+        // SQL R1 exact MAX BIGINT edit=>typed pre-write rejection, retained
+        // INTEGER and bytes; R2 stale edit=>Mismatch; R3 exact retract=>Applied.
+        // SQLite's `revision+1` otherwise silently becomes REAL at this edge.
+        let store =
+            SqliteDispatchStore::open_in_memory(Arc::new(crate::clock::ManualClock::new(0)))
+                .unwrap();
+        let thread = ThreadId("sqlite-revision-limit".into());
+        store
+            .append(PendingInput {
+                message_id: "sqlite-revision-limit".into(),
+                run_id: RunId("run".into()),
+                thread_id: thread.clone(),
+                correlation_id: "call".into(),
+                available_at_ms: None,
+                context_messages: Vec::new(),
+                result: ResumeResult::Input("old".into()),
+            })
+            .await
+            .unwrap();
+        store
+            .with_conn(|conn, p| {
+                conn.execute(
+                    &format!("UPDATE {p}_pending SET revision = ?1"),
+                    params![i64::MAX],
+                )
+                .map_err(store_error)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let before = store.list(&thread).await.unwrap();
+        assert!(
+            store
+                .edit(
+                    "sqlite-revision-limit",
+                    i64::MAX as u64,
+                    ResumeResult::Input("new".into())
+                )
+                .await
+                .is_err(),
+            "R1"
+        );
+        assert_eq!(
+            store.list(&thread).await.unwrap(),
+            before,
+            "R1 durable bytes/integer intact"
+        );
+        assert_eq!(
+            store
+                .edit(
+                    "sqlite-revision-limit",
+                    1,
+                    ResumeResult::Input("new".into())
+                )
+                .await
+                .unwrap(),
+            CasOutcome::RevisionMismatch,
+            "R2"
+        );
+        assert_eq!(
+            store
+                .retract("sqlite-revision-limit", i64::MAX as u64)
+                .await
+                .unwrap(),
+            CasOutcome::Applied,
+            "R3"
+        );
     }
 }
 #[async_trait]

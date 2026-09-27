@@ -1,5 +1,8 @@
 // PostgreSQL operational-feed and durable Inbox/Outbox ports. Included by
 // `postgres.rs` to keep every implementation on PostgresDispatchStore's module path.
+use crate::inbox_mutation::{
+    PendingInputMutation, PendingInputMutationPlan, plan_pending_input_mutation,
+};
 #[async_trait]
 impl DispatchOperationalFeed for PostgresDispatchStore {
     async fn events_after(
@@ -122,10 +125,16 @@ impl Inbox for PostgresDispatchStore {
     ) -> Result<CasOutcome, DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let outcome = match current_revision(&mut tx, message_id).await? {
-            None => CasOutcome::NotFound,
-            Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
-            Some(_) => {
+        let outcome = match plan_pending_input_mutation(
+            current_revision(&mut tx, message_id).await?,
+            expected_revision,
+            PendingInputMutation::Retract,
+            i64::MAX as u64,
+        )
+        .map_err(|error| DispatchError::Rejected(error.to_string()))?
+        {
+            PendingInputMutationPlan::Unchanged(outcome) => outcome,
+            PendingInputMutationPlan::Retract => {
                 sqlx::query(&format!("DELETE FROM {p}_pending WHERE message_id = $1"))
                     .bind(message_id)
                     .execute(&mut *tx)
@@ -133,6 +142,7 @@ impl Inbox for PostgresDispatchStore {
                     .map_err(store_error)?;
                 CasOutcome::Applied
             }
+            PendingInputMutationPlan::Edit { .. } => unreachable!("retract cannot plan edit"),
         };
         tx.commit().await.map_err(store_error)?;
         Ok(outcome)
@@ -146,21 +156,29 @@ impl Inbox for PostgresDispatchStore {
     ) -> Result<CasOutcome, DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let outcome = match current_revision(&mut tx, message_id).await? {
-            None => CasOutcome::NotFound,
-            Some(rev) if rev != expected_revision => CasOutcome::RevisionMismatch,
-            Some(_) => {
+        let outcome = match plan_pending_input_mutation(
+            current_revision(&mut tx, message_id).await?,
+            expected_revision,
+            PendingInputMutation::Edit,
+            i64::MAX as u64,
+        )
+        .map_err(|error| DispatchError::Rejected(error.to_string()))?
+        {
+            PendingInputMutationPlan::Unchanged(outcome) => outcome,
+            PendingInputMutationPlan::Edit { next_revision } => {
                 sqlx::query(&format!(
-                    "UPDATE {p}_pending SET result = $1, revision = revision + 1 \
+                    "UPDATE {p}_pending SET result = $1, revision = $3 \
                      WHERE message_id = $2"
                 ))
                 .bind(Json(&result))
                 .bind(message_id)
+                .bind(durable_i64("pending input revision", next_revision)?)
                 .execute(&mut *tx)
                 .await
                 .map_err(store_error)?;
                 CasOutcome::Applied
             }
+            PendingInputMutationPlan::Retract => unreachable!("edit cannot plan retract"),
         };
         tx.commit().await.map_err(store_error)?;
         Ok(outcome)
@@ -408,7 +426,7 @@ async fn current_revision(
     message_id: &str,
 ) -> Result<Option<u64>, DispatchError> {
     let revision: Option<i64> = sqlx::query_scalar(&format!(
-        "SELECT revision FROM {NS}_pending WHERE message_id = $1"
+        "SELECT revision FROM {NS}_pending WHERE message_id = $1 FOR UPDATE"
     ))
     .bind(message_id)
     .fetch_optional(&mut **tx)
