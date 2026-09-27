@@ -2191,6 +2191,7 @@ name = "awaken-sandbox"
 version = "1.0.0"
 dependencies = [
  "async-nats",
+ "async-trait",
  "awaken-agent-channel",
  "awaken-connection-plan",
  "awaken-ext-builtin-tools",
@@ -2211,6 +2212,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "zeroize",
 ]
 
@@ -7952,6 +7954,7 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

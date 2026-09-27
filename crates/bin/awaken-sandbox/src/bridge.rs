@@ -10,12 +10,16 @@
 
 use std::net::SocketAddr;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
+use awaken_local_process::LocalProcess;
+use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
 use tokio::net::TcpListener;
-use tokio::process::{Child, Command};
+use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::task::JoinError;
 use tokio::time::timeout;
+use tokio_util::task::AbortOnDropHandle;
 
 /// The default listen address (the container-tier agent port, `CONTAINER_AGENT_PORT`).
 pub const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
@@ -62,6 +66,10 @@ pub enum BridgeError {
     Wait(#[source] std::io::Error),
     #[error("ACP CLI did not exit after its stream closed")]
     ExitTimeout,
+    #[error("ACP CLI cleanup could not be confirmed: {0}")]
+    Cleanup(#[source] SandboxError),
+    #[error("ACP CLI cleanup observer failed: {0}")]
+    CleanupTask(#[source] JoinError),
 }
 
 /// Split `acp` role args into the listen address and the CLI argv it spawns. The form
@@ -109,42 +117,69 @@ impl AcpBridge {
     /// agent process), and bridge the socket to the CLI's stdio until the CLI exits.
     /// Returns the CLI's exit code. `stderr` inherits so agent logs reach the pod log.
     pub async fn run(self, argv: &[String]) -> Result<i32, BridgeError> {
-        let mut child = Command::new(&argv[0])
-            .args(&argv[1..])
+        let (program, args) = argv.split_first().ok_or_else(|| {
+            BridgeError::Spawn(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "ACP CLI argv is empty",
+            ))
+        })?;
+        let mut command = Command::new(program);
+        command
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(BridgeError::Spawn)?;
-        let mut cli_stdin = child.stdin.take().expect("piped stdin");
-        let mut cli_stdout = child.stdout.take().expect("piped stdout");
+            .stderr(Stdio::inherit());
+        let mut process = LocalProcess::spawn(&mut command).map_err(BridgeError::Spawn)?;
+        let cli_stdin = process.take_stdin().expect("piped stdin");
+        let cli_stdout = process.take_stdout().expect("piped stdout");
+        let process = Arc::new(process);
 
+        // Keep retirement responsibility before the first await. Dropping the
+        // caller closes this channel, while the independently owned observer
+        // still kills and observes the same canonical process. No second OS
+        // child/group implementation and no caller-cancellation fake receipt.
+        let (retire, retired) = tokio::sync::oneshot::channel::<()>();
+        let owned = process.clone();
+        let cleanup = tokio::spawn(async move {
+            let _ = retired.await;
+            stop_process(owned.as_ref()).await
+        });
+        let result = self.run_process(process, cli_stdin, cli_stdout).await;
+        drop(retire);
+        cleanup.await.map_err(BridgeError::CleanupTask)??;
+        result
+    }
+
+    async fn run_process(
+        self,
+        process: Arc<LocalProcess>,
+        mut cli_stdin: ChildStdin,
+        mut cli_stdout: ChildStdout,
+    ) -> Result<i32, BridgeError> {
         enum Startup {
             Accepted(std::io::Result<(tokio::net::TcpStream, SocketAddr)>),
-            Exited(std::io::Result<std::process::ExitStatus>),
+            Exited(Result<ExitStatus, SandboxError>),
         }
 
         let startup = timeout(self.accept_timeout, async {
             tokio::select! {
                 accepted = self.listener.accept() => Startup::Accepted(accepted),
-                status = child.wait() => Startup::Exited(status),
+                status = process.wait() => Startup::Exited(status),
             }
         })
         .await;
 
         let (sock, _peer) = match startup {
             Err(_) => {
-                stop_child(&mut child).await;
                 return Err(BridgeError::AcceptTimeout);
             }
             Ok(Startup::Accepted(Ok(accepted))) => accepted,
             Ok(Startup::Accepted(Err(error))) => {
-                stop_child(&mut child).await;
                 return Err(BridgeError::Accept(error));
             }
             Ok(Startup::Exited(status)) => {
-                let status = status.map_err(BridgeError::Wait)?;
-                return match status.code() {
+                let status = status.map_err(wait_error)?;
+                return match status.code {
                     Some(code) => Err(BridgeError::ExitedBeforeConnect(code)),
                     None => Err(BridgeError::SignalTermination),
                 };
@@ -154,28 +189,28 @@ impl AcpBridge {
 
         // socket -> CLI stdin, concurrently. Aborted once the CLI is gone (below), so a
         // still-open socket never keeps us alive past the agent.
-        let mut to_cli = tokio::spawn(async move {
+        let mut to_cli = AbortOnDropHandle::new(tokio::spawn(async move {
             tokio::io::copy(&mut sock_rd, &mut cli_stdin).await?;
             // Dropping `cli_stdin` here closes the CLI's stdin (EOF), so a client that
             // half-closes its write end lets the CLI finish its turn and exit.
             Ok::<_, std::io::Error>(())
-        });
+        }));
 
         // CLI stdout -> socket. This drives the lifetime: it returns when the CLI's
         // stdout hits EOF (the CLI exited AND its pipe drained), so the final reply is
         // always flushed to the host before we tear down.
-        let mut from_cli = tokio::spawn(async move {
+        let mut from_cli = AbortOnDropHandle::new(tokio::spawn(async move {
             tokio::io::copy(&mut cli_stdout, &mut sock_wr).await?;
             Ok::<_, std::io::Error>(())
-        });
+        }));
 
         // Whichever terminal event happens first determines the cleanup path.  A
         // closed stream gets a bounded grace period for the process to exit; a copy
         // failure kills and reaps it immediately.  Thus neither a dead peer nor a
         // misbehaving CLI can strand the bridge Pod indefinitely.
         let status = tokio::select! {
-            status = child.wait() => {
-                let status = status.map_err(BridgeError::Wait)?;
+            status = process.wait() => {
+                let status = status.map_err(wait_error)?;
                 let copied = await_copy_bounded(&mut from_cli, "CLI-to-socket").await;
                 to_cli.abort();
                 copied?;
@@ -183,11 +218,10 @@ impl AcpBridge {
             }
             copied = &mut to_cli => {
                 if let Err(error) = copy_result(copied, "socket-to-CLI") {
-                    stop_child(&mut child).await;
                     from_cli.abort();
                     return Err(error);
                 }
-                let status = match wait_for_exit(&mut child).await {
+                let status = match wait_for_exit(process.as_ref()).await {
                     Ok(status) => status,
                     Err(error) => {
                         from_cli.abort();
@@ -199,11 +233,10 @@ impl AcpBridge {
             }
             copied = &mut from_cli => {
                 if let Err(error) = copy_result(copied, "CLI-to-socket") {
-                    stop_child(&mut child).await;
                     to_cli.abort();
                     return Err(error);
                 }
-                let status = match wait_for_exit(&mut child).await {
+                let status = match wait_for_exit(process.as_ref()).await {
                     Ok(status) => status,
                     Err(error) => {
                         to_cli.abort();
@@ -215,7 +248,7 @@ impl AcpBridge {
             }
         };
 
-        status.code().ok_or(BridgeError::SignalTermination)
+        status.code.ok_or(BridgeError::SignalTermination)
     }
 }
 
@@ -229,14 +262,14 @@ fn copy_result(
 }
 
 async fn await_copy(
-    task: &mut tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    task: &mut AbortOnDropHandle<Result<(), std::io::Error>>,
     direction: &'static str,
 ) -> Result<(), BridgeError> {
     copy_result(task.await, direction)
 }
 
 async fn await_copy_bounded(
-    task: &mut tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    task: &mut AbortOnDropHandle<Result<(), std::io::Error>>,
     direction: &'static str,
 ) -> Result<(), BridgeError> {
     match timeout(CHILD_EXIT_TIMEOUT, await_copy(task, direction)).await {
@@ -248,19 +281,29 @@ async fn await_copy_bounded(
     }
 }
 
-async fn wait_for_exit(child: &mut Child) -> Result<std::process::ExitStatus, BridgeError> {
-    match timeout(CHILD_EXIT_TIMEOUT, child.wait()).await {
-        Ok(status) => status.map_err(BridgeError::Wait),
-        Err(_) => {
-            stop_child(child).await;
-            Err(BridgeError::ExitTimeout)
-        }
+fn wait_error(error: SandboxError) -> BridgeError {
+    BridgeError::Wait(std::io::Error::other(error))
+}
+
+async fn wait_for_exit(process: &dyn ProcessHandle) -> Result<ExitStatus, BridgeError> {
+    match timeout(CHILD_EXIT_TIMEOUT, process.wait()).await {
+        Ok(status) => status.map_err(wait_error),
+        Err(_) => Err(BridgeError::ExitTimeout),
     }
 }
 
-async fn stop_child(child: &mut Child) {
-    let _ = child.start_kill();
-    let _ = timeout(CHILD_EXIT_TIMEOUT, child.wait()).await;
+async fn stop_process(process: &dyn ProcessHandle) -> Result<(), BridgeError> {
+    process
+        .signal(Signal::Kill)
+        .await
+        .map_err(BridgeError::Cleanup)?;
+    timeout(CHILD_EXIT_TIMEOUT, process.wait())
+        .await
+        .map_err(|_| {
+            BridgeError::Cleanup(SandboxError::timeout("ACP CLI retirement was not observed"))
+        })?
+        .map_err(BridgeError::Cleanup)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -428,14 +471,234 @@ mod tests {
         assert!(matches!(error, BridgeError::ExitTimeout), "BF4/E1");
     }
 
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "private child participant invoked by the real bridge lifetime matrix"]
+    fn retirement_child() {
+        use std::io::{Read, Write};
+        let role = std::env::var("AWAKEN_BRIDGE_CHILD").unwrap();
+        let address = std::env::var("AWAKEN_BRIDGE_WITNESS").unwrap();
+        let mut witness = std::net::TcpStream::connect(&address).unwrap();
+        // A failing parent test drops its connection, so even an old bridge
+        // cannot leave this participant immortal. The physical EOF oracle's
+        // 2s bound is shorter than this failure-only 5s backstop.
+        witness
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let _descendant = if role != "descendant" {
+            Some(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "bridge::tests::retirement_child",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("AWAKEN_BRIDGE_CHILD", "descendant")
+                    .env("AWAKEN_BRIDGE_WITNESS", &address)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        writeln!(witness, "{role}:{}", std::process::id()).unwrap();
+        if role == "early-exit" {
+            return;
+        }
+        if role == "parent" {
+            let mut input = [0];
+            if std::io::stdin().read_exact(&mut input).is_ok() {
+                println!("AWAKEN_BRIDGE_COPY_READY");
+                std::io::stdout().flush().unwrap();
+            }
+            // EOF deliberately does not end the CLI: disconnect needs real
+            // retirement rather than a cooperative fixture exit.
+        }
+        let _ = std::io::copy(&mut witness, &mut std::io::sink());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn real_descendant_retirement_survives_caller_drop_and_reaped_parent() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        // Physical cause/effect table: P1 caller cancels before accept; P2
+        // cancels after BOTH actual copy tasks deliver the child's marker;
+        // P3 peer disconnects while parent and descendant ignore stdin EOF;
+        // P4 parent has already been reaped but descendant retains stdio.
+        // Every row: both independently acknowledged processes' dedicated TCP
+        // witnesses reach EOF while the host connection halves stay open.
+        // That is real exit evidence, not a lifecycle counter, numeric PID
+        // scan, run-return assertion or elapsed-time survival guess. No process
+        // can voluntarily leave its witness before EOF/backstop; failures close
+        // those streams and bound fixture cleanup. Private-group scope only;
+        // this does not qualify descendants escaping that group or Pod SIGKILL.
+        for cut in [
+            "accept-cancel",
+            "connected-cancel",
+            "disconnect",
+            "early-exit",
+        ] {
+            let witnesses = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = witnesses.local_addr().unwrap();
+            let (bridge, addr) = AcpBridge::bind("127.0.0.1:0").await.unwrap();
+            let role = if cut == "early-exit" {
+                "early-exit"
+            } else {
+                "parent"
+            };
+            let argv = vec![
+                "env".into(),
+                format!("AWAKEN_BRIDGE_CHILD={role}"),
+                format!("AWAKEN_BRIDGE_WITNESS={address}"),
+                std::env::current_exe().unwrap().to_str().unwrap().into(),
+                "--exact".into(),
+                "bridge::tests::retirement_child".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ];
+            let server = tokio::spawn(async move { bridge.run(&argv).await });
+            let mut observed = Vec::new();
+            for _ in 0..2 {
+                let (socket, _) = timeout(Duration::from_secs(2), witnesses.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let mut reader = BufReader::new(socket);
+                let mut line = String::new();
+                timeout(Duration::from_secs(2), reader.read_line(&mut line))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                observed.push((line, reader));
+            }
+            assert!(
+                observed
+                    .iter()
+                    .any(|(line, _)| line.starts_with("descendant:")),
+                "{cut} exact descendant"
+            );
+            assert!(
+                observed
+                    .iter()
+                    .any(|(line, _)| line.starts_with(&format!("{role}:"))),
+                "{cut} exact parent"
+            );
+            if cut == "connected-cancel" {
+                let socket = TcpStream::connect(addr).await.unwrap();
+                let mut socket = BufReader::new(socket);
+                socket.get_mut().write_all(b"x").await.unwrap();
+                timeout(Duration::from_secs(2), async {
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        assert!(socket.read_line(&mut line).await.unwrap() > 0);
+                        if line == "AWAKEN_BRIDGE_COPY_READY\n" {
+                            break;
+                        }
+                    }
+                })
+                .await
+                .expect("P2 actual bidirectional copy");
+                server.abort();
+                assert!(server.await.unwrap_err().is_cancelled());
+            } else if cut == "accept-cancel" {
+                server.abort();
+                assert!(server.await.unwrap_err().is_cancelled());
+            } else if cut == "disconnect" {
+                drop(TcpStream::connect(addr).await.unwrap());
+                assert!(
+                    matches!(server.await.unwrap(), Err(BridgeError::ExitTimeout)),
+                    "P3"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        server.await.unwrap(),
+                        Err(BridgeError::ExitedBeforeConnect(0))
+                    ),
+                    "P4"
+                );
+            }
+            for (identity, mut witness) in observed {
+                let mut remainder = Vec::new();
+                timeout(Duration::from_secs(2), witness.read_to_end(&mut remainder))
+                    .await
+                    .expect("P1-P4 exact participant exited")
+                    .unwrap();
+                assert!(
+                    remainder.is_empty(),
+                    "{cut}/{identity} no synthesized result"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_cli_argv_is_refused_before_spawning() {
+        // P0 empty program input => typed InvalidInput Spawn, zero process;
+        // parse_acp_args covers the ordinary CLI boundary, this public port
+        // independently refuses callers that bypass that parser.
+        let (bridge, _) = AcpBridge::bind("127.0.0.1:0").await.unwrap();
+        assert!(
+            matches!(bridge.run(&[]).await, Err(BridgeError::Spawn(error))
+            if error.kind() == std::io::ErrorKind::InvalidInput)
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_retirement_never_becomes_a_successful_cleanup() {
+        struct UnknownProcess(&'static str);
+        #[async_trait::async_trait]
+        impl ProcessHandle for UnknownProcess {
+            fn id(&self) -> &str {
+                "nonphysical-port-failure-fixture"
+            }
+            async fn wait(&self) -> Result<ExitStatus, SandboxError> {
+                if self.0 == "timeout" {
+                    std::future::pending().await
+                } else {
+                    Err(SandboxError::backend("wait", "observation unknown"))
+                }
+            }
+            async fn poll(&self) -> Result<Option<ExitStatus>, SandboxError> {
+                panic!("the existing wait port owns this fixture's observation")
+            }
+            async fn signal(&self, _: Signal) -> Result<(), SandboxError> {
+                if self.0 == "signal" {
+                    Err(SandboxError::backend("signal", "denied"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        // P5 signal refused; P6 exit observer errors; P7 observation deadline
+        // expires => typed Cleanup in every row, never success/exit-zero. The
+        // real process matrix supplies the positive witness; this port fixture
+        // tests propagation only and makes no OS-termination claim.
+        for failure in ["signal", "wait", "timeout"] {
+            assert!(
+                matches!(
+                    stop_process(&UnknownProcess(failure)).await,
+                    Err(BridgeError::Cleanup(_))
+                ),
+                "P5-P7 {failure}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_stalled_final_copy_has_a_bounded_drain() {
         // Drain graph: C1=CLI/output task is terminally stalled; C2=drain bound
         // expires; E1=CopyDrainTimeout and task cancellation. Rule BF5=C1+C2=>E1.
         // This helper-level injection deterministically covers TCP backpressure
         // that cannot be made portable with socket buffer timing.
-        let mut task =
-            tokio::spawn(async move { std::future::pending::<Result<(), std::io::Error>>().await });
+        let mut task = AbortOnDropHandle::new(tokio::spawn(async move {
+            std::future::pending::<Result<(), std::io::Error>>().await
+        }));
         let error = await_copy_bounded(&mut task, "test-drain")
             .await
             .expect_err("drain must be bounded");
