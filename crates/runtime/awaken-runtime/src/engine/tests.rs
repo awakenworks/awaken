@@ -1152,6 +1152,7 @@ impl LlmExecutor for InvalidResponseThenToolLlm {
 struct SucceedingLlm {
     requests: std::sync::Mutex<Vec<ChatRequest>>,
     text: &'static str,
+    response_delay: std::time::Duration,
 }
 #[async_trait]
 impl LlmExecutor for SucceedingLlm {
@@ -1164,6 +1165,11 @@ impl LlmExecutor for SucceedingLlm {
         sink: &dyn DeltaSink,
     ) -> LlmResult<ChatResponse> {
         self.requests.lock().unwrap().push(request);
+        if !self.response_delay.is_zero() {
+            // awaken-wait: this successful fixture crosses the historical
+            // inference deadline while remaining below its Runtime watchdog.
+            tokio::time::sleep(self.response_delay).await;
+        }
         sink.on_text(self.text).await;
         Ok(ChatResponse {
             output: AssistantOutput::text(self.text),
@@ -1331,6 +1337,81 @@ async fn a_provider_stream_has_a_total_attempt_deadline() {
     assert!(matches!(error, LlmError::Timeout(message) if message.contains("10ms")));
 }
 
+#[tokio::test(start_paused = true)]
+async fn an_actual_runtime_attempt_accepts_fifteen_minute_success_and_rejects_zero_before_entry() {
+    // W1 the canonical success fixture returns after900s under default1230s
+    // watchdog => exact success, one actual invocation. W2 watchdog=0 =>
+    // Binding+NotDispatched, zero calls. The existing hanging case separately
+    // owns timeout/Unknown; this positive witness prevents an all-reject fix.
+    let provider = Arc::new(SucceedingLlm {
+        requests: Default::default(),
+        text: "long successful response",
+        response_delay: std::time::Duration::from_secs(900),
+    });
+    let llm: Arc<dyn LlmExecutor> = provider.clone();
+    let started = tokio::time::Instant::now();
+    let response = infer_with_retry(
+        &llm,
+        one_step_request(),
+        &crate::retry::LlmRetryPolicy::default(),
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        response.output.text_content(),
+        "long successful response",
+        "W1 exact returned content"
+    );
+    assert_eq!(
+        started.elapsed(),
+        std::time::Duration::from_secs(900),
+        "W1 actual Runtime await"
+    );
+    assert_eq!(
+        provider.requests.lock().unwrap().len(),
+        1,
+        "W1 one invocation"
+    );
+    let zero = Arc::new(SucceedingLlm {
+        requests: Default::default(),
+        text: "must not enter",
+        response_delay: std::time::Duration::ZERO,
+    });
+    let llm: Arc<dyn LlmExecutor> = zero.clone();
+    let mut zero_policy = policy(0);
+    zero_policy.attempt_timeout = std::time::Duration::ZERO;
+    let error = infer_with_retry(
+        &llm,
+        one_step_request(),
+        &zero_policy,
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        None,
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code(), "binding_rejected", "W2");
+    assert!(
+        matches!(
+            error.execution_evidence(),
+            awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(_)
+        ),
+        "W2"
+    );
+    assert!(zero.requests.lock().unwrap().is_empty(), "W2 zero effect");
+}
+
 #[tokio::test]
 async fn logical_model_request_observations_cover_success_without_usage_and_failure() {
     use awaken_runtime_contract::llm::ModelRequestObservation;
@@ -1345,6 +1426,7 @@ async fn logical_model_request_observations_cover_success_without_usage_and_fail
     let success: Arc<dyn LlmExecutor> = Arc::new(SucceedingLlm {
         requests: Default::default(),
         text: "ok",
+        response_delay: std::time::Duration::ZERO,
     });
     let success = infer_with_retry_observed(
         &success,
@@ -1415,6 +1497,7 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
     let stale_provider = Arc::new(SucceedingLlm {
         requests: Default::default(),
         text: "must not run",
+        response_delay: std::time::Duration::ZERO,
     });
     let stale_llm: Arc<dyn LlmExecutor> = stale_provider.clone();
     let stale = SequencedOwnership {
@@ -1445,6 +1528,7 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
     let child_provider = Arc::new(SucceedingLlm {
         requests: Default::default(),
         text: "must not run",
+        response_delay: std::time::Duration::ZERO,
     });
     let child_llm: Arc<dyn LlmExecutor> = child_provider.clone();
     let child_context = RuntimeRunContext::new()
@@ -1522,6 +1606,7 @@ async fn model_entry_evidence_does_not_replace_post_write_ownership_verification
     let provider = Arc::new(SucceedingLlm {
         requests: Default::default(),
         text: "must not run",
+        response_delay: std::time::Duration::ZERO,
     });
     let llm: Arc<dyn LlmExecutor> = provider.clone();
     let durable = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
@@ -2109,6 +2194,7 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
     let succeeding = Arc::new(SucceedingLlm {
         requests: Default::default(),
         text: "world",
+        response_delay: std::time::Duration::ZERO,
     });
     let llm: Arc<dyn LlmExecutor> = succeeding.clone();
     let breaker = crate::circuit_breaker::CircuitBreaker::default();

@@ -66,10 +66,10 @@
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7576,
+      "production_lines": 7709,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "claim-fenced carrier redelivery adds one Worker transport capability and one attempt-local source without new durable state"
+        "production_lines": "One validated neutral inference budget, caller-sampled timing value and shared Tokio monotonic clock adapter replace independent Runtime/provider deadline choices and five ambient clock sites. UTC and Worker authority clocks keep their existing owners. Provider I/O stays in its adapter; one existing operation task-local carries timing, with no duplicate identity/store/resolver or graph dependencies."
       }
     },
     "awaken-sandbox-control": {

@@ -715,6 +715,20 @@ pub awaken_runtime_contract::llm::ChatResponse::stop_reason: core::option::Optio
 pub awaken_runtime_contract::llm::ChatResponse::usage: core::option::Option<awaken_agent_contract::audit::model_request::TokenUsage>
 impl awaken_runtime_contract::llm::ChatResponse
 pub const fn awaken_runtime_contract::llm::ChatResponse::terminal_receipt(&self) -> awaken_runtime_contract::model_operation::TerminalReceipt
+pub struct awaken_runtime_contract::llm::ModelAttemptTiming
+impl awaken_runtime_contract::llm::ModelAttemptTiming
+pub fn awaken_runtime_contract::llm::ModelAttemptTiming::response_deadline(self, core::time::Duration) -> core::result::Result<tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub fn awaken_runtime_contract::llm::ModelAttemptTiming::start_at(tokio::time::instant::Instant, core::time::Duration) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::watchdog_deadline(self) -> tokio::time::instant::Instant
+pub struct awaken_runtime_contract::llm::ModelInferenceBudget
+impl awaken_runtime_contract::llm::ModelInferenceBudget
+pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::attempt_watchdog(self) -> core::time::Duration
+pub fn awaken_runtime_contract::llm::ModelInferenceBudget::new(core::time::Duration, core::time::Duration) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::response_timeout(self) -> core::time::Duration
+pub fn awaken_runtime_contract::llm::ModelInferenceBudget::return_allowance(self) -> core::time::Duration
+pub struct awaken_runtime_contract::llm::ModelInferenceBudgetError
+impl awaken_runtime_contract::llm::ModelInferenceBudgetError
+pub fn awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch(self) -> awaken_runtime_contract::llm::Error
 pub struct awaken_runtime_contract::llm::ModelRequestAdmissionRequest
 pub awaken_runtime_contract::llm::ModelRequestAdmissionRequest::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::llm::ModelRequestAdmissionRequest::thread_id: awaken_agent_contract::agent::thread::Id
@@ -732,6 +746,9 @@ pub type awaken_runtime_contract::llm::ThreadUsageKey::Value = awaken_runtime_co
 pub const awaken_runtime_contract::llm::ThreadUsageKey::KEY: &'static str
 pub const awaken_runtime_contract::llm::ThreadUsageKey::MERGE: awaken_agent_contract::agent::state::MergePolicy
 pub const awaken_runtime_contract::llm::ThreadUsageKey::SCOPE: awaken_agent_contract::agent::state::Scope
+pub struct awaken_runtime_contract::llm::TokioModelInferenceClock
+impl awaken_runtime_contract::llm::ModelInferenceClock for awaken_runtime_contract::llm::TokioModelInferenceClock
+pub fn awaken_runtime_contract::llm::TokioModelInferenceClock::now(&self) -> tokio::time::instant::Instant
 pub const awaken_runtime_contract::llm::DEFAULT_MODEL_ATTEMPT_WATCHDOG: core::time::Duration
 pub const awaken_runtime_contract::llm::DEFAULT_MODEL_RESPONSE_TIMEOUT: core::time::Duration
 pub const awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY: &str
@@ -744,6 +761,10 @@ pub fn awaken_runtime_contract::llm::LlmExecutor::infer<'life0, 'async_trait>(&'
 pub fn awaken_runtime_contract::llm::LlmExecutor::infer_streaming<'life0, 'life1, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest, &'life1 dyn awaken_runtime_contract::llm::DeltaSink) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::llm::ModelContentMaterializer: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::ModelContentMaterializer::materialize<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatRequest>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_runtime_contract::llm::ModelInferenceClock: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::llm::ModelInferenceClock::now(&self) -> tokio::time::instant::Instant
+impl awaken_runtime_contract::llm::ModelInferenceClock for awaken_runtime_contract::llm::TokioModelInferenceClock
+pub fn awaken_runtime_contract::llm::TokioModelInferenceClock::now(&self) -> tokio::time::instant::Instant
 pub trait awaken_runtime_contract::llm::ModelRequestGate: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::ModelRequestGate::admit_model_request<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ModelRequestAdmissionRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::llm::ModelRequestAdmission, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub type awaken_runtime_contract::llm::Result<T> = core::result::Result<T, awaken_runtime_contract::llm::Error>
@@ -855,7 +876,9 @@ impl awaken_runtime_contract::model_operation::TerminalReceipt
 pub const fn awaken_runtime_contract::model_operation::TerminalReceipt::from_response_envelope(awaken_runtime_contract::model_operation::ResponseEnvelope) -> Self
 pub fn awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(core::option::Option<&str>) -> core::result::Result<Self, awaken_runtime_contract::model_operation::UnprovenTermination>
 pub const fn awaken_runtime_contract::model_operation::TerminalReceipt::wire_fact(self) -> awaken_runtime_contract::model_operation::TerminalWireFact
+pub fn awaken_runtime_contract::model_operation::current_model_attempt_timing() -> core::option::Option<awaken_runtime_contract::llm::ModelAttemptTiming>
 pub fn awaken_runtime_contract::model_operation::current_model_operation_context() -> core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>
+pub async fn awaken_runtime_contract::model_operation::with_model_invocation_context<T>(core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>, awaken_runtime_contract::llm::ModelAttemptTiming, impl core::future::future::Future<Output = T>) -> T
 pub async fn awaken_runtime_contract::model_operation::with_model_operation_context<T>(core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>, impl core::future::future::Future<Output = T>) -> T
 pub mod awaken_runtime_contract::model_routing
 pub fn awaken_runtime_contract::model_routing::exact_candidate_identity(&awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> bool

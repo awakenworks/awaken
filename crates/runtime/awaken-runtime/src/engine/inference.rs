@@ -180,7 +180,9 @@ pub(super) async fn infer_with_retry_observed(
     // The routing model id, captured before `request` moves into the retry loop —
     // it labels both the span and the metric (structure only, never content).
     let model_id = request.model_binding.model_ref.clone();
-    let started = std::time::Instant::now();
+    let started = awaken_runtime_contract::llm::ModelInferenceClock::now(
+        &awaken_runtime_contract::llm::TokioModelInferenceClock,
+    );
     // OTel GenAI span name is the templated `{operation} {model}` (SHOULD).
     span.record(
         "otel.name",
@@ -379,6 +381,17 @@ async fn infer_with_retry_inner(
                     "model request attempt no longer owns execution: {error}"
                 ))
             })?;
+        // Validate before committing Entered: zero or an unrepresentable budget
+        // must not leave an unknown invocation that never entered an executor.
+        // Durable entry writes remain uncancellable; their elapsed cost still
+        // consumes this invocation's one absolute provider response horizon.
+        let timing = awaken_runtime_contract::llm::ModelAttemptTiming::start_at(
+            awaken_runtime_contract::llm::ModelInferenceClock::now(
+                &awaken_runtime_contract::llm::TokioModelInferenceClock,
+            ),
+            policy.attempt_timeout,
+        )
+        .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?;
         let operation = if let Some(journal) = journal.as_deref_mut() {
             let identity = journal.enter(&attempt_request.model_binding).await?;
             // Persistence may have waited past a lease boundary. The original
@@ -402,10 +415,11 @@ async fn infer_with_retry_inner(
         }
         let outcome = model_read(
             cancellation,
-            tokio::time::timeout(
-                policy.attempt_timeout,
-                awaken_runtime_contract::model_operation::with_model_operation_context(
+            tokio::time::timeout_at(
+                timing.watchdog_deadline(),
+                awaken_runtime_contract::model_operation::with_model_invocation_context(
                     operation,
+                    timing,
                     quiescence.observe_return(llm.infer_streaming(attempt_request, &sink)),
                 ),
             ),

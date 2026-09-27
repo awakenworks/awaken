@@ -18,6 +18,12 @@ use thiserror::Error;
 use crate::agent_bindings::InferenceOptions;
 use crate::resolved::{ModelBinding, ToolDescriptor};
 
+mod inference_budget;
+pub use inference_budget::{
+    ModelAttemptTiming, ModelInferenceBudget, ModelInferenceBudgetError, ModelInferenceClock,
+    TokioModelInferenceClock,
+};
+
 /// Default deadline for a provider adapter to open and consume one complete
 /// model response. Reasoning-capable models may spend minutes before their first
 /// public token or typed tool call, so this is deliberately independent from a
@@ -39,15 +45,9 @@ mod inference_deadline_contract_tests {
 
     #[test]
     fn provider_deadline_precedes_the_runtime_watchdog() {
-        // Deadline cause/effect table. Causes: C1 a provider terminates before
-        // its response deadline; C2 it reaches its own deadline; C3 an executor
-        // ignores every provider deadline and remains pending; C4 a large,
-        // progressing tool response crosses ten minutes but completes inside
-        // twenty. Effects: E1 the
-        // provider result/error reaches Runtime unchanged; E2 only C3 is cut off
-        // by the outer watchdog. Rules D1=(C1|C2)=>E1 because response timeout <
-        // watchdog; D2=C3=>E2; D3=C4=>E1. Invariant: an outer watchdog must never preempt
-        // the canonical provider observation boundary under default composition.
+        // D1 the default composition retains response=20min and a positive
+        // 30s return allowance. This checks configuration only; real HTTP
+        // progress/timeout and Runtime watchdog tests own execution behavior.
         assert_eq!(
             DEFAULT_MODEL_RESPONSE_TIMEOUT,
             std::time::Duration::from_secs(20 * 60)

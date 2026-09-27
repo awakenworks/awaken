@@ -32,6 +32,7 @@ pub struct OpenAiResponsesExecutor {
     url: Url,
     authentication: String,
     provider_kind: String,
+    timeout: Duration,
 }
 
 impl OpenAiResponsesExecutor {
@@ -54,30 +55,44 @@ impl OpenAiResponsesExecutor {
             url,
             authentication: authentication.into(),
             provider_kind: provider_kind.into(),
+            timeout: awaken_runtime_contract::llm::DEFAULT_MODEL_RESPONSE_TIMEOUT,
         })
     }
 
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
     async fn execute(&self, request: &ChatRequest) -> Result<ResponsesResponse, Error> {
+        let deadline = crate::inference_budget::current_model_response_deadline(self.timeout)?;
         let body = request_body_for_provider(request, &self.provider_kind).map_err(|error| {
             // Nothing was encoded, so nothing reached the transport.
             error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
                 NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
             ))
         })?;
-        let response = self
-            .client
-            .post(self.url.clone())
-            .timeout(Duration::from_secs(120))
-            .bearer_auth(&self.authentication)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| classify_error(&error.without_url().to_string()))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|error| Error::Provider(error.without_url().to_string()))?;
+        let (status, text) = tokio::time::timeout_at(deadline, async {
+            let response = self
+                .client
+                .post(self.url.clone())
+                .bearer_auth(&self.authentication)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|error| classify_error(&error.without_url().to_string()))?;
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|error| Error::Provider(error.without_url().to_string()))?;
+            Ok::<_, Error>((status, text))
+        })
+        .await
+        .map_err(|_| {
+            Error::Timeout("Responses call exceeded its complete-response budget".into())
+        })??;
         if !status.is_success() {
             let classified = classify_error(&format!("HTTP {status}: {text}"));
             return Err(if status.is_client_error() || status.is_server_error() {

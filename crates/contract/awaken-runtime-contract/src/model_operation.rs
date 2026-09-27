@@ -414,28 +414,69 @@ impl ModelOperationContext {
     }
 }
 
-tokio::task_local! {
-    static MODEL_OPERATION_CONTEXT: Option<ModelOperationContext>;
+/// One invocation scope owns identity and its transient timing together. It
+/// neither allocates another operation nor persists another source of truth.
+struct ModelInvocationContext {
+    operation: Option<ModelOperationContext>,
+    timing: Option<crate::llm::ModelAttemptTiming>,
 }
 
-/// Read the Runtime-owned identity at provider entry. Direct calls outside an
-/// instrumented invocation have no durable identity and must not fabricate one.
+tokio::task_local! {
+    static MODEL_OPERATION_CONTEXT: ModelInvocationContext;
+}
+
+/// Read the Runtime-owned identity at provider entry. Ephemeral calls must not
+/// fabricate a durable identity merely because they have a timing budget.
 #[must_use]
 pub fn current_model_operation_context() -> Option<ModelOperationContext> {
     MODEL_OPERATION_CONTEXT
-        .try_with(Clone::clone)
+        .try_with(|context| context.operation.clone())
         .ok()
         .flatten()
 }
 
-/// Scope one provider invocation, including adapter awaits, to its journal
-/// identity. `None` explicitly masks an outer invocation rather than borrowing
-/// its key. Child tasks must receive their own explicit execution context.
+#[must_use]
+pub fn current_model_attempt_timing() -> Option<crate::llm::ModelAttemptTiming> {
+    MODEL_OPERATION_CONTEXT
+        .try_with(|context| context.timing)
+        .ok()
+        .flatten()
+}
+
+/// Explicit identity-only scopes mask both outer identity and outer timing.
+/// This existing helper remains for directly instrumented adapter observations;
+/// Runtime uses the complete invocation scope below for actual inference.
 pub async fn with_model_operation_context<T>(
     context: Option<ModelOperationContext>,
     future: impl std::future::Future<Output = T>,
 ) -> T {
-    MODEL_OPERATION_CONTEXT.scope(context, future).await
+    MODEL_OPERATION_CONTEXT
+        .scope(
+            ModelInvocationContext {
+                operation: context,
+                timing: None,
+            },
+            future,
+        )
+        .await
+}
+
+/// Pass the same validated outer timing through entry/credential materialization
+/// to the selected provider, without resolving that provider or its secrets twice.
+pub async fn with_model_invocation_context<T>(
+    operation: Option<ModelOperationContext>,
+    timing: crate::llm::ModelAttemptTiming,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    MODEL_OPERATION_CONTEXT
+        .scope(
+            ModelInvocationContext {
+                operation,
+                timing: Some(timing),
+            },
+            future,
+        )
+        .await
 }
 
 /// One latest-value projection; older invocations remain in the append-only
