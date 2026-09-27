@@ -6,10 +6,46 @@ import {
   loadShape,
   disposeFixtureSessions,
   nativeCrashHistoryErrors,
+  nativeProviderInvocationErrors,
+  nativeInFlightHistoryErrors,
   validateFleetEnvironmentIds,
 } from './distributed_control_driver.ts';
 
 const response = (marker: string) => ({ type: 'agent.message', content: [{ type: 'text', text: `ADR71-PROVIDER:${marker}` }] });
+
+test('independent Provider double reports exact started work and retained completion', () => {
+  // I1 running + one accepted/started => admit pre-crash injection; I2 one
+  // complete exact result => admit post-crash observation. Each identity,
+  // cardinality and phase axis is independently negated, with positive rows
+  // preventing a reject-everything oracle. This is fixture evidence only.
+  const marker='one';
+  for (const complete of [false,true]) {
+    const exact={marker,accepted:1,started:1,running:Number(!complete),completed:Number(complete),results:complete?['ADR71-PROVIDER:one']:[]};
+    assert.deepEqual(nativeProviderInvocationErrors(exact,marker,complete),[]);
+    for (const changed of [
+      {...exact,marker:'other'}, {...exact,accepted:0}, {...exact,accepted:2},
+      {...exact,started:0}, {...exact,started:2}, {...exact,running:2},
+      {...exact,completed:2}, {...exact,results:['wrong']},
+    ]) assert.ok(nativeProviderInvocationErrors(changed,marker,complete).length);
+  }
+  assert.ok(nativeProviderInvocationErrors(null,marker,false).length);
+});
+
+test('unknown in-flight history keeps logical errors separate from physical quiescence', () => {
+  // U1 original accepted receipt, no model result/success => accepted even if
+  // processed_at or an error outcome exists. U2 missing receipt, duplicate id,
+  // any exact model result, or end_turn AFTER receipt => rejects. Initial idle
+  // BEFORE the receipt cannot become a false completion for this attempt.
+  const receipt={id:'receipt',type:'user.message',processed_at:'observed'};
+  const end={id:'end',type:'session.status_idle',stop_reason:{type:'end_turn'}};
+  const error={...end,stop_reason:{type:'error'}};
+  for(const history of [[receipt],[end,receipt],[receipt,error]]) {
+    assert.deepEqual(nativeInFlightHistoryErrors(history,'receipt','one'),[]);
+  }
+  for(const history of [[],[receipt,receipt],[receipt,{id:'model',...response('one')}],[receipt,end]]) {
+    assert.ok(nativeInFlightHistoryErrors(history,'receipt','one').length);
+  }
+});
 
 test('load audit crosses latency and complete-history failures independently', () => {
   // L5 decision table: C1 latency below/equal/above limit; C2 exact/missing/

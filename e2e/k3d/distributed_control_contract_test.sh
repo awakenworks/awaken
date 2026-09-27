@@ -250,9 +250,9 @@ grep -q 'application_name=awaken_standby' "$RENDERED"
 grep -q 'connect_timeout=2' "$RENDERED"
 grep -q 'crictl stop --timeout 0 "$PRIMARY_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-# Crash-semantics ownership rule: the ordinary opaque in-flight request remains
-# excluded. The new case starts only after one terminal model record and an
-# intentionally rejected finish ACK prove the complete ThreadCommit boundary.
+# Positive recovery starts only after one terminal model record and a rejected
+# finish ACK. The negative in-flight case keeps the original journal/slot even
+# after its independent mock Provider completes, and uses no fabricated receipt.
 ! grep -q 'ADR71-CHAOS-SLOW' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'worker_kubernetes_identity_directory' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
@@ -266,7 +266,13 @@ grep -q 'NATIVE_PROVIDER_BEFORE_CRASH' "$REPO_ROOT/e2e/k3d/distributed_control_e
 grep -q 'coordinator_worker_log_count' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 ! grep -q 'logs -l app=coordinator -c worker-tls' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'observe_expired_predecessor' "$REPO_ROOT/crates/server/awaken-dispatch-http/src/worker_dispatch/session_coordination.rs"
-grep -q 'crictl stop --timeout 0 "$NATIVE_OLD_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'hard_crash_native_worker "$NATIVE_CRASH_OLD" "$NATIVE_OLD_UID"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'hard_crash_native_worker "$NATIVE_CRASH_NEXT" "$NATIVE_INFLIGHT_UID"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+[[ "$(grep -c 'crictl stop --timeout 0 "$container"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")" -eq 1 ]]
+grep -q 'NATIVE_INFLIGHT_RETAINED' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq '[ "$NATIVE_INFLIGHT_JOURNAL" = "1|0" ]' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'observe-provider-completed' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'verify-native-inflight' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'reject_old_native_finish' "$RENDERED"
 grep -q 'ADR71_PROVIDER_REQUEST' "$REPO_ROOT/crates/devtools/awaken-scenario-host/src/distributed_control.rs"
 # Stage-boundary capacity table: C1 the fault batch owns temporary retained
