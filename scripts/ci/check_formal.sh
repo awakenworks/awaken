@@ -1000,6 +1000,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness claim_bound_external_effect_admits_only_current_ownership \
     --harness committed_terminal_projection_admits_only_exact_ended_identity \
     --harness max_token_continuation_requires_every_exact_guard \
+    --harness model_budget_requires_positive_response_before_watchdog \
     --harness anchored_context_window_never_moves_past_the_covered_prefix \
     --harness unanchored_legacy_context_never_hides_transcript_messages \
     --harness child_result_is_recorded_once_and_duplicate_record_stutters \

@@ -13,9 +13,335 @@ use awaken_runtime_contract::model_operation::{
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+mod support;
+
+#[tokio::test]
+async fn every_native_dialect_rejects_incoherent_inherited_budget_before_http_dispatch() {
+    use awaken_provider_genai::OpenAiResponsesExecutor;
+    use awaken_runtime_contract::llm::ModelAttemptTiming;
+    use awaken_runtime_contract::model_operation::with_model_invocation_context;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    // B1 response=0; B2 response=watchdog; B3 response>watchdog => Binding,
+    // positive NotDispatched, zero requests. B4 0<response<watchdog => the
+    // original complete HTTP error, terminal receipt, exactly one request.
+    // Cross every rule with Anthropic/OpenAI streaming/nonstreaming and
+    // Responses. The fixture is the existing one HTTP owner, not a new path.
+    for (response_ms, watchdog_ms, valid) in [
+        (0, 100, false),
+        (100, 100, false),
+        (101, 100, false),
+        (300, 500, true),
+    ] {
+        for (kind, streaming) in [(0, false), (0, true), (1, false), (1, true), (2, false)] {
+            let requests = Arc::new(AtomicUsize::new(0));
+            let base = spawn_sse_server(StreamFixture::HttpFailure {
+                status: 400,
+                complete_body: true,
+                requests: requests.clone(),
+            })
+            .await;
+            let response = Duration::from_millis(response_ms);
+            let executor: Box<dyn LlmExecutor> = if kind == 2 {
+                Box::new(
+                    OpenAiResponsesExecutor::from_materialized_endpoint("openai", &base, "test")
+                        .unwrap()
+                        .with_timeout(response),
+                )
+            } else {
+                Box::new(
+                    GenaiExecutor::from_materialized_endpoint(
+                        if kind == 0 {
+                            AdapterKind::Anthropic
+                        } else {
+                            AdapterKind::OpenAI
+                        },
+                        base,
+                        "test",
+                    )
+                    .unwrap()
+                    .with_timeout(response),
+                )
+            };
+            let timing = ModelAttemptTiming::start_at(
+                awaken_runtime_contract::llm::ModelInferenceClock::now(
+                    &awaken_runtime_contract::llm::TokioModelInferenceClock,
+                ),
+                Duration::from_millis(watchdog_ms),
+            )
+            .unwrap();
+            let result = with_model_invocation_context(None, timing, async {
+                if streaming {
+                    executor.infer_streaming(request(), &NullSink).await
+                } else {
+                    executor.infer(request()).await
+                }
+            })
+            .await;
+            let error =
+                result.expect_err("fixture returns a complete error or pre-dispatch refusal");
+            assert_eq!(
+                requests.load(Ordering::SeqCst),
+                usize::from(valid),
+                "B/{response_ms}/{watchdog_ms}/{kind}/{streaming}"
+            );
+            if valid {
+                assert_eq!(
+                    error.execution_evidence(),
+                    ModelExecutionEvidence::Terminated(TerminalReceipt::from_response_envelope(
+                        ResponseEnvelope::CompleteErrorBody
+                    )),
+                    "B4"
+                );
+            } else {
+                assert_eq!(error.code(), "binding_rejected", "B1-B3");
+                assert!(
+                    matches!(
+                        error.execution_evidence(),
+                        ModelExecutionEvidence::NotDispatched(_)
+                    ),
+                    "B1-B3"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn credential_materialization_cannot_restart_the_inherited_response_budget() {
+    use awaken_runtime_contract::llm::ModelAttemptTiming;
+    use awaken_runtime_contract::model_operation::with_model_invocation_context;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    // B5 asynchronous pre-send materialization outlives response but not the
+    // watchdog => its exact invocation budget is spent, no HTTP request and
+    // positive NotDispatched. Do not reset the clock when the adapter is built.
+    let requests = Arc::new(AtomicUsize::new(0));
+    let base = spawn_sse_server(StreamFixture::HttpFailure {
+        status: 400,
+        complete_body: true,
+        requests: requests.clone(),
+    })
+    .await;
+    let timing = ModelAttemptTiming::start_at(
+        awaken_runtime_contract::llm::ModelInferenceClock::now(
+            &awaken_runtime_contract::llm::TokioModelInferenceClock,
+        ),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    let error = with_model_invocation_context(None, timing, async {
+        // awaken-wait: pre-dispatch materialization intentionally consumes the
+        // entire configured 10ms response budget; this deadline is the cause.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let executor = GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base, "test")
+            .unwrap()
+            .with_timeout(Duration::from_millis(10));
+        executor
+            .infer_streaming(request(), &NullSink)
+            .await
+            .unwrap_err()
+    })
+    .await;
+    assert_eq!(error.code(), "timeout", "B5 exact spent-budget error");
+    assert!(
+        matches!(
+            error.execution_evidence(),
+            ModelExecutionEvidence::NotDispatched(_)
+        ),
+        "B5"
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        0,
+        "B5 no initiating request"
+    );
+}
+
+#[tokio::test]
+async fn healthy_text_reasoning_and_typed_tool_progress_finish_after_the_old_ten_minute_limit() {
+    use awaken_runtime_contract::llm::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, ModelAttemptTiming};
+    use awaken_runtime_contract::model_operation::with_model_invocation_context;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Progress(tokio::sync::mpsc::UnboundedSender<(&'static str, String)>);
+    #[async_trait::async_trait]
+    impl DeltaSink for Progress {
+        async fn on_text(&self, text: &str) {
+            let _ = self.0.send(("text", text.into()));
+        }
+        async fn on_reasoning(&self, text: &str) {
+            let _ = self.0.send(("reasoning", text.into()));
+        }
+        async fn on_tool_call_delta(&self, _: &str, _: &str, args: &str) {
+            let _ = self.0.send(("tool", args.into()));
+        }
+    }
+    fn wire(delta: serde_json::Value, finish: serde_json::Value) -> String {
+        format!(
+            "data: {}\n\n",
+            serde_json::json!({"id":"long-response","object":"chat.completion.chunk",
+            "created":1,"model":"model-test","choices":[{"index":0,"delta":delta,"finish_reason":finish}]})
+        )
+    }
+    // Causes: L1 real HTTP + the pinned SDK parser; L2 text, reasoning or typed
+    // tool progress every 200s; L3 complete at 800s, beyond old 600s but before
+    // response1200s/watchdog1230s. E1 every actual DeltaSink observation arrives;
+    // E2 exact complete output/arguments and protocol-end receipt, one request.
+    // Virtual time advances only between confirmed wire observations. Resume
+    // while awaiting real socket I/O, so 2s failure bounds remain real and an
+    // unrecognized event cannot strand a paused-clock test indefinitely.
+    for kind in ["text", "reasoning", "tool"] {
+        let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let base = spawn_sse_server(StreamFixture::Controlled {
+            content_type: "text/event-stream",
+            entered: None,
+            commands: Arc::new(tokio::sync::Mutex::new(receiver)),
+            requests: requests.clone(),
+        })
+        .await;
+        let executor =
+            GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base, "test").unwrap();
+        let (progress, mut observed) = tokio::sync::mpsc::unbounded_channel();
+        let mut request = request();
+        if kind == "tool" {
+            request.tools = vec![support::compatibility_tool()];
+        }
+        let timing = ModelAttemptTiming::start_at(
+            awaken_runtime_contract::llm::ModelInferenceClock::now(
+                &awaken_runtime_contract::llm::TokioModelInferenceClock,
+            ),
+            DEFAULT_MODEL_ATTEMPT_WATCHDOG,
+        )
+        .unwrap();
+        let start = tokio::time::Instant::now();
+        let mut inference = tokio::spawn(async move {
+            let progress = Progress(progress);
+            with_model_invocation_context(None, timing, async {
+                tokio::time::timeout_at(
+                    timing.watchdog_deadline(),
+                    executor.infer_streaming(request, &progress),
+                )
+                .await
+            })
+            .await
+        });
+        let mut expected = String::new();
+        for index in 0..=4 {
+            if index > 0 {
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_secs(200)).await;
+                tokio::time::resume();
+            }
+            let chunk = "x".repeat(512);
+            expected.push_str(&chunk);
+            let delta = match kind {
+                "text" => serde_json::json!({"content":chunk}),
+                "reasoning" => serde_json::json!({"reasoning_content":chunk}),
+                "tool" if index == 0 => {
+                    serde_json::json!({"tool_calls":[{"index":0,"id":"long-tool","type":"function",
+                    "function":{"name":"read_compatibility_fixture","arguments":format!("{{\"marker\":\"{chunk}")}}]})
+                }
+                "tool" => {
+                    serde_json::json!({"tool_calls":[{"index":0,"function":{"arguments":chunk}}]})
+                }
+                _ => unreachable!(),
+            };
+            commands.send(wire(delta, serde_json::Value::Null)).unwrap();
+            let (channel, _) = tokio::select! {
+                frame = tokio::time::timeout(Duration::from_secs(2), observed.recv()) => frame.expect("L1 actual progress callback arrives").expect("L1 sink remains live"),
+                result = &mut inference => panic!("L2 healthy {kind} ended at progress {index}: {result:?}"),
+            };
+            assert_eq!(channel, kind, "L1 exact useful-progress channel");
+        }
+        if kind == "tool" {
+            commands
+                .send(wire(
+                    serde_json::json!({"tool_calls":[{"index":0,"function":{"arguments":"\"}"}}]}),
+                    serde_json::Value::Null,
+                ))
+                .unwrap();
+        } else if kind == "reasoning" {
+            commands
+                .send(wire(
+                    serde_json::json!({"content":"done"}),
+                    serde_json::Value::Null,
+                ))
+                .unwrap();
+        }
+        commands
+            .send(
+                wire(
+                    serde_json::json!({}),
+                    serde_json::json!(if kind == "tool" { "tool_calls" } else { "stop" }),
+                ) + "data: [DONE]\n\n",
+            )
+            .unwrap();
+        drop(commands);
+        let response = tokio::time::timeout(Duration::from_secs(2), inference)
+            .await
+            .expect("L3 completes in its remaining response budget")
+            .unwrap()
+            .expect("L3 outer watchdog did not preempt")
+            .expect("L3 exact protocol completion");
+        assert_eq!(
+            response.stop_reason,
+            Some(if kind == "tool" {
+                StopReason::ToolUse
+            } else {
+                StopReason::NaturalEnd
+            }),
+            "L3 exact protocol terminal, not an EOF assumption"
+        );
+        assert!(
+            start.elapsed() >= Duration::from_secs(800)
+                && start.elapsed() < Duration::from_secs(1_200),
+            "L3 observed virtual duration"
+        );
+        match kind {
+            "text" => assert_eq!(response.output.text_content(), expected),
+            "reasoning" => {
+                assert_eq!(response.output.text_content(), "done");
+                assert!(
+                    response.output.blocks.iter().any(
+                        |b| matches!(b, ContentBlock::Thinking { text, .. } if text == &expected)
+                    ),
+                    "L3 exact captured reasoning"
+                );
+            }
+            "tool" => {
+                let calls = response.output.tool_calls();
+                assert_eq!(calls.len(), 1);
+                assert_eq!(
+                    calls[0].arguments["marker"], expected,
+                    "L3 exact typed JSON across the old budget"
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "L3 one initiating request"
+        );
+    }
+}
 
 #[derive(Clone)]
 enum StreamFixture {
+    Controlled {
+        content_type: &'static str,
+        entered: Option<std::sync::Arc<tokio::sync::Notify>>,
+        commands: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>>,
+        requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    },
     HttpFailure {
         status: u16,
         complete_body: bool,
@@ -35,6 +361,98 @@ enum StreamFixture {
     OpenAiTextBurst,
 }
 
+#[tokio::test]
+async fn responses_complete_body_outlives_the_old_two_minute_cap_and_deadline_remains_unknown() {
+    use awaken_provider_genai::OpenAiResponsesExecutor;
+    use awaken_runtime_contract::llm::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, ModelAttemptTiming};
+    use awaken_runtime_contract::model_operation::with_model_invocation_context;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    // R1 real JSON waits180s for its complete terminal body, inside the shared
+    // 20min budget => exact success, one request. R2 the same dispatched body
+    // never finishes under a custom100ms budget => Timeout/Unknown, one request.
+    // HTTP headers and abandoning a future are never termination receipts.
+    for complete in [true, false] {
+        let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let base = spawn_sse_server(StreamFixture::Controlled {
+            content_type: "application/json",
+            entered: Some(entered.clone()),
+            commands: Arc::new(tokio::sync::Mutex::new(receiver)),
+            requests: requests.clone(),
+        })
+        .await;
+        let executor =
+            OpenAiResponsesExecutor::from_materialized_endpoint("openai", &base, "test").unwrap();
+        let executor = if complete {
+            executor
+        } else {
+            executor.with_timeout(Duration::from_millis(100))
+        };
+        let timing = ModelAttemptTiming::start_at(
+            awaken_runtime_contract::llm::ModelInferenceClock::now(
+                &awaken_runtime_contract::llm::TokioModelInferenceClock,
+            ),
+            DEFAULT_MODEL_ATTEMPT_WATCHDOG,
+        )
+        .unwrap();
+        let mut inference = tokio::spawn(async move {
+            with_model_invocation_context(None, timing, executor.infer(request())).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("exact native HTTP enrollment before moving time");
+        if complete {
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(180)).await;
+            tokio::time::resume();
+            assert!(
+                !inference.is_finished(),
+                "R1 old120s cap cannot preempt the response"
+            );
+            commands
+                .send(
+                    serde_json::json!({"status":"completed","output":[{"type":"message",
+                "content":[{"type":"output_text","text":"complete after180s"}]}]})
+                    .to_string(),
+                )
+                .unwrap();
+            drop(commands);
+            let response = tokio::time::timeout(Duration::from_secs(2), &mut inference)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                response.output.text_content(),
+                "complete after180s",
+                "R1 exact body"
+            );
+        } else {
+            let error = tokio::time::timeout(Duration::from_secs(2), &mut inference)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(error.code(), "timeout", "R2");
+            assert_eq!(
+                error.execution_evidence(),
+                ModelExecutionEvidence::Unknown,
+                "R2"
+            );
+            drop(commands);
+        }
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "R1/R2 one initiating request"
+        );
+    }
+}
+
 /// The one local SSE fixture owner. Each behavior changes only the provider
 /// events after the shared HTTP boundary, so adjacent stream rules cannot drift
 /// across copied socket servers.
@@ -51,6 +469,33 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
                 // Drain the request head; the response does not depend on it.
                 let mut buf = [0u8; 8192];
                 let _ = socket.read(&mut buf).await;
+                if let StreamFixture::Controlled {
+                    commands,
+                    requests,
+                    content_type,
+                    entered,
+                } = &fixture
+                {
+                    requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    socket
+                        .write_all(
+                            format!("HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\n\r\n")
+                                .as_bytes(),
+                        )
+                        .await
+                        .unwrap();
+                    if let Some(entered) = entered {
+                        entered.notify_one();
+                    }
+                    let mut commands = commands.lock().await;
+                    while let Some(chunk) = commands.recv().await {
+                        if socket.write_all(chunk.as_bytes()).await.is_err() {
+                            break;
+                        }
+                        socket.flush().await.unwrap();
+                    }
+                    return;
+                }
                 if let StreamFixture::HttpFailure {
                     status,
                     complete_body,
@@ -94,6 +539,7 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
                 let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
                 let _ = socket.write_all(head.as_bytes()).await;
                 match fixture {
+                    StreamFixture::Controlled { .. } => unreachable!("handled at HTTP boundary"),
                     StreamFixture::HttpFailure { .. } => unreachable!("handled at HTTP boundary"),
                     StreamFixture::Boundary { .. } => unreachable!("handled at HTTP boundary"),
                     StreamFixture::AnthropicStall => {
@@ -192,7 +638,8 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
             anthropic: false, ..
         } => "/v1",
         StreamFixture::AnthropicStall | StreamFixture::AnthropicHeartbeat => "/",
-        StreamFixture::OpenAiEmptyChoiceStall
+        StreamFixture::Controlled { .. }
+        | StreamFixture::OpenAiEmptyChoiceStall
         | StreamFixture::OpenAiEmptyTerminal
         | StreamFixture::OpenAiCompleteAfterEmptyChoices
         | StreamFixture::OpenAiTextBurst => "/v1",

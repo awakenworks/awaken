@@ -1,6 +1,7 @@
 //! Bounded coalescing of best-effort provider stream observations.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 #[cfg(test)]
 use async_trait::async_trait;
