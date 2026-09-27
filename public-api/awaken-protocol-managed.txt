@@ -1999,6 +1999,7 @@ pub fn awaken_protocol_managed::ManagedState::list_sessions(&self) -> alloc::vec
 pub fn awaken_protocol_managed::ManagedState::list_sessions_scoped(&self, &str) -> alloc::vec::Vec<awaken_protocol_managed::types::Session>
 pub async fn awaken_protocol_managed::ManagedState::list_sessions_scoped_durable(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::Session>, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::owner_scope(&self, &str) -> core::option::Option<alloc::string::String>
+pub async fn awaken_protocol_managed::ManagedState::release_profiled_session_without_publication(&self, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::resolve_owner(&self, &str) -> core::result::Result<core::option::Option<alloc::string::String>, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::archive_thread(&self, &str, &str) -> core::result::Result<awaken_protocol_managed::types::SessionThread, awaken_protocol_managed::StateError>
