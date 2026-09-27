@@ -19,6 +19,8 @@ LAZY_CONTEXT="k3d-$LAZY_CLUSTER"
 LAZY_PORT="${AWAKEN_LAZY_API_PORT:-18441}"
 LAZY_PREWARM="${AWAKEN_LAZY_IMAGE_PREWARM:-0}"
 [[ "$LAZY_PREWARM" = 0 || "$LAZY_PREWARM" = 1 ]] || { echo "AWAKEN_LAZY_IMAGE_PREWARM must be 0 or 1" >&2; exit 2; }
+LAZY_STORAGE="${AWAKEN_LAZY_STORAGE_PROFILE:-local-path}"
+[[ "$LAZY_STORAGE" = local-path || "$LAZY_STORAGE" = local-static ]] || { echo 'AWAKEN_LAZY_STORAGE_PROFILE must be local-path or local-static' >&2; exit 2; }
 LAZY_COMMIT="$(git rev-parse HEAD)"
 LAZY_IMAGE="${AWAKEN_LAZY_RUNTIME_IMAGE:-awaken-skill-lazy:$LAZY_COMMIT}"
 LAZY_OUTPUT="${AWAKEN_EVAL_ARTIFACT_DIR:-$LAZY_REPO_ROOT/target/test-evidence/skill-lazy-live}"
@@ -44,6 +46,10 @@ cleanup() {
     # the Registry itself would affect other clusters. The shared deletion
     # owner below still verifies complete absence and reports any real failure.
     docker network disconnect "k3d-$LAZY_CLUSTER" k3d-awaken-registry.localhost 2>/dev/null || true
+    if [[ "$LAZY_STORAGE" = local-static ]]; then
+      kubectl --context "$LAZY_CONTEXT" delete namespace awaken-system awaken-storage --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || true
+      docker exec "k3d-$LAZY_CLUSTER-server-0" sh -ec 'for path in /mnt/awaken-local/volume-*; do test -d "$path" || continue; umount "$path"; done' >/dev/null 2>&1 || true
+    fi
     k3d_delete_cluster "$LAZY_CLUSTER" || status=1
   fi
   if [[ -n "$LAZY_PRIOR_CONTEXT" && "$(kubectl config current-context 2>/dev/null || true)" = "$LAZY_CONTEXT" ]]; then
@@ -73,8 +79,12 @@ LAZY_CREATED=1
 k3d_create_cluster "$LAZY_CLUSTER" 0 128Mi k3d-awaken-registry.localhost:5000 "$LAZY_IMAGE"
 k3d_import_images "$LAZY_CLUSTER" "$LAZY_IMAGE"
 k3d_import_storage_images "$LAZY_CLUSTER"
+if [[ "$LAZY_STORAGE" = local-static ]]; then
+  command -v helm >/dev/null
+  k3d_install_local_storage "$LAZY_CLUSTER" "$LAZY_OUTPUT/storage" 8
+fi
 kubectl --context "$LAZY_CONTEXT" config view --minify --raw --flatten > "$LAZY_TEMP/kubeconfig"
-export LAZY_POD LAZY_IMAGE LAZY_SANDBOX_IMAGE LAZY_TEMP LAZY_CONTEXT LAZY_PORT LAZY_PREWARM
+export LAZY_POD LAZY_IMAGE LAZY_SANDBOX_IMAGE LAZY_TEMP LAZY_CONTEXT LAZY_PORT LAZY_PREWARM LAZY_STORAGE
 python3 - <<'PY'
 import json,os,subprocess
 pod,image,sandbox=(os.environ[k] for k in ['LAZY_POD','LAZY_IMAGE','LAZY_SANDBOX_IMAGE'])
@@ -87,6 +97,7 @@ config='\n'.join([
  'admin_listen = \"127.0.0.1:'+str(int(os.environ['LAZY_PORT'])+2)+'\"',
  'control_seal_key = '+json.dumps(os.urandom(32).hex()),
 ])+'\n'
+if os.environ['LAZY_STORAGE']=='local-static':config=config.replace('storage_class_name = "local-path"','storage_class_name = "awaken-local"')
 if os.environ['LAZY_PREWARM']=='1':config+='k8s_image_prewarm = { max_images = 8 }\n'
 # RBAC and network policy remain owned by the canonical product overlay.
 rendered=subprocess.check_output(['kubectl','kustomize','deploy/k3d/product-backend'])
@@ -115,4 +126,5 @@ docker run -d --network host --name "$LAZY_POD" --label awaken.test.case=skill-l
 LAZY_RUNTIME_CREATED=1
 AWAKEN_LAZY_TEST_URL="http://127.0.0.1:$LAZY_PORT" AWAKEN_LAZY_KUBE_CONTEXT="$LAZY_CONTEXT" \
 AWAKEN_LAZY_SERVICE_CONTAINER="$LAZY_POD" AWAKEN_LAZY_SOURCE_COMMIT="$LAZY_COMMIT" \
+AWAKEN_LAZY_STORAGE_PROFILE="$LAZY_STORAGE" \
 AWAKEN_EVAL_ARTIFACT_DIR="$LAZY_OUTPUT" npm --prefix e2e run test:real:skill-lazy:driver

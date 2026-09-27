@@ -112,7 +112,8 @@
     "test:claude-aliases": "node --test fixtures/fake_anthropic_fixture.test.mjs fixtures/mcp_calc_fixture.test.mjs && node claude_sdk_alias_e2e.mjs && node claude_acp_alias_e2e.mjs",
     "test:cowork-topologies": "node acp_awaken_tool_bridge_e2e.mjs && node worker_transport_e2e.mjs && tsx remote_worker_recovery_e2e.ts && node acp_projected_local_e2e.mjs && node acp_projected_container_e2e.mjs",
     "test:real:skill-lazy:k3d": "bash k3d/managed_skill_lazy_real_e2e.sh",
-    "test:real:skill-lazy:driver": "node managed_skill_lazy_real_e2e.mjs"
+    "test:real:skill-lazy:driver": "node managed_skill_lazy_real_e2e.mjs",
+    "test:local-storage:k3d": "bash k3d/local_storage_e2e.sh"
   },
   "dependencies": {
     "@a2a-js/sdk": "^0.3.13",

@@ -44,6 +44,7 @@ const evidence = { model_source: 'live-deepseek', context, namespace, service_co
   runtime_placement: 'production-cli-and-worker-in-host-network-container', sandbox_placement: 'k3d-pod',
   source_commit: process.env.AWAKEN_LAZY_SOURCE_COMMIT, reply_budget_ms: replyBudget,
   image_prewarm: imagePrewarm, startup_samples: startupSamples, observations: [], passed: false };
+evidence.storage_profile = process.env.AWAKEN_LAZY_STORAGE_PROFILE ?? 'local-path';
 const owned = { sessions: [], environments: [], agent: null, skill: null };
 function record(observation) {
   evidence.observations.push(observation);

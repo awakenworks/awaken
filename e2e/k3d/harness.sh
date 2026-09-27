@@ -596,6 +596,65 @@ k3d_import_storage_images() {
   kubectl --context "$context" -n kube-system rollout status deploy/local-path-provisioner --timeout=120s
 }
 
+# The storage chart is the sole image/config owner. Fixture provisioning uses
+# real loop-backed ext4 filesystems inside its unique Node container; ordinary
+# application PVCs never allocate a helper Pod on the static class.
+k3d_local_storage_image() {
+  local image
+  image="$(awk '$1 == "image:" {print $2; exit}' "$(dirname "${BASH_SOURCE[0]}")/../../deploy/storage/local-pv/values.yaml")"
+  k3d_validate_image_digest "$image" || return 2
+  printf '%s\n' "$image"
+}
+
+k3d_prepare_local_storage() {
+  local cluster="$1" count="${2:-4}" node="k3d-$1-server-0" image
+  k3d_validate_name "$cluster" || return 2
+  [[ "$count" =~ ^[1-9][0-9]?$ ]] && (( count <= 16 )) || return 2
+  [[ "$K3D_PLATFORM" = linux/amd64 ]] || return 2
+  image="$(k3d_local_storage_image)" || return "$?"
+  # Never reuse/format an existing storage directory, including a prior failed
+  # fixture's volumes. Unique fresh cluster lifecycle remains the outer owner.
+  docker exec "$node" sh -ec 'test ! -e /mnt/awaken-local && test ! -e /mnt/awaken-local-disks; mkdir -p /mnt; mkdir -m 0700 /mnt/awaken-local /mnt/awaken-local-disks' || return "$?"
+  docker run --rm --network none --privileged --pid "container:$node" \
+    --entrypoint /bin/sh "$image" -ec '
+      count=$1; index=0; base=/proc/1/root/mnt; loop=
+      trap '\''test -z "$loop" || losetup -d "$loop"'\'' EXIT
+      while [ "$index" -lt "$count" ]; do
+        disk="$base/awaken-local-disks/volume-$index.img"
+        target="$base/awaken-local/volume-$index"
+        test ! -e "$disk"; test ! -e "$target"
+        truncate -s 2G "$disk"
+        mkfs.ext4 -q -F "$disk"
+        mkdir -m 0770 "$target"
+        # Docker snapshots /dev when this formatter starts. LOOP_CTL_GET_FREE
+        # can allocate a newer device whose node is not in that snapshot yet.
+        device=$(losetup --find); minor=${device#/dev/loop}
+        test -e "$device" || mknod "$device" b 7 "$minor"
+        loop=$(losetup --find --show "$disk")
+        minor=${loop#/dev/loop}
+        nsenter -t 1 -m -- /bin/sh -ec '\''
+          device=$1; minor=$2; target=$3
+          test -e "$device" || mknod "$device" b 7 "$minor"
+          /bin/aux/mount -o nodev,nosuid "$device" "$target"
+        '\'' awaken-local-mount "$loop" "$minor" "/mnt/awaken-local/volume-$index"
+        # Detaching a mounted loop sets AUTOCLEAR; the owned mount keeps it
+        # live and final fixture unmount releases it without host cleanup.
+        losetup -d "$loop"; loop=
+        index=$((index+1))
+      done
+    ' awaken-local-disks "$count" || return "$?"
+  kubectl --context "k3d-$cluster" label node "$node" awaken.dev/local-storage=true --overwrite >/dev/null
+}
+
+k3d_install_local_storage() {
+  local cluster="$1" output="$2" count="${3:-4}" image
+  image="$(k3d_local_storage_image)" || return "$?"
+  k3d_ensure_images "$image" || return "$?"
+  k3d_import_images "$cluster" "$image" || return "$?"
+  k3d_prepare_local_storage "$cluster" "$count" || return "$?"
+  bash "$(dirname "${BASH_SOURCE[0]}")/../../deploy/storage/local-pv/install.sh" --context "k3d-$cluster" "$output"
+}
+
 # Kubernetes adapter publication owns the opaque Session scope annotation.
 # Never infer Session ownership from a Pod name, iteration order or copied files.
 k3d_sandbox_pod_for_session() {
@@ -738,6 +797,34 @@ resolve_cargo_executable() {
 k3d_harness_selftest() (
   python3 "$(dirname "${BASH_SOURCE[0]}")/capacity.py" --self-test
   python3 "$(dirname "${BASH_SOURCE[0]}")/test_image_archive.py"
+  # Static-volume fixture table V1 invalid name/count => no Docker/Kubernetes;
+  # V2 existing directory => stop before formatting; V3 formatter failure =>
+  # no node eligibility; V4 fresh owned Node => one formatter then eligibility.
+  # Mocks replace infrastructure only; the actual admission/helper executes.
+  (
+    local scenario calls=0 eligible=0
+    docker() {
+      calls=$((calls+1))
+      if [[ "$1" = exec && "$scenario" = existing ]]; then return 7; fi
+      if [[ "$1" = run && "$scenario" = format-fails ]]; then return 8; fi
+      return 0
+    }
+    kubectl() { eligible=$((eligible+1)); }
+    calls=0; scenario=invalid
+    ! k3d_prepare_local_storage --all 4
+    ! k3d_prepare_local_storage awaken-test 0
+    ! k3d_prepare_local_storage awaken-test 17
+    [[ "$calls" = 0 && "$eligible" = 0 ]]
+    scenario=existing
+    ! k3d_prepare_local_storage awaken-test 4
+    [[ "$calls" = 1 && "$eligible" = 0 ]]
+    calls=0; scenario=format-fails
+    ! k3d_prepare_local_storage awaken-test 4
+    [[ "$calls" = 2 && "$eligible" = 0 ]]
+    calls=0; scenario=fresh
+    k3d_prepare_local_storage awaken-test 4
+    [[ "$calls" = 2 && "$eligible" = 1 ]]
+  )
   # Digest cause/effect table: C1 inspected image has real RepoDigests;
   # C2 Docker observation succeeds; C3 reference has an exact SHA-256 shape.
   # I1 C1+C2+C3 => immutable manifest reference, stable under alias order;

@@ -1,0 +1,27 @@
+# The SIG Storage controller owns PV discovery, binding metadata and recycling.
+# Operators mount independent empty filesystems under hostDir before installation.
+fullnameOverride: awaken-local-storage
+image: registry.k8s.io/sig-storage/local-volume-provisioner@sha256:a03c72511a56dc9218ad9548e5620b0de63a84327760f1569df0dcb069152b03
+imagePullPolicy: IfNotPresent
+nodeSelector:
+  kubernetes.io/arch: amd64
+  awaken.dev/local-storage: "true"
+mountDevVolume: false
+useJobForCleaning: false
+setPVOwnerRef: false
+useNodeNameOnly: false
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+classes:
+  - name: awaken-local
+    hostDir: /mnt/awaken-local
+    volumeMode: Filesystem
+    accessMode: ReadWriteOnce
+    namePattern: "volume-*"
+    storageClass:
+      isDefaultClass: false
+      reclaimPolicy: Delete

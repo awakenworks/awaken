@@ -1,0 +1,231 @@
+# Override the default chartname or releasename
+nameOverride: ""
+fullnameOverride: ""
+
+rbac:
+  # rbac.create: `true` if rbac resources should be created
+  create: true
+  # list of additional rbac rules that may be needed by init containers
+  extraRules: []
+
+# Defines whether to generate a serviceAccount
+serviceAccount:
+  # serviceAccount.create: Whether to create a service account or not
+  create: true
+  # serviceAccount.name: The name of the service account to create or use
+  name: ""
+
+# Indicates if PVs should be dependents of the owner Node.
+setPVOwnerRef: false
+
+# Provisioner clean volumes in process by default. If set to true, provisioner
+# will use Jobs to clean.
+useJobForCleaning: false
+
+# Provisioner name contains Node.UID by default. If set to true, the provisioner
+# name will only use Node.Name.
+useNodeNameOnly: false
+
+# Resync period in reflectors will be random between minResyncPeriod and
+# 2*minResyncPeriod. Default: 5m0s.
+#minResyncPeriod: 5m0s
+
+# Additional volumes to create, for the default container and init containers
+# to consume
+additionalVolumes: []
+
+# Mount the host's `/dev/` by default so that block device symlinks can be
+# resolved by the containers
+mountDevVolume: true
+
+# Additional volumes to mount to the default container, the volumes should
+# either be host paths or defined by additionalVolumes
+additionalVolumeMounts: []
+
+# Map of label key-value pairs to apply to the PVs created by the
+# provisioner. Uncomment to add labels to the list.
+#labelsForPV:
+#  pv-labels: can-be-selected
+
+# Indicates if Windows DaemonSet should be created
+enableWindows: false
+
+# Configuration for classes of static volumes.
+classes:
+  - name: fast-disks # Defines name of storage classes.
+    # Path on the host where local volumes of this storage class are mounted
+    # under.
+    hostDir: /mnt/fast-disks
+    # Optionally specify mount path of local volumes. By default, we use same
+    # path as hostDir in container.
+    # mountDir: /mnt/fast-disks
+    # The volume mode of created PersistentVolume object. Default to Filesystem
+    # if not specified.
+    volumeMode: Filesystem
+    # Access mode of the volume. default to ReadWriteOnce if not specified.
+    accessMode: ReadWriteOnce
+    # Filesystem type to mount.
+    # It applies only when the source path is a block device,
+    # and desire volume mode is Filesystem.
+    # Must be a filesystem type supported by the host operating system.
+    fsType: ext4
+    # File name pattern to discover. By default, discover all file names.
+    namePattern: "*"
+    # Restrict topology of provisioned volumes to specific labels
+    allowedTopologies:
+    blockCleanerCommand:
+      #  Do a quick reset of the block device during its cleanup.
+      #  - "/scripts/quick_reset.sh"
+      #  or use dd to zero out block dev in two iterations by uncommenting these lines
+      #  - "/scripts/dd_zero.sh"
+      #  - "2"
+      # or run shred utility for 2 iteration.s
+      - "/scripts/shred.sh"
+      - "2"
+      # or blkdiscard utility by uncommenting the line below.
+      #  - "/scripts/blkdiscard.sh"
+    # Uncomment to create storage class object with default configuration.
+    # storageClass: true
+    # Uncomment to create storage class object and configure it.
+    # storageClass:
+      # reclaimPolicy: Delete # Available reclaim policies: Delete/Retain, defaults: Delete.
+      # isDefaultClass: true # set as default class
+      # If you are using cluster autoscaler to scale the workload using volume provisioned by this storage class,
+      # set the provisioner of the storage class to another value other than the default.
+      # Ref: https://github.com/kubernetes-sigs/sig-storage-local-static-provisioner/issues/288
+      # provisioner: kubernetes.io/no-provisioner
+
+# Defines annotations for each Pod in the DaemonSet.
+podAnnotations: {}
+# Defines labels for each Pod in the DaemonSet.
+podLabels: {}
+
+# Defines Provisioner's image name including container registry.
+image: registry.k8s.io/sig-storage/local-volume-provisioner:v{{ .Chart.AppVersion }}
+
+# Defines Image download policy, see kubernetes documentation for available values.
+# imagePullPolicy: Always
+
+# Defines Image pull secrets for the provisioner image.
+imagePullSecrets: []
+
+# Defines a name of the Pod Priority Class to use with the Provisioner DaemonSet
+# Note that if you want to make it critical, specify "system-cluster-critical"
+# or "system-node-critical" and deploy in kube-system namespace.
+# Ref: https://k8s.io/docs/tasks/administer-cluster/guaranteed-scheduling-critical-addon-pods/#marking-pod-as-critical
+#priorityClassName: system-node-critical
+# If configured, nodeSelector will add a nodeSelector field to the DaemonSet PodSpec.
+#
+# NodeSelector constraint for local-volume-provisioner scheduling to nodes.
+# Ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#nodeselector
+nodeSelector: {}
+nodeSelectorWindows: {}
+
+# List of node labels to be copied to the PVs created by the provisioner in a format:
+#
+#  nodeLabels:
+#    - failure-domain.beta.kubernetes.io/zone
+#    - failure-domain.beta.kubernetes.io/region
+#
+# If configured, tolerations will add a toleration field to the DaemonSet PodSpec.
+#
+# Node tolerations for local-volume-provisioner scheduling to nodes with taints.
+# Ref: https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+tolerations: []
+#
+# If configured, removeNodeNotReadyTaint will add provisionerNotReadyNodeTaintKey as the toleration key
+# to the DaemonSet PodSpec.
+#
+# removeNodeNotReadyTaint controls whether the provisioner should remove the provisionerNotReadyNodeTaintKey
+# once it becomes ready.
+removeNodeNotReadyTaint: false
+#
+# The key of the startup taint that provisioner will remove once it becomes ready.
+# Ref: https://karpenter.sh/docs/concepts/nodepools/#cilium-startup-taint
+provisionerNotReadyNodeTaintKey: "sig-storage-local-static-provisioner/agent-not-ready"
+#
+# If configured, affinity will add a affinity filed to the DeamonSet PodSpec.
+# Ref: https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity
+affinity: {}
+#
+# If configured, resources will set the requests/limits field to the Daemonset PodSpec.
+# Ref: https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/
+resources:
+  {}
+  # limits:
+  #   memory: "512Mi"
+  #   cpu: "1000m"
+  # requests:
+  #   memory: "32Mi"
+  #   cpu: "10m"
+#
+# Security context for the Linux provisioner container.
+# This applies only to the Linux DaemonSet; the Windows DaemonSet does not
+# render a securityContext.
+# When set to a non-empty map/object value, this takes precedence over the legacy
+# `privileged` field below. However, if `securityContext` does not include
+# the `privileged` key, the legacy `privileged` value is automatically merged
+# to preserve backward compatibility.
+# Ref: https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+#
+# Example:
+#   securityContext:
+#     privileged: true
+#     allowPrivilegeEscalation: true
+securityContext: {}
+
+# If set to false, the provisioner DaemonSet container will run without extra
+# privileges. This is the legacy field; when securityContext above is a non-empty
+# map/object and includes the `privileged` key, this field is ignored.
+privileged: true
+
+# Host PID set in the linux daemonset container spec. When set to true allows a pod to have access to the host process ID namespace
+hostPID: false
+
+# Liveness probe for the provisioner container.
+# Uses tcpSocket to verify the process is alive without coupling to readiness state.
+# Ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+livenessProbe:
+  tcpSocket:
+    port: metrics
+  initialDelaySeconds: 10
+  periodSeconds: 60
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# Readiness probe for the provisioner container.
+readinessProbe: {}
+
+# Startup probe for the provisioner container.
+startupProbe: {}
+
+# Any init containers can be configured here.
+# Ref: https://kubernetes.io/docs/concepts/workloads/pods/init-containers/
+initContainers: []
+
+# Update strategy for the DaemonSet.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+#
+# Configure Prometheus monitoring
+#
+serviceMonitor:
+  enabled: false
+  ## Interval at which Prometheus scrapes the provisioner
+  interval: 10s
+  # Namespace Prometheus is installed in defaults to release namespace
+  namespace:
+  ## Defaults to whats used if you follow CoreOS [Prometheus Install Instructions](https://github.com/coreos/prometheus-operator/tree/master/helm#tldr)
+  ## [Prometheus Selector Label](https://github.com/coreos/prometheus-operator/blob/master/helm/prometheus/templates/prometheus.yaml#L65)
+  ## [Kube Prometheus Selector Label](https://github.com/coreos/prometheus-operator/blob/master/helm/kube-prometheus/values.yaml#L298)
+  additionalLabels: {}
+  relabelings: []
+  # - sourceLabels: [__meta_kubernetes_pod_node_name]
+  #   separator: ;
+  #   regex: ^(.*)$
+  #   targetLabel: nodename
+  #   replacement: $1
+  #   action: replace

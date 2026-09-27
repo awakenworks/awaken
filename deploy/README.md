@@ -48,6 +48,11 @@ enforcement and frozen Session evidence remain required for Verified operation.
 
 ## Local and shared storage
 
+Kubernetes deployments may use the standard [preallocated local volume
+deployment](storage/local-pv/README.md) for ordinary PVCs. Its explicit StorageClass
+keeps supply and recycling in the storage controller; application initialization,
+data retention and recovery retain their existing owners.
+
 All embedded databases and the generated `control-seal.key` live under the one
 data directory. Local mode migrates embedded stores at startup. Shared server
 deployments run `awaken database migrate` before application Pods; application
