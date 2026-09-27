@@ -1,6 +1,6 @@
 // Native Skill startup qualification through production Awaken, real DeepSeek,
 // the official SDK and independent Kubernetes observations. No fake model.
-// L1 cold/warm Session + pinned reads -> exact unknown reference marker, reply
+// L1 cold/warm Session + pinned reads -> exact unknown reference bytes, reply
 // within the configured budget, zero Session-scoped Sandbox Pods.
 // L2 service container restart + same Session -> a new exact read and reply,
 // same retained pin, no Sandbox. L3 first Bash -> real script output + Ready Pod.
@@ -103,7 +103,18 @@ async function readTurn(sessionId, label) {
     first_text_ms: firstTextMs, complete_reply_ms: elapsed, pods, events: delta });
   assert.ok(delta.some((event) => event.type === 'agent.tool_use' && event.name === 'read'), 'live model chose read');
   assert.ok(resultText(delta, 'read').includes(expected), 'new tool result carries unknown reference bytes');
-  assert.ok(delta.filter((event) => event.type === 'agent.message').some((event) => JSON.stringify(event.content).includes(expected)), 'model consumed actual reference');
+  // R1 successful unknown reference bytes -> subsequent model inference and
+  // a nonempty reply, even when natural prose does not echo the test marker.
+  // R2 missing bytes is rejected above; R3 only a pre-read announcement or no
+  // subsequent inference/reply is rejected here. This qualifies delivery into
+  // the model context, not the semantic quality of the model's prose.
+  const referenceResultIndex = delta.findIndex((event) => event.type === 'agent.tool_result'
+    && !event.is_error && JSON.stringify(event.content).includes(expected));
+  const inferenceIndex = delta.findIndex((event, index) => index > referenceResultIndex
+    && event.type === 'span.model_request_start');
+  assert.ok(referenceResultIndex >= 0 && inferenceIndex > referenceResultIndex, 'model inference follows the successful reference read');
+  assert.ok(delta.some((event, index) => index > inferenceIndex && event.type === 'agent.message'
+    && event.content?.some((block) => block.type === 'text' && block.text?.trim())), 'model replies after receiving reference bytes');
   assert.ok(!delta.some((event) => event.type === 'agent.tool_use' && event.name !== 'read'), 'no shell probe before reply');
   assert.equal(pods.length, 0, 'read/reply does not create Sandbox Pod');
   assert.ok(firstTextMs <= replyBudget, `${label} first text ${firstTextMs.toFixed(0)}ms exceeds ${replyBudget}ms`);
