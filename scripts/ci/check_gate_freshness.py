@@ -4,7 +4,8 @@
 Usage:
   check_gate_freshness.py                       report; never fails on staleness
   check_gate_freshness.py --require-fresh       fail when the record has expired
-  check_gate_freshness.py --record --gates ...  bless HEAD, after everything passed
+  check_gate_freshness.py --record --gates ... --expected-commit SHA
+                                              record the clean tested candidate
   check_gate_freshness.py --self-test           prove the decision table
 
 Why this exists
@@ -219,8 +220,18 @@ def tool_versions() -> dict[str, str]:
     return versions
 
 
-def write_record(repo: Path, gates: list[str], path: Path) -> int:
-    """Bless HEAD — refusing a set of gates that is not the whole gate."""
+def source_matches_candidate(repo: Path, expected_commit: str) -> bool:
+    """One source fence reused before tool observations and record publication."""
+    head = git(repo, "rev-parse", "HEAD")
+    dirty = git(repo, "status", "--porcelain", "--untracked-files=all", "--", ".",
+                ":(exclude)scripts/ci/gate_record.json")
+    return (bool(SHA.fullmatch(expected_commit)) and head.returncode == 0
+            and head.stdout.strip() == expected_commit and dirty.returncode == 0
+            and not dirty.stdout.strip())
+
+
+def write_record(repo: Path, gates: list[str], path: Path, expected_commit: str = "") -> int:
+    """Record the same clean candidate, refusing partial or changed-source runs."""
 
     expected = all_groups()
     absent = [group for group in expected if group not in gates]
@@ -234,6 +245,9 @@ def write_record(repo: Path, gates: list[str], path: Path) -> int:
     if not SHA.match(head):
         print("refusing to record: HEAD is not a commit", file=sys.stderr)
         return 1
+    if not source_matches_candidate(repo, expected_commit):
+        print("refusing to record: candidate SHA changed, is missing, or source is not clean", file=sys.stderr)
+        return 1
     document = {
         "version": 1,
         "commit": head,
@@ -243,8 +257,11 @@ def write_record(repo: Path, gates: list[str], path: Path) -> int:
         "host": os.uname().nodename,
         "tools": tool_versions(),
     }
+    if not source_matches_candidate(repo, expected_commit):
+        print("refusing to record: source changed while tool evidence was collected", file=sys.stderr)
+        return 1
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"recorded the full gate at {head[:12]} in {path.relative_to(ROOT)}")
+    print(f"recorded the full gate at {head[:12]} in {path}")
     print("commit this record: a green run nobody can see is a run nobody trusts")
     return 0
 
@@ -458,6 +475,41 @@ def self_test() -> int:
         if (root / "partial.json").exists():
             problems.append("W1 a refused record still wrote a file")
 
+        # Source cause/effect table: W2 complete gates but no candidate binding,
+        # wrong SHA, dirty tracked source or new untracked source => refuse
+        # without a receipt. W3 the same clean exact candidate => one receipt.
+        # W4 source changes during tool-version observation => refuse. Main
+        # ancestry remains the separate I2 integrity rule, unchanged here.
+        from unittest.mock import patch
+        def record_candidate(name: str, candidate: str) -> int:
+            return _quiet(lambda: write_record(repo, groups, root / name, candidate))
+        with patch(__name__ + ".tool_versions", return_value={"cargo": "test-fixture"}):
+            for name, candidate in (("missing.json", ""), ("wrong.json", first)):
+                if record_candidate(name, candidate) != 1 or (root / name).exists():
+                    problems.append(f"W2 {name} recorded an unbound candidate")
+            tracked = repo / "file0"
+            original = tracked.read_text()
+            tracked.write_text("changed source")
+            if record_candidate("dirty.json", head) != 1 or (root / "dirty.json").exists():
+                problems.append("W2 dirty tracked source recorded")
+            tracked.write_text(original)
+            untracked = repo / "new-source.rs"
+            untracked.write_text("new source")
+            if record_candidate("untracked.json", head) != 1 or (root / "untracked.json").exists():
+                problems.append("W2 untracked source recorded")
+            untracked.unlink()
+            if record_candidate("exact.json", head) != 0:
+                problems.append("W3 exact clean candidate refused")
+            elif json.loads((root / "exact.json").read_text())["commit"] != head:
+                problems.append("W3 record drifted from tested SHA")
+        def mutate_during_tool_observation() -> dict[str, str]:
+            tracked.write_text("changed during tool observation")
+            return {"cargo": "test-fixture"}
+        with patch(__name__ + ".tool_versions", side_effect=mutate_during_tool_observation):
+            if record_candidate("raced.json", head) != 1 or (root / "raced.json").exists():
+                problems.append("W4 source race recorded")
+        tracked.write_text(original)
+
     if problems:
         print("check_gate_freshness self-test:", file=sys.stderr)
         for problem in problems:
@@ -475,13 +527,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--require-fresh", action="store_true")
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--gates", default="")
+    parser.add_argument("--expected-commit", default="")
     parser.add_argument("--self-test", action="store_true")
     arguments = parser.parse_args(argv)
 
     if arguments.self_test:
         return self_test()
     if arguments.record:
-        return write_record(ROOT, arguments.gates.split(), RECORD)
+        return write_record(ROOT, arguments.gates.split(), RECORD, arguments.expected_commit)
     return report(ROOT, RECORD, arguments.require_fresh)
 
 
