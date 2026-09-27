@@ -245,6 +245,7 @@ async fn live_broadcast_delivers_one_runs_committed_frames_in_order() {
         committed_types(&frames),
         vec![
             "user.message",
+            "user.message",
             "session.status_running",
             "session.thread_status_running",
             "agent.message",
@@ -260,6 +261,19 @@ async fn live_broadcast_delivers_one_runs_committed_frames_in_order() {
             "session.status_idle"
         ],
         "the Run's committed frames arrive live, in order"
+    );
+    // L1 same accepted identity is enriched, not a second User command. This
+    // pair was previously hidden by id-only publication; both payloads remain
+    // immutable and only the processing observation advances.
+    assert_eq!(frames[0].id, frames[1].id, "L1 exact receipt identity");
+    assert!(
+        frames[0].processed_at.is_none() && frames[1].processed_at.is_some(),
+        "L1 monotonic completion"
+    );
+    assert_eq!(
+        serde_json::to_value(&frames[0].kind).unwrap(),
+        serde_json::to_value(&frames[1].kind).unwrap(),
+        "L1 unchanged authored payload"
     );
 }
 
@@ -288,6 +302,7 @@ async fn live_broadcast_preserves_order_across_two_runs() {
         committed_types(&frames),
         vec![
             "user.message",
+            "user.message",
             "session.status_running",
             "session.thread_status_running",
             "agent.message",
@@ -301,6 +316,7 @@ async fn live_broadcast_preserves_order_across_two_runs() {
             "session.thread_status_idle",
             "session.usage",
             "session.status_idle",
+            "user.message",
             "user.message",
             "session.status_running",
             "session.thread_status_running",
@@ -1108,6 +1124,21 @@ async fn slow_http_consumers_and_reconnect_storm_recover_from_durable_replay() {
             body.contains("event: session.status_idle"),
             "R2/E2 slow body {index} catches the terminal suffix"
         );
+        // R2 requires every durable identity, not merely the buffered Idle
+        // suffix. These bodies opened before 65 receipts overflowed the
+        // receiver; skipping Lagged without index catch-up fails this rule.
+        let expected = state
+            .list_events(&id, None, Some(100), false)
+            .unwrap()
+            .data
+            .into_iter()
+            .map(|event| event.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sse_committed_ids(&body),
+            expected,
+            "R2 complete lag recovery {index}"
+        );
     }
 
     let canonical = state
@@ -1164,5 +1195,168 @@ async fn a_closed_sender_ends_the_subscription() {
             Err(tokio::sync::broadcast::error::RecvError::Closed)
         ),
         "the receiver observes Closed once the session's sender is gone"
+    );
+}
+
+#[tokio::test]
+async fn an_open_stream_reconciles_silent_commits_from_an_independent_replica() {
+    // Causes: S1 two independent Managed caches share real SQLite root truth
+    // and the Runtime port; S2 only B accepts/drives/projects one user command;
+    // S3 A's HTTP SSE body stays open with no local broadcast, reconnect or GET.
+    // Effects: E1 A reads and delivers every canonical committed id and final
+    // marker in its bounded silent window; E2 only one command/Run was admitted;
+    // E3 root/child wire projection is identical to B's authoritative history.
+    // Rule S1+S2+S3=>E1-E3. PostgreSQL multi-pool qualification reuses the same
+    // production history and projection ports; this slice owns cache isolation.
+    let runtime = CoordinatedRuntimeFake::default();
+    let repository =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let a = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
+    let b = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository));
+    let id = state_create(&a).await;
+    let response = router(a)
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/sessions/{id}/events/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "S1 open A stream");
+    let observer = tokio::spawn(async move {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            response.into_body().collect(),
+        )
+        .await
+        .expect("S3/E1 silent replica stream completes from durable truth")
+        .expect("S3 production SSE body")
+        .to_bytes()
+    });
+    state_send_user(&b, &runtime, &id, "commit only through B").await;
+    let body = String::from_utf8(observer.await.unwrap().to_vec()).unwrap();
+    let expected = b.list_events(&id, None, Some(100), false).unwrap().data;
+    assert_eq!(
+        sse_committed_ids(&body),
+        expected
+            .iter()
+            .map(|event| event.id.clone())
+            .collect::<Vec<_>>(),
+        "S3/E1+E3"
+    );
+    assert!(
+        body.contains("event: session.status_idle"),
+        "S3 exact terminal"
+    );
+    assert!(
+        runtime
+            .completed_user_dispatches()
+            .lock()
+            .unwrap()
+            .is_empty(),
+        "S2 exact completed boundary was drained"
+    );
+    assert_eq!(
+        expected
+            .iter()
+            .filter(|event| event.type_str() == "user.message")
+            .count(),
+        1,
+        "S2/E2 one accepted command, no resend"
+    );
+    let user = expected
+        .iter()
+        .find(|event| event.type_str() == "user.message")
+        .unwrap();
+    assert!(
+        user.processed_at.is_some(),
+        "S3 completed admission observation"
+    );
+    assert!(
+        body.contains(&serde_json::to_string(user).unwrap()),
+        "S3 exact completed receipt wire"
+    );
+}
+
+#[tokio::test]
+async fn an_open_http_stream_delivers_processing_enrichment_of_its_issued_receipt() {
+    // Cause/effect table E1: an admitted User Run returned, but its exact
+    // Dispatch-applied boundary has not finalized the retained command; E2 the
+    // HTTP body actually observes that id with null processed_at; E3 the
+    // canonical boundary then finalizes. Effect: the SAME connection delivers
+    // the same immutable id/payload with its first processing observation and
+    // closes on the correct aggregate Idle, without resending the command.
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let id = state_create(&state).await;
+    let sent = state.send_events(&id, serde_json::from_value(serde_json::json!({
+        "events": [{"type":"user.message", "content":[{"type":"text", "text":"observe processing"}]}]
+    })).unwrap()).await.unwrap();
+    let receipt = sent.data[0].id.clone();
+    support::drive_retained_session_events(&state, &id).await;
+    let response = router(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/sessions/{id}/events/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "E1 pending receipt stream"
+    );
+    let (observed, observation) = tokio::sync::oneshot::channel();
+    let observed_id = receipt.clone();
+    let observer = tokio::spawn(async move {
+        tokio::time::timeout(std::time::Duration::from_secs(8), async move {
+            let mut body = response.into_body();
+            let mut output = Vec::new();
+            let mut observed = Some(observed);
+            while let Some(frame) = body.frame().await {
+                let frame = frame.expect("E2 production stream frame");
+                if let Some(bytes) = frame.data_ref() {
+                    output.extend_from_slice(bytes);
+                    let text = String::from_utf8_lossy(&output);
+                    if text
+                        .lines()
+                        .filter_map(|line| line.strip_prefix("data: "))
+                        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                        .any(|event| event["id"] == observed_id && event["processed_at"].is_null())
+                        && let Some(observed) = observed.take()
+                    {
+                        observed.send(()).expect("E2 observer remains alive");
+                    }
+                }
+            }
+            String::from_utf8(output).unwrap()
+        })
+        .await
+        .expect("E3 processing completion and exact Idle settle the open body")
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(3), observation)
+        .await
+        .expect("E2 actual pending frame observed before finalization")
+        .unwrap();
+    support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
+        .await;
+    let text = observer.await.unwrap();
+    let frames = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["id"] == receipt)
+        .collect::<Vec<_>>();
+    assert_eq!(frames.len(), 2, "E2/E3 exactly admission then enrichment");
+    assert!(frames[0]["processed_at"].is_null(), "E2");
+    assert!(frames[1]["processed_at"].as_str().is_some(), "E3");
+    let mut original = frames[0].clone();
+    original["processed_at"] = frames[1]["processed_at"].clone();
+    assert_eq!(
+        original, frames[1],
+        "E3 only the completion observation changed"
     );
 }

@@ -1430,16 +1430,19 @@ impl ManagedState {
             let deleted_id = self.next_event_id();
             let mut sessions = self.sessions.lock().unwrap();
             let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-            let from = record.events.len();
-            record.events.push(Event {
+            let mut event = Event {
                 id: deleted_id,
                 kind: OutboundKind::SessionDeleted {},
                 processed_at: transition
                     .session
                     .updated_at_unix_ms
                     .map(awaken_session_application_contract::epoch_millis_to_rfc3339),
-            });
-            self.broadcast_committed_from(id, record, from);
+            };
+            let delta = super::events::committed_delivery_delta(
+                &record.events,
+                std::slice::from_mut(&mut event),
+            )?;
+            self.broadcast_committed_delta(id, &delta);
             sessions.remove(id);
         }
         Ok(())

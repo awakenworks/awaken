@@ -865,8 +865,8 @@ legacy witnesses require claim, repeated claim and abort to be reachable; a
 fourth witness preserves fresh-command publication.
 FairSpec checks conditional abort progress over all initial partitions. This
 removes the former comment-only legacy coverage; it is not Rust refinement.
-Six adapter phase rechecks remain redundant after claim success plus complete
-locked snapshot equality. Shared backend rules retain independent token, epoch,
+The six adapters now use canonical claim success plus complete locked snapshot
+equality without a second phase recheck. Shared backend rules retain independent token, epoch,
 deadline, payload and durable-phase drift checks.
 These checks do not prove UUID generation, arbitrary-length strings, the
 enclosing repository CAS, external material IO or the complete recovery protocol;

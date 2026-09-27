@@ -4,7 +4,6 @@
 //! or protocol logic lives here. Errors map to HTTP status; live stream output is
 //! a projection of committed events (SSE replay).
 
-use std::convert::Infallible;
 use std::sync::Arc;
 
 use std::collections::HashSet;
@@ -27,8 +26,8 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::preview::ThreadPreviewProjector;
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::state::{
-    ManagedState, RunError, RunErrorKind, StateError, internal_thread_id, lifecycle_event,
-    lifecycle_fact,
+    CommittedEventDelivery, ManagedState, ProjectionObservationDecision, RunError, RunErrorKind,
+    StateError, internal_thread_id, lifecycle_event, lifecycle_fact,
 };
 use crate::types::{
     DeletedSession, ErrorResponse, ListEventsResponse, PageCursor, PageQuery, SendEventsRequest,
@@ -40,6 +39,10 @@ mod event_admission;
 mod execution_evidence;
 pub(crate) mod pagination;
 mod profiled_run;
+mod stream;
+#[cfg(test)]
+use stream::replay_is_terminal_after;
+use stream::{LiveSseSource, SseTerminalScope, live_sse_stream};
 
 pub use event_admission::close_event_admission;
 pub use execution_evidence::get_session_execution_evidence;
@@ -870,223 +873,24 @@ pub(crate) fn parse_event_list_filter(raw: Option<&str>) -> Result<EventListFilt
     Ok(filter)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SseTerminalScope {
-    /// Session and primary-Thread streams close only at the aggregate boundary.
-    Session,
-    /// A child-Thread stream closes at that child's idle/terminated boundary.
-    ChildThread,
-}
-
-/// The terminal committed events that close this exact SSE projection. A child
-/// idle is observable on the primary stream but is never the Session terminal.
-fn is_terminal(frame: &StreamFrame, scope: SseTerminalScope) -> bool {
-    matches!(
-        frame,
-        StreamFrame::Committed(e)
-            if matches!(
-                e.type_str(),
-                "session.status_idle"
-                    | "session.status_terminated"
-                    | "session.deleted"
-            )
-                || (scope == SseTerminalScope::ChildThread
-                    && matches!(
-                        e.type_str(),
-                        "session.thread_status_idle" | "session.thread_status_terminated"
-                    ))
-    )
-}
-
-/// Track whether the newest Run represented in a replay snapshot has reached a
-/// terminal event. Usage and telemetry are committed after `status_idle`, so
-/// simply asking whether the final snapshot event is terminal leaves a
-/// send-then-stream client tailing forever. Conversely, an older idle must not
-/// close a stream after a newer input or running marker has started another Run.
-fn replay_is_terminal_after(current: bool, event_type: &str, scope: SseTerminalScope) -> bool {
-    match event_type {
-        "session.status_idle" | "session.status_terminated" | "session.deleted" => true,
-        "session.thread_status_idle" | "session.thread_status_terminated"
-            if scope == SseTerminalScope::ChildThread =>
-        {
-            true
-        }
-        "session.thread_status_running" | "session.thread_status_rescheduled"
-            if scope == SseTerminalScope::ChildThread =>
-        {
-            false
-        }
-        "session.thread_status_idle"
-        | "session.thread_status_terminated"
-        | "session.thread_status_running"
-        | "session.thread_status_rescheduled" => current,
-        "user.message"
-        | "user.tool_confirmation"
-        | "user.custom_tool_result"
-        | "user.tool_result"
-        | "user.define_outcome"
-        | "user.interrupt"
-        | "session.status_running"
-        | "session.status_rescheduled" => false,
-        _ => current,
-    }
-}
-
-fn sse_frame(frame: &StreamFrame) -> SseEvent {
-    // The SDK dispatches on the SSE `event:` name; the JSON body carries the same
-    // `type` plus the fields (committed event, or a stream-only preview).
-    SseEvent::default()
-        .event(frame.type_str())
-        .data(frame.data())
-}
-
-fn accept_preview_frame(
-    frame: &crate::types::PreviewFrame,
-    selection: PreviewSelection,
-    accepted_ids: &mut HashSet<String>,
-) -> bool {
-    match frame {
-        crate::types::PreviewFrame::EventStart { event } => {
-            selection.accepts(&event.event_type) && accepted_ids.insert(event.id.clone())
-        }
-        crate::types::PreviewFrame::EventDelta { event_id, .. } => accepted_ids.contains(event_id),
-    }
-}
-
-/// The live SSE body: the committed snapshot (backfill, deduped against the live
-/// tail by id), then the Runtime-owned Thread preview subscription and committed
-/// broadcast race until a terminal committed event or the Session sender drops.
-/// Preview frames are connection-local and forwarded only when their exact event
-/// type was selected; they never re-enter the committed broadcast.
-fn live_sse_stream<F>(
-    snapshot: Vec<Event>,
-    mut rx: broadcast::Receiver<Event>,
-    previews: PreviewSelection,
-    terminal_scope: SseTerminalScope,
-    project: F,
-    thread_preview: Option<(
-        Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>,
-        ThreadPreviewProjector,
-    )>,
-) -> impl Stream<Item = Result<SseEvent, Infallible>>
-where
-    F: Fn(Event) -> Option<Event> + Send + Sync + 'static,
-{
-    async_stream::stream! {
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut preview_event_ids: HashSet<String> = HashSet::new();
-        let mut thread_preview = thread_preview;
-        let mut backfill_terminal = false;
-        for event in snapshot {
-            let Some(event) = project(event) else {
-                continue;
-            };
-            seen.insert(event.id.clone());
-            let frame = StreamFrame::Committed(event);
-            backfill_terminal = replay_is_terminal_after(
-                backfill_terminal,
-                frame.type_str(),
-                terminal_scope,
-            );
-            yield Ok(sse_frame(&frame));
-        }
-        // A snapshot that already reached idle/terminated is a completed Run
-        // (send-then-stream): deliver the backfill and end, preserving
-        // request/response semantics. Otherwise tail the live broadcast.
-        if !backfill_terminal {
-            loop {
-                tokio::select! {
-                    biased;
-                    live = async {
-                        match thread_preview.as_mut() {
-                            Some((subscription, _)) => subscription.recv().await,
-                            None => std::future::pending().await,
-                        }
-                    } => {
-                        match live {
-                            Ok(Some(event)) => {
-                                let frames = thread_preview
-                                    .as_mut()
-                                    .expect("enabled Thread subscription still exists")
-                                    .1
-                                    .project(event);
-                                for frame in frames {
-                                    if accept_preview_frame(
-                                        &frame,
-                                        previews,
-                                        &mut preview_event_ids,
-                                    ) {
-                                        yield Ok(sse_frame(&StreamFrame::Preview(frame)));
-                                    }
-                                }
-                            }
-                            Ok(None) | Err(_) => thread_preview = None,
-                        }
-                    }
-                    received = rx.recv() => match received {
-                        Ok(event) => {
-                            let Some(event) = project(event) else {
-                                continue;
-                            };
-                            // Dedupe the snapshot/live overlap by id; only end on a
-                            // committed terminal.
-                            if !seen.insert(event.id.clone()) {
-                                continue;
-                            }
-                            if let Some((_, projector)) = thread_preview.as_mut() {
-                                if event.type_str() == "agent.message" {
-                                    for preview in projector.take_for_committed(&event.id) {
-                                        if accept_preview_frame(
-                                            &preview,
-                                            previews,
-                                            &mut preview_event_ids,
-                                        ) {
-                                            yield Ok(sse_frame(&StreamFrame::Preview(preview)));
-                                        }
-                                    }
-                                } else if matches!(
-                                    event.type_str(),
-                                    "agent.thread_message_sent"
-                                        | "session.thread_status_idle"
-                                        | "session.thread_status_terminated"
-                                ) {
-                                    projector.discard_uncommitted();
-                                }
-                            }
-                            let frame = StreamFrame::Committed(event);
-                            let terminal = is_terminal(&frame, terminal_scope);
-                            yield Ok(sse_frame(&frame));
-                            if terminal {
-                                break;
-                            }
-                        }
-                        // Best-effort: a lagging subscriber skips the dropped frames
-                        // (the buffered agent.message still arrives); a closed sender ends.
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                        Err(broadcast::error::RecvError::Closed) => break,
-                    },
-                }
-            }
-        }
-    }
-}
-
 async fn stream_thread_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
     RawQuery(raw): RawQuery,
-) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, WireErr> {
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, StateError>>>, WireErr> {
     // The official Thread EventStreamParams carries the same preview selector as
     // the Session stream. Primary and ordinary child Threads consume the same
     // Runtime-owned live observer; Advisor consultations intentionally expose
     // only their documented lifecycle/cross-post wire.
     let previews = parse_event_deltas(raw.as_deref())?;
-    state
+    let observation = state
         .refresh_committed_events_for_observation(&id, None)
         .await
         .map_err(error_response)?;
     let thread = state.get_thread(&id, &tid).map_err(error_response)?;
-    let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
+    let (snapshot, rx, revision) = state
+        .stream_projection_subscribe(&id)
+        .map_err(error_response)?;
     let project_thread = internal_thread_id(&id, &tid);
     let primary = project_thread == id;
     let thread_preview = if previews.any() && !thread.agent.is_advisor() {
@@ -1111,6 +915,12 @@ async fn stream_thread_events(
     let project_session = id.clone();
     let project_state = Arc::clone(&state);
     Ok(Sse::new(live_sse_stream(
+        LiveSseSource {
+            state: Arc::clone(&state),
+            session_id: id.clone(),
+            revision,
+            current: observation == ProjectionObservationDecision::UseRefreshed,
+        },
         snapshot,
         rx,
         previews,
@@ -1532,14 +1342,16 @@ async fn stream_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
-) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, WireErr> {
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, StateError>>>, WireErr> {
     // Opt in to live previews (`event_start`/`event_delta`) via `event_deltas[]`.
     let previews = parse_event_deltas(raw.as_deref())?;
-    state
+    let observation = state
         .refresh_committed_events_for_observation(&id, None)
         .await
         .map_err(error_response)?;
-    let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
+    let (snapshot, rx, revision) = state
+        .stream_projection_subscribe(&id)
+        .map_err(error_response)?;
     let thread_preview = if previews.any() {
         state
             .session_application()
@@ -1559,6 +1371,12 @@ async fn stream_events(
     let project_session = id.clone();
     let project_state = Arc::clone(&state);
     Ok(Sse::new(live_sse_stream(
+        LiveSseSource {
+            state: Arc::clone(&state),
+            session_id: id.clone(),
+            revision,
+            current: observation == ProjectionObservationDecision::UseRefreshed,
+        },
         snapshot,
         rx,
         previews,
