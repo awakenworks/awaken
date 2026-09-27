@@ -268,6 +268,23 @@ async function main() {
     return;
   }
 
+  const available = evidence.storage_profile === 'local-static'
+    ? JSON.parse(await kube('get', 'pv', '-o', 'json')).items.filter((p) => p.spec.storageClassName === 'awaken-local') : null;
+  if (available) {
+    // V1 empty preallocated PVs + A only uses pinned reads => archive A leaves
+    // identical Available PV UIDs and no claims. V2 B's later first physical
+    // tool binds one of those exact PVs. Archive must not invent a Sandbox.
+    assert.ok(available.length > 0 && available.every((p) => p.status.phase === 'Available' && !p.spec.claimRef));
+    const abandoned = await session(normalEnv); await readTurn(abandoned, 'unused-volume-session');
+    assert.equal(JSON.parse(await kube('get', 'pvc', '-o', 'json')).items.length, 0, 'V1 pinned reads do not create claims');
+    await client.beta.sessions.archive(abandoned, { betas });
+    owned.sessions.splice(owned.sessions.indexOf(abandoned), 1);
+    const after = JSON.parse(await kube('get', 'pv', '-o', 'json')).items.filter((p) => p.spec.storageClassName === 'awaken-local');
+    const identities = (pvs) => pvs.map((p) => ({ name: p.metadata.name, uid: p.metadata.uid, phase: p.status.phase, claim: p.spec.claimRef ?? null })).sort((a, b) => a.name.localeCompare(b.name));
+    assert.deepEqual(identities(after), identities(available));
+    assert.equal((await scopedPods(abandoned)).length, 0);
+    record({ label: 'unused-volumes-preserved-after-archive', session_id: abandoned, pvs: identities(after) });
+  }
   const cold = await session(normalEnv); await readTurn(cold, 'cold-session');
   const warm = await session(normalEnv); await readTurn(warm, 'warm-session');
   let historical;
@@ -306,6 +323,16 @@ async function main() {
     record({ label: 'historical-after-upgrade', session_id: historical.id, uid: pods[0].uid });
   }
   await bashTurn(cold);
+  if (available) {
+    const pods = await scopedPods(cold); assert.equal(pods.length, 1);
+    const claimName = pods[0].volumes.find((v) => v.name === 'continuation-state')?.persistentVolumeClaim?.claimName;
+    assert.ok(claimName);
+    const claim = JSON.parse(await kube('get', 'pvc', claimName, '-o', 'json'));
+    const pv = JSON.parse(await kube('get', 'pv', claim.spec.volumeName, '-o', 'json'));
+    assert.ok(available.some((p) => p.metadata.uid === pv.metadata.uid && p.metadata.name === pv.metadata.name));
+    assert.equal(pv.status.phase, 'Bound'); assert.equal(pv.spec.claimRef.uid, claim.metadata.uid);
+    record({ label: 'next-session-claims-original-unused-volume', session_id: cold, claim, pv });
+  }
   const failed = await session(await environment(true));
   await readTurn(failed, 'unavailable-sandbox-before-tool');
   await bashTurn(failed, true);
