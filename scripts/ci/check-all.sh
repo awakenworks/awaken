@@ -176,6 +176,7 @@ run static "k3d-product-image-contract" python3 deploy/k3d/test_image_contract.p
 # without a cluster. It sat executable and unrun; a topology assertion nothing
 # executes is indistinguishable from one that passes.
 run static "k3d product topology contract" e2e/k3d/product_backend_contract_test.sh
+run static "standard local storage deployment contract" python3 deploy/storage/local-pv/test_contract.py
 run static "secrets self-test" python3 scripts/ci/check_secrets.py --self-test
 run static "secrets" python3 scripts/ci/check_secrets.py
 run static "file-limits self-test" python3 scripts/ci/check_file_limits.py --self-test
@@ -242,6 +243,7 @@ run reliability "reliability" scripts/ci/check-reliability.sh --require-tools
 run postgres "postgres" scripts/ci/pg_tests.sh --require-docker
 run kubernetes "kubernetes-container" scripts/e2e/k8s_container_e2e.sh
 run k3d "distributed-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh
+run k3d "generic preallocated local PVCs" e2e/k3d/local_storage_e2e.sh
 run k3d "nats-wake-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12
 run frontend "frontend" scripts/ci/check-frontend.sh --full
 run frontend "browser-e2e" pnpm -C web test:e2e
