@@ -43,6 +43,8 @@ hand = [
 ]
 
 [dependencies]
+awaken-local-process.workspace = true
+awaken-provisioning-contract.workspace = true
 awaken-sandbox-control.workspace = true
 awaken-sandbox-control-transport.workspace = true
 awaken-sandbox-fs.workspace = true
@@ -70,16 +72,17 @@ async-nats = { version = "0.50", optional = true }
 futures = { version = "0.3", optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }
 zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["stdio"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-awaken-local-process.workspace = true
 awaken-sandbox-local.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 awaken-agent-channel.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
