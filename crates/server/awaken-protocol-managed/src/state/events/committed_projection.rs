@@ -8,6 +8,7 @@ mod historical_pending;
 mod interval_aggregate_projection;
 mod publication;
 mod refresh_entrypoint;
+pub(crate) use refresh_entrypoint::ProjectionObservationDecision;
 mod run_observation_projection;
 mod usage_projection;
 use canonical_order::*;
@@ -430,11 +431,6 @@ impl ManagedState {
         // authority; only a fully valid projection replaces the warm cache.
         let mut staged_record = base_record;
         Self::apply_persisted_session(&mut staged_record, &persisted);
-        let previous_event_ids = staged_record
-            .events
-            .iter()
-            .map(|event| event.id.clone())
-            .collect::<std::collections::HashSet<_>>();
         let record = &mut staged_record;
         // Harvest what the gate decided before the transcript is projected. The
         // decision is committed audit truth about a call; the transcript alone
@@ -1182,7 +1178,6 @@ impl ManagedState {
             publication::ProjectionRefreshCandidate::new(
                 base_cache_revision,
                 staged_record,
-                previous_event_ids,
                 persisted.revision,
                 root_snapshot.as_ref(),
                 &child_snapshots,

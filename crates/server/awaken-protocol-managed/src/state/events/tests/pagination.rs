@@ -121,8 +121,9 @@ async fn indexed_pages_match_filtered_directional_visibility_and_cursor_rules() 
     // P6 default/zero/small/max/oversized limit; P7 duplicate id with mixed kinds.
     // Effects: exact wire page/continuation, or the same error for missing,
     // hidden and filtered-out cursors. P7 chooses the first eligible occurrence
-    // in the requested direction. Each Cartesian row is compared with the
-    // independent scan composition, including its owner-sensitive references.
+    // in the requested direction. P7 is deliberately malformed delivery data:
+    // exercise the read index directly, not the publisher that must refuse it.
+    // Each Cartesian row is compared with the independent scan composition.
     let (state, id) = page_state().await;
     let events = vec![
         message("root"),
@@ -159,26 +160,22 @@ async fn indexed_pages_match_filtered_directional_visibility_and_cursor_rules() 
         message("tail"),
     ];
     for action_owner in [None, Some(id.as_str()), Some("child")] {
-        state
-            .publish_projection_update(&id, |record| {
-                record.events = events.clone();
-                record.event_thread_owners = HashMap::from([
-                    ("hidden".into(), "child".into()),
-                    ("tool".into(), "child".into()),
-                    ("thread-tool".into(), "child".into()),
-                ]);
-                if let Some(owner) = action_owner {
-                    record
-                        .event_thread_owners
-                        .insert("ask".into(), owner.into());
-                    record
-                        .event_thread_owners
-                        .insert("child-idle".into(), owner.into());
-                }
-                Ok(())
-            })
-            .unwrap();
-        let record = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+        let mut record = state.sessions.lock().unwrap().get(&id).unwrap().clone();
+        record.events = events.clone();
+        record.event_thread_owners = HashMap::from([
+            ("hidden".into(), "child".into()),
+            ("tool".into(), "child".into()),
+            ("thread-tool".into(), "child".into()),
+        ]);
+        if let Some(owner) = action_owner {
+            record
+                .event_thread_owners
+                .insert("ask".into(), owner.into());
+            record
+                .event_thread_owners
+                .insert("child-idle".into(), owner.into());
+        }
+        record.rebuild_event_page_index();
         for view in [id.as_str(), "child", "other"] {
             for kind in [
                 None,
@@ -268,7 +265,8 @@ async fn indexed_deep_pages_scan_only_the_cursor_and_bounded_matching_suffix() {
 #[tokio::test]
 async fn page_index_tracks_published_references_owners_replacement_and_order() {
     // C1 action owner changes without changing row count; C2 referenced id
-    // changes; C3 ids/owners are replaced at the same positions; C4 order changes;
+    // changes under a fresh immutable Event id; C3 ids/owners are replaced at
+    // the same positions; C4 order changes;
     // C5 processed time changes. Each successful publication must project current
     // rows and visibility exactly. C6 no-op/error/stale CAS must retain the current
     // index and frame. Only the canonical publisher mutates this fixture.
@@ -297,10 +295,12 @@ async fn page_index_tracks_published_references_owners_replacement_and_order() {
                     }
                     2 => {
                         record.events[1] = action("missing");
+                        record.events[1].id = "ask-missing".into();
                     }
                     3 => {
                         record.events[0].id = "replacement".into();
                         record.events[1] = action("replacement");
+                        record.events[1].id = "ask-replacement".into();
                         record.event_thread_owners.remove("tool");
                         record
                             .event_thread_owners
@@ -323,6 +323,8 @@ async fn page_index_tracks_published_references_owners_replacement_and_order() {
             None,
             Some("tool"),
             Some("ask"),
+            Some("ask-missing"),
+            Some("ask-replacement"),
             Some("replacement"),
             Some("tail"),
         ] {
@@ -360,7 +362,7 @@ async fn page_index_tracks_published_references_owners_replacement_and_order() {
     );
     assert!(
         !state
-            .publish_projection_candidate(&id, original.cache_revision, original, &HashSet::new())
+            .publish_projection_candidate(&id, original.cache_revision, original)
             .unwrap()
     );
     let after = state.sessions.lock().unwrap().get(&id).unwrap().clone();

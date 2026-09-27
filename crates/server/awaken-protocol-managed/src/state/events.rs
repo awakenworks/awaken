@@ -848,6 +848,10 @@ enum ValidatedEventBatchDrive {
 mod admission;
 mod committed_projection;
 mod coordination_receipts;
+mod delivery;
+pub(crate) use committed_projection::ProjectionObservationDecision;
+pub(super) use delivery::committed_delivery_delta;
+pub(crate) use delivery::{CommittedDeliveryPage, CommittedEventDelivery};
 mod lifecycle_projection;
 mod recovery;
 mod stream;

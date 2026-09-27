@@ -891,6 +891,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_reply_anchor_selects_exact_fenced_commit \
     --harness managed_ticket_admission_preserves_terminal_and_identity_priority
   run_kani awaken-protocol-managed \
+    --harness committed_delivery_all_equalities_preserve_only_monotonic_completion \
     --harness projection_publish_decision_is_total_exact_and_fail_closed \
     --harness runtime_tool_projection_phase_is_total_distinct_and_fail_closed \
     --harness projection_refresh_failure_stutters_and_success_preserves_one_pair \

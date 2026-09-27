@@ -1,8 +1,9 @@
 //! Atomic publication of one fully reduced Managed projection candidate.
 
+use super::super::delivery::committed_delivery_delta;
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// One completely reduced candidate ready for the existing Session-record CAS.
 /// Construction owns canonical source stamping, so a publishable result cannot
@@ -10,14 +11,12 @@ use std::collections::{HashMap, HashSet};
 pub(super) struct ProjectionRefreshCandidate {
     base_cache_revision: u64,
     record: SessionRecord,
-    previous_event_ids: HashSet<String>,
 }
 
 impl ProjectionRefreshCandidate {
     pub(super) fn new(
         base_cache_revision: u64,
         mut record: SessionRecord,
-        previous_event_ids: HashSet<String>,
         session_revision: awaken_session_types::SessionRevision,
         root: Option<&RunRecoverySnapshot>,
         children: &HashMap<String, RunRecoverySnapshot>,
@@ -27,7 +26,6 @@ impl ProjectionRefreshCandidate {
         Self {
             base_cache_revision,
             record,
-            previous_event_ids,
         }
     }
 }
@@ -111,14 +109,8 @@ impl ManagedState {
                 let ProjectionRefreshCandidate {
                     base_cache_revision,
                     record,
-                    previous_event_ids,
                 } = candidate;
-                self.publish_projection_candidate(
-                    session_id,
-                    base_cache_revision,
-                    record,
-                    &previous_event_ids,
-                )
+                self.publish_projection_candidate(session_id, base_cache_revision, record)
             }
         }
     }
@@ -141,19 +133,9 @@ impl ManagedState {
                 .cloned()
                 .ok_or(StateError::NotFound)?;
             let base_cache_revision = base.cache_revision;
-            let previous_event_ids = base
-                .events
-                .iter()
-                .map(|event| event.id.clone())
-                .collect::<HashSet<_>>();
             let mut candidate = base;
             update(&mut candidate)?;
-            if self.publish_projection_candidate(
-                session_id,
-                base_cache_revision,
-                candidate,
-                &previous_event_ids,
-            )? {
+            if self.publish_projection_candidate(session_id, base_cache_revision, candidate)? {
                 return Ok(());
             }
         }
@@ -164,7 +146,6 @@ impl ManagedState {
         session_id: &str,
         base_cache_revision: u64,
         mut candidate: SessionRecord,
-        previous_event_ids: &HashSet<String>,
     ) -> Result<bool, StateError> {
         let mut sessions = self.sessions.lock().unwrap();
         let current = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
@@ -191,10 +172,27 @@ impl ManagedState {
                 return Ok(false);
             }
         }
+        // The locked current projection, not a pre-read id set, owns the
+        // delivery base. Validate every immutable field before installing or
+        // broadcasting any part of the candidate.
+        let delta = committed_delivery_delta(&current.events, &mut candidate.events)?;
+        // A weaker observation can reconcile into an exact repeat. Reapply
+        // the same kernel to the actual reconciled content before any write.
+        if decide_projection_publish(
+            base_cache_revision,
+            current.cache_revision,
+            &current.checkpoint.source,
+            &candidate.checkpoint.source,
+            !current.same_projected_content(&candidate)?,
+        ) == ProjectionPublishDecision::AlreadyCurrent
+        {
+            return Ok(true);
+        }
         candidate.advance_cache_revision()?;
         candidate.rebuild_event_page_index();
+        candidate.index_delivery_delta(current, &delta);
         install_complete_projection(current, candidate);
-        self.broadcast_new_event_ids(session_id, current, previous_event_ids);
+        self.broadcast_committed_delta(session_id, &delta);
         Ok(true)
     }
 }

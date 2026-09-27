@@ -7,7 +7,7 @@ const READ_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ProjectionObservationDecision {
+pub(crate) enum ProjectionObservationDecision {
     UseRefreshed,
     ServePrior,
     Retry,
@@ -50,7 +50,7 @@ impl ManagedState {
         &self,
         session_id: &str,
         cursor: Option<&str>,
-    ) -> Result<(), StateError> {
+    ) -> Result<ProjectionObservationDecision, StateError> {
         self.ensure_session_record(session_id).await?;
         let (cursor, _) = awaken_agent_contract::page::normalize_history_page_request(cursor, None);
         let prior_complete = self
@@ -63,7 +63,10 @@ impl ManagedState {
                     && cursor.is_none_or(|cursor| record.event_positions(cursor).is_some())
             });
         if !prior_complete {
-            return self.refresh_committed_projection(session_id).await;
+            return self
+                .refresh_committed_projection(session_id)
+                .await
+                .map(|()| ProjectionObservationDecision::UseRefreshed);
         }
 
         let refresh = tokio::time::timeout(
@@ -76,13 +79,15 @@ impl ManagedState {
             Err(_) => return Err(Self::committed_prefix_read_conflict(session_id, 1)),
         };
         match projection_observation_decision(prior_complete, refresh_complete) {
-            ProjectionObservationDecision::UseRefreshed => Ok(()),
+            ProjectionObservationDecision::UseRefreshed => {
+                Ok(ProjectionObservationDecision::UseRefreshed)
+            }
             ProjectionObservationDecision::ServePrior => {
                 tracing::debug!(
                     session_id,
                     "Managed observation served the prior committed projection"
                 );
-                Ok(())
+                Ok(ProjectionObservationDecision::ServePrior)
             }
             ProjectionObservationDecision::Retry => {
                 Err(Self::committed_prefix_read_conflict(session_id, 1))

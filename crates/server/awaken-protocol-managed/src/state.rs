@@ -39,7 +39,9 @@ mod deployment_sessions;
 mod environment;
 mod error;
 mod events;
-pub(crate) use events::managed_assistant_event_id;
+pub(crate) use events::{
+    CommittedEventDelivery, ProjectionObservationDecision, managed_assistant_event_id,
+};
 mod helpers;
 #[path = "state/lifecycle_event.rs"]
 pub mod lifecycle_event;

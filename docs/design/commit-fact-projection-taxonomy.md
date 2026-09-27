@@ -34,6 +34,17 @@ Adapters must not emit durable public status before the commit that makes the
 source fact visible. Live streaming is allowed only as best-effort output and
 must be reconciled by committed history.
 
+Managed SSE uses that same committed projection for local broadcast wakes,
+silent-period reconciliation and lag recovery. One delivery comparison owns new
+identities and the sole legal enrichment, `processed_at: null -> known` under an
+unchanged immutable payload. Exact repeats and delayed empty observations
+stutter; conflicting payload or known-time changes fail before cache publication.
+The existing Event page index retains only each id's latest delivery change and
+provides bounded catch-up pages, including completion behind a positional cursor.
+It stores no second payload history. A prior complete prefix remains readable
+but cannot prove the latest activity terminal; SSE reobserves before closing.
+Preview frames remain connection-local and cannot starve committed reconciliation.
+
 ## Runtime Call, Staging, And Commit Layers
 
 The hook/tool/model path is not one execution-only axis. It crosses execution,

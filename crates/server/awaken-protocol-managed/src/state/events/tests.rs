@@ -5210,6 +5210,136 @@ fn coordinated_projection_validation_retains_only_required_trailing_root_reads()
 }
 
 #[tokio::test]
+async fn committed_completion_is_broadcast_and_indexed_once_without_payload_replacement() {
+    // Cause/effect graph: C1 an issued id has no processing observation; C2 the
+    // canonical candidate adds that observation; C3 the same candidate repeats;
+    // C4 its payload or already-known observation changes. Effects: E1 C2
+    // broadcasts and indexes the same id once; E2 C3 has no delivery or cache
+    // change; E3 C4 rejects the whole candidate and preserves every frame field.
+    // R1=C1+C2=>E1; R2=R1+C3=>E2; R3=R1+C4(each axis)=>E3.
+    let state = ManagedState::new(LifecycleRuntime::default());
+    let session = state
+        .create_session(
+            serde_json::from_value(
+                serde_json::json!({"agent":"coder", "environment_id":"env_local"}),
+            )
+            .unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    let id = "processing-observation";
+    state
+        .publish_projection_update(&session.id, |record| {
+            record.append_event_once(Event {
+                id: id.into(),
+                kind: OutboundKind::AgentThinking {},
+                processed_at: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+    let (_, mut receiver, issued_revision) =
+        state.stream_projection_subscribe(&session.id).unwrap();
+    let observation = "2026-09-27T00:00:00Z";
+    let complete = |record: &mut SessionRecord| {
+        record
+            .events
+            .iter_mut()
+            .find(|event| event.id == id)
+            .unwrap()
+            .processed_at = Some(observation.into());
+        Ok(())
+    };
+    state
+        .publish_projection_update(&session.id, complete)
+        .unwrap();
+    let delivered = receiver
+        .try_recv()
+        .expect("R1 same-id completion broadcast");
+    assert_eq!(delivered.id, id, "R1/E1");
+    assert_eq!(
+        delivered.processed_at.as_deref(),
+        Some(observation),
+        "R1/E1"
+    );
+    let page = state
+        .stream_delivery_page(&session.id, (issued_revision, usize::MAX))
+        .unwrap();
+    assert_eq!(page.len(), 1, "R1 indexed behind former history cursor");
+    assert_eq!(page[0].1, delivered, "R1 exact same canonical wire");
+    let before = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    state
+        .publish_projection_update(&session.id, complete)
+        .unwrap();
+    assert!(
+        matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "R2"
+    );
+    refresh_failure::assert_record_frame_eq(
+        state.sessions.lock().unwrap().get(&session.id).unwrap(),
+        &before,
+    );
+    // R4 a delayed empty observation retains GET, CAS and delivery state;
+    // suppressing a frame while installing its empty candidate would fail.
+    state
+        .publish_projection_update(&session.id, |record| {
+            record
+                .events
+                .iter_mut()
+                .find(|event| event.id == id)
+                .unwrap()
+                .processed_at = None;
+            Ok(())
+        })
+        .unwrap();
+    refresh_failure::assert_record_frame_eq(
+        state.sessions.lock().unwrap().get(&session.id).unwrap(),
+        &before,
+    );
+    for change_payload in [false, true] {
+        assert!(
+            state
+                .publish_projection_update(&session.id, |record| {
+                    let event = record
+                        .events
+                        .iter_mut()
+                        .find(|event| event.id == id)
+                        .unwrap();
+                    if change_payload {
+                        event.kind = OutboundKind::SessionDeleted {};
+                    } else {
+                        event.processed_at = Some("2026-09-28T00:00:00Z".into());
+                    }
+                    Ok(())
+                })
+                .is_err(),
+            "R3 axis={change_payload}"
+        );
+        refresh_failure::assert_record_frame_eq(
+            state.sessions.lock().unwrap().get(&session.id).unwrap(),
+            &before,
+        );
+        assert!(
+            matches!(
+                receiver.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "R3 no partial broadcast"
+        );
+    }
+}
+
+#[tokio::test]
 async fn stale_session_root_cannot_roll_back_the_managed_cache() {
     // Cause/effect graph: C1 cache contains Session revision N; C2 a delayed
     // reader supplies revision N-1; C3 the exact revision N is replayed.
@@ -5244,26 +5374,13 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         let record = sessions.get(&session.id).unwrap();
         let mut candidate = record.clone();
         ManagedState::apply_persisted_session(&mut candidate, persisted);
-        (
-            record.cache_revision,
-            record
-                .events
-                .iter()
-                .map(|event| event.id.clone())
-                .collect::<std::collections::HashSet<_>>(),
-            candidate,
-        )
+        (record.cache_revision, candidate)
     };
-    let (base_revision, previous_event_ids, candidate) = projection_candidate(&current);
+    let (base_revision, candidate) = projection_candidate(&current);
     let cache_before_newer = base_revision;
     assert!(
         state
-            .publish_projection_candidate(
-                &session.id,
-                base_revision,
-                candidate,
-                &previous_event_ids,
-            )
+            .publish_projection_candidate(&session.id, base_revision, candidate,)
             .unwrap(),
         "newer root publishes through the sole CAS owner"
     );
@@ -5285,15 +5402,10 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         "R0 actual cache revision advances once"
     );
 
-    let (base_revision, previous_event_ids, candidate) = projection_candidate(&stale);
+    let (base_revision, candidate) = projection_candidate(&stale);
     assert!(
         !state
-            .publish_projection_candidate(
-                &session.id,
-                base_revision,
-                candidate,
-                &previous_event_ids,
-            )
+            .publish_projection_candidate(&session.id, base_revision, candidate,)
             .unwrap(),
         "R1 stale source is rejected by the canonical publisher"
     );
