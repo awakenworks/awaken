@@ -5586,6 +5586,32 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
 // Decision table: fresh+valid=rotate; stale=409; invalid=4xx; every response/recovery path=no secret.
 #[tokio::test]
 async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
+    // The same real Vault/CAS crash rules cover both desired slots. B6 an
+    // already-attempted pending generation, B7 a Repository removed from
+    // desired and B10 a terminal root refuse before any Vault write. B8 an
+    // unrelated root winner is preserved; B9 an attempted newer Resource
+    // generation cannot absorb the completed old rotation.
+    // These are logical requested/attempted fixtures, never forged completion
+    // receipts. The product management_surface case independently produces the
+    // initially pending state through actual AllInOne creation.
+    for slot in [
+        "active",
+        "pending",
+        "attempted",
+        "removed",
+        "terminal",
+        "archived",
+        "deleting",
+        "deleted",
+        "metadata-race",
+        "generation-race",
+        "archive-race",
+    ] {
+        Box::pin(repository_rotation_slot_case(slot)).await;
+    }
+}
+
+async fn repository_rotation_slot_case(slot: &str) {
     // Cause graph:
     // write-only token -> canonical Vault sealing -> create-time Repository config
     // -> exact access@revision -> frozen Session manifest -> Runtime apply;
@@ -5606,11 +5632,14 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     let credentials =
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
-        secrets,
+        secrets.clone(),
         credentials.clone(),
     ));
+    let storage = tempfile::tempdir().unwrap();
+    let database = storage.path().join("credential-root.sqlite");
     let session_store = std::sync::Arc::new(
-        SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
+        SqliteManagedSessionRepository::open(database.to_str().unwrap())
+            .expect("file Session repository"),
     );
     let sessions = std::sync::Arc::new(ScheduledConflictRepository::new(session_store));
     let runtime = AcceptingFake::default();
@@ -5647,12 +5676,103 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     let serialized = session.to_string();
     assert!(!serialized.contains("credential_binding"));
     assert!(!serialized.contains("never-project-this-secret"));
-    let durable = sessions.get(&SessionId::from(session_id)).await.unwrap();
+    let mut durable = sessions.get(&SessionId::from(session_id)).await.unwrap();
+    if matches!(slot, "pending" | "attempted" | "removed") {
+        let original = durable.resources.active.clone();
+        if slot != "removed" {
+            durable.resources = Default::default();
+        }
+        durable
+            .resources
+            .prepare(
+                &durable.session_id,
+                if slot == "removed" {
+                    Default::default()
+                } else {
+                    original
+                },
+            )
+            .unwrap();
+        if slot == "attempted" {
+            durable.resources.start_attempt().unwrap();
+        }
+        durable = support::replace_session_fixture(
+            sessions.as_ref(),
+            "default",
+            durable,
+            &format!("qualification-slot:{session_id}:{slot}"),
+        )
+        .await;
+    }
+    if matches!(slot, "terminal" | "archived" | "deleting" | "deleted") {
+        // B10 the same aggregate terminality includes non-Active disposition,
+        // independently from execution. The archived observation is copied
+        // from the actual public creation receipt, not a fabricated clock.
+        match slot {
+            "terminal" => durable.execution = SessionExecutionState::Terminated,
+            "archived" => {
+                durable.disposition = SessionDisposition::Archived {
+                    archived_at: session["updated_at"].as_str().unwrap().to_owned(),
+                }
+            }
+            "deleting" => durable.disposition = SessionDisposition::Deleting,
+            "deleted" => durable.disposition = SessionDisposition::Deleted,
+            _ => unreachable!(),
+        }
+        durable = support::replace_session_fixture(
+            sessions.as_ref(),
+            "default",
+            durable,
+            &format!("terminal-rotation:{session_id}"),
+        )
+        .await;
+    }
+    let resource_id = session["resources"][0]["id"].as_str().unwrap();
+    if matches!(
+        slot,
+        "attempted" | "removed" | "terminal" | "archived" | "deleting" | "deleted"
+    ) {
+        let inventory = (
+            serde_json::to_value(credentials.list("default").await.unwrap()).unwrap(),
+            secrets.inventory().await.unwrap(),
+        );
+        let response = call(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
+            Some(json!({"authorization_token": "must-not-rotate"})), // awaken-allow: secret
+        )
+        .await;
+        response.expect_for(
+            if slot == "removed" {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::CONFLICT
+            },
+            "B6/B7/B10 refuse before Vault",
+        );
+        assert_eq!(
+            sessions.get(&SessionId::from(session_id)).await.unwrap(),
+            durable,
+            "B6/B7 whole root"
+        );
+        assert_eq!(
+            (
+                serde_json::to_value(credentials.list("default").await.unwrap()).unwrap(),
+                secrets.inventory().await.unwrap()
+            ),
+            inventory,
+            "B6/B7 zero Vault changes",
+        );
+        return;
+    }
+    let active_before = durable.resources.active.clone();
+    let resource_revision = durable.resources.revision;
     let awaken_session_resource_contract::ResolvedInputSource::Repository {
         config,
         credential,
         ..
-    } = &durable.resources.active.inputs()[0].source
+    } = &durable.resources.desired().inputs()[0].source
     else {
         panic!("B2 must persist one Repository input")
     };
@@ -5693,8 +5813,75 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         "B2 exact target/usage"
     );
 
-    let resource_id = session["resources"][0]["id"].as_str().unwrap();
     let applied_before = applied.lock().unwrap().len();
+    if matches!(slot, "generation-race" | "archive-race") {
+        // B9 the existing fault owner commits a real newer attempted Resource
+        // generation at the first rotation CAS. Vault 2 is a completed old
+        // effect, but neither retained manifest may be silently repinned.
+        if slot == "generation-race" {
+            sessions.resource_change_on_next(1);
+        } else {
+            // B11 execution remains Idle, but retention denies authoring after
+            // the Vault effect. The original generation alone cannot authorize
+            // a retry into this archived root.
+            sessions.disposition_change_on_next(
+                1,
+                SessionDisposition::Archived {
+                    archived_at: session["updated_at"].as_str().unwrap().to_owned(),
+                },
+            );
+        }
+        call(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
+            Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow: secret
+        )
+        .await
+        .expect_for(StatusCode::CONFLICT, "B9 competing Resource winner");
+        let winner = sessions.get(&SessionId::from(session_id)).await.unwrap();
+        assert_eq!(
+            winner.resources.revision,
+            resource_revision + u64::from(slot == "generation-race"),
+            "B9/B11 winner"
+        );
+        assert_eq!(winner.resources.active, active_before, "B9 old active pin");
+        assert_eq!(
+            winner.resources.desired().inputs()[0].source,
+            durable.resources.desired().inputs()[0].source,
+            "B9 pending pin unchanged"
+        );
+        if slot == "generation-race" {
+            assert!(
+                winner.resources.activations.iter().any(|a| a.attempts == 1),
+                "B9 real attempt fence"
+            );
+        } else {
+            assert_eq!(
+                winner.execution,
+                SessionExecutionState::Idle,
+                "B11 independent axes"
+            );
+            assert!(winner.is_terminal(), "B11 aggregate terminality");
+        }
+        assert_eq!(
+            credentials
+                .get(&awaken_credential_contract::CredentialSourceId(
+                    credential.access.credential.id.clone()
+                ))
+                .await
+                .unwrap()
+                .version,
+            2,
+            "B9 one Vault rotation"
+        );
+        assert_eq!(
+            applied.lock().unwrap().len(),
+            applied_before,
+            "B9 no remount"
+        );
+        return;
+    }
     sessions.unavailable_on_next(1);
     let crash = call(
         &app,
@@ -5712,7 +5899,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     );
     let stranded = sessions.get(&SessionId::from(session_id)).await.unwrap();
     let awaken_session_resource_contract::ResolvedInputSource::Repository { credential, .. } =
-        &stranded.resources.active.inputs()[0].source
+        &stranded.resources.desired().inputs()[0].source
     else {
         panic!("B3 must retain one Repository input")
     };
@@ -5770,6 +5957,9 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         "B4 Vault"
     );
 
+    if slot == "metadata-race" {
+        sessions.metadata_change_on_next(1, "credential-independent", "preserved");
+    }
     let rotated = call(
         &app,
         "POST",
@@ -5788,8 +5978,18 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         "B5 repins without remounting the working tree"
     );
     let durable = sessions.get(&SessionId::from(session_id)).await.unwrap();
+    if slot == "metadata-race" {
+        assert_eq!(
+            durable
+                .metadata
+                .get("credential-independent")
+                .map(String::as_str),
+            Some("preserved"),
+            "B8 rebase only this pin over the other root winner"
+        );
+    }
     let awaken_session_resource_contract::ResolvedInputSource::Repository { credential, .. } =
-        &durable.resources.active.inputs()[0].source
+        &durable.resources.desired().inputs()[0].source
     else {
         panic!("B5 must retain one Repository input")
     };
@@ -5802,6 +6002,34 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
             .revision,
         2,
         "B5 exact crash replay"
+    );
+    assert_eq!(
+        durable.resources.revision, resource_revision,
+        "B5 no new Resource generation"
+    );
+    if slot == "pending" {
+        assert_eq!(
+            durable.resources.active, active_before,
+            "B5 do not install pending implicitly"
+        );
+        assert!(
+            durable.resources.pending.is_some(),
+            "B5 exact pending retained"
+        );
+        assert!(
+            durable
+                .resources
+                .activations
+                .iter()
+                .all(|a| a.attempts == 0),
+            "B5 remains unattempted"
+        );
+    }
+    let reopened = SqliteManagedSessionRepository::open(database.to_str().unwrap()).unwrap();
+    assert_eq!(
+        reopened.get(&SessionId::from(session_id)).await.unwrap(),
+        durable,
+        "B5 exact pin/slot survives reopen"
     );
 }
 

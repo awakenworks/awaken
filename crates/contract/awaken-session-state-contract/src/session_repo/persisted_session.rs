@@ -7,6 +7,17 @@ use crate::{
     session_event_execution_may_close, session_inputs_allow_idle,
 };
 
+/// The aggregate's one terminality law: execution and retention are distinct
+/// causes. Archived/deleting/deleted roots deny new activity even while their
+/// execution projection has not yet been terminalized.
+#[must_use]
+pub const fn session_is_terminal(
+    execution: SessionExecutionState,
+    disposition: &SessionDisposition,
+) -> bool {
+    execution.is_terminal() || disposition.denies_activity()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionEventDispatchSettlementEffect {
     NotEvent,
@@ -982,7 +993,7 @@ impl PersistedSession {
     /// and later reconcilers cannot grow different terminal-status lists.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        self.execution.is_terminal() || self.disposition.denies_activity()
+        session_is_terminal(self.execution, &self.disposition)
     }
 
     #[must_use]
