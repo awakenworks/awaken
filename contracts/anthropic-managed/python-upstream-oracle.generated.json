@@ -2388,7 +2388,7 @@
       "operation_count": 127,
       "operation_fingerprint": "34d260a15bb03bb643f215c0f6ce5a6ea05813ab4a4a24c5293341d5670fe515",
       "reason": "async credential providers and cleanup, single-flight token refresh, legacy no-argument providers, full Retry-After delay, UserProfile Workspace headers, compaction capability, safe annotation reflection",
-      "role": "current_oracle",
+      "role": "transport_change_point",
       "runtime_source_count": 6,
       "runtime_source_fingerprint": "6cb0566eafd96c321f8098553b7563cdfb788cacd245c648cd94b27c49d32ad8",
       "runtime_sources": [
@@ -2478,6 +2478,146 @@
       "wheel": {
         "filename": "anthropic-1.7.0-py3-none-any.whl",
         "sha256": "6b681b6ee00f232bb54f50f9a0d6d30e7be368c1b6f754bfd470c8385b8b6058"
+      }
+    },
+    {
+      "helper_count": 5,
+      "helper_fingerprint": "bcafbf9bd41004e0a7d4d0e2cba175060b481bc1c4f07e3e4a71646d010f4a78",
+      "helpers": [
+        "beta.environments.work.poller",
+        "beta.environments.work.worker",
+        "beta.sessions.events.tool_runner",
+        "beta.webhooks.parse_unverified",
+        "beta.webhooks.unwrap"
+      ],
+      "library_export_count": 29,
+      "library_export_fingerprint": "22f578be9c17217630fc19bf7c98f9d88457aa887a0ea73300d5e9d881e52390",
+      "library_exports": [
+        "anthropic.lib.environments.BetaAnyRunnableTool",
+        "anthropic.lib.environments.DEFAULT_MAX_IDLE",
+        "anthropic.lib.environments.DEFAULT_MEMORY_SYNC_INTERVAL",
+        "anthropic.lib.environments.DispatchedToolCall",
+        "anthropic.lib.environments.DispatchedToolResultParams",
+        "anthropic.lib.environments.DispatchedToolUseEvent",
+        "anthropic.lib.environments.EnvironmentWorker",
+        "anthropic.lib.environments.EnvironmentWorkerTools",
+        "anthropic.lib.environments.MANAGED_AGENTS_BETA",
+        "anthropic.lib.environments.MEMORY_FLUSH_TIMEOUT",
+        "anthropic.lib.environments.MIN_MEMORY_SYNC_INTERVAL",
+        "anthropic.lib.environments.POLL_BLOCK_MS",
+        "anthropic.lib.environments.SessionToolRunner",
+        "anthropic.lib.environments.aiter_work",
+        "anthropic.lib.environments.download_session_skills",
+        "anthropic.lib.environments.iter_work",
+        "anthropic.lib.sessions.AccumulatedEvent",
+        "anthropic.lib.sessions.accumulate_managed_agents_event",
+        "anthropic.lib.tools.agent_toolset.AgentToolContext",
+        "anthropic.lib.tools.agent_toolset.BashResult",
+        "anthropic.lib.tools.agent_toolset.BashSession",
+        "anthropic.lib.tools.agent_toolset.beta_agent_toolset_20260401",
+        "anthropic.lib.tools.agent_toolset.beta_bash_tool",
+        "anthropic.lib.tools.agent_toolset.beta_edit_tool",
+        "anthropic.lib.tools.agent_toolset.beta_glob_tool",
+        "anthropic.lib.tools.agent_toolset.beta_grep_tool",
+        "anthropic.lib.tools.agent_toolset.beta_read_tool",
+        "anthropic.lib.tools.agent_toolset.beta_write_tool",
+        "anthropic.lib.tools.agent_toolset.resolve_path"
+      ],
+      "only_in_anchor": [],
+      "only_in_current": [],
+      "operation_count": 127,
+      "operation_fingerprint": "34d260a15bb03bb643f215c0f6ce5a6ea05813ab4a4a24c5293341d5670fe515",
+      "reason": "prepare one-shot request inputs once across retries and pagination, shared Managed tool-permission enum, safe stream finalization, claude-opus-5-5 model literal",
+      "role": "current_oracle",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "b3aed4c9de50bdb4c97a41a345a025fa4c45258705d894ddc50a4afa54890c14",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "237bf1ee2931f21175b464673036a0c26267c87b570572e6381a2865771e5e4f"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "69819477054ffebb9daa9a935b137cb37cd05c5c5e2f80a3928d14c6903ff02c"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "10418f63dd4396903f6da4e90d4b776704a5438bb3b67b8023c4c20db075618d"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "ff4cb3b5a2dc97e969308ebbc1c2b4734e3d234324ab182b0b942ba37f5ad9aa"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "a6ce63c4a153c4bf61ee74658f6711a862e94b683e234abb092c136a000695ef"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "1bd8aa290b9583992bdaa63772735300ecca47d63c99bf2e489e53d8753eca3e"
+        }
+      ],
+      "source_file_count": 41,
+      "source_fingerprint": "5e7383dd67b475be2f558a617e8ee753de387b057198b20de4978692bca1301e",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
+      "type_source_count": 1310,
+      "type_source_fingerprint": "129e2be0e10d0853a7abdbc7903fe3e01efd1ae1b5231bb28c01b6bac8be00da",
+      "version": "1.8.0",
+      "wheel": {
+        "filename": "anthropic-1.8.0-py3-none-any.whl",
+        "sha256": "79a4516a21e64fd7b15be1a49ebf544bd6376c96a971a77365358823a2717bc6"
       }
     }
   ],
@@ -3591,13 +3731,13 @@
         "path": "/v1/skills/{}/versions/{}"
       }
     ],
-    "reason": "async credential providers and cleanup, single-flight token refresh, legacy no-argument providers, full Retry-After delay, UserProfile Workspace headers, compaction capability, safe annotation reflection",
+    "reason": "prepare one-shot request inputs once across retries and pagination, shared Managed tool-permission enum, safe stream finalization, claude-opus-5-5 model literal",
     "role": "current_oracle",
-    "runtime_source_fingerprint": "6cb0566eafd96c321f8098553b7563cdfb788cacd245c648cd94b27c49d32ad8",
+    "runtime_source_fingerprint": "b3aed4c9de50bdb4c97a41a345a025fa4c45258705d894ddc50a4afa54890c14",
     "runtime_sources": [
       {
         "path": "anthropic/_base_client.py",
-        "sha256": "68754ad7ef126c8c500081900fd1384df8fac44c12f072cc5a030c35b2592d09"
+        "sha256": "237bf1ee2931f21175b464673036a0c26267c87b570572e6381a2865771e5e4f"
       },
       {
         "path": "anthropic/_client.py",
@@ -3617,11 +3757,11 @@
       },
       {
         "path": "anthropic/_streaming.py",
-        "sha256": "630ad9988e4712da3775e1c319e6709a775ec06d17ca311ffc1268a1f8c7baaf"
+        "sha256": "1bd8aa290b9583992bdaa63772735300ecca47d63c99bf2e489e53d8753eca3e"
       }
     ],
     "source_file_count": 41,
-    "source_fingerprint": "850fc0338f6c352de66a1d3b65f6ae6207fe84a9d287c56d1097b5c821aae3a9",
+    "source_fingerprint": "5e7383dd67b475be2f558a617e8ee753de387b057198b20de4978692bca1301e",
     "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
     "stream_event_names": [
       "agent.custom_tool_use",
@@ -3674,7 +3814,7 @@
       "user.tool_confirmation",
       "user.tool_result"
     ],
-    "type_source_fingerprint": "3ae95d9f4cf773ca067563aba048e50ad6054aeac572704e3b6af8ef1db5cc95",
+    "type_source_fingerprint": "129e2be0e10d0853a7abdbc7903fe3e01efd1ae1b5231bb28c01b6bac8be00da",
     "type_sources": [
       {
         "path": "anthropic/__init__.py",
@@ -3682,7 +3822,7 @@
       },
       {
         "path": "anthropic/_base_client.py",
-        "sha256": "68754ad7ef126c8c500081900fd1384df8fac44c12f072cc5a030c35b2592d09"
+        "sha256": "237bf1ee2931f21175b464673036a0c26267c87b570572e6381a2865771e5e4f"
       },
       {
         "path": "anthropic/_client.py",
@@ -3690,11 +3830,11 @@
       },
       {
         "path": "anthropic/_compat.py",
-        "sha256": "004d4e1d185623ed0a8e965bad487e1692c2d2ff8cfb3367ba1d0490001925a6"
+        "sha256": "d915cf200fef093e5fd34671ab7fca16c8248d9e41d62bc374a4e5107401a88b"
       },
       {
         "path": "anthropic/_constants.py",
-        "sha256": "8486ad0f0544830cf0565bbf9f8d5e2faa072cca6cd21a14761745499309450d"
+        "sha256": "1588bb596c89cfac52ba60e3b787dc177f19edd553ebe26f89f2b9a187c1e0d5"
       },
       {
         "path": "anthropic/_decoders/jsonl.py",
@@ -3718,7 +3858,7 @@
       },
       {
         "path": "anthropic/_qs.py",
-        "sha256": "6527d0bfa6ab1810685a5732eb4ccad7398f1362237b48bc93329d9e8c565235"
+        "sha256": "5ff88a6a22b860adb1005216be4723e288b7a4e04502e46dc2f52856b624244f"
       },
       {
         "path": "anthropic/_request.py",
@@ -3734,7 +3874,7 @@
       },
       {
         "path": "anthropic/_streaming.py",
-        "sha256": "630ad9988e4712da3775e1c319e6709a775ec06d17ca311ffc1268a1f8c7baaf"
+        "sha256": "1bd8aa290b9583992bdaa63772735300ecca47d63c99bf2e489e53d8753eca3e"
       },
       {
         "path": "anthropic/_types.py",
@@ -3742,11 +3882,11 @@
       },
       {
         "path": "anthropic/_utils/__init__.py",
-        "sha256": "792002ee793178e3d2fcfb5a9bbe18a8c53773719a2ee2e9139c1289831b2a80"
+        "sha256": "ec185c8ebeaaf78f4e48c00a2596d9e6f67ce56d11f67dd06c390be38e538567"
       },
       {
         "path": "anthropic/_utils/_compat.py",
-        "sha256": "df7db8e9e0dc977a702fa916b04855b93e0092b77c819116f4b3d39b8eb9a219"
+        "sha256": "92f4cd3dbef7ec10d8d5485ab40f51458bc6a7bda095a7d55239d73b1e221981"
       },
       {
         "path": "anthropic/_utils/_datetime_parse.py",
@@ -3758,11 +3898,15 @@
       },
       {
         "path": "anthropic/_utils/_json.py",
-        "sha256": "6e5f79bae216c2049f5d7fa03f5b6b2bf94300fc09ba361f274e42c68d92102e"
+        "sha256": "3c7afe0a4e3d40cc3307b8dced7e09b804322466add1c224aaa3cf30bc1383aa"
       },
       {
         "path": "anthropic/_utils/_path.py",
         "sha256": "0e4dbde257afb895cfe5ee26db46110c36453e5ef37a05ef73d29bddd502c092"
+      },
+      {
+        "path": "anthropic/_utils/_prepare.py",
+        "sha256": "ba7b3e7716c38ed58de2e204e14e94ae47433c03624ddb8b16e4dd2b2f6eb335"
       },
       {
         "path": "anthropic/_utils/_reflection.py",
@@ -3777,16 +3921,12 @@
         "sha256": "1c19d9924067cf1b703997b4db5d82e04ca846fc614d5b53acb143cf6ff15428"
       },
       {
-        "path": "anthropic/_utils/_transform.py",
-        "sha256": "9b7fc0e8795b46de19e9b514f23a80d808f59dd033cc51fc7c733b7edcb858b6"
-      },
-      {
         "path": "anthropic/_utils/_typing.py",
         "sha256": "3d4bd41a78ff9293b98f6d89f212595b4f9fc2edac682afb94ddebf95570e6cd"
       },
       {
         "path": "anthropic/_utils/_utils.py",
-        "sha256": "da73cecc3acf7b61800e92c244ce1b3504bc32eecb8c48821bf2c9d8000bea38"
+        "sha256": "0997d8c37df138bce70ec7b11a818d8afc72e0e22e8f5ee50c4b9767f0419f8a"
       },
       {
         "path": "anthropic/_vendor/__init__.py",
@@ -3798,7 +3938,7 @@
       },
       {
         "path": "anthropic/_version.py",
-        "sha256": "9a03e6fd14bd2471f0ad821b0ce64c38cb1c2afcbdf7dfc418eb1481103b61a5"
+        "sha256": "10decd75c0bc3f2555386772aaae9fe29f99e904d9ad66bb4c39bd224aeb4c56"
       },
       {
         "path": "anthropic/lib/_parse/_response.py",
@@ -3882,11 +4022,11 @@
       },
       {
         "path": "anthropic/lib/tools/_beta_runner.py",
-        "sha256": "69b839823fe173d1ea65709d4bfd9ce3faa945dc363548289fcd2389f8a8b3f3"
+        "sha256": "79112e03478bba2eaa50442e07240f6fa72cd6744a90254638870426e29b1e01"
       },
       {
         "path": "anthropic/lib/tools/_tool_dispatch.py",
-        "sha256": "72e484f6e9ed68b4b39e5507f48fe599bf11e480b9b19a3443fe58dfbe469f89"
+        "sha256": "4b1ef479eca77a9a0b6d0b0a90bacca7c87cb43ec7680018e3a3008cebdb9cee"
       },
       {
         "path": "anthropic/lib/tools/_tool_params.py",
@@ -3910,23 +4050,23 @@
       },
       {
         "path": "anthropic/resources/beta/messages/batches.py",
-        "sha256": "b49fb530a6fd7e6b2c773075a0f68df1ca8365d7a66965c6075aa5d729cb2ff3"
+        "sha256": "e07a5c110327ecf94fe059a9291b88a6951c47ad42a4304b3572a698d7b0d959"
       },
       {
         "path": "anthropic/resources/beta/messages/messages.py",
-        "sha256": "7a705feaa08f33ae33c8560433c4c8e9516ecce92e238a3a7319ba0e905517f5"
+        "sha256": "ec3b6dfd463634ca2c0867dc0643935883ce9e5a57b9f4908c7758c15e7f3382"
       },
       {
         "path": "anthropic/resources/beta/organization/api_keys.py",
-        "sha256": "575c5bfc6876529245ba49607bdddda9f288c3bd72064ce8e40bd647344a55af"
+        "sha256": "935e66db81f7e25da364a7d14d33197c78ca36eb6455ba82e701665bb606794f"
       },
       {
         "path": "anthropic/resources/beta/organization/compliance_settings.py",
-        "sha256": "4d152d28dfa5b9acfbcaa38f74d8bd57b4ff763527e5ec9958149762575e40c7"
+        "sha256": "06fff7831ce985bd4bce3130aa64869e94251d21091bf3ed28e2c45657e8065d"
       },
       {
         "path": "anthropic/resources/beta/organization/external_keys.py",
-        "sha256": "52c7bc654b68b33abb90963c7b9a8c617bb1fa5aeee57e75ac748c0d87868d14"
+        "sha256": "c40023dcf7e408ac020c3a7036748d31922273c9f9e24f12e41a1bec46d36486"
       },
       {
         "path": "anthropic/resources/beta/organization/federation/federation.py",
@@ -3934,19 +4074,19 @@
       },
       {
         "path": "anthropic/resources/beta/organization/federation/issuers.py",
-        "sha256": "c2a8f468f1c904bb836814944e59e0be28d254a7e8521d02a329cb552408f323"
+        "sha256": "1c445b961db8349ba8fc18619efdc2d15f8b75e5492b627b8eb8b0eeab387818"
       },
       {
         "path": "anthropic/resources/beta/organization/federation/rules/rules.py",
-        "sha256": "a6f706609df2a480abf356382e000ced2379a3121e22c03ea8ce2bd2241d78cc"
+        "sha256": "e728ba7fe85c1168cb5cbf5c94faba537aaa42d818d2b0b9d92d3974c941c342"
       },
       {
         "path": "anthropic/resources/beta/organization/federation/rules/workspaces.py",
-        "sha256": "87ccec3a23433bc1c3595f955ccbc7bdda2cfcd7ac42ded33338259ebe5abf95"
+        "sha256": "71262a5688973b5b5c166d82ed06fb6d8235dd4274470a7b1fa8d070f1b07857"
       },
       {
         "path": "anthropic/resources/beta/organization/invites.py",
-        "sha256": "a9126988ad4a8d0e332c84c86982a9d1c797d62d4d53f0cf328038954569b74b"
+        "sha256": "9ea77c3533764e6df6a3034a99869969b9a1021ba1181dd4d8da7532a5b56105"
       },
       {
         "path": "anthropic/resources/beta/organization/organization.py",
@@ -3954,35 +4094,35 @@
       },
       {
         "path": "anthropic/resources/beta/organization/rate_limits.py",
-        "sha256": "ded1c22d749b804b499fb3779854836f5631184505d4a46f0ab87873f95afd3b"
+        "sha256": "07cc03a1efa1354cf04f048f6925c74fe9d4319b5da5a32c3f98fa38f8d96a81"
       },
       {
         "path": "anthropic/resources/beta/organization/service_accounts/service_accounts.py",
-        "sha256": "c53c4bd7acbefceba6ba489c10993482b69a40f5aff61aa0af39aa86cd01a0c5"
+        "sha256": "270f0c22a7cc98cee1c6ae39d1209fc7bbb0ade358489a052ccecf1d1f6d0e56"
       },
       {
         "path": "anthropic/resources/beta/organization/service_accounts/workspaces.py",
-        "sha256": "a58b7d0e9cf405852d1953b733f99c51b2811aefc625771d95308560152b300f"
+        "sha256": "dce37c72191c78c3813f9d39154a36388ca96b6833f56d9abc6456e73cf3fd27"
       },
       {
         "path": "anthropic/resources/beta/organization/users.py",
-        "sha256": "5612f0e103c76a65f25d153fdcf1afab158dd4f6660d4a2f6a3629a4d6503fa7"
+        "sha256": "e8178d647ddca689f351ae9ae66a0cb972686e2d6750f51698c09d04a2d5aca8"
       },
       {
         "path": "anthropic/resources/beta/organization/workspaces/members.py",
-        "sha256": "3ae430fbfe168e0fa1fc9a88ac179c5a2041ca85c81c4a1c4d8b90593c125065"
+        "sha256": "81344d264ba4a266b0195cfef0283f4f067dcdd2c4f59a14d48193ecdcb771db"
       },
       {
         "path": "anthropic/resources/beta/organization/workspaces/rate_limits.py",
-        "sha256": "5c2ed1385e839d40416246e0e0aab49b4e2f66e2ee05594f07552fc5dc9af824"
+        "sha256": "6e2385007995f4a2d8565ad56202ff62290f87c81f0bc0ffaf3dd969617c9796"
       },
       {
         "path": "anthropic/resources/beta/organization/workspaces/service_accounts.py",
-        "sha256": "b43f353c32123008c2f8bf492555335c5aa016ca3dda4f1fd251daf1ae074dad"
+        "sha256": "520f0c2a2080ad98a1b97b72c3e8b818a98292a1d08d90dd5a04bf250df4217c"
       },
       {
         "path": "anthropic/resources/beta/organization/workspaces/workspaces.py",
-        "sha256": "d80cb9cc40bfb4b72df465a9798b8d5658fc34afa20b39e81c909b00a76c0d75"
+        "sha256": "98590948f33e3c4bc5a5a8b8e7b3a0e031295b492359722f3a4b39d8adf18363"
       },
       {
         "path": "anthropic/resources/messages/__init__.py",
@@ -3990,11 +4130,11 @@
       },
       {
         "path": "anthropic/resources/messages/batches.py",
-        "sha256": "d335f9244877a2f35281a55dc8fae0a368ce6f0d491528920aa1ac00955fc93f"
+        "sha256": "dff8e47704132fbd01ddd3db1ec6935108333f14dcfbc23879df1745526f7e02"
       },
       {
         "path": "anthropic/resources/messages/messages.py",
-        "sha256": "c56eb60b2ff04b4e11c2c6ee05a3c861ff339430ceda42979720f27d0514b6f3"
+        "sha256": "cd7fa68b5aba73e4277688803e059564fdbefc3d2461192fb5c8f070ff30680a"
       },
       {
         "path": "anthropic/types/__init__.py",
@@ -4002,11 +4142,11 @@
       },
       {
         "path": "anthropic/types/anthropic_beta_param.py",
-        "sha256": "2d60600b596a944d3639d1c01b4d5406d2af478bdb8d4f5494dcf287e04f8a8c"
+        "sha256": "2b6283a7fb97320764b32626e7302a229ddcd48bbdcade59b29876776786fa94"
       },
       {
         "path": "anthropic/types/base64_image_source_param.py",
-        "sha256": "3890da0ebf3c349c598ed7e2270d39e6cf8834b4dcbb3bb1c8f494a3cb077667"
+        "sha256": "55d81eda272dace3cd245cbe890209667e0dbc5bbf3246e13dd120b3d28b5db5"
       },
       {
         "path": "anthropic/types/base64_pdf_source.py",
@@ -4014,7 +4154,7 @@
       },
       {
         "path": "anthropic/types/base64_pdf_source_param.py",
-        "sha256": "00059f1048b6e4eb39999dd0d85b049d939bff9d5bfca93249af2cabd3e42f24"
+        "sha256": "1b1e9cd7bc15d81abb4b954b63d875193b8cae7e3216f84e6d9932e6b284cff5"
       },
       {
         "path": "anthropic/types/bash_code_execution_output_block.py",
@@ -4054,31 +4194,15 @@
       },
       {
         "path": "anthropic/types/beta/__init__.py",
-        "sha256": "b57ba67f0332f3d900d5a6bbf7937e5d12d0adb120084007c7a43d3753028f94"
+        "sha256": "f12efa6c0e672016d705717ce921d807180fba83e48926f294d22420188a0acb"
       },
       {
         "path": "anthropic/types/beta/agent_create_params.py",
-        "sha256": "cd419ecf92392accd45c2573ee4b665e86e277acb936896e9f79142fe22f7193"
-      },
-      {
-        "path": "anthropic/types/beta/agent_list_params.py",
-        "sha256": "5d2aa4bd0f2707e94c821493faaea5a5d977c8d4969b9ae1a481d22faa74c941"
-      },
-      {
-        "path": "anthropic/types/beta/agent_retrieve_params.py",
-        "sha256": "c93eb0dbbb8c0c31626f8aa3c7de081dea386bb4dd571e6574de09cfb7b4d2f6"
+        "sha256": "d9377a068efece2d5617268cf80f4dbaa2339fb11df462dede8954178434c13e"
       },
       {
         "path": "anthropic/types/beta/agent_update_params.py",
-        "sha256": "2a16970b9eba9f43df77c4d4b28c326c420c1246104c9943112ca0e9c7359145"
-      },
-      {
-        "path": "anthropic/types/beta/agents/__init__.py",
-        "sha256": "e7c6c70b267a488f0c0d31e83725232d35120f44b3a3ac04e7d1f045c96101d6"
-      },
-      {
-        "path": "anthropic/types/beta/agents/version_list_params.py",
-        "sha256": "0eca14bde9cc4ec14fdf84c81665fd10bdb7af6b37b98df4289eb016e85caaee"
+        "sha256": "3452e88d5be0a5adabc5666050a7f91a5411d59a93e69d8b7e7157f3509951d8"
       },
       {
         "path": "anthropic/types/beta/beta_advisor_message_iteration_usage.py",
@@ -4099,6 +4223,10 @@
       {
         "path": "anthropic/types/beta/beta_advisor_result_block_param.py",
         "sha256": "ea296fb685297c8a5bcc144bc060e0e97a402dd287b59674da11aa3d7ed67d01"
+      },
+      {
+        "path": "anthropic/types/beta/beta_advisor_tool_20260301.py",
+        "sha256": "83dc87a084062eec5d481618272ccf8499f5f59d4c4cd16aa135e9e261ec9ce6"
       },
       {
         "path": "anthropic/types/beta/beta_advisor_tool_20260301_param.py",
@@ -4126,7 +4254,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_base64_image_source_param.py",
-        "sha256": "284749c588eaec68829b6ebdebcce8911fbc37b85b1044a331d2f5c1583db54d"
+        "sha256": "331fa30de518c54e7e7b51ee2673251dbd8e3957fa3d6a8c8252f05e1b9375fc"
       },
       {
         "path": "anthropic/types/beta/beta_base64_pdf_source.py",
@@ -4134,7 +4262,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_base64_pdf_source_param.py",
-        "sha256": "f85f39315baa839bde2fd0507ec6562eb4cd6c9a793d4736e5312297a991d604"
+        "sha256": "cfc8c82f8ce9a77af99077f9227b1a8fd3b293f78f8e77a43b2639e27b430eaf"
       },
       {
         "path": "anthropic/types/beta/beta_bash_code_execution_output_block.py",
@@ -4169,104 +4297,208 @@
         "sha256": "f6ad071ffd3f984b30d0eb7c06a36269b46c8d33f0ce1ffc4461f72c9a0cfbab"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_close_tab_config.py",
+        "sha256": "a38874c3dd5d4c23c157cddb52bb6fc9a004dcf347a502b1f346dca1e3facbcd"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_close_tab_config_param.py",
         "sha256": "6e6fffe50443821d3db8edda2b9c6b1a5e7c076021f56baab16f91e44b57fe22"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_double_click_config.py",
+        "sha256": "c07d31125b1ebd32127a1c2d00d7866d63cb9546aaf1793dea112286884d5cc2"
       },
       {
         "path": "anthropic/types/beta/beta_browser_double_click_config_param.py",
         "sha256": "093a5e0b0bdaefbd3d4cfd7de57459d5ce7cfc001921d33a596c82bc9213f6ff"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_file_upload_config.py",
+        "sha256": "d839c34e96490111837be221d2ff14ad50e6d508c772809ca20afcd6c0b32b3e"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_file_upload_config_param.py",
         "sha256": "42d7cda5656badc1c1f3c4c22b19540e5f0f3e5a9fc90d1358f2674710ba3b03"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_find_config.py",
+        "sha256": "35e3af08a707781a61f1132677b2255afaa7280e78b9265cd0011db9ee1afaf0"
       },
       {
         "path": "anthropic/types/beta/beta_browser_find_config_param.py",
         "sha256": "49a7b78bdb3eff2b78a1dfef72c4f6ecd49ccd8872d260b18303d1994d607ffb"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_form_input_config.py",
+        "sha256": "7c7842993864d0c6b8b77d5343ab1bf8c0e38c36c4adf9b149d86213129ed1e2"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_form_input_config_param.py",
         "sha256": "e00dc80b323afea3b4d5e4f047f1d70182ffa7dc1e4f73893d5c26571ef7e109"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_get_page_text_config.py",
+        "sha256": "66fd86c6cb389d11e730465d2993a6ee24102a87f664dbc17724de7801b4e70d"
       },
       {
         "path": "anthropic/types/beta/beta_browser_get_page_text_config_param.py",
         "sha256": "6c9c7fec1b89fbefab03feb58b03e8315152b7c3505d637d4e2e84edd251fc2f"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_hold_key_config.py",
+        "sha256": "019cf2c0bd7a241720632e1b9658e1b1a89e8be5ad23ac84f020ef9004f17af7"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_hold_key_config_param.py",
         "sha256": "1c66d40f43ee106446f03dce53629ad49937fe3c02ce64aee150e0502feb8807"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_hover_config.py",
+        "sha256": "b1b9ab96e04d508402ac504ecbe567567525086498300589e3621a723caeada8"
       },
       {
         "path": "anthropic/types/beta/beta_browser_hover_config_param.py",
         "sha256": "98a5cf80fd182e36e79523ea2e4e789d915156c298a7cf012cb9326fd6ca5e2d"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_javascript_exec_config.py",
+        "sha256": "36c909e32113ea1d0115f99a7126bc80b704436306ee1b47d764dc4321e5e91c"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_javascript_exec_config_param.py",
         "sha256": "8356ca70961d3ea7be76c7944cb606aad1489b5ef824bfa064deb9177dfde888"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_key_config.py",
+        "sha256": "661d81a2086c781702cac92a4568532670a356ef21684ec892c3003d08a48bcf"
       },
       {
         "path": "anthropic/types/beta/beta_browser_key_config_param.py",
         "sha256": "495ed6a7e99a752ec1a8ab081c2806209531e5d32a74ea0466dd553503e2409a"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_left_click_config.py",
+        "sha256": "0fd64d190770b752f45633106974b55ff4278a5b212b5d8d56533fa0dc35bdcd"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_left_click_config_param.py",
         "sha256": "a4d78efead3b00473c9c622a1e0bba993e89df967e12ad7bc2fddb53c36b57cb"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_left_click_drag_config.py",
+        "sha256": "e6a0e40ff37a24f3e3cc78dad161ba2f996d0b16e18fc42bea7e00fe11927ee7"
       },
       {
         "path": "anthropic/types/beta/beta_browser_left_click_drag_config_param.py",
         "sha256": "0ea8e98a984d651ab91d0f0b63146994cf2fa7cc124e689a8d072580e94accb4"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_left_mouse_down_config.py",
+        "sha256": "26c240d1d3eaa71757c9198e57fd37d570877361aab0210037dece6004df2b64"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_left_mouse_down_config_param.py",
         "sha256": "31cae2423ff06d0569769574adf12963ebadc091dad958304413618d4a975ae2"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_left_mouse_up_config.py",
+        "sha256": "56ada3b9aa093d17decdd45e4d39c690608ba7f919f56f1743231aea8a703334"
       },
       {
         "path": "anthropic/types/beta/beta_browser_left_mouse_up_config_param.py",
         "sha256": "bbfdbd9133a9b7b09f028e5b061f8dcfa8010d49cc80e5314a7e929ea72a2007"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_list_tabs_config.py",
+        "sha256": "d2377f7dc55a2ef6bbd13cbeddf2f6248eb88d43a173811019c5c1259bbea1ea"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_list_tabs_config_param.py",
         "sha256": "3525d0b0a2a6a37e2f3c5286f3a9a1535c1948b3857e0e657a05df14936f6891"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_middle_click_config.py",
+        "sha256": "935f305b052d4cbd4b1193d484c95033935525254fe0c94f6678819187d43b80"
       },
       {
         "path": "anthropic/types/beta/beta_browser_middle_click_config_param.py",
         "sha256": "caebb42079e6d67161d4e99efb00bd8a75b549bab83f3dd331c1c3d806bf7a41"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_mouse_move_config.py",
+        "sha256": "f026404132f9c784c6099a1f2d52d5cc132a7f9fb687db7890556c699dfedba3"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_mouse_move_config_param.py",
         "sha256": "cb4673cd200fdf8bd496ba248edcf000c4b49f62c0768b25a458dfd1a29e2086"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_navigate_config.py",
+        "sha256": "093315879cf382b8a42fb6328c8768981683a562f8435c90ac42d447c44a6796"
       },
       {
         "path": "anthropic/types/beta/beta_browser_navigate_config_param.py",
         "sha256": "c8e7730e252181e3f6f859a9b09d6f66f8445cf36322e46b049ecf0da0d8b008"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_new_tab_config.py",
+        "sha256": "378ec1df922f5cb5ca1ebfb89bedc59d3b4a8c9281ae8476622ba0d9efed8f7a"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_new_tab_config_param.py",
         "sha256": "73f6e3c3c8af02995793c91ea9761d71655743bfcbec2b1f12e91e8d2f237fe0"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_read_console_config.py",
+        "sha256": "bbd9d13f56cf6cdf3e3f1beab947f5e78099bb62fec3331833cd4dba68064d5e"
       },
       {
         "path": "anthropic/types/beta/beta_browser_read_console_config_param.py",
         "sha256": "1b5926e61c0366ebab55f86578e61affccc7e5b69573bb949fb96d7ed43c69ee"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_read_network_config.py",
+        "sha256": "48d4b3cd791618f8205ccd39b51353d9e2025ce3a071f03a35c7a8137de905b2"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_read_network_config_param.py",
         "sha256": "b6d6db9aa5f26aa2b4f065a13b01b8242128f36b9a172232aec0dcd228475169"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_read_page_config.py",
+        "sha256": "66400e747119d1009deac134cec780f2410593566a324e29ac2e781280407d29"
       },
       {
         "path": "anthropic/types/beta/beta_browser_read_page_config_param.py",
         "sha256": "130be9ef052d07e7c4ef2cdc37a11fe25a890d853b8aa89e20e4b03132b7b2ef"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_right_click_config.py",
+        "sha256": "8f97465821872a3000c87831abdf0cd56a39e73cd397db57592cd73cf37f6261"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_right_click_config_param.py",
         "sha256": "f1c37ac81c1a10c72cc3cd1ab07f58c90bf6e3e1455da0eda17329291a9d0993"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_screenshot_config.py",
+        "sha256": "a3a39dd8a9c6888af9a99c73502b3916e79038fedab1f7c064d74f16047637e3"
       },
       {
         "path": "anthropic/types/beta/beta_browser_screenshot_config_param.py",
         "sha256": "fd9f3387147965673fa5d29b1a0ea87b8e3675ea348a45761fca0ff438b21b0f"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_scroll_config.py",
+        "sha256": "49b468831d1886ec10297f9bced0582e651cb9fbea4e52466395d77af1ae2122"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_scroll_config_param.py",
         "sha256": "50fcec92a7ef1dc5b57475cec5d379f3c9e3e25158effeea481a183dac142208"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_scroll_to_config.py",
+        "sha256": "c0fb6ca460a9af59cad4772a8df6c73689ce3437706ad17db1179c2b865ef387"
       },
       {
         "path": "anthropic/types/beta/beta_browser_scroll_to_config_param.py",
@@ -4301,32 +4533,64 @@
         "sha256": "1124ef9691ba750160d4da85dc6e586bfc94e5aad68703aab41babe9d93923c1"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_switch_tab_config.py",
+        "sha256": "adee9d5f7b3e03f4f69ef3b22990121fcc046892464d2eb6a5291d47fd08cd6b"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_switch_tab_config_param.py",
         "sha256": "d2d5e792630c9da0cf46da5c0b2cac3ec48b0f3a9b82d55291825f680a59d562"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_toolset_20260801.py",
+        "sha256": "55647aae017530ad5ed671730808830074a53e7bd42274343efccdb1ba5e18a2"
       },
       {
         "path": "anthropic/types/beta/beta_browser_toolset_20260801_param.py",
         "sha256": "cac34dcffb858fb9d0d5f5db000c682b56c031835052f0ff5285eb4bcc3673cc"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_toolset_configs.py",
+        "sha256": "8495d6b6d14cac8319bdbb9371058f8ae10be6ce649d3ffb9902bb7a555e8d03"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_toolset_configs_param.py",
         "sha256": "a50470d69850d5ad68e82fb2d8ed765d680e7c5066c374594447246b70db6ab4"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_triple_click_config.py",
+        "sha256": "9995cfe4a3064ac5d4f825fdccc2e0e2b774919f0d1eae93811f6365dcfe4b16"
       },
       {
         "path": "anthropic/types/beta/beta_browser_triple_click_config_param.py",
         "sha256": "4b316229ba54bddc2857d301fbd986d4f204d8a1a54af8ae902723883c45aed8"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_type_config.py",
+        "sha256": "4bbbb873d3efb6cb0621b12c743c9c9db3c7982f3c612ea51faf6032e319c11a"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_type_config_param.py",
         "sha256": "8d757dae4b946f7b77278d462d17b314ad07bc48047514fa13f59711662686f6"
+      },
+      {
+        "path": "anthropic/types/beta/beta_browser_wait_config.py",
+        "sha256": "9e69568375f5fe10900ca8ad912b712fbfc08707d5079f196f26eca06b40704d"
       },
       {
         "path": "anthropic/types/beta/beta_browser_wait_config_param.py",
         "sha256": "66750b3a8650659f494cf4ff86e7cf6b503474924a723fed2b4bac5fbf4a3385"
       },
       {
+        "path": "anthropic/types/beta/beta_browser_zoom_config.py",
+        "sha256": "da24ec0be2e34a02bc6795b72f52a11e1f6c5471ff0d55343262fd619ced9349"
+      },
+      {
         "path": "anthropic/types/beta/beta_browser_zoom_config_param.py",
         "sha256": "a1d4f9df8cd8ed400618c0f93a011b45db5d9e2e7af4e9bb66ed6fa26e215b62"
+      },
+      {
+        "path": "anthropic/types/beta/beta_cache_control_ephemeral.py",
+        "sha256": "faffcae4ac30009edf2335de047452c31d23e0ea9aaecb114e7d24b3964494da"
       },
       {
         "path": "anthropic/types/beta/beta_cache_control_ephemeral_param.py",
@@ -4406,7 +4670,11 @@
       },
       {
         "path": "anthropic/types/beta/beta_citations_config_param.py",
-        "sha256": "97c6491bbf63f61b414e10bd59dd42c4e76b773bae0be9262bf1a8d0930cd12a"
+        "sha256": "5f5a831ae4fe6835dea2d901d951804dd93a04caea028f41c1562f90f3b0a2fd"
+      },
+      {
+        "path": "anthropic/types/beta/beta_citations_config_param_param.py",
+        "sha256": "1f2940fe1e1237e18f192339359128bb56a6465c7ad60341caf5d6d91cfb8652"
       },
       {
         "path": "anthropic/types/beta/beta_citations_delta.py",
@@ -4457,16 +4725,32 @@
         "sha256": "58317c823480106d3ec2424aca4cacbd6912b27be2cc77dc93264620b37b1a28"
       },
       {
+        "path": "anthropic/types/beta/beta_code_execution_tool_20250522.py",
+        "sha256": "911f7c62cfd4c0cd1fe298c16ff3edb3eaf06aa59fc4e764edcabf55e79a8de1"
+      },
+      {
         "path": "anthropic/types/beta/beta_code_execution_tool_20250522_param.py",
         "sha256": "1f4d6f12794eb953c5082a5e6f36600a8294c518ac4d77f633ac550d7b6e0dca"
+      },
+      {
+        "path": "anthropic/types/beta/beta_code_execution_tool_20250825.py",
+        "sha256": "49ce3ef11ee8461981d3a4509ae901ca79843fc193056c8b7c823388161ac8f9"
       },
       {
         "path": "anthropic/types/beta/beta_code_execution_tool_20250825_param.py",
         "sha256": "828146854f1c3912f502308d92cde1436286d0b6fcc5af74cb79b4e50b4836c1"
       },
       {
+        "path": "anthropic/types/beta/beta_code_execution_tool_20260120.py",
+        "sha256": "4e7e7503cc8ccad721731f40c59f7cfaa5c64f0c111b4ea53eacf4a294a17cc1"
+      },
+      {
         "path": "anthropic/types/beta/beta_code_execution_tool_20260120_param.py",
         "sha256": "63551acb4f3afed4a49961fc632499d5cf87808ee82caa88ac9a93e43666ae3c"
+      },
+      {
+        "path": "anthropic/types/beta/beta_code_execution_tool_20260521.py",
+        "sha256": "4894e6639960586c6e050d4f071815f2ae8e9891f6a39bcf1b27c2d54bd3ae6b"
       },
       {
         "path": "anthropic/types/beta/beta_code_execution_tool_20260521_param.py",
@@ -4506,11 +4790,11 @@
       },
       {
         "path": "anthropic/types/beta/beta_compaction_block.py",
-        "sha256": "7c40c4e1b806327510effe6b0773a347086591e40ca89b7f2012a50497e5d2ca"
+        "sha256": "4ac012ed821b967b2a6f2a87926573950222ef338d3d35d05e8d1e328548b0e4"
       },
       {
         "path": "anthropic/types/beta/beta_compaction_block_param.py",
-        "sha256": "6ca3918708ed9edc2be4f1b24387e545b289b869f1b3664a57893f7d862d7440"
+        "sha256": "8303431e87981a61d0c4a5a699820f6a42a8ce1466e629b68ecacf6ab10648bc"
       },
       {
         "path": "anthropic/types/beta/beta_compaction_capability.py",
@@ -4529,76 +4813,152 @@
         "sha256": "70a62ba670580e0ed1887efa904012a509446822e82d2b325bb3787cc66a69f9"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_cursor_position_config.py",
+        "sha256": "cee82eb0a773f7a7c9ebe999061d74059ba521b913d81f11b4cc786b7d1f0614"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_cursor_position_config_param.py",
         "sha256": "c22325b615d14ef03c051f94a1141d2e0d111ab4b3c0c0fbc07d6836046bd1d4"
+      },
+      {
+        "path": "anthropic/types/beta/beta_computer_double_click_config.py",
+        "sha256": "e54c46a0f710b8b14b8156a4bf77dea20ddc631b6194195b1890b3b042f83a19"
       },
       {
         "path": "anthropic/types/beta/beta_computer_double_click_config_param.py",
         "sha256": "d788bb952fe13906b8f0ecc537c1cfc91c871908a194b00843da1a8c7cfb052a"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_hold_key_config.py",
+        "sha256": "0d4b44957dab74a707f47aacfdc98b11ebd2c3cc6dabed98646954f9ed283659"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_hold_key_config_param.py",
         "sha256": "c5e0aa1de128b506321b89fa80be3ca95821fa12849e45556dffad936a289431"
+      },
+      {
+        "path": "anthropic/types/beta/beta_computer_key_config.py",
+        "sha256": "554efe190bc0e02deea22f833302cb6ebd3b24c1a3c4c22567cc99e7e2bffc64"
       },
       {
         "path": "anthropic/types/beta/beta_computer_key_config_param.py",
         "sha256": "2453c0c803c8293ab48c01559918b8711f5b7b0b3d5cf4a960c04560e2be087b"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_left_click_config.py",
+        "sha256": "a598ae322b34ccc97e9eb96cc1687b660c47a8812734c84cba8412658a0afd64"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_left_click_config_param.py",
         "sha256": "4aa1ade1afd5a4c51176f78e1f5d30b09beb186106c628f99fa12151295ec5f5"
+      },
+      {
+        "path": "anthropic/types/beta/beta_computer_left_click_drag_config.py",
+        "sha256": "646d47800fb79b4bbf48ba33a0b4d5447c0979f2ec5d9a8d938740db4d9bd951"
       },
       {
         "path": "anthropic/types/beta/beta_computer_left_click_drag_config_param.py",
         "sha256": "d89ff593817cdf3ed1ad6206599c7f5dbb95aabfaea9f43458e4d3ef3cfb08d7"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_left_mouse_down_config.py",
+        "sha256": "4ee3461ba1530b354dbe9bca6353b60619516ddff2354c1f9e86d3a7487c4c75"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_left_mouse_down_config_param.py",
         "sha256": "32c96bce04f7fe9ae8fb3e900aa75b3115744d440f8a20ef84a001537fc62733"
+      },
+      {
+        "path": "anthropic/types/beta/beta_computer_left_mouse_up_config.py",
+        "sha256": "bd5029e3336a5f63df478c7fede2438a6348b66530f67b9cadf4ae565c4fc39e"
       },
       {
         "path": "anthropic/types/beta/beta_computer_left_mouse_up_config_param.py",
         "sha256": "d85a584ff86ccbef93c08682a113e73623d9ed18fab251463c18d9aedbb71026"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_middle_click_config.py",
+        "sha256": "7f110e468f7236c7f8a4474b5f54f83cc34128613267d98f316182058d4dd3a1"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_middle_click_config_param.py",
         "sha256": "30cc43e5a09b03dd336df228c540f3d17f44e7d89e75ef9f316f983e6f402c1a"
+      },
+      {
+        "path": "anthropic/types/beta/beta_computer_mouse_move_config.py",
+        "sha256": "f56ce759a80746a5fd11660b738a9c1f6a7bc0935a9f840d8a1923ea578495cb"
       },
       {
         "path": "anthropic/types/beta/beta_computer_mouse_move_config_param.py",
         "sha256": "0d4626e163672710bfdc22bd06153a979f3776c2770ee746799109841cffb771"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_right_click_config.py",
+        "sha256": "95aa9dfce72777d1243aa27f60cec7f5766a31c3becbe4d1547db2d9dc52b663"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_right_click_config_param.py",
         "sha256": "259af343ce2bdafcf2d0b44ff640a54b9bc58507fbf10c7ef12f603585fb5a3e"
+      },
+      {
+        "path": "anthropic/types/beta/beta_computer_screenshot_config.py",
+        "sha256": "cb395740825f6363c21e73557f997f03a5857d624deea888b28279ac6951aced"
       },
       {
         "path": "anthropic/types/beta/beta_computer_screenshot_config_param.py",
         "sha256": "a43343c98f42de4f4792861630e3115936af1bb2525a111ac53746208816ddc9"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_scroll_config.py",
+        "sha256": "47864b4f50d7f70093320e4226036e05711cdd80a88396b1215592b828d8b3c3"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_scroll_config_param.py",
         "sha256": "b4d600d9d84199c045dde71dfd210cb38288392f4e8407ee34c3190c0acb7923"
+      },
+      {
+        "path": "anthropic/types/beta/beta_computer_toolset_20260801.py",
+        "sha256": "7beab7d939f441215e037cf93f643793a0ca106a531c7b1b45767c156d69e7a3"
       },
       {
         "path": "anthropic/types/beta/beta_computer_toolset_20260801_param.py",
         "sha256": "211fa30335a6757ff0a3c745e185f7a9ff126f3f492e70d285dacddf44ac7c6b"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_toolset_configs.py",
+        "sha256": "26cf25f41243a663d6f1dbea5d67c2d0ed3d11f57cfb5e62b293fa48e04f7eff"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_toolset_configs_param.py",
         "sha256": "c07b6fa1a379186cd032f908aceaa2f385175500fd43611df5a05ba09a779ea8"
+      },
+      {
+        "path": "anthropic/types/beta/beta_computer_triple_click_config.py",
+        "sha256": "a45ae06ad9843e71f22b95bf02da05d3ad17d729f529888806c4fb231b416f4e"
       },
       {
         "path": "anthropic/types/beta/beta_computer_triple_click_config_param.py",
         "sha256": "2a08f74e0f8a17a2329903594ac9790eaf63b020ca373690a47e6e3fa1654934"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_type_config.py",
+        "sha256": "114db07cfcb098394709bb88165ca3cbb1ee6c294783f2c656971e3de45c69b9"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_type_config_param.py",
         "sha256": "df686964dd72120016cf0dd004e6bad617e2ed607821ddd38205fe61bba2d7b0"
       },
       {
+        "path": "anthropic/types/beta/beta_computer_wait_config.py",
+        "sha256": "ae088030ac7d62676b57b8141d134b3c37f16eac0b01056b09b0f544dd6bbabb"
+      },
+      {
         "path": "anthropic/types/beta/beta_computer_wait_config_param.py",
         "sha256": "8e3faa15ac2794b7b8610f83abf614cbc3d9c8b16d062f06717ebcd383c8ce52"
+      },
+      {
+        "path": "anthropic/types/beta/beta_computer_zoom_config.py",
+        "sha256": "4e20f74a4a14c32ca774ed83377e2e50db0d086b8f55586263a1bd6b12531b41"
       },
       {
         "path": "anthropic/types/beta/beta_computer_zoom_config_param.py",
@@ -4626,11 +4986,11 @@
       },
       {
         "path": "anthropic/types/beta/beta_content_block.py",
-        "sha256": "85df7becee910c575ca51f21bd6dba62800484984afcd52f0eb02d0de5854162"
+        "sha256": "ecd93d5abbe7a0e32b5f6cbf7219230ad6d8154b3219082ec927e0d8175a3c71"
       },
       {
         "path": "anthropic/types/beta/beta_content_block_param.py",
-        "sha256": "ce0e169b2ba16371959e150006b0990715cad6025ed5aa5885a658777a9416c9"
+        "sha256": "535dd14d12c15b5c8d2ab623fec33124b1e697eb0eaf8b60d75d3b4599857306"
       },
       {
         "path": "anthropic/types/beta/beta_content_block_source_content_param.py",
@@ -4666,7 +5026,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_diagnostics.py",
-        "sha256": "8de9fb3a533873ab9b16648951ddcfea9b63b731ab6e9242fcc99c79d2ad8086"
+        "sha256": "e4c79ac43f0aab0895c9c6f36d356c6edadd8c36b66ad94395475e97ce2dc871"
       },
       {
         "path": "anthropic/types/beta/beta_diagnostics_param.py",
@@ -4686,11 +5046,11 @@
       },
       {
         "path": "anthropic/types/beta/beta_dream.py",
-        "sha256": "705ac2e5602aa6885d8b68a2867adc1e897a836283307aa6485a351e9c22a626"
+        "sha256": "38dc71af97587d722327eebb7a3814030f2fce09dad728551028549499ff04f8"
       },
       {
         "path": "anthropic/types/beta/beta_dream_error.py",
-        "sha256": "f9639911ef99fc699c5a1e45c375e8e8a5c36d7363fc9559b9e33e84e224d278"
+        "sha256": "ebecbfd46f1ced3d429f25a28ac9d2aae3a46ae15f2bab241476d8dc3550651f"
       },
       {
         "path": "anthropic/types/beta/beta_dream_input.py",
@@ -4702,31 +5062,31 @@
       },
       {
         "path": "anthropic/types/beta/beta_dream_memory_store_input.py",
-        "sha256": "243cd6109f687486b52a7ca3d6384624d23dabd055e1ddd4986e18f7dc03db07"
+        "sha256": "bae733a6a4572856a2ebc0aa86b23a18d1be7e03d52a8ec8cfe8f96016a525a7"
       },
       {
         "path": "anthropic/types/beta/beta_dream_memory_store_input_param.py",
-        "sha256": "f95a06a7c3601187d92fee32917ac82771b23073d73c1631d5a09d2a7d67139d"
+        "sha256": "a4e72b483b029c33b738943725d23b24798bbc873f7e2ba1937d1618bfadba5a"
       },
       {
         "path": "anthropic/types/beta/beta_dream_model_config.py",
-        "sha256": "1bc381b6813b55cc31a04ae684e4780817ad88691c13a16f3f0e342a6bb8ca48"
+        "sha256": "dc463a9cd88a70eea4556c18882c30dccb2e6903c228dc8f03b934b134ad86c2"
       },
       {
         "path": "anthropic/types/beta/beta_dream_model_config_param.py",
-        "sha256": "e37ad0aeff76401a29cb81e599a880c6d07844cb24b9b9b55adf26392eb344fc"
+        "sha256": "8484a3eaf328903e07f254d3ec079dc4fa08554e0d59668ff3f72b850c7b6961"
       },
       {
         "path": "anthropic/types/beta/beta_dream_output.py",
-        "sha256": "d73fdf7ce3fd6c767fa8bb3c472cd2cec793ab065a77d37895c6ccdd907e0c8b"
+        "sha256": "89c8cf1203f433735c8c82461691ac640195e721d4e7a2f6aa5b21c552eb25b8"
       },
       {
         "path": "anthropic/types/beta/beta_dream_sessions_input.py",
-        "sha256": "fda8f5232587e0a15e6740cfe2adf067a0002def1dc4dc8b95bbd1aed6e32790"
+        "sha256": "39a1e413488aa821078af6f557ea5caca1af3b67be50d0847889ef3ae9021961"
       },
       {
         "path": "anthropic/types/beta/beta_dream_sessions_input_param.py",
-        "sha256": "b13d3e0062353836a3d362ba09fd9b9a567c414e9688288ce722eaa8f667a23a"
+        "sha256": "31cd06d205e4f4e88af396348f35bc81ff628eaf336babad4577c19575c13a95"
       },
       {
         "path": "anthropic/types/beta/beta_dream_status.py",
@@ -4734,7 +5094,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_dream_usage.py",
-        "sha256": "4cc90a105c02a121567be6a0959925f2d213a825cab9478e3a3608e03fca3331"
+        "sha256": "145a669db430f05fb48ee4c1b9f5332906133ae4f476a91da92dc68df49bdf42"
       },
       {
         "path": "anthropic/types/beta/beta_effort_capability.py",
@@ -4762,7 +5122,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_fallback_block_param.py",
-        "sha256": "61b598ec004230f48553dd9ec2f01f870bac374fb07232674519982526188064"
+        "sha256": "83bb6a5fe72a051e1ff652e52d8bb040fe401353cfde17fc5a7614f43d19a762"
       },
       {
         "path": "anthropic/types/beta/beta_fallback_credit_not_applied.py",
@@ -5254,7 +5614,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_managed_agents_model.py",
-        "sha256": "dc97d0112a3c6d27e05e5fc7cdf005cd7a7b02667c08af74eab4011e6fed9c11"
+        "sha256": "e51a864bcd792ace986fd1b9289e26c0acc4430d7910dd1c527930fb88590f6a"
       },
       {
         "path": "anthropic/types/beta/beta_managed_agents_model_config.py",
@@ -5266,7 +5626,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_managed_agents_model_param.py",
-        "sha256": "04de40efaec2ad2c89fbaf76759e6d358ae989b8b48c382fdee0074b161c55bb"
+        "sha256": "94a8d11f55c056b1837464bd8d88394e73c049210dd8b08fad31cd816eabfbf6"
       },
       {
         "path": "anthropic/types/beta/beta_managed_agents_multiagent.py",
@@ -5501,12 +5861,40 @@
         "sha256": "b84fc3b2118a66cc7902cfb8aba521affb6c2ea62ff5d0bc178ab5e63a3e1d51"
       },
       {
+        "path": "anthropic/types/beta/beta_mcp_tool.py",
+        "sha256": "64a396d0c3b23f9d3d73228d74d0199ed1d7399d45e9da92b3b021aeb5ba9d42"
+      },
+      {
+        "path": "anthropic/types/beta/beta_mcp_tool_config.py",
+        "sha256": "35da12b119fce6fbf93ec6c9da01d019b830eaeebb519d1a06116cd48711fdc2"
+      },
+      {
         "path": "anthropic/types/beta/beta_mcp_tool_config_param.py",
         "sha256": "679d6305d86f050135dab8df31689a2c97565f7aa3c7b3947fa335712f552301"
       },
       {
+        "path": "anthropic/types/beta/beta_mcp_tool_default_config.py",
+        "sha256": "87c77e4b58b6f130811388be1122f975835957327cd4b650560b094ff6d95f0b"
+      },
+      {
         "path": "anthropic/types/beta/beta_mcp_tool_default_config_param.py",
         "sha256": "f6a99a8222e85f0c10204f6fd249303b4addb3286c2a76b4fe0e223c0a5b7056"
+      },
+      {
+        "path": "anthropic/types/beta/beta_mcp_tool_listing_block.py",
+        "sha256": "4f1d080af3318bc85a5d9da2c5431f9560dfaaf97d2deaf1ad0de927f650765b"
+      },
+      {
+        "path": "anthropic/types/beta/beta_mcp_tool_listing_block_param.py",
+        "sha256": "ba41e0394d39af16378cf66faff121538ae5ce8a02eb7a248594edbbeed02774"
+      },
+      {
+        "path": "anthropic/types/beta/beta_mcp_tool_param.py",
+        "sha256": "2c49b6653dcadc0edd63b69e7d7b46eb8be1ddf10cd2b30ba71c5814adb7ad09"
+      },
+      {
+        "path": "anthropic/types/beta/beta_mcp_tool_param_param.py",
+        "sha256": "26a8305af8ad41e5b43052314a736e935cffcc950691bc3be1f1e448fdcf4b11"
       },
       {
         "path": "anthropic/types/beta/beta_mcp_tool_result_block.py",
@@ -5521,8 +5909,16 @@
         "sha256": "e21b221c0209edfb72db11eee32865cf25cc6431d8a6f5d96aeb372cafecd35c"
       },
       {
+        "path": "anthropic/types/beta/beta_mcp_toolset.py",
+        "sha256": "f517c9977e52602e10087aefacd6ded55cb44d4881cec8326bac46f2796bafb4"
+      },
+      {
         "path": "anthropic/types/beta/beta_mcp_toolset_param.py",
-        "sha256": "8a306a8ac6af4ca9fb2673955fee06cec26caca3658823d73f0e90803cd9a8ec"
+        "sha256": "2265618a257906823061f4272bb0a48210006869679153c5860991dd37a2b86d"
+      },
+      {
+        "path": "anthropic/types/beta/beta_memory_tool_20250818.py",
+        "sha256": "f69fdcc3fe654675cbeed704101608416f8a8362a179940d1c5f00d8f05146e8"
       },
       {
         "path": "anthropic/types/beta/beta_memory_tool_20250818_param.py",
@@ -5530,7 +5926,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_message.py",
-        "sha256": "1f77a4c35d9f9872a59f4d581f48c6106f534d9aa232fde9f775f27588f5d6b0"
+        "sha256": "5dcb701aef666897c7be5947ec178cf22313ecd95cf72a1fd089a3217f9d98c2"
       },
       {
         "path": "anthropic/types/beta/beta_message_delta_usage.py",
@@ -5574,11 +5970,11 @@
       },
       {
         "path": "anthropic/types/beta/beta_output_behavior_create_new.py",
-        "sha256": "401acc45c6e408d3546d5084c82d0d58e5d7aaac275a2ba5db8a0d3591934fe0"
+        "sha256": "82d98a9a3fe266d24a9d1949d9920e46c5d02aa0b4250d28ee01c37d52cab586"
       },
       {
         "path": "anthropic/types/beta/beta_output_behavior_create_new_param.py",
-        "sha256": "4adcef4f6b0f5ccc5380980af63f97ec6cbd93effbf28d2bfe36b8a0012df334"
+        "sha256": "45f917137ae96d8dddcbfa3d26b591f3872f2c5448728e585ee62947f6e15883"
       },
       {
         "path": "anthropic/types/beta/beta_output_behavior_param.py",
@@ -5586,11 +5982,11 @@
       },
       {
         "path": "anthropic/types/beta/beta_output_behavior_update_existing.py",
-        "sha256": "e8f228c4c3003b07dae867ff79112aada657f23b0d04ecce5f9e2faa06f0c24a"
+        "sha256": "34044369798eb20ac16925d3d359b2fa8b0261b107c4dbd9e9bef849ee987a43"
       },
       {
         "path": "anthropic/types/beta/beta_output_behavior_update_existing_param.py",
-        "sha256": "0c9973b31fdf505b99c8d2a3696917529f2f9eccbceb4f3a9a75204643298b64"
+        "sha256": "13b95a752b8da0fbffbd68954de2899898436777cb17e67c32112b19de37b336"
       },
       {
         "path": "anthropic/types/beta/beta_output_config_param.py",
@@ -5626,7 +6022,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_raw_content_block_start_event.py",
-        "sha256": "ff9fb3410a65f71d52a6691f21b725dbb45bd3b5f15be81ec4a6fd09e1842c83"
+        "sha256": "55e269a152ff9c882414435501c1a15ca9e738ddbdb07b26cd24fb1f3e49eeff"
       },
       {
         "path": "anthropic/types/beta/beta_raw_content_block_stop_event.py",
@@ -5662,7 +6058,7 @@
       },
       {
         "path": "anthropic/types/beta/beta_request_document_block_param.py",
-        "sha256": "0a5892cd8629744cab5b20ac444e986fb607a83bf317a4664b64d6f3bd21f0e4"
+        "sha256": "ab09a04b552eb07c0d3c5140d9c19ebbfa12ab1823ee5d46c7839a473f6cc468"
       },
       {
         "path": "anthropic/types/beta/beta_request_mcp_server_tool_configuration_param.py",
@@ -5678,15 +6074,47 @@
       },
       {
         "path": "anthropic/types/beta/beta_request_tool_addition_block_param.py",
-        "sha256": "c41c36907691fecee8c72cc29e5f17f12c5f96661433a28b1a08d8c66653c039"
+        "sha256": "dac35654b4b44df88d40542670a8718ebe4e8ee38588ee789d810f45504949c8"
       },
       {
         "path": "anthropic/types/beta/beta_request_tool_removal_block_param.py",
-        "sha256": "057735e62a85be6e2c2d279baf891414a8aca6d642050c607af44d24d0e71263"
+        "sha256": "b3a99fc534517c10f6e4a49370d71af81919e62b4621dd3b92d53491a5cf7365"
+      },
+      {
+        "path": "anthropic/types/beta/beta_response_tool.py",
+        "sha256": "d7f67b3d93416770cbe9910109d1abb0e6471a45c10dc9e9b9fa71623b5f6cf8"
+      },
+      {
+        "path": "anthropic/types/beta/beta_response_tool_addition_block.py",
+        "sha256": "d6bedb8185bb097e56c4f0b4d065cbe03cadd2cb0ae5ffa0c83358ea6aa73feb"
+      },
+      {
+        "path": "anthropic/types/beta/beta_response_tool_change_mcp_tool_reference.py",
+        "sha256": "19c7dc34f9ba8aac1a961cf423c3e11d28a04d8d2b41d34651ef50c39fd55135"
+      },
+      {
+        "path": "anthropic/types/beta/beta_response_tool_change_mcp_toolset_reference.py",
+        "sha256": "55e0fd7738a298c3513766c212e7a2f0fc683d91aeeb739ea42f366f677dbb03"
+      },
+      {
+        "path": "anthropic/types/beta/beta_response_tool_change_tool_reference.py",
+        "sha256": "4467e537fb4ff4adc5ea812ed7435a0c34cdae9f92584ed382a66ff61f602e4f"
+      },
+      {
+        "path": "anthropic/types/beta/beta_response_tool_input_schema.py",
+        "sha256": "f7f9c78ae8ee33455c826feafbb405188f98795326d96da09158ececbd351ebd"
+      },
+      {
+        "path": "anthropic/types/beta/beta_response_tool_removal_block.py",
+        "sha256": "be9c21733703629323525399d6aea2d87598d043f3489ccef43e14f9988f6aa1"
+      },
+      {
+        "path": "anthropic/types/beta/beta_response_tool_union.py",
+        "sha256": "18d4116228fd79e697f340875b02aa3307e46d50ee153e188eda4fb8d8b0563a"
       },
       {
         "path": "anthropic/types/beta/beta_search_result_block_param.py",
-        "sha256": "edd311fb3d72a3e3c2cefe4fa9cba88da52c451b9e6eaac1db205f75d59c5614"
+        "sha256": "8da1dda9108c834d57798188db7e6705414c20ce5f3b9f178a07a220aeadd609"
       },
       {
         "path": "anthropic/types/beta/beta_self_hosted_config.py",
@@ -5869,8 +6297,16 @@
         "sha256": "b444e256ec87a6fdfd4a6ef30d6b1c3aaa523d1d50a0189954af1a5ae9daec08"
       },
       {
+        "path": "anthropic/types/beta/beta_tool_bash_20241022.py",
+        "sha256": "6725f5e9ae8291ff2c49d5d531eeaaa321451d6f5f0f49e127c5740ed2d37510"
+      },
+      {
         "path": "anthropic/types/beta/beta_tool_bash_20241022_param.py",
         "sha256": "ba8fbddb885fccf395edc07ed771b33056bffd948dec6778449326e0cf4e4002"
+      },
+      {
+        "path": "anthropic/types/beta/beta_tool_bash_20250124.py",
+        "sha256": "d69ca1ac0fad2b4316f2d1c81ffda1dbc5a6f0255d22eb57cabbb52df03ec5f1"
       },
       {
         "path": "anthropic/types/beta/beta_tool_bash_20250124_param.py",
@@ -5885,8 +6321,16 @@
         "sha256": "6f92ee76aeb5b4d5dad88fff830f0f2d8b68c5252f1ae52547d28823fcdb62e3"
       },
       {
+        "path": "anthropic/types/beta/beta_tool_change_tool_definition.py",
+        "sha256": "34144a3871513da06c1fc1ec11bea9b2f0016dcba7f2989fb171a421be8638e6"
+      },
+      {
+        "path": "anthropic/types/beta/beta_tool_change_tool_definition_param.py",
+        "sha256": "c6589ce41a904f6aca91e277696b6b95408cbb2caf8454d04b5441a000d2b6e1"
+      },
+      {
         "path": "anthropic/types/beta/beta_tool_change_tool_reference_param.py",
-        "sha256": "01493acead8a72da96a88af71bd0989ba587eb76a57ac8819649187a96baac2e"
+        "sha256": "ba832fe050c6463c63d0084670f80b4c861e94b6df469480758529296cfbafca"
       },
       {
         "path": "anthropic/types/beta/beta_tool_choice_any_param.py",
@@ -5909,12 +6353,24 @@
         "sha256": "328f2f47f51e7988bc3bd456622a56a69c709c3596c9bc14d6036c71ef6b3ad0"
       },
       {
+        "path": "anthropic/types/beta/beta_tool_computer_use_20241022.py",
+        "sha256": "4d6a505d34dab8d219ac3ad073f5e70870fdd842b709139d891aa4e5bcf0e973"
+      },
+      {
         "path": "anthropic/types/beta/beta_tool_computer_use_20241022_param.py",
         "sha256": "4c89f9cf08fa7d4e2d1566cd7db8a73478a912c6543e416e6111f585e3623276"
       },
       {
+        "path": "anthropic/types/beta/beta_tool_computer_use_20250124.py",
+        "sha256": "c339448f842ab4cb48b55fe40a6bda8e241a2f9b3d23cb51c52382ab2ef54546"
+      },
+      {
         "path": "anthropic/types/beta/beta_tool_computer_use_20250124_param.py",
         "sha256": "7da1fea56037c229f7f8ae62714400dca8a3f90f0dae30fd9c3b7f29ee57f05c"
+      },
+      {
+        "path": "anthropic/types/beta/beta_tool_computer_use_20251124.py",
+        "sha256": "d8972f2c29e34ce40766c03ddedefe3ecbc815d1109839b4fca38cde51982f7e"
       },
       {
         "path": "anthropic/types/beta/beta_tool_computer_use_20251124_param.py",
@@ -5937,8 +6393,16 @@
         "sha256": "f15730e508b8a6c3dce1a7ba271a122a248870e90f4d31beb7bd4103084fc088"
       },
       {
+        "path": "anthropic/types/beta/beta_tool_search_tool_bm25_20251119.py",
+        "sha256": "9e078b88140884d1a7a80dbcabe4e1c8ca8a8303eae97f04c58f9e60fb6551d4"
+      },
+      {
         "path": "anthropic/types/beta/beta_tool_search_tool_bm25_20251119_param.py",
         "sha256": "8cd024476b7443c7fffc5c3b3b2a617c4d26704351cf016065c0366246347bc7"
+      },
+      {
+        "path": "anthropic/types/beta/beta_tool_search_tool_regex_20251119.py",
+        "sha256": "1bf3b4baf3f80f3710445c11d2ce41fd83791909715c12308a8dd91ecc5d8ad2"
       },
       {
         "path": "anthropic/types/beta/beta_tool_search_tool_regex_20251119_param.py",
@@ -5969,16 +6433,32 @@
         "sha256": "ab5518f4609385b87c08fc27de35e61e951eacef761dfd2206ff21a8e7a8ef8b"
       },
       {
+        "path": "anthropic/types/beta/beta_tool_text_editor_20241022.py",
+        "sha256": "bcc95d4a34aab27e67b484251e8e3eb2f10472b221dcc48c56276d61ce311693"
+      },
+      {
         "path": "anthropic/types/beta/beta_tool_text_editor_20241022_param.py",
         "sha256": "d2d6d9d86af8fddd5e0a70646eb00d843bf64ab1dafe4d5075e7bd8631c4c296"
+      },
+      {
+        "path": "anthropic/types/beta/beta_tool_text_editor_20250124.py",
+        "sha256": "0ac7e58bd15072b0fa444d3b90e66e802c0fcf9848cb442658bd7e1ab90cc44d"
       },
       {
         "path": "anthropic/types/beta/beta_tool_text_editor_20250124_param.py",
         "sha256": "3a2ef69364f71160dc9f702317af2d9675283364136f840d268205fb2f7752ca"
       },
       {
+        "path": "anthropic/types/beta/beta_tool_text_editor_20250429.py",
+        "sha256": "2a70211bfe842163f911423a879063713f6d1a78a297fa2e4e808b6607e1c544"
+      },
+      {
         "path": "anthropic/types/beta/beta_tool_text_editor_20250429_param.py",
         "sha256": "5906c036b6af6be0d12e67d3c1ab1e0cab8ee4f01f6df2630f6a8cab81aae202"
+      },
+      {
+        "path": "anthropic/types/beta/beta_tool_text_editor_20250728.py",
+        "sha256": "638aa9d410b2f3296adb94204dd7edc3bcc71057cb43837b4015f407422e8ae7"
       },
       {
         "path": "anthropic/types/beta/beta_tool_text_editor_20250728_param.py",
@@ -6033,28 +6513,32 @@
         "sha256": "beef47e593c4722c338670bdd7f2efe6168ffe1cb36df10da08fe0254d88115e"
       },
       {
+        "path": "anthropic/types/beta/beta_user_location.py",
+        "sha256": "c9fba37c6c7b5cc3e63b152b146cc1971472cd01e696696cb7fbaf0d810844df"
+      },
+      {
         "path": "anthropic/types/beta/beta_user_location_param.py",
         "sha256": "72715af9e2d9e96c40b49e2171fdcae71799de132a2812c6007abff4c771be47"
       },
       {
         "path": "anthropic/types/beta/beta_user_profile.py",
-        "sha256": "ccd72070439c9ecbed10c5421b3654f6f874ab57ce1804e40cfae2a224c40967"
+        "sha256": "cc8f5ab17554bdaf29d06251309512a08e74cedee1c7b5aa3e4823ec7d08dcda"
       },
       {
         "path": "anthropic/types/beta/beta_user_profile_enrollment_url.py",
-        "sha256": "ecd5b21d90eb6442e69e9ee34f5a4657f0c48e8ec966970ca832764f1ab96dea"
+        "sha256": "e55f1b17a7919ad9e6139586db61dfeb6c59fc8d7b98e43eb1f32d0323e3afa8"
       },
       {
         "path": "anthropic/types/beta/beta_user_profile_external_user_details.py",
-        "sha256": "872edc0ab6d98bb10c20bdc96db0fa0d3c9809da6c7e2613d40501979c99eaa0"
+        "sha256": "842fa5f1b6327ff753ca7903034db757add9241f37e403e8a49b6683d1dd1548"
       },
       {
         "path": "anthropic/types/beta/beta_user_profile_external_user_details_params.py",
-        "sha256": "fc46dc078f264e74fe324497046c7a6d3e2b421981acfb511dc0781c47ca033c"
+        "sha256": "29d1d67f2e5640500d017c9422ad11daaac845413bafda7ae502b7d6cbf2fa69"
       },
       {
         "path": "anthropic/types/beta/beta_user_profile_trust_grant.py",
-        "sha256": "bde5229fdf22600e2554a0020aee6d571affa25a093bd55473947ceb93abe0a5"
+        "sha256": "48565a44d6f0d336975bf0c54b1ae6f7d3073ae52654ff07c5dfb064137024c7"
       },
       {
         "path": "anthropic/types/beta/beta_web_fetch_block.py",
@@ -6065,20 +6549,36 @@
         "sha256": "001f7f2ca4ba3fee0f8dafaf5edbd6d0d0d2c88254d8a0d084e6f891d74bac19"
       },
       {
+        "path": "anthropic/types/beta/beta_web_fetch_tool_20250910.py",
+        "sha256": "dd1a5cf5ce533fb6f4b611d3052dbbbcc5ea7c23420c6a3d3b0d2a02b2da955a"
+      },
+      {
         "path": "anthropic/types/beta/beta_web_fetch_tool_20250910_param.py",
-        "sha256": "c63e5f311229987bbd09220d55ccf4d4788c192aa74632cfb231a8805088c8b4"
+        "sha256": "50072390eaaa461aff2f9f232fdf82f7105c876459f1c584709e11e906aaf8d1"
+      },
+      {
+        "path": "anthropic/types/beta/beta_web_fetch_tool_20260209.py",
+        "sha256": "36e5609e35ec6794ade39ff7c730b3b269da12c9a762fd31bc1d7aecc1825397"
       },
       {
         "path": "anthropic/types/beta/beta_web_fetch_tool_20260209_param.py",
-        "sha256": "b79792403669e0c496b402ceb085188ed97eedaff19f545db0b452f87432eea7"
+        "sha256": "05ab65b4995ab482f17f77a2d24e5691bb77834b3f8e662309f5f3e2b9507fbf"
+      },
+      {
+        "path": "anthropic/types/beta/beta_web_fetch_tool_20260309.py",
+        "sha256": "a27649d2687d60260d334a873a85b10082819131a22b4cd05e5e26f9563e117c"
       },
       {
         "path": "anthropic/types/beta/beta_web_fetch_tool_20260309_param.py",
-        "sha256": "30133ef99d03f7d14f6d749d33d0293d3cbd6b63df55d90cb2e897cde130089d"
+        "sha256": "f0eca97d01355151af9087fe98b1be53431c3f8fbc9a233b8cfc628b492b91ff"
+      },
+      {
+        "path": "anthropic/types/beta/beta_web_fetch_tool_20260318.py",
+        "sha256": "416589ed3d6b859f0e6f4ef170ef1bb28487bf869800cdd80707b041192e14cf"
       },
       {
         "path": "anthropic/types/beta/beta_web_fetch_tool_20260318_param.py",
-        "sha256": "455895790d0df6e4b324567c092de97583463bb03fe3667d9b30165f73768d25"
+        "sha256": "41c3c94b2ddc0fd81cbb65728458cc3fbaf88fa9dc29888ac79d0c7a13767514"
       },
       {
         "path": "anthropic/types/beta/beta_web_fetch_tool_result_block.py",
@@ -6101,24 +6601,48 @@
         "sha256": "1d7ca718e047273dd7504d0dd9c1a457ee230a878f54361a6831f6a0d1014a1c"
       },
       {
+        "path": "anthropic/types/beta/beta_web_fetch_url_source_all.py",
+        "sha256": "f67860bb8108c8a2efdc34f1a8f37833539cf746bd9b68beba9930e35edd3660"
+      },
+      {
         "path": "anthropic/types/beta/beta_web_fetch_url_source_all_param.py",
         "sha256": "f3f200c7b29d787d121c9ba6b03effbe1e9252f898159eb1a8be26ec7d0280c9"
+      },
+      {
+        "path": "anthropic/types/beta/beta_web_fetch_url_source_except.py",
+        "sha256": "aec13d8d2e7b238aec50593a2f0d7f850b6a5b18193bfebd8ccaadd63069ffef"
       },
       {
         "path": "anthropic/types/beta/beta_web_fetch_url_source_except_param.py",
         "sha256": "582571cd866d4c0718fcd4183a42bb05cb6b704a9a9c9f31507111b784893db9"
       },
       {
+        "path": "anthropic/types/beta/beta_web_fetch_url_source_none.py",
+        "sha256": "520ea12ab993cafad5b93d07f3d8ff63c8b6d5276f3bcff4240dc6612917adf3"
+      },
+      {
         "path": "anthropic/types/beta/beta_web_fetch_url_source_none_param.py",
         "sha256": "da7d744516a5c244a7b3e4c72d005985712f224172e44c3396af45b04e2cbe06"
+      },
+      {
+        "path": "anthropic/types/beta/beta_web_fetch_url_source_only.py",
+        "sha256": "141f38eb0f43c27051478db16f9eeb5aeb0cc26773f2a5a57a25de31201e4efd"
       },
       {
         "path": "anthropic/types/beta/beta_web_fetch_url_source_only_param.py",
         "sha256": "18a93d4fb3317b05007c3814eb54fd60b16f7d6e8dce3b4be4653dcad7eb38f9"
       },
       {
+        "path": "anthropic/types/beta/beta_web_fetch_url_source_tool_reference.py",
+        "sha256": "11a6b8151ba1c7bac7497092869d20b474db1ab56b741e6a921727f5e0ffbcb7"
+      },
+      {
         "path": "anthropic/types/beta/beta_web_fetch_url_source_tool_reference_param.py",
         "sha256": "38836868d1ce270f351f53b85c4688d36e295ca362df3ab4befb3b8529f07e7a"
+      },
+      {
+        "path": "anthropic/types/beta/beta_web_fetch_url_sources.py",
+        "sha256": "8c74f97e3997fd1683ef38bc8de6e5a8c1a24bf2b0eb6c760e08bd04e2cb0d2d"
       },
       {
         "path": "anthropic/types/beta/beta_web_fetch_url_sources_param.py",
@@ -6133,12 +6657,24 @@
         "sha256": "d7d02c87f0c4de4a80c785f20ed2442efba1929162b24475d73c53f194effa97"
       },
       {
+        "path": "anthropic/types/beta/beta_web_search_tool_20250305.py",
+        "sha256": "5728441a8c3b58e836e8130f3bb57d58ceed9f7d535e3b148f4ddfb8c88f7198"
+      },
+      {
         "path": "anthropic/types/beta/beta_web_search_tool_20250305_param.py",
         "sha256": "216e479008c045049ae8eea78e2be92ed3418db51fa3d4acbf388c4a38d581c1"
       },
       {
+        "path": "anthropic/types/beta/beta_web_search_tool_20260209.py",
+        "sha256": "5e9a13b6a4a9572d0d5be7dddfdc203e53371d6b25e1e62a85b3e3b0926abdaa"
+      },
+      {
         "path": "anthropic/types/beta/beta_web_search_tool_20260209_param.py",
         "sha256": "f9211236d5ea014b8976b70172f6076162f7613bb71c2d815597c2723e00901c"
+      },
+      {
+        "path": "anthropic/types/beta/beta_web_search_tool_20260318.py",
+        "sha256": "18b550593bda025a7876344054b474e134c13710d9f101644465dc4f0eb1ba20"
       },
       {
         "path": "anthropic/types/beta/beta_web_search_tool_20260318_param.py",
@@ -6358,43 +6894,23 @@
       },
       {
         "path": "anthropic/types/beta/deployment_create_params.py",
-        "sha256": "4792587d87b407436b5a34ae6f118bcf2ef2b78fc3370e37526d88d9860967dc"
-      },
-      {
-        "path": "anthropic/types/beta/deployment_list_params.py",
-        "sha256": "f058a7ce104469fc7d1e9347cb4aaf1c288d3da49515487a2e42204fbb8c901c"
-      },
-      {
-        "path": "anthropic/types/beta/deployment_run_list_params.py",
-        "sha256": "289910dd325f2065a60af8dc062d9ccc04cc8747955f19e25166bab8fe483a6e"
+        "sha256": "ffebfe2eb03df794d2528f31f664d24e6c58f82d6e6a1eee6be0038bc5a7cd5d"
       },
       {
         "path": "anthropic/types/beta/deployment_update_params.py",
-        "sha256": "30ab1ee2c04bcbbb28cb1948f56a6bd7fc3375d3f69f9d5fe2cc647fd48d32c5"
+        "sha256": "ba39840b3b689a6d0f7706140075278b7c3d3aed7a57a19b40f509cfc9940b57"
       },
       {
         "path": "anthropic/types/beta/dream_create_params.py",
-        "sha256": "f9e87351564c8f30fc104022436e321c0630426abc484a3464b55692bea62aeb"
-      },
-      {
-        "path": "anthropic/types/beta/dream_list_params.py",
-        "sha256": "10250ea3dc00c3963e33f942a91f75c30a7b69e923c329f09e87a04b27b72afa"
+        "sha256": "1290eb6758f3331cab9d271d5d0a7f70aaa871fa6c93f6eaddb6585510a5bc3b"
       },
       {
         "path": "anthropic/types/beta/environment_create_params.py",
-        "sha256": "a03e21a88bd268ec94dc95f74e5f40aa7dacbb94298f5bbf4bdda96c2783d647"
-      },
-      {
-        "path": "anthropic/types/beta/environment_list_params.py",
-        "sha256": "6dab3d4cbeee702d721b895f42571849eb673dd93e83526291aa9fb848f95146"
+        "sha256": "f3c4e6420b794cb9ad8a1a031bff3ddba2ed7c8939ff90be196dbe489f3f8627"
       },
       {
         "path": "anthropic/types/beta/environment_update_params.py",
-        "sha256": "682337f749f57d8c9ff1ac56807acd00bfe74555f73193f580b77fd21bf90ef1"
-      },
-      {
-        "path": "anthropic/types/beta/environments/__init__.py",
-        "sha256": "774df8f45c0423ff94f5e7596b795a0384d6b568d30aef101b1ca08cd01162b3"
+        "sha256": "72d525a9575c3cc615e5bbfd63866bb658c1822dfa9776da74e5bd4fbcd0edc7"
       },
       {
         "path": "anthropic/types/beta/environments/beta_self_hosted_work.py",
@@ -6411,46 +6927,6 @@
       {
         "path": "anthropic/types/beta/environments/beta_session_work_data.py",
         "sha256": "726a6aa1e60a58c449eac45b75e5aea973222f49733497100b72cf54739e2633"
-      },
-      {
-        "path": "anthropic/types/beta/environments/work_heartbeat_params.py",
-        "sha256": "f7b98c2dc21f9c6fb4d4c90bd3b4743520b1b41f9ac0a3b1a2bb57562be51cea"
-      },
-      {
-        "path": "anthropic/types/beta/environments/work_list_params.py",
-        "sha256": "5be844ae09ea08608ae43384d6862786d64ff0f34e0a552b903c7f4f6bb2a4b5"
-      },
-      {
-        "path": "anthropic/types/beta/environments/work_poll_params.py",
-        "sha256": "10a6e587b0a6e8a9f61aa78207333652f1558483b6e85a2ccb62a22b58a7944d"
-      },
-      {
-        "path": "anthropic/types/beta/environments/work_stop_params.py",
-        "sha256": "d3cb51dddae0bc66b50dda142a42c531997ed998657e7362dbd05e6d902cccc3"
-      },
-      {
-        "path": "anthropic/types/beta/environments/work_update_params.py",
-        "sha256": "7ca30d988132d9d192dbb63f45e538de009399cb2b706d530169be164eb46b22"
-      },
-      {
-        "path": "anthropic/types/beta/file_list_params.py",
-        "sha256": "ebd5a3aaa325f65d4672a0a5d00f92ed715ca8362a9588d755b61b70fd8345ab"
-      },
-      {
-        "path": "anthropic/types/beta/file_upload_params.py",
-        "sha256": "220f38f2fb6ed4fd49a739beb15fe43e187b4deb1e7b4a57dd2639b44865e3e0"
-      },
-      {
-        "path": "anthropic/types/beta/memory_store_create_params.py",
-        "sha256": "70083a7c66e1232bdc0c5e304f934ae5fe2c8e9fdfcba08945d90310d96ad2a7"
-      },
-      {
-        "path": "anthropic/types/beta/memory_store_list_params.py",
-        "sha256": "e357708ba463b380b5733c995c68d8e58788c1101a1061c3e6cac8fd15385b51"
-      },
-      {
-        "path": "anthropic/types/beta/memory_store_update_params.py",
-        "sha256": "987282ddfb47b866be483c8d330fbf4a0f1d7802d46a11bfd49f4a30427b6e6c"
       },
       {
         "path": "anthropic/types/beta/memory_stores/__init__.py",
@@ -6509,40 +6985,8 @@
         "sha256": "e2ecabb06a6242e7552f13eda390fdf9218d624b31f8d31c60325ff8185102b6"
       },
       {
-        "path": "anthropic/types/beta/memory_stores/memory_create_params.py",
-        "sha256": "a283de94e8e43fedec01619b933d93aa62c37da8950cec7a2a297cb6cdd41b86"
-      },
-      {
-        "path": "anthropic/types/beta/memory_stores/memory_delete_params.py",
-        "sha256": "099a65b39fca05b91beb6934810a76440fae15a4eececcc2bcc4ab469ae70d00"
-      },
-      {
-        "path": "anthropic/types/beta/memory_stores/memory_list_params.py",
-        "sha256": "3160f0c3192f7af289928ada4dd100ebc72d109f100610c7aeef65fc66cbefad"
-      },
-      {
-        "path": "anthropic/types/beta/memory_stores/memory_retrieve_params.py",
-        "sha256": "9644beaa0d645b640531f095287e6c73724bf42ec3d52d79024d67260c53cb6c"
-      },
-      {
-        "path": "anthropic/types/beta/memory_stores/memory_update_params.py",
-        "sha256": "d00af4bdde0967c92fa62a0eea790d83db6c96bcb655dc41ba38cbbf3b254a59"
-      },
-      {
-        "path": "anthropic/types/beta/memory_stores/memory_version_list_params.py",
-        "sha256": "ee89132d56ef3ea1682736d1697755176f605797cf23ddc0a80d59cbf01ae04a"
-      },
-      {
-        "path": "anthropic/types/beta/memory_stores/memory_version_retrieve_params.py",
-        "sha256": "4f0db3234c8cbf642d80b9987557825f401c5509ec4b8350cf879bdbf9cd72b1"
-      },
-      {
-        "path": "anthropic/types/beta/message_count_tokens_params.py",
-        "sha256": "fa1e506e2a1449adf3751c90cf737a13c8ddb96ccf0d3491c234b12a6157bb24"
-      },
-      {
         "path": "anthropic/types/beta/message_create_params.py",
-        "sha256": "0bf31ed96f89a07311ea4c35d65522db464c4f51a87d49f9c011de501e4c06fa"
+        "sha256": "8dfa7e3e8e1e500b3dacb686ad661619a21e2d42ec1de00c7867ae7c05a92891"
       },
       {
         "path": "anthropic/types/beta/messages/__init__.py",
@@ -6550,11 +6994,7 @@
       },
       {
         "path": "anthropic/types/beta/messages/batch_create_params.py",
-        "sha256": "93d6fab6e567bfc616f715afcdef2d5ea72f29efeb6bfc4f78c0d128d4bb92ef"
-      },
-      {
-        "path": "anthropic/types/beta/messages/batch_list_params.py",
-        "sha256": "4162384b4edb394b264884ad3f2610f81af51c9376d263d4f46adeda37eb7a11"
+        "sha256": "55b94c36e4ab12a8023415e042cb9bb08848421cd2b8ed2c7707c75b44aa1998"
       },
       {
         "path": "anthropic/types/beta/messages/beta_deleted_message_batch.py",
@@ -6593,20 +7033,8 @@
         "sha256": "5ffe820c43ed2969938343e661e3532e5b8ae486484b8ef53ce8cb9d8fcfdd09"
       },
       {
-        "path": "anthropic/types/beta/model_list_params.py",
-        "sha256": "1a83dc0bdca643835f20a1da41c0ee6e9ab106e0aa6bb5a105ea5473d280d99a"
-      },
-      {
         "path": "anthropic/types/beta/organization/__init__.py",
         "sha256": "618a5aa4ad11765a37fb13dd1eacb55977280c4c1a09d1b09612e0ae4525ad5a"
-      },
-      {
-        "path": "anthropic/types/beta/organization/api_key_list_params.py",
-        "sha256": "dd04e9c8f1a657b07bccbf8a12554842b83223550e7cd1a4b1a7b1ab1bc1a9e9"
-      },
-      {
-        "path": "anthropic/types/beta/organization/api_key_update_params.py",
-        "sha256": "14c3d978fd1a4158fd500eaaec79902e83aee6955100e2e1d6c4c2f4965169f3"
       },
       {
         "path": "anthropic/types/beta/organization/beta_allowed_inference_geo.py",
@@ -6777,20 +7205,12 @@
         "sha256": "6c592d3c396a49f33859afd7976fc762e8960e7e5ea4eb7f4164acebcaf2210c"
       },
       {
-        "path": "anthropic/types/beta/organization/compliance_setting_update_params.py",
-        "sha256": "52ea27a90505e04fded0f863feb3cb6251210016fb6717b4143e178f0fa13985"
-      },
-      {
         "path": "anthropic/types/beta/organization/external_key_create_params.py",
         "sha256": "4d98566720b0d2df690c2eeed94027927592b2969def30cae44485ece1901b8d"
       },
       {
         "path": "anthropic/types/beta/organization/external_key_delete_response.py",
         "sha256": "69d61d4c89a38e8bbf518182a6a535bd66d118b397f149f2809a172cd5475805"
-      },
-      {
-        "path": "anthropic/types/beta/organization/external_key_list_params.py",
-        "sha256": "7cce65c93a20cd435dab5fb6b5949689baa620ea01ed5b942074a32ff32916a0"
       },
       {
         "path": "anthropic/types/beta/organization/external_key_update_params.py",
@@ -6865,112 +7285,24 @@
         "sha256": "f1da157728ac6fbfa9225205db4e686f454603347deca24b11b0420d420867bb"
       },
       {
-        "path": "anthropic/types/beta/organization/federation/issuer_list_params.py",
-        "sha256": "bfbf1229ebe9d21cc583df61cc43daa15a76f2eb6ed703b00f3f9272c63d8a81"
-      },
-      {
         "path": "anthropic/types/beta/organization/federation/issuer_update_params.py",
         "sha256": "4cea43b0d0429a418de2fec10376c624e79858447fd674c0647bbf1bf928cb86"
-      },
-      {
-        "path": "anthropic/types/beta/organization/federation/rule_create_params.py",
-        "sha256": "a283d5bee95161f074f76a586dc0770846a83738421d00bc0658a86f412043d9"
-      },
-      {
-        "path": "anthropic/types/beta/organization/federation/rule_list_params.py",
-        "sha256": "e47971a9d34bc22230b7b85d895972d655305571ea4c533e9e26604a0b8e9d19"
-      },
-      {
-        "path": "anthropic/types/beta/organization/federation/rule_update_params.py",
-        "sha256": "d0b0c0eb3d3710d092c5f0d84348717528562e157acfad9137667c67dd614f0c"
-      },
-      {
-        "path": "anthropic/types/beta/organization/federation/rules/__init__.py",
-        "sha256": "69d2b3f46c6dda2f14eb1349a0434671485814f045809415a319303e211cfd5e"
-      },
-      {
-        "path": "anthropic/types/beta/organization/federation/rules/workspace_add_params.py",
-        "sha256": "8b085695891ef1a27afcc1577d22eb64ec2a75e7e2361b7bcdda5e5d98bd5756"
-      },
-      {
-        "path": "anthropic/types/beta/organization/federation/rules/workspace_list_params.py",
-        "sha256": "dd5ca451c1ac7a76930f06cbbec177514eeb2ad05e6c88bc710a7aa1022dbf1d"
       },
       {
         "path": "anthropic/types/beta/organization/federation/rules/workspace_remove_response.py",
         "sha256": "b3201f3fa821f82376af6afeaefeea2e89dc2f30bd6bb60d8b3bb717c4520d4e"
       },
       {
-        "path": "anthropic/types/beta/organization/invite_create_params.py",
-        "sha256": "c54bc3796a5ed03265e8dacb671e33939364fff6878ebd149710732c661c1cdc"
-      },
-      {
         "path": "anthropic/types/beta/organization/invite_delete_response.py",
         "sha256": "87828c256a7cfa0b1185bccaa7dcb55c514e5d37b903a4fa8ca21deeada5ae7e"
-      },
-      {
-        "path": "anthropic/types/beta/organization/invite_list_params.py",
-        "sha256": "5112463072626cd1c3917735adb3376c7ac6de38fc534ff1da38fa0a0977abb0"
-      },
-      {
-        "path": "anthropic/types/beta/organization/rate_limit_list_params.py",
-        "sha256": "0c891520c6667b58e7603cb8dbe05c4730904f723d6ebe7b8de22b9cee218c96"
-      },
-      {
-        "path": "anthropic/types/beta/organization/service_account_create_params.py",
-        "sha256": "44036fa887684ffcc5eee6f5afa29ae12585e3da8c05319517589d49c868084d"
-      },
-      {
-        "path": "anthropic/types/beta/organization/service_account_list_params.py",
-        "sha256": "3bac4f5eb194a5a324d3113c2835fb1dd449e70bda09aacc29e3d996e20aa567"
-      },
-      {
-        "path": "anthropic/types/beta/organization/service_account_update_params.py",
-        "sha256": "e713869817ac3280457adb1c109df460217d20d51de7942dd4fcbb791d3d921b"
-      },
-      {
-        "path": "anthropic/types/beta/organization/service_accounts/__init__.py",
-        "sha256": "69d2b3f46c6dda2f14eb1349a0434671485814f045809415a319303e211cfd5e"
-      },
-      {
-        "path": "anthropic/types/beta/organization/service_accounts/workspace_add_params.py",
-        "sha256": "39d65199288a3dd6d4b9a4dda33969774bfb6b8d52ba8010c6a95f44cd890b76"
-      },
-      {
-        "path": "anthropic/types/beta/organization/service_accounts/workspace_list_params.py",
-        "sha256": "80338dad72a9ab528d3e33952d1d7eed775a8471c516c73d03f7adbf33547e88"
       },
       {
         "path": "anthropic/types/beta/organization/service_accounts/workspace_remove_response.py",
         "sha256": "c5a9f353978d67ae968592122bca5e7eb3a34721374020e0cbd3ebfc3018e62a"
       },
       {
-        "path": "anthropic/types/beta/organization/user_list_params.py",
-        "sha256": "2d9b30ca0b49bfe426cc64d2117785646abc0a300dc149a25597951e8fd0a2b5"
-      },
-      {
         "path": "anthropic/types/beta/organization/user_remove_response.py",
         "sha256": "cefc3feba5e97fcffdee6330749ca5a05d1f9412857bf948a435010361960ad8"
-      },
-      {
-        "path": "anthropic/types/beta/organization/user_update_params.py",
-        "sha256": "b5d9da5837bc88023e7bf91616c927c1c5d9f657b0b2c9cdee50a853cdb95cba"
-      },
-      {
-        "path": "anthropic/types/beta/organization/workspace_create_params.py",
-        "sha256": "204db243d920d33b683de7d579d4d0ecacc2ad9abc203f23d9c09b9b662d9b71"
-      },
-      {
-        "path": "anthropic/types/beta/organization/workspace_list_params.py",
-        "sha256": "e7b55546ce00c56377c36ffdee6b6226e2b7cefed4bb39b52944881fdde09969"
-      },
-      {
-        "path": "anthropic/types/beta/organization/workspace_update_params.py",
-        "sha256": "c206f4c01fe0b49cff3912af3e1d7008767a7f865411b927b8421fa2a7a22b0f"
-      },
-      {
-        "path": "anthropic/types/beta/organization/workspaces/__init__.py",
-        "sha256": "d08ed53735c9e200ebb5456c339a043b4bff82ea798e9fdc268b3b681999f8a2"
       },
       {
         "path": "anthropic/types/beta/organization/workspaces/beta_workspace_rate_limit.py",
@@ -6981,60 +7313,20 @@
         "sha256": "26d9dd39863265143d4376abbf7fc25974309bb1b511578a6b8c7ea6e8c98de6"
       },
       {
-        "path": "anthropic/types/beta/organization/workspaces/member_add_params.py",
-        "sha256": "fe3c0af227d5f3fab73fffaaf847cd2acaaa53374f9ba384a71a4a38e9ddc8a1"
-      },
-      {
-        "path": "anthropic/types/beta/organization/workspaces/member_list_params.py",
-        "sha256": "d388aa62c6e44e313d5d90d287f8218242474a3dc81a0e179ba551145df2fc70"
-      },
-      {
         "path": "anthropic/types/beta/organization/workspaces/member_remove_response.py",
         "sha256": "8ca243839a008fb2222b94ee249953f10cbedaf49f54e21b2397caf095b43162"
-      },
-      {
-        "path": "anthropic/types/beta/organization/workspaces/member_update_params.py",
-        "sha256": "0b31324a0e4360b352ffe2cc44073217ab3b5c0e1475f81555b5557d42e8d6d7"
-      },
-      {
-        "path": "anthropic/types/beta/organization/workspaces/rate_limit_list_params.py",
-        "sha256": "2b0438f33311c4544dddc0142b6d4cfe035c28a15fadccd4b06cd63fe0c94bf0"
-      },
-      {
-        "path": "anthropic/types/beta/organization/workspaces/service_account_add_params.py",
-        "sha256": "166c51aee15dc3bdf2b4e867e2afdef90ca28a7f86fcfeb06b47697fe3f26696"
-      },
-      {
-        "path": "anthropic/types/beta/organization/workspaces/service_account_list_params.py",
-        "sha256": "520d28c2e4a9ce767667bc4e60167d6f452c3459ec147ff40af47b43af14f712"
       },
       {
         "path": "anthropic/types/beta/organization/workspaces/service_account_remove_response.py",
         "sha256": "e2cd20d0ed1c9bd5331c74932df8dc308049f9f55524c219defaeb021b85c6ea"
       },
       {
-        "path": "anthropic/types/beta/organization/workspaces/service_account_update_params.py",
-        "sha256": "4f89573ff6939c4b5a266ba46cfb18fef9696d5d60f7acbfeba2cbb94291f18d"
-      },
-      {
         "path": "anthropic/types/beta/parsed_beta_message.py",
-        "sha256": "50458412c13749be8f787cf9b54cbfcf0320e1ff2e5fa30682f03526f0d9582e"
+        "sha256": "72488ac5d910d317b6855f1d5fcbf017286502b7cb3e4718d837cd8694b18825"
       },
       {
         "path": "anthropic/types/beta/session_create_params.py",
-        "sha256": "04a5b5e397717d1e0084e2c57b7a1c9a09c0a7c2afc23dd64a0e0e0872b2d741"
-      },
-      {
-        "path": "anthropic/types/beta/session_list_params.py",
-        "sha256": "38a3ab6e6095af5d57ef814527bee94dbf32a4914eb4b02d5cdc6e5fdf466516"
-      },
-      {
-        "path": "anthropic/types/beta/session_update_params.py",
-        "sha256": "50d0af9e62751bc44eeed6f718f05231f64a0a434b8f33ec7d5958a230456ee9"
-      },
-      {
-        "path": "anthropic/types/beta/sessions/__init__.py",
-        "sha256": "d4817f65b546f0b485149e92c4460e9d6433ecc14bc4e6d4980b92ac2709a07c"
+        "sha256": "5069a5ea14039fc6d55d17b7b9e19c82bbc7835b9be621089e76a2ed198962c4"
       },
       {
         "path": "anthropic/types/beta/sessions/beta_managed_agents_agent_auto_evaluated_permission.py",
@@ -7057,12 +7349,16 @@
         "sha256": "36c2c50d4b9e7b9862b16ecb2747d2b2878c88f74a782c3c25f88719fff73b0d"
       },
       {
+        "path": "anthropic/types/beta/sessions/beta_managed_agents_agent_evaluated_permission.py",
+        "sha256": "6e22f96dd0ef6bc25b34722d188e6740f09b02486dc3b1cba06b81fe1a9bf02a"
+      },
+      {
         "path": "anthropic/types/beta/sessions/beta_managed_agents_agent_mcp_tool_result_event.py",
         "sha256": "74da675ae639b33be917f87bf8e17a3aca04a239e56374abee19b62589f9933d"
       },
       {
         "path": "anthropic/types/beta/sessions/beta_managed_agents_agent_mcp_tool_use_event.py",
-        "sha256": "5508da83c60a72dde30eb2cfc27cd77fa49daa909aeb011b3927e4c3065a96ee"
+        "sha256": "1d46fe53997e165e8393d453d0ac8aa5d0ee48f245b441c93ab143feea89faa4"
       },
       {
         "path": "anthropic/types/beta/sessions/beta_managed_agents_agent_message_event.py",
@@ -7106,7 +7402,7 @@
       },
       {
         "path": "anthropic/types/beta/sessions/beta_managed_agents_agent_tool_use_event.py",
-        "sha256": "55771c3e6013c80c4944863ec0e15b09c9ebad004c2dae579b8f081bd434018f"
+        "sha256": "f250a3bb8dbfc7a33ebd0256319b197f1945d7b2feb45947984b23a5e7fb6cb3"
       },
       {
         "path": "anthropic/types/beta/sessions/beta_managed_agents_base64_document_source.py",
@@ -7318,7 +7614,7 @@
       },
       {
         "path": "anthropic/types/beta/sessions/beta_managed_agents_session_thread.py",
-        "sha256": "c972ba416e1b6cfe5fbcb01f8ee61a8791cb304815ca3e890d7dacb32b866836"
+        "sha256": "c796c52360d24fbce92c9f20d5b6e41c1b27a207726d2e4648a12dcbf0864256"
       },
       {
         "path": "anthropic/types/beta/sessions/beta_managed_agents_session_thread_created_event.py",
@@ -7473,64 +7769,12 @@
         "sha256": "cffb485ebcf343b7b71bd7e7d4f9a3084706ed75b3c705f2687f5650bcb784de"
       },
       {
-        "path": "anthropic/types/beta/sessions/event_list_params.py",
-        "sha256": "b6abda9e1a541c7e63386a32fd692ef77bfc6aeccf5c825532b1a6f1f4687f42"
-      },
-      {
-        "path": "anthropic/types/beta/sessions/event_send_params.py",
-        "sha256": "68b08b0c23e2b8839df628ee5bbb9786df0dd9827691ee01f800a51377320250"
-      },
-      {
-        "path": "anthropic/types/beta/sessions/event_stream_params.py",
-        "sha256": "c76152a9e6253342cbd1ac406b7f1b3638121e68d689d6d7249065af9d93b6a0"
-      },
-      {
-        "path": "anthropic/types/beta/sessions/resource_add_params.py",
-        "sha256": "8e94d92c2583c96dfa69f737b0266b5b01d4459a31119cd2a5a3755fbf408af3"
-      },
-      {
-        "path": "anthropic/types/beta/sessions/resource_list_params.py",
-        "sha256": "9c42d78b3bd044e1c962235a220de742eb2a1d53d31f089d8a4af4d047f12294"
-      },
-      {
         "path": "anthropic/types/beta/sessions/resource_retrieve_response.py",
         "sha256": "7a91e16a7d1e1ced1f037760abdfe5c0a746cd818371ba355713299a846917b9"
       },
       {
-        "path": "anthropic/types/beta/sessions/resource_update_params.py",
-        "sha256": "6dd627d8fcc2888d40c21c8c2d23e0832c25c7b395b680810d4cb119e971ba56"
-      },
-      {
         "path": "anthropic/types/beta/sessions/resource_update_response.py",
         "sha256": "70eafb15a8b7b57375ff827df6dccf0124674f2770400a2f19a1a393cae21257"
-      },
-      {
-        "path": "anthropic/types/beta/sessions/thread_list_params.py",
-        "sha256": "d6b7226273c6c33bcdbeb50a954c9c887028bf9feaf5e0e488ce183edc4db426"
-      },
-      {
-        "path": "anthropic/types/beta/sessions/threads/__init__.py",
-        "sha256": "2e1c5eb16e567cd9c1e8dcbf6dedf4fea95a3ba5be56681784eb55430da582ac"
-      },
-      {
-        "path": "anthropic/types/beta/sessions/threads/event_list_params.py",
-        "sha256": "036195f288e74266abde652ec17dc9e61183cfdc3fb045596dea793288cbd13c"
-      },
-      {
-        "path": "anthropic/types/beta/sessions/threads/event_stream_params.py",
-        "sha256": "84b4a93929dd66a96319ca370a8a83fe51e325dcdd617350678acb438e6f0237"
-      },
-      {
-        "path": "anthropic/types/beta/skill_create_params.py",
-        "sha256": "82c21642dfb46e5e6c165a18f269b64e03559695cbe62de0f9645d2d96e581dd"
-      },
-      {
-        "path": "anthropic/types/beta/skill_list_params.py",
-        "sha256": "a2d517f739cad1135f7837c13284f53d44dca29a85ee583df4ad8a6400ea0d0f"
-      },
-      {
-        "path": "anthropic/types/beta/skills/__init__.py",
-        "sha256": "4c9c19f753d01d66cd6a64714e4fe8d7f957946c274876d1f8cde0445756bda6"
       },
       {
         "path": "anthropic/types/beta/skills/beta_deleted_skill_version.py",
@@ -7541,64 +7785,8 @@
         "sha256": "124b6ae51cf2b84fd8c0314a53f646d5ebb44c83124fa2325c12155a7941c695"
       },
       {
-        "path": "anthropic/types/beta/skills/version_create_params.py",
-        "sha256": "7ad1eaf115a558f8043420c6fe35e140542464c15fe31e8dc00b0dafbd1e4a15"
-      },
-      {
-        "path": "anthropic/types/beta/skills/version_list_params.py",
-        "sha256": "cee81569e41fc1bbb7e56980f668aa6773775c90a2e9ad897941dd4db29c76bc"
-      },
-      {
-        "path": "anthropic/types/beta/tunnel_create_params.py",
-        "sha256": "6ddc8141beca962beba4d4eb61dcd87b3ea3b90974751480187708952a9eed52"
-      },
-      {
-        "path": "anthropic/types/beta/tunnel_list_params.py",
-        "sha256": "86d2df7bf064c959b9c748eddee6a612826e8b86203e241230b1608eb148b982"
-      },
-      {
-        "path": "anthropic/types/beta/tunnel_rotate_token_params.py",
-        "sha256": "3934462c8d9f53d383dfa236a7fb40bc4759e19d79cd3f4fd9f70a810625d2c2"
-      },
-      {
-        "path": "anthropic/types/beta/tunnels/__init__.py",
-        "sha256": "67b9081d2bf2ab37b76778c9da874044f022bd2fc36e7ae5023cfed2ed43fee2"
-      },
-      {
         "path": "anthropic/types/beta/tunnels/beta_tunnel_certificate.py",
         "sha256": "8cbe6d9cd9314ec24ad8ccc6babb28035fbf6aaca4b334b57a6fac2ee205babd"
-      },
-      {
-        "path": "anthropic/types/beta/tunnels/certificate_create_params.py",
-        "sha256": "b356f5728d0152450e1e65ed1bf4870182585f969fb7941ceb36d96322db5045"
-      },
-      {
-        "path": "anthropic/types/beta/tunnels/certificate_list_params.py",
-        "sha256": "b83524ebf2a7d375de7c68a164a8728de34d59b998fe88bbd0bd587c6a96d024"
-      },
-      {
-        "path": "anthropic/types/beta/user_profile_create_params.py",
-        "sha256": "bfee30e11bfba26cc380f5f6616d30745f47f2cd95058ea41b3028123cd5d533"
-      },
-      {
-        "path": "anthropic/types/beta/user_profile_list_params.py",
-        "sha256": "f5cbed30d251b34fdfb1fa4744f8e71a25c863c07f2485ab612667b20e671ba6"
-      },
-      {
-        "path": "anthropic/types/beta/user_profile_update_params.py",
-        "sha256": "9eba1cc042a409a002a50c9e3498c278e5a29372ad2a22f7f32ad51d72b4fb62"
-      },
-      {
-        "path": "anthropic/types/beta/vault_create_params.py",
-        "sha256": "a5f1dc5e532e33384ef36e12ade5e8a487e68dc0a87f693138cfd6218d3f0a77"
-      },
-      {
-        "path": "anthropic/types/beta/vault_list_params.py",
-        "sha256": "8e3b842f3d141578991afa34f58ae0513c85bb17ec7e44e1d556f76138035dee"
-      },
-      {
-        "path": "anthropic/types/beta/vault_update_params.py",
-        "sha256": "9d87c44e08fcbcb8f5236c7b6c9038b4cd8e4bc9f46296d7a1fc4a4b4a207da1"
       },
       {
         "path": "anthropic/types/beta/vaults/__init__.py",
@@ -7662,7 +7850,7 @@
       },
       {
         "path": "anthropic/types/beta/vaults/beta_managed_agents_mcp_oauth_create_params.py",
-        "sha256": "4cffcc768663093d5852a359f088bfcc260d9aa338c51ab911b9f1c6d2fe2121"
+        "sha256": "5b6e7a791e1e316134f540f412cc745cb2b3a1c833c6f01eabea10f165b2a9c1"
       },
       {
         "path": "anthropic/types/beta/vaults/beta_managed_agents_mcp_oauth_refresh_params.py",
@@ -7678,7 +7866,7 @@
       },
       {
         "path": "anthropic/types/beta/vaults/beta_managed_agents_mcp_oauth_update_params.py",
-        "sha256": "4a58440849cd350314213672c772c706fe6c225c98c66efdb8eae4aa2eaff505"
+        "sha256": "b5c62f8e2261777e7f66c3f706d8e26fa515def36c861bfa85bf66b2fc566ea7"
       },
       {
         "path": "anthropic/types/beta/vaults/beta_managed_agents_mcp_probe.py",
@@ -7746,15 +7934,11 @@
       },
       {
         "path": "anthropic/types/beta/vaults/credential_create_params.py",
-        "sha256": "782c9927f608c60d4fbf8ecf49700d3fbbe7a100c7cf7c7496c127baa3d2b3f1"
-      },
-      {
-        "path": "anthropic/types/beta/vaults/credential_list_params.py",
-        "sha256": "f0f4ea32b393bfa1f03026f6d4fda1f2830aacbe4ea142cd589d023c5359e157"
+        "sha256": "5c32e4f366c4e58d111086d175fc324efddb54ceba531b797a36dfab3d795f89"
       },
       {
         "path": "anthropic/types/beta/vaults/credential_update_params.py",
-        "sha256": "b88dc71be3becd575a4d345afd13be36b0aa1e277984effa7b970a93cf0fb102"
+        "sha256": "3524f481d87c60c76b48e391202b531e570b16d3872aa4b17b52145ff1dce6f1"
       },
       {
         "path": "anthropic/types/beta_api_error.py",
@@ -8253,16 +8437,8 @@
         "sha256": "4a6814194b9a94b26dd0893ea44a95de53f63ae84b4cea1fc221de21db808eac"
       },
       {
-        "path": "anthropic/types/file_list_params.py",
-        "sha256": "9abe223ae94c6df5525d3d648b495045aef532049fd7a7dee193a61a79eae824"
-      },
-      {
         "path": "anthropic/types/file_metadata.py",
         "sha256": "0f37fd70d8d3c8ad4c4730ada761ee56a75c2af6f453ee42037adae4ddb620d1"
-      },
-      {
-        "path": "anthropic/types/file_upload_params.py",
-        "sha256": "1a52d6aaad3ce50687827293b0a73ce2c56e6c1971fa578e92133715536f5045"
       },
       {
         "path": "anthropic/types/image_block_param.py",
@@ -8289,16 +8465,12 @@
         "sha256": "823891cec32da816e16b5191ada650e4a26fa22f963d6ccb644a697014fe771a"
       },
       {
-        "path": "anthropic/types/message_count_tokens_params.py",
-        "sha256": "baa87bb33e0401ed241d1e7d0a8da4d909c5227ac7870736690d736836391383"
-      },
-      {
         "path": "anthropic/types/message_count_tokens_tool_param.py",
         "sha256": "426c845286926de40c105d0723887a4f69e91b5dc001497331e083c7c100ac86"
       },
       {
         "path": "anthropic/types/message_create_params.py",
-        "sha256": "5791215e207f3860d9e7eaaf0b7b0e21232a971a7af5223848d5a9343667271d"
+        "sha256": "16ad2d09cc89174b50332b369e77c2575924f1af6968f3273ece4fb342be9042"
       },
       {
         "path": "anthropic/types/message_create_params_container_param.py",
@@ -8322,11 +8494,7 @@
       },
       {
         "path": "anthropic/types/messages/batch_create_params.py",
-        "sha256": "265997cd6d33485b70542184e4d991e01d364d02405efca531b1466362eca503"
-      },
-      {
-        "path": "anthropic/types/messages/batch_list_params.py",
-        "sha256": "a13b34f048e0eec25bf9d29251190ccf8d664660926b3724466ea2075da39225"
+        "sha256": "fad78dccb37f46cf71d5a59927e29ba4ec257eaf776760a0e5b28fbac74cc4f3"
       },
       {
         "path": "anthropic/types/messages/deleted_message_batch.py",
@@ -8370,7 +8538,7 @@
       },
       {
         "path": "anthropic/types/model.py",
-        "sha256": "41280c3d34d8906e554dea7b4ad884dd89783e6c5da13ba1fe074c0e103c4cda"
+        "sha256": "0f605cbb77e05b099a5f73966af4f279b571a8c8976bb01b550071ee91c5cb13"
       },
       {
         "path": "anthropic/types/model_capabilities.py",
@@ -8381,12 +8549,8 @@
         "sha256": "838e863b80a9a7aa41b41415d21e7af49531898b980b77fd92d830931cf19c12"
       },
       {
-        "path": "anthropic/types/model_list_params.py",
-        "sha256": "67ae2d7f84f905b72cf89b4c34bd9085346e054a14febdf382644fb029c9bc34"
-      },
-      {
         "path": "anthropic/types/model_param.py",
-        "sha256": "be71e39bd3847ae3fc7bf4c1f0430fd7d1ce97bafd720fb1101b4ff2e0510cc4"
+        "sha256": "afd16d032dbc35fc62b7c7d70f5f18efc3899cde10cf51308965e7aef4a834c9"
       },
       {
         "path": "anthropic/types/output_config_param.py",
@@ -8541,14 +8705,6 @@
         "sha256": "b413b3ec4f86cd30a078b5ca28c3650bc06f813fbf746ea8ca41b2e25127eebd"
       },
       {
-        "path": "anthropic/types/skill_create_params.py",
-        "sha256": "d5974d07231877da7670ff298bc397d558310352ba785b3fc4f155f842c77f4e"
-      },
-      {
-        "path": "anthropic/types/skill_list_params.py",
-        "sha256": "8281a69796c208c839e4bce7d99d39e2e3d124ab3ec4b8c0321673c1269a7fd3"
-      },
-      {
         "path": "anthropic/types/skill_params.py",
         "sha256": "f6033f1389c72cfbd886fb45fe12becdc02ac3be0f77b2dbd735101432682063"
       },
@@ -8557,24 +8713,12 @@
         "sha256": "9274020d261bd6237f026dcdb9172fdb92e6b432f5e9c0a29b2da24305922e0f"
       },
       {
-        "path": "anthropic/types/skills/__init__.py",
-        "sha256": "34362f3ed0acb930d2f3ff5517a99e9823ec960ff0a2def8c9ad98d2d997bc0d"
-      },
-      {
         "path": "anthropic/types/skills/deleted_skill_version.py",
         "sha256": "34f04d9db2c043e201b8fd718b9eede5935956bf2565ec770bff8cc3b9ba58cf"
       },
       {
         "path": "anthropic/types/skills/skill_version.py",
         "sha256": "6f33c911d5de52d5c5ede2a1b9ff0979f99353dde39b2cac28945bcbd8edfeab"
-      },
-      {
-        "path": "anthropic/types/skills/version_create_params.py",
-        "sha256": "8ec81f0ea081eac3e2ebaf4a752ee3f24fd866db32974b940f0fed566a7de1f4"
-      },
-      {
-        "path": "anthropic/types/skills/version_list_params.py",
-        "sha256": "750ae0c0b6c70f1b92e9c8fb56a6478fb2effc903b0e230ae0653ff71d2f42e8"
       },
       {
         "path": "anthropic/types/stop_reason.py",
@@ -8913,10 +9057,10 @@
         "sha256": "537dd05cb065cef59c638c6e617e60bcc890bbf01c4ee77cf6f3f1d8a8938586"
       }
     ],
-    "version": "1.7.0",
+    "version": "1.8.0",
     "wheel": {
-      "filename": "anthropic-1.7.0-py3-none-any.whl",
-      "sha256": "6b681b6ee00f232bb54f50f9a0d6d30e7be368c1b6f754bfd470c8385b8b6058"
+      "filename": "anthropic-1.8.0-py3-none-any.whl",
+      "sha256": "79a4516a21e64fd7b15be1a49ebf544bd6376c96a971a77365358823a2717bc6"
     }
   },
   "package": "anthropic",

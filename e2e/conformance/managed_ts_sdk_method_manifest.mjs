@@ -40,7 +40,6 @@ const OWNER_PREFIXES = new Map([
 ]);
 
 const OWNER_OVERRIDES = new Map([
-  ['beta.files.download', 'managed_dream_e2e.ts'],
   ['beta.files.list', 'managed_resources_api_e2e.mjs'],
   ['beta.files.retrieveMetadata', 'managed_full_lifecycle_e2e.mjs'],
   ['beta.sessions.resources.update', 'managed_session_resource_rotation_e2e.mjs'],
@@ -48,7 +47,6 @@ const OWNER_OVERRIDES = new Map([
   ['beta.vaults.credentials.retrieve', 'management_vaults_e2e.mjs'],
   ['beta.vaults.delete', 'management_vaults_e2e.mjs'],
   ['beta.vaults.retrieve', 'management_vaults_e2e.mjs'],
-  ['files.download', 'managed_dream_e2e.ts'],
 ]);
 
 const SDK_HELPERS = [
@@ -92,6 +90,8 @@ const SDK_HELPERS = [
 ];
 
 const SDK_HELPER_CALLS = new Map([
+  ['beta.files.download', 'fixtures/generated_file_download.mjs#verifyGeneratedFileDownload'],
+  ['files.download', 'fixtures/generated_file_download.mjs#verifyGeneratedFileDownload'],
   ['beta.sessions.events.list', 'harness.mjs#waitForSessionEventReceipt'],
 ]);
 

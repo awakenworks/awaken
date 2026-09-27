@@ -492,6 +492,7 @@ pub(crate) fn build_router_and_host_with_model_publication_resolver(
             host.clone(),
             resources,
             resolver,
+            None,
         ),
         host,
     )

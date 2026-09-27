@@ -290,7 +290,7 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
     // webhooks (identical to an unconfigured plane before).
     let catalog = ephemeral_resource_registry();
     let state = local_managed_state(host.clone(), catalog.clone());
-    mount_with_managed_and_resource_registry_and_dreams(host, state, catalog).0
+    mount_with_managed_and_resource_registry_and_dreams(host, state, catalog, None).0
 }
 
 /// Assemble the local/single-process Managed adapter with one shared ephemeral
@@ -517,6 +517,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
         ephemeral_resource_registry(),
         ApplicationAccessMount::ExplicitlyUnguardedTest,
         awaken_service_lifecycle::ServiceLifecycle::new(),
+        None,
     )
     .0
 }
@@ -592,8 +593,25 @@ pub fn mount_with_managed_and_resource_registry(
     managed_state: Arc<ManagedState>,
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 ) -> Router {
-    mount_with_managed_and_resource_registry_and_dreams(host, managed_state, resource_registry).0
+    mount_with_managed_and_resource_registry_and_dreams(
+        host,
+        managed_state,
+        resource_registry,
+        None,
+    )
+    .0
 }
+
+/// Test-support decoration of the existing Dream execution port. The
+/// Coordinator still constructs the sole production executor and Dream state.
+#[cfg(feature = "test-support")]
+pub type ScenarioDreamExecutorDecorator = Arc<
+    dyn Fn(
+            Arc<dyn awaken_dream_application::DreamExecutor>,
+        ) -> Arc<dyn awaken_dream_application::DreamExecutor>
+        + Send
+        + Sync,
+>;
 
 /// Scenario/embedder variant that returns the exact Dream aggregate mounted in
 /// the data router. Production callers use the fuller application-access variant
@@ -610,12 +628,14 @@ pub fn mount_with_managed_and_resource_registry_and_dreams(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
         host,
         managed_state,
         resource_registry,
         awaken_service_lifecycle::ServiceLifecycle::new(),
+        dream_executor_decorator,
     )
 }
 
@@ -628,6 +648,7 @@ pub fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
     managed_state: Arc<ManagedState>,
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+    dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     let local_workspace = host.local_workspace().to_string();
     let (data, dreams) = mount_with_managed_over(
@@ -636,6 +657,7 @@ pub fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
         resource_registry,
         ApplicationAccessMount::ExplicitlyUnguardedTest,
         lifecycle,
+        dream_executor_decorator,
     );
     // The bare scenario/test mount has no separate management edge. Keep the
     // Awaken policy authoring projection reachable here so deterministic SDK and
@@ -660,6 +682,7 @@ pub fn mount_with_managed_and_application_access(
         resource_registry,
         ApplicationAccessMount::Guarded(application_access),
         awaken_service_lifecycle::ServiceLifecycle::new(),
+        None,
     )
     .0
 }
@@ -697,6 +720,8 @@ pub fn mount_with_managed_and_application_access_and_models(
             model_inventory: Some(model_inventory),
             dream_process_store,
             executable_projection_refresh: None,
+            #[cfg(feature = "test-support")]
+            dream_executor_decorator: None,
         },
         ManagedRoutingExtensions {
             resource_management_router: resources,
@@ -757,6 +782,8 @@ pub struct ManagedApplicationServices {
     pub dream_process_store: Arc<dyn awaken_session_dream_contract::DreamProcessStore>,
     pub executable_projection_refresh:
         Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
+    #[cfg(feature = "test-support")]
+    pub dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
 }
 
 enum ApplicationAccessMount {
@@ -1080,6 +1107,7 @@ fn mount_with_managed_over(
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     application_access: ApplicationAccessMount,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+    dream_executor_decorator: Option<ScenarioDreamExecutorDecorator>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     let lifecycle_host = host.clone();
     let remote_worker_required = !host.runs_local_dispatch_pool();
@@ -1109,6 +1137,7 @@ fn mount_with_managed_over(
                 model_inventory: None,
                 dream_process_store,
                 executable_projection_refresh: None,
+                dream_executor_decorator,
             },
             ManagedRoutingExtensions {
                 resource_management_router: resources,
@@ -1161,6 +1190,8 @@ fn mount_with_managed_over_and_models(
         model_inventory,
         dream_process_store,
         executable_projection_refresh,
+        #[cfg(feature = "test-support")]
+        dream_executor_decorator,
     } = applications;
     let ManagedRoutingExtensions {
         resource_management_router,
@@ -1239,13 +1270,19 @@ fn mount_with_managed_over_and_models(
     if host.runs_local_dispatch_pool() {
         host.ensure_dispatch_pool();
     }
-    let dream_worker = Arc::new(dream::BuiltInDreamAgent::new(
-        session_application.clone(),
-        host.memory_repository(),
-        resource_registry.clone(),
-        memory_stores,
-        worker_file_application.clone(),
-    ));
+    let dream_worker: Arc<dyn awaken_dream_application::DreamExecutor> =
+        Arc::new(dream::BuiltInDreamAgent::new(
+            session_application.clone(),
+            host.memory_repository(),
+            resource_registry.clone(),
+            memory_stores,
+            worker_file_application.clone(),
+        ));
+    #[cfg(feature = "test-support")]
+    let dream_worker = match dream_executor_decorator {
+        Some(decorate) => decorate(dream_worker),
+        None => dream_worker,
+    };
     let dream_application = Arc::new(
         awaken_dream_application::DreamApplication::with_store(dream_worker, dream_process_store)
             .expect("load durable Dream jobs"),

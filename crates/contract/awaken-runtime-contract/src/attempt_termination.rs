@@ -208,7 +208,7 @@ mod tests {
     use crate::llm::ToolCall;
     use crate::model_operation::{
         ModelExecutionEvidence, ModelOperation, ModelOperationPhase, NoDispatchProof,
-        PreDispatchStage, TerminalReceipt,
+        TerminalReceipt,
     };
     use crate::resolved::ModelBinding;
     use crate::tool::ToolRecoveryPolicy;
@@ -378,7 +378,7 @@ mod tests {
             classify_native_attempt_termination(&snapshot(vec![
                 coverage.clone(),
                 model(ModelExecutionEvidence::NotDispatched(
-                    NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection)
+                    NoDispatchProof::request_projection()
                 )),
             ]))
             .unwrap(),

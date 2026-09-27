@@ -57,7 +57,7 @@ fn mount_parts_on_lifecycle(
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state(host.clone(), catalog.clone());
     awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
-        host, managed, catalog, lifecycle,
+        host, managed, catalog, lifecycle, None,
     )
     .0
 }
@@ -66,6 +66,7 @@ pub(super) fn mount_parts_with_model_publication_resolver(
     host: Arc<SharedHost>,
     resources: awaken_resource_application::ResourcesApplication,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
+    dream_executor_decorator: Option<awaken_coordinator::ScenarioDreamExecutorDecorator>,
 ) -> Router {
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state_with_model_publication_resolver(
@@ -74,7 +75,10 @@ pub(super) fn mount_parts_with_model_publication_resolver(
         resolver.clone(),
     );
     let (router, dreams) = awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams(
-        host, managed, catalog,
+        host,
+        managed,
+        catalog,
+        dream_executor_decorator,
     );
     dreams.bind_model_readiness(Arc::new(ScenarioDreamModelReadiness { resolver }));
     router
@@ -141,7 +145,7 @@ pub(super) fn mount_parts_with_agent_source_on_lifecycle(
         agent_source,
     );
     awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
-        host, managed, catalog, lifecycle,
+        host, managed, catalog, lifecycle, None,
     )
     .0
 }

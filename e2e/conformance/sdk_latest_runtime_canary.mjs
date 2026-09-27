@@ -40,11 +40,13 @@ import {
   withServer,
   withScenarioServer,
 } from '../harness.mjs';
+import { verifyGeneratedFileDownload } from "../fixtures/generated_file_download.mjs";
 import { officialBetaResourceProjection } from './official_sdk_resource_projection.mjs';
 import {
   assertDeclarationWitnesses,
   officialSdkCandidateDelta,
   assertRetainedOfficialSdkBehaviorOwners,
+  retainedOfficialSdkBehaviorOwners,
   qualifyOfficialSdkCandidateDelta,
 } from './official_sdk_candidate_delta.mjs';
 import { compileOfficialSdkChangePoints } from './official_sdk_change_point_compile.mjs';
@@ -179,6 +181,13 @@ const MISSING_FILE_ID = 'file_missing';
 const managedTypesV127 = /BetaCompactionCapability/u.test(
   readFileSync(resolve(packageRoot, 'resources/beta/models.d.ts'), 'utf8'),
 );
+const managedTypesV128 = /export type BetaManagedAgentsAgentEvaluatedPermission =/u.test(
+  readFileSync(resolve(packageRoot, 'resources/beta/sessions/events.d.ts'), 'utf8'),
+);
+const requiredRetainedOwners = new Set(retainedOfficialSdkBehaviorOwners(
+  manifest.version,
+  qualificationCatalog.qualifications,
+));
 const webhookProfile = exerciseOfficialWebhookContract(Anthropic);
 completeBehaviorOwner('candidate.webhook-helpers');
 compileOfficialSdkChangePoints(packageRoot, {
@@ -189,12 +198,38 @@ compileOfficialSdkChangePoints(packageRoot, {
   managedTypesV123,
   managedTypesV125,
   managedTypesV127,
+  managedTypesV128,
   workspaceRouting: workspaceRuntimeModules.length > 0,
 });
 completeBehaviorOwner('candidate.typescript-change-points');
 if (managedTypesV123) completeBehaviorOwner('candidate.managed-type-change-points');
 if (managedTypesV125) completeBehaviorOwner('candidate.managed-type-change-points-v125');
 if (managedTypesV127) completeBehaviorOwner('candidate.managed-type-change-points-v127');
+if (managedTypesV128) completeBehaviorOwner('candidate.managed-type-change-points-v128');
+
+async function exerciseInlineToolHelperTelemetry() {
+  if (!requiredRetainedOwners.has('candidate.inline-tool-helper-telemetry')) return;
+  const helper = await import(pathToFileURL(resolve(packageRoot, 'internal/stainless-helper-header.mjs')));
+  const marked = (name, value = {}) => ({ ...value, [helper.SDK_HELPER_SYMBOL]: name });
+  // Helper cause/effect graph: H1 the inline definition carries the SDK Symbol;
+  // H2 the same helper also appears directly; H3 tools/message/block helpers
+  // precede it; H4 a plain string property tries to impersonate the Symbol.
+  // R1 no marks => no header; R2 H1 => inline helper; R3 H1+H2 => one entry;
+  // R4 H3+H1 => ordered distinct entries; R5 H4/null/missing definition => no
+  // invented helper. All cases invoke the exact candidate's actual collector
+  // and header serializer. Retained obligations execute after promotion too.
+  for (const [rule, tools, messages, expected] of [
+    ['R1', undefined, undefined, []],
+    ['R2', [], [{ content: [{ type: 'tool_addition', tool: { definition: marked('mcpTool') } }] }], ['mcpTool']],
+    ['R3', [marked('mcpTool')], [{ content: [{ tool: { definition: marked('mcpTool') } }] }], ['mcpTool']],
+    ['R4', [marked('tools')], [marked('message', { content: [marked('block', { tool: { definition: marked('inline') } })] })], ['tools', 'message', 'block', 'inline']],
+    ['R5', [{}], [{ content: [null, {}, { tool: null }, { tool: { definition: { 'anthropic.sdk.stainlessHelper': 'forged' } } }] }], []],
+  ]) {
+    assert.deepEqual(helper.collectStainlessHelpers(tools, messages), expected, rule);
+    assert.deepEqual(helper.stainlessHelperHeader(tools, messages), expected.length ? { 'x-stainless-helper': expected.join(', ') } : {}, `${rule} header`);
+  }
+  completeBehaviorOwner('candidate.inline-tool-helper-telemetry');
+}
 
 async function drain(pagePromise) {
   const rows = [];
@@ -957,75 +992,6 @@ async function exerciseBetaFiles(client) {
   completeBehaviorOwner('candidate.files-runtime');
 }
 
-async function exerciseGeneratedFileDownload() {
-  // Files.download has two semantically distinct paths: uploaded inputs must
-  // fail closed, while an Agent-produced artifact must return bytes. The Files
-  // canary above owns the former. This isolated Dream topology supplies a legal
-  // generated artifact for the latter without manufacturing a test-only File
-  // record or granting uploads a production-invalid capability. Dream remains
-  // owned by its canonical behavior scenario; it is fixture setup here.
-  await withServer('dream', Number(process.env.E2E_PORT), async (baseURL) => {
-    const client = new Anthropic({
-      apiKey: 'e2e-dummy',
-      baseURL,
-      fetch: candidateRecordingFetch,
-    });
-    const sourceSession = await client.beta.sessions.create({
-      agent: 'assistant',
-      environment_id: 'env_local',
-      initial_events: [{
-        type: 'user.message',
-        content: [{ type: 'text', text: `downloadable-candidate-${manifest.version}` }],
-      }],
-    });
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      const source = await client.beta.sessions.retrieve(sourceSession.id);
-      if (source.status === 'idle') break;
-      assert.notEqual(source.status, 'terminated', 'generated File source Session remains viable');
-      if (attempt === 399) assert.fail('generated File source Session did not become idle');
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    const sourceStore = await client.beta.memoryStores.create({
-      name: `downloadable-candidate-${manifest.version}`,
-    });
-    const target = await client.beta.dreams.create({
-      inputs: [
-        { type: 'memory_store', memory_store_id: sourceStore.id },
-        { type: 'sessions', session_ids: [sourceSession.id] },
-      ],
-      model: 'claude-sonnet-5',
-      instructions: '[awaken-test:hold-dream-for-cancellation]',
-    });
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      const dream = await client.beta.dreams.retrieve(target.id);
-      if (dream.status === 'running' && dream.session_id && dream.outputs.length === 1) break;
-      assert.ok(
-        !['completed', 'failed', 'canceled'].includes(dream.status),
-        `generated File Dream became ${dream.status} before preparation`,
-      );
-      if (attempt === 399) assert.fail('generated File Dream did not expose preparation');
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    const files = await drain(client.beta.files.list());
-    const transcript = files.find(({ filename }) => filename === `${sourceSession.id}.jsonl`);
-    assert.ok(transcript, 'candidate setup publishes one generated transcript File');
-    assert.equal(transcript.downloadable, true, 'candidate transcript carries output capability');
-    const betaBytes = await (await client.beta.files.download(transcript.id)).text();
-    assert.ok(betaBytes.includes(`downloadable-candidate-${manifest.version}`));
-    assert.equal(
-      await (await client.files.download(transcript.id)).text(),
-      betaBytes,
-      'candidate Beta and GA download methods decode the same generated bytes',
-    );
-    assert.equal((await client.beta.dreams.cancel(target.id)).status, 'canceled');
-    await client.beta.dreams.archive(target.id);
-    await client.beta.sessions.delete(sourceSession.id);
-    await client.beta.memoryStores.archive(sourceStore.id);
-    await client.beta.memoryStores.delete(sourceStore.id);
-    pass(`registry SDK ${manifest.version} downloads one generated File through Beta and GA roots`);
-  });
-}
-
 async function exerciseBetaSkills(client) {
   // Cause/effect graph: S1 generated Beta Skills operations carry the Skills
   // capability; S2 post-GA operations keep beta=true without it. Effects:
@@ -1143,10 +1109,22 @@ async function exerciseBetaSkills(client) {
     managedError(404, 'not_found_error'),
     'S1/S2 retired Version stays absent',
   );
+  // S3 only one visible version remains after retiring the first. E4 the
+  // canonical SkillStore rejects its removal as LifecycleConflict (409), and
+  // E5 the rejected mutation preserves the exact version through the selected root.
+  // This is state conflict, not invalid input; the same rule owns Beta and GA.
+  const pinnedVersion = await client.beta.skills.versions.retrieve(versionReference, {
+    skill_id: skill.id,
+  });
   await assert.rejects(
     () => client.beta.skills.versions.delete(versionReference, { skill_id: skill.id }),
-    managedError(400, 'invalid_request_error'),
-    'S1/S2 last live Version protects the aggregate invariant',
+    managedError(409, 'conflict_error'),
+    'S3/E4 last live Version protects the aggregate invariant',
+  );
+  assert.deepEqual(
+    await client.beta.skills.versions.retrieve(versionReference, { skill_id: skill.id }),
+    pinnedVersion,
+    'S3/E5 rejected removal preserves the immutable Version',
   );
   assert.equal((await client.beta.skills.delete(skill.id)).type, 'skill_deleted', 'S1/S2 delete');
   await assert.rejects(
@@ -1378,6 +1356,7 @@ async function exerciseBetaGaRecovery() {
 }
 
 await exerciseSdkCoreTransport();
+await exerciseInlineToolHelperTelemetry();
 if (managedTypesV127) {
   await exerciseNonReplayableTransport({ Anthropic, packageRoot });
   completeBehaviorOwner('candidate.non-replayable-transport');
@@ -1568,7 +1547,11 @@ await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), asyn
   pass(`registry SDK ${manifest.version} runs UserProfile default beta`);
 });
 
-await exerciseGeneratedFileDownload();
+await verifyGeneratedFileDownload({
+  Client: Anthropic, fetch: candidateRecordingFetch,
+  hasGaFiles: operations.some(({ id }) => id === 'files.download'),
+  port: Number(process.env.E2E_PORT),
+});
 await exerciseBetaGaRecovery();
 
 // Causal/FMECA closure for candidate operation drift:

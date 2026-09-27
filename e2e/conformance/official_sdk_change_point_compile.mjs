@@ -190,6 +190,37 @@ function workspaceRoutingFixture(enabled) {
   await client.skills.versions.list('skill_compile', { workspace_id });`;
 }
 
+function managedTypesV128Fixture(enabled) {
+  if (!enabled) return '';
+  // 0.128 closes one shared permission vocabulary across ordinary and MCP
+  // tool events, re-exported from the Session namespace. Both equality checks
+  // reject a wider/narrower event-specific enum; no cast or type escape is used.
+  return `
+  {
+  type SameType<A, B> = (<T>() => T extends A ? 1 : 2) extends
+    (<T>() => T extends B ? 1 : 2) ? true : false;
+  type EvaluatedPermission = import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsAgentEvaluatedPermission;
+  type SessionPermission = import('@anthropic-ai/sdk/resources/beta/sessions/sessions').Sessions.BetaManagedAgentsAgentEvaluatedPermission;
+  type ToolPermission = NonNullable<import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsAgentToolUseEvent['evaluated_permission']>;
+  type McpPermission = NonNullable<import('@anthropic-ai/sdk/resources/beta/sessions/events').BetaManagedAgentsAgentMCPToolUseEvent['evaluated_permission']>;
+  const closedPermission: SameType<EvaluatedPermission, 'allow' | 'ask' | 'deny'> = true;
+  const sessionPermission: SameType<SessionPermission, EvaluatedPermission> = true;
+  const toolPermission: SameType<ToolPermission, EvaluatedPermission> = true;
+  const mcpPermission: SameType<McpPermission, EvaluatedPermission> = true;
+  const newModel: import('@anthropic-ai/sdk/resources/beta/agents/agents').BetaManagedAgentsModel = 'claude-opus-5-5';
+  type Dream = import('@anthropic-ai/sdk/resources/beta/dreams').BetaDream;
+  type Memory = import('@anthropic-ai/sdk/resources/beta/memory-stores/memories').BetaManagedAgentsMemory;
+  type MemoryVersion = import('@anthropic-ai/sdk/resources/beta/memory-stores/memory-versions').BetaManagedAgentsMemoryVersion;
+  type Resource = import('@anthropic-ai/sdk/resources/beta/sessions/resources').BetaManagedAgentsSessionResource;
+  type Thread = import('@anthropic-ai/sdk/resources/beta/sessions/threads/threads').BetaManagedAgentsSessionThread;
+  type ThreadEvent = import('@anthropic-ai/sdk/resources/beta/sessions/threads/events').EventListParams;
+  type UserProfile = import('@anthropic-ai/sdk/resources/beta/user-profiles').BetaUserProfile;
+  const documentedOwners: [Dream, Memory, MemoryVersion, Resource, Thread, ThreadEvent, UserProfile] | undefined = undefined;
+  void closedPermission; void sessionPermission; void toolPermission; void mcpPermission;
+  void newModel; void documentedOwners;
+  }`;
+}
+
 export function officialSdkChangePointFixture({
   filesProjection,
   skillsProjection,
@@ -198,6 +229,7 @@ export function officialSdkChangePointFixture({
   managedTypesV123 = false,
   managedTypesV125 = false,
   managedTypesV127 = false,
+  managedTypesV128 = false,
   workspaceRouting = false,
 }) {
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
@@ -241,6 +273,7 @@ ${managedTypesV127 ? `
   await client.beta.userProfiles.createEnrollmentURL('profile-compile', { workspace_id: 'workspace-compile' });
 ` : ''}
 ${workspaceRoutingFixture(workspaceRouting)}
+${managedTypesV128Fixture(managedTypesV128)}
   client.beta.webhooks.unwrap('{}', { headers: {
     'webhook-id': 'event_compile',
     'webhook-timestamp': '0',

@@ -158,6 +158,10 @@ pub enum PreDispatchStage {
     /// No provider executor, endpoint or egress lease could be resolved for
     /// the binding, so no adapter was ever entered.
     ExecutorResolution,
+    /// Runtime refused the live attempt before constructing or calling the
+    /// provider executor, for example when cancellation arrived during the
+    /// uncancellable entry commit. A resolved executor is not a dispatched call.
+    RuntimeAdmission,
     /// Restored from a journal written before proofs were recorded. Reachable
     /// only by decoding history, never by minting.
     Unrecorded,
@@ -166,11 +170,12 @@ pub enum PreDispatchStage {
 /// Positive proof that a request never left this process.
 ///
 /// Unlike termination there is no remote artifact to parse — the absence of a
-/// dispatch has no wire form — so the witness is the adapter naming the point
-/// in its own send path at which it stopped. Every [`PreDispatchStage`] is
-/// strictly before the first byte is handed to a transport, which is the one
+/// dispatch has no wire form — so the adapter or Runtime names its exact
+/// pre-call refusal. Each mintable stage is strictly before the first byte is
+/// handed to a transport, which is the one
 /// claim a caller downstream of a send can never honestly make. The private
-/// [`Seal`] keeps this out of reach of struct literals just like a receipt.
+/// [`Seal`] keeps this out of reach of struct literals just like a receipt;
+/// dedicated constructors cannot mint the decoder-only `Unrecorded` tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoDispatchProof {
     stage: PreDispatchStage,
@@ -178,12 +183,26 @@ pub struct NoDispatchProof {
 }
 
 impl NoDispatchProof {
-    /// Mint by naming the pre-send stage that failed. Honest only where no
-    /// byte of the request has reached a transport; a failure observed after
-    /// a send must report [`ModelExecutionEvidence::Unknown`] instead.
-    #[must_use]
-    pub const fn before_dispatch(stage: PreDispatchStage) -> Self {
+    const fn mint(stage: PreDispatchStage) -> Self {
         Self { stage, seal: Seal }
+    }
+
+    /// The request could not be projected before transport admission.
+    #[must_use]
+    pub const fn request_projection() -> Self {
+        Self::mint(PreDispatchStage::RequestProjection)
+    }
+
+    /// No executable provider/endpoint was resolved before transport admission.
+    #[must_use]
+    pub const fn executor_resolution() -> Self {
+        Self::mint(PreDispatchStage::ExecutorResolution)
+    }
+
+    /// Runtime rejected the attempt before constructing a provider future.
+    #[must_use]
+    pub const fn runtime_admission() -> Self {
+        Self::mint(PreDispatchStage::RuntimeAdmission)
     }
 
     /// Which pre-send stage refused the request, for diagnostics and history.
@@ -642,6 +661,37 @@ fn fixture_binding(
 
 #[cfg(kani)]
 #[kani::proof]
+fn no_dispatch_mints_only_reviewed_pre_call_stages() {
+    // C1 the production caller chooses one of three explicit constructors;
+    // E1 the sealed proof carries that exact pre-call stage; E2 no constructor
+    // can mint decoder-only Unrecorded. Exhaust every u8 selector; this is a
+    // constructor/stage proof, not transport honesty or async journal proof.
+    let choice: u8 = kani::any();
+    let proof = match choice % 3 {
+        0 => NoDispatchProof::request_projection(),
+        1 => NoDispatchProof::executor_resolution(),
+        _ => NoDispatchProof::runtime_admission(),
+    };
+    assert!(matches!(
+        proof.stage(),
+        PreDispatchStage::RequestProjection
+            | PreDispatchStage::ExecutorResolution
+            | PreDispatchStage::RuntimeAdmission
+    ));
+    assert_eq!(
+        proof.stage(),
+        match choice % 3 {
+            0 => PreDispatchStage::RequestProjection,
+            1 => PreDispatchStage::ExecutorResolution,
+            _ => PreDispatchStage::RuntimeAdmission,
+        }
+    );
+    assert_ne!(proof.stage(), PreDispatchStage::Unrecorded);
+    assert!(ModelExecutionEvidence::NotDispatched(proof).permits_reentry());
+}
+
+#[cfg(kani)]
+#[kani::proof]
 fn model_execution_reentry_requires_positive_evidence() {
     // R1 unknown => deny; R2 not dispatched / terminal => only the physical
     // gate opens. Retry policy and claim/budget remain separate authorities.
@@ -778,9 +828,7 @@ mod tests {
     }
 
     fn not_dispatched() -> ModelExecutionEvidence {
-        ModelExecutionEvidence::NotDispatched(NoDispatchProof::before_dispatch(
-            PreDispatchStage::RequestProjection,
-        ))
+        ModelExecutionEvidence::NotDispatched(NoDispatchProof::request_projection())
     }
 
     #[tokio::test]
@@ -1134,13 +1182,23 @@ mod tests {
             assert_eq!(receipt.wire_fact(), fact, "R4");
             assert!(ModelExecutionEvidence::Terminated(receipt).permits_reentry());
         }
-        // A no-dispatch proof names the pre-send stage and nothing else can
-        // say it; both stages open the same physical gate as a receipt.
-        for stage in [
-            PreDispatchStage::RequestProjection,
-            PreDispatchStage::ExecutorResolution,
+        // D1-D3 only reviewed pre-send constructors can mint positive proof;
+        // D4 Unrecorded remains decoder-only. No general enum-taking public
+        // constructor can turn D4 into new re-entry authority.
+        for (stage, proof) in [
+            (
+                PreDispatchStage::RequestProjection,
+                NoDispatchProof::request_projection(),
+            ),
+            (
+                PreDispatchStage::ExecutorResolution,
+                NoDispatchProof::executor_resolution(),
+            ),
+            (
+                PreDispatchStage::RuntimeAdmission,
+                NoDispatchProof::runtime_admission(),
+            ),
         ] {
-            let proof = NoDispatchProof::before_dispatch(stage);
             assert_eq!(proof.stage(), stage);
             assert!(ModelExecutionEvidence::NotDispatched(proof).permits_reentry());
         }
@@ -1181,9 +1239,7 @@ mod tests {
                 serde_json::json!({ "Terminated": "stream_end_frame" }),
             ),
             (
-                ModelExecutionEvidence::NotDispatched(NoDispatchProof::before_dispatch(
-                    PreDispatchStage::ExecutorResolution,
-                )),
+                ModelExecutionEvidence::NotDispatched(NoDispatchProof::executor_resolution()),
                 serde_json::json!({ "NotDispatched": "executor_resolution" }),
             ),
             (

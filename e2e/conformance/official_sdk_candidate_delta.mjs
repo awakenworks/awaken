@@ -196,7 +196,7 @@ export function assertDeclarationWitnesses(witnesses, readCandidateFile) {
 // The qualification catalog also retains regression obligations after promotion.
 // Walk only incoming upgrade edges for the selected version; future/unrelated
 // candidates cannot require unavailable features, and a shared owner runs once.
-export function assertRetainedOfficialSdkBehaviorOwners(version, qualifications, completed) {
+export function retainedOfficialSdkBehaviorOwners(version, qualifications) {
   const pending = [version];
   const visited = new Set();
   const owners = new Set();
@@ -209,10 +209,15 @@ export function assertRetainedOfficialSdkBehaviorOwners(version, qualifications,
       for (const { owner } of entry.evidence_groups) owners.add(owner);
     }
   }
+  return Object.freeze([...owners].sort());
+}
+
+export function assertRetainedOfficialSdkBehaviorOwners(version, qualifications, completed) {
+  const owners = retainedOfficialSdkBehaviorOwners(version, qualifications);
   for (const owner of owners) {
     if (!completed.has(owner)) throw new Error(`retained SDK behavior owner did not complete: ${owner}`);
   }
-  return Object.freeze([...owners].sort());
+  return owners;
 }
 
 export function assertLatestRuntimeOwnsCandidateDelta(delta) {
@@ -271,6 +276,9 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
     /^resources\/(?:beta\/.+|files|models|skills(?:\/(?:index|skills|versions))?)\.mjs$/u,
     /^tools\/agent-toolset\/(?:fs-util|memories|node|skills)\.mjs$/u,
     /^version\.mjs$/u,
+    // Exact 0.128 inline-definition telemetry change, separately exercised by
+    // candidate.inline-tool-helper-telemetry and bound to reviewed delta bytes.
+    /^internal\/stainless-helper-header\.mjs$/u,
     // 0.125 dropped the generator banner from every generated module. These
     // core/internal modules are owned by `candidate.generated-module-loadability`,
     // which imports each one from the exact package root; any behavioral

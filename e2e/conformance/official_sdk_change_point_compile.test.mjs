@@ -60,7 +60,19 @@ test('candidate compile fixtures are projection-complete and contain no escape h
     assert.doesNotMatch(ga, changePoint, '0.125 change point is emitted only when owned');
   }
   assert.match(ga, /noRetiredResolveHelper/u, '0.122 helper removal is strongly typed');
-  for (const fixture of [beta, ga]) {
+  // T3 shared evaluated permission declaration => all three namespace/event
+  // projections equal the exact allow/ask/deny union; T4 no declaration => the
+  // candidate-only fixture is omitted. Equality is checked by the real compiler
+  // in the runtime canary, not an unchecked annotation or type assertion.
+  const v128 = officialSdkChangePointFixture({
+    filesProjection: 'ga', skillsProjection: 'ga', parseUnverified: true,
+    resolveSkillVersion: false, managedTypesV128: true,
+  });
+  for (const changePoint of [/BetaManagedAgentsAgentEvaluatedPermission/u, /SameType<ToolPermission, EvaluatedPermission>/u, /SameType<McpPermission, EvaluatedPermission>/u]) {
+    assert.match(v128, changePoint, 'T3 shared permission stays strongly typed');
+    assert.doesNotMatch(ga, changePoint, 'T4 earlier declaration has no candidate-only import');
+  }
+  for (const fixture of [beta, ga, v128]) {
     assert.match(fixture, /betaAgentToolset20260401/u, 'Managed helper subpath compiles');
     assert.match(fixture, /accumulateManagedAgentsEvent/u, 'Session accumulator subpath compiles');
     assert.doesNotMatch(fixture, /\bany\b|\sas\s|@ts-/u, 'E4');

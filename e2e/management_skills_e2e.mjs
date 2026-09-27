@@ -232,6 +232,12 @@ async function main() {
       assert.equal(delVer.type, 'skill_version_deleted');
       pass('beta.skills.versions.delete');
 
+      // S1 retired id => 404; S2 only one live Version => canonical
+      // LifecycleConflict (409), not invalid input; S3 rejected removal =>
+      // the exact visible Version remains unchanged through this SDK root.
+      const pinnedVersion = await client.beta.skills.versions.retrieve(secondVersion, {
+        skill_id: skill.id, betas: BETAS,
+      });
       await expectStatus(
         () => client.beta.skills.versions.delete(firstVersion, {
           skill_id: skill.id,
@@ -244,7 +250,12 @@ async function main() {
           skill_id: skill.id,
           betas: BETAS,
         }),
-        400,
+        409,
+      );
+      assert.deepEqual(
+        await client.beta.skills.versions.retrieve(secondVersion, { skill_id: skill.id, betas: BETAS }),
+        pinnedVersion,
+        'S3 rejected last-Version removal preserves exact state',
       );
       pass('retired version stays absent and the sole live version cannot be deleted');
 

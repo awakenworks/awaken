@@ -549,9 +549,7 @@ mod tests {
         for evidence in [
             ModelExecutionEvidence::Unknown,
             ModelExecutionEvidence::NotDispatched(
-                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
-                ),
+                awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
             ),
             ModelExecutionEvidence::Terminated(
                 awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(

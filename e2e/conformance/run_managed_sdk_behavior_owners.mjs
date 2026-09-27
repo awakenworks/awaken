@@ -226,7 +226,6 @@ async function executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment
         AWAKEN_MANAGED_SDK_USER_PROFILES_EXTERNAL_DETAILS: userProfilesExternalDetails ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_GA_FILES: selectedOperationIDs.has('files.upload') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_GA_SKILLS: selectedOperationIDs.has('skills.create') ? '1' : '0',
-        AWAKEN_MANAGED_SDK_HAS_DREAMS: selectedOperationIDs.has('beta.dreams.create') ? '1' : '0',
         AWAKEN_MANAGED_SDK_RESPONSE_FINGERPRINT_KEY: MANAGED_SDK_RESPONSE_FINGERPRINT_KEY,
         NODE_OPTIONS: RECEIPT_NODE_OPTIONS,
       },

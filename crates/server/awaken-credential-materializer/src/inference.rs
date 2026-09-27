@@ -331,9 +331,7 @@ impl LlmExecutor for PinnedCandidateExecutor {
                 // no byte of this request reached a transport.
                 error.with_execution_evidence(
                     awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
-                        awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                            awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
-                        ),
+                        awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution(),
                     ),
                 )
             })?
@@ -353,9 +351,7 @@ impl LlmExecutor for PinnedCandidateExecutor {
                 // no byte of this request reached a transport.
                 error.with_execution_evidence(
                     awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
-                        awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                            awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
-                        ),
+                        awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution(),
                     ),
                 )
             })?
@@ -496,9 +492,7 @@ mod tests {
         for evidence in [
             ModelExecutionEvidence::Unknown,
             ModelExecutionEvidence::NotDispatched(
-                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                    awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
-                ),
+                awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution(),
             ),
             ModelExecutionEvidence::Terminated(
                 awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
@@ -772,7 +766,7 @@ mod tests {
         };
         use awaken_runtime_contract::model_operation::{
             ModelExecutionEvidence, ModelOperation, ModelOperationContext, NoDispatchProof,
-            PreDispatchStage, with_model_operation_context,
+            with_model_operation_context,
         };
 
         // C1 the immutable brokered candidate freezes Disabled; C2 its
@@ -861,9 +855,7 @@ mod tests {
         );
         assert_eq!(
             error.execution_evidence(),
-            ModelExecutionEvidence::NotDispatched(NoDispatchProof::before_dispatch(
-                PreDispatchStage::ExecutorResolution
-            )),
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof::executor_resolution()),
             "P1/E1"
         );
         assert_eq!(*grant.0.lock().unwrap(), 1, "P1/E2");
@@ -950,7 +942,7 @@ mod tests {
                 .unwrap_err();
                 assert_eq!(
                     error.execution_evidence(),
-                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution))
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution())
                 );
             }
         }
@@ -1070,7 +1062,10 @@ mod tests {
             .unwrap_err();
             assert_eq!(
                 error.execution_evidence(),
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution))
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
+                    awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution(
+                    )
+                )
             );
         }
     }

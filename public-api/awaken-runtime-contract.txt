@@ -830,6 +830,7 @@ pub awaken_runtime_contract::model_operation::ModelOperationPhase::TimedOut
 pub enum awaken_runtime_contract::model_operation::PreDispatchStage
 pub awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution
 pub awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection
+pub awaken_runtime_contract::model_operation::PreDispatchStage::RuntimeAdmission
 pub awaken_runtime_contract::model_operation::PreDispatchStage::Unrecorded
 pub enum awaken_runtime_contract::model_operation::ResponseEnvelope
 pub awaken_runtime_contract::model_operation::ResponseEnvelope::CompleteBody
@@ -869,7 +870,9 @@ pub fn awaken_runtime_contract::model_operation::ModelOperationContext::operatio
 pub fn awaken_runtime_contract::model_operation::ModelOperationContext::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub struct awaken_runtime_contract::model_operation::NoDispatchProof
 impl awaken_runtime_contract::model_operation::NoDispatchProof
-pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage) -> Self
+pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution() -> Self
+pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::request_projection() -> Self
+pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::runtime_admission() -> Self
 pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::stage(self) -> awaken_runtime_contract::model_operation::PreDispatchStage
 pub struct awaken_runtime_contract::model_operation::TerminalReceipt
 impl awaken_runtime_contract::model_operation::TerminalReceipt
@@ -1640,6 +1643,9 @@ pub mod awaken_runtime_contract::runtime_context
 pub enum awaken_runtime_contract::runtime_context::AttemptOwnershipError
 pub awaken_runtime_contract::runtime_context::AttemptOwnershipError::Lost
 pub awaken_runtime_contract::runtime_context::AttemptOwnershipError::Unavailable(alloc::string::String)
+pub enum awaken_runtime_contract::runtime_context::ModelCancellationObservation
+pub awaken_runtime_contract::runtime_context::ModelCancellationObservation::AbortAndFence
+pub awaken_runtime_contract::runtime_context::ModelCancellationObservation::RetainClaimedUntilReceipt
 pub enum awaken_runtime_contract::runtime_context::TranscriptContextDestination
 pub awaken_runtime_contract::runtime_context::TranscriptContextDestination::DurableThreadTruth
 pub awaken_runtime_contract::runtime_context::TranscriptContextDestination::ModelRequest
@@ -1675,6 +1681,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::o
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::credential::AttemptCredentialRealization>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_cancellation_observation: awaken_runtime_contract::runtime_context::ModelCancellationObservation
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_content_materializer: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_request_gate: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelRequestGate>>
@@ -1709,6 +1716,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_credent
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_data_subject(self, awaken_runtime_contract::data_subject::DataSubjectId) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_cancellation_observation(self, awaken_runtime_contract::runtime_context::ModelCancellationObservation) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_content_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_request_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelRequestGate>) -> Self
@@ -2352,6 +2360,7 @@ pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<all
 pub awaken_runtime_contract::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::credential::AttemptCredentialRealization>
 pub awaken_runtime_contract::RuntimeRunContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
+pub awaken_runtime_contract::RuntimeRunContext::model_cancellation_observation: awaken_runtime_contract::runtime_context::ModelCancellationObservation
 pub awaken_runtime_contract::RuntimeRunContext::model_content_materializer: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>>
 pub awaken_runtime_contract::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::RuntimeRunContext::model_request_gate: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelRequestGate>>
@@ -2386,6 +2395,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_credent
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_data_subject(self, awaken_runtime_contract::data_subject::DataSubjectId) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_cancellation_observation(self, awaken_runtime_contract::runtime_context::ModelCancellationObservation) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_content_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_request_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelRequestGate>) -> Self

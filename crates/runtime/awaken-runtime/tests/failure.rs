@@ -59,14 +59,14 @@ impl LlmExecutor for FailingLlm {
                 retry_after: None,
             }
             .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
-                ),
+                awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
             )))
         } else {
             Err(
                 LlmError::Unauthorized("bad api key before dispatch".to_string())
-                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection))),
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                    awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
+                )),
             )
         }
     }
@@ -90,7 +90,9 @@ impl LlmExecutor for PermanentThenOkLlm {
         if n < self.fail_times {
             Err(
                 LlmError::Unauthorized("bad api key before dispatch".to_string())
-                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection))),
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                    awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
+                )),
             )
         } else {
             Ok(ChatResponse {
@@ -118,7 +120,9 @@ impl LlmExecutor for FlakyLlm {
         if n < self.fail_times {
             Err(
                 LlmError::Provider("unavailable before dispatch".to_string())
-                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection))),
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                    awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
+                )),
             )
         } else {
             Ok(ChatResponse {

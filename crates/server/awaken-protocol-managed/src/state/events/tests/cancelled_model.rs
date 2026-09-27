@@ -21,9 +21,7 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
         None,
         Some(ModelExecutionEvidence::Unknown),
         Some(ModelExecutionEvidence::NotDispatched(
-            awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
-            ),
+            awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
         )),
         Some(ModelExecutionEvidence::Terminated(
             awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(

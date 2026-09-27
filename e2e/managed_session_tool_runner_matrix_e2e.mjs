@@ -167,18 +167,26 @@ try {
   {
     const session = await createSession(client, environment.id, 'tool-unowned');
     await sendTask(client, session.id);
+    // U1 the SDK's own 1000-row reconciliation query must read the already
+    // committed custom-tool boundary; U2 no local registration may post a
+    // result. U1 fails before the runner if the historical list projection is
+    // incompatible. U2 has one 10s outer bound so an SDK that never yields the
+    // unowned event fails by name instead of hanging until suite termination.
+    const history = await drain(client.beta.sessions.events.list(session.id, { limit: 1000 }));
+    assert.ok(history.some((event) => event.type === 'agent.custom_tool_use'
+      && event.name === 'submit_answer'), 'U1 SDK replay sees the exact custom tool');
     const controller = new AbortController();
     let observed;
     for await (const call of client.beta.sessions.events.toolRunner(session.id, {
       tools: [],
       betas: BETAS,
       maxIdleMs: 0,
-      signal: controller.signal,
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
     })) {
       observed = call;
       controller.abort();
     }
-    assert.equal(observed?.name, 'submit_answer');
+    assert.equal(observed?.name, 'submit_answer', 'U2 SDK yields the unowned tool within the bound');
     assert.equal(observed?.posted, false);
     assert.equal(observed?.result, undefined);
     const events = await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }));

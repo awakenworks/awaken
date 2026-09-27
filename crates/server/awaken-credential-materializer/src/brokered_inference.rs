@@ -827,8 +827,7 @@ impl BrokeredCandidateExecutor {
             // The egress lease could not be acquired, so nothing was sent.
             error.with_execution_evidence(
                 awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
-                    awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                        awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
+                    awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution(
                     ),
                 ),
             )
@@ -842,8 +841,7 @@ impl BrokeredCandidateExecutor {
             // No executor could be built for the lease: never entered.
             Err(error) => Err(error.with_execution_evidence(
                 awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
-                    awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                        awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
+                    awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution(
                     ),
                 ),
             )),
@@ -1349,7 +1347,10 @@ mod tests {
             assert_eq!(error.code(), "binding_rejected");
             assert_eq!(
                 error.execution_evidence(),
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution))
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
+                    awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution(
+                    )
+                )
             );
         }
         assert!(client.requests.lock().unwrap().is_empty());
@@ -1466,7 +1467,7 @@ mod tests {
                     assert_eq!(error.code(), "binding_rejected", "{rule}");
                     assert_eq!(
                         error.execution_evidence(),
-                        ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution)),
+                        ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::executor_resolution()),
                         "{rule}"
                     );
                 } else {

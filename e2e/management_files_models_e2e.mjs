@@ -9,7 +9,7 @@
 // C3=published executable Model exists/missing. Effects: E1=each root decodes its
 // exact metadata/list/retrieve response; E2=input download is denied by the shared
 // file policy; E3=delete makes later metadata fail; E4=missing Model returns 404.
-// Downloadable artifact success is owned by the Session namespace E2E. Constraints:
+// Downloadable artifact success reuses the ordinary ProbeModel/Runtime fixture. Constraints:
 // both roots share one FileCatalog/model inventory and never copy state.
 // Decision table:
 // | rule | root | identity | operation | effects |
@@ -21,6 +21,7 @@
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { FAKE_KEY, withScenarioServer, pass, provisionProviderTestModel, publishManagementAgent } from './harness.mjs';
+import { verifyGeneratedFileDownload } from './fixtures/generated_file_download.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const gaFilesMode = process.env.AWAKEN_MANAGED_SDK_HAS_GA_FILES ?? '1';
@@ -165,7 +166,10 @@ async function main() {
       pass('Beta and GA models.retrieve(unknown) -> 404');
     }, {}, { upstream: { models: ['claude-opus-4-8'] } });
 
-    console.log('E2E PASS: files.delete + the Models API round-trip through the official @anthropic-ai/sdk.');
+    await verifyGeneratedFileDownload({
+      Client: Anthropic, hasGaFiles: HAS_GA_FILES, port: Number(process.env.E2E_PORT),
+    });
+    console.log('E2E PASS: Files + the Models API round-trip through the official @anthropic-ai/sdk.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

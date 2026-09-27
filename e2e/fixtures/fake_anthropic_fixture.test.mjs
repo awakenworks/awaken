@@ -5,6 +5,41 @@ import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fake_anthropic_fixture.mjs';
 import { singleFileReference } from './resource_prompt_fixture.mjs';
 
+test('fault responses distinguish a complete envelope from a real body interruption', async () => {
+  // W20/W21: C1 complete/truncated body x C2 one-shot/persistent fault. A real
+  // client reads the advertised 503 plus every byte for W20; W21 reads 503 but
+  // body consumption rejects below Content-Length. C3 a later explicit request
+  // => success only for a one-shot fault. Invalid mode rejects before listening.
+  // This qualifies the sole HTTP error writer; Runtime reentry is owned by the
+  // managed_upstream_faults process decision table, not inferred from this test.
+  assert.throws(() => startFakeAnthropic('fixture-key', { faultBodyMode:'unknown' }));
+  for (const faultBodyMode of ['complete', 'truncated']) {
+    for (const alwaysFail of [false, true]) {
+      const upstream = await startFakeAnthropic('fixture-key', {
+        faultBodyMode, alwaysFail, failuresBeforeSuccess:1,
+      });
+      try {
+        for (let request = 1; request <= 2; request++) {
+          const response = await fetch(`${upstream.url}/v1/messages`, {
+            method:'POST', headers:{'x-api-key':'fixture-key', 'content-type':'application/json'}, // awaken-allow: secret -- synthetic local fixture credential
+            body:JSON.stringify({model:'fixture-model', messages:[]}),
+          });
+          const fault = request === 1 || alwaysFail;
+          assert.equal(response.status, fault ? 503 : 200);
+          if (fault && faultBodyMode === 'truncated') {
+            await assert.rejects(response.text(), /terminated/u);
+          } else {
+            const body = await response.json();
+            assert.equal(body.type, fault ? 'error' : 'message');
+            if (fault) assert.equal(body.error.type, 'overloaded_error');
+          }
+        }
+        assert.equal(upstream.attempts, 2, 'only the two explicit requests');
+      } finally { await upstream.close(); }
+    }
+  }
+});
+
 test('fragmented HTTP input preserves UTF-8 before parsing the inference request', { timeout:10_000 }, async () => {
   // W17-W19: ASCII/multibyte input x aligned/split UTF-8 code points -> the same
   // exact parsed request. Each internal byte boundary of 2/3/4-byte characters
