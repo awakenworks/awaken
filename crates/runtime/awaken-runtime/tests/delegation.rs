@@ -196,6 +196,7 @@ enum Step {
     Awaiting(serde_json::Value),
     /// Could not run.
     Fail(String),
+    Interrupted(String),
 }
 
 fn step_to_result(step: &Step) -> Result<DelegationStep, DelegationExecutionError> {
@@ -221,12 +222,14 @@ fn step_to_result(step: &Step) -> Result<DelegationStep, DelegationExecutionErro
             continuation: continuation.clone(),
         }),
         Step::Fail(err) => Err(DelegationExecutionError::new(err.clone())),
+        Step::Interrupted(err) => Err(DelegationExecutionError::retryable(err.clone())),
     }
 }
 
 /// A delegation executor whose `run` and `resume` yield configured [`Step`]s, and
 /// which records the `(handle, typed result)` each resume was called with.
 struct MockRunDelegationService {
+    parallel: bool,
     run_step: Step,
     resume_step: Step,
     started: Mutex<Vec<DelegationOrigin>>,
@@ -493,6 +496,7 @@ impl RawTool for ObservedRawTool {
 impl MockRunDelegationService {
     fn new(run_step: Step, resume_step: Step) -> Self {
         Self {
+            parallel: false,
             run_step,
             resume_step,
             started: Mutex::new(Vec::new()),
@@ -504,6 +508,9 @@ impl MockRunDelegationService {
 
 #[async_trait::async_trait]
 impl RunDelegationService for MockRunDelegationService {
+    fn supports_parallel_completion(&self, _: &serde_json::Value) -> bool {
+        self.parallel
+    }
     fn tool_id(&self) -> &str {
         DELEGATE_TOOL
     }
@@ -928,6 +935,77 @@ async fn mixed_delegation_and_parallel_regular_tool_execute_concurrently() {
 
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(probe.maximum_active.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn interrupted_or_awaiting_parallel_child_preserves_returned_regular_sibling() {
+    // D1 terminal-only advertised + child unexpectedly awaits -> original
+    // Indeterminate disposition, exact Awaiting relationship, no partial model
+    // transcript; D2 retryable child interruption -> original error and open
+    // relationship. In both rows the same joined wave's returned regular
+    // output is durable. Mixed all-terminal success is covered adjacent.
+    // This is per-call logical evidence, never whole-attempt stop proof.
+    for awaits in [true, false] {
+        let step = if awaits {
+            Step::Awaiting(serde_json::json!({"task":"addressable-child"}))
+        } else {
+            Step::Interrupted("child interrupted".into())
+        };
+        let mut executor = MockRunDelegationService::new(step, Step::Done("unused".into(), 0));
+        executor.parallel = true;
+        let executor = Arc::new(executor);
+        let model = Arc::new(MixedCallsThenText {
+            calls: AtomicUsize::new(0),
+            delegations: 1,
+            regular_calls: 1,
+        });
+        let runtime = configured_runtime(executor)
+            .with_llm(model.clone())
+            .with_tool(Arc::new(ObservedRawTool {
+                probe: Arc::new(ConcurrencyProbe::default()),
+                concurrency: ToolConcurrency::Parallel,
+                output_bytes: 0,
+            }));
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let result = runtime
+            .execute(
+                activation_with_regular_tool(),
+                RuntimeRunContext::new().with_commit(commit.clone()),
+            )
+            .await;
+        if awaits {
+            assert_eq!(result.unwrap(), RunState::Ended(EndCause::Indeterminate));
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("child interrupted")
+            );
+        }
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        let committed = commit.committed();
+        assert!(
+            !committed
+                .messages
+                .iter()
+                .any(|message| message.role == Role::Tool)
+        );
+        let run = activation_with_regular_tool().run_id;
+        let store =
+            awaken_runtime_contract::tool_batch::store_from_run_commands(committed.state, &run);
+        let batch = ActiveToolBatch::load(&store).unwrap().unwrap();
+        let regular = batch
+            .calls()
+            .iter()
+            .find(|entry| entry.call.call_id == "mixed-regular-0")
+            .unwrap();
+        assert!(
+            matches!(regular.phase, ToolCallPhase::Completed(_)),
+            "D1/D2 returned sibling lost, awaits={awaits}"
+        );
+        assert!(!batch.is_complete());
+    }
 }
 
 #[tokio::test]
