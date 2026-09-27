@@ -170,8 +170,11 @@ pub awaken_ext_builtin_tools::ManagedWebGatewayEndpoint::route_ref: alloc::strin
 pub struct awaken_ext_builtin_tools::ReadArgs
 pub awaken_ext_builtin_tools::ReadArgs::path: alloc::string::String
 pub awaken_ext_builtin_tools::ReadArgs::view_range: core::option::Option<[i64; 2]>
+impl awaken_ext_builtin_tools::ReadArgs
+pub fn awaken_ext_builtin_tools::ReadArgs::read_content(&self, &[u8], core::option::Option<u64>) -> core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>
 pub struct awaken_ext_builtin_tools::ReadTool(_)
 impl awaken_ext_builtin_tools::ReadTool
+pub const awaken_ext_builtin_tools::ReadTool::DEFAULT_MAX_FILE_BYTES: u64
 pub fn awaken_ext_builtin_tools::ReadTool::new(&awaken_ext_builtin_tools::HandToolContext) -> Self
 impl awaken_tool_contract::tool::Tool for awaken_ext_builtin_tools::ReadTool
 pub type awaken_ext_builtin_tools::ReadTool::Args = awaken_ext_builtin_tools::ReadArgs
