@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -14,6 +15,46 @@ import { resolveSdkPackage } from '../src/package-source.mjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scope = JSON.parse(fs.readFileSync(path.join(packageRoot, 'config/scope.json')));
+
+test('one declaration fingerprint rejects divergent ESM and CommonJS projections', () => {
+  // Cause/effect rules: D1 paired import/export/import-type specifiers differ
+  // only by .js/.mjs and maps by .d.ts/.d.mts => one canonical fingerprint;
+  // D2 CRLF/LF => the SAME fingerprint; D3 ESM field type changes, D4 a module
+  // target changes, D5 a field string literal changes, D6 docs change, or D7 the
+  // ESM counterpart disappears => fail before admitting candidate declarations.
+  // Constraint: never normalize arbitrary strings or keep a second fingerprint
+  // ledger for the same wire types. Each mutation resets the same exact fixture.
+  const root = fs.mkdtempSync(path.join(tmpdir(), 'awaken-declaration-pair-'));
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@anthropic-ai/sdk', version: '0.128.0' }));
+    const directory = path.join(root, 'resources/beta/sessions');
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, 'events.d.ts');
+    const twin = path.join(directory, 'events.d.mts');
+    const cjs = "import { X } from './peer.js';\nexport type { X } from './peer.js';\nexport type Y = import('./peer.js').X;\nexport type Permission = 'allow';\nexport type Literal = 'value.mjs';\n// docs: data.mjs\n//# sourceMappingURL=events.d.ts.map\n";
+    const esm = cjs.replaceAll('./peer.js', './peer.mjs').replace('events.d.ts.map', 'events.d.mts.map');
+    const selectedScope = { beta_resource_roots: ['sessions'] };
+    fs.writeFileSync(file, cjs);
+    fs.writeFileSync(twin, esm);
+    const expected = managedTypeFingerprintFromPackageRoot(root, selectedScope);
+    assert.equal(expected.file_count, 1, 'D1 one canonical coordinate');
+    fs.writeFileSync(twin, esm.replaceAll('\n', '\r\n'));
+    assert.deepEqual(managedTypeFingerprintFromPackageRoot(root, selectedScope), expected, 'D2');
+    for (const [rule, before, after] of [
+      ['D3', "Permission = 'allow'", "Permission = 'allow' | 'deny'"],
+      ['D4', './peer.mjs', './other.mjs'],
+      ['D5', "Literal = 'value.mjs'", "Literal = 'value.js'"],
+      ['D6', '// docs: data.mjs', '// docs: data.js'],
+    ]) {
+      fs.writeFileSync(twin, esm.replace(before, after));
+      assert.throws(() => managedTypeFingerprintFromPackageRoot(root, selectedScope), /declarations disagree/u, rule);
+    }
+    fs.rmSync(twin);
+    assert.throws(() => managedTypeFingerprintFromPackageRoot(root, selectedScope), /missing ESM declaration/u, 'D7');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('managed declaration fingerprint is deterministic and scoped', () => {
   // Cause/effect graph: C1 exact installed SDK declarations and C2 reviewed

@@ -25,6 +25,34 @@ export function managedTypeFingerprint(moduleName, scope) {
   return managedTypeFingerprintFromPackageRoot(sdk.root, scope);
 }
 
+function canonicalDeclarationContent(filename) {
+  const content = fs.readFileSync(filename, 'utf8').replaceAll('\r\n', '\n');
+  const esmFilename = filename.replace(/\.d\.ts$/u, '.d.mts');
+  if (!fs.existsSync(esmFilename)) throw new Error(`${filename}: missing ESM declaration counterpart`);
+  let esm = fs.readFileSync(esmFilename, 'utf8').replaceAll('\r\n', '\n');
+  const source = ts.createSourceFile(esmFilename, esm, ts.ScriptTarget.Latest, true);
+  const edits = [];
+  const visit = (node) => {
+    // Normalize ONLY module specifiers, never a field literal or documentation.
+    if (ts.isStringLiteral(node) && (
+      ((ts.isImportDeclaration(node.parent) || ts.isExportDeclaration(node.parent))
+        && node.parent.moduleSpecifier === node)
+      || (ts.isLiteralTypeNode(node.parent) && ts.isImportTypeNode(node.parent.parent))
+      || ts.isExternalModuleReference(node.parent)
+    ) && node.text.endsWith('.mjs')) {
+      edits.push([node.getStart(source) + 1, node.getEnd() - 1, node.text.slice(0, -4) + '.js']);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  for (const [start, end, value] of edits.sort((left, right) => right[0] - left[0])) {
+    esm = esm.slice(0, start) + value + esm.slice(end);
+  }
+  esm = esm.replace(/(\/\/# sourceMappingURL=[^\n]*)\.d\.mts\.map(?=\n?$)/u, '$1.d.ts.map');
+  if (esm !== content) throw new Error(`${filename}: ESM and CommonJS declarations disagree`);
+  return content;
+}
+
 export function managedTypeFingerprintFromPackageRoot(root, scope) {
   sdkPackageFromRoot(root);
   const betaRoot = path.join(root, 'resources', 'beta');
@@ -39,7 +67,7 @@ export function managedTypeFingerprintFromPackageRoot(root, scope) {
       const relative = path.relative(declarationRoot, filename).replaceAll(path.sep, '/');
       if (!allowed.has(relative.split('/')[0].replace(/\.d\.ts$/, ''))) continue;
       const scopedPath = prefix + relative;
-      const content = fs.readFileSync(filename, 'utf8').replaceAll('\r\n', '\n');
+      const content = canonicalDeclarationContent(filename);
       hash.update(scopedPath);
       hash.update('\0');
       hash.update(content);
@@ -55,7 +83,7 @@ export function managedTypeFingerprintFromPackageRoot(root, scope) {
     for (const filename of declarations(declarationRoot)) {
       const relative = path.relative(root, filename).replaceAll(path.sep, '/');
       const scopedPath = `managed/${relative}`;
-      const content = fs.readFileSync(filename, 'utf8').replaceAll('\r\n', '\n');
+      const content = canonicalDeclarationContent(filename);
       hash.update(scopedPath);
       hash.update('\0');
       hash.update(content);
