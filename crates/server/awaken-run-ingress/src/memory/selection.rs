@@ -47,6 +47,7 @@ fn select_in_physical_band(
             && row.active_attempt.is_some() == occupied
             && row.cancellation_requested
             && matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
+            && retry_deadline_is_due(row, now_ms)
             && !thread_has_claim_blocking_peer(state, run, false)
             && compatible(row)
         {
