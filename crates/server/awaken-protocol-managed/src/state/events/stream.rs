@@ -8,6 +8,7 @@ const LIVE_CHANNEL_CAPACITY: usize = 64;
 const LIVE_CHANNEL_CAPACITY: usize = 1024;
 
 impl ManagedState {
+    pub(crate) const STREAM_DELIVERY_PAGE_SIZE: usize = 128;
     pub(in crate::state) fn next_event_id(&self) -> String {
         format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
     }
@@ -32,47 +33,35 @@ impl ManagedState {
         &self,
         session_id: &str,
     ) -> Result<(Vec<Event>, broadcast::Receiver<Event>), StateError> {
+        self.stream_projection_subscribe(session_id)
+            .map(|(snapshot, receiver, _)| (snapshot, receiver))
+    }
+
+    pub(crate) fn stream_projection_subscribe(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<Event>, broadcast::Receiver<Event>, u64), StateError> {
         let rx = self.live_sender(session_id).subscribe();
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        Ok((record.events.clone(), rx))
+        Ok((record.events.clone(), rx, record.cache_revision))
     }
 
-    /// Publish each committed `Event` appended to `session_id` since `from` on the
-    /// live broadcast, so an open SSE connection receives it without a reconnect.
-    /// Best-effort: no subscriber (or a lagging one) is not an error.
-    pub(in crate::state) fn broadcast_committed_from(
+    pub(crate) fn stream_delivery_page(
         &self,
         session_id: &str,
-        record: &SessionRecord,
-        from: usize,
-    ) {
-        if from >= record.events.len() {
-            return;
-        }
-        if let Some(tx) = self.live.lock().unwrap().get(session_id) {
-            for event in &record.events[from..] {
-                let _ = tx.send(event.clone());
-            }
-        }
+        after: (u64, usize),
+    ) -> Result<CommittedDeliveryPage, StateError> {
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+        Ok(record.delivery_page(after, Self::STREAM_DELIVERY_PAGE_SIZE))
     }
 
-    /// Broadcast only identities that were absent before a canonical rebuild.
-    /// Reordering the disposable vector cannot make an older event look newly
-    /// committed, and a newly completed interval is delivered in its canonical
-    /// order even when rebuilding it inserted facts before a transient overlay.
-    pub(in crate::state) fn broadcast_new_event_ids(
-        &self,
-        session_id: &str,
-        record: &SessionRecord,
-        previous_ids: &std::collections::HashSet<String>,
-    ) {
+    /// One emission edge for a fully validated committed delta. Publication
+    /// and terminal deletion both use the same delivery admission beforehand.
+    pub(in crate::state) fn broadcast_committed_delta(&self, session_id: &str, events: &[Event]) {
         if let Some(tx) = self.live.lock().unwrap().get(session_id) {
-            for event in record
-                .events
-                .iter()
-                .filter(|event| !previous_ids.contains(&event.id))
-            {
+            for event in events {
                 let _ = tx.send(event.clone());
             }
         }

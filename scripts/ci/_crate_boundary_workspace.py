@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import tomllib
 from collections.abc import Callable, Iterable
+from functools import lru_cache
 from pathlib import Path
 
 import _arch_fitness
@@ -13,6 +14,7 @@ import _crate_dependency_fitness
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
+_RUST_PROJECTION_CACHE_SIZE = 2048
 
 
 def load_manifest(path: Path) -> dict:
@@ -93,6 +95,7 @@ def _character_literal_end(source: str, start: int) -> int | None:
     return None
 
 
+@lru_cache(maxsize=_RUST_PROJECTION_CACHE_SIZE)
 def rust_without_comments(source: str) -> str:
     """Blank Rust comments without changing offsets, lines, or string literals."""
     output: list[str] = []
@@ -140,6 +143,7 @@ def rust_without_comments(source: str) -> str:
     return "".join(output)
 
 
+@lru_cache(maxsize=_RUST_PROJECTION_CACHE_SIZE)
 def rust_syntax(source: str) -> str:
     """Blank comments and literals while retaining Rust syntax and line structure."""
     source = rust_without_comments(source)
@@ -412,6 +416,7 @@ def test_only_rust_ranges(source: str) -> list[tuple[int, int]]:
     return ranges
 
 
+@lru_cache(maxsize=_RUST_PROJECTION_CACHE_SIZE)
 def production_rust(source: str) -> str:
     """Project Rust source compiled with ``cfg(test) == false``.
 
@@ -542,6 +547,28 @@ def public_first_party_reexports(sources: Iterable[str]) -> frozenset[str]:
     )
 
 
+def _selftest_projection_cache() -> None:
+    # Cache cause/effect graph: C1 identical source is projected repeatedly;
+    # C2 source changes at the same path/length; C3 more than the bound's unique
+    # contents are examined. E1 reuse exactly the immutable result; E2 changed
+    # syntax remains visible; E3 retained cache size stays bounded. Rules
+    # K1=C1=>E1, K2=C2=>E2, K3=C3=>E3. Source CONTENT, not mtime/path, is the key;
+    # never cache mutable range lists or filesystem discovery.
+    for projector in (rust_without_comments, rust_syntax, production_rust):
+        projector.cache_clear()
+        original = 'fn live() { let marker = 1; } // keep offsets\n'
+        changed = original.replace('marker', 'latest')
+        first = projector(original)
+        assert projector(original) is first, "K1 exact immutable projection reuse"
+        assert projector.cache_info().hits == 1, "K1 only one lexical computation"
+        assert 'latest' in projector(changed) and 'marker' not in projector(changed), "K2 no stale syntax"
+        for item in range(_RUST_PROJECTION_CACHE_SIZE + 2):
+            projector(f'fn retained_{item}() {{}}')
+        assert projector.cache_info().currsize == _RUST_PROJECTION_CACHE_SIZE, "K3 bounded contents"
+        assert projector(original) == first, "K3 eviction preserves semantics"
+        projector.cache_clear()
+
+
 def selftest() -> None:
     """Cause/effect table for first-party facade discovery.
 
@@ -557,6 +584,7 @@ def selftest() -> None:
     | R2   | no          | yes           | no      | E1     |
     | R3   | no          | no            | yes     | E2     |
     """
+    _selftest_projection_cache()
     # Production-source cause/effect table: C4 an exact/`all` cfg predicate is
     # false whenever test=false; C5 `not(test)` or `any(test, feature=...)` can
     # compile outside tests; C6 a test-only item precedes later production; C7
@@ -693,4 +721,3 @@ def architecture_fitness_specs() -> list[_arch_fitness.CrateSpec]:
             )
         )
     return specs
-

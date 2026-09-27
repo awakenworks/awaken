@@ -269,6 +269,26 @@ impl SessionRecord {
         ));
     }
 
+    pub(super) fn index_delivery_delta(&mut self, previous: &Self, delta: &[Event]) {
+        Arc::make_mut(&mut self.event_page_index).inherit_delivery_changes(
+            &previous.event_page_index,
+            self.cache_revision,
+            delta,
+        );
+    }
+
+    pub(super) fn delivery_page(
+        &self,
+        after: (u64, usize),
+        limit: usize,
+    ) -> Vec<((u64, usize), Event)> {
+        self.event_page_index
+            .delivery_page(after, limit)
+            .into_iter()
+            .map(|(cursor, position)| (cursor, self.events[position].clone()))
+            .collect()
+    }
+
     /// Append one deterministic public Event if its id is not already present.
     /// The published page index is extended only over the candidate's new tail;
     /// it remains derived from `events` and is rebuilt after any reorder/removal.
