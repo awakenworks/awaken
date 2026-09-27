@@ -1661,6 +1661,85 @@ pub async fn assert_pending_revision_cas<S: awaken_dispatch::Inbox>(store: &S) {
     assert_eq!(store.retract("m1", 2).await.unwrap(), CasOutcome::Applied);
     assert_eq!(store.retract("m1", 2).await.unwrap(), CasOutcome::NotFound);
     assert!(store.list(&thread).await.unwrap().is_empty());
+
+    // Concurrent decision table: C1 two edits observe revision 1; C2 an edit
+    // and retract observe the same successor revision. Effects: E1 exactly one
+    // Applied for C1/C2; E2 loser is Mismatch/NotFound; E3 retained bytes and
+    // revision belong exactly to the winner, or the winner removed the row.
+    // R6=C1=>E1+E2+one rev2 history; R7=C2=>E1+E2+E3. PostgreSQL's separate
+    // row-lock fault case forces both commands into the old read/write gap.
+    let race_id = "pending-cas-race";
+    store
+        .append(pending(
+            race_id,
+            "run-1",
+            TICKET,
+            ResumeResult::Input("initial".into()),
+        ))
+        .await
+        .unwrap();
+    let (left, right) = tokio::join!(
+        store.edit(race_id, 1, ResumeResult::Input("left".into())),
+        store.edit(race_id, 1, ResumeResult::Input("right".into())),
+    );
+    let (left, right) = (left.unwrap(), right.unwrap());
+    assert_eq!(
+        usize::from(left == CasOutcome::Applied) + usize::from(right == CasOutcome::Applied),
+        1,
+        "R6 one CAS winner"
+    );
+    let retained = store.list(&thread).await.unwrap();
+    let row = retained
+        .iter()
+        .find(|row| row.input.message_id == race_id)
+        .unwrap();
+    assert_eq!(row.revision, 2, "R6 one successor");
+    assert_eq!(
+        row.input.result,
+        ResumeResult::Input(
+            if left == CasOutcome::Applied {
+                "left"
+            } else {
+                "right"
+            }
+            .into()
+        ),
+        "R6 exact winner payload"
+    );
+    let (edited, retracted) = tokio::join!(
+        store.edit(race_id, 2, ResumeResult::Input("third".into())),
+        store.retract(race_id, 2),
+    );
+    let (edited, retracted) = (edited.unwrap(), retracted.unwrap());
+    assert_eq!(
+        usize::from(edited == CasOutcome::Applied) + usize::from(retracted == CasOutcome::Applied),
+        1,
+        "R7 one mutation winner"
+    );
+    let retained = store.list(&thread).await.unwrap();
+    if edited == CasOutcome::Applied {
+        let row = retained
+            .iter()
+            .find(|row| row.input.message_id == race_id)
+            .unwrap();
+        assert_eq!(row.revision, 3, "R7 exact edited successor");
+        assert_eq!(
+            row.input.result,
+            ResumeResult::Input("third".into()),
+            "R7 exact bytes"
+        );
+        assert_eq!(
+            retracted,
+            CasOutcome::RevisionMismatch,
+            "R7 rejected stale removal"
+        );
+    } else {
+        assert!(
+            !retained.iter().any(|row| row.input.message_id == race_id),
+            "R7 removed winner"
+        );
+        assert_eq!(edited, CasOutcome::NotFound, "R7 rejected absent edit");
+    }
 }
 
 /// Shared spec for the cross-thread outbox + relay (M3b): every backend must
@@ -2720,6 +2799,37 @@ pub async fn assert_defer_claim_is_request_local<
         .expect("D3 cancelled retry becomes due at the exact deadline");
     assert_eq!(retry.lease.run_id, deferred_run, "D3");
     assert!(retry.cancellation_requested, "D3");
+
+    // D4 cause/effect interaction: the cancelled high-priority row fails again
+    // and is deferred, while an independent lower-priority Thread is runnable.
+    // Its exact claim is correctly fenced before expiry, so broad discovery
+    // must skip it rather than falsely report the whole queue empty. A 30s
+    // fixture deadline avoids relying on a fast PostgreSQL wall-clock sample;
+    // this rule never waits for that deadline and creates no physical attempt.
+    store
+        .defer_claim(&RunClaim::from(&retry.lease), 30_000)
+        .await
+        .unwrap();
+    store.cancel(&deferred_run).await.unwrap();
+    let independent_retry = RunDispatch::new(activation_on(
+        "independent-during-cancel-backoff",
+        "independent-during-cancel-backoff-thread",
+    ));
+    let independent_retry_id = independent_retry.run_id().clone();
+    store.enqueue(independent_retry).await.unwrap();
+    let ready = store
+        .claim("owner-independent", 1_000, &Default::default())
+        .await
+        .unwrap()
+        .expect("D4 cancelled backoff cannot hide independent runnable work");
+    assert_eq!(
+        ready.lease.run_id, independent_retry_id,
+        "D4 exact independent winner"
+    );
+    assert!(
+        !ready.cancellation_requested,
+        "D4 no premature cancelled retry"
+    );
 }
 
 pub async fn assert_defer_claim_deadline_edge<S: awaken_dispatch::ControlDispatch>(

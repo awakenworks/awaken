@@ -467,6 +467,7 @@ impl awaken_dispatch_contract::dispatch::AttemptAdmission
 pub const fn awaken_dispatch_contract::dispatch::AttemptAdmission::permits_pre_start_no_effect_ack(self) -> bool
 pub enum awaken_dispatch_contract::CancelTransition
 pub awaken_dispatch_contract::CancelTransition::Applied
+pub awaken_dispatch_contract::CancelTransition::Applied::clear_retry_deadline: bool
 pub awaken_dispatch_contract::CancelTransition::Applied::revoked_lease: bool
 pub awaken_dispatch_contract::CancelTransition::Applied::state: awaken_dispatch_contract::DispatchTransition
 pub awaken_dispatch_contract::CancelTransition::NotCancellable
@@ -564,6 +565,7 @@ pub awaken_dispatch_contract::PhysicalAttemptSlot::OtherClaim
 impl awaken_dispatch_contract::PhysicalAttemptSlot
 pub const fn awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(bool, bool, bool, bool) -> Self
 pub const fn awaken_dispatch_contract::PhysicalAttemptSlot::permits_settlement(self) -> bool
+pub const fn awaken_dispatch_contract::PhysicalAttemptSlot::quarantine_admits_occupation(self, bool) -> bool
 pub enum awaken_dispatch_contract::PhysicalAttemptTransition
 pub awaken_dispatch_contract::PhysicalAttemptTransition::Blocked
 pub awaken_dispatch_contract::PhysicalAttemptTransition::Clear

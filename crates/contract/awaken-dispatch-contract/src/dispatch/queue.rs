@@ -496,7 +496,7 @@ pub trait ControlDispatchQueue: DispatchQueue {
     /// This is the repair-side entry into the ordinary fenced settlement path:
     /// it never reads or accepts Run outcome truth, never executes the Run, and
     /// skips execution placement/credential admission because the caller will
-    /// only redeliver terminal observers and call [`settle`](Self::settle) with
+    /// only redeliver terminal observers and call [`settle`](DispatchQueue::settle) with
     /// `Done`. Implementations must claim only an unleased `pending`/`awaiting`
     /// row whose Thread has no running dispatch, or a `running` row whose lease
     /// is strictly expired. Every state requires an empty physical slot: this
@@ -521,7 +521,7 @@ pub trait ControlDispatchQueue: DispatchQueue {
     /// Acquire the narrow authority for one live `ReservationLeased` repair.
     /// This guard may authorize only Session activity admission; commit, stream,
     /// sandbox, credential, and settle operations continue to require an
-    /// ordinary `Leased` claim through [`Self::lock_commit_epoch`].
+    /// ordinary `Leased` claim through [`DispatchQueue::lock_commit_epoch`].
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,

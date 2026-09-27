@@ -34,12 +34,182 @@ use sqlx::Executor as _;
 use sqlx::postgres::PgPoolOptions;
 
 use harness::{
-    FailingCommit, THREAD, TICKET, activation, activation_on, blocking_tool_runtime, tool_runtime,
+    FailingCommit, THREAD, TICKET, activation, activation_on,
+    blocking_tool_runtime_with_entry_signal, tool_runtime,
 };
 
 struct BlockingCommit {
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
+}
+
+#[tokio::test]
+async fn postgres_pending_mutations_lock_revision_before_effect_and_preserve_exhaustion() {
+    // Cause/effect graph: P1 a third transaction holds this exact pending row;
+    // P2 two independent one-connection replicas edit it, or edit/retract it;
+    // P3 both real backend pids reach a Lock wait before P1 releases; P4 the
+    // row later reaches MAX BIGINT. R1=P1+P2+P3=>one Applied and exact winner;
+    // R2=P4+edit=>typed rejection, unchanged row; R3=P4+retract=>remove.
+    // This forces the former SELECT->UPDATE gap: without FOR UPDATE both
+    // commands read the old revision before waiting and both falsely Apply.
+    const SCHEMA: &str = "t_known_defect_pending_cas_20260927";
+    let Some(pool) = harness::schema_pool(SCHEMA).await else {
+        return;
+    };
+    let primary = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let url = harness::database_url_in_schema(SCHEMA);
+    let left_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let right_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let left_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&left_pool)
+        .await
+        .unwrap();
+    let right_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&right_pool)
+        .await
+        .unwrap();
+    let left = Arc::new(PostgresDispatchStore::with_pool(left_pool).await.unwrap());
+    let right = Arc::new(PostgresDispatchStore::with_pool(right_pool).await.unwrap());
+    for retract in [false, true] {
+        let message = if retract {
+            "edit-retract-lock"
+        } else {
+            "edit-edit-lock"
+        };
+        primary
+            .append(harness::pending(
+                message,
+                "run",
+                TICKET,
+                ResumeResult::Input("initial".into()),
+            ))
+            .await
+            .unwrap();
+        let mut holder = pool.begin().await.unwrap();
+        sqlx::query("SELECT revision FROM runtime_pending WHERE message_id = $1 FOR UPDATE")
+            .bind(message)
+            .fetch_one(&mut *holder)
+            .await
+            .unwrap();
+        let editor = left.clone();
+        let edited = tokio::spawn(async move {
+            editor
+                .edit(message, 1, ResumeResult::Input("left".into()))
+                .await
+        });
+        let mutator = right.clone();
+        let changed = tokio::spawn(async move {
+            if retract {
+                mutator.retract(message, 1).await
+            } else {
+                mutator
+                    .edit(message, 1, ResumeResult::Input("right".into()))
+                    .await
+            }
+        });
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE pid = ANY($1) AND wait_event_type = 'Lock'",
+            ).bind(vec![left_pid, right_pid]).fetch_one(&pool).await.unwrap();
+            if waiting == 2 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "P3 both exact replica backend pids must reach row-lock wait"
+            );
+            // awaken-wait: wait for the two exact PostgreSQL backend pids to
+            // report their row-lock wait; the deadline above rejects expiry.
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        holder.commit().await.unwrap();
+        let (edited, changed) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            (
+                edited.await.unwrap().unwrap(),
+                changed.await.unwrap().unwrap(),
+            )
+        })
+        .await
+        .expect("R1 row mutations finish after the holder commits");
+        use awaken_dispatch::CasOutcome;
+        assert_eq!(
+            usize::from(edited == CasOutcome::Applied)
+                + usize::from(changed == CasOutcome::Applied),
+            1,
+            "R1 one linearized mutation, retract={retract}"
+        );
+        let rows = primary.list(&ThreadId(THREAD.into())).await.unwrap();
+        let row = rows.iter().find(|row| row.input.message_id == message);
+        if retract && changed == CasOutcome::Applied {
+            assert!(row.is_none(), "R1 exact retract winner");
+            assert_eq!(edited, CasOutcome::NotFound, "R1 rejected absent edit");
+        } else {
+            let row = row.unwrap();
+            assert_eq!(row.revision, 2, "R1 exactly one successor");
+            assert_eq!(
+                row.input.result,
+                ResumeResult::Input(
+                    if edited == CasOutcome::Applied {
+                        "left"
+                    } else {
+                        "right"
+                    }
+                    .into()
+                ),
+                "R1 exact winner bytes"
+            );
+        }
+    }
+    primary
+        .append(harness::pending(
+            "pg-revision-limit",
+            "run",
+            TICKET,
+            ResumeResult::Input("old".into()),
+        ))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE runtime_pending SET revision = $1 WHERE message_id = 'pg-revision-limit'")
+        .bind(i64::MAX)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before = primary.list(&ThreadId(THREAD.into())).await.unwrap();
+    assert!(
+        primary
+            .edit(
+                "pg-revision-limit",
+                i64::MAX as u64,
+                ResumeResult::Input("new".into())
+            )
+            .await
+            .is_err(),
+        "R2"
+    );
+    assert_eq!(
+        primary.list(&ThreadId(THREAD.into())).await.unwrap(),
+        before,
+        "R2 durable frame unchanged"
+    );
+    assert_eq!(
+        primary
+            .retract("pg-revision-limit", i64::MAX as u64)
+            .await
+            .unwrap(),
+        awaken_dispatch::CasOutcome::Applied,
+        "R3"
+    );
 }
 
 #[tokio::test]
@@ -1597,7 +1767,7 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     );
 
     let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let (runtime, ran, entered) = blocking_tool_runtime_with_entry_signal(release.clone());
     let run = RunId("run-1".to_string());
     store
         .enqueue(RunDispatch::new(activation("run-1")))
@@ -1622,14 +1792,14 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
         tokio::spawn(async move { worker_a.drive_claimed(claimed_a, harness::clock(0)).await })
     };
 
-    // Wait until A is frozen inside the tool.
-    let frozen = tokio::time::timeout(std::time::Duration::from_millis(DEFAULT_LEASE_MS), async {
-        while ran.load(Ordering::SeqCst) < 1 {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-    })
-    .await;
-    assert!(frozen.is_ok(), "A reached and blocked in the tool");
+    // The existing fixture's exact entry barrier proves A is blocked in this
+    // tool; a counter or any unrelated committed lifecycle cannot substitute.
+    tokio::time::timeout(
+        std::time::Duration::from_millis(DEFAULT_LEASE_MS),
+        entered.notified(),
+    )
+    .await
+    .expect("A reached and blocked in the tool");
 
     let record = CommittedThreadView::run(&*commit_a, &run).expect("A committed a record");
     assert_eq!(

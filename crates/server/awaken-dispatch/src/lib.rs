@@ -27,6 +27,8 @@ mod execution_capacity;
 #[cfg(feature = "test-support")]
 mod durable;
 mod fenced_checkpoint;
+#[cfg(any(feature = "durable", test, kani))]
+mod inbox_mutation;
 mod live_control;
 #[cfg(any(test, feature = "test-support"))]
 pub mod memory;
