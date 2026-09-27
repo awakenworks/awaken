@@ -21,6 +21,94 @@ struct Facts {
     updates: Mutex<Vec<Value>>,
 }
 
+fn model_only_activation(tag: &str) -> awaken_runtime_contract::activation::RunActivation {
+    let mut activation = awaken_dispatch_testkit::worker_http::activation(tag);
+    // The generic HTTP fixture deliberately owns two opaque consistency tokens;
+    // actual Runtime execution requires the canonical internally coherent hash.
+    // Compile before enqueue so Dispatch and Runtime consume identical bytes.
+    activation.snapshot.recompute_fingerprint().unwrap();
+    activation
+}
+
+/// Generate closure history through the actual Runtime journal, shared by the
+/// mock-API and live-Pod qualification. Never write a coverage/terminal pair by
+/// hand: that could accidentally qualify a history production cannot produce.
+async fn commit_actual_model_only_result<R>(
+    recovery: Arc<R>,
+    activation: awaken_runtime_contract::activation::RunActivation,
+) where
+    R: awaken_runtime_contract::CommitCoordinator
+        + awaken_runtime_contract::CommittedThreadView
+        + awaken_runtime_contract::RunRecoverySource
+        + 'static,
+{
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_runtime_contract::RunExecutor as _;
+    use awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage;
+    use awaken_runtime_contract::model_operation::ActiveModelOperation;
+    struct CompleteModel(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::llm::LlmExecutor for CompleteModel {
+        async fn infer(
+            &self,
+            _: awaken_runtime_contract::llm::ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>
+        {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(awaken_runtime_contract::llm::ChatResponse {
+                output: awaken_runtime_contract::llm::AssistantOutput::text(
+                    "complete fixture response",
+                ),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+    // R1 one complete model result, no tools/plugins => actual pre-effect
+    // coverage commit strictly before model entry, one invocation and a closed
+    // journal. R2 replay/retirement only reads this exact durable snapshot.
+    // This fixture qualifies journal wiring, not a remote cancellation/query.
+    let thread = activation.thread_id.clone();
+    let run = activation.run_id.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let result = awaken_runtime::Runtime::new()
+        .with_llm(Arc::new(CompleteModel(calls.clone())))
+        .execute(
+            activation,
+            awaken_runtime_contract::RuntimeRunContext::new()
+                .with_reader(recovery.clone())
+                .with_commit(recovery.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        awaken_agent_contract::agent::run::RunState::Ended(
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd
+        ),
+        "R1 actual Runtime result"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "R1 one invocation");
+    let snapshot = recovery.recovery_snapshot(&thread, &run).await.unwrap();
+    let cursor_for = |key: &str| {
+        snapshot
+            .state
+            .iter()
+            .zip(&snapshot.state_commit_cursors)
+            .find_map(|(command, cursor)| (command.key.0 == key).then_some(*cursor))
+            .unwrap()
+    };
+    assert!(
+        cursor_for(ActiveNativeAttemptCoverage::KEY) < cursor_for(ActiveModelOperation::KEY),
+        "R1 enrollment must actually commit first"
+    );
+    assert_eq!(
+        classify_native_attempt_termination(&snapshot).unwrap(),
+        NativeAttemptTermination::AllExecutionStopped,
+        "R2 real journal is the classifier's input"
+    );
+}
+
 fn running() -> Value {
     json!({"metadata":{"namespace":"workers","name":"worker-a","uid":"uid-a","resourceVersion":"7",
         "finalizers":["awaken.dev/worker-process-evidence"]},
@@ -225,19 +313,8 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
 
 #[tokio::test]
 async fn independent_stop_consumes_only_original_closed_binding_and_preserves_dispatch_veto() {
-    use awaken_agent_contract::agent::run::EndCause;
-    use awaken_agent_contract::agent::state::StateKey;
     use awaken_dispatch::{DispatchQueue, WorkerDirectory};
-    use awaken_runtime_contract::attempt_termination::{
-        ActiveNativeAttemptCoverage, NativeAttemptCoverage,
-    };
-    use awaken_runtime_contract::model_operation::{
-        ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
-    };
-    use awaken_runtime_contract::resolved::ModelBinding;
-    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
     use awaken_store_inmem::MemoryCommitCoordinator;
-    use std::num::NonZeroU64;
     // S1 current successor + persisted old binding + exact expired Registry
     // => independent UID/resourceVersion stop with Coordinator client (no token
     // from the dead Worker). S2 accepted/delete-in-progress => Unknown. S3 exact
@@ -293,8 +370,8 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         };
         let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
         let store = awaken_dispatch::MemoryDispatchStore::new(clock.clone());
-        let activation = awaken_dispatch_testkit::worker_http::activation("cli-stop");
-        let thread_id = activation.thread_id.clone();
+        let activation = model_only_activation("cli-stop");
+        let model_activation = activation.clone();
         let request = awaken_dispatch::RunDispatch::new(activation)
             .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
         store.enqueue(request).await.unwrap();
@@ -311,6 +388,10 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         );
         clock.set(100);
         store.begin_attempt(&old_claim, Some(&bound)).await.unwrap();
+        let recovery = Arc::new(MemoryCommitCoordinator::new());
+        if rule == "valid" {
+            commit_actual_model_only_result(recovery.clone(), model_activation).await;
+        }
         snapshot.identity = WorkerIdentity::new("successor", "successor-boot", 1);
         snapshot.expires_at_ms = 10_000;
         clock.set(200);
@@ -377,31 +458,11 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                     "startedAt":"2026-09-09T00:00:00Z","finishedAt":"2026-09-09T00:01:00Z"
                 }});
             }
-            let recovery = MemoryCommitCoordinator::new();
-            recovery
-                .commit(ThreadCommit::assemble(
-                    thread_id,
-                    RunDisposition::ended(old_claim.run_id.clone(), EndCause::NaturalEnd),
-                    true,
-                    Vec::new(),
-                    vec![
-                        ActiveNativeAttemptCoverage::write(&NativeAttemptCoverage::ModelOnlyV1),
-                        ActiveModelOperation::write(&Some(ModelOperation {
-                            ordinal: NonZeroU64::MIN,
-                            binding: ModelBinding::new("test", "model", "native"),
-                            phase: ModelOperationPhase::Returned,
-                            execution: ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap()),
-                        })),
-                    ],
-                    Vec::new(),
-                ))
-                .await
-                .unwrap();
             let observation = awaken_dispatch::stop_expired_predecessor(
                 &store,
                 &directory,
                 stop.as_ref(),
-                Some(&recovery),
+                Some(recovery.as_ref()),
                 &next,
                 200,
             )

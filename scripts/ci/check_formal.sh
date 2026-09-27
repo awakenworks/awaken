@@ -992,6 +992,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness tool_wave_extension_never_crosses_the_positive_bound_or_admits_serial
   run_kani awaken-runtime-contract \
     --harness native_attempt_termination_requires_every_closed_surface_fact \
+    --harness native_coverage_must_be_committed_strictly_before_model_entry \
     --harness attempt_delivery_requires_unique_exact_binding_envelope_and_unchanged_authority \
     --harness credential_realization_receipt_requires_every_exact_binding_coordinate \
     --harness model_operation_ordinal_never_wraps_or_reuses_a_coordinate \

@@ -1,22 +1,12 @@
 //! Actual TokenReview + HTTP + reopened SQLite + independently assembled stop.
 //! The shared k3d harness owns the isolated cluster; no fake provider receipts.
 use super::*;
-use awaken_agent_contract::agent::run::EndCause;
-use awaken_agent_contract::agent::state::StateKey;
 use awaken_dispatch::ControlDispatchQueue;
 use awaken_dispatch::{
     AttemptAdmission, DispatchQueue, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
     WorkerHeartbeat, WorkerManifest,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
-use awaken_runtime_contract::attempt_termination::{
-    ActiveNativeAttemptCoverage, NativeAttemptCoverage,
-};
-use awaken_runtime_contract::model_operation::{
-    ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
-};
-use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
 use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_worker_registry::SqliteWorkerDirectory;
 use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_upstream};
@@ -27,7 +17,6 @@ use awaken_worker_transport_security::{
 use k8s_openapi::api::authentication::v1::TokenRequest;
 use k8s_openapi::api::core::v1::{Namespace, Pod, ServiceAccount};
 use kube::api::{DeleteParams, Patch, PatchParams, PostParams};
-use std::num::NonZeroU64;
 use std::time::Duration;
 
 const TTL: u64 = 60_000;
@@ -314,8 +303,8 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .is_err(),
         "L2 UID"
     );
-    let activation = awaken_dispatch_testkit::worker_http::activation("live-pod-stop");
-    let thread_id = activation.thread_id.clone();
+    let activation = model_only_activation("live-pod-stop");
+    let model_activation = activation.clone();
     store
         .enqueue(
             RunDispatch::new(activation)
@@ -350,28 +339,11 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         original.binding.as_ref().unwrap().worker(),
         &worker.snapshot.identity
     );
-    let recovery =
+    let recovery = Arc::new(
         SqliteCommitCoordinator::open(files.path().join("runtime.sqlite").to_str().unwrap())
-            .unwrap();
-    recovery
-        .commit(ThreadCommit::assemble(
-            thread_id,
-            RunDisposition::ended(old_claim.run_id.clone(), EndCause::NaturalEnd),
-            true,
-            Vec::new(),
-            vec![
-                ActiveNativeAttemptCoverage::write(&NativeAttemptCoverage::ModelOnlyV1),
-                ActiveModelOperation::write(&Some(ModelOperation {
-                    ordinal: NonZeroU64::MIN,
-                    binding: ModelBinding::new("test", "model", "native"),
-                    phase: ModelOperationPhase::Returned,
-                    execution: ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap()),
-                })),
-            ],
-            Vec::new(),
-        ))
-        .await
-        .unwrap();
+            .unwrap(),
+    );
+    commit_actual_model_only_result(recovery.clone(), model_activation).await;
     drop(recovery);
     // L3 must drop the old authority, not just its listening task while pooled
     // HTTP connections retain the old service/store. Drain connections first.

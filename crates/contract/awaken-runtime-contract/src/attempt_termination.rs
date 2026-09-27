@@ -40,6 +40,24 @@ pub enum NativeAttemptTermination {
     AllExecutionStopped,
 }
 
+const fn coverage_precedes_model(coverage_commit: u64, model_commit: u64) -> bool {
+    coverage_commit > 0 && coverage_commit < model_commit
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn native_coverage_must_be_committed_strictly_before_model_entry() {
+    // Actual production chronology predicate, full u64 domain. Same commit,
+    // missing coordinate and reversed order never prove pre-effect enrollment.
+    let coverage: u64 = kani::any();
+    let model: u64 = kani::any();
+    let precedes = coverage_precedes_model(coverage, model);
+    assert_eq!(precedes, coverage != 0 && model > coverage);
+    if coverage == model || coverage == 0 || coverage == u64::MAX {
+        assert!(!precedes);
+    }
+}
+
 /// Final closed decision after the append-only evidence has been decoded.
 /// Keeping this truth table separate from state parsing makes the safety
 /// condition directly exhaustible while the public classifier remains its only
@@ -47,11 +65,12 @@ pub enum NativeAttemptTermination {
 #[must_use]
 const fn termination_from_facts(
     coverage_installed: bool,
-    model_before_coverage: bool,
+    model_lacks_prior_coverage: bool,
     all_models_stopped: bool,
     tool_batch_absent: bool,
 ) -> NativeAttemptTermination {
-    if coverage_installed && !model_before_coverage && all_models_stopped && tool_batch_absent {
+    if coverage_installed && !model_lacks_prior_coverage && all_models_stopped && tool_batch_absent
+    {
         NativeAttemptTermination::AllExecutionStopped
     } else {
         NativeAttemptTermination::Unknown
@@ -131,12 +150,12 @@ pub fn classify_native_attempt_termination(
         }
         coverage_cursor = Some(*cursor);
     }
-    let model_before_coverage = coverage_cursor.is_some_and(|coverage_cursor| {
+    let model_lacks_prior_coverage = coverage_cursor.is_some_and(|coverage_cursor| {
         snapshot.state.iter().zip(cursors).any(|(command, cursor)| {
             command.scope == ActiveModelOperation::SCOPE
                 && command.key.0 == ActiveModelOperation::KEY
                 && command.run_id.as_ref() == Some(&snapshot.claimed_run_id)
-                && *cursor < coverage_cursor
+                && !coverage_precedes_model(coverage_cursor, *cursor)
         })
     });
     let models = ActiveModelOperation::recorded(&snapshot.state, &snapshot.claimed_run_id)
@@ -151,7 +170,7 @@ pub fn classify_native_attempt_termination(
         .is_none();
     Ok(termination_from_facts(
         coverage_cursor.is_some(),
-        model_before_coverage,
+        model_lacks_prior_coverage,
         all_models_stopped,
         tool_batch_absent,
     ))
@@ -165,18 +184,21 @@ fn native_attempt_termination_requires_every_closed_surface_fact() {
     // positive evidence for every model operation, and no ToolBatch history.
     // Parsing, cursor ordering and backend durability remain executable/DB TCB.
     let coverage_installed: bool = kani::any();
-    let model_before_coverage: bool = kani::any();
+    let model_lacks_prior_coverage: bool = kani::any();
     let all_models_stopped: bool = kani::any();
     let tool_batch_absent: bool = kani::any();
     let result = termination_from_facts(
         coverage_installed,
-        model_before_coverage,
+        model_lacks_prior_coverage,
         all_models_stopped,
         tool_batch_absent,
     );
     assert_eq!(
         result == NativeAttemptTermination::AllExecutionStopped,
-        coverage_installed && !model_before_coverage && all_models_stopped && tool_batch_absent
+        coverage_installed
+            && !model_lacks_prior_coverage
+            && all_models_stopped
+            && tool_batch_absent
     );
 }
 
@@ -265,6 +287,21 @@ mod tests {
             .unwrap(),
             NativeAttemptTermination::AllExecutionStopped,
             "T2"
+        );
+        // T13 coverage and a returned model frame share one durable commit.
+        // That atomic write cannot prove enrollment preceded the external
+        // invocation; only a strictly earlier committed barrier permits closure.
+        let mut simultaneous = snapshot(vec![
+            coverage.clone(),
+            model(ModelExecutionEvidence::Terminated(
+                TerminalReceipt::from_wire_status(Some("completed")).unwrap(),
+            )),
+        ]);
+        simultaneous.state_commit_cursors = vec![1, 1];
+        assert_eq!(
+            classify_native_attempt_termination(&simultaneous).unwrap(),
+            NativeAttemptTermination::Unknown,
+            "T13 same commit is not pre-effect enrollment"
         );
         assert_eq!(
             classify_native_attempt_termination(&snapshot(vec![model(
