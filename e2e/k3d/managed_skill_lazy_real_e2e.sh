@@ -22,6 +22,10 @@ LAZY_PREWARM="${AWAKEN_LAZY_IMAGE_PREWARM:-0}"
 LAZY_STORAGE="${AWAKEN_LAZY_STORAGE_PROFILE:-local-path}"
 [[ "$LAZY_STORAGE" = local-path || "$LAZY_STORAGE" = local-static ]] || { echo 'AWAKEN_LAZY_STORAGE_PROFILE must be local-path or local-static' >&2; exit 2; }
 LAZY_COMMIT="$(git rev-parse HEAD)"
+LAZY_RUNTIME_COMMIT="${AWAKEN_LAZY_RUNTIME_SOURCE_COMMIT:-$LAZY_COMMIT}"
+[[ "$LAZY_RUNTIME_COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 2
+LAZY_DIRECTORY_INIT="${AWAKEN_LAZY_DIRECTORY_INIT:-0}"
+[[ "$LAZY_DIRECTORY_INIT" = 0 || "$LAZY_DIRECTORY_INIT" = 1 ]] || exit 2
 LAZY_IMAGE="${AWAKEN_LAZY_RUNTIME_IMAGE:-awaken-skill-lazy:$LAZY_COMMIT}"
 LAZY_OUTPUT="${AWAKEN_EVAL_ARTIFACT_DIR:-$LAZY_REPO_ROOT/target/test-evidence/skill-lazy-live}"
 LAZY_TEMP="$(mktemp -d)"
@@ -69,7 +73,10 @@ if [[ -z "${AWAKEN_LAZY_RUNTIME_IMAGE:-}" ]]; then
   k3d_docker_build --load -f deploy/k3d/Dockerfile --build-arg AUXILIARY_EXECUTABLE=awaken \
     --label "org.opencontainers.image.revision=$LAZY_COMMIT" -t "$LAZY_IMAGE" "$LAZY_TEMP"
 fi
-[[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$LAZY_IMAGE")" = "$LAZY_COMMIT" ]] || { echo "runtime image does not match source commit" >&2; exit 2; }
+[[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$LAZY_IMAGE")" = "$LAZY_RUNTIME_COMMIT" ]] || { echo "runtime image does not match declared source commit" >&2; exit 2; }
+if [[ -n "${AWAKEN_LAZY_UPGRADE_RUNTIME_IMAGE:-}" ]]; then
+  [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$AWAKEN_LAZY_UPGRADE_RUNTIME_IMAGE")" = "$LAZY_COMMIT" ]] || { echo 'upgrade image does not match fixture commit' >&2; exit 2; }
+fi
 # Unique PID name is still checked before calling the shared create owner,
 # whose normal scenario policy replaces its explicitly named previous fixture.
 if k3d cluster list -o json | python3 -c 'import json,sys; name=sys.argv[1]; sys.exit(0 if any(v["name"] == name for v in json.load(sys.stdin)) else 1)' "$LAZY_CLUSTER"; then
@@ -126,5 +133,6 @@ docker run -d --network host --name "$LAZY_POD" --label awaken.test.case=skill-l
 LAZY_RUNTIME_CREATED=1
 AWAKEN_LAZY_TEST_URL="http://127.0.0.1:$LAZY_PORT" AWAKEN_LAZY_KUBE_CONTEXT="$LAZY_CONTEXT" \
 AWAKEN_LAZY_SERVICE_CONTAINER="$LAZY_POD" AWAKEN_LAZY_SOURCE_COMMIT="$LAZY_COMMIT" \
+AWAKEN_LAZY_RUNTIME_SOURCE_COMMIT="$LAZY_RUNTIME_COMMIT" AWAKEN_LAZY_DIRECTORY_INIT="$LAZY_DIRECTORY_INIT" \
 AWAKEN_LAZY_STORAGE_PROFILE="$LAZY_STORAGE" \
 AWAKEN_EVAL_ARTIFACT_DIR="$LAZY_OUTPUT" npm --prefix e2e run test:real:skill-lazy:driver

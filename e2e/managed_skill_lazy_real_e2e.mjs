@@ -1,6 +1,6 @@
 // Native Skill startup qualification through production Awaken, real DeepSeek,
 // the official SDK and independent Kubernetes observations. No fake model.
-// L1 cold/warm Session + pinned reads -> exact unknown reference marker, reply
+// L1 cold/warm Session + pinned reads -> exact unknown reference bytes, reply
 // within the configured budget, zero Session-scoped Sandbox Pods.
 // L2 service container restart + same Session -> a new exact read and reply,
 // same retained pin, no Sandbox. L3 first Bash -> real script output + Ready Pod.
@@ -29,6 +29,8 @@ const output = path.resolve(process.env.AWAKEN_EVAL_ARTIFACT_DIR ?? 'target/test
 const replyBudget = Number(process.env.AWAKEN_LAZY_REPLY_BUDGET_MS ?? 30_000);
 const startupSamples = Number(process.env.AWAKEN_LAZY_STARTUP_SAMPLES ?? 0);
 const imagePrewarm = process.env.AWAKEN_LAZY_IMAGE_PREWARM === '1';
+let directoryInit = process.env.AWAKEN_LAZY_DIRECTORY_INIT === '1';
+const upgradeImage = process.env.AWAKEN_LAZY_UPGRADE_RUNTIME_IMAGE;
 assert.ok(Number.isSafeInteger(startupSamples) && startupSamples >= 0 && startupSamples <= 20, 'startup samples 0..20');
 const key = process.env.DEEPSEEK_API_KEY || (process.env.DEEPSEEK_API_KEY_FILE
   ? fs.readFileSync(process.env.DEEPSEEK_API_KEY_FILE, 'utf8').trim() : null);
@@ -45,6 +47,7 @@ const evidence = { model_source: 'live-deepseek', context, namespace, service_co
   source_commit: process.env.AWAKEN_LAZY_SOURCE_COMMIT, reply_budget_ms: replyBudget,
   image_prewarm: imagePrewarm, startup_samples: startupSamples, observations: [], passed: false };
 evidence.storage_profile = process.env.AWAKEN_LAZY_STORAGE_PROFILE ?? 'local-path';
+evidence.runtime_source_commit = process.env.AWAKEN_LAZY_RUNTIME_SOURCE_COMMIT;
 const owned = { sessions: [], environments: [], agent: null, skill: null };
 function record(observation) {
   evidence.observations.push(observation);
@@ -103,7 +106,18 @@ async function readTurn(sessionId, label) {
     first_text_ms: firstTextMs, complete_reply_ms: elapsed, pods, events: delta });
   assert.ok(delta.some((event) => event.type === 'agent.tool_use' && event.name === 'read'), 'live model chose read');
   assert.ok(resultText(delta, 'read').includes(expected), 'new tool result carries unknown reference bytes');
-  assert.ok(delta.filter((event) => event.type === 'agent.message').some((event) => JSON.stringify(event.content).includes(expected)), 'model consumed actual reference');
+  // R1 successful unknown reference bytes -> subsequent model inference and
+  // a nonempty reply, even when natural prose does not echo the test marker.
+  // R2 missing bytes is rejected above; R3 only a pre-read announcement or no
+  // subsequent inference/reply is rejected here. This qualifies delivery into
+  // the model context, not the semantic quality of the model's prose.
+  const referenceResultIndex = delta.findIndex((event) => event.type === 'agent.tool_result'
+    && !event.is_error && JSON.stringify(event.content).includes(expected));
+  const inferenceIndex = delta.findIndex((event, index) => index > referenceResultIndex
+    && event.type === 'span.model_request_start');
+  assert.ok(referenceResultIndex >= 0 && inferenceIndex > referenceResultIndex, 'model inference follows the successful reference read');
+  assert.ok(delta.some((event, index) => index > inferenceIndex && event.type === 'agent.message'
+    && event.content?.some((block) => block.type === 'text' && block.text?.trim())), 'model replies after receiving reference bytes');
   assert.ok(!delta.some((event) => event.type === 'agent.tool_use' && event.name !== 'read'), 'no shell probe before reply');
   assert.equal(pods.length, 0, 'read/reply does not create Sandbox Pod');
   assert.ok(firstTextMs <= replyBudget, `${label} first text ${firstTextMs.toFixed(0)}ms exceeds ${replyBudget}ms`);
@@ -165,7 +179,12 @@ async function bashTurn(sessionId, failure = false) {
         && delta.some((event) => event.type === 'agent.tool_result' || event.type === 'session.error'),
       'first physical tool settles', { timeoutMs: 210_000, pollMs: 100 }));
   } finally { settledReceipt = id; await monitor; }
-  const pods = [...seen.values()];
+  // O1 the monitor misses the Ready edge during a transient TLS outage but the
+  // final independent read sees it => retain that real snapshot. O2 final and
+  // monitored reads both show no Ready => still reject. Never infer Pod readiness
+  // from the model's reply. Reuse this final read in detailed evidence below.
+  const finalPods = await scopedPods(sessionId);
+  const pods = [...seen.values(), ...finalPods];
   record({ label: failure ? 'unschedulable-startup' : 'first-bash', session_id: sessionId,
     input_receipt: id, elapsed_ms: performance.now() - start, pods, events: delta });
   if (monitorFailure) throw monitorFailure;
@@ -183,7 +202,7 @@ async function bashTurn(sessionId, failure = false) {
     const logs = [];
     for (const pod of currentPods) logs.push({ pod: pod.metadata.name, text: await kube('logs', pod.metadata.name, '-c', 'agent', '--timestamps', '--tail=100') });
     record({ label: 'startup-details', session_id: sessionId, metrics_before: beforeMetrics, metrics_after: await metrics(), events,
-      pods: await scopedPods(sessionId), claims: claims.map((claim) => ({ uid: claim.metadata.uid, created_at: claim.metadata.creationTimestamp, status: claim.status })),
+      pods: finalPods, claims: claims.map((claim) => ({ uid: claim.metadata.uid, created_at: claim.metadata.creationTimestamp, status: claim.status })),
       helper_pods: [...seenHelpers.values(), ...helpers.map((pod) => ({ name: pod.metadata.name, created_at: pod.metadata.creationTimestamp, status: pod.status }))], logs });
     if (imagePrewarm) assert.ok(!events.some((event) => event.reason === 'Pulled' && /Successfully pulled image/.test(event.message)), 'T2 prewarmed node must not download Sandbox image in first tool');
   }
@@ -196,6 +215,8 @@ async function bashTurn(sessionId, failure = false) {
     assert.ok(delta.some((event) => event.type === 'session.error' || (event.type === 'agent.tool_result' && event.is_error)), 'failure reaches public history');
   } else {
     assert.ok(pods.some((pod) => pod.ready), 'first physical tool creates a real Ready Pod');
+    assert.equal(pods.some((pod) => pod.init_containers?.some((item) => item.name === 'continuation-init')), directoryInit,
+      'only historical Pods contain directory init; fresh Pods use kubelet subPaths');
     assert.ok(resultText(delta, 'bash').includes(executionMarker), 'actual script output committed');
   }
 }
@@ -214,7 +235,7 @@ async function main() {
   const form = managedFileUploadForm('---\nname: startup-diagnosis\ndescription: 家具招商诊断，先阅读参考资料再提问\n---\nBefore answering, read references/facts.md. Include its reference marker with one brief Chinese question.\nWhen explicitly asked to execute, use bash to run scripts/verify.sh from this Skill directory. Never retry a failed tool.\n', 'SKILL.md');
   form.append('file', new Blob([`${referenceMarker}\n产品是家具，客户计划招经销商。\n`]), 'references/facts.md');
   form.append('file', new Blob([`${recoveryMarker}\n现在需要澄清合作门店是否已经开业。\n`]), 'references/recovery.md');
-  form.append('file', new Blob([`#!/bin/sh\nprintf 'SCRIPT_BEGIN '; date -u +%s%N\nprintf '%s\\n' '${executionMarker}'\nprintf 'SCRIPT_END '; date -u +%s%N\n`]), 'scripts/verify.sh');
+  form.append('file', new Blob([`#!/bin/sh\nset -eu\nprintf 'SCRIPT_BEGIN '; date -u +%s%N\nstate=/workspace/.skill-lazy-state\nif [ ! -e "$state" ]; then printf '%s' '${executionMarker}' > "$state"; fi\ntest "$(cat "$state")" = '${executionMarker}'\nprintf '%s\\n' '${executionMarker}'\nprintf 'SCRIPT_END '; date -u +%s%N\n`]), 'scripts/verify.sh');
   const upload = await fetch(`${baseURL}/v1/skills`, { method: 'POST', headers: { 'anthropic-beta': SKILLS_BETA }, body: form });
   assert.ok(upload.ok); const skill = await upload.json(); owned.skill = skill.id;
   const agent = await client.beta.agents.create({ name: `Skill lazy qualification ${tag}`, model: supplied.model,
@@ -233,6 +254,9 @@ async function main() {
   if (startupSamples) {
     for (let index = 0; index < startupSamples; index += 1) {
       const id = await session(normalEnv);
+      // C1 first physical call => no Session Pod before the tool; warming the
+      // Session ahead of this clock cannot satisfy the on_tool_use measurement.
+      assert.equal((await scopedPods(id)).length, 0, 'on_tool_use remains deferred');
       record({ label: 'startup-sample', sample: index + 1, session_id: id, repeat: false });
       await bashTurn(id);
       if (index === 0 || index === startupSamples - 1) {
@@ -246,14 +270,41 @@ async function main() {
 
   const cold = await session(normalEnv); await readTurn(cold, 'cold-session');
   const warm = await session(normalEnv); await readTurn(warm, 'warm-session');
+  let historical;
+  if (upgradeImage) {
+    // U1 old committed runtime creates a retained Pod and writes state; U2
+    // replacement runtime must adopt the same UID and execute pinned script
+    // against that state. U3 no historical creation in the new cold path.
+    const id = await session(normalEnv); await bashTurn(id);
+    const pods = await scopedPods(id); assert.equal(pods.length, 1);
+    assert.ok(pods[0].init_containers?.some((item) => item.name === 'continuation-init'));
+    historical = { id, uid: pods[0].uid }; record({ label: 'historical-before-upgrade', ...historical });
+  }
   const before = JSON.parse((await execute('docker', ['inspect', serviceContainer], { timeout: 15_000 })).stdout)[0];
   assert.equal(before.Config.Labels?.['awaken.test.case'], 'skill-lazy-real', 'restart only owned fixture');
-  await execute('docker', ['restart', '--time', '15', before.Id], { timeout: 45_000 });
+  if (upgradeImage) {
+    assert.equal(before.HostConfig.NetworkMode, 'host');
+    assert.deepEqual(before.Config.Entrypoint, ['/usr/local/bin/awaken']);
+    assert.equal(before.Config.Cmd[0], 'all-in-one');
+    await execute('docker', ['stop', '--time', '15', before.Id], { timeout: 45_000 });
+    await execute('docker', ['rm', before.Id], { timeout: 15_000 });
+    await execute('docker', ['run', '-d', '--network', 'host', '--name', serviceContainer,
+      '--label', 'awaken.test.case=skill-lazy-real', '-e', 'KUBECONFIG=/etc/awaken/kubeconfig',
+      ...before.HostConfig.Binds.flatMap((binding) => ['-v', binding]),
+      '--entrypoint', '/usr/local/bin/awaken', upgradeImage, ...before.Config.Cmd], { timeout: 30_000 });
+    directoryInit = false;
+  } else await execute('docker', ['restart', '--time', '15', before.Id], { timeout: 45_000 });
   await waitForValue(async () => {
     try { return (await fetch(`${baseURL}/v1/config/workspace-context`)).ok; }
     catch { return false; }
   }, (ready) => ready, 'same service restored after restart', { timeoutMs: 90_000, pollMs: 500 });
   await readTurn(cold, 'cold-restored-session');
+  if (historical) {
+    directoryInit = true; await bashTurn(historical.id); directoryInit = false;
+    const pods = await scopedPods(historical.id); assert.equal(pods.length, 1);
+    assert.equal(pods[0].uid, historical.uid, 'U2 same retained historical Pod');
+    record({ label: 'historical-after-upgrade', session_id: historical.id, uid: pods[0].uid });
+  }
   await bashTurn(cold);
   const failed = await session(await environment(true));
   await readTurn(failed, 'unavailable-sandbox-before-tool');

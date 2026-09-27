@@ -147,6 +147,13 @@ where
 /// lease: a replacement Worker must be able to adopt the same frozen Session Pod
 /// while every executable/mount/security field remains digest-fenced.
 pub(super) fn stamp_pod_realization(pod: &mut Pod) -> Result<(), RuntimeError> {
+    // Re-stamping desired inputs must not hash the preceding digest into itself.
+    if let Some(annotations) = pod.metadata.annotations.as_mut() {
+        annotations.remove(REALIZATION_DIGEST_ANNOTATION);
+        if annotations.is_empty() {
+            pod.metadata.annotations = None;
+        }
+    }
     let owner = pod
         .metadata
         .labels

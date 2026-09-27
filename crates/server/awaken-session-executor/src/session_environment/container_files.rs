@@ -2,6 +2,10 @@
 
 use awaken_provisioning_contract as pc;
 
+mod batch;
+
+const MATERIALIZATION_CHUNK_BYTES: usize = 32 * 1024;
+
 static FILE_STAGE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[must_use]
@@ -126,7 +130,7 @@ pub(super) async fn write(
     // Kubernetes, unlike half-closing an attached stdin stream. Chunked base64 keeps
     // every argv well below OS limits while preserving arbitrary binary file bytes.
     use base64::Engine as _;
-    for chunk in contents.chunks(32 * 1024) {
+    for chunk in contents.chunks(MATERIALIZATION_CHUNK_BYTES) {
         let encoded = base64::engine::general_purpose::STANDARD.encode(chunk);
         let append = sandbox
             .spawn(pc::Command {
@@ -204,113 +208,30 @@ pub(super) async fn materialize_read_only_tree(
     subdir: &str,
     files: &[(String, Vec<u8>, bool)],
 ) -> Result<(), pc::SandboxError> {
-    let root = workspace_path(subdir)?;
     let sequence = FILE_STAGE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let stage = format!("{root}.awaken-tree-stage-{}-{sequence}", std::process::id());
-    let backup = format!(
-        "{root}.awaken-tree-backup-{}-{sequence}",
-        std::process::id()
-    );
-    let setup = sandbox
-        .spawn(pc::Command {
-            argv: vec![
-                "sh".into(),
-                "-c".into(),
-                "current=/workspace; old_ifs=$IFS; IFS=/; for part in $2; do current=\"$current/$part\"; test ! -L \"$current\" || exit 65; done; IFS=$old_ifs; chmod -R u+w -- \"$1\" 2>/dev/null || true; rm -rf -- \"$1\" && mkdir -p -- \"$1\"".into(),
-                "awaken-read-only-tree".into(),
-                stage.clone(),
-                subdir.to_string(),
-            ],
-            cwd: pc::WorkspaceLayout::ROOT.into(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Null,
-        })
-        .await?;
-    require_success(setup.wait().await?, "container read-only tree setup")?;
-    for (relative, contents, executable) in files {
-        let path = read_only_tree_file_path(&stage, relative)?;
-        if let Err(error) = write(sandbox, &path, contents).await {
+    let (stage, commands) = batch::commands(subdir, files, sequence)?;
+    for command in commands {
+        let result = async {
+            require_success(
+                sandbox.spawn(command).await?.wait().await?,
+                "container read-only tree batch",
+            )
+        }
+        .await;
+        if result.is_err() {
             remove_staged_tree(sandbox, &stage).await;
-            return Err(error);
         }
-        if *executable {
-            let chmod = sandbox
-                .spawn(pc::Command {
-                    argv: vec!["chmod".into(), "u+x".into(), "--".into(), path],
-                    cwd: pc::WorkspaceLayout::ROOT.into(),
-                    env: Vec::new(),
-                    stdio: pc::Stdio::Null,
-                })
-                .await?;
-            if let Err(error) =
-                require_success(chmod.wait().await?, "container executable Skill file chmod")
-            {
-                remove_staged_tree(sandbox, &stage).await;
-                return Err(error);
-            }
-        }
-    }
-    let restrict = sandbox
-        .spawn(pc::Command {
-            argv: vec![
-                "chmod".into(),
-                "-R".into(),
-                "a-w".into(),
-                "--".into(),
-                stage.clone(),
-            ],
-            cwd: pc::WorkspaceLayout::ROOT.into(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Null,
-        })
-        .await?;
-    if let Err(error) = require_success(restrict.wait().await?, "container read-only tree chmod") {
-        remove_staged_tree(sandbox, &stage).await;
-        return Err(error);
+        result?;
     }
     debug_assert!(read_only_tree_publish_admitted(true, true, true));
-    let commit = sandbox
-        .spawn(pc::Command {
-            argv: vec![
-                "sh".into(),
-                "-c".into(),
-                "chmod -R u+w -- \"$3\" 2>/dev/null || true; rm -rf -- \"$3\"; if test -e \"$1\"; then mv -- \"$1\" \"$3\" || exit 66; fi; if mv -- \"$2\" \"$1\"; then chmod -R u+w -- \"$3\" 2>/dev/null || true; rm -rf -- \"$3\"; else test ! -e \"$3\" || mv -- \"$3\" \"$1\"; exit 67; fi".into(),
-                "awaken-commit-read-only-tree".into(),
-                root,
-                stage.clone(),
-                backup,
-            ],
-            cwd: pc::WorkspaceLayout::ROOT.into(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Null,
-        })
-        .await?;
-    let result = require_success(commit.wait().await?, "container read-only tree commit");
-    if result.is_err() {
-        remove_staged_tree(sandbox, &stage).await;
-    }
-    result
+    Ok(())
 }
 
 async fn remove_staged_tree(
     sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
     stage: &str,
 ) {
-    if let Ok(process) = sandbox
-        .spawn(pc::Command {
-            argv: vec![
-                "sh".into(),
-                "-c".into(),
-                "chmod -R u+w -- \"$1\" 2>/dev/null || true; rm -rf -- \"$1\"".into(),
-                "awaken-remove-staged-tree".into(),
-                stage.to_string(),
-            ],
-            cwd: pc::WorkspaceLayout::ROOT.into(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Null,
-        })
-        .await
-    {
+    if let Ok(process) = sandbox.spawn(batch::cleanup_command(stage)).await {
         let _ = process.wait().await;
     }
 }
