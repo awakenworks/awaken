@@ -4240,12 +4240,13 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
 
     assert!(
         accepted
-            .resume_session_run_for_owner(
+            .resume_session_run_streaming_for_owner(
                 "foreign-workspace",
                 "foreground-request-foreign",
                 &SessionId::from("foreground-resume"),
                 "reply-tool",
                 allow(),
+                Arc::new(awaken_session_application_contract::EventForwardingSink::new(|_| Ok(()))),
             )
             .await
             .is_err(),
@@ -4291,11 +4292,13 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
     );
 
     let outcome = accepted
-        .resume_session_run(
+        .resume_session_run_streaming_for_owner(
+            "workspace",
             "foreground-request-accepted",
             &SessionId::from("foreground-resume"),
             "reply-tool",
             allow(),
+            Arc::new(awaken_session_application_contract::EventForwardingSink::new(|_| Ok(()))),
         )
         .await
         .expect("F3 accepted foreground resume");
@@ -4306,6 +4309,9 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
         ),
         "F3/E3 committed outcome observation"
     );
+    // F5 observation sink passes through the same authorized resume path;
+    // F0 rejected owner never reaches the Runtime observer.
+    assert_eq!(accepted_runtime.observed_sinks.load(Ordering::SeqCst), 1);
     let delivery = accepted_runtime.deliveries.lock().unwrap()[0].clone();
     assert_eq!(
         delivery.command.target,

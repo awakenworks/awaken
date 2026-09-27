@@ -341,6 +341,7 @@ impl SharedHost {
     pub(crate) async fn reply_and_observe_session_thread_tool(
         &self,
         delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<CommittedStepReceipt, HostError> {
         let session_id = delivery.command.session_id.clone();
         let run_id = delivery.command.expected_run_id.clone();
@@ -353,7 +354,7 @@ impl SharedHost {
             .await?
             .messages
             .len();
-        let (settled, _waiter_guard) = self.completion.register(&run_id, None);
+        let (settled, _waiter_guard) = self.completion.register(&run_id, stream_sink);
         self.reply_session_thread_tool(delivery).await?;
         let state = self
             .await_settled_event(&ctx, &run_id, Some(&correlation_id), settled)

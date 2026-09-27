@@ -677,10 +677,11 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
     async fn reply_and_observe_session_thread_tool(
         &self,
         delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
         let receipt = self
             .host
-            .reply_and_observe_session_thread_tool(delivery)
+            .reply_and_observe_session_thread_tool(delivery, stream_sink)
             .await
             .map_err(to_run_error)?;
         crate::step_projection::settled_step(receipt)

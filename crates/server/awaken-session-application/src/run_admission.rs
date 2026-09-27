@@ -1190,6 +1190,25 @@ impl RunApplication for SessionRunApplication {
         .await
     }
 
+    async fn resume_streaming(
+        &self,
+        operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+        sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.resume_streaming_for_owner(
+            &(self.workspace)(thread),
+            operation_id,
+            thread,
+            tool_use_id,
+            resume,
+            sink,
+        )
+        .await
+    }
+
     async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
         self.runtime.interrupt(thread).await
     }
@@ -1248,6 +1267,26 @@ impl OwnerScopedRunApplication for SessionRunApplication {
                 &awaken_session_types::SessionId::from(thread),
                 tool_use_id,
                 resume,
+            )
+            .await
+    }
+    async fn resume_streaming_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+        sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.sessions
+            .resume_session_run_streaming_for_owner(
+                owner_scope,
+                operation_id,
+                &awaken_session_types::SessionId::from(thread),
+                tool_use_id,
+                resume,
+                sink,
             )
             .await
     }

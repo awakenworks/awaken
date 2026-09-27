@@ -326,8 +326,15 @@ impl SessionApplication {
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunError> {
-        self.resume_session_run_with_owner(None, operation_id, session_id, tool_use_id, resume)
-            .await
+        self.resume_session_run_with_owner(
+            None,
+            operation_id,
+            session_id,
+            tool_use_id,
+            resume,
+            None,
+        )
+        .await
     }
 
     /// Resume a public-protocol Session Run only when the authenticated owner
@@ -347,6 +354,28 @@ impl SessionApplication {
             session_id,
             tool_use_id,
             resume,
+            None,
+        )
+        .await
+    }
+
+    /// Reuse the exact authorized reply state machine, changing observation only.
+    pub async fn resume_session_run_streaming_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        session_id: &awaken_session_types::SessionId,
+        tool_use_id: &str,
+        resume: RunResume,
+        sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
+    ) -> Result<StepOutcome, RunError> {
+        self.resume_session_run_with_owner(
+            Some(owner_scope),
+            operation_id,
+            session_id,
+            tool_use_id,
+            resume,
+            Some(sink),
         )
         .await
     }
@@ -358,6 +387,7 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         tool_use_id: &str,
         resume: RunResume,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
         if operation_id.trim().is_empty() {
             return Err(RunError::bad_request(
@@ -436,7 +466,7 @@ impl SessionApplication {
             self.prepare_session_thread_tool_reply(command).await?;
         let result = self
             .runtime()
-            .reply_and_observe_session_thread_tool(delivery)
+            .reply_and_observe_session_thread_tool(delivery, stream_sink)
             .await;
         if let Some(epoch) = session_activity_epoch {
             self.settle_definitive_coordination_rejection(&session_id, epoch, &result)
