@@ -95,9 +95,9 @@
       "operation_fingerprint": "701ee5399eb5cdc42aaa4606904862d73bed85a39de5e1fa5f1e9feb28050f8c",
       "role": "current_oracle",
       "runtime_file_count": 113,
-      "runtime_fingerprint": "d855b9e88dcef7e747c835438f50565dce48a355b339a5e9c48996459088c4a0",
-      "type_fingerprint": "d17f259214475cc9ce04ca006290d875536a344de469e6163059045f5a80c9cc",
-      "version": "0.127.0"
+      "runtime_fingerprint": "26b6034e1e4e2a0ec1254cdbc51ae80cd6d1257de0e713fae65d74a26a371e09",
+      "type_fingerprint": "9e05d784139fca08e1a781809cb32f05f42af9d945ce30e6aa803db78961a0c4",
+      "version": "0.128.0"
     }
   ],
   "current": {
@@ -157,6 +157,7 @@
       "BetaManagedAgentsAgentAutoEvaluatedPermissionAsk",
       "BetaManagedAgentsAgentAutoEvaluatedPermissionDeny",
       "BetaManagedAgentsAgentCustomToolUseEvent",
+      "BetaManagedAgentsAgentEvaluatedPermission",
       "BetaManagedAgentsAgentMCPToolResultEvent",
       "BetaManagedAgentsAgentMCPToolUseEvent",
       "BetaManagedAgentsAgentMessageEvent",
@@ -1988,9 +1989,9 @@
     ],
     "role": "current_oracle",
     "runtime_file_count": 113,
-    "runtime_fingerprint": "d855b9e88dcef7e747c835438f50565dce48a355b339a5e9c48996459088c4a0",
-    "type_fingerprint": "d17f259214475cc9ce04ca006290d875536a344de469e6163059045f5a80c9cc",
-    "version": "0.127.0",
+    "runtime_fingerprint": "26b6034e1e4e2a0ec1254cdbc51ae80cd6d1257de0e713fae65d74a26a371e09",
+    "type_fingerprint": "9e05d784139fca08e1a781809cb32f05f42af9d945ce30e6aa803db78961a0c4",
+    "version": "0.128.0",
     "wire_contract": {
       "events": {
         "inbound": [

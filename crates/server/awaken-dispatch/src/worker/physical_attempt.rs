@@ -176,6 +176,10 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         let _execution_capacity = execution_capacity.map(ExecutionCapacity::enter);
         let mut attempt_context = context.clone();
         attempt_context.physical_quiescence = Default::default();
+        // This freshly admitted physical slot may keep observing its own call;
+        // the policy alone is never proof that the provider stopped.
+        attempt_context.model_cancellation_observation =
+            awaken_runtime_contract::runtime_context::ModelCancellationObservation::RetainClaimedUntilReceipt;
         let quiescence = attempt_context.physical_quiescence.clone();
         let attempt = self.runtime.begin_active_attempt(
             &claim.run_id,

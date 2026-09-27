@@ -413,21 +413,50 @@ async fn infer_with_retry_inner(
                 "attempt participant termination remains unconfirmed".into(),
             ));
         }
-        let outcome = model_read(
-            cancellation,
-            tokio::time::timeout_at(
-                timing.watchdog_deadline(),
-                awaken_runtime_contract::model_operation::with_model_invocation_context(
-                    operation,
-                    timing,
-                    quiescence.observe_return(llm.infer_streaming(attempt_request, &sink)),
-                ),
+        if cancellation.is_some_and(|token| token.is_cancelled()) {
+            // This branch precedes even construction of the executor future.
+            // The owned entry write drained, but no adapter was entered. Keep
+            // that exact pre-dispatch fact in the same journal; an earlier
+            // participant's uncertainty remains on the independent latch.
+            if let Some(journal) = journal.as_deref_mut() {
+                use awaken_runtime_contract::model_operation::{
+                    ModelExecutionEvidence, NoDispatchProof,
+                };
+                journal
+                    .returned(
+                        false,
+                        ModelExecutionEvidence::NotDispatched(NoDispatchProof::runtime_admission()),
+                    )
+                    .await?;
+            }
+            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+                "model observation cancelled before executor admission".into(),
+            ));
+        }
+        // A claim-bound durable journal can retain the SAME physical call
+        // through logical cancellation and record its later terminal envelope.
+        // Direct ingress has no Dispatch slot to keep current, even if it has
+        // a Thread commit port: abort its hung call immediately and let the
+        // return observer veto reuse as Unknown. Both paths keep the original
+        // absolute provider deadline; neither invents a terminal result.
+        let read = tokio::time::timeout_at(
+            timing.watchdog_deadline(),
+            awaken_runtime_contract::model_operation::with_model_invocation_context(
+                operation,
+                timing,
+                quiescence.observe_return(llm.infer_streaming(attempt_request, &sink)),
             ),
-        )
-        .await;
+        );
+        let outcome = if journal.as_ref().is_some_and(|journal| {
+            journal.context.commit.is_some()
+                && journal.context.model_cancellation_observation
+                    == awaken_runtime_contract::runtime_context::ModelCancellationObservation::RetainClaimedUntilReceipt
+        }) {
+            Some(read.await)
+        } else {
+            model_read(cancellation, read).await
+        };
         let Some(outcome) = outcome else {
-            // A dropped provider future leaves Entered evidence. Do not forge
-            // Returned merely because the caller stopped observing.
             return Err(awaken_runtime_contract::llm::Error::Unauthorized(
                 "model observation cancelled".into(),
             ));

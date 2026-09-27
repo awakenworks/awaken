@@ -1,6 +1,8 @@
 //! The execution loop runs one model step, commits durable facts, and streams
 //! live progress that is independent of committed truth (G1/G13).
 
+#[path = "execution/cancelled_model_observation.rs"]
+mod cancelled_model_observation;
 #[path = "execution/checkpoint_observation.rs"]
 mod checkpoint_observation;
 
@@ -278,7 +280,11 @@ async fn cancellation_drains_model_evidence_commit_before_terminalizing() {
     // C1 cancel during entry/return evidence persistence; C2 commit ACK held.
     // E1 retain the owned commit future until its result; E2 no later provider
     // invocation; E3 one ordered Cancelled terminal, no duplicate draft.
-    // R10=entry+C2=>calls0,[Entered]; R11=return+C2=>calls1,[Entered,Returned].
+    // R10=entry+C2=>calls0,[Entered,Returned(NotDispatched)];
+    // R11=return+C2=>calls1,[Entered,Returned]. The live R10 producer knows the
+    // executor was never constructed; a crash before this second commit still
+    // leaves Entered/Unknown and remains fenced. Cancellation cannot erase a
+    // historical unknown or manufacture provider termination.
     // Both cancel before releasing C2. This catches an outer select dropping
     // the whole inference future while its durable write is still in flight.
     for phase in [Entered, Returned] {
@@ -339,12 +345,18 @@ async fn cancellation_drains_model_evidence_commit_before_terminalizing() {
                 .skip(1) // The original confirmed operation survives cancellation.
                 .map(|op| op.phase)
                 .collect::<Vec<_>>(),
-            if phase == Entered {
-                vec![Entered]
-            } else {
-                vec![Entered, Returned]
-            }
+            vec![Entered, Returned]
         );
+        if phase == Entered {
+            use awaken_runtime_contract::model_operation::{
+                ModelExecutionEvidence, PreDispatchStage,
+            };
+            let latest = model_operations(&durable).last().cloned().unwrap();
+            assert!(
+                matches!(latest.execution, ModelExecutionEvidence::NotDispatched(proof)
+                if proof.stage() == PreDispatchStage::RuntimeAdmission)
+            );
+        }
         assert_eq!(
             durable
                 .committed()
@@ -698,7 +710,7 @@ async fn provider_operation_context_follows_committed_invocations_across_retry_a
             if first {
                 Err(
                     awaken_runtime_contract::llm::Error::Provider("before send".into())
-                        .with_execution_evidence(ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection))),
+                        .with_execution_evidence(ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::request_projection())),
                 )
             } else {
                 TextLlm("done").infer(request).await
@@ -1097,7 +1109,9 @@ impl LlmExecutor for PrimaryFailureThenTextLlm {
                 "primary rejected before dispatch".into(),
             )
             .with_execution_evidence(
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection)),
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
+                    awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
+                ),
             ));
         }
         Ok(ChatResponse {

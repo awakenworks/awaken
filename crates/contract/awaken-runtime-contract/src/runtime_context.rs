@@ -268,6 +268,15 @@ pub struct CaptureContext {
     pub sink: Option<Arc<dyn CaptureSink>>,
 }
 
+/// Process-local model cancellation wait policy. It never grants execution,
+/// retry or physical-slot release; the Dispatch slot remains authoritative.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModelCancellationObservation {
+    #[default]
+    AbortAndFence,
+    RetainClaimedUntilReceipt,
+}
+
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
     /// Authorized Workspace ownership for this attempt. The ingress/session
@@ -301,6 +310,9 @@ pub struct RuntimeRunContext {
     /// A dropped external-call future or failed process cleanup cannot prove
     /// quiescence merely by returning a logical Run outcome.
     pub physical_quiescence: AttemptQuiescence,
+    /// Only an admitted Dispatch physical attempt opts into retained
+    /// observation. A direct Run aborts promptly and preserves Unknown.
+    pub model_cancellation_observation: ModelCancellationObservation,
     /// Cooperative pause observed at safe loop boundaries (ADR-0054). When set and
     /// requested, the next boundary awaits the run (`AwaitReason::ManualPause`)
     /// instead of continuing — an operator pause, never a mid-step freeze. Absent
@@ -520,6 +532,15 @@ impl RuntimeRunContext {
     #[must_use]
     pub fn with_cancellation(mut self, token: CancellationToken) -> Self {
         self.cancellation = Some(token);
+        self
+    }
+
+    #[must_use]
+    pub fn with_model_cancellation_observation(
+        mut self,
+        observation: ModelCancellationObservation,
+    ) -> Self {
+        self.model_cancellation_observation = observation;
         self
     }
 

@@ -762,7 +762,7 @@ function systemLines(parsed) {
 }
 
 // `opts`: `{ behavior, models, failuresBeforeSuccess, alwaysFail, failArrivalKind,
-// faultStatus, delayMs, firstDelayMs, listenHost }`. `models` enables the same fixture's
+// faultStatus, faultBodyMode, delayMs, firstDelayMs, listenHost }`. `models` enables the same fixture's
 // Anthropic model-directory endpoint for Provider Connection tests.
 // `behavior` (default `'default'`) selects a named model or a test callback
 // returning the same {text}/{tool}/{tools} reply, optionally asynchronously.
@@ -776,6 +776,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     failuresBeforeSuccess = 0,
     alwaysFail = false,
     faultStatus = 503,
+    faultBodyMode = 'complete',
     delayMs = 0,
     firstDelayMs = 0,
     models = [],
@@ -783,6 +784,9 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     failModel = null,
     failArrivalKind = null,
   } = opts;
+  if (!['complete', 'truncated'].includes(faultBodyMode)) {
+    throw new Error(`unknown fake-anthropic fault body mode: ${faultBodyMode}`);
+  }
   const reply_of = typeof behavior === 'function' ? behavior : BEHAVIORS[behavior];
   if (!reply_of) throw new Error(`unknown fake-anthropic behavior: ${behavior}`);
   // `receivedRequests` is the arrival-side ledger; `requests` below is the
@@ -809,8 +813,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       const authorize = () => {
         if (presented === apiKey) return true;
         state.unauthorized += 1;
-        res.writeHead(401, { 'content-type':'application/json' });
-        res.end(JSON.stringify({ type:'error', error:{ type:'authentication_error', message:'invalid x-api-key' } }));
+        emitError(res, 401, 'authentication_error', 'invalid x-api-key');
         return false;
       };
       if (req.method === 'GET' && pathname.startsWith('/v1/models') && models.length > 0) {
@@ -852,8 +855,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       const responseDelay = state.received === 1 ? firstDelayMs || delayMs : delayMs;
       if (responseDelay > 0) await new Promise((r) => setTimeout(r, responseDelay));
       if (req.method !== 'POST' || !pathname.endsWith('/messages')) {
-        res.writeHead(404, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error', message: `no ${req.method} ${req.url}` } }));
+        emitError(res, 404, 'not_found_error', `no ${req.method} ${req.url}`);
         return;
       }
       if (!authorize()) return;
@@ -861,8 +863,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       const parsed = arrival;
       if (failArrivalKind === arrivalKind) {
         state.requests.push({ url: req.url, model: parsed.model, stream: !!parsed.stream, failed: true });
-        res.writeHead(faultStatus, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `${arrivalKind} failed` } }));
+        emitError(res, faultStatus, 'api_error', `${arrivalKind} failed`, faultBodyMode);
         return;
       }
       // Per-model fault (#1): fail exactly the named model with a retryable
@@ -870,13 +871,11 @@ export function startFakeAnthropic(apiKey, opts = {}) {
       // recorded (marked `failed`) so a test can see both models were tried in order.
       if (failModel && parsed.model === failModel) {
         state.requests.push({ url: req.url, model: parsed.model, stream: !!parsed.stream, failed: true });
-        res.writeHead(faultStatus, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: `model ${failModel} is down` } }));
+        emitError(res, faultStatus, 'overloaded_error', `model ${failModel} is down`, faultBodyMode);
         return;
       }
       if (alwaysFail || state.attempts <= failuresBeforeSuccess) {
-        res.writeHead(faultStatus, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'fake upstream is overloaded' } }));
+        emitError(res, faultStatus, 'overloaded_error', 'fake upstream is overloaded', faultBodyMode);
         return;
       }
       state.requests.push({
@@ -901,8 +900,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
         reply = await reply_of(parsed, ordinal, pending.signal);
       } catch {
         if (!res.destroyed) {
-          res.writeHead(500, { 'content-type':'application/json' });
-          res.end(JSON.stringify({ type:'error', error:{ type:'api_error', message:'fixture behavior failed' } }));
+          emitError(res, 500, 'api_error', 'fixture behavior failed');
         }
         return;
       } finally {
@@ -957,6 +955,19 @@ export function startFakeAnthropic(apiKey, opts = {}) {
     };
     listen();
   });
+}
+
+// All fixture HTTP failures use this one envelope writer. Truncation sends a
+// real status line and body prefix before closing the socket below Content-Length;
+// a transport must observe a failed read rather than a complete terminal body.
+function emitError(res, status, type, message, mode = 'complete') {
+  const bytes = Buffer.from(JSON.stringify({ type: 'error', error: { type, message } }));
+  res.writeHead(status, { 'content-type': 'application/json', 'content-length': bytes.length });
+  if (mode === 'truncated') {
+    res.write(bytes.subarray(0, Math.floor(bytes.length / 2)), () => res.destroy());
+  } else {
+    res.end(bytes);
+  }
 }
 
 // The Anthropic non-streaming response: one text block or an ordered tool_use
