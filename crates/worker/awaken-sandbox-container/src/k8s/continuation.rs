@@ -3,8 +3,7 @@
 use crate::ContainerContinuationHandle;
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
-    Container, PersistentVolumeClaim, PersistentVolumeClaimSpec, Pod, VolumeMount,
-    VolumeResourceRequirements,
+    PersistentVolumeClaim, PersistentVolumeClaimSpec, Pod, VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -18,7 +17,6 @@ use super::names::{continuation_claim_for_pod, continuation_claim_name};
 use super::pod_projection::CONTINUATION_VOLUME;
 use super::{
     ContainerEffectFence, ContainerPlan, ContainerRealizationIntent, RuntimeError, backend,
-    hardened_security_context,
 };
 
 pub(super) const ORPHANED_LIVE_CLAIM_ERROR: &str =
@@ -945,37 +943,6 @@ pub(super) fn build_claim(
     })
 }
 
-pub(super) fn append_init_container(
-    plan: &ContainerPlan,
-    subpaths: &[String],
-    init_containers: &mut Vec<Container>,
-) {
-    if subpaths.is_empty() {
-        return;
-    }
-    let directories = subpaths
-        .iter()
-        .map(|path| format!("/state/{path}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    init_containers.push(Container {
-        name: "continuation-init".into(),
-        image: Some(plan.image.clone()),
-        command: Some(vec![
-            "/bin/sh".into(),
-            "-c".into(),
-            format!("mkdir -p {directories}"),
-        ]),
-        volume_mounts: Some(vec![VolumeMount {
-            name: CONTINUATION_VOLUME.to_owned(),
-            mount_path: "/state".into(),
-            ..Default::default()
-        }]),
-        security_context: Some(hardened_security_context()),
-        ..Default::default()
-    });
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PendingClaimDeletion {
     name: String,
@@ -1606,7 +1573,8 @@ mod tests {
          * roots are workspace/output/tmp; C3 Pod or Worker ownership disappears;
          * C4 storage policy is blank/valid. Effects: E1 legacy emptyDirs; E2 one
          * deterministic PVC with no ownerReference; E3 distinct pre-created
-         * subpaths mounted at every C2 root; E4 fail before an API write.
+         * kubelet-created subpaths mounted at every C2 root, without a helper
+         * init container; E4 fail before an API write.
          * Rules: V1 !C1=>E1; V2 C1+C2+C3+valid(C4)=>E2+E3;
          * V3 C1+blank(C4)=>E4. FMECA: a Pod-owned claim makes Pod recovery lose
          * live Session data (S5/O2/D3=30), while reusing one subpath for several
@@ -1673,13 +1641,10 @@ mod tests {
             ],
             "V2/E3"
         );
-        let init = spec
-            .init_containers
-            .as_ref()
-            .and_then(|containers| containers.iter().find(|c| c.name == "continuation-init"))
-            .expect("V2 initializes subpaths before kubelet mounts the agent");
-        assert!(
-            init.command.as_ref().unwrap()[2].contains("/state/root-0 /state/root-1 /state/root-2"),
+        assert!(spec.init_containers.is_none(), "V2/E3 kubelet owns mkdir");
+        assert_eq!(
+            spec.security_context.unwrap().fs_group,
+            Some(10001),
             "V2/E3"
         );
         assert!(

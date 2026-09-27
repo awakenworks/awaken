@@ -100,6 +100,10 @@ AWAKEN_LAZY_STORAGE_PROFILE=local-static AWAKEN_LAZY_IMAGE_PREWARM=1 \
 
 The live test covers ordinary claims in different namespaces/capacities, node
 affinity, exclusive binding, Pod replacement, controller restart, class isolation,
-pool exhaustion and data cleaning before reallocation. No Session execution Pod
-exists while empty PVs are prepared. A real-LLM comparison uses the same immutable
-Sandbox image and records PVC/Pod/Hand/tool clocks; results are samples, not P95.
+pool exhaustion and data cleaning before reallocation. Kubelet creates declared
+writable directory subPaths with the Pod's fsGroup; Awaken adds no directory-only
+init container. Consumers verify three roots as UID/GID 10001 and retain data
+after Pod replacement. Historical directory init projections require their
+complete original spec and digest. Empty PV preparation has no Session execution
+Pod. The real-LLM fixture preserves `on_tool_use`, uses one immutable Sandbox
+image and records PVC/Pod/Hand/tool clocks; results are samples, not P95.

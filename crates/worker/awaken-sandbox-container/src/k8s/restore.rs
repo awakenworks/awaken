@@ -14,11 +14,78 @@ fn verify_plan(plan: &ContainerPlan, expected: &str) -> Result<(), RuntimeError>
     }
 }
 
+/// Decode only the historical directory initializer into the expected immutable
+/// projection. New creation never emits it. Full spec and original digest still
+/// have to match: an arbitrary init, command, image or mount is not normalized away.
+fn expected_historical_directory_projection(
+    expected: &Pod,
+    observed: &Pod,
+) -> Result<Pod, RuntimeError> {
+    let mut expected = expected.clone();
+    let has_legacy = observed
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.init_containers.as_ref())
+        .is_some_and(|items| items.iter().any(|item| item.name == "continuation-init"));
+    if !has_legacy {
+        return Ok(expected);
+    }
+    let spec = expected
+        .spec
+        .as_mut()
+        .ok_or_else(|| backend("desired Pod has no specification"))?;
+    if spec
+        .init_containers
+        .as_ref()
+        .is_some_and(|items| items.iter().any(|item| item.name == "continuation-init"))
+    {
+        return Ok(expected);
+    }
+    let agent = spec
+        .containers
+        .iter()
+        .find(|item| item.name == "agent")
+        .ok_or_else(|| backend("desired Pod has no agent"))?;
+    let directories = agent
+        .volume_mounts
+        .iter()
+        .flatten()
+        .filter(|mount| mount.name == pod_projection::CONTINUATION_VOLUME)
+        .filter_map(|mount| mount.sub_path.as_ref())
+        .map(|path| format!("/state/{path}"))
+        .collect::<Vec<_>>();
+    if directories.is_empty() {
+        return Ok(expected);
+    }
+    let initializer = Container {
+        name: "continuation-init".into(),
+        image: agent.image.clone(),
+        command: Some(vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("mkdir -p {}", directories.join(" ")),
+        ]),
+        volume_mounts: Some(vec![VolumeMount {
+            name: pod_projection::CONTINUATION_VOLUME.into(),
+            mount_path: "/state".into(),
+            ..Default::default()
+        }]),
+        security_context: Some(hardened_security_context()),
+        ..Default::default()
+    };
+    spec.init_containers
+        .get_or_insert_with(Vec::new)
+        .insert(0, initializer);
+    realization::stamp_pod_realization(&mut expected)?;
+    Ok(expected)
+}
+
 pub(super) fn verify_pod_projection(
     expected: &Pod,
     observed: &Pod,
     disposal: Option<&pc::SandboxDisposalAuthorization>,
 ) -> Result<(), RuntimeError> {
+    let expected = expected_historical_directory_projection(expected, observed)?;
     let mut expected_spec = expected
         .spec
         .clone()
@@ -46,7 +113,7 @@ pub(super) fn verify_pod_projection(
             "Kubernetes restore Pod differs from the complete immutable security projection",
         ));
     }
-    realization::verify_realization(expected, observed, disposal)
+    realization::verify_realization(&expected, observed, disposal)
 }
 
 pub(super) fn verify_claim_projection(

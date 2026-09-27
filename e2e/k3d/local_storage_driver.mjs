@@ -34,7 +34,13 @@ function pod(name, namespace, pvc, command, image) {
     automountServiceAccountToken: false,
     terminationGracePeriodSeconds: 1,
     securityContext: { runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001 },
-    containers: [{ name: 'consumer', image, imagePullPolicy: 'IfNotPresent', command: ['sh', '-ec', `${command}; exec sleep 3600`], volumeMounts: [{ name: 'data', mountPath: '/data' }] }],
+    // P2/P3: kubelet creates fresh directory subPaths with fsGroup access;
+    // replacement mounts preserve them. No mkdir init or root consumer exists.
+    containers: [{ name: 'consumer', image, imagePullPolicy: 'IfNotPresent', command: ['sh', '-ec', `test -w /data && test -w /data-output && test -w /data-tmp; ${command}; exec sleep 3600`], volumeMounts: [
+      { name: 'data', mountPath: '/data', subPath: 'root-0' },
+      { name: 'data', mountPath: '/data-output', subPath: 'root-1' },
+      { name: 'data', mountPath: '/data-tmp', subPath: 'root-2' },
+    ] }],
     volumes: [{ name: 'data', persistentVolumeClaim: { claimName: pvc } }] } };
 }
 async function consume(name, namespace, size, command, image, storageClassName = 'awaken-local') {

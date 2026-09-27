@@ -55,9 +55,8 @@ pub(super) fn append_writable_and_cache_volumes(
     continuation_claim: Option<&str>,
     volumes: &mut Vec<Volume>,
     agent_mounts: &mut Vec<VolumeMount>,
-) -> Vec<String> {
+) {
     let writable = crate::writable_dirs(plan);
-    let mut continuation_subpaths = Vec::new();
     if let Some(claim_name) = continuation_claim {
         volumes.push(Volume {
             name: CONTINUATION_VOLUME.to_owned(),
@@ -76,7 +75,8 @@ pub(super) fn append_writable_and_cache_volumes(
             } => {
                 debug_assert_eq!(claim_slot, 0);
                 let subpath = format!("root-{subpath_slot}");
-                continuation_subpaths.push(subpath.clone());
+                // Kubelet safely creates missing subPath directories using the
+                // volume's fsGroup permissions before mounting this container.
                 agent_mounts.push(VolumeMount {
                     name: CONTINUATION_VOLUME.to_owned(),
                     mount_path: directory,
@@ -123,7 +123,6 @@ pub(super) fn append_writable_and_cache_volumes(
             ..Default::default()
         });
     }
-    continuation_subpaths
 }
 
 pub(super) fn content_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {

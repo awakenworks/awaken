@@ -10,6 +10,100 @@ fn verify_container_projection(expected: &Container, observed: &Container) -> bo
     expected == observed
 }
 
+#[tokio::test]
+async fn historical_directory_init_keeps_exact_projection_and_digest() {
+    // Historical projection decision table: H1 new Pod => no directory init;
+    // H2 exact old mkdir/image/mount/security + original digest => adopt without
+    // recreating its Pod/PVC; H3 any field or digest drift => reject. H4 a new
+    // Pod with copied old provenance is not an old Pod. No security field is
+    // ignored and no historical creation path is reintroduced.
+    let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap()).with_continuation_volume(
+        crate::K8sContinuationVolume {
+            storage_class_name: None,
+            size: "1Gi".into(),
+        },
+    );
+    let plan = crate::k8s::tests::plan_with_memory(Vec::new());
+    let mut current = runtime.pod("historical-init", &plan);
+    realization::stamp_pod_realization(&mut current).unwrap();
+    assert!(
+        current.spec.as_ref().unwrap().init_containers.is_none(),
+        "H1"
+    );
+    let mut historical = current.clone();
+    let agent = &historical.spec.as_ref().unwrap().containers[0];
+    let initializer = Container {
+        name: "continuation-init".into(),
+        image: agent.image.clone(),
+        command: Some(vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "mkdir -p /state/root-0 /state/root-1 /state/root-2".into(),
+        ]),
+        volume_mounts: Some(vec![VolumeMount {
+            name: "continuation-state".into(),
+            mount_path: "/state".into(),
+            ..Default::default()
+        }]),
+        security_context: agent.security_context.clone(),
+        ..Default::default()
+    };
+    historical.spec.as_mut().unwrap().init_containers = Some(vec![initializer]);
+    realization::stamp_pod_realization(&mut historical).unwrap();
+    assert!(
+        verify_pod_projection(&current, &historical, None).is_ok(),
+        "H2"
+    );
+    let once = historical.clone();
+    realization::stamp_pod_realization(&mut historical).unwrap();
+    assert_eq!(once, historical, "H2 desired stamping is idempotent");
+    for cause in [
+        "command",
+        "image",
+        "mount",
+        "security",
+        "extra",
+        "digest",
+        "missing_init",
+    ] {
+        let mut changed = historical.clone();
+        let spec = changed.spec.as_mut().unwrap();
+        match cause {
+            "command" => spec.init_containers.as_mut().unwrap()[0]
+                .command
+                .as_mut()
+                .unwrap()[2]
+                .push_str("; touch /state/foreign"),
+            "image" => spec.init_containers.as_mut().unwrap()[0].image = Some("foreign:1".into()),
+            "mount" => {
+                spec.init_containers.as_mut().unwrap()[0]
+                    .volume_mounts
+                    .as_mut()
+                    .unwrap()[0]
+                    .mount_path = "/foreign".into()
+            }
+            "security" => {
+                spec.init_containers.as_mut().unwrap()[0]
+                    .security_context
+                    .as_mut()
+                    .unwrap()
+                    .privileged = Some(true)
+            }
+            "extra" => spec.init_containers.as_mut().unwrap().push(Container {
+                name: "foreign".into(),
+                ..Default::default()
+            }),
+            "digest" => changed.metadata.annotations = current.metadata.annotations.clone(),
+            "missing_init" => spec.init_containers = None,
+            _ => unreachable!(),
+        }
+        assert!(
+            verify_pod_projection(&current, &changed, None).is_err(),
+            "H3/H4 {cause}"
+        );
+    }
+}
+
 #[test]
 fn claim_projection_preserves_policy_across_api_defaulting() {
     // Cause/effect table CP: C1 class is delegated or explicitly pinned;

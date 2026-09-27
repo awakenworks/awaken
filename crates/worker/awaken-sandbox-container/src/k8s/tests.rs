@@ -1265,7 +1265,7 @@ fn a_pids_limit_is_flagged_unenforceable_on_k8s_so_create_fails_closed() {
     );
 }
 
-fn plan_with_memory(mounts: Vec<crate::MemoryMount>) -> ContainerPlan {
+pub(super) fn plan_with_memory(mounts: Vec<crate::MemoryMount>) -> ContainerPlan {
     ContainerPlan {
         image: "agent:1".into(),
         command: vec!["claude".into(), "--acp".into()],
