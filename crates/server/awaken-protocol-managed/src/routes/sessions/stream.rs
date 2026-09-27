@@ -94,6 +94,7 @@ fn accept_preview_frame(
 pub(super) struct LiveSseSource {
     pub(super) state: Arc<ManagedState>,
     pub(super) session_id: String,
+    pub(super) owner_scope: String,
     pub(super) revision: u64,
     pub(super) current: bool,
 }
@@ -152,9 +153,28 @@ where
                 };
                 tail_due = true;
             }
+            if !current
+                && let Ok(Some(event)) = source.state.observe_committed_session_deletion(
+                    &source.session_id, &source.owner_scope).await
+            {
+                match delivery.accept(&event) {
+                    Ok(true) => yield Ok(sse_frame(&StreamFrame::Committed(event))),
+                    Ok(false) => {},
+                    Err(error) => { yield Err(error); return; },
+                }
+                break;
+            }
             if tail_due {
                 let page = match source.state.stream_delivery_page(&source.session_id, cursor) {
                     Ok(page) => page,
+                    Err(StateError::NotFound) => {
+                        // Deletion may remove the cache between snapshot and
+                        // this read. Observe its exact durable fact on the next
+                        // iteration; 404 alone never manufactures a terminal.
+                        current = false;
+                        tail_due = false;
+                        continue;
+                    },
                     Err(error) => { yield Err(error); return; },
                 };
                 tail_due = page.len() == ManagedState::STREAM_DELIVERY_PAGE_SIZE;

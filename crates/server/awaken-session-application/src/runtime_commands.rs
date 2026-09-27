@@ -1113,23 +1113,29 @@ impl SessionApplication {
             .get(&awaken_session_types::SessionId::from(thread))
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
-        Ok(Self::project_session_usage(&session, thread_usages))
+        Ok(Self::project_session_usage(
+            &session,
+            thread_usages,
+            self.now_unix_ms(),
+        ))
     }
 
     /// Aggregate already observed, distinct logical Threads using the same
     /// accounting rule as live budget reads. Callers own scope and prefix
     /// validation; this projection creates no usage cache or authority.
     /// Active time belongs to the Session root, never the sum of child clocks.
+    /// The observing owner supplies its existing Clock sample; a projection
+    /// cannot silently select an ambient second time authority.
     pub fn project_session_usage(
         session: &awaken_session_state_contract::PersistedSession,
         threads: impl IntoIterator<Item = SessionUsage>,
+        now_unix_ms: u64,
     ) -> SessionUsage {
         let mut usage = SessionUsage::default();
         for thread in threads {
             merge_session_usage(&mut usage, thread);
         }
-        usage.active_seconds =
-            session.effective_runtime_active_millis(super::activity::now_unix_ms()) / 1_000;
+        usage.active_seconds = session.effective_runtime_active_millis(now_unix_ms) / 1_000;
         usage
     }
 

@@ -11,8 +11,7 @@ use awaken_session_state_contract::{
 
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError, SnapshotCommit,
-    activity::{now_unix_ms, runtime_interval_fact},
-    mutation::repository_failure,
+    activity::runtime_interval_fact, mutation::repository_failure,
     resource_reconciliation::mutation_failure,
 };
 
@@ -308,7 +307,7 @@ impl SessionApplication {
                 break;
             }
             let mut facts = session
-                .close_runtime_interval(now_unix_ms())
+                .close_runtime_interval(self.now_unix_ms())
                 .map(|interval| {
                     runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
                 })
@@ -657,7 +656,7 @@ impl SessionApplication {
                 .archive(archived_at)
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
             let mut facts = session
-                .close_runtime_interval(now_unix_ms())
+                .close_runtime_interval(self.now_unix_ms())
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id.as_str(), interval))
                 .into_iter()
                 .collect::<Vec<_>>();
@@ -715,7 +714,7 @@ impl SessionApplication {
                 return Err(pending_event_batch_error());
             }
             let mut facts = session
-                .close_runtime_interval(now_unix_ms())
+                .close_runtime_interval(self.now_unix_ms())
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
                 .into_iter()
                 .collect::<Vec<_>>();

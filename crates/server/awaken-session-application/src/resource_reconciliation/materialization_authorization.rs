@@ -26,7 +26,7 @@ impl SessionApplication {
             awaken_session_realization_contract::realization_lease_authorizes(
                 current,
                 intent.lease(),
-                crate::activity::now_unix_ms(),
+                self.now_unix_ms(),
             )
         }) {
             return Err(SessionRealizationControlFailure::StaleOwnership);

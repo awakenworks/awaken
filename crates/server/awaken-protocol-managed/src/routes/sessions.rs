@@ -918,6 +918,11 @@ async fn stream_thread_events(
         LiveSseSource {
             state: Arc::clone(&state),
             session_id: id.clone(),
+            owner_scope: state
+                .resolve_owner(&id)
+                .await
+                .map_err(error_response)?
+                .ok_or_else(|| error_response(StateError::NotFound))?,
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
         },
@@ -1374,6 +1379,11 @@ async fn stream_events(
         LiveSseSource {
             state: Arc::clone(&state),
             session_id: id.clone(),
+            owner_scope: state
+                .resolve_owner(&id)
+                .await
+                .map_err(error_response)?
+                .ok_or_else(|| error_response(StateError::NotFound))?,
             revision,
             current: observation == ProjectionObservationDecision::UseRefreshed,
         },

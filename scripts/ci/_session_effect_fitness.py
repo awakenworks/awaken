@@ -507,6 +507,13 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         )
     )
 
+    errors.extend(_require_ordered_function(
+        sources, APPLICATION_RESOURCE_RECONCILIATION,
+        "require_current_live_terminal_generation",
+        ("current.expires_at_unix_ms", "self.now_unix_ms()"),
+        "terminal generation consumes the installed application clock",
+    ))
+
     # Application Control re-derives authority from the root and commits both
     # receipt classes through that same root CAS; it owns no side queue.
     for function, markers, ownership in (
@@ -514,7 +521,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "authorize_terminal_cleanup_effect_from_root",
             (
                 ".get(&effect.command.session_id)",
-                "Self::require_current_live_terminal_generation(&session)?",
+                "self.require_current_live_terminal_generation(&session)?",
                 ".owner(&effect.command.session_id)",
                 "terminal_restore_target_for_thread(",
                 ".authorize_terminal_cleanup_effect(effect)",
@@ -1079,9 +1086,12 @@ fn drive_local_terminal_cleanup() {
 """
     canonical[APPLICATION_RESOURCE_RECONCILIATION] = """
 fn terminal_cleanup_projection() { session.terminal_cleanup_work_action(); }
+fn require_current_live_terminal_generation(&self, session: &PersistedSession) {
+    realization_lease_is_live_at(current.expires_at_unix_ms, self.now_unix_ms());
+}
 fn authorize_terminal_cleanup_effect_from_root() {
     repository.get(&effect.command.session_id);
-    Self::require_current_live_terminal_generation(&session)?;
+    self.require_current_live_terminal_generation(&session)?;
     repository.owner(&effect.command.session_id);
     terminal_restore_target_for_thread(&workspace_id, &session, &effect.command.thread_id);
     session.authorize_terminal_cleanup_effect(effect);
@@ -1276,6 +1286,14 @@ fn recover_terminal_receipts() {
     # G48 cause/effect rules: C1 one expected-prior declaration reaches the
     # sole local Git writer under an exact ref lease; C2 the shared cleanup
     # driver records its typed outcome through the one Session-root CAS before
+    # Clock cause/effect rule: the full authority check stays present, but an
+    # ambient sample would disagree with the installed Coordinator clock.
+    clock_mutant = dict(canonical)
+    clock_mutant[APPLICATION_RESOURCE_RECONCILIATION] = clock_mutant[
+        APPLICATION_RESOURCE_RECONCILIATION
+    ].replace("self.now_unix_ms()", "SystemClock.now_ms()", 1)
+    assert session_effect_violations(clock_mutant), "ambient terminal clock rejected"
+
     # projecting root preparation/disposal; C3 the Host deadline decorator
     # forwards both outcomes without becoming another outcome owner. E1 accepts
     # C1+C2+C3. Removing an edge, reordering a durable outcome, or adding a

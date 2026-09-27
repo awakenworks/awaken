@@ -2,6 +2,31 @@
 
 use crate::RunError;
 
+/// Report semantic changes while retaining the authoritative value on a no-op.
+fn replace_if_changed<T: PartialEq>(current: &mut T, next: T) -> bool {
+    if *current == next {
+        false
+    } else {
+        *current = next;
+        true
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn effective_publication_field_replacement_is_exact_and_noop_preserving() {
+    // The actual generic field updater, instantiated over all u64 payloads.
+    // Container/String equality and hash/serialization remain their own TCB.
+    let initial: u64 = kani::any();
+    let incoming: u64 = kani::any();
+    let mut current = initial;
+    let changed = replace_if_changed(&mut current, incoming);
+    assert_eq!(changed, initial != incoming);
+    assert_eq!(current, incoming);
+    assert!(!replace_if_changed(&mut current, incoming));
+    assert_eq!(current, incoming);
+}
+
 /// Project every Session-owned Agent override onto one immutable publication.
 ///
 /// This is the only lowering rule for Session-local model, inference, and
@@ -16,6 +41,7 @@ pub fn project_effective_agent_publication(
     workspace_id: &str,
     mut snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
 ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError> {
+    let mut changed = false;
     if let Some(model_override) = model_override {
         if let Some(publication) = &model_override.publication {
             publication
@@ -25,18 +51,28 @@ pub fn project_effective_agent_publication(
                         "frozen Session model override publication is invalid: {error}"
                     ))
                 })?;
-            snapshot.resolved_spec.model_binding = publication.primary.clone();
-            snapshot.resolved_spec.model_candidates = publication.candidates.clone();
+            changed |= replace_if_changed(
+                &mut snapshot.resolved_spec.model_binding,
+                publication.primary.clone(),
+            );
+            changed |= replace_if_changed(
+                &mut snapshot.resolved_spec.model_candidates,
+                publication.candidates.clone(),
+            );
         }
-        snapshot.resolved_spec.plugin_config.inference = model_override.inference.clone();
+        changed |= replace_if_changed(
+            &mut snapshot.resolved_spec.plugin_config.inference,
+            model_override.inference.clone(),
+        );
     }
     if !system_prompt.is_inherit() {
-        snapshot.resolved_spec.instructions = system_prompt
+        let instructions = system_prompt
             .resolve(Some(snapshot.resolved_spec.instructions.clone()))
             .unwrap_or_default();
+        changed |= replace_if_changed(&mut snapshot.resolved_spec.instructions, instructions);
     }
     if let Some(pins) = skill_pins {
-        snapshot.resolved_spec.plugin_config.agent.skills = pins
+        let skills = pins
             .iter()
             .map(|pin| awaken_agent_contract::AgentSkillBinding {
                 kind: pin.kind,
@@ -44,8 +80,12 @@ pub fn project_effective_agent_publication(
                 version: pin.version.to_string(),
             })
             .collect();
+        changed |= replace_if_changed(
+            &mut snapshot.resolved_spec.plugin_config.agent.skills,
+            skills,
+        );
     }
-    if model_override.is_some() || !system_prompt.is_inherit() || skill_pins.is_some() {
+    if changed {
         snapshot.recompute_fingerprint().map_err(|error| {
             RunError::internal(format!(
                 "Session-local Agent publication is invalid: {error}"
@@ -226,6 +266,135 @@ fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn effective_publication_equal_overrides_preserve_the_complete_authoritative_source() {
+        // Causes: P1 explicit equal model/inference roster; P2 replacing a
+        // prompt with the same bytes (or clearing already-empty instructions);
+        // P3 explicit empty Skills over an already-empty selection. N1-N5
+        // independently set each no-op and N6 combines them => exact original
+        // snapshot, including its authoritative consistency token/metadata.
+        // Merely specifying an override cannot mint a new publication identity.
+        let mut metadata = awaken_runtime_contract::AgentSnapshotMetadata::default();
+        metadata.source.revision = 7;
+        let base = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent")
+            .model(
+                awaken_runtime_contract::resolved::ModelBinding::parse("test", "model", "genai")
+                    .unwrap(),
+            )
+            .fingerprint("authoritative-publication-7")
+            .metadata(metadata)
+            .build();
+        let equal_model = crate::SessionModelOverride {
+            publication: Some(Box::new(
+                awaken_session_configuration_contract::SessionModelPublication {
+                    primary: base.resolved_spec.model_binding.clone(),
+                    candidates: base.resolved_spec.model_candidates.clone(),
+                },
+            )),
+            inference: base.resolved_spec.plugin_config.inference.clone(),
+        };
+        for (rule, model, prompt, skills) in [
+            (
+                "N1",
+                None,
+                crate::SessionSystemPromptSelection::Inherit,
+                None,
+            ),
+            (
+                "N2",
+                Some(equal_model.clone()),
+                crate::SessionSystemPromptSelection::Inherit,
+                None,
+            ),
+            ("N3", None, crate::SessionSystemPromptSelection::Clear, None),
+            (
+                "N4",
+                None,
+                crate::SessionSystemPromptSelection::Replace(String::new()),
+                None,
+            ),
+            (
+                "N5",
+                None,
+                crate::SessionSystemPromptSelection::Inherit,
+                Some(&[][..]),
+            ),
+            (
+                "N6",
+                Some(equal_model.clone()),
+                crate::SessionSystemPromptSelection::Clear,
+                Some(&[][..]),
+            ),
+        ] {
+            let projected = project_effective_agent_publication(
+                model.as_ref(),
+                &prompt,
+                skills,
+                "workspace",
+                base.clone(),
+            )
+            .unwrap();
+            assert_eq!(projected, base, "{rule} complete no-op, no second identity");
+        }
+        // C1-C3 independently change only primary, fallback roster or inference
+        // controls. Each must replace exactly that payload and recompute all
+        // three existing fingerprint coordinates; adjacent tests own prompt
+        // and Skill changes. These positive witnesses forbid an all-no-op fix.
+        for axis in ["primary", "candidates", "inference"] {
+            let mut model = equal_model.clone();
+            let next = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::parse(
+                    "next-provider",
+                    "next-model",
+                    "genai",
+                )
+                .unwrap(),
+            );
+            match axis {
+                "primary" => model.publication.as_mut().unwrap().primary = next,
+                "candidates" => model.publication.as_mut().unwrap().candidates = vec![next],
+                "inference" => {
+                    model.inference.effort =
+                        Some(awaken_runtime_contract::agent_bindings::ReasoningEffort::High)
+                }
+                _ => unreachable!(),
+            }
+            let projected = project_effective_agent_publication(
+                Some(&model),
+                &crate::SessionSystemPromptSelection::Inherit,
+                Some(&[]),
+                "workspace",
+                base.clone(),
+            )
+            .unwrap();
+            let publication = model.publication.as_ref().unwrap();
+            assert_eq!(
+                projected.resolved_spec.model_binding, publication.primary,
+                "C/{axis} exact primary"
+            );
+            assert_eq!(
+                projected.resolved_spec.model_candidates, publication.candidates,
+                "C/{axis} exact roster"
+            );
+            assert_eq!(
+                projected.resolved_spec.plugin_config.inference, model.inference,
+                "C/{axis} exact inference"
+            );
+            assert_ne!(
+                projected.fingerprint, base.fingerprint,
+                "C/{axis} new content identity"
+            );
+            assert_eq!(
+                projected.fingerprint, projected.resolved_spec.catalog_fingerprint,
+                "C/{axis}"
+            );
+            assert_eq!(
+                projected.fingerprint.0, projected.metadata.fingerprint.0,
+                "C/{axis}"
+            );
+        }
+    }
 
     #[test]
     fn worker_publication_decision_table_is_total_and_fail_closed() {
