@@ -254,7 +254,17 @@ impl<'a> Controller<'a> {
         &self,
         outcome_id: &Id,
     ) -> Result<Option<CommittedOutcome>, Error> {
-        let projection = match self.state.projection(outcome_id).await {
+        Self::committed_projection_from_state(&self.state, outcome_id).await
+    }
+
+    /// Read the same terminal projection without constructing execution ports.
+    /// Hosts use their ordinary commit/read adapter even before Session runtime
+    /// realization; all classification remains in this one application query.
+    pub async fn committed_projection_from_state(
+        state: &ThreadOutcomeState<'_>,
+        outcome_id: &Id,
+    ) -> Result<Option<CommittedOutcome>, Error> {
+        let projection = match state.projection(outcome_id).await {
             Ok(projection) => projection,
             Err(StateError::NotFound(_)) => return Ok(None),
             Err(error) => return Err(state_error(error)),
