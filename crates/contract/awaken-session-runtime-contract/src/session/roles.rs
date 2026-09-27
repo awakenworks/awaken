@@ -196,6 +196,7 @@ pub trait CoordinationRuntime: Send + Sync {
     async fn reply_and_observe_session_thread_tool(
         &self,
         delivery: crate::SessionThreadToolReplyDelivery,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError>;
 
     /// Stop the parent Run, wait until it can no longer commit a delegation, and

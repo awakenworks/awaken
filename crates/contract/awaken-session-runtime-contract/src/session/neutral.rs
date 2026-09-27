@@ -286,6 +286,7 @@ macro_rules! neutral_role {
             async fn reply_and_observe_session_thread_tool(
                 &self,
                 _delivery: $crate::SessionThreadToolReplyDelivery,
+        _stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
             ) -> Result<$crate::__macro_support::StepOutcome, $crate::__macro_support::RunError> {
                 Err($crate::__macro_support::RunError::unavailable(
                     "Session Thread tool reply observation is unsupported",

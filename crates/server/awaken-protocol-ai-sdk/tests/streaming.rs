@@ -483,3 +483,221 @@ async fn a_client_hangup_mid_stream_stops_the_producer_without_hanging() {
         "the runtime observed the sink closing once the client disconnected"
     );
 }
+
+struct ResumeProbe {
+    release: Arc<Notify>,
+    interrupted: Arc<AtomicBool>,
+    scopes: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl RunApplication for ResumeProbe {
+    async fn run(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<String>,
+        _: Vec<Message>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!()
+    }
+    async fn resume(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!("a live continuation must not use the buffered resume method")
+    }
+    async fn resume_streaming(
+        &self,
+        operation: &str,
+        thread: &str,
+        call: &str,
+        resume: RunResume,
+        sink: Arc<dyn StreamSink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        assert!(!operation.is_empty());
+        assert_eq!(thread, "t1");
+        assert_eq!(call, "c1");
+        assert!(matches!(
+            resume,
+            RunResume::ClientResult {
+                is_error: false,
+                ..
+            }
+        ));
+        for kind in [
+            AgentEvent::Fact(Fact::RunStarted),
+            AgentEvent::Delta(Delta::TextDelta {
+                delta: "已有直营样板。".into(),
+            }),
+        ] {
+            sink.send(Event {
+                run_id: RunId("r1".into()),
+                kind,
+            })
+            .await
+            .unwrap();
+        }
+        self.release.notified().await;
+        if self.interrupted.load(Ordering::SeqCst) {
+            return Ok(StepOutcome::ended(
+                Vec::new(),
+                awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            ));
+        }
+        sink.send(Event {
+            run_id: RunId("r1".into()),
+            kind: AgentEvent::Delta(Delta::TextDelta {
+                delta: "API 服务由谁交付？".into(),
+            }),
+        })
+        .await
+        .unwrap();
+        Ok(StepOutcome::ended(
+            vec![Message::text(
+                Id("reply".into()),
+                Role::Assistant,
+                "已有直营样板。API 服务由谁交付？",
+            )],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        ))
+    }
+    async fn interrupt(&self, _: &str) -> Result<(), RunApplicationError> {
+        self.interrupted.store(true, Ordering::SeqCst);
+        self.release.notify_one();
+        Ok(())
+    }
+    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(Some(Pending {
+            tool_use_id: "c1".into(),
+            name: "AskUserQuestion".into(),
+            input: json!({}),
+            client_executed: true,
+        }))
+    }
+    async fn history(&self, _: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
+    }
+    fn model(&self) -> String {
+        "mock".into()
+    }
+    async fn usage(&self, _: &str) -> Result<(u64, u64), RunApplicationError> {
+        Ok((12, 34))
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_application_contract::OwnerScopedRunApplication for ResumeProbe {
+    async fn run_streaming_for_owner(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: Option<String>,
+        _: Vec<Message>,
+        _: Arc<dyn StreamSink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!()
+    }
+    async fn resume_for_owner(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        unreachable!("owner scope must not downgrade streaming")
+    }
+    async fn resume_streaming_for_owner(
+        &self,
+        scope: &str,
+        operation: &str,
+        thread: &str,
+        call: &str,
+        resume: RunResume,
+        sink: Arc<dyn StreamSink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.scopes.lock().unwrap().push(scope.into());
+        self.resume_streaming(operation, thread, call, resume, sink)
+            .await
+    }
+}
+
+#[tokio::test]
+async fn client_tool_continuation_streams_before_commit_and_preserves_scope_and_usage() {
+    // Cause/effect table: R1 exact client result + model still running -> first
+    // real delta before commit; R2 authenticated scoped request -> only scoped
+    // port; R3 later delta + committed tail -> no repeated text, one finish,
+    // authoritative usage. The gate makes a buffered implementation time out.
+    use http_body_util::BodyExt;
+    let rt = Arc::new(ResumeProbe {
+        release: Arc::new(Notify::new()),
+        interrupted: Arc::new(AtomicBool::new(false)),
+        scopes: Mutex::new(Vec::new()),
+    });
+    let app = awaken_protocol_ai_sdk::router::router_with_owner_scope(rt.clone()).layer(
+        axum::Extension(awaken_tenancy::WorkspaceScope("owner-1".into())),
+    );
+    let response = app.oneshot(Request::builder().method("POST").uri("/v1/ai-sdk/threads/t1/runs")
+        .header("content-type", "application/json").body(Body::from(json!({"messages":[{"id":"a1","role":"assistant","parts":[{"type":"tool-AskUserQuestion","toolCallId":"c1","state":"output-available","output":{"status":"answered"}}]}]}).to_string())).unwrap()).await.unwrap();
+    let mut body = response.into_body();
+    let mut prefix = String::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !prefix.contains("已有直营样板") {
+            let frame = body.frame().await.unwrap().unwrap();
+            if let Ok(data) = frame.into_data() {
+                prefix.push_str(std::str::from_utf8(&data).unwrap());
+            }
+        }
+    })
+    .await
+    .expect("R1 text arrives while continuation is blocked");
+    assert!(!prefix.contains("\"type\":\"finish\""));
+    assert_eq!(*rt.scopes.lock().unwrap(), vec!["owner-1"], "R2");
+    rt.release.notify_one();
+    let tail = to_bytes(body, usize::MAX).await.unwrap();
+    let all = prefix + std::str::from_utf8(&tail).unwrap();
+    assert_eq!(
+        all.matches("已有直营样板").count(),
+        1,
+        "R3 no replayed prefix"
+    );
+    assert!(all.contains("API 服务由谁交付"));
+    assert_eq!(all.matches("\"type\":\"finish\"").count(), 1);
+    assert!(all.contains("\"inputTokens\":12"));
+    assert!(all.contains("\"outputTokens\":34"));
+}
+
+#[tokio::test]
+async fn a_stalled_tool_continuation_interrupts_immediately_on_disconnect() {
+    // D1 a resumed model emits a prefix then stalls with no new event;
+    // D2 the client drops the SSE body -> same Run interrupt immediately,
+    // not after a token or keep-alive timer. No additional resume is sent.
+    use http_body_util::BodyExt;
+    let rt = Arc::new(ResumeProbe {
+        release: Arc::new(Notify::new()),
+        interrupted: Arc::new(AtomicBool::new(false)),
+        scopes: Mutex::new(Vec::new()),
+    });
+    let app = awaken_protocol_ai_sdk::router::router(rt.clone(), "owner-1".into());
+    let response = app.oneshot(Request::builder().method("POST").uri("/v1/ai-sdk/threads/t1/runs")
+        .header("content-type", "application/json").body(Body::from(json!({"messages":[{"id":"a1","role":"assistant","parts":[{"type":"tool-AskUserQuestion","toolCallId":"c1","state":"output-available","output":{"status":"answered"}}]}]}).to_string())).unwrap()).await.unwrap();
+    let mut body = response.into_body();
+    tokio::time::timeout(Duration::from_secs(2), body.frame())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    drop(body);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !rt.interrupted.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("D2 interrupted without waiting for another live frame");
+}

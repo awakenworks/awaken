@@ -139,6 +139,7 @@ enum ReplyRuntimeOutcome {
 struct RecordingReplyRuntime {
     activity: awaken_session_runtime_contract::SessionThreadToolReplyActivity,
     outcome: ReplyRuntimeOutcome,
+    observed_sinks: AtomicUsize,
     deliveries: Mutex<Vec<awaken_session_runtime_contract::SessionThreadToolReplyDelivery>>,
     boundaries: RecordingBoundaries,
 }
@@ -520,6 +521,7 @@ impl RecordingReplyRuntime {
                 prior_epoch: Some(1),
             },
             outcome,
+            observed_sinks: AtomicUsize::new(0),
             deliveries: Mutex::new(Vec::new()),
             boundaries: RecordingBoundaries::default(),
         }
@@ -1631,7 +1633,11 @@ impl awaken_session_runtime_contract::CoordinationRuntime for RecordingReplyRunt
     async fn reply_and_observe_session_thread_tool(
         &self,
         delivery: awaken_session_runtime_contract::SessionThreadToolReplyDelivery,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<awaken_session_application_contract::StepOutcome, RunError> {
+        if stream_sink.is_some() {
+            self.observed_sinks.fetch_add(1, Ordering::SeqCst);
+        }
         self.reply_session_thread_tool(delivery).await?;
         Ok(awaken_session_application_contract::StepOutcome::ended(
             Vec::new(),
@@ -2349,12 +2355,13 @@ impl awaken_session_runtime_contract::CoordinationRuntime for RecordingAgentAdmi
     async fn reply_and_observe_session_thread_tool(
         &self,
         delivery: awaken_session_runtime_contract::SessionThreadToolReplyDelivery,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<
         awaken_session_application_contract::StepOutcome,
         awaken_session_error_contract::RunError,
     > {
         awaken_session_runtime_contract::NeutralRuntime
-            .reply_and_observe_session_thread_tool(delivery)
+            .reply_and_observe_session_thread_tool(delivery, stream_sink)
             .await
     }
 
@@ -2986,12 +2993,13 @@ impl awaken_session_runtime_contract::CoordinationRuntime for RecordingBoundaryB
     async fn reply_and_observe_session_thread_tool(
         &self,
         delivery: awaken_session_runtime_contract::SessionThreadToolReplyDelivery,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<
         awaken_session_application_contract::StepOutcome,
         awaken_session_error_contract::RunError,
     > {
         awaken_session_runtime_contract::NeutralRuntime
-            .reply_and_observe_session_thread_tool(delivery)
+            .reply_and_observe_session_thread_tool(delivery, stream_sink)
             .await
     }
 
@@ -3689,12 +3697,13 @@ impl awaken_session_runtime_contract::CoordinationRuntime for RecordingCleanupRu
     async fn reply_and_observe_session_thread_tool(
         &self,
         delivery: awaken_session_runtime_contract::SessionThreadToolReplyDelivery,
+        stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<
         awaken_session_application_contract::StepOutcome,
         awaken_session_error_contract::RunError,
     > {
         awaken_session_runtime_contract::NeutralRuntime
-            .reply_and_observe_session_thread_tool(delivery)
+            .reply_and_observe_session_thread_tool(delivery, stream_sink)
             .await
     }
 

@@ -67,6 +67,19 @@ pub trait RunApplication: Send + Sync {
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError>;
 
+    /// Same resume command, with best-effort live observation. Implementations
+    /// without live support still return the authoritative committed outcome.
+    async fn resume_streaming(
+        &self,
+        operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+        _sink: Arc<dyn StreamSink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.resume(operation_id, thread, tool_use_id, resume).await
+    }
+
     async fn interrupt(&self, _thread: &str) -> Result<(), RunApplicationError> {
         Ok(())
     }
@@ -105,6 +118,19 @@ pub trait OwnerScopedRunApplication: RunApplication {
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError>;
+    /// Owner authorization remains required for observed continuations.
+    async fn resume_streaming_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        thread: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+        _sink: Arc<dyn StreamSink>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.resume_for_owner(owner_scope, operation_id, thread, tool_use_id, resume)
+            .await
+    }
 }
 
 /// Narrow application port for an explicit newest-wins Session Run.
