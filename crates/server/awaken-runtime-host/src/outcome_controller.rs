@@ -20,15 +20,11 @@ enum OutcomeCommand<'a> {
         max_iterations: u32,
     },
     Resume,
-    Read {
-        outcome_id: &'a str,
-    },
 }
 
 enum OutcomeCommandResult {
     Prepared(u64),
     Driven(Option<HostOutcomeDrive>),
-    Projected(Option<CommittedOutcome>),
 }
 
 impl SharedHost {
@@ -83,7 +79,7 @@ impl SharedHost {
             .await?
         {
             OutcomeCommandResult::Prepared(cursor) => Ok(cursor),
-            OutcomeCommandResult::Driven(_) | OutcomeCommandResult::Projected(_) => {
+            OutcomeCommandResult::Driven(_) => {
                 unreachable!("prepare command result")
             }
         }
@@ -99,29 +95,30 @@ impl SharedHost {
             .await?
         {
             OutcomeCommandResult::Driven(progress) => Ok(progress),
-            OutcomeCommandResult::Prepared(_) | OutcomeCommandResult::Projected(_) => {
+            OutcomeCommandResult::Prepared(_) => {
                 unreachable!("resume command result")
             }
         }
     }
 
-    /// Read one exact terminal projection through the existing Outcome
-    /// controller composition. The Host adds no cache and performs no Outcome
-    /// transition.
+    /// Read one exact terminal projection through the ordinary commit/read
+    /// adapter and the Outcome controller's sole projection implementation.
+    /// No Agent or physical Environment context is required for this query.
     pub(crate) async fn committed_outcome_projection(
         &self,
         thread: &str,
         outcome_id: &str,
     ) -> Result<Option<CommittedOutcome>, HostError> {
-        match self
-            .execute_outcome_command(thread, OutcomeCommand::Read { outcome_id })
-            .await?
-        {
-            OutcomeCommandResult::Projected(report) => Ok(report),
-            OutcomeCommandResult::Prepared(_) | OutcomeCommandResult::Driven(_) => {
-                unreachable!("read command result")
-            }
-        }
+        let commit = self.commit_for_read(thread).await?;
+        let thread_id = awaken_runtime_contract::ThreadId(thread.to_owned());
+        let state = awaken_ext_goal::state::ThreadOutcomeState::new(
+            &thread_id,
+            commit.as_ref(),
+            commit.as_ref(),
+        );
+        Controller::committed_projection_from_state(&state, &Id(outcome_id.to_owned()))
+            .await
+            .map_err(controller_error)
     }
 
     async fn execute_outcome_command(
@@ -139,7 +136,7 @@ impl SharedHost {
                 Definition::new(*description, *rubric, *max_iterations)
                     .map_err(|error| HostError::bad_request(error.to_string()))?,
             ),
-            OutcomeCommand::Resume | OutcomeCommand::Read { .. } => None,
+            OutcomeCommand::Resume => None,
         };
         // A frozen Worker placement makes the Coordinator a scheduler/reader,
         // even after the Worker publishes a durable Environment binding. Reuse
@@ -224,16 +221,6 @@ impl SharedHost {
                     Err(error) => Err(controller_error(error)),
                 }
             }
-            // The committed Outcome projection is a pure snapshot read. It
-            // must not join the execution mutexes used to serialize Worker and
-            // Grader effects: inbound receipt admission refreshes this query,
-            // and an interrupt must be durably accepted while those effects
-            // are still running.
-            OutcomeCommand::Read { outcome_id } => controller
-                .committed_projection(&Id(outcome_id.to_string()))
-                .await
-                .map(OutcomeCommandResult::Projected)
-                .map_err(controller_error),
         }
     }
 }
