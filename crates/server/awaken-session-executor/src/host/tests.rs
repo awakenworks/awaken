@@ -4,6 +4,7 @@ use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_execution_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
 use awaken_session_types::SessionId;
 mod mcp_relay_lease;
+mod outcome_query;
 mod pinned_skill_read;
 mod projection_convergence;
 mod resource_staging_lease;
