@@ -50,6 +50,8 @@ pub mod worker_fleet;
 pub mod worker_observation_boundary;
 pub mod worker_placement;
 mod worker_registry;
+mod worker_transport;
+pub use worker_transport::WorkerTransport;
 pub mod workspace_path;
 
 pub use artifact_publication::ClaimFencedArtifactPublisher;
