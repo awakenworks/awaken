@@ -4,7 +4,8 @@
 //! neutral `ChatRequest`/`ChatResponse` onto `genai` types and routes on the
 //! selected `ModelBinding.model_ref` — it never picks a different model (G22).
 
-use std::time::{Duration, Instant};
+use awaken_runtime_contract::llm::{ModelInferenceClock, TokioModelInferenceClock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageSource};
@@ -28,6 +29,7 @@ pub use genai::adapter::AdapterKind;
 
 mod anthropic_content;
 mod error_classification;
+mod inference_budget;
 mod inference_options;
 mod model_discovery;
 pub use error_classification::classify_error;
@@ -230,6 +232,15 @@ impl LlmExecutor for GenaiExecutor {
         use futures::StreamExt;
         use genai::chat::ChatStreamEvent;
 
+        let deadline = crate::inference_budget::current_model_response_deadline(self.timeout)?;
+        if self.idle_timeout.is_zero() {
+            return Err(Error::Binding(
+                "stream useful-progress silence budget must be positive".into(),
+            )
+            .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+            )));
+        }
         let model = request.model_binding.model_ref.clone();
         let genai_request =
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
@@ -259,9 +270,9 @@ impl LlmExecutor for GenaiExecutor {
             // extended-thinking folds into a `Thinking` block (→ `agent.thinking`).
             .with_capture_reasoning_content(true);
 
-        let started = Instant::now();
-        let stream_response = tokio::time::timeout(
-            self.timeout,
+        let started = TokioModelInferenceClock.now();
+        let stream_response = tokio::time::timeout_at(
+            deadline,
             self.client
                 .exec_chat_stream(model, genai_request, Some(&options)),
         )
@@ -277,7 +288,6 @@ impl LlmExecutor for GenaiExecutor {
         // deltas (`ToolCallDelta`); no downstream ever diffs again.
         let mut tool_sent: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
-        let deadline = started + self.timeout;
         let mut progress_deadline = started + self.idle_timeout;
         let mut live = BufferedLiveDelta::default();
 
@@ -288,7 +298,7 @@ impl LlmExecutor for GenaiExecutor {
             // actual text, reasoning, tool progress, or a terminal event. This
             // prevents provider heartbeats and empty choices from occupying the
             // full reasoning budget while retaining one stream parser/authority.
-            let observed_at = Instant::now();
+            let observed_at = TokioModelInferenceClock.now();
             let remaining = deadline.saturating_duration_since(observed_at);
             if remaining.is_zero() {
                 break Err(Error::Timeout(
@@ -323,7 +333,7 @@ impl LlmExecutor for GenaiExecutor {
                     ));
                 }
                 Err(_) => {
-                    let after_wait = Instant::now();
+                    let after_wait = TokioModelInferenceClock.now();
                     if after_wait >= deadline {
                         break Err(Error::Timeout(
                             "model stream exceeded total timeout".to_string(),
@@ -339,7 +349,7 @@ impl LlmExecutor for GenaiExecutor {
                     continue;
                 }
             };
-            let event_at = Instant::now();
+            let event_at = TokioModelInferenceClock.now();
             let mut made_progress = false;
             match event {
                 // Live text: forward each chunk as it arrives (valid UTF-8 by type).
@@ -454,6 +464,7 @@ impl GenaiExecutor {
         request: ChatRequest,
         max_tokens_override: Option<u32>,
     ) -> Result<ChatResponse> {
+        let deadline = crate::inference_budget::current_model_response_deadline(self.timeout)?;
         let model = request.model_binding.model_ref.clone();
         let genai_request =
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
@@ -471,8 +482,8 @@ impl GenaiExecutor {
             options = options.with_max_tokens(max_tokens);
         }
 
-        let response = tokio::time::timeout(
-            self.timeout,
+        let response = tokio::time::timeout_at(
+            deadline,
             self.client.exec_chat(model, genai_request, Some(&options)),
         )
         .await
