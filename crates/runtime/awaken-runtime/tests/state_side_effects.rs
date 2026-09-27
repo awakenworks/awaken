@@ -605,6 +605,135 @@ async fn parallel_tools_overlap_and_publish_results_in_model_order() {
     assert_eq!(results, ["observed_a", "observed_b"]);
 }
 
+struct FatalWaveTool(&'static str, Arc<Barrier>);
+
+#[async_trait::async_trait]
+impl RawTool for FatalWaveTool {
+    fn id(&self) -> &str {
+        "fatal"
+    }
+    async fn invoke(&self, _: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.1.wait().await;
+        match self.0 {
+            "unknown" => Err(ToolError::Indeterminate(
+                "external outcome remains unknown".into(),
+            )),
+            "state" => Err(ToolError::StateInvalidatedAfterDispatch(
+                "effect returned after projection invalidation".into(),
+            )),
+            "panic" => panic!("fixture executor panic"),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn parallel_wave_retains_returned_siblings_after_fatal_result_without_publishing_or_reentry()
+{
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_runtime_contract::tool_batch::{
+        ActiveToolBatch, ToolCallPhase, store_from_run_commands,
+    };
+    // Causes: C1 a wave has already joined every entered invocation;
+    // C2 fatal Indeterminate, post-dispatch StateConflict, or caught panic;
+    // C3 fatal is before/after a returned successful sibling in model order;
+    // C4 a subsequent serial wave remains unstarted. Effects: preserve every
+    // known returned per-call result in the same durable ToolBatch; retain the
+    // failed call's uncertainty and the original fatal disposition; publish no
+    // partial model transcript; start no later wave. Unknown/panic must still
+    // veto physical ACK. The 3x2 finite decision table crosses C2 with C3;
+    // positive overlap/order and all-success publication are tested adjacent.
+    for mode in ["unknown", "state", "panic"] {
+        for fatal_first in [true, false] {
+            let ids = if fatal_first {
+                ["fatal", "positive"]
+            } else {
+                ["positive", "fatal"]
+            };
+            let calls = ids
+                .into_iter()
+                .chain(["tail"])
+                .map(|id| ToolCall {
+                    call_id: id.into(),
+                    tool_id: id.into(),
+                    arguments: serde_json::json!({}),
+                })
+                .collect();
+            let model = Arc::new(CallsThenEnd::new(calls));
+            let positive = Arc::new(ConcurrencyProbe::default());
+            let barrier = Arc::new(Barrier::new(2));
+            let tail = Arc::new(ConcurrencyProbe::default());
+            let runtime = Runtime::new()
+                .with_llm(model.clone())
+                .with_tool(Arc::new(FatalWaveTool(mode, barrier.clone())))
+                .with_tool(Arc::new(ObservedTool {
+                    id: "positive",
+                    probe: positive.clone(),
+                    concurrency: Some(ToolConcurrency::Parallel),
+                    delay: Duration::ZERO,
+                    barrier: Some(barrier),
+                }))
+                .with_tool(Arc::new(ObservedTool {
+                    id: "tail",
+                    probe: tail.clone(),
+                    concurrency: Some(ToolConcurrency::Serial),
+                    delay: Duration::ZERO,
+                    barrier: None,
+                }))
+                .with_gate(Arc::new(AllowGate));
+            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let context = RuntimeRunContext::new().with_commit(commit.clone());
+            let latch = context.physical_quiescence.clone();
+            let outcome = runtime
+                .execute(activation(&["fatal", "positive", "tail"]), context)
+                .await
+                .unwrap();
+            assert_eq!(
+                outcome,
+                RunState::Ended(if mode == "state" {
+                    EndCause::Error(Failure::StateConflict)
+                } else {
+                    EndCause::Indeterminate
+                }),
+                "{mode}/{fatal_first}"
+            );
+            assert_eq!(positive.maximum_active.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                tail.maximum_active.load(Ordering::SeqCst),
+                0,
+                "later wave stays Requested"
+            );
+            assert_eq!(model.seen.load(Ordering::SeqCst), 1, "no partial inference");
+            if mode != "state" {
+                assert!(!latch.can_acknowledge_return(), "no fabricated stop proof");
+            }
+            let committed = commit.committed();
+            assert!(
+                !committed
+                    .messages
+                    .iter()
+                    .any(|message| message.role == Role::Tool)
+            );
+            let store = store_from_run_commands(committed.state, &RunId("run-1".into()));
+            let batch = ActiveToolBatch::load(&store).unwrap().unwrap();
+            let success = batch
+                .calls()
+                .iter()
+                .find(|entry| entry.call.call_id == "positive")
+                .unwrap();
+            assert!(
+                matches!(success.phase, ToolCallPhase::Completed(_)),
+                "returned sibling receipt lost: {mode}/{fatal_first}"
+            );
+            assert!(!batch.is_complete());
+            assert!(matches!(
+                batch.calls().last().unwrap().phase,
+                ToolCallPhase::Requested
+            ));
+        }
+    }
+}
+
 /// Resource-access decision table:
 ///
 /// | Left | Right | Same address | Expected maximum active |
