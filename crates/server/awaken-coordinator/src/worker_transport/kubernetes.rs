@@ -18,32 +18,35 @@ use awaken_worker_transport_security::kubernetes::{
 };
 
 pub(super) fn assemble(
-    policy: &crate::config::KubernetesWorkerTransport,
     client: kube::Client,
+    namespace: &str,
+    service_account: &str,
+    audience: &str,
+    provider_id: &str,
 ) -> Result<WorkerTransport, String> {
     let authenticator = KubernetesWorkerAuthenticator::new(
         client.clone(),
-        &policy.namespace,
-        &policy.service_account,
-        &policy.audience,
+        namespace,
+        service_account,
+        audience,
         std::time::Duration::from_secs(5),
     )?;
-    let observer = PodProcessObserver::new(client.clone(), &policy.namespace)
-        .map_err(|error| error.to_string())?;
+    let observer =
+        PodProcessObserver::new(client.clone(), namespace).map_err(|error| error.to_string())?;
     let stopper = PodProcessStopper::new(
-        PodProcessObserver::new(client, &policy.namespace).map_err(|error| error.to_string())?,
+        PodProcessObserver::new(client, namespace).map_err(|error| error.to_string())?,
     );
     Ok(WorkerTransport {
         authenticator: Arc::new(authenticator),
         bindings: Some(Arc::new(KubernetesWorkerBindings {
             observer,
-            namespace: policy.namespace.clone(),
-            provider_id: policy.provider_id.clone(),
+            namespace: namespace.to_owned(),
+            provider_id: provider_id.to_owned(),
         })),
         stops: Some(Arc::new(KubernetesWorkerStops {
             stopper,
-            namespace: policy.namespace.clone(),
-            provider_id: policy.provider_id.clone(),
+            namespace: namespace.to_owned(),
+            provider_id: provider_id.to_owned(),
         })),
     })
 }

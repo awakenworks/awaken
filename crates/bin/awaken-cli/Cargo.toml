@@ -173,7 +173,7 @@ test-support = [
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.
 container-docker = ["awaken-execution-composition/docker"]
 container-podman = ["awaken-execution-composition/podman"]
-container-k8s = ["awaken-execution-composition/k8s", "awaken-worker/container-k8s", "awaken-worker-transport-security/kubernetes", "dep:kube"]
+container-k8s = ["awaken-coordinator/container-k8s", "awaken-execution-composition/k8s", "awaken-worker/container-k8s", "awaken-worker-transport-security/kubernetes", "dep:kube"]
 
 [build-dependencies]
 serde_json.workspace = true

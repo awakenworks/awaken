@@ -122,15 +122,6 @@ fn running() -> Value {
     }]}})
 }
 
-fn policy() -> crate::config::KubernetesWorkerTransport {
-    crate::config::KubernetesWorkerTransport {
-        namespace: "workers".into(),
-        service_account: "executor".into(),
-        audience: "awaken-worker".into(),
-        provider_id: "test-cluster".into(),
-    }
-}
-
 fn fixture() -> (WorkerTransport, Arc<Facts>) {
     let facts = Arc::new(Facts {
         pod: Mutex::new((StatusCode::OK, running())),
@@ -185,7 +176,14 @@ fn fixture() -> (WorkerTransport, Arc<Facts>) {
             get(pod).put(update).delete(delete),
         )
         .with_state(facts.clone());
-    let transport = assemble(&policy(), kube::Client::new(router, "workers")).unwrap();
+    let transport = WorkerTransport::kubernetes(
+        kube::Client::new(router, "workers"),
+        "workers",
+        "executor",
+        "awaken-worker",
+        "test-cluster",
+    )
+    .unwrap();
     (transport, facts)
 }
 
@@ -540,5 +538,33 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                 "S3 remote veto"
             );
         }
+    }
+}
+
+#[test]
+fn shared_policy_validation_rejects_invalid_provider_coordinates_before_io() {
+    // Decision P1: exact provider/ns/account/audience -> accepted. P2 any blank,
+    // padded or malformed coordinate -> rejected before provider I/O. Existing
+    // CLI tests separately own role/build-feature/signing-trust exclusivity.
+    assert!(
+        WorkerTransport::validate_kubernetes_policy(
+            "workers",
+            "executor",
+            "awaken-worker",
+            "cluster"
+        )
+        .is_ok()
+    );
+    for (namespace, account, audience, provider) in [
+        ("../workers", "executor", "awaken-worker", "cluster"),
+        ("workers", "", "awaken-worker", "cluster"),
+        ("workers", "executor", " ", "cluster"),
+        ("workers", "executor", "awaken-worker", ""),
+        ("workers", "executor", "awaken-worker", " cluster "),
+    ] {
+        assert!(
+            WorkerTransport::validate_kubernetes_policy(namespace, account, audience, provider)
+                .is_err()
+        );
     }
 }

@@ -218,13 +218,9 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .unwrap();
         created.push(pod);
     }
-    let policy = crate::config::KubernetesWorkerTransport {
-        namespace: name.into(),
-        service_account: "executor".into(),
-        audience: "awaken-worker".into(),
-        provider_id: cluster,
-    };
-    let transport = assemble(&policy, client.clone()).unwrap();
+    let audience = "awaken-worker";
+    let transport =
+        WorkerTransport::kubernetes(client.clone(), name, "executor", audience, &cluster).unwrap();
     let bindings = transport.binding_source().unwrap();
     // Readiness uses the actual admissible process shape, not Pod phase alone.
     for pod in &created {
@@ -269,11 +265,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
             .is_err(),
         "L2 audience"
     );
-    std::fs::write(
-        &old_token,
-        token(&accounts, &created[0], &policy.audience).await,
-    )
-    .unwrap();
+    std::fs::write(&old_token, token(&accounts, &created[0], audience).await).unwrap();
     let worker = control
         .register_classified("nonce-a", manifest())
         .await
@@ -362,11 +354,14 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     // Independent instance, reopened durable stores, no old token on disk.
     std::fs::remove_file(&old_token).unwrap();
     clock.set(100 + TTL + 1);
-    let transport = assemble(
-        &policy,
+    let transport = WorkerTransport::kubernetes(
         awaken_sandbox_container::k8s::connect_control_client()
             .await
             .unwrap(),
+        name,
+        "executor",
+        audience,
+        &cluster,
     )
     .unwrap();
     let (address, store, server) = coordinator(files.path(), &transport, clock.clone()).await;
@@ -378,11 +373,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         Some(original.clone()),
         "L3"
     );
-    std::fs::write(
-        &next_token,
-        token(&accounts, &created[1], &policy.audience).await,
-    )
-    .unwrap();
+    std::fs::write(&next_token, token(&accounts, &created[1], audience).await).unwrap();
     let next_upstream = upstream(&address, &created[1], &next_token);
     let successor = WorkerControlClient::new(next_upstream.clone())
         .register_classified("next-boot", manifest())
