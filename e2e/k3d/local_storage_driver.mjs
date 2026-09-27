@@ -86,24 +86,42 @@ async function main() {
   await consume('legacy', 'pvc-a', '64Mi', 'printf legacy > /data/legacy', image, 'local-path');
   const classes = await list('storageclass');
   assert.equal(classes.find((c) => c.metadata.name === 'local-path').metadata.annotations['storageclass.kubernetes.io/is-default-class'], 'true');
-  // P5 exhaustion => new consumer Pending, never another client's data/PV.
-  await consume('third', 'pvc-a', '128Mi', 'printf third > /data/identity', image);
+  // P5 decision table: all PVs Bound + one empty claim + its Pod absent =>
+  // new consumers remain Pending; neither emptiness nor Pod absence releases
+  // that claim's ownership. Explicit PVC release is the only reclaim trigger.
+  const emptyBound = await consume('third', 'pvc-a', '128Mi', 'test ! -e /data/identity', image);
+  await kube('-n', 'pvc-a', 'delete', 'pod', 'third', '--wait=true');
   await consume('fourth', 'pvc-b', '128Mi', 'printf fourth > /data/identity', image);
   await apply(claim('waiting', 'pvc-b')); await apply(pod('waiting', 'pvc-b', 'waiting', 'test ! -e /data/identity', image));
   const pending = await waitForValue(async () => (await list('pods', 'pvc-b')).find((p) => p.metadata.name === 'waiting'),
     (p) => p?.status?.conditions?.some((c) => c.type === 'PodScheduled' && c.status === 'False' && c.reason === 'Unschedulable'),
     'exhausted pool remains unscheduled', { timeoutMs: 60_000, pollMs: 250 });
   record({ label: 'exhausted', pod: pending });
-  // P6 explicit PVC release => upstream cleanup, new PV UID, then a waiting
-  // ordinary consumer binds it with no previous identity file visible.
+  const stillBound = (await list('pv')).find((p) => p.metadata.name === emptyBound.spec.volumeName);
+  assert.equal(stillBound.status.phase, 'Bound');
+  assert.equal(stillBound.spec.claimRef.uid, emptyBound.metadata.uid);
+  record({ label: 'bound-empty-without-pod-preserved', claim: emptyBound, pv: stillBound });
+  // P6 two pending claims + exactly one released PV + successful cleanup =>
+  // exactly one winner, the other remains Pending, with no old identity visible.
+  // This tests contested reuse rather than assuming creation order wins.
+  await apply(claim('contender', 'pvc-b'));
+  await apply(pod('contender', 'pvc-b', 'contender', 'test ! -e /data/identity', image));
   const prior = (await list('pv')).find((p) => p.metadata.name === b.spec.volumeName);
   await kube('-n', 'pvc-b', 'delete', 'pod', 'cache', '--wait=true');
   await kube('-n', 'pvc-b', 'delete', 'pvc', 'cache', '--wait=true');
-  await ready('waiting', 'pvc-b');
+  const competing = await waitForValue(async () => (await list('pvc', 'pvc-b')).filter((c) => ['waiting', 'contender'].includes(c.metadata.name)),
+    (claims) => claims.length === 2 && claims.filter((c) => c.status.phase === 'Bound').length === 1,
+    'only one pending consumer binds the reclaimed PV', { timeoutMs: 90_000, pollMs: 250 });
+  const winner = competing.find((c) => c.status.phase === 'Bound');
+  const loser = competing.find((c) => c.status.phase !== 'Bound');
+  assert.equal(loser.status.phase, 'Pending'); assert.ok(!loser.spec.volumeName);
+  await ready(winner.metadata.name, 'pvc-b');
   const recycled = (await list('pv')).find((p) => p.metadata.name === b.spec.volumeName);
   assert.ok(recycled); assert.notEqual(recycled.metadata.uid, prior.metadata.uid);
-  assert.equal((await list('pvc', 'pvc-b')).find((c) => c.metadata.name === 'waiting').spec.volumeName, b.spec.volumeName);
-  record({ label: 'cleaned-before-reallocation', previous_uid: prior.metadata.uid, pv: recycled });
+  assert.equal(winner.spec.volumeName, b.spec.volumeName);
+  assert.equal(recycled.spec.claimRef.uid, winner.metadata.uid);
+  assert.equal((await list('pv')).find((p) => p.metadata.name === emptyBound.spec.volumeName).spec.claimRef.uid, emptyBound.metadata.uid);
+  record({ label: 'cleaned-before-reallocation', previous_uid: prior.metadata.uid, pv: recycled, winner, loser });
   evidence.passed = true;
 }
 main().catch((error) => { evidence.error = String(error); process.exitCode = 1; console.error(String(error)); })
