@@ -193,3 +193,26 @@ Workspace ownership authorization. The ordinary public archive remains
 idle-only. No new route, cleanup queue, status authority, credential, or Run
 permission is introduced; this is the existing product release contract
 reusing the terminal-only Session owner.
+
+## Amendment 2026-09-28: reuse the retained terminal Repository source
+
+A failed or response-lost terminal preparation can leave the exact bound
+Environment in the process-local Retiring phase while the aggregate still owns
+an uncompleted Repository publication. Reusing the ordinary LiveSource role
+then rejects the retained owner forever, even when the provider proves the same
+physical source is Ready. A fresh Host does not exercise that hot retry shape.
+
+The existing bound-Environment preparation mode now distinguishes terminal
+Repository publication from ordinary live/checkpoint adoption. Both require the
+same Ready observation and exact binding/handle validation. Only the aggregate's
+terminal Repository command may reuse an exact bound terminal-retiring Arc; it
+keeps that owner retired and does not reopen tool execution. Unpublished,
+revoked, foreign, closed and disposing sources remain rejected. Current lease,
+Workspace, publication expectation and provider effect fencing are unchanged.
+There is no additional owner, receipt, cleanup queue or persistent state.
+
+The existing real Git/Namespace integration covers publication and byte-identical
+replay with this retained owner, rejection by ordinary LiveSource, and rejection
+of nonterminal retirement. Its original cold recovery, remote-ref rejection and
+ordered cleanup cases remain in the same test. Real product acceptance still
+requires the exact consuming revision and the UI delivery evidence above.

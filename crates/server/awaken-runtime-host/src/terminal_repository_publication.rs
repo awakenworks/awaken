@@ -110,7 +110,7 @@ impl ManagedHost {
                 binding,
                 &effect_fence,
                 resolved_resources.as_ref(),
-                crate::host::BoundEnvironmentPreparationMode::LiveSource,
+                crate::host::BoundEnvironmentPreparationMode::TerminalRepositoryPublication,
             )
             .await
             .map_err(to_run_error)?;

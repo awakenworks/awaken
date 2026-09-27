@@ -136,7 +136,8 @@ impl SharedHost {
         let mut environment = match resident {
             Some(environment) => environment,
             None => match mode {
-                BoundEnvironmentPreparationMode::LiveSource => Arc::new(
+                BoundEnvironmentPreparationMode::LiveSource
+                | BoundEnvironmentPreparationMode::TerminalRepositoryPublication => Arc::new(
                     provider
                         .adopt_effective_for_effect(
                             spec,
@@ -183,7 +184,7 @@ impl SharedHost {
             },
         };
         if adopted
-            && mode != BoundEnvironmentPreparationMode::LiveSource
+            && !mode.requires_live_source()
             && let Some(retiring) = self
                 .session_slots
                 .read(thread, |slot| match &slot.environment_owner {
@@ -211,7 +212,8 @@ impl SharedHost {
             adopted = false;
         }
         match mode {
-            BoundEnvironmentPreparationMode::LiveSource => {
+            BoundEnvironmentPreparationMode::LiveSource
+            | BoundEnvironmentPreparationMode::TerminalRepositoryPublication => {
                 if adopted {
                     let candidate =
                         self.begin_session_environment_adoption(thread, environment.clone())?;
@@ -238,7 +240,14 @@ impl SharedHost {
                             })
                         })
                         .unwrap_or(false);
-                    if !still_resident {
+                    // A response-lost terminal preparation keeps the bound Arc
+                    // behind the existing retirement fence. Only the terminal
+                    // Repository role can read that same Ready source; generic
+                    // live adoption cannot reopen it for tools/checkpoint work.
+                    let retained_terminal = mode
+                        == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
+                        && self.retained_terminal_preparation_owner(thread, &environment);
+                    if !still_resident && !retained_terminal {
                         return Err(HostError::unavailable_classified(
                             "session_live_environment_owner_not_resident",
                             "live source recovery found a non-resident Environment owner",
@@ -342,7 +351,7 @@ impl SharedHost {
         resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<PreparedBoundEnvironment, HostError> {
-        if mode == BoundEnvironmentPreparationMode::LiveSource
+        if mode.requires_live_source()
             && self
                 .session_slots
                 .read(thread, |slot| {
@@ -386,7 +395,7 @@ impl SharedHost {
                     spec: &spec,
                     effect_fence,
                 },
-                if mode == BoundEnvironmentPreparationMode::LiveSource {
+                if mode.requires_live_source() {
                     awaken_container_contract::ContainerObservationPurpose::Recovery
                 } else {
                     awaken_container_contract::ContainerObservationPurpose::TerminalCleanup
@@ -399,7 +408,7 @@ impl SharedHost {
                     error.to_string(),
                 )
             })?;
-        if mode == BoundEnvironmentPreparationMode::LiveSource {
+        if mode.requires_live_source() {
             match &observation {
                 awaken_provisioning_contract::SandboxObservation::Ready => {}
                 awaken_provisioning_contract::SandboxObservation::Provisioning => {

@@ -743,6 +743,12 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
 /// produced evidence.
 #[tokio::test]
 async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays() {
+    for retained_terminal in [false, true] {
+        terminal_repository_publication_fixture(retained_terminal).await;
+    }
+}
+
+async fn terminal_repository_publication_fixture(retained_terminal: bool) {
     let temp = tempfile::tempdir().expect("publication fixture");
     let sandbox_root = temp.path().join("sandboxes");
     let namespace_probe = awaken_sandbox_local::NamespaceProvider::new(&sandbox_root);
@@ -1045,6 +1051,76 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     )
     .await
     .expect("P1 install the aggregate-fenced publication assignment");
+    if retained_terminal {
+        // P5: a previous terminal preparation returned no aggregate receipt but
+        // retained this exact bound Arc behind retirement. Provider remains Ready;
+        // publication must reuse it under the current terminal assignment, without
+        // reopening ordinary execution. A cold Host does not reproduce this shape.
+        host.session_slots.update(session_id, |slot| {
+            let owned = slot.environment_owner.terminal_bound_environment().unwrap();
+            slot.environment_owner = crate::session_slot::SessionEnvironmentOwner::Retiring(
+                crate::session_slot::RetiringSessionEnvironment {
+                    cause: crate::session_slot::SessionEnvironmentRetirementCause::Terminal {
+                        effect_id: "terminal-source-preparation".into(),
+                    },
+                    owned: crate::session_slot::RetiringEnvironmentOwner::Bound(owned),
+                },
+            );
+            slot.runtime = None;
+        });
+        assert!(
+            host.session_environment(session_id).await.is_none(),
+            "P5 ordinary execution remains closed"
+        );
+        // P6: the generic live/checkpoint source path remains denied, even with
+        // an exact handle and current lease. P7: nonterminal retirement cannot be
+        // relabelled as a terminal publication source by this new role projection.
+        let binding = terminal_projection.environment.binding().unwrap();
+        let publication_fence = lease
+            .sandbox_effect_fence(command.effect_id.clone())
+            .unwrap();
+        let ordinary = host
+            .prepare_bound_environment_for_effect_under_lifecycle(
+                session_id,
+                binding,
+                &publication_fence,
+                Some(&resources),
+                crate::host::BoundEnvironmentPreparationMode::LiveSource,
+            )
+            .await;
+        assert!(
+            ordinary.is_err(),
+            "P6 terminal retirement remains hidden from ordinary live IO"
+        );
+        host.session_slots.update(session_id, |slot| {
+            if let crate::session_slot::SessionEnvironmentOwner::Retiring(retiring) =
+                &mut slot.environment_owner
+            {
+                retiring.cause =
+                    crate::session_slot::SessionEnvironmentRetirementCause::RealizationRevocation;
+            } else {
+                panic!("P7 retained owner");
+            }
+        });
+        assert!(
+            managed
+                .terminal_cleanup()
+                .unwrap()
+                .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
+                .await
+                .is_err(),
+            "P7 revoked owner remains closed"
+        );
+        host.session_slots.update(session_id, |slot| {
+            if let crate::session_slot::SessionEnvironmentOwner::Retiring(retiring) =
+                &mut slot.environment_owner
+            {
+                retiring.cause = crate::session_slot::SessionEnvironmentRetirementCause::Terminal {
+                    effect_id: "terminal-source-preparation".into(),
+                };
+            }
+        });
+    }
     let first = managed
         .terminal_cleanup()
         .ok_or_else(|| {
@@ -1110,9 +1186,20 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     std::fs::write(divergent.join("README.md"), "remote changed").unwrap();
     git(&divergent, &["commit", "-am", "remote changed"]);
     git(&divergent, &["push", "origin", "awf/work"]);
-    assert!(
+    assert_eq!(
         host.session_environment(session_id).await.is_some(),
-        "P1-P2 Environment survives until root cleanup"
+        !retained_terminal,
+        "P1-P2/P5 publication preserves ordinary residency or retirement",
+    );
+    assert!(
+        host.session_slots
+            .read(session_id, |slot| {
+                slot.environment_owner
+                    .terminal_bound_environment()
+                    .is_some()
+            })
+            .unwrap_or(false),
+        "P1-P2/P5 exact physical source survives until root cleanup"
     );
 
     let control_session = terminal_test_session(

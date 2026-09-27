@@ -75,12 +75,22 @@ pub(super) enum SessionEnvironmentUnavailablePolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BoundEnvironmentPreparationMode {
     LiveSource,
+    /// The aggregate's terminal Repository command may reuse its exact bound
+    /// terminal-retiring owner while the provider is still Ready. It never
+    /// reopens ordinary execution or consumes a closed/disposal source.
+    TerminalRepositoryPublication,
     Terminal,
     /// Re-observe/reconstruct only the physical owner after the aggregate has
     /// durably admitted terminal Preparation. An existing terminal Retiring
     /// owner stays under its original preparation fence; this mode adds no
     /// source-dependent work and exists only for the Disposal boundary.
     TerminalDisposal,
+}
+
+impl BoundEnvironmentPreparationMode {
+    fn requires_live_source(self) -> bool {
+        matches!(self, Self::LiveSource | Self::TerminalRepositoryPublication)
+    }
 }
 
 /// Borrowed coordinates consumed by the one Session publication/provider
