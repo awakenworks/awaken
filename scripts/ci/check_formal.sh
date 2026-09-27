@@ -935,6 +935,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-sandbox-container \
     --harness continuation_writable_roots_share_one_claim_without_aliasing \
     --harness allowlist_claim_never_exceeds_its_evidence
+  run_kani awaken-sandbox-container --features docker \
+    --harness docker_absence_requires_an_explicit_not_found_response
   run_kani awaken-sandbox-container --features k8s --solver kissat \
     --harness rebuild_activation_requires_exact_continuation_and_effect \
     --harness continuation_claim_selection_is_total_exact_and_non_widening \

@@ -50,6 +50,7 @@ use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 mod exec;
+mod removal;
 
 use exec::{DockerExecProcess, wrapped_exec_argv};
 
@@ -132,6 +133,34 @@ fn docker_not_found(error: &bollard::errors::Error) -> bool {
             ..
         }
     )
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(2)]
+fn docker_absence_requires_an_explicit_not_found_response() {
+    // Actual Engine-error classifier over every u16 API status and the distinct
+    // transport-timeout variant. C1 explicit HTTP response; C2 status=404.
+    // R1 C1+C2 => absence; R2 every other status/transport error => unknown.
+    // This is the classification kernel, not truth of the daemon, immutable-ID
+    // addressing, async deletion, or physical termination; HTTP tests own wiring.
+    let status: u16 = kani::any();
+    let api_response: bool = kani::any();
+    let error = if api_response {
+        bollard::errors::Error::DockerResponseServerError {
+            status_code: status,
+            message: "engine".into(),
+        }
+    } else {
+        bollard::errors::Error::RequestTimeoutError
+    };
+    if docker_not_found(&error) {
+        assert!(api_response);
+        assert_eq!(status, 404);
+    }
+    if api_response && status == 404 {
+        assert!(docker_not_found(&error));
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -1126,13 +1155,9 @@ impl ContainerRuntime for DockerRuntime {
                 }
                 ExistingRealizationDecision::ReplaceExact(observed) => {
                     let removal = self
-                        .docker
-                        .remove_container(
+                        .remove_confirmed_incarnation(
                             &observed.incarnation.identity,
-                            Some(RemoveContainerOptions {
-                                force: observed.phase != ExistingRealizationPhase::Terminal,
-                                ..Default::default()
-                            }),
+                            observed.phase != ExistingRealizationPhase::Terminal,
                         )
                         .await;
                     let after = self
@@ -1142,7 +1167,7 @@ impl ContainerRuntime for DockerRuntime {
                     if after == ExistingRealizationDecision::Create {
                         decision = after;
                     } else if removal.is_err() {
-                        return Err(backend(removal.unwrap_err()).after_mutation());
+                        return Err(removal.unwrap_err().after_mutation());
                     } else {
                         decision = after;
                     }
@@ -1696,16 +1721,7 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        self.docker
-            .remove_container(
-                container_id,
-                Some(RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
-            )
-            .await
-            .map_err(backend)
+        self.remove_confirmed_incarnation(container_id, true).await
     }
 
     fn capacity_lease_domain(&self) -> Option<String> {
@@ -1718,21 +1734,15 @@ impl ContainerRuntime for DockerRuntime {
         // never got to produce. 404 is success: the create was dropped before
         // the daemon ever saw it, which is the other half of the same window.
         let name = runtime_container_name(self.realization_namespace.as_str(), scope)?;
-        match self
-            .docker
-            .remove_container(
-                &name,
-                Some(RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
-            )
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(error) if docker_not_found(&error) => Ok(()),
-            Err(error) => Err(backend(error)),
-        }
+        let observed = match self.docker.inspect_container(&name, None).await {
+            Ok(observed) => observed,
+            Err(error) if docker_not_found(&error) => return Ok(()),
+            Err(error) => return Err(backend(error)),
+        };
+        let exact_id = observed.id.filter(|id| !id.is_empty()).ok_or_else(|| {
+            backend("Docker unreceipted scope observation has no immutable incarnation")
+        })?;
+        self.remove_confirmed_incarnation(&exact_id, true).await
     }
 
     async fn remove_exact_incarnation(

@@ -61,6 +61,7 @@ unrecorded-exec = []
 podman = ["connection", "tokio/process"]
 
 [dev-dependencies]
+axum.workspace = true
 # Self dev-dependency so the integration suites — which drive the runtime port
 # directly and own their containers — can admit an exec no environment ledger
 # records. Dependants never see this feature.
