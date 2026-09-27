@@ -2235,6 +2235,7 @@ dependencies = [
  "awaken-sandbox-control-transport",
  "awaken-sandbox-memoryd",
  "awaken-tool-relay",
+ "axum",
  "base64 0.22.1",
  "blake3",
  "bollard",
