@@ -10,13 +10,59 @@ use std::time::Instant;
 use awaken_dispatch::{ControlDispatchQueue, DispatchQueue, PostgresDispatchStore, RunDispatch};
 use sqlx::types::Json;
 
+/// Nearest-rank percentile, ceil(N*p/100)-1, without width-dependent overflow.
+/// All measurement callers sort their own completed samples before reporting.
+fn percentile_index(len: usize, percent: usize) -> Option<usize> {
+    if len == 0 || !(1..=100).contains(&percent) {
+        return None;
+    }
+    (len / 100 * percent + ((len % 100) * percent).div_ceil(100)).checked_sub(1)
+}
+
+fn percentile(samples: &[f64], percent: usize) -> f64 {
+    samples[percentile_index(samples.len(), percent)
+        .expect("nonempty sorted measurement samples and percentile1..100")]
+}
+
+#[test]
+fn percentile_reporting_covers_empty_bounds_and_exact_integer_ranks() {
+    // Q1 empty/percent0/percent101 => no rank; Q2 N=1/9/20/32/100 => the
+    // nearest rank; Q3 usizeMAX => representable exact index, no multiplication
+    // overflow. N20,p95 formerly selected index19(max), not the correct18.
+    for (n, p, expected) in [
+        (0, 95, None),
+        (20, 0, None),
+        (20, 101, None),
+        (1, 95, Some(0)),
+        (9, 95, Some(8)),
+        (20, 95, Some(18)),
+        (32, 95, Some(30)),
+        (100, 95, Some(94)),
+        (20, 50, Some(9)),
+        (20, 99, Some(19)),
+    ] {
+        assert_eq!(percentile_index(n, p), expected, "Q1/Q2 {n}/{p}");
+    }
+    for p in [1, 50, 95, 99, 100] {
+        assert_eq!(
+            percentile_index(usize::MAX, p),
+            Some(((usize::MAX as u128 * p as u128).div_ceil(100) - 1) as usize),
+            "Q3"
+        );
+    }
+    let samples = (1..=20).map(f64::from).collect::<Vec<_>>();
+    assert_eq!(percentile(&samples, 50), 10.0, "Q2 explicit p50 definition");
+    assert_eq!(percentile(&samples, 95), 19.0, "Q2 exact p95");
+    assert_eq!(percentile(&samples, 99), 20.0, "Q2 exact p99");
+}
+
 #[tokio::test]
 #[ignore = "requires a live PostgreSQL fixture and intentionally creates a large queue"]
 async fn broad_pending_queue_claim_latency() {
     // Cause/effect design: C1 a large, entirely runnable Pending queue; C2 the
     // first claim warms caches, then repeated exact claims remove one candidate
     // at a time; C3 the exact operational depth query is repeated separately.
-    // E1 every call claims a distinct Run; E2 print median and p95 claim
+    // E1 every call claims a distinct Run; E2 print nearest-rank p50, p95 and p99 claim
     // latency; E3 print the cost of one exact depth read. Constraint:
     // all rows have distinct Threads, no physical slot, and identical priority,
     // so the measurement isolates discovery/claim rather than placement or a
@@ -76,10 +122,11 @@ async fn broad_pending_queue_claim_latency() {
     }
     samples.sort_by(f64::total_cmp);
     println!(
-        "dispatch_claim_perf rows={rows} n={} median_ms={:.3} p95_ms={:.3} min_ms={:.3} max_ms={:.3}",
+        "dispatch_claim_perf rows={rows} n={} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} min_ms={:.3} max_ms={:.3}",
         samples.len(),
-        samples[samples.len() / 2],
-        samples[samples.len() * 95 / 100],
+        percentile(&samples, 50),
+        percentile(&samples, 95),
+        percentile(&samples, 99),
         samples[0],
         samples[samples.len() - 1],
     );
@@ -102,10 +149,11 @@ async fn broad_pending_queue_claim_latency() {
     }
     depth_samples.sort_by(f64::total_cmp);
     println!(
-        "dispatch_depth_perf rows={rows} n={} median_ms={:.3} p95_ms={:.3}",
+        "dispatch_depth_perf rows={rows} n={} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3}",
         depth_samples.len(),
-        depth_samples[depth_samples.len() / 2],
-        depth_samples[depth_samples.len() * 95 / 100],
+        percentile(&depth_samples, 50),
+        percentile(&depth_samples, 95),
+        percentile(&depth_samples, 99),
     );
 }
 
@@ -115,7 +163,7 @@ async fn incompatible_front_queue_claim_latency() {
     // Causes: C1 a high-priority front of pending rows has exhausted claim
     // epochs; C2 ten ordinary lower-priority Runs remain; C3 each claim must
     // inspect past C1 without silently returning None. Effects: E1 only C2
-    // runs are claimed; E2 print warm median/p95 latency with the same fixture
+    // runs are claimed; E2 print warm p50/p95/p99 latency with the same fixture
     // before and after the query change. Rule I1=C1+C2+C3 -> E1+E2. This probes
     // the worst-case cursor path that a broad all-compatible benchmark misses.
     let pool = harness::schema_pool("t_pg_claim_incompat_perf")
@@ -158,10 +206,11 @@ async fn incompatible_front_queue_claim_latency() {
     }
     samples.sort_by(f64::total_cmp);
     println!(
-        "dispatch_incompatible_perf rows={rows} n={} median_ms={:.3} p95_ms={:.3} min_ms={:.3} max_ms={:.3}",
+        "dispatch_incompatible_perf rows={rows} n={} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} min_ms={:.3} max_ms={:.3}",
         samples.len(),
-        samples[samples.len() / 2],
-        samples[samples.len() * 95 / 100],
+        percentile(&samples, 50),
+        percentile(&samples, 95),
+        percentile(&samples, 99),
         samples[0],
         samples[samples.len() - 1],
     );
@@ -173,7 +222,7 @@ async fn concurrent_incompatible_front_claim_throughput() {
     // Causes: C1 the same exhausted high-priority prefix for every case;
     // C2 exactly N independent eligible Runs; C3 N claimers start behind one
     // barrier with N in {1,8,32}. Effects: E1 every Run gets one distinct
-    // current claim; E2 print per-call p95 and whole-window claim/s under the
+    // current claim; E2 print per-call p50/p95/p99 and whole-window claim/s under the
     // same database/pool. Rules T1=C1+C2+C3->E1+E2 for each N. No numeric
     // timing assertion is made in CI: old/new runs must alternate on one fixed
     // host, PostgreSQL image and pool before any performance claim is issued.
@@ -250,9 +299,10 @@ async fn concurrent_incompatible_front_claim_throughput() {
         samples.sort_by(f64::total_cmp);
         println!(
             "dispatch_claim_concurrent_perf rows={rows} claimers={claimers} \
-             median_ms={:.3} p95_ms={:.3} claim_per_s={:.3}",
-            samples[samples.len() / 2],
-            samples[samples.len() * 95 / 100],
+             p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} claim_per_s={:.3}",
+            percentile(&samples, 50),
+            percentile(&samples, 95),
+            percentile(&samples, 99),
             claimers as f64 / window_s,
         );
     }
