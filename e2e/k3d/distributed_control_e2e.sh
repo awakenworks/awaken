@@ -19,6 +19,7 @@ DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
 DRIVER="$REPO_ROOT/e2e/k3d/distributed_control_driver.ts"
 API_PF_LOG="${TMPDIR:-/tmp}/${CLUSTER}_api_pf.log"
 API_PF=""
+PROVIDER_PF=""
 STOPPED_NODE=""
 STOPPED_CONTAINER=""
 PARTITIONED_NODE=""
@@ -31,6 +32,8 @@ CLUSTER_CREATED=0
 NATIVE_CRASH_OLD="native-crash-old"
 NATIVE_CRASH_NEXT="native-crash-next"
 NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"
+NATIVE_INFLIGHT_NEXT="native-inflight-next"
+NATIVE_INFLIGHT_MARKER="ADR71-NATIVE-INFLIGHT-CRASH"
 BATCH_CLEANUP_TIMEOUT_SECONDS="${ADR71_BATCH_CLEANUP_TIMEOUT_SECONDS:-120}"
 export CARGO_CACHE_AUTOCLEAN=0
 
@@ -159,6 +162,7 @@ cleanup() {
     "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" open "$PARTITION_DIRECTION" >/dev/null 2>&1 || true
   [ -z "$STOPPED_CONTAINER" ] || docker start "$STOPPED_CONTAINER" >/dev/null 2>&1 || true
   [ -z "$API_PF" ] || kill "$API_PF" 2>/dev/null || true
+  [ -z "$PROVIDER_PF" ] || kill "$PROVIDER_PF" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
   k3d_delete_cluster_and_remove \
     "$CLUSTER" \
@@ -345,6 +349,31 @@ spec:
     - name: data
       emptyDir: {}
 YAML
+}
+
+hard_crash_native_worker() {
+  local pod="$1" expected_uid="$2" facts uid node container phase observed_container observed_uid
+  # One API observation binds UID, node and CRI id before the destructive
+  # injection. Completion joins the exact retained UID/container, never a bare
+  # name/404. Both Native fault phases reuse this one physical injection owner.
+  facts=$(kubectl -n "$NS" get pod "$pod" \
+    -o jsonpath='{.metadata.uid}|{.spec.nodeName}|{.status.containerStatuses[0].containerID}')
+  IFS='|' read -r uid node container <<<"$facts"
+  container=${container#containerd://}
+  [ "$uid" = "$expected_uid" ] && [[ "$node" == "k3d-${CLUSTER}-"* ]] \
+    && [[ "$container" =~ ^[0-9a-f]{64}$ ]] \
+    || { err "invalid exact Native Worker CRI crash target"; return 1; }
+  docker exec "$node" crictl stop --timeout 0 "$container" >/dev/null
+  for _ in $(seq 1 90); do
+    facts=$(kubectl -n "$NS" get pod "$pod" \
+      -o jsonpath='{.metadata.uid}|{.status.phase}|{.status.containerStatuses[0].state.terminated.containerID}')
+    IFS='|' read -r observed_uid phase observed_container <<<"$facts"
+    [ "$observed_uid" = "$expected_uid" ] && [ "$phase" = "Failed" ] \
+      && [ "$observed_container" = "containerd://${container}" ] && return 0
+    sleep 1
+  done
+  err "Kubernetes did not retain the exact hard-crashed Worker process"
+  return 1
 }
 
 log "1/11 build production roles and the protocol-only Provider fixture"
@@ -966,7 +995,7 @@ for _ in $(seq 1 60); do
 done
 [ "$FINISH_REJECTED" -gt 0 ] \
   || { err "old Native Worker never reached the held finish ACK boundary"; exit 1; }
-NATIVE_PROVIDER_BEFORE_CRASH=$(kubectl -n "$NS" logs -l app=provider -c provider --since=30m \
+NATIVE_PROVIDER_BEFORE_CRASH=$(kubectl -n "$NS" logs -l app=provider -c provider --tail=-1 --since=30m \
   | grep -Fc "ADR71_PROVIDER_REQUEST \"${NATIVE_CRASH_MARKER}\"" || true)
 [ "$NATIVE_PROVIDER_BEFORE_CRASH" = "1" ] \
   || { err "Native crash Run reached Provider ${NATIVE_PROVIDER_BEFORE_CRASH} times before crash"; exit 1; }
@@ -982,26 +1011,7 @@ IFS='|' read -r NATIVE_RUN_ID NATIVE_OLD_OWNER NATIVE_OLD_EPOCH <<<"$NATIVE_DISP
 [ -n "$NATIVE_RUN_ID" ] && [ -n "$NATIVE_OLD_OWNER" ] && [[ "$NATIVE_OLD_EPOCH" =~ ^[0-9]+$ ]] \
   || { err "occupied Native dispatch coordinates are malformed"; exit 1; }
 
-NATIVE_OLD_NODE=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" -o jsonpath='{.spec.nodeName}')
-NATIVE_OLD_CONTAINER=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" \
-  -o jsonpath='{.status.containerStatuses[0].containerID}')
-NATIVE_OLD_CONTAINER=${NATIVE_OLD_CONTAINER#containerd://}
-[[ "$NATIVE_OLD_NODE" == "k3d-${CLUSTER}-"* ]] \
-  && [[ "$NATIVE_OLD_CONTAINER" =~ ^[0-9a-f]{64}$ ]] \
-  || { err "invalid Native Worker CRI crash target"; exit 1; }
-docker exec "$NATIVE_OLD_NODE" crictl stop --timeout 0 "$NATIVE_OLD_CONTAINER" >/dev/null
-for _ in $(seq 1 90); do
-  NATIVE_OLD_PHASE=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" -o jsonpath='{.status.phase}')
-  NATIVE_TERMINATED_CONTAINER=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" \
-    -o jsonpath='{.status.containerStatuses[0].state.terminated.containerID}')
-  [ "$NATIVE_OLD_PHASE" = "Failed" ] \
-    && [ "$NATIVE_TERMINATED_CONTAINER" = "containerd://${NATIVE_OLD_CONTAINER}" ] \
-    && break
-  sleep 1
-done
-[ "$NATIVE_OLD_PHASE" = "Failed" ] \
-  && [ "$NATIVE_TERMINATED_CONTAINER" = "containerd://${NATIVE_OLD_CONTAINER}" ] \
-  || { err "Kubernetes did not retain the exact hard-crashed Worker process"; exit 1; }
+hard_crash_native_worker "$NATIVE_CRASH_OLD" "$NATIVE_OLD_UID"
 
 create_native_worker_pod "$NATIVE_CRASH_NEXT"
 kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_CRASH_NEXT" --timeout=240s
@@ -1017,10 +1027,90 @@ NATIVE_NEXT_DELETION=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_NEXT" \
   -o jsonpath='{.metadata.deletionTimestamp}')
 [ -z "$NATIVE_NEXT_DELETION" ] \
   || { err "exact predecessor evidence release affected the successor"; exit 1; }
-NATIVE_PROVIDER_REQUESTS=$(kubectl -n "$NS" logs -l app=provider -c provider --since=30m \
+NATIVE_PROVIDER_REQUESTS=$(kubectl -n "$NS" logs -l app=provider -c provider --tail=-1 --since=30m \
   | grep -Fc "ADR71_PROVIDER_REQUEST \"${NATIVE_CRASH_MARKER}\"" || true)
 [ "$NATIVE_PROVIDER_REQUESTS" = "1" ] \
   || { err "Native crash Run reached Provider ${NATIVE_PROVIDER_REQUESTS} times"; exit 1; }
 ok "Pod-bound Native hard crash retired only the exact predecessor and settled without model replay"
 
-ok "K3D/K3S FULL E2E PASS: one public API covered configuration, resources, credentials, publication, deployment, real Worker execution and response; tier, Worker, node, provider, PostgreSQL and Pod-bound Native hard-crash faults recovered without duplicate terminal output; concurrent load met the public latency/error gates."
+log "11b/11 retain an opaque in-flight attempt after actual Worker death"
+# U1 Provider is a separate Pod and its owned task has started; U2 the exact
+# Worker dies before ModelOperationReturned; U3 its Run/Registry leases expire;
+# U4 the Provider later completes while that HTTP caller is gone; U5 a fresh
+# successor handles independent work. Effects: original journal remains Entered,
+# original physical slot remains occupied, one accepted Provider invocation,
+# no synthesized successful output, and independent receipt settles. Provider
+# fixture query/release is an injection oracle only; no production exact-query
+# capability is invented. This is the negative complement of K1-K3 above.
+NATIVE_INFLIGHT_UID=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_NEXT" -o jsonpath='{.metadata.uid}')
+NATIVE_PREPARE=$(node "$DRIVER" prepare-native-crash \
+  "$API_URL" "$ENVIRONMENT_ID" "$NATIVE_INFLIGHT_MARKER" | tail -1)
+read -r NATIVE_PREPARED NATIVE_INFLIGHT_SESSION NATIVE_INFLIGHT_RECEIPT <<<"$NATIVE_PREPARE"
+[ "$NATIVE_PREPARED" = "OK" ] && [ -n "$NATIVE_INFLIGHT_SESSION" ] && [ -n "$NATIVE_INFLIGHT_RECEIPT" ] \
+  || { err "in-flight Native preparation did not return exact identities"; exit 1; }
+# Provider has two independent replicas. The arrival's prefixed log identifies
+# the ORIGINAL process; a Service forwarder could query the other replica and
+# falsely report absence. No replicated mock store or second model route.
+for _ in $(seq 1 60); do
+  PROVIDER_ARRIVAL=$(kubectl -n "$NS" logs -l app=provider -c provider --prefix --tail=-1 --since=10m \
+    | grep -F "ADR71_PROVIDER_REQUEST \"${NATIVE_INFLIGHT_MARKER}\"" || true)
+  [ "$(grep -c . <<<"$PROVIDER_ARRIVAL" || true)" = "1" ] && break
+  sleep 1
+done
+[ "$(grep -c . <<<"$PROVIDER_ARRIVAL" || true)" = "1" ] \
+  || { err "in-flight Provider arrival was absent or duplicated"; exit 1; }
+PROVIDER_ORIGINAL_POD=$(sed -E 's/^\[pod\/([^/]*)\/provider\].*/\1/' <<<"$PROVIDER_ARRIVAL")
+[[ "$PROVIDER_ORIGINAL_POD" =~ ^provider-[a-z0-9-]+$ ]] \
+  || { err "in-flight arrival has no exact Provider process"; exit 1; }
+PROVIDER_ORIGINAL_UID=$(kubectl -n "$NS" get pod "$PROVIDER_ORIGINAL_POD" -o jsonpath='{.metadata.uid}')
+PROVIDER_PORT=$(k3d_available_port "$((API_PORT + 1))")
+PROVIDER_URL="http://127.0.0.1:${PROVIDER_PORT}"
+PROVIDER_PF=$(k3d_start_port_forward "$NS" "pod/$PROVIDER_ORIGINAL_POD" "$PROVIDER_PORT" 3000 \
+  "${TMPDIR:-/tmp}/${CLUSTER}_provider_pf.log")
+node "$DRIVER" observe-provider-inflight "$PROVIDER_URL" "$NATIVE_INFLIGHT_MARKER"
+NATIVE_INFLIGHT_DISPATCH=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -Atc \
+  "SELECT run_id || '|' || active_attempt_owner || '|' || active_attempt_epoch::text || '|' || lease_until::text
+     FROM runtime_dispatch WHERE request::text LIKE '%${NATIVE_INFLIGHT_SESSION}%'
+      AND active_attempt_owner LIKE 'k8s:${NS}:${NATIVE_CRASH_NEXT}:%'")
+[ "$(grep -c . <<<"$NATIVE_INFLIGHT_DISPATCH")" = "1" ] \
+  || { err "expected one exact in-flight dispatch"; exit 1; }
+IFS='|' read -r NATIVE_INFLIGHT_RUN NATIVE_INFLIGHT_OWNER NATIVE_INFLIGHT_EPOCH NATIVE_INFLIGHT_LEASE <<<"$NATIVE_INFLIGHT_DISPATCH"
+[[ "$NATIVE_INFLIGHT_EPOCH" =~ ^[0-9]+$ ]] && [[ "$NATIVE_INFLIGHT_LEASE" =~ ^[0-9]+$ ]] \
+  || { err "in-flight authority coordinates are malformed"; exit 1; }
+hard_crash_native_worker "$NATIVE_CRASH_NEXT" "$NATIVE_INFLIGHT_UID"
+node "$DRIVER" observe-provider-inflight "$PROVIDER_URL" "$NATIVE_INFLIGHT_MARKER"
+for _ in $(seq 1 90); do
+  NATIVE_INFLIGHT_EXPIRED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -Atc \
+    "SELECT count(*) FROM worker_registry_worker WHERE worker_id='${NATIVE_INFLIGHT_OWNER}'
+       AND expires_at_ms < FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint
+       AND EXISTS(SELECT 1 FROM runtime_dispatch WHERE run_id='${NATIVE_INFLIGHT_RUN}'
+         AND active_attempt_owner='${NATIVE_INFLIGHT_OWNER}' AND active_attempt_epoch=${NATIVE_INFLIGHT_EPOCH}
+         AND (lease_until IS NULL OR lease_until < FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)::bigint))")
+  [ "$NATIVE_INFLIGHT_EXPIRED" = "1" ] && break
+  sleep 1
+done
+[ "$NATIVE_INFLIGHT_EXPIRED" = "1" ] || { err "exact old Registry and Run leases did not expire"; exit 1; }
+create_native_worker_pod "$NATIVE_INFLIGHT_NEXT"
+kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_INFLIGHT_NEXT" --timeout=240s
+node "$DRIVER" release-provider-inflight "$PROVIDER_URL" "$NATIVE_INFLIGHT_MARKER"
+node "$DRIVER" verify-native-inflight "$API_URL" "$NATIVE_INFLIGHT_SESSION" \
+  "$NATIVE_INFLIGHT_RECEIPT" "$NATIVE_INFLIGHT_MARKER"
+NATIVE_INFLIGHT_RETAINED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -Atc \
+  "SELECT count(*) FROM runtime_dispatch WHERE run_id='${NATIVE_INFLIGHT_RUN}'
+    AND active_attempt_owner='${NATIVE_INFLIGHT_OWNER}' AND active_attempt_epoch=${NATIVE_INFLIGHT_EPOCH}")
+[ "$NATIVE_INFLIGHT_RETAINED" = "1" ] || { err "opaque physical slot was falsely retired"; exit 1; }
+NATIVE_INFLIGHT_JOURNAL=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -Atc \
+  "SELECT count(*) FILTER (WHERE data->'action'->'Set'->>'phase'='Entered')::text || '|' ||
+          count(*) FILTER (WHERE data->'action'->'Set'->>'phase' IN ('Returned','TimedOut'))::text
+    FROM runtime_state_command WHERE data->>'run_id'='${NATIVE_INFLIGHT_RUN}'
+      AND data->>'key'='runtime.model_operation.v1'")
+[ "$NATIVE_INFLIGHT_JOURNAL" = "1|0" ] || { err "old Worker journal gained a fabricated model return: $NATIVE_INFLIGHT_JOURNAL"; exit 1; }
+node "$DRIVER" observe-provider-completed "$PROVIDER_URL" "$NATIVE_INFLIGHT_MARKER"
+[ "$(kubectl -n "$NS" get pod "$PROVIDER_ORIGINAL_POD" -o jsonpath='{.metadata.uid}')" = "$PROVIDER_ORIGINAL_UID" ] \
+  || { err "Provider double process changed during Worker crash qualification"; exit 1; }
+NATIVE_INFLIGHT_PROVIDER_REQUESTS=$(kubectl -n "$NS" logs -l app=provider -c provider --tail=-1 --since=10m \
+  | grep -Fc "ADR71_PROVIDER_REQUEST \"${NATIVE_INFLIGHT_MARKER}\"" || true)
+[ "$NATIVE_INFLIGHT_PROVIDER_REQUESTS" = "1" ] || { err "in-flight invocation was replayed across Provider replicas"; exit 1; }
+ok "independent Provider double completed; original unknown journal/slot retained, no replay, independent successor work passed"
+
+ok "K3D/K3S FULL E2E PASS: one public API covered configuration, resources, credentials, publication, deployment, real Worker execution and response; completed Pod-bound Native crash recovered and opaque in-flight crash retained safely without duplicate execution; concurrent load met the public latency/error gates."

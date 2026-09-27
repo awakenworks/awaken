@@ -1,5 +1,7 @@
 // Black-box ADR-0071 driver. Every operation uses the one public Ingress URL;
 // private Control/Coordinator/Worker addresses are intentionally unknowable here.
+// The independent Provider double's private control URL is a fault injector,
+// never a product read/write path or a production termination receipt.
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -556,6 +558,76 @@ async function prepareNativeCrash(base: string, environmentId: string, marker: s
   const receiptId = receipt.data?.[0]?.id;
   assert.equal(typeof receiptId, 'string', 'Native crash Event receipt id');
   console.log(`OK ${session.id} ${receiptId}`);
+  return { sessionId: session.id, receiptId: receiptId as string };
+}
+
+export function nativeProviderInvocationErrors(value: any, marker: string, completed: boolean) {
+  // F1 one independent accepted/started invocation; F2 running or completed
+  // according to the explicit fault phase; F3 exact retained output after
+  // completion. Any duplicate, missing, wrong identity or partial outcome fails.
+  const errors: string[] = [];
+  if (value?.marker !== marker) errors.push('wrong Provider fixture identity');
+  if (value?.accepted !== 1 || value?.started !== 1) errors.push('not one actual Provider invocation');
+  if (value?.running !== Number(!completed) || value?.completed !== Number(completed)) errors.push('wrong Provider execution phase');
+  const expected = completed ? [`ADR71-PROVIDER:${marker}`] : [];
+  if (JSON.stringify(value?.results) !== JSON.stringify(expected)) errors.push('wrong retained Provider result');
+  return errors;
+}
+
+async function observeNativeProvider(base: string, marker: string, completed: boolean) {
+  const value = await waitForValue(async () => {
+    const response = await fetch(`${base}/__scenario/invocations/${encodeURIComponent(marker)}`, {
+      headers: { 'x-api-key': 'adr71-provider-secret' }, signal: AbortSignal.timeout(5000), // awaken-allow: secret
+    });
+    if (response.status === 404) return null;
+    assert.equal(response.status, 200, 'private Provider fixture observation');
+    return response.json();
+  }, (value: any) => nativeProviderInvocationErrors(value, marker, completed).length === 0,
+  'one exact Provider double invocation reaches the explicit fault phase', {
+    timeoutMs: 20_000, pollMs: 100,
+    retryReadError: (error: any) => error?.name === 'TypeError' && error?.message === 'fetch failed',
+  });
+  assert.deepEqual(nativeProviderInvocationErrors(value, marker, completed), []);
+  console.log(`OK Provider ${marker} completed=${completed}`);
+}
+
+async function releaseNativeProvider(base: string, marker: string) {
+  // One idempotent fault command releases already-accepted work. It never
+  // issues another inference or imports this mock observation into Runtime.
+  const response = await fetch(`${base}/__scenario/invocations/${encodeURIComponent(marker)}/release`, {
+    method: 'POST', headers: { 'x-api-key': 'adr71-provider-secret' }, signal: AbortSignal.timeout(5000), // awaken-allow: secret
+  });
+  assert.equal(response.status, 202, 'release accepted Provider work');
+  await observeNativeProvider(base, marker, true);
+}
+
+async function verifyNativeInFlight(
+  base: string, sessionId: string, receiptId: string, marker: string,
+) {
+  // U1 original dispatched call has no committed return after Worker death;
+  // U2 its physical slot remains occupied; U3 a successor runs independent
+  // work. SQL/Pod oracles in the same shell own U1/U2; SDK history owns no
+  // synthesized successful result or completion. Error outcomes may settle
+  // logically while physical execution remains Unknown; processed_at alone
+  // is therefore not a quiescence predicate. Never resend the original Event.
+  const [environmentId] = await createFleetEnvironments(clientFor(base), 1);
+  const independent = await prepareNativeCrash(base, environmentId, 'ADR71-NATIVE-INDEPENDENT');
+  await verifyNativeCrash(base, independent.sessionId, independent.receiptId, 'ADR71-NATIVE-INDEPENDENT');
+  const history = await listManagedSessionEvents(clientFor(base), sessionId, BETAS);
+  assert.deepEqual(nativeInFlightHistoryErrors(history, receiptId, marker), [], 'U1 exact unresolved command history');
+  console.log(`OK Native unknown retained ${sessionId} ${receiptId}`);
+}
+
+export function nativeInFlightHistoryErrors(history: any[], receiptId: string, marker: string) {
+  const errors: string[] = [];
+  const ids = history.map((event: any) => event.id);
+  if (new Set(ids).size !== ids.length) errors.push('repeated public facts');
+  const accepted = history.findIndex((event: any) => event.id === receiptId);
+  if (accepted < 0) errors.push('original Event receipt absent');
+  if ((providerResponseCounts(history).get(`ADR71-PROVIDER:${marker}`) ?? 0) !== 0) errors.push('invented Provider result');
+  if (accepted >= 0 && history.slice(accepted + 1).some((event: any) =>
+    event.type === 'session.status_idle' && event.stop_reason?.type === 'end_turn')) errors.push('invented success');
+  return errors;
 }
 
 async function verifyNativeCrash(
@@ -602,15 +674,18 @@ export function validateFleetEnvironmentIds(environmentIds: string[], concurrenc
   return environmentIds;
 }
 
-async function createFleetSessions(client: Anthropic, concurrency: number) {
+async function createFleetEnvironments(client: Anthropic, concurrency: number) {
   const environments = await Promise.all(Array.from({ length: concurrency }, (_, index) =>
     client.beta.environments.create({
       name: `adr71-load-${index}`, config: { type: 'cloud' }, betas: BETAS,
     })));
-  const environmentIds = validateFleetEnvironmentIds(
+  return validateFleetEnvironmentIds(
     environments.map((environment) => environment.id), concurrency,
   );
-  return createParallelSessions(client, environmentIds);
+}
+
+async function createFleetSessions(client: Anthropic, concurrency: number) {
+  return createParallelSessions(client, await createFleetEnvironments(client, concurrency));
 }
 
 export async function disposeFixtureSessions(
@@ -848,6 +923,10 @@ async function main() {
     case 'read-durable': return readDurableDuringFault(base, args[0], args[1], args[2]);
     case 'prepare-native-crash': return prepareNativeCrash(base, args[0], args[1]);
     case 'verify-native-crash': return verifyNativeCrash(base, args[0], args[1], args[2]);
+    case 'observe-provider-inflight': return observeNativeProvider(base, args[0], false);
+    case 'observe-provider-completed': return observeNativeProvider(base, args[0], true);
+    case 'release-provider-inflight': return releaseNativeProvider(base, args[0]);
+    case 'verify-native-inflight': return verifyNativeInFlight(base, args[0], args[1], args[2]);
     case 'batch': return batch(base, args[0], args[1], args[2], Number(args[3]));
     case 'dispose-batch': return disposeBatch(base, args[0]);
     case 'load': return load(base);
