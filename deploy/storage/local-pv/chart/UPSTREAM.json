@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/kubernetes-sigs/sig-storage-local-static-provisioner",
+  "tag": "v2.9.0",
+  "commit": "30b98c3",
+  "source_archive_sha256": "36f1c3860bd1d04957a6c6e0c56ee3c4616f03105ec0b697fe7816532cf5cd58",
+  "files": {
+    "Chart.yaml": "5020d4f1f753b75f65f5b9e61cc4e59e38b256d4d6060f5db3bc02856ba2019f",
+    "LICENSE": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1",
+    "templates/NOTES.txt": "3a59adc86a84507ca117119332b210477dc2d3e247ecfc6043396fff4f130be2",
+    "templates/_helpers.tpl": "11140e2dee7d80a39ee3c06a0d9fce021340e4abb530d22db03fcccd69d0533d",
+    "templates/configmap.yaml": "4c1f8c19456fc53f9a3ac7c3b253beb57b13716ebe6c12b7eaca65d89e5fbff3",
+    "templates/daemonset_linux.yaml": "3fc234625c5b9928c6a06c1e2ff221ad770661b718dabdb25a20c9e8e50c67c9",
+    "templates/daemonset_windows.yaml": "21b5ac073dcbcffea08e6aa04fd3c60d25214afaefa136b3b7c51e0c9cf54f06",
+    "templates/rbac.yaml": "85bf6d9cb4bb3af319a0f7a5057e713451bf65a76982dd05dd862f0ed6b46da2",
+    "templates/serviceaccount.yaml": "a3d015647114abfce0abf531f98b2f715c06f8ed194cf88de1e8e05e3ef6f661",
+    "templates/servicemonitor.yaml": "7ff0d069e48767ca6688dfc1aed288f920ad05adc0884305875988dffc72121b",
+    "templates/storageclass.yaml": "7027789bf38cb44d3d8f0f2b61a73ac5fa89ce074ee5c69c87d480005ee2c12c",
+    "values.yaml": "b29429a6021cf200c20506a8b51e12824e6a21062942bda9f1e2ae22aa1b6bda"
+  }
+}

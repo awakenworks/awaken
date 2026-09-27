@@ -1,0 +1,167 @@
+---
+{{- if .Values.enableWindows }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "provisioner.fullname" . }}-win
+  namespace: {{ .Release.Namespace }}
+  labels:
+    helm.sh/chart: {{ template "provisioner.chart" . }}
+    app.kubernetes.io/name: {{ template "provisioner.name" . }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ template "provisioner.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  updateStrategy:
+{{ toYaml .Values.updateStrategy | indent 4 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ template "provisioner.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+{{- if .Values.podLabels }}
+{{ .Values.podLabels | toYaml | trim | indent 8 }}
+{{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.podAnnotations }}
+{{ .Values.podAnnotations | toYaml | trim | indent 8 }}
+{{- end }}
+    spec:
+      serviceAccountName: {{ template "provisioner.serviceAccountName" . }}
+{{- if .Values.priorityClassName }}
+      priorityClassName: {{.Values.priorityClassName}}
+{{- end }}
+{{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{ toYaml .Values.imagePullSecrets | nindent 8 }}
+{{- end }}
+      nodeSelector:
+        kubernetes.io/os: windows
+{{- if .Values.nodeSelectorWindows }}
+        {{ toYaml .Values.nodeSelectorWindows | nindent 8 }}
+{{- end }}
+      tolerations:
+        # an empty key operator Exists matches all keys, values and effects
+        # which meants that this will tolerate everything
+        - operator: "Exists"
+{{- if .Values.tolerations }}
+        {{ toYaml .Values.tolerations | nindent 8 }}
+{{- end }}
+{{- if .Values.affinity }}
+      affinity:
+        {{ toYaml .Values.affinity | nindent 8 }}
+{{- end }}
+{{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+{{- end }}
+      containers:
+        - name: provisioner
+          image: {{ tpl .Values.image . }}
+          {{- if .Values.imagePullPolicy }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          {{- end }}
+{{- if .Values.resources }}
+          resources:
+            {{ toYaml .Values.resources | nindent 12 }}
+{{- end }}
+          env:
+          - name: MY_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: MY_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: JOB_CONTAINER_IMAGE
+            value: {{ tpl .Values.image . }}
+          {{- if .Values.kubeConfigEnv }}
+          - name: KUBECONFIG
+            value: {{.Values.kubeConfigEnv}}
+          {{- end }}
+{{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+{{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+{{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+          ports:
+          - name: metrics
+            containerPort: 8080
+          volumeMounts:
+            - name: provisioner-config
+              mountPath: /etc/provisioner/config
+              readOnly: true
+            - name: csi-proxy-volume-v1
+              mountPath: \\.\pipe\csi-proxy-volume-v1
+            - name: csi-proxy-filesystem-v1
+              mountPath: \\.\pipe\csi-proxy-filesystem-v1
+            # these csi-proxy paths are still included for compatibility, they're used
+            # only if the node has still the beta version of the CSI proxy
+            - name: csi-proxy-volume-v1beta2
+              mountPath: \\.\pipe\csi-proxy-volume-v1beta2
+            - name: csi-proxy-filesystem-v1beta2
+              mountPath: \\.\pipe\csi-proxy-filesystem-v1beta2
+          {{- if .Values.mountDevVolume }}
+            - name: provisioner-dev
+              mountPath: /dev
+          {{- end }}
+          {{- range .Values.classes }}
+            - name: {{ .name }}
+              mountPath: {{ default .hostDir .mountDir }}
+              mountPropagation: HostToContainer
+          {{- end }}
+          {{- with .Values.additionalVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: csi-proxy-volume-v1
+          hostPath:
+            path: \\.\pipe\csi-proxy-volume-v1
+            type: ""
+        - name: csi-proxy-filesystem-v1
+          hostPath:
+            path: \\.\pipe\csi-proxy-filesystem-v1
+            type: ""
+        # these csi-proxy paths are still included for compatibility, they're used
+        # only if the node has still the beta version of the CSI proxy
+        - name: csi-proxy-volume-v1beta2
+          hostPath:
+            path: \\.\pipe\csi-proxy-volume-v1beta2
+            type: ""
+        - name: csi-proxy-filesystem-v1beta2
+          hostPath:
+            path: \\.\pipe\csi-proxy-filesystem-v1beta2
+            type: ""
+        - name: provisioner-config
+          configMap:
+            name: {{ template "provisioner.fullname" . }}-config
+      {{- if .Values.mountDevVolume }}
+        - name: provisioner-dev
+          hostPath:
+            path: "C:\\dev"
+            # If nothing exists at the given path, an empty directory will be
+            # created there as needed with permission set to 0755,
+            # having the same group and ownership with Kubelet.
+            type: DirectoryOrCreate
+      {{- end }}
+      {{- range .Values.classes }}
+        - name: {{ .name }}
+          hostPath:
+            path: {{ .hostDir }}
+      {{- end }}
+      {{- with .Values.additionalVolumes }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,146 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "provisioner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    helm.sh/chart: {{ template "provisioner.chart" . }}
+    app.kubernetes.io/name: {{ template "provisioner.name" . }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ template "provisioner.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  updateStrategy:
+{{ toYaml .Values.updateStrategy | indent 4 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ template "provisioner.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+{{- if .Values.podLabels }}
+{{ .Values.podLabels | toYaml | trim | indent 8 }}
+{{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+{{- if .Values.podAnnotations }}
+{{ .Values.podAnnotations | toYaml | trim | indent 8 }}
+{{- end }}
+    spec:
+      hostPID: {{.Values.hostPID}}
+      serviceAccountName: {{ template "provisioner.serviceAccountName" . }}
+{{- if .Values.priorityClassName }}
+      priorityClassName: {{.Values.priorityClassName}}
+{{- end }}
+{{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{ toYaml .Values.imagePullSecrets | nindent 8 }}
+{{- end }}
+      nodeSelector:
+        kubernetes.io/os: linux
+{{- if .Values.nodeSelector }}
+        {{ toYaml .Values.nodeSelector | nindent 8 }}
+{{- end }}
+{{- if or (.Values.tolerations) (.Values.removeNodeNotReadyTaint) }}
+      tolerations:
+{{- if .Values.tolerations}}
+        {{- toYaml .Values.tolerations | nindent 8 }}
+{{- end }}
+{{- if .Values.removeNodeNotReadyTaint }}
+        - key: {{ .Values.provisionerNotReadyNodeTaintKey}}
+          operator: Exists
+{{- end }}
+{{- end }}
+{{- if .Values.affinity }}
+      affinity:
+        {{ toYaml .Values.affinity | nindent 8 }}
+{{- end }}
+{{- with .Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+{{- end }}
+      containers:
+        - name: provisioner
+          image: {{ tpl .Values.image . }}
+          {{- if .Values.imagePullPolicy }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          {{- end }}
+          securityContext:
+{{- if and .Values.securityContext (kindIs "map" .Values.securityContext) }}
+{{- if not (hasKey .Values.securityContext "privileged") }}
+            privileged: {{ .Values.privileged }}
+{{- end }}
+            {{- toYaml .Values.securityContext | nindent 12 }}
+{{- else }}
+            privileged: {{ .Values.privileged }}
+{{- end }}
+{{- if .Values.resources }}
+          resources:
+            {{ toYaml .Values.resources | nindent 12 }}
+{{- end }}
+          env:
+          - name: MY_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: MY_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: JOB_CONTAINER_IMAGE
+            value: {{ tpl .Values.image . }}
+          {{- if .Values.kubeConfigEnv }}
+          - name: KUBECONFIG
+            value: {{.Values.kubeConfigEnv}}
+          {{- end }}
+{{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+{{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+{{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+          ports:
+          - name: metrics
+            containerPort: 8080
+          volumeMounts:
+            - name: provisioner-config
+              mountPath: /etc/provisioner/config
+              readOnly: true
+          {{- if .Values.mountDevVolume }}
+            - name: provisioner-dev
+              mountPath: /dev
+          {{- end }}
+          {{- range .Values.classes }}
+            - name: {{ .name }}
+              mountPath: {{ default .hostDir .mountDir }}
+              mountPropagation: HostToContainer
+          {{- end }}
+          {{- with .Values.additionalVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: provisioner-config
+          configMap:
+            name: {{ template "provisioner.fullname" . }}-config
+      {{- if .Values.mountDevVolume }}
+        - name: provisioner-dev
+          hostPath:
+            path: /dev
+      {{- end }}
+      {{- range .Values.classes }}
+        - name: {{ .name }}
+          hostPath:
+            path: {{ .hostDir }}
+      {{- end }}
+      {{- with .Values.additionalVolumes }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
