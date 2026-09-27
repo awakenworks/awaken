@@ -32,7 +32,9 @@ pub use mutation::{
     SessionRepositoryConflict, SessionRepositoryError, SessionTombstone,
     session_tombstone_is_admitted,
 };
-pub use persisted_session::{PersistedSession, SessionEventDispatchSettlementEffect};
+pub use persisted_session::{
+    PersistedSession, SessionEventDispatchSettlementEffect, session_is_terminal,
+};
 pub use recovery::{
     SessionRecoveryQuarantine, SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor,
     SessionScanQuery,

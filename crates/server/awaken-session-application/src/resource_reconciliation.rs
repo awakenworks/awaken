@@ -4,7 +4,7 @@ use awaken_resource_contract::{ResourceReference, ResourceReferenceKind, Resourc
 use awaken_session_error_contract::RunError;
 use awaken_session_realization_contract::SessionRealizationControlFailure;
 use awaken_session_resource_contract::{
-    ResolvedInputSource, ResolvedSessionResources, SessionRealizationLease,
+    ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionRealizationLease,
 };
 use awaken_session_state_contract::{
     ActivationState, IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
@@ -45,6 +45,100 @@ enum ResourceSettlement {
     Commit,
     Rollback(String),
     RetryableFailure(String),
+}
+
+/// Compose the aggregate's sole desired-slot selector and pending-amendment
+/// gate. Rotation never installs a pending manifest or alters an attempted one.
+fn replace_desired_repository_input(
+    resources: &mut awaken_session_state_contract::SessionResourceState,
+    session_id: &awaken_session_types::SessionId,
+    input: ResolvedInput,
+) -> Result<(), SessionPreparationError> {
+    let desired = resources.desired().replace(input).map_err(internal)?;
+    if resources.pending.is_some() {
+        resources
+            .revise_unattempted_pending(session_id, desired)
+            .map_err(|_| SessionPreparationError::Conflict)?;
+    } else {
+        resources.active = desired;
+    }
+    Ok(())
+}
+
+/// Root-CAS retries may advance only this command's credential pin/observation,
+/// never rebind a completed Vault effect to another Resource identity/config.
+fn repository_rotation_target_matches(before: &ResolvedInput, after: &ResolvedInput) -> bool {
+    let mut candidate = after.clone();
+    let (
+        ResolvedInputSource::Repository {
+            credential: original,
+            ..
+        },
+        ResolvedInputSource::Repository {
+            credential: current,
+            ..
+        },
+    ) = (&before.source, &mut candidate.source)
+    else {
+        return false;
+    };
+    *current = original.clone();
+    candidate.updated_at_unix_ms = before.updated_at_unix_ms;
+    candidate == *before
+}
+
+const fn repository_rotation_generation_is_current(
+    captured: u64,
+    current: u64,
+    execution: SessionExecutionState,
+    disposition: &awaken_session_state_contract::SessionDisposition,
+) -> bool {
+    captured == current
+        && !awaken_session_state_contract::session_is_terminal(execution, disposition)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn repository_rotation_requires_original_live_resource_generation() {
+    // Full u64 generations and every actual durable execution-state variant.
+    // Root-only CAS changes can rebase; a different desired generation or
+    // terminal root refuses. Codec/source honesty, pin equality, Vault/SQL
+    // atomicity and async races are outside this scalar proof.
+    let captured: u64 = kani::any();
+    let current: u64 = kani::any();
+    let execution = match kani::any::<u8>() {
+        0 => SessionExecutionState::Preparing,
+        1 => SessionExecutionState::Activating,
+        2 => SessionExecutionState::ActivationFailed,
+        3 => SessionExecutionState::Running,
+        4 => SessionExecutionState::Rescheduling,
+        5 => SessionExecutionState::Idle,
+        _ => SessionExecutionState::Terminated,
+    };
+    let disposition = match kani::any::<u8>() {
+        0 => awaken_session_state_contract::SessionDisposition::Active,
+        1 => awaken_session_state_contract::SessionDisposition::Archived {
+            archived_at: String::new(),
+        },
+        2 => awaken_session_state_contract::SessionDisposition::Deleting,
+        _ => awaken_session_state_contract::SessionDisposition::Deleted,
+    };
+    let terminal = matches!(
+        execution,
+        SessionExecutionState::ActivationFailed | SessionExecutionState::Terminated
+    ) || !matches!(
+        disposition,
+        awaken_session_state_contract::SessionDisposition::Active
+    );
+    let admitted =
+        repository_rotation_generation_is_current(captured, current, execution, &disposition);
+    assert_eq!(admitted, captured == current && !terminal);
+    if captured != current || terminal {
+        assert!(!admitted);
+    }
+    if captured == current && !terminal {
+        assert!(admitted);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -846,6 +940,9 @@ impl SessionApplication {
             .get(session_id)
             .await
             .map_err(repository_preparation)?;
+        if persisted.is_terminal() {
+            return Err(SessionPreparationError::Conflict);
+        }
         if let Some(baseline) = persisted.frozen_baseline()
             && !baseline
                 .mutation_policy
@@ -860,33 +957,44 @@ impl SessionApplication {
                 "repository authorization requires a configured credential Vault",
             ))
         })?;
-        let (credential_source, credential_revision, remote_url) = persisted
+        let resource_generation = persisted.resources.desired_generation().0;
+        let original_input = persisted
             .resources
-            .active
+            .desired()
             .inputs()
             .iter()
             .find(|input| input.binding_id == *binding_id)
-            .and_then(|input| match &input.source {
-                ResolvedInputSource::Repository {
-                    config, credential, ..
-                } => config
-                    .credential_binding
-                    .clone()
-                    .zip(credential.as_ref())
-                    .map(|(binding, credential)| {
-                        (
-                            binding,
-                            credential.access.credential.revision,
-                            config.remote_url.clone(),
-                        )
-                    }),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                SessionPreparationError::Rejected(RunError::bad_request(
-                    "repository credential update requires an authenticated Repository resource",
-                ))
-            })?;
+            .cloned()
+            .ok_or(SessionPreparationError::NotFound)?;
+        let (credential_source, credential_revision, remote_url) = match &original_input.source {
+            ResolvedInputSource::Repository {
+                config, credential, ..
+            } => config
+                .credential_binding
+                .clone()
+                .zip(credential.as_ref())
+                .map(|(binding, credential)| {
+                    (
+                        binding,
+                        credential.access.credential.revision,
+                        config.remote_url.clone(),
+                    )
+                }),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            SessionPreparationError::Rejected(RunError::bad_request(
+                "repository credential update requires an authenticated Repository resource",
+            ))
+        })?;
+        // Run the existing exact pending gate BEFORE the Vault effect. The
+        // clone is a preflight only; the durable root remains the sole owner.
+        replace_desired_repository_input(
+            &mut persisted.resources.clone(),
+            session_id,
+            original_input.clone(),
+        )?;
+        self.resource_plaintext_holder(&persisted)?;
         let credential_target =
             awaken_session_resource_contract::repository_transport_credential_target(&remote_url)
                 .map_err(|error| {
@@ -909,15 +1017,26 @@ impl SessionApplication {
             })?;
 
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            if !repository_rotation_generation_is_current(
+                resource_generation,
+                persisted.resources.desired_generation().0,
+                persisted.execution,
+                &persisted.disposition,
+            ) {
+                return Err(SessionPreparationError::Conflict);
+            }
             let holder = self.resource_plaintext_holder(&persisted)?;
             let mut input = persisted
                 .resources
-                .active
+                .desired()
                 .inputs()
                 .iter()
                 .find(|input| input.binding_id == *binding_id)
                 .cloned()
-                .ok_or(SessionPreparationError::NotFound)?;
+                .ok_or(SessionPreparationError::Conflict)?;
+            if !repository_rotation_target_matches(&original_input, &input) {
+                return Err(SessionPreparationError::Conflict);
+            }
             let ResolvedInputSource::Repository { credential, .. } = &mut input.source else {
                 return Err(SessionPreparationError::NotFound);
             };
@@ -942,11 +1061,7 @@ impl SessionApplication {
                 self.now_unix_ms()
                     .max(input.updated_at_unix_ms.unwrap_or(0)),
             );
-            persisted.resources.active = persisted
-                .resources
-                .active
-                .replace(input)
-                .map_err(internal)?;
+            replace_desired_repository_input(&mut persisted.resources, session_id, input)?;
             match self
                 .commit_session_snapshot_with_outcome(
                     owner_scope,

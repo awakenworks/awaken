@@ -15306,6 +15306,11 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
 
 #[tokio::test]
 async fn claimed_snapshot_is_the_worker_session_authority() {
+    // P1 exact claimed publication + identical Session projection + no
+    // semantic override => preserve the COMPLETE snapshot and its source
+    // fingerprint. P2 different node defaults cannot rehash or replace it.
+    // Changed overlays own their positive witnesses in the canonical projector
+    // table; an unconditional expected.recompute_fingerprint hid this no-op law.
     let published = awaken_runtime_contract::ExecutableAgentSnapshot::builder("published-agent")
         .model(test_model_binding())
         .instructions("published instructions")
@@ -15338,11 +15343,7 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
         .await
         .expect("worker session builds from claimed snapshot");
 
-    let mut expected = published;
-    expected
-        .recompute_fingerprint()
-        .expect("recompute the complete Session overlay identity");
-    assert_eq!(ctx.config, expected);
+    assert_eq!(ctx.config, published);
 }
 
 #[tokio::test]

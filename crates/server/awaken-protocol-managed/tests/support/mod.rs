@@ -238,6 +238,7 @@ pub struct ScheduledConflictRepository {
     unavailable: Mutex<BTreeSet<usize>>,
     resource_changes: Mutex<BTreeSet<usize>>,
     metadata_changes: Mutex<BTreeMap<usize, (String, String)>>,
+    disposition_changes: Mutex<BTreeMap<usize, awaken_session_state_contract::SessionDisposition>>,
 }
 
 #[allow(dead_code)]
@@ -250,6 +251,7 @@ impl ScheduledConflictRepository {
             unavailable: Mutex::new(BTreeSet::new()),
             resource_changes: Mutex::new(BTreeSet::new()),
             metadata_changes: Mutex::new(BTreeMap::new()),
+            disposition_changes: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -289,6 +291,21 @@ impl ScheduledConflictRepository {
             .lock()
             .unwrap()
             .insert(call, (key.to_string(), value.to_string()));
+    }
+
+    /// A retention transition may win after a permitted external effect.
+    /// Its actual root CAS uses the same fixture mutation owner as metadata.
+    pub fn disposition_change_on_next(
+        &self,
+        offset: usize,
+        disposition: awaken_session_state_contract::SessionDisposition,
+    ) {
+        let call = self.commit_calls.load(Ordering::SeqCst) + offset;
+        self.conflicts.lock().unwrap().insert(call);
+        self.disposition_changes
+            .lock()
+            .unwrap()
+            .insert(call, disposition);
     }
 
     pub fn commit_call_count(&self) -> usize {
@@ -374,21 +391,13 @@ impl SessionRepository for ScheduledConflictRepository {
                     .await
                     .expect("concurrent metadata Session exists");
                 concurrent.metadata.insert(key, value);
-                let payload = SessionMutationPayload::Replace(concurrent.clone());
-                let payload_hash = payload.stable_hash();
-                let concurrent_mutation = SessionMutation {
-                    expected_revision: concurrent.revision,
-                    idempotency: IdempotencyRecord {
-                        key: format!("test:concurrent-metadata:{call}:{payload_hash}"),
-                        payload_hash,
-                    },
-                    payload,
-                    lifecycle_facts: Vec::new(),
-                };
-                assert!(matches!(
-                    self.inner.commit(owner_scope, concurrent_mutation).await?,
-                    SessionMutationResult::Applied { .. }
-                ));
+                replace_session_fixture(
+                    self.inner.as_ref(),
+                    owner_scope,
+                    concurrent,
+                    &format!("test:concurrent-metadata:{call}"),
+                )
+                .await;
             }
             if self.resource_changes.lock().unwrap().contains(&call) {
                 let mut concurrent = self
@@ -405,21 +414,30 @@ impl SessionRepository for ScheduledConflictRepository {
                     .resources
                     .start_attempt()
                     .expect("concurrent Resource attempt is valid");
-                let payload = SessionMutationPayload::Replace(concurrent.clone());
-                let payload_hash = payload.stable_hash();
-                let concurrent_mutation = SessionMutation {
-                    expected_revision: concurrent.revision,
-                    idempotency: IdempotencyRecord {
-                        key: format!("test:concurrent-resource:{call}:{payload_hash}"),
-                        payload_hash,
-                    },
-                    payload,
-                    lifecycle_facts: Vec::new(),
-                };
-                assert!(matches!(
-                    self.inner.commit(owner_scope, concurrent_mutation).await?,
-                    SessionMutationResult::Applied { .. }
-                ));
+                replace_session_fixture(
+                    self.inner.as_ref(),
+                    owner_scope,
+                    concurrent,
+                    &format!("test:concurrent-resource:{call}"),
+                )
+                .await;
+            }
+            let disposition_change =
+                { self.disposition_changes.lock().unwrap().get(&call).cloned() };
+            if let Some(disposition) = disposition_change {
+                let mut concurrent = self
+                    .inner
+                    .get(mutation.payload.session_id())
+                    .await
+                    .expect("concurrent retention Session exists");
+                concurrent.disposition = disposition;
+                replace_session_fixture(
+                    self.inner.as_ref(),
+                    owner_scope,
+                    concurrent,
+                    &format!("test:concurrent-retention:{call}"),
+                )
+                .await;
             }
             let current_revision = self
                 .inner
