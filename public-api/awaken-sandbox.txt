@@ -3,6 +3,8 @@ pub mod awaken_sandbox::bridge
 pub enum awaken_sandbox::bridge::BridgeError
 pub awaken_sandbox::bridge::BridgeError::Accept(core::io::error::Error)
 pub awaken_sandbox::bridge::BridgeError::AcceptTimeout
+pub awaken_sandbox::bridge::BridgeError::Cleanup(awaken_provisioning_contract::sandbox::error::SandboxError)
+pub awaken_sandbox::bridge::BridgeError::CleanupTask(tokio::runtime::task::error::JoinError)
 pub awaken_sandbox::bridge::BridgeError::Copy
 pub awaken_sandbox::bridge::BridgeError::Copy::direction: &'static str
 pub awaken_sandbox::bridge::BridgeError::Copy::source: core::io::error::Error

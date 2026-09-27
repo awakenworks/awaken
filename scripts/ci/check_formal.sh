@@ -677,6 +677,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
+    --harness repository_rotation_requires_original_live_resource_generation \
     --harness session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed \
     --harness realization_publication_selects_only_unacknowledged_active_generation \
     --harness session_root_observation_is_total_monotonic_and_idempotent \
