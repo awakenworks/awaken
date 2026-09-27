@@ -1958,11 +1958,20 @@ async fn assert_profiled_publication_revision_rules(
         .frozen_session_projection("workspace".into(), &historical, true)
         .await
         .expect("exact historical projection");
-    // P1 exact historical publication + Session resource pins (including an
-    // empty list) => retain source revision while deriving the effective
-    // content fingerprint. The old literal catalog fingerprint was stale
-    // after canonical Skill projection started recomputing local identity.
+    // P1 exact historical publication + inherited model/prompt + explicit empty
+    // Skill pins over an already-empty selection => preserve the complete
+    // catalog publication, including its consistency token and metadata.
+    // O1 below independently changes the model and requires the derived
+    // fingerprint; P2 rejects a missing Worker publication before effects.
     let publication = historical_projection.agent_publication.as_ref().unwrap();
+    let source_publication =
+        awaken_executable_agent_contract::ExecutableAgentProfileSource::executable_snapshot_at_revision_in(
+            &ProfiledAgent { unavailable: false },
+            "workspace",
+            "profiled",
+            7,
+        )
+        .expect("P1 exact catalog publication");
     assert_eq!(publication.root_agent_id.0, "profiled");
     assert_eq!(publication.metadata.source.revision, 7);
     assert!(
@@ -1973,15 +1982,7 @@ async fn assert_profiled_publication_revision_rules(
             .skills
             .is_empty()
     );
-    assert_eq!(
-        publication.fingerprint,
-        publication.resolved_spec.catalog_fingerprint
-    );
-    assert_eq!(
-        publication.fingerprint.0,
-        publication.metadata.fingerprint.0
-    );
-    assert_ne!(publication.fingerprint.0, "profiled-revision-7");
+    assert_eq!(publication, &source_publication, "P1 complete no-op");
 
     let mut missing_command = profiled_session_command("profiled-missing", None);
     missing_command.source_revision = Some(8);
