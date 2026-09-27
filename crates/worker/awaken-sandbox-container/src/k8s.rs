@@ -1633,13 +1633,12 @@ fn build_pod_with_continuation(
             });
         }
 
-        let continuation_subpaths = append_writable_and_cache_volumes(
+        append_writable_and_cache_volumes(
             plan,
             continuation_claim,
             &mut volumes,
             &mut agent_mounts,
         );
-        continuation::append_init_container(plan, &continuation_subpaths, &mut init_containers);
         live_inputs::append_projection(
             plan,
             effect_fence,

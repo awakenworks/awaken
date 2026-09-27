@@ -103,6 +103,13 @@ completion edge; registry construction does not clear or install it again.
 Advancing a Resource generation with identical Skill pins preserves the existing
 tree; actual replacement and cold/fresh/adopted realization reuse the installer.
 Direct compatibility construction reuses the same bundle installer.
+The container installer transfers one atomic tree through bounded detached
+command batches, including binary bytes, empty files and executable modes.
+Small multi-file bundles use one transfer command; large bundles split by argv
+size. Final atomic publication uses a separate command so the existing execution
+authority is checked again after transfer, before replacing the visible root.
+No per-file atomic publication runs inside that tree stage. Invalid entries
+are rejected before effects, and only the complete read-only stage is published.
 Once resident, the existing Hand executor serves reads from that projection.
 Cold recovery reuses the canonical pinned bundle loader rather than a new Skill
 cache. Repository Skills, mounted files/memory, baseline environment variables,
