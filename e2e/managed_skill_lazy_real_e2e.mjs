@@ -179,7 +179,12 @@ async function bashTurn(sessionId, failure = false) {
         && delta.some((event) => event.type === 'agent.tool_result' || event.type === 'session.error'),
       'first physical tool settles', { timeoutMs: 210_000, pollMs: 100 }));
   } finally { settledReceipt = id; await monitor; }
-  const pods = [...seen.values()];
+  // O1 the monitor misses the Ready edge during a transient TLS outage but the
+  // final independent read sees it => retain that real snapshot. O2 final and
+  // monitored reads both show no Ready => still reject. Never infer Pod readiness
+  // from the model's reply. Reuse this final read in detailed evidence below.
+  const finalPods = await scopedPods(sessionId);
+  const pods = [...seen.values(), ...finalPods];
   record({ label: failure ? 'unschedulable-startup' : 'first-bash', session_id: sessionId,
     input_receipt: id, elapsed_ms: performance.now() - start, pods, events: delta });
   if (monitorFailure) throw monitorFailure;
@@ -197,7 +202,7 @@ async function bashTurn(sessionId, failure = false) {
     const logs = [];
     for (const pod of currentPods) logs.push({ pod: pod.metadata.name, text: await kube('logs', pod.metadata.name, '-c', 'agent', '--timestamps', '--tail=100') });
     record({ label: 'startup-details', session_id: sessionId, metrics_before: beforeMetrics, metrics_after: await metrics(), events,
-      pods: await scopedPods(sessionId), claims: claims.map((claim) => ({ uid: claim.metadata.uid, created_at: claim.metadata.creationTimestamp, status: claim.status })),
+      pods: finalPods, claims: claims.map((claim) => ({ uid: claim.metadata.uid, created_at: claim.metadata.creationTimestamp, status: claim.status })),
       helper_pods: [...seenHelpers.values(), ...helpers.map((pod) => ({ name: pod.metadata.name, created_at: pod.metadata.creationTimestamp, status: pod.status }))], logs });
     if (imagePrewarm) assert.ok(!events.some((event) => event.reason === 'Pulled' && /Successfully pulled image/.test(event.message)), 'T2 prewarmed node must not download Sandbox image in first tool');
   }
