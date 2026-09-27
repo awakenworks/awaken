@@ -304,6 +304,8 @@ mod tests {
          * alone writes the marker; C3 makes same-effect create replay observe
          * that marker before clearing any live File. Rule G1=C1+C2+C3. The
          * separate Memory test covers the same marker with snapshots present.
+         * C4 no private Repository gateway trust keeps this standalone fixture
+         * on the same file-projection path; pass no optional trust input.
          */
         let fence =
             ContainerEffectFence::new("file-create", "owner", "runtime", 1, u64::MAX).unwrap();
@@ -315,6 +317,7 @@ mod tests {
             &[],
             None,
             Some(&fence),
+            None,
             None,
         );
         let spec = pod.spec.unwrap();
