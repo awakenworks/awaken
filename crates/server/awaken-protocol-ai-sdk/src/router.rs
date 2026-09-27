@@ -26,11 +26,11 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use awaken_api_contract::CursorPage;
 use awaken_session_application_contract::{
     CursorParams, EventForwardingSink, OwnerScopedRunApplication, Pending, RunApplication,
-    RunApplicationError, RunResume, StepOutcome, paginate_history,
+    RunApplicationError, RunResume, paginate_history,
 };
 use awaken_tenancy::{ResolvedResourceId, WorkspaceScope};
 
-use crate::encoder::{AiSdkEncoder, encode_history, encode_step};
+use crate::encoder::{AiSdkEncoder, encode_history};
 use crate::request::{DecisionKind, process_request, result_text};
 use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 
@@ -172,18 +172,15 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest, owner: RequestOwner) -> Res
     let operation_id = processed.operation_id.clone();
 
     if processed.is_resume_only() {
-        // RunResume answers an awaiting tool decision — a single committed step, framed
-        // whole (no in-flight model output to stream).
-        match resume_step(&rt, &owner, &operation_id, &thread, &processed.decisions).await {
-            Ok(outcome) => {
-                let mut events = encode_step(&outcome);
-                let usage = match rt.usage(&thread).await {
-                    Ok(usage) => usage,
-                    Err(error) => return sse_error(error),
-                };
-                attach_usage(&mut events, usage);
-                sse_response(events)
-            }
+        match resume_command(&rt, &thread, &processed.decisions).await {
+            Ok(command) => stream_command(
+                rt,
+                operation_id,
+                thread,
+                command,
+                owner,
+                STREAM_KEEP_ALIVE_INTERVAL,
+            ),
             Err(response) => response,
         }
     } else if !processed.messages.is_empty() {
@@ -238,6 +235,36 @@ fn stream_turn_with_keep_alive(
     owner: RequestOwner,
     keep_alive_interval: std::time::Duration,
 ) -> Response {
+    stream_command(
+        rt,
+        operation_id,
+        thread,
+        StreamCommand::Turn { agent, messages },
+        owner,
+        keep_alive_interval,
+    )
+}
+
+enum StreamCommand {
+    Turn {
+        agent: Option<String>,
+        messages: Vec<Message>,
+    },
+    Resume {
+        tool_use_id: String,
+        resume: RunResume,
+    },
+}
+
+// One live drain/encoder/keep-alive/interrupt path for messages and tool replies.
+fn stream_command(
+    rt: Runtime,
+    operation_id: String,
+    thread: String,
+    command: StreamCommand,
+    owner: RequestOwner,
+    keep_alive_interval: std::time::Duration,
+) -> Response {
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
     // Kept for the post-turn usage read (the turn future consumes `rt`/`thread`).
     let rt_usage = Arc::clone(&rt);
@@ -258,8 +285,8 @@ fn stream_turn_with_keep_alive(
         // sink lives inside that future; when the turn ends it drops, closing
         // `live_rx` and ending the drain loop.
         let mut turn = tokio::spawn(async move {
-            match &owner.mode {
-                RunMode::OwnerScoped(port) => {
+            match (command, &owner.mode) {
+                (StreamCommand::Turn { agent, messages }, RunMode::OwnerScoped(port)) => {
                     port.run_streaming_for_owner(
                         &owner.scope,
                         &operation_id,
@@ -270,8 +297,35 @@ fn stream_turn_with_keep_alive(
                     )
                     .await
                 }
-                RunMode::Local => {
+                (StreamCommand::Turn { agent, messages }, RunMode::Local) => {
                     rt.run_streaming(&operation_id, &thread, agent, messages, sink)
+                        .await
+                }
+                (
+                    StreamCommand::Resume {
+                        tool_use_id,
+                        resume,
+                    },
+                    RunMode::OwnerScoped(port),
+                ) => {
+                    port.resume_streaming_for_owner(
+                        &owner.scope,
+                        &operation_id,
+                        &thread,
+                        &tool_use_id,
+                        resume,
+                        sink,
+                    )
+                    .await
+                }
+                (
+                    StreamCommand::Resume {
+                        tool_use_id,
+                        resume,
+                    },
+                    RunMode::Local,
+                ) => {
+                    rt.resume_streaming(&operation_id, &thread, &tool_use_id, resume, sink)
                         .await
                 }
             }
@@ -286,6 +340,10 @@ fn stream_turn_with_keep_alive(
                 break;
             }
             tokio::select! {
+                _ = out_tx.closed() => {
+                    disconnected = true;
+                    break 'live;
+                },
                 event = live_rx.recv(), if !live_closed => match event {
                     Some(event) => {
                         if !forward_live_event(&mut transcoder, &out_tx, &event) {
@@ -369,13 +427,11 @@ fn forward_live_event(
 /// carries no decision authored for exactly that tool call: a decision for some
 /// other call — a stale replay, a UI re-send, or the losing side of a
 /// parallel-tool race — is never substituted for the one the runtime awaits.
-async fn resume_step(
+async fn resume_command(
     rt: &Runtime,
-    owner: &RequestOwner,
-    operation_id: &str,
     thread: &str,
     decisions: &crate::request::Decisions,
-) -> Result<StepOutcome, Response> {
+) -> Result<StreamCommand, Response> {
     let Some(pending) = rt.pending(thread).await.map_err(sse_error)? else {
         return Err(sse_error(RunApplicationError::bad_request(
             "no awaiting run to resume",
@@ -391,23 +447,10 @@ async fn resume_step(
             )))
         })?;
     let resume = to_resume(&decision.kind, &pending);
-    match &owner.mode {
-        RunMode::OwnerScoped(port) => {
-            port.resume_for_owner(
-                &owner.scope,
-                operation_id,
-                thread,
-                &pending.tool_use_id,
-                resume,
-            )
-            .await
-        }
-        RunMode::Local => {
-            rt.resume(operation_id, thread, &pending.tool_use_id, resume)
-                .await
-        }
-    }
-    .map_err(sse_error)
+    Ok(StreamCommand::Resume {
+        tool_use_id: pending.tool_use_id,
+        resume,
+    })
 }
 
 /// Map a client decision to a neutral resume, choosing the variant that matches
@@ -560,6 +603,7 @@ fn query_error(error: RunApplicationError) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_session_application_contract::StepOutcome;
 
     /* Idle-stream cause/effect decision table. Causes: C1 the run is live but
      * its best-effort AgentEvent sink closes before the authoritative turn;

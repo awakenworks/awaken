@@ -77,6 +77,13 @@ ROOT = Path(__file__).resolve().parents[2]
 # behaviour for an implementation that does not override it. An entry is a
 # decision someone made and can be argued with.
 DEGRADING_DEFAULT_EXEMPTIONS: dict[str, str] = {
+    "RunApplication::resume_streaming": (
+        "Best-effort observation of the same authoritative resume mutation. "
+        "Non-live engines return the committed outcome; the sole protocol encoder "
+        "projects that outcome as its documented fallback. SessionRunApplication "
+        "overrides it to register live observation before reply publication. "
+        "AI SDK streaming/router_errors tests cover both live and committed paths."
+    ),
     "AcpToolExporter::export": (
         "not a degrade: `export` has nothing to drop. It is the singular "
         "spelling of `export_set`, delegating with a one-element set, which is "
