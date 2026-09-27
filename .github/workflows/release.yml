@@ -74,7 +74,10 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: quality-${{ github.sha }}-${{ github.run_attempt }}
-          path: target/test-timings
+          # Quality uploads multiple directories relative to the checkout root.
+          # Preserve that root so the canonical proof-run consumer below sees
+          # target/test-timings/formal-run.json without an extra nested prefix.
+          path: .
       # Native execution, before packaging, shares the PR/formal suite owner.
       - name: Test native non-Windows Session observations and MCP recovery
         if: runner.os != 'Windows'

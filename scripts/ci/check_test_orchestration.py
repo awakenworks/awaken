@@ -510,7 +510,7 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
         'source_revision="$(git rev-parse "$GITHUB_SHA^{commit}")"',
         'test "$(git rev-parse HEAD)" = "$source_revision"',
         "AWAKEN_TEST_TIMINGS_FILE: target/test-timings/check-all.tsv",
-        "run: scripts/ci/check-all.sh",
+        "run: scripts/ci/check-all.sh --full-gate --record",
         "pnpm install --frozen-lockfile",
         "npm ci --prefix e2e",
     )
@@ -529,6 +529,7 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
         "          name: quality-${{ github.sha }}-${{ github.run_attempt }}",
         "            target/test-timings/",
         "            web/test-results/",
+        "            scripts/ci/gate_record.json",
         "          if-no-files-found: error",
     ):
         if not evidence_step or marker not in [line.split(" #", 1)[0] for line in evidence_step.group(0).splitlines()]:
@@ -542,7 +543,7 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     if (
         quality.count("run: scripts/ci/check-all.sh") != 1
         or not gate_step
-        or not re.search(r"^        run: scripts/ci/check-all\.sh$", gate_step.group(0), re.MULTILINE)
+        or not re.search(r"^        run: scripts/ci/check-all\.sh --full-gate --record$", gate_step.group(0), re.MULTILINE)
     ):
         errors.append("quality workflow must invoke the exact canonical full gate once")
     if (
@@ -558,6 +559,15 @@ def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     local_quality_call = "uses: ./.github/workflows/quality.yml"
     if release.count(local_quality_call) != 1:
         errors.append("release workflow must reuse the canonical quality workflow exactly once")
+    evidence_download = re.search(
+        r"^      - name: Download the exact quality invocation evidence\n(?:(?!^      - ).|\n)*",
+        release, re.MULTILINE,
+    )
+    # Upload's declared paths share checkout root; the named download must
+    # retain it so the one package proof consumer resolves its original path.
+    if (not evidence_download or not re.search(r"^          path: \.$", evidence_download.group(0), re.MULTILINE)
+        or "AWAKEN_FORMAL_RUN_EVIDENCE: target/test-timings/formal-run.json" not in release):
+        errors.append("quality evidence download must preserve checkout root and canonical proof-run path")
     if "check-all.sh" in release or "check-rust.sh --full" in release:
         errors.append("release workflow duplicates the canonical quality workflow")
     if release.count("npm ci --prefix e2e") != 1 or "pnpm -C e2e install" in release:
@@ -1774,6 +1784,22 @@ def self_test() -> None:
         changed = dict(workflows)
         changed[QUALITY_WORKFLOW] = mutated
         assert workflow_gate_errors(changed), f"W{rule}"
+    # E1 complete recorded gate + root-preserving upload/download + original
+    # proof consumer => accept. E2 remove record selection/file, nest extraction
+    # again, or move the consumer => reject before packaging. These mutations
+    # keep the remaining quality workflow intact, preventing token-only green.
+    for broken in (
+        quality.replace(" --full-gate --record", "", 1),
+        quality.replace("            scripts/ci/gate_record.json\n", "", 1),
+    ):
+        changed = dict(workflows); changed[QUALITY_WORKFLOW] = broken
+        assert workflow_gate_errors(changed), "E2 missing executed full-gate record"
+    for broken in (
+        release.replace("          path: .\n", "          path: target/test-timings\n", 1),
+        release.replace("AWAKEN_FORMAL_RUN_EVIDENCE: target/test-timings/formal-run.json", "AWAKEN_FORMAL_RUN_EVIDENCE: nested/formal-run.json", 1),
+    ):
+        changed = dict(workflows); changed[RELEASE_WORKFLOW] = broken
+        assert workflow_gate_errors(changed), "E2 artifact consumer path mismatch"
     # W10 cause/effect table: C1 exact full-quality upload exists; C2 its
     # condition is unconditional-on-result; C3 its artifact binds SHA/attempt
     # and includes both evidence owners; C4 another job also uploads evidence.
