@@ -156,13 +156,10 @@ pub(crate) fn terminal_cleanup_worker_requirements(
 pub(super) fn verify_lease(
     session: &PersistedSession,
     asserted: &SessionRealizationLease,
+    now_ms: u64,
 ) -> Result<(), SessionRealizationControlFailure> {
     if !session.realization.as_ref().is_some_and(|current| {
-        awaken_session_realization_contract::realization_lease_authorizes(
-            current,
-            asserted,
-            now_unix_ms(),
-        )
+        awaken_session_realization_contract::realization_lease_authorizes(current, asserted, now_ms)
     }) {
         return Err(SessionRealizationControlFailure::StaleOwnership);
     }

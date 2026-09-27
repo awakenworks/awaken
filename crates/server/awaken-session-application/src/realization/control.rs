@@ -145,7 +145,7 @@ impl SessionApplication {
             || command.requested_expires_at_unix_ms < command.asserted_lease.expires_at_unix_ms
             || !awaken_session_realization_contract::realization_lease_is_live_at(
                 command.requested_expires_at_unix_ms,
-                now_unix_ms(),
+                self.now_unix_ms(),
             )
         {
             return Err(SessionRealizationControlFailure::Invalid(
@@ -178,7 +178,7 @@ impl SessionApplication {
             if !awaken_session_realization_contract::realization_lease_authorizes(
                 &current,
                 &command.asserted_lease,
-                now_unix_ms(),
+                self.now_unix_ms(),
             ) {
                 return Err(SessionRealizationControlFailure::StaleOwnership);
             }
@@ -236,7 +236,7 @@ impl SessionApplication {
         &self,
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        validate_target(&command)?;
+        validate_target(&command, self.now_unix_ms())?;
         for attempt in 0..SessionApplication::ROOT_CAS_ATTEMPTS {
             let (owner_scope, mut session) =
                 self.session_for_realization(&command.session_id).await?;
@@ -261,7 +261,7 @@ impl SessionApplication {
                     expected.revision != session.resources.active_revision()
                 }
             };
-            let now = now_unix_ms();
+            let now = self.now_unix_ms();
             let existing_live = session.realization.as_ref().is_some_and(|lease| {
                 awaken_session_realization_contract::realization_lease_is_live_at(
                     lease.expires_at_unix_ms,
@@ -439,7 +439,7 @@ impl SessionApplication {
         command: ActivateSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         let (owner_scope, mut session) = self.session_for_realization(&command.session_id).await?;
-        verify_lease(&session, &command.lease)?;
+        verify_lease(&session, &command.lease, self.now_unix_ms())?;
         let mut expected = Self::realization_stage_requests(&owner_scope, &session)?;
         let receipt_generations = command
             .mcp_receipts
@@ -615,7 +615,7 @@ impl SessionApplication {
         command: AcknowledgeSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         let (owner_scope, mut session) = self.session_for_realization(&command.session_id).await?;
-        verify_lease(&session, &command.lease)?;
+        verify_lease(&session, &command.lease, self.now_unix_ms())?;
         let expected_publish =
             publication_generations(&session.session_id, &session.mcp.attachments)?;
         let expected_drain = draining_generations(&session.session_id, &session.mcp.attachments)?;
@@ -717,14 +717,19 @@ impl SessionApplication {
                     .transition_execution(SessionExecutionState::Running)
                     .map_err(unavailable)?;
             }
-            session.begin_runtime_interval(now_unix_ms());
+            session.begin_runtime_interval(self.now_unix_ms());
         } else if session.execution != SessionExecutionState::Running {
             session
                 .transition_execution(SessionExecutionState::Idle)
                 .map_err(unavailable)?;
         }
-        let ready_fact =
-            initial_ready.then(|| initial_idle_fact(&owner_scope, command.session_id.as_str()));
+        let ready_fact = initial_ready.then(|| {
+            initial_idle_fact(
+                &owner_scope,
+                command.session_id.as_str(),
+                self.now_unix_ms(),
+            )
+        });
         let session = self
             .commit_session_snapshot_with_outcome(
                 &owner_scope,
@@ -770,7 +775,7 @@ impl SessionApplication {
             Err(error) => return Err(repository_control(error)),
         }
         let (owner_scope, mut session) = self.session_for_realization(&command.session_id).await?;
-        verify_lease(&session, &command.lease)?;
+        verify_lease(&session, &command.lease, self.now_unix_ms())?;
         if command
             .prepared_resource_revision
             .is_some_and(|revision| session.resources.retained_generation(revision).is_none())
@@ -861,7 +866,7 @@ impl SessionApplication {
         // Retryable failures below budget remain Running and retain the open
         // interval through the earlier return above.
         let lifecycle_facts = failed_running_activity
-            .then(now_unix_ms)
+            .then(|| self.now_unix_ms())
             .and_then(|ended_at_unix_ms| session.close_runtime_interval(ended_at_unix_ms))
             .map(|interval| {
                 runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
@@ -914,7 +919,7 @@ impl SessionApplication {
             authority:
                 awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                     lease,
-                    now_unix_ms(),
+                    self.now_unix_ms(),
                 )?,
         })
     }
@@ -947,7 +952,7 @@ impl SessionApplication {
         }
         let worker = registered.snapshot;
         let fingerprint = worker.manifest.fingerprint().map_err(unavailable)?;
-        let now = now_unix_ms();
+        let now = self.now_unix_ms();
         if worker.identity.lease_owner() != target.runtime_incarnation
             || worker.expires_at_ms <= now
             || target.lease_expires_at_unix_ms > worker.expires_at_ms
@@ -1147,7 +1152,7 @@ impl SessionApplication {
         let current_is_live = session.realization.as_ref().is_some_and(|current| {
             awaken_session_realization_contract::realization_lease_is_live_at(
                 current.expires_at_unix_ms,
-                now_unix_ms(),
+                self.now_unix_ms(),
             )
         });
         if current_is_live {
@@ -1286,7 +1291,7 @@ impl SessionApplication {
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
-        validate_realization_target(&target)?;
+        validate_realization_target(&target, self.now_unix_ms())?;
         if target.reassign_existing_lease {
             return Err(SessionRealizationControlFailure::Invalid(
                 "terminal cleanup recovery claims cannot reassign a live logical owner".into(),
@@ -1397,7 +1402,8 @@ impl SessionApplication {
             .refresh_executable_projections()
             .await
             .map_err(unavailable)?;
-        let lease_expires_at_unix_ms = now_unix_ms()
+        let lease_expires_at_unix_ms = self
+            .now_unix_ms()
             .checked_add(LOCAL_SESSION_REALIZATION_LEASE_MS)
             .ok_or_else(|| {
                 SessionRealizationControlFailure::Unavailable(
@@ -1410,7 +1416,7 @@ impl SessionApplication {
             lease_expires_at_unix_ms,
             reassign_existing_lease: false,
         };
-        validate_realization_target(&target)?;
+        validate_realization_target(&target, self.now_unix_ms())?;
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = admission
                 .enter(|| self.owner(session_id))
@@ -1577,7 +1583,7 @@ impl SessionRealizationControl for SessionApplication {
         &self,
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        validate_target(&command)?;
+        validate_target(&command, self.now_unix_ms())?;
         let admission = self
             .refresh_executable_projections()
             .await
@@ -1596,7 +1602,7 @@ impl SessionRealizationControl for SessionApplication {
     > {
         awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
             self.renew_session_realization_after_load(command).await?,
-            now_unix_ms(),
+            self.now_unix_ms(),
         )
     }
 
@@ -1679,7 +1685,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Sessio
         &self,
         target: awaken_session_realization_contract::SessionRealizationTarget,
     ) -> Result<Option<SessionTerminalCleanupAssignment>, SessionRealizationControlFailure> {
-        validate_realization_target(&target)?;
+        validate_realization_target(&target, self.now_unix_ms())?;
         if target.reassign_existing_lease {
             return Err(SessionRealizationControlFailure::Invalid(
                 "terminal cleanup recovery claims cannot reassign a live logical owner".into(),

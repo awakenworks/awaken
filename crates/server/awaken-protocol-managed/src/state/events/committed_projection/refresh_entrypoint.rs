@@ -6,6 +6,45 @@ use crate::state::constants::COMMITTED_PREFIX_READ_CONFLICT;
 const READ_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 
+pub(super) const fn logical_deletion_is_proven(
+    root_present: bool,
+    id_matches: bool,
+    owner_matches: bool,
+    hidden: bool,
+    terminal: bool,
+    scoped_tombstone_present: bool,
+) -> bool {
+    if root_present {
+        id_matches && owner_matches && hidden && terminal
+    } else {
+        scoped_tombstone_present
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn logical_deletion_observation_requires_positive_exact_scoped_evidence() {
+    // Direct production read-decision over all 64 Boolean rows. Repository
+    // decoding/owner-partition honesty and async consistency are explicit TCB.
+    let present: bool = kani::any();
+    let id: bool = kani::any();
+    let owner: bool = kani::any();
+    let hidden: bool = kani::any();
+    let terminal: bool = kani::any();
+    let tombstone: bool = kani::any();
+    let proven = logical_deletion_is_proven(present, id, owner, hidden, terminal, tombstone);
+    assert_eq!(
+        proven,
+        (present && id && owner && hidden && terminal) || (!present && tombstone)
+    );
+    if present && (!id || !owner || !hidden || !terminal) {
+        assert!(!proven);
+    }
+    if !present && !tombstone {
+        assert!(!proven);
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProjectionObservationDecision {
     UseRefreshed,
@@ -27,6 +66,57 @@ pub(super) const fn projection_observation_decision(
 }
 
 impl ManagedState {
+    /// An open stream retains its already-authorized owner. Hidden terminal
+    /// roots and owner-scoped durable tombstones are positive logical deletion
+    /// evidence; a missing row, wrong owner, error or timeout is not evidence.
+    pub(crate) async fn observe_committed_session_deletion(
+        &self,
+        session_id: &str,
+        owner_scope: &str,
+    ) -> Result<Option<Event>, StateError> {
+        let read = async {
+            let repository = self.application.session_repository_handle();
+            let id = awaken_session_types::SessionId::from(session_id);
+            let deleted = match repository.get(&id).await {
+                Ok(root) => {
+                    let id_matches = root.session_id == session_id;
+                    let hidden = root.is_hidden();
+                    let terminal = root.is_terminal();
+                    let owner_matches = if id_matches && hidden && terminal {
+                        repository.owner(&id).await.map_err(|error| {
+                            StateError::Run(RunError::unavailable(error.to_string()))
+                        })? == owner_scope
+                    } else {
+                        false
+                    };
+                    logical_deletion_is_proven(
+                        true,
+                        id_matches,
+                        owner_matches,
+                        hidden,
+                        terminal,
+                        false,
+                    )
+                }
+                Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
+                    let tombstone = repository
+                        .deleted_event_admissions(owner_scope, &id)
+                        .await
+                        .map_err(|error| StateError::Run(RunError::unavailable(error.to_string())))?
+                        .is_some();
+                    logical_deletion_is_proven(false, false, false, false, false, tombstone)
+                }
+                Err(error) => {
+                    return Err(StateError::Run(RunError::unavailable(error.to_string())));
+                }
+            };
+            Ok(deleted.then(|| session_deletion_event(owner_scope, session_id)))
+        };
+        tokio::time::timeout(READ_BUDGET, read)
+            .await
+            .map_err(|_| Self::committed_prefix_read_conflict(session_id, 1))?
+    }
+
     /// Refresh this process's disposable event projection from the Runtime's one
     /// durable transcript and Run lifecycle feed. A Session cache hit is not proof
     /// that it contains commits accepted through another protocol or Coordinator.
@@ -136,6 +226,72 @@ impl ManagedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn deletion_observation_requires_positive_owned_truth_not_bare_absence() {
+        // Causes: D7 row absent with no tombstone; D8 current visible root;
+        // D9 exact hidden terminal root after the real delete-intent CAS;
+        // D10 only the asserted owner changes. Effects: D7/D8/D10 => no
+        // deletion frame; D9 => the same canonical producer frame, no invented
+        // timestamp. The retained root deliberately stays before physical
+        // cleanup: this proves logical deletion, never remote quiescence.
+        let state = ManagedState::new(crate::state::test_support::RehydrateFake::default())
+            .with_session_repo(Arc::new(
+                crate::state::test_support::ephemeral_session_repo(),
+            ));
+        let owner = awaken_tenancy::DEFAULT_WORKSPACE_ID;
+        assert!(
+            state
+                .observe_committed_session_deletion("never-created", owner)
+                .await
+                .unwrap()
+                .is_none(),
+            "D7"
+        );
+        let session = state
+            .create_session(
+                serde_json::from_value(serde_json::json!({
+                    "agent":"coder", "environment_id":"env_local"
+                }))
+                .unwrap(),
+                owner,
+            )
+            .await
+            .unwrap();
+        assert!(
+            state
+                .observe_committed_session_deletion(&session.id, owner)
+                .await
+                .unwrap()
+                .is_none(),
+            "D8"
+        );
+        state
+            .application
+            .commit_delete_intent(awaken_session_application::SessionDeleteCommand::new(
+                &session.id,
+            ))
+            .await
+            .unwrap();
+        let event = state
+            .observe_committed_session_deletion(&session.id, owner)
+            .await
+            .unwrap()
+            .expect("D9");
+        assert_eq!(
+            event,
+            session_deletion_event(owner, &session.id),
+            "D9 exact deletion projection"
+        );
+        assert!(
+            state
+                .observe_committed_session_deletion(&session.id, "foreign-owner")
+                .await
+                .unwrap()
+                .is_none(),
+            "D10"
+        );
+    }
 
     #[test]
     fn observation_fallback_decision_table_is_closed() {

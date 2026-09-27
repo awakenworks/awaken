@@ -6253,8 +6253,14 @@ async fn cancellation_before_external_realization_settles_without_a_runtime_inte
             .expect("pre-realization cancellation repository"),
     );
     let mut session = persisted(session_id, false, "preparing");
-    let epoch = SessionApplication::open_activity_on_snapshot(&mut session, None, true, false)
-        .expect("P1/C2 activity admitted during external realization");
+    let epoch = SessionApplication::open_activity_on_snapshot(
+        &mut session,
+        None,
+        true,
+        false,
+        awaken_agent_contract::clock::Clock::now_ms(&awaken_agent_contract::clock::SystemClock),
+    )
+    .expect("P1/C2 activity admitted during external realization");
     assert!(
         session.running_interval.is_none(),
         "P1/C1 no Running interval"
@@ -7750,7 +7756,9 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 repo.clone(),
                 Arc::new(RecordingEnvironmentSource::default()),
             );
-            let expiry = crate::activity::now_unix_ms() + 60_000;
+            let expiry = awaken_agent_contract::clock::Clock::now_ms(
+                &awaken_agent_contract::clock::SystemClock,
+            ) + 60_000;
             let lease = SessionRealizationLease {
                 owner: "owner".into(),
                 runtime_incarnation: "old-boot".into(),

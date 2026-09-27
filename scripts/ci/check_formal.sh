@@ -643,6 +643,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-session-application-contract \
     --harness public_millisecond_projection_is_exact_bounded_and_nonwrapping
   run_kani awaken-session-realization-contract \
+    --harness effective_publication_field_replacement_is_exact_and_noop_preserving \
     --harness realization_generation_authority_requires_every_axis \
     --harness session_realization_control_failure_disposition_is_total_exact_and_fail_closed \
     --harness realization_ownership_loss_proof_is_total_and_exact \
@@ -893,6 +894,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_ticket_admission_preserves_terminal_and_identity_priority
   run_kani awaken-protocol-managed \
     --harness committed_delivery_all_equalities_preserve_only_monotonic_completion \
+    --harness logical_deletion_observation_requires_positive_exact_scoped_evidence \
     --harness projection_publish_decision_is_total_exact_and_fail_closed \
     --harness runtime_tool_projection_phase_is_total_distinct_and_fail_closed \
     --harness projection_refresh_failure_stutters_and_success_preserves_one_pair \

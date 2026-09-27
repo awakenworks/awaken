@@ -7,6 +7,24 @@ use super::*;
 
 pub(crate) type CommittedDeliveryPage = Vec<((u64, usize), Event)>;
 
+/// One immutable logical-deletion projection for the producer, retained root
+/// and scoped tombstone readers. Session ids cannot be recreated after deletion.
+/// Cleanup can update root timestamps, so those are not a deletion observation.
+pub(crate) fn session_deletion_event(owner_scope: &str, session_id: &str) -> Event {
+    Event {
+        id: format!(
+            "evt_deleted_{}",
+            awaken_agent_contract::stable_fingerprint(&(
+                "managed-session-delete-v1",
+                owner_scope,
+                session_id,
+            ))
+        ),
+        kind: OutboundKind::SessionDeleted {},
+        processed_at: None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EventDeliveryConflict {
     Payload,
