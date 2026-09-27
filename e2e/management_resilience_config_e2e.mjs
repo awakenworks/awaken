@@ -16,7 +16,6 @@ import { withServer, pass } from './harness.mjs';
 import { closeHttpServer } from './http_server.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38472);
-const WS = 'ws';
 const DIRECTORY_KEY = 'sk-resilience-directory'; // awaken-allow: secret
 
 async function modelDirectory() {
@@ -57,6 +56,15 @@ async function main() {
       return { status: res.status, body: await res.json().catch(() => ({})) };
     };
     const ok = (r, s, m) => assert.equal(r.status, s, `${m} (got ${r.status}: ${JSON.stringify(r.body)})`);
+
+    // Scope input rule S1: authoring/resolution uses the nonempty Workspace
+    // returned by the production composition root. A hardcoded foreign claim
+    // fails before provider discovery and cannot cover the resilience rules.
+    const context = await cfg('GET', '/v1/config/workspace-context');
+    ok(context, 200, 'resolved Workspace context');
+    const WS = context.body.workspace_id;
+    assert.equal(typeof WS, 'string');
+    assert.ok(WS.length > 0);
 
     // ── One tested connection discovers two models and stores credential 1 ───
     const c1 = await cfg('POST', '/v1/config/provider-connections', {

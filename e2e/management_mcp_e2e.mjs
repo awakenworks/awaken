@@ -107,6 +107,13 @@ async function main() {
   const fixture = await startCalcFixture(CALC_TOKEN);
   try {
     await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
+      // S1 obtain the current trusted Workspace before either valid or invalid
+      // MCP credential authoring, so F2 reaches MCP rejection rather than tenancy.
+      const context = await req(base, 'GET', '/v1/config/workspace-context');
+      assert.equal(context.status, 200);
+      const workspace = context.json.workspace_id;
+      assert.equal(typeof workspace, 'string');
+      assert.ok(workspace.length > 0);
       // --- author the binding through the admin config plane ---
       // Credential decision rule C0: the canonical MCP audience plus Bearer
       // usage authorizes only this target; an undescribed source must fail
@@ -115,7 +122,7 @@ async function main() {
       const calcAudience = fixture.url.replace(/\/+$/u, '');
       let r = await req(base, 'POST', '/v1/config/credentials', {
         idempotency_key: 'management-mcp-primary',
-        workspace_id: 'ws',
+        workspace_id: workspace,
         kind: 'vault',
         secret: CALC_TOKEN,
         descriptor: mcpBearerDescriptor(calcAudience),
@@ -341,7 +348,7 @@ async function main() {
       // | F3   | no           | -           | 503 before activation     |
       const wrong = await req(base, 'POST', '/v1/config/credentials', {
         idempotency_key: 'management-mcp-wrong',
-        workspace_id: 'ws',
+        workspace_id: workspace,
         kind: 'vault',
         secret: 'wrong-mcp-token', // awaken-allow: secret (deliberate auth-failure fixture)
         descriptor: mcpBearerDescriptor(calcAudience),
