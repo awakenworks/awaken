@@ -122,9 +122,13 @@ async function main() {
       };
       const alwaysAllow = { enabled: true, permission_policy: { type: 'always_allow' } };
 
-      const credential = await configRequest(baseURL, 'POST', '/v1/config/credentials', {
+      const context = await configRequest(baseURL, 'GET', '/v1/config/workspace-context');
+      assert.equal(context.status, 200, 'the composition root exposes its Workspace');
+      assert.equal(typeof context.body.workspace_id, 'string');
+      assert.ok(context.body.workspace_id.length > 0, 'one authoritative Workspace');
+      const credentialInput = {
         idempotency_key: 'managed-web-tools-e2e-search',
-        workspace_id: 'ignored-by-platform-scope',
+        workspace_id: context.body.workspace_id,
         kind: 'vault',
         env_key: null,
         secret: SEARCH_SECRET,
@@ -146,7 +150,18 @@ async function main() {
             },
           }],
         },
+      };
+      // Scope cause/effect table: W1 a foreign body claim => 404 before sealing;
+      // W2 the exact edge-resolved Workspace with the same idempotency identity
+      // => 201 and secret-free output. Reusing that identity positively proves
+      // the refused claim did not poison the successful authoring operation.
+      const foreign = await configRequest(baseURL, 'POST', '/v1/config/credentials', {
+        ...credentialInput,
+        workspace_id: `${context.body.workspace_id}-foreign`,
       });
+      assert.equal(foreign.status, 404, 'W1 foreign Workspace claim is refused');
+      assert.ok(!JSON.stringify(foreign.body).includes(SEARCH_SECRET), 'W1 refusal is secret-free');
+      const credential = await configRequest(baseURL, 'POST', '/v1/config/credentials', credentialInput);
       assert.equal(credential.status, 201, JSON.stringify(credential.body));
       assert.ok(!JSON.stringify(credential.body).includes(SEARCH_SECRET), 'credential response is secret-free');
 
