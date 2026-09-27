@@ -11,46 +11,7 @@ use std::sync::Arc;
 
 use crate::config::{OperatingMode, ResolvedDeployment};
 
-#[cfg(feature = "container-k8s")]
-mod kubernetes;
-
-/// Private fields keep authentication and physical binding selected together.
-/// An injected authenticator alone is deliberately an unbound transport.
-pub(super) struct WorkerTransport {
-    authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
-    bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
-    stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
-}
-
-impl WorkerTransport {
-    pub(super) fn unbound(
-        authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
-    ) -> Self {
-        Self {
-            authenticator,
-            bindings: None,
-            stops: None,
-        }
-    }
-
-    pub(super) fn authenticator(
-        &self,
-    ) -> Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator> {
-        self.authenticator.clone()
-    }
-
-    pub(super) fn binding_source(
-        &self,
-    ) -> Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>> {
-        self.bindings.clone()
-    }
-
-    pub(super) fn stop_source(
-        &self,
-    ) -> Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>> {
-        self.stops.clone()
-    }
-}
+pub(super) use awaken_coordinator::WorkerTransport;
 
 pub(super) async fn select(
     deployment: &ResolvedDeployment,
@@ -73,7 +34,13 @@ pub(super) async fn select(
             let client = awaken_sandbox_container::k8s::connect_control_client()
                 .await
                 .map_err(|error| error.to_string())?;
-            return kubernetes::assemble(policy, client);
+            return WorkerTransport::kubernetes(
+                client,
+                &policy.namespace,
+                &policy.service_account,
+                &policy.audience,
+                &policy.provider_id,
+            );
         }
         #[cfg(not(feature = "container-k8s"))]
         unreachable!("configuration validation rejects the missing feature");

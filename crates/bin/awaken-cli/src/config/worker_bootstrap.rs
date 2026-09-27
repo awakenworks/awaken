@@ -26,12 +26,12 @@ impl KubernetesWorkerTransport {
         if !owns_coordinator || has_signing_trust {
             return Err("worker_kubernetes requires a server-mode Coordinator or local AllInOne and cannot be mixed with worker_trust_credentials_file".into());
         }
-        if self.provider_id.trim().is_empty() || self.provider_id.trim() != self.provider_id {
-            return Err("worker_kubernetes requires an exact nonempty provider_id".into());
-        }
         #[cfg(feature = "container-k8s")]
-        return awaken_worker_transport_security::kubernetes::KubernetesWorkerAuthenticator::validate_policy(
-            &self.namespace, &self.service_account, &self.audience, std::time::Duration::from_secs(5),
+        return awaken_coordinator::WorkerTransport::validate_kubernetes_policy(
+            &self.namespace,
+            &self.service_account,
+            &self.audience,
+            &self.provider_id,
         );
         #[cfg(not(feature = "container-k8s"))]
         Err("worker_kubernetes requires the container-k8s build feature".into())

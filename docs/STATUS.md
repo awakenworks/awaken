@@ -219,6 +219,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0081-contract-layering-and-ratchet-guardrails.md` | Accepted contract layering; September closure splits Session vocabulary behind its facade, makes Session/Run-ingress/Resource capabilities explicit, types Resource error detail, records canonical conformance owners, and verifies the container projection is not a second Sandbox authority | Not required | n/a |
 | `adr/0082-open-specification-closed-substrate.md` | Deferred; keep ADR-0041's current open durable-backend and provider placement until a second closed substrate or a revised self-hosted multi-node floor requires a new product decision | Not required | n/a |
 | `adr/0083-managed-cloud-session-durable-acceptance.md` | Implemented local Cloud Managed durable-root acceptance; physical capacity remains a deployment and frozen idle-retention concern | Not required | n/a |
+| `adr/0084-shared-worker-transport-assembly.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 
