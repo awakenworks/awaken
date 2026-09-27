@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -261,8 +262,20 @@ class ReliabilityCheckerTests(unittest.TestCase):
         # D1 => initialize + run all 6 tools; D2 => zero mutation calls + failure;
         # D3 => stop + failure + cleanup. The real script runs in a disposable
         # checkout with process stubs: these prove orchestration, not Rust tests.
+        # D4 a named mutation filter must select a function declared in the
+        # configured implementation file. A still-existing facade that only
+        # imports/re-exports the function is rejected by this structural oracle;
+        # actual nonempty mutation generation and test kills remain cargo-mutants'
+        # and the receipt checker’s responsibilities. Derive paths and selectors
+        # from the real runner argv, without a second target registry.
+        # D5 the shared UTC owner moved packages: its mutation must still run
+        # the original Session Work consumer tests as well as the owner's tests.
+        # D6 stale fuzz lock => exact preflight failure, zero fuzz/mutation calls;
+        # a current lock passes the existing Cargo --locked reader before fuzz.
+        # D7 each actual mutation package must be cleaned before and after the
+        # batch, so a migrated owner cannot leave a mutant compilation behind.
         # Removing the mkdir line must kill the fresh-directory positive control.
-        for case in ("fresh", "existing", "nested", "blocked", "tool-failure", "missing-init"):
+        for case in ("fresh", "existing", "nested", "blocked", "tool-failure", "missing-init", "fuzz-lock-stale"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 scripts = root / "scripts/ci"
@@ -276,9 +289,12 @@ class ReliabilityCheckerTests(unittest.TestCase):
                 binary = root / "bin"
                 binary.mkdir()
                 cargo = '''#!/usr/bin/env bash
-echo "$*" >> "$CALL_LOG"
+printf '%q ' "$@" >> "$CALL_LOG"
+printf '\\n' >> "$CALL_LOG"
 case "$*" in
   "install --list") echo 'cargo-fuzz 1'; echo 'cargo-mutants 1' ;;
+  "+nightly metadata --locked --format-version 1")
+    [ "$FAIL_FUZZ_LOCK" != 1 ] || exit 41 ;;
   "mutants "*)
     while [ "$1" != '--output' ]; do shift; done
     [ -d "$(dirname "$2")" ] || exit 9
@@ -296,14 +312,63 @@ esac
                     output.mkdir()
                 if case == "blocked":
                     output.write_text("owned file must remain unchanged")
-                env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CARGO_TARGET_DIR=str(root / "target"), AWAKEN_RELIABILITY_EVIDENCE_DIR=str(output), CALL_LOG=str(root / "calls"), FAIL_MUTANT=str(int(case == "tool-failure")))
+                env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CARGO_TARGET_DIR=str(root / "target"), AWAKEN_RELIABILITY_EVIDENCE_DIR=str(output), CALL_LOG=str(root / "calls"), FAIL_MUTANT=str(int(case == "tool-failure")), FAIL_FUZZ_LOCK=str(int(case == "fuzz-lock-stale")))
                 result = subprocess.run(["bash", str(scripts / "check-reliability.sh"), "--require-tools"], env=env, capture_output=True, text=True, timeout=20)
-                calls = (root / "calls").read_text().splitlines()
+                calls = [line.rstrip() for line in (root / "calls").read_text().splitlines()]
                 mutations = [line for line in calls if line.startswith("mutants ")]
                 passed = case in ("fresh", "existing", "nested")
                 self.assertEqual(result.returncode == 0, passed, result.stderr)
-                self.assertEqual(len(mutations), 6 if passed else 0 if case == "blocked" else 1)
-                self.assertEqual(calls[-1], "clean -p awaken-session-executor", "D2/D3 cleanup")
+                self.assertEqual(len(mutations), 6 if passed else 0 if case in ("blocked", "fuzz-lock-stale") else 1)
+                if case == "fuzz-lock-stale":
+                    self.assertEqual(result.returncode, 41, "D6 exact preflight refusal")
+                    self.assertEqual(calls[-1], "+nightly metadata --locked --format-version 1")
+                    self.assertFalse(any(" fuzz run " in call for call in calls), "D6 zero fuzz builds")
+                else:
+                    self.assertEqual(calls[-1], "clean -p awaken-session-executor", "D2/D3 cleanup")
+                if passed:
+                    preflight = calls.index("+nightly metadata --locked --format-version 1")
+                    self.assertLess(preflight, next(index for index, call in enumerate(calls) if " fuzz run " in call), "D6 locked preflight precedes fuzz")
+                    owners = set()
+                    for mutation in mutations:
+                        argv = shlex.split(mutation)
+                        owners.add(argv[argv.index("--package") + 1])
+                        selected_source = ROOT / argv[argv.index("--file") + 1]
+                        self.assertTrue(selected_source.is_file(), "D4 source exists")
+                        if "--re" not in argv:
+                            continue
+                        selector = argv[argv.index("--re") + 1]
+                        # Operator filters match generated mutation descriptions,
+                        # not function names; the actual batch owns that check.
+                        if selector.startswith("replace "):
+                            continue
+                        declared_names = re.findall(
+                            r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+|async\s+)?fn\s+(\w+)",
+                            selected_source.read_text(),
+                        )
+                        self.assertTrue(
+                            any(re.search(selector, name) for name in declared_names),
+                            f"D4 named filter must reach its implementation: {selected_source}",
+                        )
+                        if selector == "bounded_rfc3339_nanos":
+                            test_packages = {
+                                argv[index + 1]
+                                for index, argument in enumerate(argv)
+                                if argument == "--test-package"
+                            }
+                            self.assertEqual(
+                                test_packages,
+                                {argv[argv.index("--package") + 1], "awaken-session-work-contract"},
+                                "D5 shared UTC owner and original Work consumer both execute",
+                            )
+                    def cleaned_packages(selected_calls: list[str]) -> set[str]:
+                        packages = set()
+                        for call in selected_calls:
+                            argv = shlex.split(call)
+                            if argv[0] == "clean":
+                                packages.update(argv[index + 1] for index, arg in enumerate(argv) if arg == "-p")
+                        return packages
+                    self.assertLessEqual(owners, cleaned_packages(calls[:calls.index(mutations[0])]), "D7 all mutation owners cleaned before")
+                    self.assertLessEqual(owners, cleaned_packages(calls[calls.index(mutations[-1]) + 1:]), "D7 all mutation owners cleaned after")
                 if case == "blocked":
                     self.assertEqual(output.read_text(), "owned file must remain unchanged")
 

@@ -66,9 +66,9 @@ esac
 cleanup_mutation_artifacts() {
   cargo clean -p awaken-mcp-wire >/dev/null 2>&1 || true
   cargo clean -p awaken-runtime-contract >/dev/null 2>&1 || true
-  cargo clean -p awaken-tool-contract >/dev/null 2>&1 || true
+  cargo clean -p awaken-tool-contract -p awaken-agent-contract >/dev/null 2>&1 || true
   cargo clean -p awaken-session-application-contract -p awaken-session-configuration-contract \
-    -p awaken-session-error-contract -p awaken-session-realization-contract \
+    -p awaken-session-error-contract -p awaken-session-event-contract -p awaken-session-realization-contract \
     -p awaken-session-repository-contract -p awaken-session-execution-contract \
     -p awaken-session-state-contract >/dev/null 2>&1 || true
   cargo clean -p awaken-session-executor >/dev/null 2>&1 || true
@@ -128,6 +128,9 @@ if ! cargo +nightly miri --version >/dev/null 2>&1; then
 fi
 
 fuzz_seconds="${AWAKEN_FUZZ_SECONDS:-15}"
+# cargo-fuzz has no --locked switch. Resolve its separate workspace through
+# Cargo's existing locked reader before any fuzz build can rewrite source.
+(cd fuzz && cargo +nightly metadata --locked --format-version 1 > /dev/null)
 (cd fuzz && cargo +nightly fuzz run sse_chunks -- -max_total_time="$fuzz_seconds")
 (cd fuzz && cargo +nightly fuzz run thread_commit_wire -- -max_total_time="$fuzz_seconds")
 (cd fuzz && cargo +nightly fuzz run tool_batch_transitions -- -max_total_time="$fuzz_seconds")
@@ -169,13 +172,14 @@ cargo mutants --package awaken-session-event-contract \
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-event-observations/mutants.out"
 cargo mutants --package awaken-session-realization-contract \
   --output "$mutation_evidence/session-realization-observations" \
-  --file crates/contract/awaken-session-realization-contract/src/session_realization.rs \
+  --file crates/contract/awaken-session-realization-contract/src/session_realization/generation_authority.rs \
   --re 'realization_generation_authorizes' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-realization-observations/mutants.out"
-cargo mutants --package awaken-session-work-contract \
+cargo mutants --package awaken-agent-contract \
+  --test-package awaken-agent-contract --test-package awaken-session-work-contract \
   --output "$mutation_evidence/session-work-observations" \
-  --file crates/contract/awaken-session-work-contract/src/lib.rs \
+  --file crates/contract/awaken-agent-contract/src/clock/utc.rs \
   --re 'bounded_rfc3339_nanos' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-work-observations/mutants.out"
