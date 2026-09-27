@@ -1,4 +1,5 @@
 use super::*;
+mod cleanup_timing;
 use awaken_session_realization_contract::{
     SessionRealizationControl, SessionResourceMaterializationControl, SessionTerminalCleanupQueue,
     SessionTerminalDisposalControl, SessionTerminalMemoryControl,
@@ -218,7 +219,9 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
                 owner: "worker".into(),
                 runtime_incarnation: "incarnation".into(),
                 epoch: 1,
-                expires_at_unix_ms: crate::activity::now_unix_ms() + 60_000,
+                expires_at_unix_ms: awaken_agent_contract::clock::Clock::now_ms(
+                    &awaken_agent_contract::clock::SystemClock,
+                ) + 60_000,
             });
             if rollback_twice {
                 assert_eq!(
@@ -2324,10 +2327,16 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
         owner: "worker-terminal-owner".into(),
         runtime_incarnation: "worker-terminal-incarnation".into(),
         epoch: 1,
-        expires_at_unix_ms: crate::activity::now_unix_ms().saturating_sub(20_001),
+        expires_at_unix_ms: awaken_agent_contract::clock::Clock::now_ms(
+            &awaken_agent_contract::clock::SystemClock,
+        )
+        .saturating_sub(20_001),
     };
     let terminal_lease = awaken_session_resource_contract::SessionRealizationLease {
-        expires_at_unix_ms: crate::activity::now_unix_ms().saturating_add(30_000),
+        expires_at_unix_ms: awaken_agent_contract::clock::Clock::now_ms(
+            &awaken_agent_contract::clock::SystemClock,
+        )
+        .saturating_add(30_000),
         ..asserted_terminal_lease.clone()
     };
     terminal.realization = Some(terminal_lease.clone());
@@ -2439,7 +2448,10 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         expires_at_unix_ms: 1,
     };
     let lease = awaken_session_resource_contract::SessionRealizationLease {
-        expires_at_unix_ms: crate::activity::now_unix_ms().saturating_add(30_000),
+        expires_at_unix_ms: awaken_agent_contract::clock::Clock::now_ms(
+            &awaken_agent_contract::clock::SystemClock,
+        )
+        .saturating_add(30_000),
         ..asserted_lease.clone()
     };
     let mut session = persisted("remote-cleanup", true, "terminated");
@@ -2607,7 +2619,10 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
         owner: "worker-restoring".into(),
         runtime_incarnation: "worker-restoring:incarnation-1".into(),
         epoch: 3,
-        expires_at_unix_ms: crate::activity::now_unix_ms().saturating_add(30_000),
+        expires_at_unix_ms: awaken_agent_contract::clock::Clock::now_ms(
+            &awaken_agent_contract::clock::SystemClock,
+        )
+        .saturating_add(30_000),
     };
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(session_id),
@@ -3676,7 +3691,8 @@ fn registry_race_target() -> awaken_session_realization_contract::SessionRealiza
 /// | A3 | foreign epoch | predecessor renewed/live | E3: none |
 #[tokio::test]
 async fn terminal_effect_authorization_requires_current_live_same_generation() {
-    let now = crate::activity::now_unix_ms();
+    let now =
+        awaken_agent_contract::clock::Clock::now_ms(&awaken_agent_contract::clock::SystemClock);
     let asserted = awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker-terminal-authority".into(),
         runtime_incarnation: "worker-terminal-authority:2:boot-current".into(),
@@ -5801,7 +5817,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             .unwrap(),
         authority: awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
             initial.realization.clone().unwrap(),
-            crate::activity::now_unix_ms(),
+            awaken_agent_contract::clock::Clock::now_ms(&awaken_agent_contract::clock::SystemClock),
         )
         .unwrap(),
         action: awaken_session_realization_contract::SessionRealizationAction::Stage {

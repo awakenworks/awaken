@@ -266,7 +266,7 @@ impl SessionApplication {
                     .await?;
                 Ok(lease)
             },
-            crate::activity::now_unix_ms,
+            || self.now_unix_ms(),
         )
         .await
     }

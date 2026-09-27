@@ -89,8 +89,7 @@ impl SessionApplication {
                     object_id: session_id.to_string(),
                     workspace_id: Some(owner_scope.clone()),
                     event_type: "session.budget_reached".into(),
-                    timestamp: i64::try_from(super::activity::now_unix_ms() / 1_000)
-                        .unwrap_or(i64::MAX),
+                    timestamp: i64::try_from(self.now_unix_ms() / 1_000).unwrap_or(i64::MAX),
                     runtime_interval: None,
                 }]
             } else {

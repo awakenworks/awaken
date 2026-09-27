@@ -29,11 +29,7 @@ pub(super) fn environment_admits_realization_effects(
 }
 
 use super::{SessionApplication, SessionMutationError};
-use crate::{
-    activity::{now_unix_ms, runtime_interval_fact},
-    creation::DurableSessionRoot,
-    projection,
-};
+use crate::{activity::runtime_interval_fact, creation::DurableSessionRoot, projection};
 
 mod authority;
 mod control;
@@ -62,13 +58,13 @@ pub(crate) const LOCAL_SESSION_REALIZATION_LEASE_MS: u64 = 300_000;
 pub(crate) const LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS: u64 =
     LOCAL_SESSION_REALIZATION_LEASE_MS / 3;
 
-fn initial_idle_fact(owner_scope: &str, session_id: &str) -> ManagedLifecycleFact {
+fn initial_idle_fact(owner_scope: &str, session_id: &str, now_ms: u64) -> ManagedLifecycleFact {
     ManagedLifecycleFact {
         id: format!("session:{session_id}:created"),
         object_id: session_id.to_string(),
         workspace_id: Some(owner_scope.to_string()),
         event_type: "session.status_idled".to_string(),
-        timestamp: i64::try_from(now_unix_ms() / 1_000).unwrap_or(i64::MAX),
+        timestamp: i64::try_from(now_ms / 1_000).unwrap_or(i64::MAX),
         runtime_interval: None,
     }
 }
@@ -95,12 +91,13 @@ pub(crate) fn mutation_control(error: SessionMutationError) -> SessionRealizatio
 
 fn validate_realization_target(
     target: &awaken_session_realization_contract::SessionRealizationTarget,
+    now_ms: u64,
 ) -> Result<(), SessionRealizationControlFailure> {
     if target.owner.trim().is_empty()
         || target.runtime_incarnation.trim().is_empty()
         || !awaken_session_realization_contract::realization_lease_is_live_at(
             target.lease_expires_at_unix_ms,
-            now_unix_ms(),
+            now_ms,
         )
     {
         return Err(SessionRealizationControlFailure::Invalid(
@@ -112,13 +109,14 @@ fn validate_realization_target(
 
 fn validate_target(
     command: &BeginSessionRealization,
+    now_ms: u64,
 ) -> Result<(), SessionRealizationControlFailure> {
     if command.session_id.as_str().trim().is_empty() {
         return Err(SessionRealizationControlFailure::Invalid(
             "Session id is required".into(),
         ));
     }
-    validate_realization_target(&command.target)
+    validate_realization_target(&command.target, now_ms)
 }
 
 /// Failure while the Session application drives durable realization effects.
@@ -233,7 +231,7 @@ impl SessionApplication {
             &projection,
             &awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                 lease.clone(),
-                now_unix_ms(),
+                self.now_unix_ms(),
             )
             .map_err(|error| RunError::unavailable(error.to_string()))?
             .observed(request_started),
@@ -298,7 +296,7 @@ impl SessionApplication {
             );
         }
         let continuation_failure_count = self
-            .reconcile_environment_continuations_from(&candidates, now_unix_ms())
+            .reconcile_environment_continuations_from(&candidates, self.now_unix_ms())
             .await;
         let continuations_elapsed = cycle_started.elapsed();
         let realizations = self.reconcile_session_realizations_from(&candidates).await;
@@ -624,7 +622,8 @@ impl SessionApplication {
             .runtime()
             .observe_realization_request()
             .map_err(SessionRealizationError::Effect)?;
-        let lease_expires_at_unix_ms = now_unix_ms()
+        let lease_expires_at_unix_ms = self
+            .now_unix_ms()
             .checked_add(LOCAL_SESSION_REALIZATION_LEASE_MS)
             .ok_or_else(|| {
                 SessionRealizationError::Effect(RunError::internal("lease expiry overflow"))
@@ -772,7 +771,7 @@ impl SessionApplication {
                 }
             };
             let session = session.as_session();
-            let now = now_unix_ms();
+            let now = self.now_unix_ms();
             let projection_is_current = session.realization.as_ref().is_some_and(|lease| {
                 lease.owner == self.local_realization_owner()
                     && lease.runtime_incarnation == self.runtime_incarnation()
@@ -884,7 +883,7 @@ impl SessionApplication {
                         .realization
                         .clone()
                         .ok_or(SessionRealizationControlFailure::NotReady)?,
-                    now_unix_ms(),
+                    self.now_unix_ms(),
                 )?,
             action,
         })

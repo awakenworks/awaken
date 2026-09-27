@@ -851,7 +851,7 @@ mod coordination_receipts;
 mod delivery;
 pub(crate) use committed_projection::ProjectionObservationDecision;
 pub(super) use delivery::committed_delivery_delta;
-pub(crate) use delivery::{CommittedDeliveryPage, CommittedEventDelivery};
+pub(crate) use delivery::{CommittedDeliveryPage, CommittedEventDelivery, session_deletion_event};
 mod lifecycle_projection;
 mod recovery;
 mod stream;

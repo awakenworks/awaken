@@ -31,6 +31,15 @@ use awaken_protocol_managed::types::Event;
 fn router(state: Arc<ManagedState>) -> axum::Router {
     support::edge_stamped(awaken_protocol_managed::router(state))
 }
+
+fn independent_replicas() -> (CoordinatedRuntimeFake, Arc<ManagedState>, Arc<ManagedState>) {
+    let runtime = CoordinatedRuntimeFake::default();
+    let repository =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let a = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
+    let b = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository));
+    (runtime, a, b)
+}
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -164,7 +173,12 @@ async fn http_json(
 }
 
 /// GET an SSE endpoint and collect the whole (terminating) body as a string.
-async fn http_sse(app: &Router, uri: &str, headers: &[(&str, &str)]) -> support::Call<String> {
+async fn http_sse(
+    app: &Router,
+    uri: &str,
+    headers: &[(&str, &str)],
+    mut preview_consumed: Option<Arc<tokio::sync::Notify>>,
+) -> support::Call<String> {
     let mut b = Request::builder().method("GET").uri(uri);
     for (k, v) in headers {
         b = b.header(*k, *v);
@@ -173,10 +187,26 @@ async fn http_sse(app: &Router, uri: &str, headers: &[(&str, &str)]) -> support:
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = Box::pin(resp.into_body().collect())
-        .await
-        .unwrap()
-        .to_bytes();
+    let mut body = resp.into_body();
+    let mut bytes = Vec::new();
+    while let Some(frame) = Box::pin(body.frame()).await {
+        let frame = frame.expect("SSE body remains valid through its exact terminal");
+        if let Some(data) = frame.data_ref() {
+            bytes.extend_from_slice(data);
+            if preview_consumed.is_some() {
+                let preview_count = String::from_utf8_lossy(&bytes)
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .filter_map(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                    .filter(|event| event["type"] == "event_delta")
+                    .count();
+                if preview_count == 2 {
+                    preview_consumed.take().unwrap().notify_one();
+                }
+            }
+        }
+    }
+
     support::Call::new(status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
@@ -365,11 +395,19 @@ async fn root_stream_immediately_projects_thread_live_observations_only() {
     let (_snapshot, mut committed_rx) = state.stream_subscribe(&id).expect("R3 subscribe");
     let stream_app = app.clone();
     let uri = format!("/v1/sessions/{id}/events/stream?event_deltas[]=agent.message");
-    let stream = tokio::spawn(async move { http_sse(&stream_app, &uri, &[]).await });
+    let consumed = Arc::new(tokio::sync::Notify::new());
+    let body_consumed = consumed.clone();
+    let stream =
+        tokio::spawn(async move { http_sse(&stream_app, &uri, &[], Some(body_consumed)).await });
     runtime.wait_for_live_subscription().await;
 
     runtime.publish_root_live_text(&id, "root ");
     runtime.publish_root_live_text(&id, "progress");
+    // R1/R2 must be observed in the real HTTP body before the terminal is
+    // submitted; subscription creation alone is not preview delivery evidence.
+    tokio::time::timeout(std::time::Duration::from_secs(2), consumed.notified())
+        .await
+        .expect("R1-R2 actual preview deltas arrive before deletion");
     assert!(
         matches!(committed_rx.try_recv(), Err(TryRecvError::Empty)),
         "R3/E3"
@@ -480,7 +518,7 @@ async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
         .unwrap()
         .to_string();
 
-    let primary_sse = http_sse(&app, &format!("/v1/sessions/{id}/events/stream"), &[])
+    let primary_sse = http_sse(&app, &format!("/v1/sessions/{id}/events/stream"), &[], None)
         .await
         .expect_for(StatusCode::OK, "S1");
     let child_idle = primary_sse
@@ -502,6 +540,7 @@ async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
         &app,
         &format!("/v1/sessions/{id}/threads/{child_id}/stream"),
         &[],
+        None,
     )
     .await
     .expect(StatusCode::OK);
@@ -551,6 +590,7 @@ async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
         &app,
         &format!("/v1/sessions/{id}/threads/{child_id}/stream"),
         &[],
+        None,
     )
     .await
     .expect_for(StatusCode::OK, "S2/E2");
@@ -665,6 +705,7 @@ async fn stream_thread_events_backfills_the_primary_thread() {
         &app,
         &format!("/v1/sessions/{id}/threads/{primary_id}/stream"),
         &[],
+        None,
     )
     .await
     .expect(StatusCode::OK);
@@ -717,6 +758,7 @@ async fn stream_thread_events_accepts_the_preview_opt_in() {
         &app,
         &format!("/v1/sessions/{id}/threads/{primary_id}/stream?event_deltas[]=agent.message"),
         &[],
+        None,
     )
     .await
     .expect(StatusCode::OK);
@@ -791,7 +833,8 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     let child_app = app.clone();
     let child_uri =
         format!("/v1/sessions/{id}/threads/{child_id}/stream?event_deltas[]=agent.message");
-    let child_stream = tokio::spawn(async move { http_sse(&child_app, &child_uri, &[]).await });
+    let child_stream =
+        tokio::spawn(async move { http_sse(&child_app, &child_uri, &[], None).await });
     runtime.wait_for_live_subscription().await;
     // The child route's repeated refresh is idempotent, so the already-caught-up
     // Session receiver remains empty before connection-local previews arrive.
@@ -880,6 +923,7 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
         &app,
         &format!("/v1/sessions/{id}/threads/{primary_id}/stream?event_deltas[]=agent.message"),
         &[],
+        None,
     )
     .await
     .expect(StatusCode::OK);
@@ -911,6 +955,7 @@ async fn stream_thread_events_unknown_thread_is_404() {
             &app,
             &format!("/v1/sessions/{id}/threads/{thread_id}/stream"),
             &[],
+            None,
         )
         .await
         .expect_for(StatusCode::NOT_FOUND, "expected status");
@@ -950,6 +995,7 @@ async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
         &app,
         &format!("/v1/sessions/{id}/events/stream?{}", repeated(100)),
         &[],
+        None,
     )
     .await
     .expect_for(StatusCode::OK, "E4 inclusive maximum");
@@ -965,6 +1011,7 @@ async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
             &app,
             &format!("/v1/sessions/{id}/events/stream?{query}"),
             &[],
+            None,
         )
         .await
         .expect_for(StatusCode::BAD_REQUEST, "expected status");
@@ -1020,6 +1067,7 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
         &app,
         &format!("/v1/sessions/{id}/events/stream"),
         &[("last-event-id", &last_id)],
+        None,
     )
     .await
     .expect(StatusCode::OK);
@@ -1155,7 +1203,12 @@ async fn slow_http_consumers_and_reconnect_storm_recover_from_durable_replay() {
     for reconnect in 0..24 {
         let body = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            http_sse(&app, &uri, &[("last-event-id", "stale-client-cursor")]),
+            http_sse(
+                &app,
+                &uri,
+                &[("last-event-id", "stale-client-cursor")],
+                None,
+            ),
         )
         .await
         .unwrap_or_else(|_| panic!("R3 reconnect {reconnect} timed out"))
@@ -1208,11 +1261,7 @@ async fn an_open_stream_reconciles_silent_commits_from_an_independent_replica() 
     // E3 root/child wire projection is identical to B's authoritative history.
     // Rule S1+S2+S3=>E1-E3. PostgreSQL multi-pool qualification reuses the same
     // production history and projection ports; this slice owns cache isolation.
-    let runtime = CoordinatedRuntimeFake::default();
-    let repository =
-        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
-    let a = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
-    let b = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository));
+    let (runtime, a, b) = independent_replicas();
     let id = state_create(&a).await;
     let response = router(a)
         .oneshot(
@@ -1276,6 +1325,133 @@ async fn an_open_stream_reconciles_silent_commits_from_an_independent_replica() 
     assert!(
         body.contains(&serde_json::to_string(user).unwrap()),
         "S3 exact completed receipt wire"
+    );
+}
+
+#[tokio::test]
+async fn deletion_after_sse_snapshot_delivers_the_exact_committed_terminal_without_cache() {
+    // Causes: D1 HTTP has captured its snapshot/receiver but its body has never
+    // been polled; D2 the same producer commits Delete and removes that cache;
+    // D3 the real body starts only after D2. D1+D2+D3 => snapshot still readable,
+    // no NotFound body error, one terminal equal to the producer's receipt.
+    // This deterministically covers the cache-vs-broadcast deletion race.
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let app = router(state.clone());
+    let id = http_create(&app).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/sessions/{id}/events/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "D1 accepted snapshot");
+    let (_, mut receipt) = state.stream_subscribe(&id).unwrap();
+    http_json(
+        &app,
+        "DELETE",
+        &format!("/v1/sessions/{id}"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let committed = drain(&mut receipt)
+        .0
+        .into_iter()
+        .find(|event| event.type_str() == "session.deleted")
+        .expect("D2 committed producer receipt");
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        response.into_body().collect(),
+    )
+    .await
+    .expect("D3 exact terminal closes")
+    .expect("D3 cache absence is not a body error");
+    let body = String::from_utf8(body.to_bytes().to_vec()).unwrap();
+    let terminals = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["type"] == "session.deleted")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1, "D3 exactly one logical terminal");
+    assert_eq!(
+        terminals[0]["id"], committed.id,
+        "D3 same authoritative identity"
+    );
+    assert!(
+        terminals[0]["processed_at"].is_null(),
+        "D3 cleanup timestamps are not invented deletion timestamps"
+    );
+}
+
+#[tokio::test]
+async fn an_open_stream_observes_another_replicas_durable_deletion_without_local_broadcast() {
+    // Causes: D4 independent caches share one real durable root; D5 only B
+    // commits deletion and A's receiver gets no local wake; D6 A's already-open
+    // body stays connected. D4+D5+D6 => the retained hidden root or scoped
+    // tombstone proves one logical deletion with the same producer identity.
+    // No reconnect, history GET, command resend or second deletion admission.
+    let (_, a, b) = independent_replicas();
+    let id = state_create(&a).await;
+    // Keep the aggregate's real activity fence open before subscribing. An
+    // already-idle Session may legitimately finish SSE before a later delete.
+    a.session_application()
+        .begin_activity(&awaken_session_types::SessionId::from(&id))
+        .await
+        .expect("D4 admitted activity keeps the stream open");
+    let app = router(a.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/sessions/{id}/events/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let observer = tokio::spawn(async move {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            response.into_body().collect(),
+        )
+        .await
+        .expect("D6 durable deletion closes A")
+        .expect("D6 valid terminal body")
+    });
+    http_json(
+        &router(b.clone()),
+        "GET",
+        &format!("/v1/sessions/{id}"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let (_, mut producer) = b.stream_subscribe(&id).unwrap();
+    let (_, mut local) = a.stream_subscribe(&id).unwrap();
+    b.delete_session(&id).await.unwrap();
+    let committed = drain(&mut producer)
+        .0
+        .into_iter()
+        .find(|event| event.type_str() == "session.deleted")
+        .unwrap();
+    assert!(
+        matches!(local.try_recv(), Err(TryRecvError::Empty)),
+        "D5 no A broadcast"
+    );
+    let body = String::from_utf8(observer.await.unwrap().to_bytes().to_vec()).unwrap();
+    let terminals = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|event| event["type"] == "session.deleted")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1, "D6 exactly one deletion");
+    assert_eq!(
+        terminals[0]["id"], committed.id,
+        "D6 shared canonical identity"
     );
 }
 

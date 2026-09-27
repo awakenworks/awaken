@@ -15,7 +15,8 @@ impl ManagedState {
 
     /// The Session's committed SSE broadcast sender, created on first use.
     /// Capacity is generous so a fast Run's commit burst does not lag a slow
-    /// subscriber into `Lagged` (which the stream tolerates by skipping).
+    /// subscriber into `Lagged`; an overflow wakes the same durable projection
+    /// catch-up rather than dropping committed facts.
     fn live_sender(&self, session_id: &str) -> broadcast::Sender<Event> {
         let mut live = self.live.lock().unwrap();
         live.entry(session_id.to_string())

@@ -248,12 +248,13 @@ impl SessionApplication {
     /// authorization immediately after this gate proves same-generation
     /// identity; this helper owns only the shared current-clock decision.
     fn require_current_live_terminal_generation(
+        &self,
         session: &PersistedSession,
     ) -> Result<(), SessionRealizationControlFailure> {
         if session.realization.as_ref().is_some_and(|current| {
             awaken_session_realization_contract::realization_lease_is_live_at(
                 current.expires_at_unix_ms,
-                crate::activity::now_unix_ms(),
+                self.now_unix_ms(),
             )
         }) {
             Ok(())
@@ -280,7 +281,7 @@ impl SessionApplication {
         // domain check below proves the old assertion is that same generation.
         // Worker Registry authentication remains the independent transport
         // identity edge; no second lease record or timer authority is created.
-        Self::require_current_live_terminal_generation(&session)?;
+        self.require_current_live_terminal_generation(&session)?;
         let workspace_id = self
             .session_repository()
             .owner(&effect.command.session_id)
@@ -316,7 +317,7 @@ impl SessionApplication {
             .get(&effect.command.session_id)
             .await
             .map_err(repository_control)?;
-        Self::require_current_live_terminal_generation(&session)?;
+        self.require_current_live_terminal_generation(&session)?;
         let owner_scope = self
             .session_repository()
             .owner(&effect.command.session_id)
@@ -353,7 +354,7 @@ impl SessionApplication {
             .get(session_id)
             .await
             .map_err(repository_control)?;
-        Self::require_current_live_terminal_generation(&session)?;
+        self.require_current_live_terminal_generation(&session)?;
         session
             .authorize_terminal_memory_intent(intent)
             .map_err(|error| match error {
@@ -401,7 +402,7 @@ impl SessionApplication {
         // renewal. Starting a new credential/source effect still requires the
         // current root lease to be live; its exact readback travels with the
         // immutable command so transport adapters never reconstruct it.
-        Self::require_current_live_terminal_generation(&session)?;
+        self.require_current_live_terminal_generation(&session)?;
         if !Self::terminal_cleanup_lease_matches(&session, lease) {
             return Err(SessionRealizationControlFailure::StaleOwnership);
         }

@@ -2545,6 +2545,7 @@ dependencies = [
  "awaken-session-types",
  "awaken-session-work-contract",
  "awaken-worker-contract",
+ "awaken-worker-registry",
  "futures-util",
  "serde",
  "serde_json",

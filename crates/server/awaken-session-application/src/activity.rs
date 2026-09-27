@@ -14,11 +14,6 @@ use awaken_session_types::SessionRevision;
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
-pub(crate) fn now_unix_ms() -> u64 {
-    use awaken_agent_contract::clock::{Clock, SystemClock};
-    SystemClock.now_ms()
-}
-
 pub(crate) fn runtime_interval_fact(
     owner_scope: &str,
     session_id: &str,
@@ -397,6 +392,7 @@ impl SessionApplication {
         exact_epoch: Option<u64>,
         allow_external_realization: bool,
         continue_committed_await: bool,
+        now_ms: u64,
     ) -> Result<u64, SessionActivityError> {
         let epoch = match session_activity_open_plan(
             session.execution,
@@ -425,7 +421,7 @@ impl SessionApplication {
                 .transition_execution(SessionExecutionState::Running)
                 .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
         }
-        session.begin_runtime_interval(now_unix_ms());
+        session.begin_runtime_interval(now_ms);
         Ok(epoch)
     }
 
@@ -481,7 +477,7 @@ impl SessionApplication {
             }
             Err(error) => return Err(SessionActivityError::Unavailable(error.to_string())),
         }
-        self.ensure_environment_resident(session_id, now_unix_ms())
+        self.ensure_environment_resident(session_id, self.now_unix_ms())
             .await
             .map_err(|error| match error {
                 super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
@@ -505,7 +501,13 @@ impl SessionApplication {
             // `running` would let a failed Stage look like an ordinary Run and
             // a later settlement could erase `activation_failed` back to idle.
             let external = self.requires_external_realization(&session);
-            Self::open_activity_on_snapshot(&mut session, None, external, false)?;
+            Self::open_activity_on_snapshot(
+                &mut session,
+                None,
+                external,
+                false,
+                self.now_unix_ms(),
+            )?;
             match self
                 .commit_session_snapshot_with_record(
                     &owner_scope,
@@ -639,7 +641,7 @@ impl SessionApplication {
                         &projected_root.environment,
                     );
                 let resident = self
-                    .ensure_environment_resident(session_id, now_unix_ms())
+                    .ensure_environment_resident(session_id, self.now_unix_ms())
                     .await
                     .map_err(|error| match error {
                         super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
@@ -652,7 +654,7 @@ impl SessionApplication {
                 })
             }
             None => {
-                self.ensure_environment_resident(session_id, now_unix_ms())
+                self.ensure_environment_resident(session_id, self.now_unix_ms())
                     .await
                     .map_err(|error| match error {
                         super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
@@ -704,6 +706,7 @@ impl SessionApplication {
                 Some(epoch),
                 external,
                 continue_committed_await,
+                self.now_unix_ms(),
             )?;
             if let Some(prior_activity_epoch) = prior_activity_epoch {
                 // The new epoch was inserted first, so removing the old one can
@@ -893,7 +896,7 @@ impl SessionApplication {
                             SessionEventProjectionAnchor {
                                 source_commit_cursor: observation.source_commit_cursor,
                             },
-                            now_unix_ms(),
+                            self.now_unix_ms(),
                         )
                         .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?
                     {
@@ -930,7 +933,7 @@ impl SessionApplication {
                     session
                         .transition_execution(SessionExecutionState::Idle)
                         .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
-                    let ended_at_unix_ms = now_unix_ms();
+                    let ended_at_unix_ms = self.now_unix_ms();
                     session.environment.mark_idle(ended_at_unix_ms);
                     session
                         .close_runtime_interval(ended_at_unix_ms)

@@ -251,6 +251,7 @@ impl ManagedState {
                         ),
                     )
                 }),
+            self.application.now_unix_ms(),
         );
         let primary_thread_usage = usage_projection::project_committed_thread_usage(
             root_snapshot.as_ref(),
@@ -1160,6 +1161,30 @@ impl ManagedState {
                 child_pending: &child_pending,
             },
         )?;
+        if persisted.is_hidden() && persisted.is_terminal() {
+            // Logical Delete is an absorbing Session-root fact, independent
+            // of Runtime commit cursors. Emit it after the canonical retained
+            // history, using the same renderer as the deletion producer and
+            // scoped tombstone observer. A retained root must not close SSE as
+            // mere Terminated before its actual Delete fact is delivered.
+            let owner = self
+                .application
+                .owner(&awaken_session_types::SessionId::from(session_id))
+                .await
+                .map_err(Self::map_application_mutation_error)?;
+            let expected_owner = self.owner_scope(session_id).ok_or(StateError::NotFound)?;
+            if !refresh_entrypoint::logical_deletion_is_proven(
+                true,
+                persisted.session_id == session_id,
+                owner == expected_owner,
+                persisted.is_hidden(),
+                persisted.is_terminal(),
+                false,
+            ) {
+                return Err(StateError::NotFound);
+            }
+            record.append_event_once(session_deletion_event(&owner, session_id));
+        }
         let canonicalization_done = started.elapsed();
         tracing::debug!(
             session_id,

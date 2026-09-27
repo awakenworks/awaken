@@ -1409,11 +1409,10 @@ impl ManagedState {
 
     /// `DELETE /v1/sessions/{id}` — commit a terminal `session.deleted` event,
     /// push it to any open SSE stream, then drop the in-memory record. The
-    /// broadcast happens *before* removal because after the record is gone there
-    /// is nothing to backfill from: a live frame is the only way a streaming
-    /// client observes the deletion, and a subsequent `events.list`/`retrieve`
-    /// is a 404 (delete removes the session; it does not tombstone it as archive
-    /// does).
+    /// broadcast happens before cache removal. An already-open stream can also
+    /// observe the same logical deletion from its exact hidden durable root or
+    /// owner-scoped tombstone; a 404 alone is never a deletion receipt. Public
+    /// `events.list`/`retrieve` still return 404 for this hidden Session.
     pub async fn delete_session(&self, id: &str) -> Result<(), StateError> {
         // A terminal command must work after a process restart without realizing
         // the soon-to-be-released Environment or MCP attachments.
@@ -1427,17 +1426,9 @@ impl ManagedState {
             .await
             .map_err(Self::map_preparation_error)?;
         {
-            let deleted_id = self.next_event_id();
             let mut sessions = self.sessions.lock().unwrap();
             let record = sessions.get_mut(id).ok_or(StateError::NotFound)?;
-            let mut event = Event {
-                id: deleted_id,
-                kind: OutboundKind::SessionDeleted {},
-                processed_at: transition
-                    .session
-                    .updated_at_unix_ms
-                    .map(awaken_session_application_contract::epoch_millis_to_rfc3339),
-            };
+            let mut event = super::events::session_deletion_event(&transition.owner_scope, id);
             let delta = super::events::committed_delivery_delta(
                 &record.events,
                 std::slice::from_mut(&mut event),
