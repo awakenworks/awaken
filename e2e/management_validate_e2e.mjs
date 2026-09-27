@@ -44,10 +44,17 @@ async function main() {
 
   try {
     await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
+      // S1 the live probe's body claim must equal the trusted composition-root
+      // Workspace; otherwise 404 would test tenancy instead of credential validity.
+      const context = await req(base, 'GET', '/v1/config/workspace-context');
+      assert.equal(context.status, 200);
+      const workspace = context.json.workspace_id;
+      assert.equal(typeof workspace, 'string');
+      assert.ok(workspace.length > 0);
       // A tested connection discovers the live model and stores the key once.
       let r = await req(base, 'POST', '/v1/config/provider-connections', {
         idempotency_key: 'management-validate-provider-connection',
-        workspace_id: 'ws',
+        workspace_id: workspace,
         provider_id: 'anthropic',
         display_name: 'Anthropic',
         dialect: 'anthropic_messages',
@@ -57,7 +64,7 @@ async function main() {
       });
       assert.equal(r.status, 201);
       const goodId = r.json.credential.id;
-      r = await req(base, 'POST', `/v1/config/credentials/${goodId}/validate`, { workspace_id: 'ws', model_id: model });
+      r = await req(base, 'POST', `/v1/config/credentials/${goodId}/validate`, { workspace_id: workspace, model_id: model });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.ok(validateContract(r.json), `CredentialValidation contract: ${ajv.errorsText(validateContract.errors)}`);
       assert.equal(r.json.status, 'valid', `real key must validate; got ${JSON.stringify(r.json)}`);
@@ -65,12 +72,12 @@ async function main() {
 
       // A bogus key validates as `invalid` (the provider rejects it).
       r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: 'ws', kind: 'vault', provider_id: 'anthropic', env_key: 'ANTHROPIC_API_KEY',
+        workspace_id: workspace, kind: 'vault', provider_id: 'anthropic', env_key: 'ANTHROPIC_API_KEY',
         secret: 'sk-obviously-not-a-real-key', // awaken-allow: secret
       });
       assert.equal(r.status, 201);
       const badId = r.json.id;
-      r = await req(base, 'POST', `/v1/config/credentials/${badId}/validate`, { workspace_id: 'ws', model_id: model });
+      r = await req(base, 'POST', `/v1/config/credentials/${badId}/validate`, { workspace_id: workspace, model_id: model });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.equal(r.json.status, 'invalid', `bogus key must be invalid; got ${JSON.stringify(r.json)}`);
       pass('validate a bogus credential -> status=invalid (never a false valid)');

@@ -23,7 +23,6 @@ import assert from 'node:assert/strict';
 import { withServer, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38155);
-const WS = 'ws';
 
 const KEY = process.env.ANTHROPIC_API_KEY ?? process.env.KIMI_API_KEY;
 const RAW_BASE = process.env.ANTHROPIC_BASE_URL ?? process.env.KIMI_BASE_URL ?? 'https://api.kimi.com/coding/v1/';
@@ -49,6 +48,14 @@ async function main() {
         });
         return { status: res.status, body: await res.json().catch(() => ({})) };
       };
+
+      // S1 read the composition-root Workspace; a foreign body claim must not
+      // impersonate a provider-discovery or live validation outcome.
+      const context = await cfg('GET', '/v1/config/workspace-context');
+      assert.equal(context.status, 200);
+      const WS = context.body.workspace_id;
+      assert.equal(typeof WS, 'string');
+      assert.ok(WS.length > 0);
 
       // ── 1. Test and save the provider, catalog, and credential atomically ────
       const connection = await cfg('POST', '/v1/config/provider-connections', {
