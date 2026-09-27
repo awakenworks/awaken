@@ -50,14 +50,14 @@
     },
     "awaken-resource-contract": {
       "depth": 0,
-      "production_lines": 3171,
+      "production_lines": 3163,
       "growth_reasons": {
         "production_lines": "Replace the last generic Resource Invalid payloads with domain causes and remove ResourceErrorDetail"
       }
     },
     "awaken-dispatch-contract": {
       "depth": 7,
-      "production_lines": 2381,
+      "production_lines": 2378,
       "catch_all_errors": 3,
       "growth_reasons": {
         "production_lines": "The rebased operator-quarantine contract adds one shared occupied-slot decision used by Memory, SQLite, and PostgreSQL; no duplicate dispatch authority is introduced.",
@@ -66,10 +66,10 @@
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7713,
+      "production_lines": 7738,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "The neutral Runtime contract owns validated inference budget/caller-sampled monotonic timing and the strict coverage-before-model chronology law. The latter refuses same-commit pseudo-enrollment; one shared actual Runtime result fixture replaces hand-written Memory/SQLite closure pairs. No parallel journal/authority/store/resolver or graph dependency is introduced."
+        "production_lines": "The neutral Runtime contract already owns validated inference budget and coverage-before-model chronology. This revision seals no-dispatch authority to reviewed pre-call constructors and binds physical-attempt cancellation observation in the existing RuntimeRunContext port; no new execution owner, journal, resolver, or store is introduced."
       }
     },
     "awaken-sandbox-control": {

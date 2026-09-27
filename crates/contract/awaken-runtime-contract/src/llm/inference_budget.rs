@@ -5,7 +5,7 @@
 use super::Error;
 #[cfg(test)]
 use super::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, DEFAULT_MODEL_RESPONSE_TIMEOUT};
-use crate::model_operation::{ModelExecutionEvidence, NoDispatchProof, PreDispatchStage};
+use crate::model_operation::{ModelExecutionEvidence, NoDispatchProof};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -114,9 +114,7 @@ impl ModelAttemptTiming {
 impl ModelInferenceBudgetError {
     pub fn before_dispatch(self) -> Error {
         Error::Binding(self.to_string()).with_execution_evidence(
-            ModelExecutionEvidence::NotDispatched(NoDispatchProof::before_dispatch(
-                PreDispatchStage::RequestProjection,
-            )),
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof::request_projection()),
         )
     }
 }

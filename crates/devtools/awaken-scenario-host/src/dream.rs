@@ -3,6 +3,7 @@
 //! The scenario uses the production MemoryStore mounter and a scripted model that
 //! performs a real output-file write through the ordinary tool loop.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Json;
@@ -10,6 +11,9 @@ use axum::Router;
 use axum::routing::get;
 
 use crate::{SharedHost, build_router_and_host_with_model_publication_resolver, scenario_model};
+use awaken_dream_application::{
+    DreamCancellation, DreamExecutor, DreamFailure, DreamPreparation, DreamRequest,
+};
 
 /// Build the one Dream scenario router used by process-level SDK E2E.
 pub fn build_dream_router() -> Router {
@@ -32,10 +36,110 @@ pub async fn build_dream_runtime_router() -> Router {
     .await;
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
+    let barrier = std::env::var_os("AWAKEN_TEST_DREAM_PRE_EXECUTE_BARRIER_DIR").map(|directory| {
+        Arc::new(move |inner: Arc<dyn DreamExecutor>| {
+            Arc::new(PreparedDreamBarrier {
+                inner,
+                directory: PathBuf::from(&directory),
+            }) as Arc<dyn DreamExecutor>
+        }) as awaken_coordinator::ScenarioDreamExecutorDecorator
+    });
     let router = crate::scenario_platform::mount_parts_with_model_publication_resolver(
-        host, resources, resolver,
+        host, resources, resolver, barrier,
     );
     router.merge(dream_auxiliary_routes())
+}
+
+/// Test-only decorator on the EXISTING DreamExecutor port. The real executor
+/// owns preparation and cleanup; only a marked scenario waits before its first
+/// call to execute. No second Dream store, Session path or model result exists.
+struct PreparedDreamBarrier {
+    inner: Arc<dyn DreamExecutor>,
+    directory: PathBuf,
+}
+
+#[async_trait::async_trait]
+impl DreamExecutor for PreparedDreamBarrier {
+    async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
+        self.inner.validate_inputs(request).await
+    }
+
+    async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
+        self.inner.prepare(request).await
+    }
+
+    async fn execute(
+        &self,
+        request: &DreamRequest,
+        preparation: &DreamPreparation,
+        cancellation: DreamCancellation,
+    ) -> Result<(), DreamFailure> {
+        if request
+            .request_guidance
+            .as_deref()
+            .is_some_and(|guidance| guidance.contains("[awaken-test:pause-dream-before-execution]"))
+        {
+            // B1 prepared coordinates are committed before this method begins;
+            // B2 the marker proves this decorator is entered; B3 cancel leaves
+            // the real Session cleanup owner to finish. No model call can be
+            // constructed before B3. Failure to cancel/release is bounded.
+            if !request.job_id.starts_with("dream_")
+                || !request.job_id[6..].bytes().all(|b| b.is_ascii_digit())
+            {
+                return Err(DreamFailure::new(
+                    "fixture_invalid",
+                    "invalid Dream fixture identity",
+                ));
+            }
+            tokio::fs::create_dir_all(&self.directory)
+                .await
+                .map_err(|error| DreamFailure::new("fixture_io", error.to_string()))?;
+            tokio::fs::write(
+                self.directory.join(format!("{}.prepared", request.job_id)),
+                b"ready",
+            )
+            .await
+            .map_err(|error| DreamFailure::new("fixture_io", error.to_string()))?;
+            tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                loop {
+                    if cancellation.is_canceled() {
+                        return Ok(());
+                    }
+                    if tokio::fs::try_exists(self.directory.join("release"))
+                        .await
+                        .map_err(|error| DreamFailure::new("fixture_io", error.to_string()))?
+                    {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .map_err(|_| {
+                DreamFailure::new("fixture_timeout", "prepared Dream was never cancelled")
+            })??;
+            if cancellation.is_canceled() {
+                return Ok(());
+            }
+        }
+        self.inner.execute(request, preparation, cancellation).await
+    }
+
+    async fn cleanup(
+        &self,
+        request: &DreamRequest,
+        preparation: Option<&DreamPreparation>,
+    ) -> Result<(), DreamFailure> {
+        self.inner.cleanup(request, preparation).await
+    }
+
+    async fn cancel(
+        &self,
+        request: &DreamRequest,
+        preparation: Option<&DreamPreparation>,
+    ) -> Result<(), DreamFailure> {
+        self.inner.cancel(request, preparation).await
+    }
 }
 
 /// Return the same router plus its Host for focused cross-module assertions.
@@ -151,27 +255,6 @@ impl awaken_runtime_contract::llm::LlmExecutor for DreamScenarioModel {
     ) -> awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse> {
         use awaken_agent_contract::agent::message::Role;
         use awaken_runtime_contract::llm::{AssistantOutput, ChatResponse, ToolCall};
-
-        // The process-level SDK conformance scenario needs one deterministic
-        // Running Dream so it can observe the prepared transcript and exercise
-        // cancellation without racing this deliberately fast scripted model.
-        // Delay only the first inference: the marker remains in conversation
-        // history, so delaying every turn would turn one cause into an accidental
-        // multi-turn timeout and obscure the cancellation behavior under test.
-        if request
-            .messages
-            .last()
-            .is_some_and(|message| message.role != Role::Tool)
-            && request.messages.iter().any(|message| {
-                awaken_session_executor::block_text(&message.content)
-                    .contains("[awaken-test:hold-dream-for-cancellation]")
-            })
-        {
-            // Bounded below the Session terminal-quiescence deadline: a broken
-            // cancellation delivery can still settle naturally instead of
-            // stranding the process fixture forever.
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        }
 
         let is_dream = request.messages.iter().any(|message| {
             message.role == Role::User

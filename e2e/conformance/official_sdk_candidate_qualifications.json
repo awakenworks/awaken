@@ -472,6 +472,62 @@
           ]
         }
       ]
+    },
+    {
+      "baseline_version": "0.127.0",
+      "candidate_version": "0.128.0",
+      "module": "@anthropic-ai/sdk-candidate",
+      "package_integrity": "sha512-tl5cBFZC1jVFrTuQyvQObA4WmuNgcYVeXfriqOumgtLAHUm4gPUj18YnszBW60v0PrjDB8nBDOC6wd9CmHQFlA==",
+      "delta_fingerprint": "77e6febe0d0c3fa18249968010d81ef3ed42c352645c93e7239c113bcb6d85cd",
+      "evidence_groups": [
+        {
+          "owner": "candidate.managed-type-change-points-v128",
+          "coordinates": [
+            "declarations:changed:beta/agents/agents.d.ts",
+            "declarations:changed:beta/dreams.d.ts",
+            "declarations:changed:beta/memory-stores/memories.d.ts",
+            "declarations:changed:beta/memory-stores/memory-versions.d.ts",
+            "declarations:changed:beta/sessions/events.d.ts",
+            "declarations:changed:beta/sessions/index.d.ts",
+            "declarations:changed:beta/sessions/resources.d.ts",
+            "declarations:changed:beta/sessions/sessions.d.ts",
+            "declarations:changed:beta/sessions/threads/events.d.ts",
+            "declarations:changed:beta/sessions/threads/threads.d.ts",
+            "declarations:changed:beta/user-profiles.d.ts"
+          ],
+          "witnesses": {
+            "declarations:changed:beta/agents/agents.d.ts": "claude-opus-5-5",
+            "declarations:changed:beta/dreams.d.ts": "Start an asynchronous job that uses past sessions",
+            "declarations:changed:beta/memory-stores/memories.d.ts": "Two paths overlap when one is an ancestor of the other",
+            "declarations:changed:beta/memory-stores/memory-versions.d.ts": "Query param: Return only versions written with the API key",
+            "declarations:changed:beta/sessions/events.d.ts": "export type BetaManagedAgentsAgentEvaluatedPermission = 'allow' \\| 'ask' \\| 'deny';",
+            "declarations:changed:beta/sessions/index.d.ts": "type BetaManagedAgentsAgentEvaluatedPermission,",
+            "declarations:changed:beta/sessions/resources.d.ts": "(?<!A memory store attached to an agent session\\.\\n \\*/\\n)export type BetaManagedAgentsSessionResource =",
+            "declarations:changed:beta/sessions/sessions.d.ts": "type BetaManagedAgentsAgentEvaluatedPermission as BetaManagedAgentsAgentEvaluatedPermission",
+            "declarations:changed:beta/sessions/threads/events.d.ts": "Path param\\s*\\n\\s*\\*/",
+            "declarations:changed:beta/sessions/threads/threads.d.ts": "The resolved agent a `session_thread` runs",
+            "declarations:changed:beta/user-profiles.d.ts": "A record of an entity that the platform serves through the API"
+          }
+        },
+        {
+          "owner": "candidate.inline-tool-helper-telemetry",
+          "coordinates": [
+            "runtime:changed:internal/stainless-helper-header.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.generated-module-loadability",
+          "coordinates": [
+            "runtime:changed:resources/beta/dreams.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.core-transport",
+          "coordinates": [
+            "runtime:changed:version.mjs"
+          ]
+        }
+      ]
     }
   ]
 }

@@ -15,7 +15,7 @@ use awaken_runtime_contract::llm::{
     Result, StopReason, TokenUsage, ToolCall,
 };
 use awaken_runtime_contract::model_operation::{
-    ModelExecutionEvidence, NoDispatchProof, PreDispatchStage, ResponseEnvelope, TerminalReceipt,
+    ModelExecutionEvidence, NoDispatchProof, ResponseEnvelope, TerminalReceipt,
 };
 use genai::Client;
 use genai::chat::{
@@ -238,7 +238,7 @@ impl LlmExecutor for GenaiExecutor {
                 "stream useful-progress silence budget must be positive".into(),
             )
             .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+                NoDispatchProof::request_projection(),
             )));
         }
         let model = request.model_binding.model_ref.clone();
@@ -246,7 +246,7 @@ impl LlmExecutor for GenaiExecutor {
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
                 .map_err(|error| {
                     error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                        NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+                        NoDispatchProof::request_projection(),
                     ))
                 })?;
 
@@ -260,7 +260,7 @@ impl LlmExecutor for GenaiExecutor {
             .chat_options(&request, true)
             .map_err(|error| {
                 error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                    NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+                    NoDispatchProof::request_projection(),
                 ))
             })?
             .with_capture_content(true)
@@ -470,12 +470,12 @@ impl GenaiExecutor {
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
                 .map_err(|error| {
                     error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                        NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+                        NoDispatchProof::request_projection(),
                     ))
                 })?;
         let mut options = self.chat_options(&request, false).map_err(|error| {
             error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+                NoDispatchProof::request_projection(),
             ))
         })?;
         if let Some(max_tokens) = max_tokens_override {

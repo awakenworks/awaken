@@ -70,9 +70,7 @@ impl LlmExecutor for RouteByProviderLlm {
                 retry_after: None,
             }
             .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
-                ),
+                awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
             )))
         } else {
             Ok(ChatResponse {
@@ -98,9 +96,7 @@ impl LlmExecutor for RouteLlm {
                 retry_after: None,
             }
             .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
-                ),
+                awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
             )))
         } else {
             Ok(ChatResponse {
@@ -145,9 +141,7 @@ impl LlmExecutor for TruncateThenFailPrimary {
                 retry_after: None,
             }
             .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
-                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
-                ),
+                awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
             ))),
             other => Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {other}")),

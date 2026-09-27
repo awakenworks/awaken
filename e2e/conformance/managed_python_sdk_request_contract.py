@@ -19,6 +19,7 @@ from typing import Any
 from urllib.parse import parse_qsl, unquote
 
 from managed_python_sdk_wire import semantic_request
+from managed_python_sdk_preparation_contract import exercise_request_preparation
 
 
 SKILL = b"---\nname: python-fixture\ndescription: request fixture\n---\nFixture."
@@ -43,6 +44,7 @@ WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "1.4.0",
     "1.5.0",
     "1.7.0",
+    "1.8.0",
 })
 CREDENTIAL_PROVIDER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0"}
 ENVIRONMENT_HELPER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0", "0.100.0"}
@@ -89,9 +91,9 @@ UNICODE_WORKER_HEADER_REJECTING_VERSIONS = frozenset(
         "0.125.0",
     }
 )
-MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.7.0"})
-ASYNC_CREDENTIAL_PROVIDER_VERSIONS = frozenset({"1.7.0"})
-FULL_RETRY_AFTER_VERSIONS = frozenset({"1.7.0"})
+MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.7.0", "1.8.0"})
+ASYNC_CREDENTIAL_PROVIDER_VERSIONS = frozenset({"1.7.0", "1.8.0"})
+FULL_RETRY_AFTER_VERSIONS = frozenset({"1.7.0", "1.8.0"})
 HTTP_FIELD_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 
 
@@ -931,8 +933,12 @@ async def _call_session_create(
     raw: bool = False,
     extra_headers: dict[str, str] | None = None,
     client_options: dict[str, object] | None = None,
+    call_arguments: dict[str, object] | None = None,
+    operation: str = "create",
+    collect: bool = False,
 ) -> object:
-    arguments = {"agent": "fixture", "environment_id": "fixture"}
+    arguments = {"agent": "fixture", "environment_id": "fixture"} if operation == "create" else {}
+    arguments.update(call_arguments or {})
     if extra_headers is not None:
         arguments["extra_headers"] = extra_headers
     if asynchronous:
@@ -951,11 +957,12 @@ async def _call_session_create(
             **options,
         ) as client:
             method = (
-                client.beta.sessions.with_raw_response.create
+                getattr(client.beta.sessions.with_raw_response, operation)
                 if raw
-                else client.beta.sessions.create
+                else getattr(client.beta.sessions, operation)
             )
-            return await method(**arguments)
+            response = await method(**arguments)
+            return [row async for row in response] if collect else response
 
     options = {
         "api_key": "transport-contract",  # awaken-allow: secret
@@ -967,11 +974,12 @@ async def _call_session_create(
     options.update(client_options or {})
     with anthropic_module.Anthropic(**options) as client:
         method = (
-            client.beta.sessions.with_raw_response.create
+            getattr(client.beta.sessions.with_raw_response, operation)
             if raw
-            else client.beta.sessions.create
+            else getattr(client.beta.sessions, operation)
         )
-        return method(**arguments)
+        response = method(**arguments)
+        return list(response) if collect else response
 
 
 async def _exercise_error_and_retry_contract_for_mode(
@@ -1232,6 +1240,13 @@ async def _exercise_error_and_retry_contract_for_mode(
         transport_module,
         asynchronous=asynchronous,
     )
+    client_type = anthropic_module.AsyncAnthropic if asynchronous else anthropic_module.Anthropic
+    supports_preparation = hasattr(client_type, "_copy_and_prepare")
+    assert supports_preparation is (anthropic_module.__version__ in {"1.8.0"}), "unreviewed preparation change point"
+    if supports_preparation:
+        await exercise_request_preparation(
+            anthropic_module, transport_module, _call_session_create, asynchronous=asynchronous,
+        )
 
 
 async def _exercise_credential_provider_contract_for_mode(

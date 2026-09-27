@@ -151,7 +151,6 @@ test('version-projected capability inputs form one closed boolean domain', () =>
   for (const [script, variable, pattern] of [
     ['management_files_models_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_FILES', /GA Files capability/u],
     ['management_skills_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_SKILLS', /GA Skills capability/u],
-    ['managed_dream_e2e.ts', 'AWAKEN_MANAGED_SDK_HAS_DREAMS', /Dreams capability/u],
     [
       'management_user_profiles_e2e.mjs',
       'AWAKEN_MANAGED_SDK_USER_PROFILES_PROJECTION',
@@ -164,5 +163,32 @@ test('version-projected capability inputs form one closed boolean domain', () =>
     });
     assert.notEqual(result.status, 0, script);
     assert.match(result.stderr, pattern, script);
+  }
+});
+
+test('a client without Dreams cannot enter a raw HTTP compatibility path', () => {
+  // D1 the selected oldest package has Files but no Dreams methods => reject
+  // before starting the Dream process. Files download remains owned by its
+  // canonical artifact scenario; no raw request can impersonate SDK coverage.
+  const sdk = resolveSdkPackage('@anthropic-ai/sdk-oldest');
+  const directory = mkdtempSync(path.resolve(tmpdir(), 'awaken-sdk-dream-admission-'));
+  try {
+    const result = spawnSync(process.execPath, [
+    '--import', hook, '--experimental-strip-types',
+    path.resolve(import.meta.dirname, '..', 'managed_dream_e2e.ts'),
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...environmentWithoutCandidateSelection(),
+      AWAKEN_MANAGED_SDK_PACKAGE_ROOT: sdk.root,
+      AWAKEN_MANAGED_SDK_PACKAGE_VERSION: sdk.version,
+      AWAKEN_MANAGED_SDK_RESOLUTION_FILE: path.resolve(directory, 'resolution.jsonl'),
+    },
+  });
+  assert.notEqual(result.status, 0, 'D1 unavailable official method fails closed');
+  assert.match(result.stderr, /official SDK Dreams surface is required/u);
+  assert.doesNotMatch(result.stdout, /listening on/u, 'D1 no server process');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });

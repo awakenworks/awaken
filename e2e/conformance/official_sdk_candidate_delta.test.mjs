@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   assertLatestRuntimeOwnsCandidateDelta,
   assertRetainedOfficialSdkBehaviorOwners,
+  retainedOfficialSdkBehaviorOwners,
   officialSdkCandidateDeltaCoordinates,
   officialSdkCandidateDeltaFingerprint,
   qualifyOfficialSdkCandidateDelta,
@@ -311,6 +312,7 @@ test('promotion retains prior behavior obligations without importing future requ
     entry('X', 'Y', ['unrelated']),
   ];
   const expected = ['stream', 'transport', 'workspace'];
+  assert.deepEqual(retainedOfficialSdkBehaviorOwners('C', catalog), expected, 'P1/P2 one shared requirement traversal before execution');
   const sameVersion = {
     currentVersion: 'C', candidateVersion: 'C',
     operations: empty(), declarations: empty(), runtime: empty(), exports: empty(),

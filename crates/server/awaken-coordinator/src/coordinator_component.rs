@@ -282,6 +282,8 @@ pub async fn build_coordinator_component(
             managed_state.clone(),
             application_access.clone(),
             crate::ManagedApplicationServices {
+                #[cfg(feature = "test-support")]
+                dream_executor_decorator: None,
                 session_application,
                 resource_registry,
                 model_inventory: Some(model_inventory),

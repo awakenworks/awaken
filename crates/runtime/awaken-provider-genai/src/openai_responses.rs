@@ -9,7 +9,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, TokenUsage,
 };
 use awaken_runtime_contract::model_operation::{
-    ModelExecutionEvidence, NoDispatchProof, PreDispatchStage, ResponseEnvelope, TerminalReceipt,
+    ModelExecutionEvidence, NoDispatchProof, ResponseEnvelope, TerminalReceipt,
 };
 use awaken_runtime_contract::resolved::ProviderServerTool;
 #[cfg(test)]
@@ -70,7 +70,7 @@ impl OpenAiResponsesExecutor {
         let body = request_body_for_provider(request, &self.provider_kind).map_err(|error| {
             // Nothing was encoded, so nothing reached the transport.
             error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+                NoDispatchProof::request_projection(),
             ))
         })?;
         let (status, text) = tokio::time::timeout_at(deadline, async {
