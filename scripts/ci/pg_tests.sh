@@ -272,6 +272,10 @@ self_test() {
     echo "Durable backend gate omits SQLite crash and injected fault atomicity" >&2
     return 1
   }
+  grep -Fq -- '--test dispatch_claim_perf -- --ignored --test-threads=1 --nocapture' "$0" || {
+    echo "Durable backend gate omits explicit ignored scale qualification" >&2
+    return 1
+  }
 }
 
 case "${1:-}" in
@@ -514,6 +518,13 @@ record_failure() {
 # fallback before these same entries run against this live fixture.
 pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"
 pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"
+# Scale qualification remains owned by the existing ingress target and this
+# exact database/image fixture. Explicit selection prevents its three ignored
+# cases from becoming green without execution. Timings qualify this fixture,
+# not production capacity or an unmeasured baseline improvement.
+pg_test cargo test -p awaken-dispatch --features test-support \
+  --test dispatch_claim_perf -- --ignored --test-threads=1 --nocapture \
+  || record_failure "$?"
 pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http -- --test-threads=1 --show-output \
   || record_failure "$?"
 pg_test cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \

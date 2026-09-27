@@ -115,7 +115,7 @@ jobs:
         env:
           AWAKEN_TEST_TIMINGS_FILE: target/test-timings/check-all.tsv
           AWAKEN_RELIABILITY_EVIDENCE_DIR: target/test-timings/reliability
-        run: scripts/ci/check-all.sh
+        run: scripts/ci/check-all.sh --full-gate --record
       - name: Retain exact-SHA quality evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -124,4 +124,5 @@ jobs:
           path: |
             target/test-timings/
             web/test-results/
+            scripts/ci/gate_record.json
           if-no-files-found: error

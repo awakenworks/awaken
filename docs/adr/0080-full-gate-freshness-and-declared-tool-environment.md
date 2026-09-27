@@ -61,6 +61,22 @@ a run with any failed check cannot record. A partial run cannot bless the record
 either: the writer refuses a gate list that is not the complete group list
 `check-all.sh` itself declares.
 
+The runner captures its candidate commit before executing the checks and passes
+that exact SHA to the existing writer. The writer refuses a missing or changed
+candidate, modified tracked source, or new untracked source, and repeats that
+fence after collecting tool versions. The previous gate record is excluded from
+the source check because publishing the receipt is the final step. This binds
+the record to a clean candidate at those boundaries; the worktree must remain
+unchanged throughout the run. Main ancestry is still required by the separate
+freshness reader and is not replaced by candidate evidence.
+
+The quality workflow invokes this same recorded full-gate entry point and keeps
+the record beside its SHA-bound logs. Its artifact includes multiple source-root
+relative evidence directories. Release extracts that named artifact at checkout
+root so the existing package consumer reads `target/test-timings/formal-run.json`
+at the original path; it does not create another proof manifest or copy of the
+test graph.
+
 The record's integrity is checked rather than trusted. The commit it names must
 exist in the repository and must be an ancestor of `main`, so a record can never
 bless work that was rewritten away or that never landed.

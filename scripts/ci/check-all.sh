@@ -74,6 +74,7 @@ if [ "$full_gate" -eq 1 ] && [ -z "${AWAKEN_FULL_GATE_LOG:-}" ]; then
 fi
 
 failed=()   # labels of checks that failed
+gate_candidate_revision="$(git rev-parse --verify HEAD)" || exit 1
 repro=()    # standalone reproduce command, parallel to `failed`
 timing_file="${AWAKEN_TEST_TIMINGS_FILE:-target/test-timings/check-all-${requested_group}.tsv}"
 initialize_timing_file() {
@@ -279,5 +280,6 @@ fi
 # Reached only when every group above passed, so this is the one place a record
 # can be written and the only run that is entitled to write one.
 if [ "$record_full_gate" -eq 1 ]; then
-  python3 scripts/ci/check_gate_freshness.py --record --gates "${groups[*]}" || exit 1
+  python3 scripts/ci/check_gate_freshness.py --record --gates "${groups[*]}" \
+    --expected-commit "$gate_candidate_revision" || exit 1
 fi
