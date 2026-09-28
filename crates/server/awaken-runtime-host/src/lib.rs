@@ -122,8 +122,8 @@ pub use crate::host::capability::ContainerEnvironmentComponents;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts};
 pub use crate::host::{
-    AttemptExecutorDecorator, DispatchPoolSizing, HostResume, RemoteAttemptInstallation,
-    SharedHost, remote_worker_placement, self_hosted_inference_holder,
+    AttemptExecutorDecorator, DispatchPoolSizing, HostProcess, HostResume,
+    RemoteAttemptInstallation, SharedHost, remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::run_application_host::RunApplicationHost;

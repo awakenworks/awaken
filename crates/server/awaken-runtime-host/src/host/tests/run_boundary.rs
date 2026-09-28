@@ -338,9 +338,11 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
                 .expect("open test Memory repository"),
         ),
         SharedHost::test_memory_extraction_repository(None),
-        SharedHost::mint_local_workspace(),
-        crate::DeploymentConfig::ephemeral(),
-        system_clock(),
+        crate::HostProcess {
+            local_workspace: SharedHost::mint_local_workspace(),
+            deployment: crate::DeploymentConfig::ephemeral(),
+            clock: system_clock(),
+        },
     );
     let resolved = host
         .worker_file_content_source()

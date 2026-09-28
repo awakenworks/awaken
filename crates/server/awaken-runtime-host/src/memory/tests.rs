@@ -1103,9 +1103,11 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
             "stub",
             Arc::new(awaken_resource_contract::UnavailableFileContentSource),
             content.clone(),
-            SharedHost::mint_local_workspace(),
-            crate::DeploymentConfig::ephemeral(),
-            awaken_lease_contract::system_clock(),
+            crate::HostProcess {
+                local_workspace: SharedHost::mint_local_workspace(),
+                deployment: crate::DeploymentConfig::ephemeral(),
+                clock: awaken_lease_contract::system_clock(),
+            },
         )
         .with_worker_upstream(awaken_worker_transport_security::WorkerUpstream::new(
             "http://coordinator.invalid",
