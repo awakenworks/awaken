@@ -27,7 +27,7 @@ pub(super) async fn adopt_bound_sandbox(
 {
     let provider = host
         .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
-        .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
+        .map_err(HostWorkerResolver::map_host_resolution_error)?;
     host.adopt_bound_session_environment(
         expected_sandbox_id,
         encoded,
@@ -36,7 +36,10 @@ pub(super) async fn adopt_bound_sandbox(
         recovery == awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
     )
     .await
-    .map_err(|error| HostWorkerResolver::execution_error(format!("run {}: {error}", run_id.0)))
+    .map_err(|mut error| {
+        error.message = format!("run {}: {}", run_id.0, error.message);
+        HostWorkerResolver::map_host_resolution_error(error)
+    })
 }
 
 impl HostWorkerResolver {
@@ -51,7 +54,7 @@ impl HostWorkerResolver {
         let substrate = host
             .session_child_execution_substrate(&session_thread_id.0, None)
             .await
-            .map_err(|error| Self::execution_error(error.to_string()))?;
+            .map_err(Self::map_host_resolution_error)?;
         let environment = substrate.environment;
         let snapshot = &claimed.request.activation.snapshot;
         let authorization = crate::config::effective_tool_authorization(
@@ -77,7 +80,7 @@ impl HostWorkerResolver {
                 Some(snapshot),
                 publication_source,
             )
-            .map_err(|error| Self::execution_error(error.to_string()))?
+            .map_err(Self::map_host_resolution_error)?
         {
             runtime = runtime.with_run_delegation(delegation);
         }
@@ -296,7 +299,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 ))
             })?;
             host.install_environment_projection(&thread_id.0, &projection.environment)
-                .map_err(|error| Self::execution_error(error.to_string()))?;
+                .map_err(Self::map_host_resolution_error)?;
             host.session_slots
                 .update(&thread_id.0, |slot| slot.tools = projection.tools);
             projection.mcp_stages
@@ -432,12 +435,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 (run_thread_id == thread_id).then_some(&claimed.request.activation.snapshot);
             host.session_child_execution_substrate(&thread_id.0, frozen_parent)
                 .await
-                .map_err(|error| {
-                    Self::execution_error(format!(
-                        "run {} sandbox-stdio physical realization failed: {error}",
-                        claimed.lease.run_id.0
-                    ))
-                })?;
+                .map_err(Self::map_host_resolution_error)?;
         }
         if let Some(stages) = dispatched_mcp_stages {
             Self::reconcile_dispatched_mcp(&host, &thread_id.0, stages).await?;
@@ -445,13 +443,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         if run_thread_id != thread_id {
             return self
                 .recovered_child_worker(&host, claimed, thread_id, claimed_source)
-                .await
-                .map_err(|error| {
-                    Self::execution_error(format!(
-                        "run {} coordinated child resolution failed: {error}",
-                        claimed.lease.run_id.0
-                    ))
-                });
+                .await;
         }
         // Complete Session projection installation has already validated the
         // delivered Run coordinates and retained the immutable publication in
@@ -480,13 +472,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 immutable_publication,
                 claimed_runtime_input,
             )
-            .await
-            .map_err(|error| {
-                Self::execution_error(format!(
-                    "run {} root Session resolution failed: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?;
+            .await?;
         Ok(worker)
     }
 

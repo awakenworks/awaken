@@ -399,12 +399,14 @@ mod tests {
             has_worker_relay(&capabilities),
             "R3: legacy relay remains installed"
         );
+        for backend in ["acp:claude", "acp:codex"] {
+            assert!(
+                has_acp_mcp_client_injection(&capabilities, backend),
+                "R3: each witnessed declared client publishes its exact profile: {backend}"
+            );
+        }
         assert!(
-            has_acp_mcp_client_injection(&capabilities, "acp:claude"),
-            "R3: the declared ACP client publishes its exact process-protocol profile"
-        );
-        assert!(
-            !has_acp_mcp_client_injection(&capabilities, "acp:codex"),
+            !has_acp_mcp_client_injection(&capabilities, "acp:opencode"),
             "R5: an undeclared client-injection adapter is not synthesized"
         );
     }
