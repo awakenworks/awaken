@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 7619 (legacy oversized test file: split, never grow)
 //! Slice 5 coverage: pure planners (container/pod) and the provider lifecycle over
 //! an in-memory fake [`ContainerRuntime`] — Session environment plus attempt execs,
 //! no daemon required.

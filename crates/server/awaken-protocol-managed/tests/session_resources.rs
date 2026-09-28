@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 7631 (legacy oversized test file: split, never grow)
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
 //! Managed Agents contract, while whole-manifest replacement is explicitly owned
 //! by `/v1/awaken/sessions/{id}/resources`: only `file` attaches to a live Session;

@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 8501 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;

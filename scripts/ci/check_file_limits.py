@@ -20,6 +20,19 @@ CODE_WARNING_LIMIT = 1000
 CODE_ERROR_LIMIT = 2000
 DOC_LIMIT = 1200
 CONFIG_LIMIT = 1200
+# Test code had no limit at all, so single files grew to 27k lines and became
+# the most-rebased files in the tree (runtime-host host/tests.rs was touched by
+# 46 of 500 commits). Tests get more room than production, not unlimited room.
+TEST_ERROR_LIMIT = 3000
+# A test file that was already over TEST_ERROR_LIMIT when the limit arrived
+# carries its ceiling in its own first lines, as `awaken-file-limit-ceiling: N`.
+# The ceiling lives with the file, not in a path list here, so a split or a
+# rename carries it (or drops it) in the same diff. At commit time the ceiling
+# may only fall: it may not exceed the committed one, and a file that had none
+# may take one only if it was already over the limit, which after the first
+# commit is never. Once the file is back under the limit the marker is stale.
+CEILING_MARKER_RE = re.compile(r"awaken-file-limit-ceiling:\s*(\d+)")
+CEILING_MARKER_SCAN_LINES = 5
 
 CODE_SUFFIXES = {
     ".rs",
@@ -81,7 +94,9 @@ def limit_for(rel: str) -> int | None:
     if path.name in LOCKFILES or is_excluded(rel):
         return None
     if path.suffix in CODE_SUFFIXES:
-        return None if is_test_path(rel) else CODE_ERROR_LIMIT
+        if is_test_path(rel):
+            return TEST_ERROR_LIMIT
+        return CODE_ERROR_LIMIT
     if path.suffix in DOC_SUFFIXES:
         return DOC_LIMIT
     if path.suffix in CONFIG_SUFFIXES:
@@ -156,6 +171,73 @@ def classify_line_count(rel: str, lines: int) -> str | None:
     return "error" if lines > limit else None
 
 
+def is_test_code_file(rel: str) -> bool:
+    return Path(rel).suffix in CODE_SUFFIXES and is_test_path(rel)
+
+
+def declared_ceiling(text: str) -> int | None:
+    for line in text.splitlines()[:CEILING_MARKER_SCAN_LINES]:
+        match = CEILING_MARKER_RE.search(line)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def committed_text(rel: str) -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "show", f"HEAD:{rel}"], cwd=REPO_ROOT, stderr=subprocess.DEVNULL
+        ).decode("utf-8", errors="replace")
+    except subprocess.CalledProcessError:
+        return None
+
+
+def test_file_errors(rel: str, text: str, previous: str | None, staged: bool) -> list[str]:
+    """The test-file limit with its in-file ceiling, judged against HEAD when staged."""
+
+    lines = count_lines(text)
+    ceiling = declared_ceiling(text)
+    errors: list[str] = []
+    if ceiling is None:
+        if lines > TEST_ERROR_LIMIT:
+            errors.append(
+                f"{rel}: {lines} lines > test limit {TEST_ERROR_LIMIT}; split the file by the "
+                "behaviour its tests verify"
+            )
+        return errors
+    if lines <= TEST_ERROR_LIMIT:
+        errors.append(
+            f"{rel}: {lines} lines is within the {TEST_ERROR_LIMIT}-line test limit; remove its "
+            "awaken-file-limit-ceiling marker so it cannot grow back"
+        )
+        return errors
+    if lines > ceiling:
+        errors.append(
+            f"{rel}: {lines} lines > its awaken-file-limit-ceiling {ceiling}; an oversized test "
+            "file may shrink but never grow -- add new tests in a new file"
+        )
+    if staged:
+        if previous is None:
+            errors.append(
+                f"{rel}: a new file may not declare awaken-file-limit-ceiling; keep it under "
+                f"{TEST_ERROR_LIMIT} lines"
+            )
+        else:
+            before = declared_ceiling(previous)
+            bound = before if before is not None else count_lines(previous) + 1
+            if before is None and count_lines(previous) <= TEST_ERROR_LIMIT:
+                errors.append(
+                    f"{rel}: declares awaken-file-limit-ceiling {ceiling} but was within the "
+                    f"{TEST_ERROR_LIMIT}-line limit; a ceiling may not be introduced to admit growth"
+                )
+            elif ceiling > bound:
+                errors.append(
+                    f"{rel}: raises awaken-file-limit-ceiling to {ceiling} from {bound}; the "
+                    "ceiling only falls"
+                )
+    return errors
+
+
 def find_results(files: list[str], staged: bool) -> tuple[list[str], list[str], bool]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -166,6 +248,12 @@ def find_results(files: list[str], staged: bool) -> tuple[list[str], list[str], 
             continue
         text = read_content(rel, staged)
         if text is None:
+            continue
+        if is_test_code_file(rel):
+            previous = committed_text(rel) if staged else None
+            found = test_file_errors(rel, text, previous, staged)
+            errors.extend(found)
+            has_code_violation = has_code_violation or bool(found)
             continue
         lines = count_lines(text)
         classification = classify_line_count(rel, lines)
@@ -187,7 +275,8 @@ def self_test() -> int:
         ("src/lib.rs", CODE_ERROR_LIMIT),
         ("docs/design/runtime.md", DOC_LIMIT),
         ("package.json", CONFIG_LIMIT),
-        ("tests/runtime.rs", None),
+        ("tests/runtime.rs", TEST_ERROR_LIMIT),
+
         ("src/generated/schema.rs", None),
         ("Cargo.lock", None),
     ]
@@ -216,6 +305,26 @@ def self_test() -> int:
         failures.append("source files should receive a 1000-line warning threshold")
     if warning_limit_for("tests/runtime.rs") is not None:
         failures.append("test files should not receive a source warning threshold")
+    # Cause/effect table for test files. Causes: C1 lines vs limit, C2 marker
+    # present, C3 lines vs marker, C4 staged against HEAD (absent / unmarked
+    # under limit / unmarked over limit / marked). Effects: E1 accept, E2 reject.
+    big = "// awaken-file-limit-ceiling: 3005\n" + "x\n" * 3000
+    small = "x\n" * 10
+    rows = [
+        ("T1 under the limit, no marker", small, None, False, False),
+        ("T2 over the limit, no marker", "x\n" * 3001, None, False, True),
+        ("T3 marked, at its ceiling", big, None, False, False),
+        ("T4 marked, over its ceiling", big + "x\n" * 10, None, False, True),
+        ("T5 marked but back under the limit", "// awaken-file-limit-ceiling: 3005\n" + small, None, False, True),
+        ("T6 staged new file with a marker", big, None, True, True),
+        ("T7 staged marker added to a file under the limit", big, small, True, True),
+        ("T8 staged marker added to a legacy oversized file", big, "x\n" * 3004, True, False),
+        ("T9 staged ceiling raised", big, "// awaken-file-limit-ceiling: 3002\n" + "x\n" * 3000, True, True),
+        ("T10 staged ceiling held", big, big, True, False),
+    ]
+    for name, text, previous, staged, rejected in rows:
+        if bool(test_file_errors("tests/x.rs", text, previous, staged)) != rejected:
+            failures.append(f"{name}: expected {'reject' if rejected else 'accept'}")
     if failures:
         print("Self-test FAILED:", file=sys.stderr)
         for failure in failures:

@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 3697 (legacy oversized test file: split, never grow)
 //! The Managed vault/credential front door over HTTP: create a vault, enter
 //! `environment_variable` / `static_bearer` / `mcp_oauth` credentials (secrets
 //! write-only), retrieve them secret-free, and confirm an unscoped env-var

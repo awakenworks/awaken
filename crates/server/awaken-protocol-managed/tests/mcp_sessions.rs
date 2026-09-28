@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 3955 (legacy oversized test file: split, never grow)
 //! Session-create MCP binding (ADR-0043 Phase 3): a session's `mcp_servers` are
 //! bound to vault credentials by the canonical normalized-URL rule. Preparing,
 //! frozen generation-1 state and realization claims are durable before Runtime

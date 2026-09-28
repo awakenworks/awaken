@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 5856 (legacy oversized test file: split, never grow)
 //! End-to-end tests with in-memory fakes: a scripted duplex channel stands in for
 //! the launched CLI — no daemon, no network.
 

@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 3821 (legacy oversized test file: split, never grow)
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;
 use std::collections::BTreeMap;

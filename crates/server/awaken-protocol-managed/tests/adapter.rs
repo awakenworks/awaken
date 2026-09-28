@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 7148 (legacy oversized test file: split, never grow)
 //! Adapter integration tests with fake runtimes: the happy path, and the HITL
 //! await -> `requires_action` -> `user.tool_confirmation` -> resume round-trip.
 

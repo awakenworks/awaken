@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 27445 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_run_ingress_contract::ControlDispatchQueue;
 use awaken_sandbox_container::ContainerHandleCodec as _;

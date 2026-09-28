@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 3918 (legacy oversized test file: split, never grow)
 //! Shared runtime harness for the durable-ingress integration tests.
 //!
 //! It builds a real `Runtime` with deterministic model providers — a plain text

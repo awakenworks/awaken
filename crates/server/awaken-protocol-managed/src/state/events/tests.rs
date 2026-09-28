@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 13669 (legacy oversized test file: split, never grow)
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;
 mod cancelled_model;
