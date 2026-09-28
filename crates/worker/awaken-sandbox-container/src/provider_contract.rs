@@ -58,8 +58,7 @@ use awaken_provisioning_contract as pc;
 pub use awaken_container_contract::{
     ContainerCreateAttempt, ContainerEnvironment, ContainerEnvironmentAdoption,
     ContainerEnvironmentProvider, ContainerObservationPurpose, EnvironmentFile,
-    EnvironmentRealizationIntent, RestorableContainerEnvironmentProvider,
-    RestoreTargetContainerEnvironmentProvider, restore_ladder_is_consistent,
+    EnvironmentRealizationIntent, restore_ladder_is_consistent,
 };
 
 /// Stable namespace used to discover a provider effect after a Worker process

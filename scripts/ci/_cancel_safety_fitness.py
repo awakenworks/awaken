@@ -116,7 +116,14 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
 # pure predicates were admitting five real Kubernetes creations — the Sandbox
 # Pod among them — and the podman backend had no registered leaf at all. A
 # number that falls because the rule stopped looking is not progress.
-CANCEL_SAFETY_BASELINE = 54
+#
+# It rose again, from 54 to 55, for the same reason: the Sandbox and container
+# restore rungs became one generic pair whose restore method keeps the
+# registered `restore_environment` name, so the Workdir/Namespace restore in
+# the Session provider -- previously reached through a method named plain
+# `restore` that no registry entry could match -- is now visible beside the
+# container one it always mirrored.
+CANCEL_SAFETY_BASELINE = 55
 
 FN_HEAD = re.compile(r"\bfn\s+([A-Za-z_]\w*)\s*")
 IMPL_HEAD = re.compile(r"\bimpl\b")

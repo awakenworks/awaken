@@ -85,7 +85,6 @@ pub use provider_contract::{
     ContainerObservationPurpose, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, DecodedContainerHandle, EnvironmentFile,
     EnvironmentRealizationIntent, PreparedContainer, PreparedContainerDisposition,
-    RestorableContainerEnvironmentProvider, RestoreTargetContainerEnvironmentProvider,
     restore_ladder_is_consistent,
 };
 
