@@ -146,6 +146,7 @@ pub(super) async fn control_component_for_process(
         local_browser_auth,
         remote_iam,
         cloud_login,
+        clock: stores.clock.clone(),
     })
     .await
 }

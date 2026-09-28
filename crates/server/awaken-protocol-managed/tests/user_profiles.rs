@@ -20,8 +20,12 @@ use tower::ServiceExt;
 fn app() -> Router {
     let repo = Arc::new(InMemoryDataSubjectRepo::new());
     let application = Arc::new(
-        DataSubjectApplication::new(repo, b"test-user-profile-enrollment-key!!".to_vec())
-            .expect("valid test enrollment key"),
+        DataSubjectApplication::new(
+            repo,
+            b"test-user-profile-enrollment-key!!".to_vec(),
+            awaken_lease_contract::system_clock(),
+        )
+        .expect("valid test enrollment key"),
     );
     user_profiles_router(application, "org_test".into())
 }

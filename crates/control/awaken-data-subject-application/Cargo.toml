@@ -10,6 +10,7 @@ layer = "application"
 authority = "data-subject"
 
 [dependencies]
+awaken-lease-contract.workspace = true
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
@@ -21,6 +22,7 @@ thiserror = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+awaken-lease-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
