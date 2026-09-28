@@ -5676,7 +5676,7 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                     Box<dyn std::future::Future<Output = Result<(), pc::SandboxError>> + Send + '_>,
                 > {
                     if port == "sandbox" {
-                        pc::RestoreTargetSandboxProvider::dispose_restored(
+                        pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
                             &provider,
                             &spec,
                             &request,
@@ -5684,7 +5684,7 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                             authority,
                         )
                     } else {
-                        RestoreTargetContainerEnvironmentProvider::dispose_restored_environment(
+                        pc::RestoreTargetProvider::<Arc<dyn ContainerEnvironment>>::dispose_restored(
                             &provider,
                             &spec,
                             &request,

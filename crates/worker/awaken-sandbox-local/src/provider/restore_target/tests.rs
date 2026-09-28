@@ -34,10 +34,11 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
             let evidence = request.evidence(&spec);
             let root = restoration_root(tmp.path(), &evidence).unwrap();
             if present {
-                let target =
-                    pc::RestoreTargetSandboxProvider::acquire_restore(&provider, &spec, &request)
-                        .await
-                        .unwrap();
+                let target = pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::acquire_restore(
+                    &provider, &spec, &request,
+                )
+                .await
+                .unwrap();
                 std::fs::write(root.join("retained"), b"original").unwrap();
                 assert!(
                     target.target().dispose_unattached().await.is_err(),
@@ -48,7 +49,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
             let authorization = restored_disposal_authorization();
             let authority = EffectAuthority::new(authorization.effect_fence());
             assert!(
-                pc::RestoreTargetSandboxProvider::dispose_restored(
+                pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
                     &provider,
                     &spec,
                     &request,
@@ -64,13 +65,15 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 binding
             );
             let held = lock_target(&root).await.unwrap();
-            let mut pending = Box::pin(pc::RestoreTargetSandboxProvider::dispose_restored(
-                &provider,
-                &spec,
-                &request,
-                &authorization,
-                &authority,
-            ));
+            let mut pending = Box::pin(
+                pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
+                    &provider,
+                    &spec,
+                    &request,
+                    &authorization,
+                    &authority,
+                ),
+            );
             std::future::poll_fn(|cx| {
                 assert!(
                     std::future::Future::poll(pending.as_mut(), cx).is_pending(),
@@ -109,7 +112,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 if present {
                     assert_eq!(std::fs::read(root.join("retained")).unwrap(), b"original");
                 }
-                pc::RestoreTargetSandboxProvider::dispose_restored(
+                pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
                     &provider,
                     &spec,
                     &request,
@@ -126,7 +129,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 "one stable lock inode survives cleanup"
             );
             assert!(
-                pc::RestoreTargetSandboxProvider::dispose_restored(
+                pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
                     &provider,
                     &spec,
                     &request,
@@ -137,7 +140,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 .is_err(),
                 "R5 no unauthorized absent success"
             );
-            pc::RestoreTargetSandboxProvider::dispose_restored(
+            pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
                 &provider,
                 &spec,
                 &request,
@@ -233,9 +236,11 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
     assert!(!sandbox.workspace_path().exists(), "source terminated");
 
     let request = exact_restore_request(&spec, &checkpoint_request, &receipt, "fidelity");
-    let restored = pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
-        .await
-        .unwrap();
+    let restored = pc::RestorableProvider::<Box<dyn pc::Sandbox>>::restore_environment(
+        &provider, &spec, &request, &store,
+    )
+    .await
+    .unwrap();
     let expected_evidence = request.evidence(&spec);
     assert_eq!(restored.evidence(), &expected_evidence, "R1 exact evidence");
     request
@@ -268,7 +273,7 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
         "directory mode is applied after child extraction"
     );
     drop(restored);
-    pc::RestoreTargetSandboxProvider::dispose_restored(
+    pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -277,7 +282,7 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
     )
     .await
     .expect("R2 exact disposal");
-    pc::RestoreTargetSandboxProvider::dispose_restored(
+    pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -368,9 +373,11 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     let request = exact_restore_request(&spec, &checkpoint_request, &checkpoint, "recovery");
     let evidence = request.evidence(&spec);
     let exact_root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
-    let created = pc::RestoreTargetSandboxProvider::acquire_restore(&provider, &spec, &request)
-        .await
-        .expect("T1 exact target creation");
+    let created = pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::acquire_restore(
+        &provider, &spec, &request,
+    )
+    .await
+    .expect("T1 exact target creation");
     assert_eq!(
         created.disposition(),
         pc::SandboxRestoreTargetDisposition::Created,
@@ -385,10 +392,13 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     drop(created);
 
     let fresh_provider = LocalProvider::new(tmp.path());
-    let recovered =
-        pc::RestoreTargetSandboxProvider::acquire_restore(&fresh_provider, &spec, &request)
-            .await
-            .expect("T2 fresh provider recovery");
+    let recovered = pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::acquire_restore(
+        &fresh_provider,
+        &spec,
+        &request,
+    )
+    .await
+    .expect("T2 fresh provider recovery");
     assert_eq!(
         recovered.disposition(),
         pc::SandboxRestoreTargetDisposition::Recovered,
@@ -406,7 +416,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     );
 
     let foreign = exact_restore_request(&spec, &checkpoint_request, &checkpoint, "foreign");
-    pc::RestoreTargetSandboxProvider::dispose_restored(
+    pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
         &fresh_provider,
         &spec,
         &foreign,
@@ -420,9 +430,13 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     let mut drifted = request.clone();
     drifted.session_id = "different-session".into();
     assert!(
-        pc::RestoreTargetSandboxProvider::acquire_restore(&fresh_provider, &spec, &drifted)
-            .await
-            .is_err(),
+        pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::acquire_restore(
+            &fresh_provider,
+            &spec,
+            &drifted
+        )
+        .await
+        .is_err(),
         "T4 session drift fails admission"
     );
     assert_eq!(
@@ -433,7 +447,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     assert!(exact_root.is_dir(), "T4 exact target remains");
 
     drop(recovered);
-    pc::RestoreTargetSandboxProvider::dispose_restored(
+    pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
         &fresh_provider,
         &spec,
         &request,
@@ -442,7 +456,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     )
     .await
     .expect("T5 exact disposal");
-    pc::RestoreTargetSandboxProvider::dispose_restored(
+    pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
         &fresh_provider,
         &spec,
         &request,
@@ -484,18 +498,22 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
     let request = exact_restore_request(&spec, &checkpoint_request, &receipt, "response-loss");
     let expected_evidence = request.evidence(&spec);
     let restored_root = restore_target::restoration_root(tmp.path(), &expected_evidence).unwrap();
-    let restored = pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
-        .await
-        .expect("M1");
+    let restored = pc::RestorableProvider::<Box<dyn pc::Sandbox>>::restore_environment(
+        &provider, &spec, &request, &store,
+    )
+    .await
+    .expect("M1");
     assert_eq!(restored.evidence(), &expected_evidence, "M1 exact evidence");
     let first_handle = pc::Sandbox::handle(restored.target().as_ref());
     let gets_after_first = store.gets.load(std::sync::atomic::Ordering::Relaxed);
     drop(restored);
 
     std::fs::write(restored_root.join("value"), b"unpublished-crash-residue").unwrap();
-    let replay = pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
-        .await
-        .expect("M2");
+    let replay = pc::RestorableProvider::<Box<dyn pc::Sandbox>>::restore_environment(
+        &provider, &spec, &request, &store,
+    )
+    .await
+    .expect("M2");
     assert_eq!(
         pc::Sandbox::handle(replay.target().as_ref()),
         first_handle,
@@ -517,9 +535,11 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
     malformed.effect_id = "blake3:00".into();
     let gets_before_reject = store.gets.load(std::sync::atomic::Ordering::Relaxed);
     assert!(
-        pc::RestorableSandboxProvider::restore(&provider, &spec, &malformed, &store)
-            .await
-            .is_err(),
+        pc::RestorableProvider::<Box<dyn pc::Sandbox>>::restore_environment(
+            &provider, &spec, &malformed, &store
+        )
+        .await
+        .is_err(),
         "M3 malformed identity"
     );
     assert_eq!(
@@ -533,7 +553,7 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
         "M3 zero target write"
     );
     drop(replay);
-    pc::RestoreTargetSandboxProvider::dispose_restored(
+    pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -542,7 +562,7 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
     )
     .await
     .expect("M1/M2 exact cleanup");
-    pc::RestoreTargetSandboxProvider::dispose_restored(
+    pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -588,9 +608,11 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
     let evidence = request.evidence(&spec);
     let restored_root = restore_target::restoration_root(tmp.path(), &evidence).unwrap();
     assert!(
-        pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
-            .await
-            .is_err(),
+        pc::RestorableProvider::<Box<dyn pc::Sandbox>>::restore_environment(
+            &provider, &spec, &request, &store
+        )
+        .await
+        .is_err(),
         "F1 corruption fails closed"
     );
     assert!(restored_root.is_dir(), "F1 exact target is retryable");
@@ -606,9 +628,11 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
         .get_mut(&receipt.id)
         .unwrap()
         .bytes = original;
-    let recovered = pc::RestorableSandboxProvider::restore(&provider, &spec, &request, &store)
-        .await
-        .expect("F2 exact retry");
+    let recovered = pc::RestorableProvider::<Box<dyn pc::Sandbox>>::restore_environment(
+        &provider, &spec, &request, &store,
+    )
+    .await
+    .expect("F2 exact retry");
     assert_eq!(recovered.evidence(), &evidence, "F2 exact evidence");
     assert_eq!(
         std::fs::read(restored_root.join("value")).unwrap(),
@@ -616,7 +640,7 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
         "F2 materialized bytes"
     );
     drop(recovered);
-    pc::RestoreTargetSandboxProvider::dispose_restored(
+    pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
         &provider,
         &spec,
         &request,
@@ -625,7 +649,7 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
     )
     .await
     .expect("F3 exact disposal");
-    pc::RestoreTargetSandboxProvider::dispose_restored(
+    pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
         &provider,
         &spec,
         &request,

@@ -1296,16 +1296,18 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         })
     }
 
-    fn restore_targets(&self) -> Option<&dyn RestoreTargetContainerEnvironmentProvider> {
+    fn restore_targets(
+        &self,
+    ) -> Option<&dyn pc::RestoreTargetProvider<Arc<dyn ContainerEnvironment>>> {
         Some(self)
     }
 }
 
-#[async_trait]
-impl<R: ContainerRuntime + 'static> RestoreTargetContainerEnvironmentProvider
-    for ContainerProvider<R>
-{
-    async fn acquire_restore_environment(
+impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
+    /// The container-environment restore target. This provider serves both
+    /// restore rungs (Sandbox and container environment), so a caller holding
+    /// the concrete provider names the rung it means here.
+    pub async fn acquire_restore_environment(
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
@@ -1316,7 +1318,8 @@ impl<R: ContainerRuntime + 'static> RestoreTargetContainerEnvironmentProvider
             .map_target(|sandbox| Arc::new(sandbox) as Arc<dyn ContainerEnvironment>))
     }
 
-    async fn dispose_restored_environment(
+    /// Dispose the unpublished container-environment restore target.
+    pub async fn dispose_restored_environment(
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
@@ -1324,6 +1327,30 @@ impl<R: ContainerRuntime + 'static> RestoreTargetContainerEnvironmentProvider
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         self.dispose_restore_target(spec, request, authorization, authority)
+            .await
+    }
+}
+
+#[async_trait]
+impl<R: ContainerRuntime + 'static> pc::RestoreTargetProvider<Arc<dyn ContainerEnvironment>>
+    for ContainerProvider<R>
+{
+    async fn acquire_restore(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError> {
+        self.acquire_restore_environment(spec, request).await
+    }
+
+    async fn dispose_restored(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        self.dispose_restored_environment(spec, request, authorization, authority)
             .await
     }
 }
@@ -1422,13 +1449,15 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         .map(|sandbox| sandbox.map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
 
-    fn restore_targets(&self) -> Option<&dyn pc::RestoreTargetSandboxProvider> {
+    fn restore_targets(&self) -> Option<&dyn pc::RestoreTargetProvider<Box<dyn pc::Sandbox>>> {
         Some(self)
     }
 }
 
 #[async_trait]
-impl<R: ContainerRuntime + 'static> pc::RestoreTargetSandboxProvider for ContainerProvider<R> {
+impl<R: ContainerRuntime + 'static> pc::RestoreTargetProvider<Box<dyn pc::Sandbox>>
+    for ContainerProvider<R>
+{
     async fn acquire_restore(
         &self,
         spec: &pc::SandboxSpec,

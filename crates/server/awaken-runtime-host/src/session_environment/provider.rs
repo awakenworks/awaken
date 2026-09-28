@@ -936,8 +936,10 @@ impl SessionEnvironmentProvider {
     ) -> Result<pc::SandboxHandle, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                let restored =
-                    pc::RestorableSandboxProvider::restore(provider, spec, request, store).await?;
+                let restored = pc::RestorableProvider::<Box<dyn pc::Sandbox>>::restore_environment(
+                    provider, spec, request, store,
+                )
+                .await?;
                 let handle = restored.target().handle();
                 request.verify_handle(spec, &handle)?;
                 Ok(handle)
@@ -1065,7 +1067,7 @@ impl SessionEnvironmentProvider {
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
-                pc::RestoreTargetSandboxProvider::dispose_restored(
+                pc::RestoreTargetProvider::<Box<dyn pc::Sandbox>>::dispose_restored(
                     provider,
                     spec,
                     request,
@@ -1090,7 +1092,7 @@ impl SessionEnvironmentProvider {
                             "container provider does not implement exact restored-target disposal",
                         )
                     })?
-                    .dispose_restored_environment(&spec, request, authorization, authority)
+                    .dispose_restored(&spec, request, authorization, authority)
                     .await
             }
         }

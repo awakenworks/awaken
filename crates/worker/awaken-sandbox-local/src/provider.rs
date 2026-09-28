@@ -1131,17 +1131,17 @@ impl pc::SandboxProvider for LocalProvider {
             .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
     }
 
-    fn restore_targets(&self) -> Option<&dyn pc::RestoreTargetSandboxProvider> {
+    fn restore_targets(&self) -> Option<&dyn pc::RestoreTargetProvider<Box<dyn pc::Sandbox>>> {
         Some(self)
     }
 
-    fn restorable(&self) -> Option<&dyn pc::RestorableSandboxProvider> {
+    fn restorable(&self) -> Option<&dyn pc::RestorableProvider<Box<dyn pc::Sandbox>>> {
         Some(self)
     }
 }
 
 #[async_trait]
-impl pc::RestoreTargetSandboxProvider for LocalProvider {
+impl pc::RestoreTargetProvider<Box<dyn pc::Sandbox>> for LocalProvider {
     async fn acquire_restore(
         &self,
         spec: &pc::SandboxSpec,
@@ -1166,8 +1166,8 @@ impl pc::RestoreTargetSandboxProvider for LocalProvider {
 }
 
 #[async_trait]
-impl pc::RestorableSandboxProvider for LocalProvider {
-    async fn restore(
+impl pc::RestorableProvider<Box<dyn pc::Sandbox>> for LocalProvider {
+    async fn restore_environment(
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,

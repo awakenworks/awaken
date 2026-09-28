@@ -709,12 +709,12 @@ pub trait SandboxProvider: Send + Sync {
     /// Custody of exact restore targets, when this provider has it. A
     /// composition root that needs it asks here instead of discovering an
     /// `Unsupported` error after placement.
-    fn restore_targets(&self) -> Option<&dyn RestoreTargetSandboxProvider> {
+    fn restore_targets(&self) -> Option<&dyn RestoreTargetProvider<Box<dyn Sandbox>>> {
         None
     }
 
     /// Complete checkpoint restore, when this provider has it.
-    fn restorable(&self) -> Option<&dyn RestorableSandboxProvider> {
+    fn restorable(&self) -> Option<&dyn RestorableProvider<Box<dyn Sandbox>>> {
         None
     }
 }
@@ -723,15 +723,20 @@ pub trait SandboxProvider: Send + Sync {
 /// acquire the one target an aggregate-projected request names and dispose an
 /// unpublished target under disposal authorization. Checkpoint bytes are not
 /// read here; a composition may restore them through its own codec.
+///
+/// `Env` is the live environment the provider family hands out: a boxed
+/// [`Sandbox`] for [`SandboxProvider`], a shared container environment for the
+/// container projection. One rung serves both families instead of a mirrored
+/// pair per family.
 #[async_trait]
-pub trait RestoreTargetSandboxProvider: SandboxProvider {
+pub trait RestoreTargetProvider<Env: Send + 'static>: Send + Sync {
     /// Acquire the one physical target for an aggregate-projected exact restore
     /// without reading or interpreting checkpoint bytes.
     async fn acquire_restore(
         &self,
         spec: &SandboxSpec,
         request: &SandboxRestoreRequest,
-    ) -> Result<SandboxRestoreTarget<Box<dyn Sandbox>>, SandboxError>;
+    ) -> Result<SandboxRestoreTarget<Env>, SandboxError>;
 
     /// Remove only the unpublished physical target named by one durable
     /// restoring tuple using the aggregate preparation/successor authorization.
@@ -751,15 +756,15 @@ pub trait RestoreTargetSandboxProvider: SandboxProvider {
 /// A provider that restores an exact filesystem checkpoint into its own
 /// restore target.
 #[async_trait]
-pub trait RestorableSandboxProvider: RestoreTargetSandboxProvider {
+pub trait RestorableProvider<Env: Send + 'static>: RestoreTargetProvider<Env> {
     /// Complete one exact restore and return canonical evidence only after the
     /// checkpoint bytes have been materialized and verified.
-    async fn restore(
+    async fn restore_environment(
         &self,
         spec: &SandboxSpec,
         request: &SandboxRestoreRequest,
         store: &dyn SandboxCheckpointStore,
-    ) -> Result<SandboxRestoreResult<Box<dyn Sandbox>>, SandboxError>;
+    ) -> Result<SandboxRestoreResult<Env>, SandboxError>;
 }
 
 /// A live sandbox environment. **Execute** (`spawn`), **mount/inject** (`attach`),

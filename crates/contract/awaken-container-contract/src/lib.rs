@@ -34,6 +34,5 @@ pub use policy::{
 pub use provider::{
     ContainerAdoptionLayout, ContainerEnvironmentAdoption, ContainerEnvironmentCapacity,
     ContainerEnvironmentProvider, ContainerObservationPurpose, EnvironmentRealizationIntent,
-    RestorableContainerEnvironmentProvider, RestoreTargetContainerEnvironmentProvider,
     restore_ladder_is_consistent,
 };
