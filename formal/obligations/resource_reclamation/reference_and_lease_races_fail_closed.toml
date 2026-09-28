@@ -7,14 +7,8 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/ResourceReclamation.tla",
   "crates/contract/awaken-resource-contract/src/lifecycle.rs",
-  "crates/server/awaken-resource-reclaimer/src/lib.rs",
-  "crates/stores/awaken-resource-store/src/lib.rs",
   "crates/stores/awaken-resource-store/src/sqlite_lifecycle.rs",
   "crates/stores/awaken-resource-store/src/postgres.rs",
-]
-proof_harnesses = [
-  "reclamation_fence_admission_requires_absent_owner_and_zero_references",
-  "physical_purge_requires_zero_references_leases_and_fence",
 ]
 production_entrypoints = [
   "crates/contract/awaken-resource-contract/src/lifecycle.rs",

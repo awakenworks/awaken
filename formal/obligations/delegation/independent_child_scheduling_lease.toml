@@ -8,9 +8,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/Delegation.tla",
   "formal/tla/Delegation.cfg",
-  "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/dispatch.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite/claim.rs",
   "crates/server/awaken-dispatch/src/postgres/claim.rs",
@@ -25,11 +22,6 @@ evidence = [
   "crates/server/awaken-dispatch/tests/durable_postgres.rs",
   "scripts/ci/check_formal.sh",
   "formal/VERIFICATION_BOUNDARIES.md",
-]
-proof_harnesses = [
-  "dispatch_admission_shape_keeps_child_affinity_independent",
-  "dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows",
-  "dispatch_claim_preserves_every_frozen_binding",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",

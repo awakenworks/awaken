@@ -3,18 +3,9 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-session-realization-contract/src/session_realization/control_failure.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization.rs",
-  "crates/server/awaken-session-executor/src/application.rs",
-  "crates/server/awaken-session-executor/src/host/worker_resolver/realization_failure.rs",
-]
-proof_harnesses = [
-  "session_realization_control_failure_disposition_is_total_exact_and_fail_closed",
-  "realization_ownership_loss_proof_is_total_and_exact",
-  "session_realization_control_disposition_projects_exact_worker_effect",
-  "session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-realization-contract/src/session_realization/control_failure.rs",

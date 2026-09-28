@@ -7,12 +7,8 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/LiveInbox.tla",
   "crates/contract/awaken-runtime-contract/src/boundary.rs",
-  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
   "crates/runtime/awaken-runtime/tests/live_inbox.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "live_inbox_boundary_drain_retires_exactly_the_queue",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/boundary.rs",

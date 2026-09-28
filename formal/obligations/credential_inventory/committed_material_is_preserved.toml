@@ -8,12 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/CredentialInventory.tla",
-  "crates/control/awaken-credential-vault/src/repo/inventory.rs",
   "crates/control/awaken-credential-vault/src/repo/credential_operations/tests.rs",
   "crates/control/awaken-control/src/component.rs",
-]
-proof_harnesses = [
-  "credential_inventory_never_orphans_committed_pending_or_foreign_material",
 ]
 production_entrypoints = [
   "crates/control/awaken-credential-vault/src/repo/inventory.rs",

@@ -5,13 +5,9 @@ tcb_assumptions = [
   "external.container_and_kernel_isolation",
 ]
 evidence = [
-  "crates/worker/awaken-sandbox-container/src/writable.rs",
   "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",
   "crates/worker/awaken-sandbox-container/src/k8s/pod_projection.rs",
   "crates/worker/awaken-sandbox-container/tests/k8s_it.rs",
-]
-proof_harnesses = [
-  "continuation_writable_roots_share_one_claim_without_aliasing",
 ]
 production_entrypoints = [
   "crates/worker/awaken-sandbox-container/src/writable.rs",

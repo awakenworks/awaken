@@ -327,6 +327,8 @@ fn arbitrary_run_error_kind(bits: u8) -> RunErrorKind {
 }
 
 #[cfg(kani)]
+/// @obligation public_dto.deployment_failure_projection_is_total_exact_and_non_strengthening
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 fn deployment_run_failure_projection_is_total_exact_and_non_strengthening() {
     let kind = arbitrary_run_error_kind(kani::any());

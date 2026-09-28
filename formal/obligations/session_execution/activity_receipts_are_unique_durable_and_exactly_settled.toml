@@ -5,29 +5,14 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/SessionActivityProof.tla",
   "crates/contract/awaken-session-state-contract/src/session_repo.rs",
-  "crates/server/awaken-session-application/src/activity.rs",
   "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
   "crates/contract/awaken-session-state-contract/src/session_repo/activity_state.rs",
   "crates/contract/awaken-session-state-contract/src/session_repo/activity_state/tests.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state/proofs.rs",
   "crates/contract/awaken-session-state-contract/src/session_repo/activity_state/model.rs",
   "scripts/ci/formal_kani_options.py",
-  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
   "crates/server/awaken-session-application/src/run_admission.rs",
   "crates/server/awaken-session-application/src/tests/authority.rs",
   "crates/server/awaken-session-application/src/tests/run_admission.rs",
-]
-proof_harnesses = [
-  "activity_next_epoch_inserts_exact_checked_successor",
-  "activity_exact_epoch_inserts_only_fresh_positive_member",
-  "activity_two_slot_next_next_admissions_preserve_exact_members",
-  "activity_two_slot_next_exact_admissions_preserve_exact_members",
-  "activity_two_slot_exact_next_admissions_preserve_exact_members",
-  "activity_two_slot_exact_exact_admissions_preserve_exact_members",
-  "activity_terminal_transition_clears_one_real_member",
-  "activity_two_slot_terminal_transition_clears_members",
-  "session_run_reservation_binds_exactly_one_nonzero_activity_receipt",
-  "session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/session_repo.rs",

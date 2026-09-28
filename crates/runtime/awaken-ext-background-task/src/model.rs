@@ -904,6 +904,7 @@ pub enum BackgroundTaskError {
 }
 
 #[cfg(kani)]
+/// @obligation background_task.single_fenced_attempt
 #[kani::proof]
 fn background_execution_admission_is_exact_fenced_live_and_phase_monotone() {
     // All pairs of five phases, both identity/remote predicates and all u64
@@ -944,6 +945,7 @@ fn background_execution_admission_is_exact_fenced_live_and_phase_monotone() {
 }
 
 #[cfg(kani)]
+/// @obligation background_task.stale_fence_never_finishes_or_heartbeats
 #[kani::proof]
 fn stale_fenced_heartbeat_and_finish_have_no_mutation_plan() {
     // Cause/effect decision table over the sole production mutation plan:
@@ -1002,6 +1004,7 @@ fn stale_fenced_heartbeat_and_finish_have_no_mutation_plan() {
 }
 
 #[cfg(kani)]
+/// @obligation background_task.cancellation_absorption
 #[kani::proof]
 fn cancellation_is_monotone_and_terminal_states_are_absorbing() {
     // C1 every phase; C2 known/unknown completion. Cancel is a stutter for
@@ -1037,6 +1040,8 @@ fn cancellation_is_monotone_and_terminal_states_are_absorbing() {
 }
 
 #[cfg(kani)]
+/// @obligation background_task.never_replay_and_attempt_exhaustion_fail_closed
+/// @obligation background_task.remote_continuation_survives_wait_cancel_and_reclaim
 #[kani::proof]
 fn never_replay_recovery_requires_a_durable_remote_continuation() {
     // C1 recovery mode; C2 remote handle; C3 cancellation. Remote reconnects,
@@ -1064,6 +1069,8 @@ fn never_replay_recovery_requires_a_durable_remote_continuation() {
 }
 
 #[cfg(kani)]
+/// @obligation background_task.expiry_reclaim_advances_epoch_or_terminates
+/// @obligation background_task.never_replay_and_attempt_exhaustion_fail_closed
 #[kani::proof]
 fn expired_reclaim_plan_advances_epoch_or_terminates() {
     // Cause/effect decision table over the production scalar plan: C1 all five

@@ -767,6 +767,8 @@ mod tests {
     }
 
     #[cfg(kani)]
+    /// @obligation tool_result.only_matching_call_is_accepted
+    /// @kani profile=resume-validator-empty-object-v1
     #[kani::proof]
     #[kani::unwind(16)]
     fn resume_validator_preserves_complete_binding_decision_table() {

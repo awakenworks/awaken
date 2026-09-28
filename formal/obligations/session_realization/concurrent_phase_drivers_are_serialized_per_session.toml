@@ -63,15 +63,11 @@ evidence = [
   "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/terminal_preparation.rs",
   "crates/worker/awaken-sandbox-local/src/realization_marker/observation.rs",
   "crates/worker/awaken-sandbox-local/src/realization_marker/tests.rs",
-  "crates/contract/awaken-session-realization-contract/src/session_realization/exclusion.rs",
   "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization.rs",
   "crates/contract/awaken-session-realization-contract/src/session_realization.rs",
   "crates/contract/awaken-session-realization-contract/src/session_realization/model.rs",
-]
-proof_harnesses = [
-  "session_realization_permit_admits_only_a_current_acquired_slot",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/session_slot.rs",

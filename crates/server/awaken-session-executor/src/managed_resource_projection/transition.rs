@@ -39,6 +39,7 @@ pub(super) const fn live_resource_projection_change(
 }
 
 #[cfg(kani)]
+/// @obligation session_resources.explicit_empty_manifest_revokes_runtime_projection
 #[kani::proof]
 fn explicit_empty_resource_manifest_revokes_without_activation() {
     // Cause/effect graph: C1 the aggregate generation changed; C2 the desired

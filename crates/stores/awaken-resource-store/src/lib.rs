@@ -849,6 +849,8 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
+/// @obligation resource_reclamation.reference_and_lease_races_fail_closed
 #[kani::proof]
 fn reclamation_fence_admission_requires_absent_owner_and_zero_references() {
     // Symbolic form of the production decision table above. All Boolean

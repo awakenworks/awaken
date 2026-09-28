@@ -16,6 +16,7 @@ pub fn observation_budget_fits(
 }
 
 #[cfg(kani)]
+/// @obligation worker_credential.publication_budget_covers_probe_and_delivery
 #[kani::proof]
 fn observation_publication_budget_is_strict_and_overflow_safe() {
     // Universal scalar time-budget kernel, including Duration overflow. The

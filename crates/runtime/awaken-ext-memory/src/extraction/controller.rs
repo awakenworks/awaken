@@ -505,6 +505,7 @@ mod verification {
         }
     }
 
+    /// @obligation memory_extraction.unknown_execution_never_reenters_retry
     #[kani::proof]
     fn memory_extraction_unknown_is_terminal_and_never_retryable() {
         // Causes: C1 every closed failure class; C2 every u32 attempts/max pair;

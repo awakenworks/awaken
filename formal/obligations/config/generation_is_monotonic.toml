@@ -10,7 +10,6 @@ evidence = [
   "crates/control/awaken-config-store/src/sqlite.rs",
   "crates/control/awaken-config-store/src/postgres.rs",
   "formal/tla/AggregateCAS.cfg",
-  "crates/control/awaken-config-store/src/lib.rs",
   "crates/stores/awaken-sql-storage/src/lib.rs",
   "crates/control/awaken-config-store/tests/integration.rs",
   "crates/control/awaken-config-store/tests/postgres.rs",
@@ -19,9 +18,6 @@ evidence = [
   "scripts/ci/check_formal.sh",
   "scripts/ci/check_formal_mutations.py",
   "scripts/ci/formal_config_mutations.py",
-]
-proof_harnesses = [
-  "config_revision_admission_is_exact_and_nonwrapping",
 ]
 production_entrypoints = [
   "crates/control/awaken-config-store/src/schema.rs",

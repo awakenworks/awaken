@@ -97,6 +97,7 @@ pub const fn has_verified_capability_observation(
 }
 
 #[cfg(kani)]
+/// @obligation worker.acp_capability_is_detected_only_after_a_verified_handshake
 #[kani::proof]
 fn acp_capability_is_detected_exactly_after_a_verified_observation() {
     let present: bool = kani::any();

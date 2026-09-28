@@ -224,6 +224,7 @@ fn check_projection_refresh_domain_permit_is_exclusive() {
 }
 
 #[cfg(kani)]
+/// @obligation executable_projection.concurrent_refresh_is_serialized_per_domain
 #[kani::proof]
 fn projection_refresh_domain_permit_is_exclusive() {
     // This invokes the actual Tokio mutex wrapper used by both production
@@ -280,6 +281,8 @@ fn check_install_then_reconcile(previous: u64, through: u64, succeeds: bool) {
 }
 
 #[cfg(kani)]
+/// @obligation executable_projection.cursor_never_leads_installed_projection
+/// @obligation executable_projection.installed_projection_never_leads_authority
 #[kani::proof]
 fn projection_install_reconciliation_preserves_cursor_and_monotonic_authority() {
     // No assumptions, stubs, or reduced domains: all prior and target u64

@@ -9,11 +9,7 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/RemoteTool.tla",
   "crates/worker/awaken-tool-relay/src/ledger.rs",
-  "crates/worker/awaken-tool-relay/src/executor.rs",
   "crates/worker/awaken-tool-relay/tests/relay.rs",
-]
-proof_harnesses = [
-  "hand_result_disposition_allows_only_explicit_success",
 ]
 production_entrypoints = [
   "crates/worker/awaken-tool-relay/src/executor.rs",

@@ -246,6 +246,7 @@ impl Plugin for MemoryPlugin {
 }
 
 #[cfg(kani)]
+/// @obligation memory.recall_config_contributes_authority_exactly_when_enabled
 #[kani::proof]
 fn memory_recall_contribution_is_exact_and_disabled_is_inert() {
     let enabled = kani::any::<bool>();

@@ -8,14 +8,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ObservationReconcileProof.tla",
-  "crates/contract/awaken-worker-contract/src/registry.rs",
   "crates/contract/awaken-worker-contract/src/lib.rs",
   "crates/server/awaken-worker-registry/src/transition.rs",
   "crates/bin/awaken-cli/src/observation_reconcile.rs",
-]
-proof_harnesses = [
-  "changed_worker_observation_always_mints_a_strictly_fresh_fence",
-  "observation_publication_fence_is_success_owned_exact_and_failure_stable",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/registry.rs",

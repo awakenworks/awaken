@@ -601,6 +601,8 @@ mod verification {
         }
     }
 
+    // Hosted Runtime and Workspace role vocabulary is owned by its only consumer.
+    /// @obligation authz.run_backed_protocol_routes_use_the_exact_run_action_namespace
     #[kani::proof]
     fn run_backed_route_policy_uses_exact_run_actions() {
         let access = symbolic_access();
@@ -630,6 +632,7 @@ mod verification {
         }
     }
 
+    /// @obligation authz.application_protocol_is_scoped_by_application_guard_not_service_guard
     #[kani::proof]
     fn application_route_policy_never_enters_the_service_guard() {
         assert_eq!(
@@ -638,6 +641,7 @@ mod verification {
         );
     }
 
+    /// @obligation authz.credential_ingress_role_is_exact_workspace_apikey_and_provider_connect_only
     #[kani::proof]
     fn credential_ingress_role_contains_only_apikey_and_provider_connect_authority() {
         let authority = symbolic_authority();
@@ -651,6 +655,7 @@ mod verification {
         );
     }
 
+    /// @obligation authz.agent_publisher_role_is_exact_workspace_agent_model_read_and_skill_only
     #[kani::proof]
     fn agent_publisher_role_contains_only_workspace_model_read_and_skill_authority() {
         let authority = symbolic_authority();
@@ -665,6 +670,7 @@ mod verification {
         );
     }
 
+    /// @obligation authz.hosted_workspace_and_runtime_member_grants_are_exact
     #[kani::proof]
     fn hosted_admin_role_contains_exactly_its_seven_workspace_authorities() {
         let authority = symbolic_workspace_profile_authority();
@@ -683,6 +689,7 @@ mod verification {
         );
     }
 
+    /// @obligation authz.hosted_workspace_and_runtime_member_grants_are_exact
     #[kani::proof]
     fn hosted_builder_role_has_writes_without_apikey_or_model_administration() {
         let authority = symbolic_workspace_profile_authority();
@@ -698,6 +705,7 @@ mod verification {
         );
     }
 
+    /// @obligation authz.hosted_workspace_and_runtime_member_grants_are_exact
     #[kani::proof]
     fn workspace_member_role_contains_exactly_read_only_workspace_authorities() {
         let authority = symbolic_workspace_profile_authority();
@@ -713,6 +721,7 @@ mod verification {
         );
     }
 
+    /// @obligation authz.legacy_workspace_binding_migration_is_authority_preserving_and_idempotent
     #[kani::proof]
     fn legacy_workspace_binding_migration_is_idempotent_and_authority_exact() {
         let state = WorkspaceBindingMigrationState::Legacy {

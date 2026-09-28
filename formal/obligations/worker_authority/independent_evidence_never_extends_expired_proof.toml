@@ -5,13 +5,9 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/WorkerAuthorityEvidence.tla",
   "formal/tla/WorkerAuthorityEvidence.cfg",
-  "crates/bin/awaken-worker/src/lifecycle/environment_evidence.rs",
   "crates/bin/awaken-worker/src/lifecycle.rs",
   "crates/bin/awaken-worker/src/lib.rs",
   "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs",
-]
-proof_harnesses = [
-  "environment_evidence_decision_never_refreshes_expired_proof",
 ]
 production_entrypoints = [
   "crates/bin/awaken-worker/src/lifecycle/environment_evidence.rs",

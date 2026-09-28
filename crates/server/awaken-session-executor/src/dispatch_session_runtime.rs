@@ -485,6 +485,7 @@ mod tests {
 mod proofs {
     use super::*;
 
+    /// @obligation session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
     #[kani::proof]
     fn dispatched_resource_manifest_requires_exact_nonempty_scope() {
         let workspace_is_nonempty: bool = kani::any();

@@ -954,6 +954,11 @@ mod drain_admission_proofs {
         }
     }
 
+    /// @obligation worker_drain.closed_generation_is_absorbing
+    /// @obligation worker_drain.no_claim_after_acknowledgement
+    /// @obligation worker_drain.no_claim_attempt_after_registry_drain
+    /// @obligation worker_drain.registry_transition_follows_local_fence
+    /// @kani default-features=false
     #[kani::proof]
     fn pool_draining_state_is_absorbing_and_claim_closed() {
         let initial = symbolic_state();
@@ -982,6 +987,8 @@ mod drain_error_proofs {
     use super::{DrainErrorState, drain_error_backoff, retry_deadline_is_due};
     use std::time::Duration;
 
+    /// @obligation run_ingress.request_local_resolution_retry_honors_persisted_deadline
+    /// @kani default-features=false
     #[kani::proof]
     fn resolution_retry_admission_matches_only_the_persisted_deadline() {
         let deadline_present: bool = kani::any();
@@ -994,6 +1001,8 @@ mod drain_error_proofs {
         );
     }
 
+    /// @obligation run_ingress.pool_retry_gate_admits_one_probe_and_uses_bounded_monotonic_backoff
+    /// @kani default-features=false
     #[kani::proof]
     fn shared_error_gate_admits_exactly_one_probe_after_the_deadline() {
         let consecutive_errors: u32 = kani::any();
@@ -1011,6 +1020,8 @@ mod drain_error_proofs {
         assert!(!state.admit_cycle(true));
     }
 
+    /// @obligation run_ingress.pool_retry_gate_admits_one_probe_and_uses_bounded_monotonic_backoff
+    /// @kani default-features=false
     #[kani::proof]
     fn probe_release_is_exact_and_preserves_backoff() {
         // P1 exact identity releases the gate, P2 stale identity changes nothing;
@@ -1039,6 +1050,8 @@ mod drain_error_proofs {
         assert!(!state.admit_cycle(true));
     }
 
+    /// @obligation run_ingress.pool_retry_gate_admits_one_probe_and_uses_bounded_monotonic_backoff
+    /// @kani default-features=false
     #[kani::proof]
     fn drain_error_backoff_is_bounded_monotonic_and_saturating() {
         let consecutive_errors: u32 = kani::any();

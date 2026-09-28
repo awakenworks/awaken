@@ -8,12 +8,8 @@ evidence = [
   "formal/tla/ResourceDispatch.tla",
   "formal/tla/ResourceDispatch.cfg",
   "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
-  "crates/server/awaken-session-executor/src/managed_resource_projection/transition.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/tests.rs",
   "crates/server/awaken-session-executor/src/host/tests.rs",
-]
-proof_harnesses = [
-  "explicit_empty_resource_manifest_revokes_without_activation",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/managed_resource_projection.rs",

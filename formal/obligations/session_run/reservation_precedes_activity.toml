@@ -10,7 +10,6 @@ evidence = [
   "formal/tla/SessionRunProtocol.cfg",
   "docs/adr/0040-server-durable-ingress-integration.md",
   "docs/adr/0075-unified-managed-session-worker-execution.md",
-  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
   "crates/server/awaken-session-application/src/run_admission.rs",
   "crates/server/awaken-session-application/src/tests/run_admission.rs",
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
@@ -20,9 +19,6 @@ evidence = [
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
   "e2e/remote_worker_recovery_e2e.ts",
-]
-proof_harnesses = [
-  "session_run_reservation_binds_exactly_one_nonzero_activity_receipt",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-execution-contract/src/run_admission.rs",

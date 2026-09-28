@@ -7,6 +7,8 @@ use super::*;
 // BTreeSet insertion, lookup and Drop are real and all unwinding checks remain.
 // The pair and terminal proofs below extend this base case. Collection removal,
 // SQL durability and application exactly-once close remain separate gaps.
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+/// @kani profile=activity-admission-height-v1
 #[kani::proof]
 #[kani::unwind(4)]
 fn activity_next_epoch_inserts_exact_checked_successor() {
@@ -48,6 +50,8 @@ fn activity_next_epoch_inserts_exact_checked_successor() {
 // This complements the Next base case without assuming uniqueness or replacing
 // the real BTreeSet. The four pair proofs below establish two-call admission;
 // real collection settlement remains a separate gap.
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+/// @kani profile=activity-admission-height-v1
 #[kani::proof]
 #[kani::unwind(4)]
 fn activity_exact_epoch_inserts_only_fresh_positive_member() {
@@ -91,6 +95,8 @@ fn activity_exact_epoch_inserts_only_fresh_positive_member() {
 // unchanged, on the same host), the same wall the two-admission proofs hit.
 // The two-member case is covered by the model proof below, and the model is
 // held to the real set by the property test in tests.rs.
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+/// @kani profile=activity-terminal-height-v1
 #[kani::proof]
 #[kani::unwind(4)]
 fn activity_terminal_transition_clears_one_real_member() {
@@ -112,6 +118,7 @@ fn activity_terminal_transition_clears_one_real_member() {
 }
 
 // The same terminal table after TWO admissions, over the two-slot model.
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
 #[kani::proof]
 #[kani::unwind(4)]
 fn activity_two_slot_terminal_transition_clears_members() {
@@ -240,24 +247,30 @@ fn check_admission_pair<const FIRST_EXACT: bool, const SECOND_EXACT: bool>() {
     check_admission::<SECOND_EXACT, _>(&mut state, &mut members, 1);
 }
 
+// The two-admission partitions run the reducer over the two-slot member
+// model: no B-tree loops, so no checked loop profile applies to them.
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
 #[kani::proof]
 #[kani::unwind(4)]
 fn activity_two_slot_next_next_admissions_preserve_exact_members() {
     check_admission_pair::<false, false>();
 }
 
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
 #[kani::proof]
 #[kani::unwind(4)]
 fn activity_two_slot_next_exact_admissions_preserve_exact_members() {
     check_admission_pair::<false, true>();
 }
 
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
 #[kani::proof]
 #[kani::unwind(4)]
 fn activity_two_slot_exact_next_admissions_preserve_exact_members() {
     check_admission_pair::<true, false>();
 }
 
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
 #[kani::proof]
 #[kani::unwind(4)]
 fn activity_two_slot_exact_exact_admissions_preserve_exact_members() {

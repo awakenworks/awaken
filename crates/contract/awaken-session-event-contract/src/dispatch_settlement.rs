@@ -254,6 +254,8 @@ impl SessionEventBatch {
 }
 
 #[cfg(kani)]
+/// @obligation session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+/// @obligation session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 #[kani::proof]
 fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement() {
     // Cause/effect table exhausts command identity, processed/activity state,
@@ -356,6 +358,8 @@ fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement
 /// The fold is covered by the executable decision tables in this module and in
 /// `crate::tests::event_batches`.
 #[cfg(kani)]
+/// @obligation session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+/// @obligation session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 #[kani::proof]
 fn retained_input_idling_is_exactly_settled_or_only_blocked_users() {
     let class = proof_class(kani::any());

@@ -345,6 +345,7 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// @obligation sandbox.effect_fence_succession_is_renewal_or_epoch_advance
     #[kani::proof]
     fn fence_succession_is_exactly_renewal_or_epoch_advance() {
         let predecessor_epoch: u64 = kani::any();

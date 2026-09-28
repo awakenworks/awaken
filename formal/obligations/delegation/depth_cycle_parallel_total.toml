@@ -4,12 +4,6 @@ status = "model_linked"
 tcb_assumptions = []
 evidence = [
   "formal/tla/Delegation.tla",
-  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
-]
-proof_harnesses = [
-  "only_unsettled_relationships_occupy_a_parallel_slot",
-  "delegation_admission_requires_every_budget_and_lineage_guard",
-  "recovered_registry_requires_every_scalar_invariant",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/agent/delegation.rs",

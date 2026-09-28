@@ -376,6 +376,12 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// @obligation remote_worker.acknowledged_projection_is_monotonic
+    /// @obligation remote_worker.committed_truth_is_coordinator_owned
+    /// @obligation remote_worker.operation_identity_maps_to_one_hash_and_append
+    /// @obligation store_history.exact_retry_and_every_rejection_are_atomic_stutters
+    /// @obligation store_history.receipt_refines_one_exact_durable_record
+    /// @obligation store_history.recovery_preserves_committed_time_and_receipt_identity
     #[kani::proof]
     fn operation_identity_replays_only_the_same_run_and_payload() {
         let run_identity_matches: bool = kani::any();
@@ -397,6 +403,11 @@ mod verification {
         );
     }
 
+    /// @obligation remote_worker.committed_truth_is_coordinator_owned
+    /// @obligation remote_worker.operation_identity_maps_to_one_hash_and_append
+    /// @obligation store_history.concurrent_compare_and_swap_has_one_winner_per_thread_version
+    /// @obligation store_history.exact_retry_and_every_rejection_are_atomic_stutters
+    /// @obligation store_history.receipt_refines_one_exact_durable_record
     #[kani::proof]
     fn operation_append_requires_exact_prefix_and_nonwrapping_version() {
         let expected_version: u64 = kani::any();
@@ -425,6 +436,9 @@ mod verification {
         }
     }
 
+    /// @obligation store_history.exact_retry_and_every_rejection_are_atomic_stutters
+    /// @obligation store_history.receipt_refines_one_exact_durable_record
+    /// @obligation store_history.recovery_preserves_committed_time_and_receipt_identity
     #[kani::proof]
     fn applied_receipt_is_exact_and_names_one_successor_record() {
         let ordinal: u64 = kani::any();

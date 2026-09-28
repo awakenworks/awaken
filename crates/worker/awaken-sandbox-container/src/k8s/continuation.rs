@@ -650,6 +650,8 @@ pub(super) fn claim_name(id: &str, plan: &ContainerPlan, configured: bool) -> Op
 }
 
 #[cfg(kani)]
+/// @obligation sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
+/// @kani profile=solver-kissat-v1 features=k8s
 #[kani::proof]
 fn continuation_claim_selection_is_total_exact_and_non_widening() {
     let configured: bool = kani::any();
@@ -667,6 +669,8 @@ fn continuation_claim_selection_is_total_exact_and_non_widening() {
 }
 
 #[cfg(kani)]
+/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+/// @kani profile=solver-kissat-v1 features=k8s
 #[kani::proof]
 fn absent_pod_claim_admission_is_total_and_never_starts_deletion() {
     // KAP-proof: all 16 raw observations, including malformed combinations,
@@ -696,6 +700,8 @@ fn absent_pod_claim_admission_is_total_and_never_starts_deletion() {
 }
 
 #[cfg(kani)]
+/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+/// @kani profile=solver-kissat-v1 features=k8s
 #[kani::proof]
 fn continuation_claim_deletion_requires_exact_uid_and_resource_version() {
     let uid_present = kani::any::<bool>();

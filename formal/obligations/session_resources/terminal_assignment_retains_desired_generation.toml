@@ -9,10 +9,6 @@ evidence = [
   "crates/server/awaken-session-application/src/tests/realization.rs",
   "crates/server/awaken-session-executor/src/application.rs",
   "crates/server/awaken-session-application/src/projection.rs",
-  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
-]
-proof_harnesses = [
-  "terminal_resource_projection_retains_the_exact_desired_generation",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/realization/control.rs",

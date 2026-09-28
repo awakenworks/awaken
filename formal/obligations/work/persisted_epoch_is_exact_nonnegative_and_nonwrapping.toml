@@ -3,13 +3,9 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/stores/awaken-work-store/src/mutation.rs",
   "crates/stores/awaken-sql-storage/src/lib.rs",
   "scripts/ci/check_authority_arithmetic.py",
   "crates/stores/awaken-work-store/src/session_access.rs",
-]
-proof_harnesses = [
-  "work_lease_epoch_is_exact_nonnegative_and_nonwrapping",
 ]
 production_entrypoints = [
   "crates/stores/awaken-work-store/src/mutation.rs",

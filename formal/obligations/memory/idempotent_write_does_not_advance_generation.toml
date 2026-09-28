@@ -10,13 +10,9 @@ evidence = [
   "crates/worker/awaken-sandbox-memoryd/src/copy.rs",
   "crates/worker/awaken-sandbox-memoryd/src/mounter.rs",
   "crates/worker/awaken-sandbox-memoryd/tests/copy_lifecycle.rs",
-  "crates/resources/awaken-memory-store/src/repository.rs",
   "crates/resources/awaken-memory-store/src/sqlite.rs",
   "crates/resources/awaken-memory-store/src/postgres.rs",
   "crates/resources/awaken-memory-store/tests/conformance.rs",
-]
-proof_harnesses = [
-  "memory_head_update_admission_preserves_stale_and_idempotent_heads",
 ]
 production_entrypoints = [
   "crates/resources/awaken-memory-store/src/repository.rs",

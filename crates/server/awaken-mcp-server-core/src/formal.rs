@@ -116,12 +116,14 @@ fn arbitrary_trace() -> ProtocolState {
 }
 
 #[cfg(kani)]
+/// @obligation mcp.at_most_one_final_response
 #[kani::proof]
 fn one_request_has_at_most_one_final_response() {
     assert!(arbitrary_trace().responses <= 1);
 }
 
 #[cfg(kani)]
+/// @obligation mcp.notification_has_no_response
 #[kani::proof]
 fn notifications_never_have_a_jsonrpc_response() {
     let state = arbitrary_trace();
@@ -129,6 +131,7 @@ fn notifications_never_have_a_jsonrpc_response() {
 }
 
 #[cfg(kani)]
+/// @obligation mcp.final_stops_progress
 #[kani::proof]
 fn final_response_is_progress_absorbing() {
     let state = arbitrary_trace();
@@ -136,6 +139,7 @@ fn final_response_is_progress_absorbing() {
 }
 
 #[cfg(kani)]
+/// @obligation mcp.rejected_request_skips_host
 #[kani::proof]
 fn rejected_requests_never_enter_the_host() {
     let state = arbitrary_trace();
@@ -143,6 +147,7 @@ fn rejected_requests_never_enter_the_host() {
 }
 
 #[cfg(kani)]
+/// @obligation mcp.cancellation_has_no_success_result
 #[kani::proof]
 fn cancellation_never_produces_a_success_result() {
     let state = arbitrary_trace();

@@ -8,12 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerCredentialLiveness.tla",
-  "crates/bin/awaken-worker/src/credential_liveness.rs",
   "crates/bin/awaken-worker/src/lifecycle.rs",
   "crates/bin/awaken-worker/src/lib.rs",
-]
-proof_harnesses = [
-  "observation_batch_is_single_generation_and_never_wraps",
 ]
 production_entrypoints = [
   "crates/bin/awaken-worker/src/credential_liveness.rs",

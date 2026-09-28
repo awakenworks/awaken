@@ -7,13 +7,9 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/contract/awaken-worker-contract/src/lib.rs",
   "crates/contract/awaken-worker-contract/src/manifest.rs",
   "crates/contract/awaken-worker-contract/src/requirements.rs",
   "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http.rs",
-]
-proof_harnesses = [
-  "accepted_version_is_inside_worker_range",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/lib.rs",

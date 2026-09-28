@@ -433,10 +433,20 @@ class VerificationManifestTests(unittest.TestCase):
                    proof_grade="abstract_model_checked", bounds=["fixture only"], evidence=["formal/tla/Fixture.tla"])
         feature = dict(id="fixture", criticality="P0", requirements=[dict(
             kind="safety", repository_controlled=True, obligations=["fixture.safe"])])
+        # The copied admission sources carry `/// @obligation` anchors on their
+        # Kani harnesses; a consistent source tree stores those obligations too.
+        import formal_anchors
+        admission = "crates/server/awaken-service-lifecycle/src/release_admission.rs"
+        anchored = sorted({
+            anchor.value
+            for harness in formal_anchors.scan_text(admission, (ROOT / admission).read_text(), None).harnesses
+            for anchor in harness.values("obligation")
+        })
+        rows = [row, *(dict(row, id=identifier) for identifier in anchored)]
         root = directory / "source"
         prepare_source_fixture(root, {
             ".gitignore": "target/\ndist/\ndeploy/images/management/.awaken-management.bin\ndeploy/images/management/.awaken-verification.json\n",
-            **formal_ledger.files({"obligations": [row]}),
+            **formal_ledger.files({"obligations": rows}),
             "formal/features.json": json.dumps({"features": [feature]}) + "\n",
             "formal/assumptions.json": '{"assumptions": []}\n',
             "formal/proof-boundaries.json": '{"boundaries": []}\n',

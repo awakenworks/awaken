@@ -6,7 +6,6 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RunIngress.tla",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
@@ -16,9 +15,6 @@ evidence = [
   "crates/server/awaken-dispatch/tests/durable_memory.rs",
   "crates/server/awaken-dispatch/tests/sqlite_dispatch.rs",
   "crates/server/awaken-dispatch/tests/durable_postgres.rs",
-]
-proof_harnesses = [
-  "relinquish_requires_exact_current_claim_and_preserves_retry_budget",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",

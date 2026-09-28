@@ -328,6 +328,7 @@ const fn host_observation_is_routable(
 }
 
 #[cfg(kani)]
+/// @obligation worker_credential.host_observation_projection_is_backend_scoped
 #[kani::proof]
 fn host_observation_projection_is_exactly_backend_scoped() {
     // Causes: C1 backend selected; C2 executable detected; C3 current login is
@@ -452,6 +453,7 @@ fn stage_local_binding_batch(
 }
 
 #[cfg(kani)]
+/// @obligation worker_credential.local_binding_batch_is_atomic
 #[kani::proof]
 fn local_binding_batch_publication_is_complete_or_stutters() {
     // Causes: C1-C3 are the exact admission results for three arbitrary batch

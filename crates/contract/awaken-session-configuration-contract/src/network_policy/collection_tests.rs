@@ -225,6 +225,7 @@ fn canonical_collection_is_exact_across_sort_sizes_and_input_orders() {
 // oracle. Only the conjunction covers all 16,515 policies; no single partition
 // implies complete normalization or intersection coverage.
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_normalization_none_partition() {
@@ -233,6 +234,7 @@ fn session_network_normalization_none_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_normalization_unrestricted_partition() {
@@ -241,6 +243,7 @@ fn session_network_normalization_unrestricted_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_normalization_empty_partition() {
@@ -249,6 +252,7 @@ fn session_network_normalization_empty_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_normalization_one_ascii_host_partition() {
@@ -260,6 +264,7 @@ fn session_network_normalization_one_ascii_host_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_normalization_two_ascii_hosts_partition() {
@@ -271,6 +276,7 @@ fn session_network_normalization_two_ascii_hosts_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_two_by_two_ascii_hosts_partition() {
@@ -292,6 +298,7 @@ fn session_network_intersection_two_by_two_ascii_hosts_partition() {
 // All rows execute the same owned production composition and R1..R6 oracle.
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_none_by_none_partition() {
@@ -302,6 +309,7 @@ fn session_network_intersection_none_by_none_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_none_by_unrestricted_partition() {
@@ -312,6 +320,7 @@ fn session_network_intersection_none_by_unrestricted_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_none_by_empty_partition() {
@@ -322,6 +331,7 @@ fn session_network_intersection_none_by_empty_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_none_by_one_ascii_host_partition() {
@@ -334,6 +344,7 @@ fn session_network_intersection_none_by_one_ascii_host_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_none_by_two_ascii_hosts_partition() {
@@ -345,6 +356,7 @@ fn session_network_intersection_none_by_two_ascii_hosts_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_unrestricted_by_none_partition() {
@@ -355,6 +367,7 @@ fn session_network_intersection_unrestricted_by_none_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_unrestricted_by_unrestricted_partition() {
@@ -365,6 +378,7 @@ fn session_network_intersection_unrestricted_by_unrestricted_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_unrestricted_by_empty_partition() {
@@ -375,6 +389,7 @@ fn session_network_intersection_unrestricted_by_empty_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_unrestricted_by_one_ascii_host_partition() {
@@ -387,6 +402,7 @@ fn session_network_intersection_unrestricted_by_one_ascii_host_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_unrestricted_by_two_ascii_hosts_partition() {
@@ -398,6 +414,7 @@ fn session_network_intersection_unrestricted_by_two_ascii_hosts_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_empty_by_none_partition() {
@@ -408,6 +425,7 @@ fn session_network_intersection_empty_by_none_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_empty_by_unrestricted_partition() {
@@ -418,6 +436,7 @@ fn session_network_intersection_empty_by_unrestricted_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_empty_by_empty_partition() {
@@ -428,6 +447,7 @@ fn session_network_intersection_empty_by_empty_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_empty_by_one_ascii_host_partition() {
@@ -440,6 +460,7 @@ fn session_network_intersection_empty_by_one_ascii_host_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_empty_by_two_ascii_hosts_partition() {
@@ -451,6 +472,7 @@ fn session_network_intersection_empty_by_two_ascii_hosts_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_one_ascii_host_by_none_partition() {
@@ -463,6 +485,7 @@ fn session_network_intersection_one_ascii_host_by_none_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_one_ascii_host_by_unrestricted_partition() {
@@ -475,6 +498,7 @@ fn session_network_intersection_one_ascii_host_by_unrestricted_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_one_ascii_host_by_empty_partition() {
@@ -487,6 +511,7 @@ fn session_network_intersection_one_ascii_host_by_empty_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_one_ascii_host_by_one_ascii_host_partition() {
@@ -501,6 +526,7 @@ fn session_network_intersection_one_ascii_host_by_one_ascii_host_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_one_ascii_host_by_two_ascii_hosts_partition() {
@@ -514,6 +540,7 @@ fn session_network_intersection_one_ascii_host_by_two_ascii_hosts_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_two_ascii_hosts_by_none_partition() {
@@ -525,6 +552,7 @@ fn session_network_intersection_two_ascii_hosts_by_none_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_two_ascii_hosts_by_unrestricted_partition() {
@@ -536,6 +564,7 @@ fn session_network_intersection_two_ascii_hosts_by_unrestricted_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_two_ascii_hosts_by_empty_partition() {
@@ -547,6 +576,7 @@ fn session_network_intersection_two_ascii_hosts_by_empty_partition() {
 }
 
 #[cfg(kani)]
+/// @obligation session_creation.network_intersection_is_canonical_and_non_widening
 #[kani::proof]
 #[kani::unwind(3)]
 fn session_network_intersection_two_ascii_hosts_by_one_ascii_host_partition() {

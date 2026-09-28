@@ -2,12 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/runtime/awaken-ext-compact/src/fold.rs",
-]
-proof_harnesses = [
-  "fold_point_is_present_exactly_when_triggered_with_nonempty_prefix",
-]
+evidence = []
 production_entrypoints = [
   "crates/runtime/awaken-ext-compact/src/fold.rs",
 ]

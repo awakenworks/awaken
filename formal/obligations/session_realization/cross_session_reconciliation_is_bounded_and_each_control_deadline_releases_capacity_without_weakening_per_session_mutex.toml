@@ -7,22 +7,14 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/SessionRealizationMutex.tla",
-  "crates/server/awaken-session-executor/src/application.rs",
-  "crates/server/awaken-session-executor/src/application/realization_control_deadline.rs",
   "crates/server/awaken-session-executor/src/session_slot.rs",
   "crates/server/awaken-session-executor/src/host/tests.rs",
   "crates/server/awaken-session-executor/src/application/realization_renewal.rs",
-  "crates/contract/awaken-session-realization-contract/src/session_realization/exclusion.rs",
   "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs",
   "crates/server/awaken-session-executor/src/application/realization_control_deadline/composition_tests.rs",
   "formal/runtime-refinement-manifest.json",
   "scripts/ci/render_runtime_refinement_traces.py",
   "scripts/ci/formal_realization_capacity_mutations.py",
-]
-proof_harnesses = [
-  "session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed",
-  "session_realization_control_permit_ownership_release_is_total_and_exact",
-  "session_realization_permit_admits_only_a_current_acquired_slot",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/application.rs",

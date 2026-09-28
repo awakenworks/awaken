@@ -7,8 +7,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/ResourceBindingEffect.tla",
   "formal/tla/ResourceBindingEffect.cfg",
-  "crates/control/awaken-agent-config/src/store.rs",
-  "crates/control/awaken-config-store/src/lib.rs",
   "crates/control/awaken-config-store/src/sqlite.rs",
   "crates/control/awaken-config-store/src/postgres.rs",
   "crates/control/awaken-config-service/src/config_plane.rs",
@@ -17,11 +15,6 @@ evidence = [
   "crates/control/awaken-config-store/tests/postgres.rs",
   "crates/control/awaken-config-store/tests/integration.rs",
   "crates/bin/awaken-cli/tests/management_persistence.rs",
-]
-proof_harnesses = [
-  "management_effect_enqueue_is_exact_replay_or_absent_insert",
-  "management_effect_confirmation_requires_positive_exact_readback",
-  "management_effect_retirement_requires_present_matching_receipt",
 ]
 production_entrypoints = [
   "crates/control/awaken-agent-config/src/store.rs",

@@ -62,6 +62,7 @@ pub const fn claim_credential_operation(
 }
 
 #[cfg(kani)]
+/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
 #[kani::proof]
 fn claim_credential_operation_is_total_and_terminal_dominates() {
     // Cause/effect decision table: C1 terminal repair, C2 cancellation request.
@@ -311,6 +312,7 @@ fn claim_credential_bindings_are_exact(
 }
 
 #[cfg(kani)]
+/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
 #[kani::proof]
 #[kani::unwind(12)]
 fn claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire() {

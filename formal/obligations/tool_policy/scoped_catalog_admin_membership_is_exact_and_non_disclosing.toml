@@ -3,12 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/control/awaken-config-service/src/tool_catalog.rs",
   "crates/control/awaken-config-service/src/config_plane.rs",
-]
-proof_harnesses = [
-  "only_the_reserved_scope_selects_admin_catalog_membership",
-  "every_non_reserved_scope_selects_strictly_global_membership",
 ]
 production_entrypoints = [
   "crates/control/awaken-config-service/src/tool_catalog.rs",

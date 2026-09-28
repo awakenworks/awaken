@@ -223,6 +223,8 @@ fn validate_session_create_command(
 }
 
 #[cfg(kani)]
+/// @obligation session.owner_saved_atomically
+/// @obligation session.visible_row_always_owned
 #[kani::proof]
 fn session_identity_and_create_shapes_require_one_owned_live_row() {
     // Cause/effect tables exhaust row kind/presence and every create command

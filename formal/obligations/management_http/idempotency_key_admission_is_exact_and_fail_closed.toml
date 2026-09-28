@@ -2,14 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/server/awaken-protocol-managed/src/common/headers.rs",
-]
-proof_harnesses = [
-  "idempotency_key_scan_transition_is_exact_and_invalid_absorbing",
-  "idempotency_key_length_and_summary_policy_is_exact",
-  "idempotency_key_admission_rejects_empty_overlong_and_every_invalid_byte",
-]
+evidence = []
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/common/headers.rs",
 ]

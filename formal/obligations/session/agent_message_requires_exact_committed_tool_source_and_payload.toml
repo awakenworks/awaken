@@ -9,13 +9,9 @@ evidence = [
   "formal/tla/AgentMessageProtocol.cfg",
   "crates/runtime/awaken-ext-builtin-tools/src/coordination.rs",
   "crates/server/awaken-session-executor/src/host/coordination.rs",
-  "crates/server/awaken-session-executor/src/host/coordination/agent_message_source.rs",
   "crates/server/awaken-session-application/src/coordination.rs",
   "crates/contract/awaken-session-execution-contract/src/session.rs",
   "crates/contract/awaken-session-execution-contract/src/session/roles.rs",
-]
-proof_harnesses = [
-  "session_agent_message_admission_requires_every_committed_field",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-ext-builtin-tools/src/coordination.rs",

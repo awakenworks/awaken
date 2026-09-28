@@ -3,11 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-runtime-contract/src/resolved.rs",
   "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
-]
-proof_harnesses = [
-  "advisor_never_substitutes_for_primary_model_admission",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/resolved.rs",

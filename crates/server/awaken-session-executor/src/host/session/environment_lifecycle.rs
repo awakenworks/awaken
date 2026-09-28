@@ -226,6 +226,7 @@ const fn closed_environment_recovery_admission(
 }
 
 #[cfg(kani)]
+/// @obligation session_environment.closed_revoked_recovery_consumes_only_exact_unprotected_owner
 #[kani::proof]
 fn closed_environment_recovery_consumes_only_rebuildable_owner_classes() {
     // Complete cause/effect table: C1 Reject/Rebuild policy; C2 every owner

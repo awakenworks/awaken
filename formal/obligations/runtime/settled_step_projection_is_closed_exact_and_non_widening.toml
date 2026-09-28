@@ -3,13 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/server/awaken-session-executor/src/step_projection.rs",
   "crates/server/awaken-session-executor/src/run_application_host.rs",
   "crates/server/awaken-session-executor/src/host/run/step_verification.rs",
-]
-proof_harnesses = [
-  "unsettled_running_is_always_rejected_and_settled_kinds_never_interchange",
-  "settled_step_projection_cannot_invent_pending_or_observations",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/step_projection.rs",

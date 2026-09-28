@@ -4,11 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/ResourceReclamation.tla",
-  "crates/contract/awaken-resource-contract/src/lifecycle.rs",
   "crates/server/awaken-resource-reclaimer/src/lib.rs",
-]
-proof_harnesses = [
-  "stale_resource_purge_claim_cannot_commit_receipt",
 ]
 production_entrypoints = [
   "crates/contract/awaken-resource-contract/src/lifecycle.rs",

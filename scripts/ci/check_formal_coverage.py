@@ -7,17 +7,15 @@ import pathlib
 import re
 import shlex
 import sys
-import tomllib
 
 import formal_ledger
-from _crate_boundary_workspace import rust_syntax
-from formal_kani_options import checked_loop_override, expand_options
+import formal_plan
 from formal_profile import PROOF_GRADES, profile_result, validate_proof_grade
 
 
 # Input set: the whole tree, and the sentinel says so honestly. Besides the
 # formal/ registries, scripts/ci/check_formal.sh and every crates/**/*.rs file
-# it scans for `#[kani::proof]`, this checker asserts that *every* path an
+# whose `#[kani::proof]` harnesses the derived Kani plan selects, this checker asserts that *every* path an
 # obligation cites as evidence or as a production entrypoint still exists --
 # and an obligation may cite any repository path (crates/, formal/, docs/,
 # e2e/, scripts/, web/, packages/, deploy/ and .github/ all appear today). That
@@ -76,10 +74,13 @@ minimum = float(data["minimum_ratio"])
 obligations = data["obligations"]
 profile = data.get("verified_profile")
 formal_gate = (ROOT / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
-# Inventory the existing runner's literal selections, not arbitrary shell text.
-# This checks its declared package/name bindings; execution is still witnessed
-# by the strict runner receipt, not by this static parser.
-gate_harnesses: dict[str, list[str]] = {}
+# The strict gate runs the derived Kani plan: one uncommented plan assignment
+# and one loop that hands every planned batch to the runner. The plan itself
+# is derived from the harnesses (formal_plan.py), so a harness cannot be left
+# out of strict CI by an edit to a list; it can only be left out of the plan
+# by failing to plan, which fails here.
+KANI_PLAN_RUN = re.compile(r'^  kani_plan="\$\(python3 scripts/ci/formal_plan\.py kani --tier full\)"$')
+KANI_BATCH_RUN = re.compile(r'^    run_kani "\$\{kani_argv\[@\]\}"$')
 gate_python_self_tests: dict[str, int] = {}
 for line in formal_gate.replace("\\\n", " ").splitlines():
     if line.lstrip().startswith("python3 "):
@@ -87,61 +88,16 @@ for line in formal_gate.replace("\\\n", " ").splitlines():
         if len(selection) == 3 and selection[2] == "self-test":
             relative = selection[1]
             gate_python_self_tests[relative] = gate_python_self_tests.get(relative, 0) + 1
-    if not line.lstrip().startswith("run_kani "):
-        continue
-    tokens = shlex.split(line, comments=True)
-    if len(tokens) < 4 or re.fullmatch(r"[a-z0-9_-]+", tokens[1]) is None:
-        fail("strict CI Kani selection must name a literal package and exact harnesses")
-    try:
-        tokens = tokens[:2] + expand_options(tokens[1], tokens[2:])
-    except ValueError as error:
-        fail(str(error))
-    index = 2
-    unstable_options = False
-    while index < len(tokens):
-        flag = tokens[index]
-        if flag == "--cbmc-args":
-            # The two qualified literal forms never admit arbitrary CBMC
-            # options or source-controlled shell values.
-            if not checked_loop_override(tokens[1], tokens[2:index], tokens[index:], unstable_options):
-                fail("strict CI Kani selection permits only checked literal loop bounds")
-            break
-        if flag in {"--lib", "--no-default-features"}:
-            index += 1
-            continue
-        if index + 1 >= len(tokens):
-            fail("strict CI Kani selection must name a literal package and exact harnesses")
-        value = tokens[index + 1]
-        if flag == "-Z" and value == "unstable-options":
-            unstable_options = True
-        elif flag == "--harness" and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
-            gate_harnesses.setdefault(value, []).append(tokens[1])
-        elif flag not in {"--features", "--solver"} or re.fullmatch(r"[A-Za-z0-9_,.-]+", value) is None:
-            fail("strict CI Kani selection must name a literal package and exact harnesses")
-        index += 2
+gate_lines = formal_gate.splitlines()
+if sum(bool(KANI_PLAN_RUN.match(line)) for line in gate_lines) != 1 or sum(
+    bool(KANI_BATCH_RUN.match(line)) for line in gate_lines
+) != 1:
+    fail("strict CI does not run the derived Kani plan exactly once (formal_plan.py kani --tier full)")
+try:
+    planned = {item.harness.name: item for item in formal_plan.harnesses(ROOT)}
+except formal_plan.PlanError as error:
+    fail(f"the Kani plan cannot be derived:\n{error}")
 
-source_harnesses: dict[str, list[str]] = {}
-source_packages: dict[str, str] = {}
-proof_pattern = re.compile(
-    r"#\[kani::proof\]\s*(?:#\[[^\]]+\]\s*)*fn\s+([A-Za-z_][A-Za-z0-9_]*)"
-)
-for path in (ROOT / "crates").glob("**/*.rs"):
-    source = path.read_text(encoding="utf-8")
-    if "#[kani::proof]" not in source:
-        continue
-    relative = path.relative_to(ROOT).as_posix()
-    # Reuse the existing Rust lexer: comments, doc examples and string literals
-    # cannot create a definition, and a function-name prefix is not an identity.
-    harnesses = proof_pattern.findall(rust_syntax(source))
-    if not harnesses:
-        continue
-    manifest = next((parent / "Cargo.toml" for parent in path.parents
-                     if parent != ROOT and (parent / "Cargo.toml").is_file()), None)
-    if manifest is None:
-        fail(f"Kani source has no Cargo package: {relative}")
-    source_packages[relative] = tomllib.loads(manifest.read_text())["package"]["name"]
-    for harness in harnesses:
-        source_harnesses.setdefault(harness, []).append(relative)
 if not 0.0 < minimum <= 1.0:
     fail(f"minimum_ratio must be in (0, 1], got {minimum}")
 if not obligations:
@@ -158,7 +114,6 @@ assumption_data = json.loads(
 assumption_ids = {item["id"] for item in assumption_data["assumptions"]}
 
 ids: set[str] = set()
-ledger_harnesses: set[str] = set()
 for obligation in obligations:
     obligation_id = obligation["id"]
     if obligation_id in ids:
@@ -235,17 +190,12 @@ for obligation in obligations:
     harnesses = obligation.get("proof_harnesses", [])
     if len(harnesses) != len(set(harnesses)):
         fail(f"{obligation_id} contains duplicate proof harnesses")
-    if harnesses:
-        ledger_harnesses.update(harnesses)
-        for harness in harnesses:
-            definitions = source_harnesses.get(harness, [])
-            if len(definitions) != 1 or definitions[0] not in evidence:
-                fail(f"{obligation_id} Kani harness {harness} is not a unique proof definition in its evidence")
-            selected = gate_harnesses.get(harness, [])
-            if not selected:
-                fail(f"{obligation_id} Kani harness {harness} is absent from strict CI")
-            if selected != [source_packages[definitions[0]]]:
-                fail(f"{obligation_id} Kani harness {harness} is selected from wrong package or more than once")
+    for harness in harnesses:
+        selected = planned.get(harness)
+        if selected is None:
+            fail(f"{obligation_id} Kani harness {harness} is absent from strict CI")
+        if selected.harness.path not in evidence:
+            fail(f"{obligation_id} Kani harness {harness} is not a unique proof definition in its evidence")
 
     if status == "model_linked":
         if not has_formal_model:
@@ -282,18 +232,6 @@ for obligation in obligations:
             or "-testkit/" in relative
         ):
             fail(f"{obligation_id} test support is not a production entrypoint: {relative}")
-
-for harness, paths in sorted(source_harnesses.items()):
-    if harness not in gate_harnesses:
-        fail(
-            f"source Kani harness {harness} in {', '.join(paths)} is absent from strict CI"
-        )
-    if harness not in ledger_harnesses:
-        fail(
-            f"source Kani harness {harness} in {', '.join(paths)} is absent from the obligation ledger"
-        )
-for harness in sorted(set(gate_harnesses) - set(source_harnesses)):
-    fail(f"strict CI selects nonexistent Kani harness {harness}")
 
 formalizable = [item for item in obligations if item["formalizable"]]
 linked = [

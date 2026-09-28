@@ -99,6 +99,8 @@ mod pending_mutation_tests {
 }
 
 #[cfg(kani)]
+/// @obligation ingress.pending_mutation_plan_requires_exact_revision_and_nonwrapping_edit
+/// @kani default-features=false
 #[kani::proof]
 fn pending_input_mutation_plan_is_exact_revision_fenced_and_nonwrapping() {
     // Direct production plan over the full Option/u64/operation domains. SQL

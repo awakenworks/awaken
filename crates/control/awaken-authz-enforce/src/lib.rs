@@ -608,6 +608,7 @@ fn collapse_session_decision(decision: AuthorizationDecision) -> SessionDecision
 }
 
 #[cfg(kani)]
+/// @obligation authz.decision_collapse_fail_closed
 #[kani::proof]
 fn session_decision_collapse_allows_only_explicit_allow() {
     // Closed-domain decision table: R1 Allow -> Allow; R2 Deny -> Deny;
@@ -672,6 +673,7 @@ pub fn session_action(method: &str) -> ActionKey {
 }
 
 #[cfg(kani)]
+/// @obligation authz.method_mapping_total
 #[kani::proof]
 fn session_method_mapping_is_total_and_read_only_for_exact_safe_methods() {
     // Closed classifier domain after exact string comparisons: every possible

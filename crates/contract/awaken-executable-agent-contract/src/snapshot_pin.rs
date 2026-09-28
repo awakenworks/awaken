@@ -106,6 +106,7 @@ pub fn published_snapshot_pin<T: Copy + Eq>(
 mod kani_proofs {
     use super::*;
 
+    /// @obligation executable_snapshot.pin_is_complete_exact_and_non_mixing
     #[kani::proof]
     fn executable_snapshot_pin_is_complete_exact_and_non_mixing() {
         let registration: SnapshotRegistrationIdentity<u8> = SnapshotRegistrationIdentity {
@@ -144,6 +145,7 @@ mod kani_proofs {
         }
     }
 
+    /// @obligation executable_snapshot.pin_is_complete_exact_and_non_mixing
     #[kani::proof]
     fn every_duplicated_snapshot_pin_axis_is_binding() {
         let registration = SnapshotRegistrationIdentity {

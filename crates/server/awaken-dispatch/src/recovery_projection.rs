@@ -292,6 +292,8 @@ fn apply_to_snapshot(
 mod verification {
     use super::*;
 
+    /// @obligation remote_worker.recovery_projection_is_committed_prefix
+    /// @kani default-features=false
     #[kani::proof]
     fn recovery_snapshot_admission_requires_exact_claim_identity() {
         // Causes: C1 returned Run matches the claim; C2 returned Thread matches
@@ -316,6 +318,9 @@ mod verification {
         );
     }
 
+    /// @obligation remote_worker.acknowledged_projection_is_monotonic
+    /// @obligation remote_worker.recovery_projection_is_committed_prefix
+    /// @kani default-features=false
     #[kani::proof]
     fn acknowledged_projection_is_exact_monotonic_or_a_noop() {
         let identity_matches: bool = kani::any();

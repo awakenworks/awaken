@@ -10,18 +10,11 @@ evidence = [
   "crates/stores/awaken-store-conformance/src/lib.rs",
   "crates/stores/awaken-store-fs/tests/recovery.rs",
   "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
   "crates/stores/awaken-store-sqlite/src/lib.rs",
   "crates/stores/awaken-store-postgres/src/lib.rs",
   "formal/runtime-refinement-manifest.json",
   "scripts/ci/render_runtime_refinement_traces.py",
   "scripts/ci/check_formal_mutations.py",
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-]
-proof_harnesses = [
-  "recovery_replay_preserves_complete_entry_and_time",
-  "operation_identity_replays_only_the_same_run_and_payload",
-  "applied_receipt_is_exact_and_names_one_successor_record",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-store-inmem/src/lib.rs",

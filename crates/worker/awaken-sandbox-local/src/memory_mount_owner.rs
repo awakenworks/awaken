@@ -136,6 +136,7 @@ impl MemoryMountRegistry {
 }
 
 #[cfg(kani)]
+/// @obligation memory_participant.live_provider_retains_pending_and_failed_operations
 #[kani::proof]
 fn live_provider_prunes_only_observed_empty_unreferenced_memory_owners() {
     // This exhausts the exact production pruning predicate. Arc strong-count

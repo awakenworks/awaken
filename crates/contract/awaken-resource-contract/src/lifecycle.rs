@@ -971,6 +971,7 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation resource_reclamation.stale_claim_cannot_commit_receipt
 #[kani::proof]
 fn stale_resource_purge_claim_cannot_commit_receipt() {
     // Symbolic form of the receipt-admission decision table: Kani covers every

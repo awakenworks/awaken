@@ -26,6 +26,8 @@ def formal_gate_initialization(root: Path) -> str:
 
 
 SCRIPT_REFERENCE = re.compile(r"scripts/ci/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)*")
+# `import name` / `from name import ...` of a module beside the importer.
+PYTHON_IMPORT = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 
 # Entry points the fixture executes, plus the data files they read that no
 # script names in its own text.
@@ -46,8 +48,10 @@ def fixture_sources() -> list[str]:
     """Every repository file the fixture's entry scripts can reach.
 
     Each copied script is scanned for `scripts/ci/...` paths and those are
-    copied too, transitively. A script that grows a dependency therefore
-    brings it into the fixture by itself; nothing has to be remembered here.
+    copied too, transitively; a Python script's imports of a sibling module
+    are dependencies of the same kind. A script that grows a dependency
+    therefore brings it into the fixture by itself; nothing has to be
+    remembered here.
     """
 
     pending = list(FIXTURE_ROOTS)
@@ -60,8 +64,15 @@ def fixture_sources() -> list[str]:
         if (ROOT / relative).suffix in {".patch", ".c", ".rs", ".toml"}:
             continue
         text = (ROOT / relative).read_text(encoding="utf-8", errors="ignore")
-        pending.extend(reference for reference in SCRIPT_REFERENCE.findall(text)
-                       if reference not in seen)
+        references = SCRIPT_REFERENCE.findall(text)
+        if relative.endswith(".py"):
+            parent = Path(relative).parent
+            references += [
+                (parent / f"{module}.py").as_posix()
+                for module in PYTHON_IMPORT.findall(text)
+                if (ROOT / parent / f"{module}.py").is_file()
+            ]
+        pending.extend(reference for reference in references if reference not in seen)
     return sorted(seen)
 
 
@@ -211,13 +222,14 @@ class EvidenceTests(unittest.TestCase):
         # Z4 proof failure => propagate. Execute the real runner selection and its
         # final strict check with a solver process stub; this is not proof evidence.
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
-        # End at this conditional's own indentation, not the next package
-        # batch: another solver selection can legally follow the closing fi.
         # The real runner decides the solver for every batch, so execute it
-        # (and its pinned-version helper) around the one explicit Z3 batch.
-        runner = source[source.index("  run_kani() {"):source.index("  run_kani awaken-agent-contract")]
-        invocation = "  run_kani awaken-protocol-managed --solver z3" + source.split(
-            "  run_kani awaken-protocol-managed --solver z3", 1)[1].split("\n\n", 1)[0].split("\n  #", 1)[0] + "\n"
+        # (and its pinned-version helper) on the planned batch of the one
+        # harness whose own tag selects Z3 alone.
+        import formal_plan
+        runner = source[source.index("  run_kani() {"):source.index("  # The batches are derived, not listed")]
+        [batch] = [batch for batch in formal_plan.batches(ROOT, "full")
+                   if batch.selection.profile == "solver-z3-v1"]
+        invocation = "  run_kani " + " ".join(batch.argv()) + "\n"
         selection = runner + invocation
         strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
         version = begin_record(self.root, True, 100)["proof_toolchain"]["z3"]
@@ -247,7 +259,8 @@ class EvidenceTests(unittest.TestCase):
                 invoked = installed and reported == version and version_exit == 0
                 self.assertEqual(calls.exists(), invoked)
                 if invoked:
-                    self.assertEqual(calls.read_text().strip(), "cargo kani -p awaken-protocol-managed --output-format terse -j 1 --solver z3 --harness memory_time_filter_compares_visible_milliseconds_without_merging_them")
+                    self.assertEqual(calls.read_text().strip(), "cargo kani -p awaken-protocol-managed --output-format terse -j 1 --solver z3 --exact --harness "
+                                     "resources::memory_stores::memory_time_filter_compares_visible_milliseconds_without_merging_them")
                 if not installed:
                     self.assertIn("skipped Z3", result.stdout)
         passed = finish_record(begin_record(self.root, True, 100), self.root, False, 110)
@@ -261,7 +274,7 @@ class EvidenceTests(unittest.TestCase):
         # mode completes; S3 a solver compiled into CBMC (cadical) needs no
         # binary. Absent kissat used to read as "0 of N failed ... FAILED".
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
-        runner = source[source.index("  run_kani() {"):source.index("  run_kani awaken-agent-contract")]
+        runner = source[source.index("  run_kani() {"):source.index("  # The batches are derived, not listed")]
         strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
         for solver, installed, strict, expected, invoked in (
             ("kissat", True, 1, 0, True),

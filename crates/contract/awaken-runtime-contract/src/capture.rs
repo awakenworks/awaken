@@ -159,6 +159,7 @@ mod kani_proofs {
         }
     }
 
+    /// @obligation capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
     #[kani::proof]
     fn capture_meet_is_exact_commutative_and_non_widening() {
         let left = arbitrary_capture();
@@ -171,6 +172,7 @@ mod kani_proofs {
         assert!(effective <= right);
     }
 
+    /// @obligation capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
     #[kani::proof]
     fn capture_projection_admits_content_only_at_full() {
         let level = arbitrary_capture();
@@ -185,6 +187,7 @@ mod kani_proofs {
         assert_eq!(level.allows_content(), level == ContentCapture::Full);
     }
 
+    /// @obligation capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
     #[kani::proof]
     fn non_full_capture_fails_closed_before_redaction() {
         let level = arbitrary_capture();

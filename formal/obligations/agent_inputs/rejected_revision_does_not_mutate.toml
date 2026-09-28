@@ -6,16 +6,12 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/AgentInputRevision.tla",
-  "crates/control/awaken-config-resolver/src/stores.rs",
   "formal/tla/AgentInputRevision.cfg",
   "crates/control/awaken-admin-config-api/src/sqlite.rs",
   "crates/control/awaken-admin-config-api/src/postgres.rs",
   "crates/control/awaken-admin-config-api/tests/postgres_store.rs",
   "crates/control/awaken-admin-config-api/tests/agent_input_admission.rs",
   "crates/control/awaken-admin-config-api/tests/support/agent_input_admission.rs",
-]
-proof_harnesses = [
-  "agent_input_revision_decision_is_exact_non_wrapping_and_replay_first",
 ]
 production_entrypoints = [
   "crates/control/awaken-config-resolver/src/stores.rs",

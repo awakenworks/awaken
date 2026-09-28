@@ -8,15 +8,11 @@ evidence = [
   "formal/tla/AcpBoundary.tla",
   "formal/tla/AcpBoundary.cfg",
   "crates/server/awaken-protocol-acp/src/jsonrpc.rs",
-  "crates/server/awaken-protocol-acp/src/jsonrpc/handshake.rs",
   "formal/verification-boundaries/acp-handshake-and-wire.md",
   "crates/server/awaken-protocol-acp/src/lib.rs",
   "scripts/ci/check_formal.sh",
   "scripts/ci/check_formal_mutations.py",
   "docs/adr/0069-acp-capability-configuration-lifecycle.md",
-]
-proof_harnesses = [
-  "acp_prompt_admission_requires_exact_completed_handshake",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-acp/src/jsonrpc.rs",

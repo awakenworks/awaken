@@ -4,11 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "crates/server/awaken-protocol-acp/src/lib.rs",
-  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "acp_permission_projection_is_total_exact_and_non_widening",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",

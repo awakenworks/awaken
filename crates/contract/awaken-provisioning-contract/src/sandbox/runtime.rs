@@ -527,6 +527,7 @@ mod verification {
         }
     }
 
+    /// @obligation sandbox.admission_never_weakens_isolation
     #[kani::proof]
     fn sandbox_admission_never_weakens_the_isolation_floor() {
         let actual = isolation(kani::any());
@@ -544,6 +545,7 @@ mod verification {
         }
     }
 
+    /// @obligation sandbox.admission_requires_requested_capabilities
     #[kani::proof]
     fn sandbox_admission_requires_every_requested_capability() {
         let has_network = kani::any();
@@ -564,6 +566,7 @@ mod verification {
         }
     }
 
+    /// @obligation sandbox.fail_closed_policy_never_downgrades
     #[kani::proof]
     fn fail_closed_sandbox_policy_never_authorizes_a_downgrade() {
         let actual = isolation(kani::any());
@@ -573,6 +576,7 @@ mod verification {
         }
     }
 
+    /// @obligation sandbox.workspace_path_projection_is_one_logical_root_and_never_discloses_provider_host_paths
     #[kani::proof]
     fn workspace_path_projection_requires_exact_fidelity_admission() {
         let provider_has_path_fidelity: bool = kani::any();

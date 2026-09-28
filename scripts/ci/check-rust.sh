@@ -210,10 +210,10 @@ case "$mode" in
       # another `-D warnings` lint -> the quick check passes, main goes red at
       # the first full run; the pre-push gate runs the same workspace clippy
       # the full gate runs (same feature set, same locked graph) so the lint
-      # is refused before it leaves the machine. P2 a Kani harness is
-      # registered in the formal/obligations ledger but not selected by
-      # scripts/ci/check_formal.sh -> the formal group fails hours later; the
-      # ledger check proves selection in seconds, so it runs here. Neither is
+      # is refused before it leaves the machine. P2 a Kani harness cannot be
+      # planned (no @obligation anchor, a bad @kani tag, unreachable from its
+      # Cargo target) -> the formal group fails hours later; the ledger check
+      # derives the plan in seconds, so it runs here. Neither is
       # a test run: the workspace suite stays in --full.
       #
       # P3 an optional feature is declared but no gate compiles it -> a renamed
@@ -231,7 +231,7 @@ case "$mode" in
       # need a live daemon to run, which their own integration gates provide.
       step "lint-all-features" "review the errors above; every declared feature must compile and lint clean (auto-fixable: cargo clippy --fix --all-features --all-targets --allow-dirty)" \
         cargo clippy --workspace --all-features --all-targets "${locked[@]}" -- -D warnings
-      step "formal-coverage" "register the harness in scripts/ci/check_formal.sh or fix formal/obligations/ as shown above" \
+      step "formal-coverage" "fix the harness anchors/@kani tags or formal/obligations/ as shown above" \
         python3 scripts/ci/check_formal_coverage.py
       # The formal-evidence pre-commit hook now triggers on every production
       # Rust file and answers the same question incrementally (--staged), so an

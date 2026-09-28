@@ -182,6 +182,7 @@ pub fn commit_bundle() -> Result<MigrationBundle, MigrationError> {
 mod verification {
     use super::*;
 
+    /// @obligation migration.versions_are_dense_and_increasing
     #[kani::proof]
     fn dense_migration_versions_are_strictly_increasing() {
         let versions = [
@@ -195,6 +196,7 @@ mod verification {
         }
     }
 
+    /// @obligation migration.step_never_rolls_back_or_skips
     #[kani::proof]
     fn migration_step_never_rolls_back_or_skips_a_version() {
         let applied = kani::any::<u32>();
@@ -204,6 +206,7 @@ mod verification {
         assert!(next <= applied.saturating_add(1));
     }
 
+    /// @obligation migration.replay_of_applied_plan_is_noop
     #[kani::proof]
     fn replaying_a_fully_applied_migration_plan_is_a_noop() {
         let version = kani::any::<u32>();

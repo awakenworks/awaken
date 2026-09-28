@@ -557,6 +557,7 @@ mod sequencing_tests {
 mod kani_proofs {
     use super::*;
 
+    /// @obligation remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
     #[kani::proof]
     fn remote_operation_sequence_admits_only_prepared_before_send_and_accept_commit() {
         // Causes: C1 current phase and C2 requested external/durable event.
@@ -604,6 +605,10 @@ mod kani_proofs {
         );
     }
 
+    /// @obligation remote_attempt.committed_task_is_endpoint_pinned
+    /// @obligation remote_attempt.endpoint_mismatch_fails_closed
+    /// @obligation remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
+    /// @obligation remote_attempt.recovery_reattaches_without_resending
     #[kani::proof]
     fn remote_operation_route_is_total_and_fail_closed() {
         // Cause graph: C1 state is absent/prepared/accepted; C2 its endpoint
@@ -645,6 +650,7 @@ mod kani_proofs {
         );
     }
 
+    /// @obligation remote_attempt.terminal_commit_retires_task_reference
     #[kani::proof]
     fn terminal_remote_operation_command_is_exact_run_scoped_removal() {
         // Cause graph: C1 a Run reaches a committed terminal boundary.
@@ -661,6 +667,8 @@ mod kani_proofs {
         assert!(matches!(command.action, StateAction::Remove));
     }
 
+    /// @obligation remote_attempt.cancel_addresses_pinned_task
+    /// @obligation remote_attempt.resume_preserves_context_and_task_reference
     #[kani::proof]
     fn task_reference_admission_requires_complete_fields_and_required_identity_matches() {
         // Causes: C1 endpoint present; C2 task id present; C3 context id

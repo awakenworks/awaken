@@ -3,14 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-session-dream-contract/src/lib.rs",
   "crates/server/awaken-dream-application/src/lib.rs",
-]
-proof_harnesses = [
-  "terminal_dream_statuses_are_absorbing",
-  "dream_success_and_failure_require_a_running_process",
-  "dream_recovery_and_cancel_never_widen_terminal_authority",
-  "dream_transition_table_is_total_exact_and_closed",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-dream-contract/src/lib.rs",

@@ -8,14 +8,10 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/WorkerDrain.tla",
   "formal/tla/WorkerDrain.cfg",
-  "crates/server/awaken-dispatch/src/pool.rs",
   "crates/bin/awaken-worker/src/lib.rs",
   "crates/bin/awaken-worker/src/lifecycle.rs",
   "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs",
   "crates/bin/awaken-worker/tests/support/mod.rs",
-]
-proof_harnesses = [
-  "pool_draining_state_is_absorbing_and_claim_closed",
 ]
 production_entrypoints = [
   "crates/server/awaken-dispatch/src/pool.rs",

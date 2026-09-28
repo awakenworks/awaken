@@ -6,14 +6,10 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",
   "crates/server/awaken-protocol-managed/src/state/events/delivery.rs",
   "crates/server/awaken-protocol-managed/src/routes/sessions/stream.rs",
   "crates/server/awaken-protocol-managed/tests/streaming.rs",
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
-]
-proof_harnesses = [
-  "logical_deletion_observation_requires_positive_exact_scoped_evidence",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",

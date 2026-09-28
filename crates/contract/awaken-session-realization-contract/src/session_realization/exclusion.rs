@@ -132,6 +132,8 @@ impl std::fmt::Debug for SessionRealizationPermit {
 }
 
 #[cfg(kani)]
+/// @obligation session_realization.concurrent_phase_drivers_are_serialized_per_session
+/// @obligation session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
 #[kani::proof]
 fn session_realization_permit_admits_only_a_current_acquired_slot() {
     let exclusion_owner_acquired: bool = kani::any();

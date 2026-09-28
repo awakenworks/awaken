@@ -2,12 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/contract/awaken-session-realization-contract/src/session_realization/generation_authority.rs",
-]
-proof_harnesses = [
-  "realization_generation_authority_requires_every_axis",
-]
+evidence = []
 production_entrypoints = [
   "crates/contract/awaken-session-realization-contract/src/session_realization/generation_authority.rs",
 ]

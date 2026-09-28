@@ -221,6 +221,7 @@ pub fn project_epoch_millis(epoch_millis: u128) -> u64 {
 }
 
 #[cfg(kani)]
+/// @obligation session_time.utc_projection_domain_is_total_exact_and_idempotent
 #[kani::proof]
 fn public_millisecond_projection_is_exact_bounded_and_nonwrapping() {
     // P1 every u128 at/below the UTC maximum is preserved; P2 every larger

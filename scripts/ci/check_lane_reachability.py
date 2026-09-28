@@ -41,12 +41,15 @@ from pathlib import Path
 
 import formal_ledger
 
-# Every file this checker reads: the lane roots whose closure it walks and the
-# executables it accounts for.
+# Every file this checker reads: the lane roots whose closure it walks, the
+# executables it accounts for, and the obligation ledger (its TOML files and
+# the Rust anchors and Cargo manifests it is assembled from).
 INPUT_GLOBS: tuple[str, ...] = (
     "lefthook.yml",
     "formal/coverage.toml",
     "formal/obligations/**/*",
+    "crates/**/*.rs",
+    "crates/**/Cargo.toml",
     "scripts/**/*",
     "e2e/**/*",
     "deploy/**/*",

@@ -14,16 +14,10 @@ evidence = [
   "e2e/managed_mcp_recovery_e2e.ts",
   "crates/contract/awaken-session-realization-contract/src/session_realization.rs",
   "crates/contract/awaken-session-realization-contract/src/session_realization/model.rs",
-  "crates/contract/awaken-session-realization-contract/src/session_realization/generation_authority.rs",
   "crates/devtools/awaken-scenario-host/src/realization_observation.rs",
-  "crates/server/awaken-session-application/src/realization/publication.rs",
   "crates/server/awaken-session-application/src/realization/publication/collection_tests.rs",
   "crates/contract/awaken-session-mcp-contract/src/lib.rs",
   "crates/server/awaken-session-application/src/realization.rs",
-]
-proof_harnesses = [
-  "realization_publication_selects_only_unacknowledged_active_generation",
-  "realization_generation_authority_requires_every_axis",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/realization/control.rs",

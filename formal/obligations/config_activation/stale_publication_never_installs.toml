@@ -11,7 +11,6 @@ evidence = [
   "scripts/ci/formal_config_mutations.py",
   "docs/adr/0071-distributed-service-boundaries-and-executable-agent-registration.md",
   "docs/design/config-publication-lifecycle.md",
-  "crates/control/awaken-agent-config/src/store.rs",
   "crates/control/awaken-config-service/src/config_service/publication.rs",
   "crates/control/awaken-config-store/src/sqlite.rs",
   "crates/control/awaken-config-store/src/postgres.rs",
@@ -19,15 +18,10 @@ evidence = [
   "crates/control/awaken-config-service/src/config_service/publication_tests.rs",
   "crates/control/awaken-config-service/src/config_service/publication_recovery_tests.rs",
   "crates/control/awaken-config-service/src/registration_reconciliation.rs",
-  "crates/control/awaken-config-store/src/lib.rs",
   "crates/control/awaken-config-store/tests/support/revision_cas.rs",
   "crates/control/awaken-config-store/tests/integration.rs",
   "crates/control/awaken-config-store/tests/postgres.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "publication_source_admission_requires_present_exact_revision",
-  "publication_registration_requires_exact_commit_receipt",
 ]
 production_entrypoints = [
   "crates/control/awaken-config-service/src/config_service/publication.rs",

@@ -113,6 +113,7 @@ impl FileReadRoot {
 }
 
 #[cfg(kani)]
+/// @obligation sandbox.file_read_authority_is_explicit
 #[kani::proof]
 fn file_read_authority_never_changes_path_class_or_admits_unsafe_input() {
     let authority = if kani::any() {

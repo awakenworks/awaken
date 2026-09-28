@@ -16,7 +16,6 @@ evidence = [
   "crates/worker/awaken-sandbox-container/src/k8s/process_termination/stop.rs",
   "crates/worker/awaken-sandbox-container/src/k8s/finalizer.rs",
   "crates/server/awaken-worker-registry/src/migrations/V0003__retain_worker_process_exit.sql",
-  "crates/contract/awaken-worker-contract/src/registry.rs",
   "crates/server/awaken-worker-registry/src/transition.rs",
   "crates/worker/awaken-sandbox-container/src/k8s/process_termination/stop/tests.rs",
   "crates/server/awaken-dispatch/src/application.rs",
@@ -24,16 +23,11 @@ evidence = [
   "crates/bin/awaken-cli/src/worker_transport_security/kubernetes.rs",
   "crates/bin/awaken-cli/src/worker_transport_security/kubernetes/tests.rs",
   "crates/bin/awaken-cli/src/worker_transport_security/kubernetes/tests/live.rs",
-  "crates/contract/awaken-runtime-contract/src/attempt_termination.rs",
   "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
   "crates/runtime/awaken-runtime/tests/execution.rs",
   "e2e/k3d/distributed_control_e2e.sh",
   "e2e/k3d/distributed_control_driver.ts",
   "e2e/k3d/distributed_control_driver.test.ts",
-]
-proof_harnesses = [
-  "native_attempt_termination_requires_every_closed_surface_fact",
-  "worker_process_exit_receipt_requires_closed_exact_immutable_history",
 ]
 production_entrypoints = [
   "crates/worker/awaken-sandbox-container/src/k8s/process_termination.rs",

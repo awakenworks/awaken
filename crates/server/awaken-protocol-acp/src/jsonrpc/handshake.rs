@@ -108,6 +108,8 @@ impl PromptReady {
 }
 
 #[cfg(kani)]
+/// @obligation acp.prompt_is_never_sent_before_bounded_handshake_completion
+/// @kani features=real-acp
 #[kani::proof]
 fn acp_prompt_admission_requires_exact_completed_handshake() {
     // Cause/effect decision table over the production transition kernel:

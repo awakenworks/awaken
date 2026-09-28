@@ -7,10 +7,6 @@ evidence = [
   "crates/contract/awaken-session-state-contract/src/environment/continuation.rs",
   "crates/contract/awaken-session-state-contract/src/environment/generation.rs",
   "crates/server/awaken-session-application/src/continuation.rs",
-  "crates/contract/awaken-session-state-contract/src/environment/verification.rs",
-]
-proof_harnesses = [
-  "checkpoint_receipt_requires_every_immutable_generation_axis",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/environment.rs",

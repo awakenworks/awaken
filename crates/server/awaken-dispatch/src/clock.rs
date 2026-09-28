@@ -62,6 +62,9 @@ pub(crate) fn deadline_millis(now_ms: u64, lease_ms: u64) -> u64 {
 }
 
 #[cfg(kani)]
+/// @obligation run_ingress.store_deadline_is_monotonic_saturating_and_never_wraps
+/// @obligation session_run.reservation_ttl_uses_store_clock
+/// @kani default-features=false
 #[kani::proof]
 fn store_deadline_is_monotonic_saturating_and_never_wraps() {
     // Cause/effect decision table: C1 now is inside/outside the SQL domain; C2

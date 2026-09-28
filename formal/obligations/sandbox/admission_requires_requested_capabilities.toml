@@ -4,12 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.container_and_kernel_isolation",
 ]
-evidence = [
-  "crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs",
-]
-proof_harnesses = [
-  "sandbox_admission_requires_every_requested_capability",
-]
+evidence = []
 production_entrypoints = [
   "crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs",
 ]

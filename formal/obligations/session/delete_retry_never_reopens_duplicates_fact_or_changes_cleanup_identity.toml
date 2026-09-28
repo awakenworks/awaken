@@ -19,21 +19,13 @@ evidence = [
   "scripts/ci/render_runtime_refinement_traces.py",
   "scripts/ci/formal_session_deletion_mutations.py",
   "scripts/ci/check_formal_mutations.py",
-  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
   "crates/contract/awaken-session-state-contract/src/session_repo/disposition.rs",
-  "crates/contract/awaken-session-state-contract/src/terminal_cleanup.rs",
   "crates/server/awaken-session-application/src/mutation.rs",
   "crates/server/awaken-session-application/src/tests/mod.rs",
   "crates/contract/awaken-session-state-contract/src/terminal_cleanup/state.rs",
-  "crates/contract/awaken-agent-contract/src/fingerprint.rs",
   "scripts/ci/formal_kani_options.py",
   "scripts/ci/test_formal_profile.py",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "session_delete_request_plan_is_exact_hidden_terminal_and_idempotent",
-  "session_cleanup_phase_advances_only_not_requested_fenced_requested_completed",
-  "fnv_hex_output_preserves_every_u64",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/terminal.rs",

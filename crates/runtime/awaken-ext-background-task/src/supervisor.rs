@@ -830,6 +830,7 @@ mod loom_tests {
 }
 
 #[cfg(kani)]
+/// @obligation background_task.process_completion_is_retryable_and_stale_completion_is_inert
 #[kani::proof]
 fn process_completion_fold_retries_exact_candidate_and_stale_is_inert() {
     // Cause/effect decision table over the production completion_fold_plan:

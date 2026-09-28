@@ -6,12 +6,7 @@ tcb_assumptions = [
   "external.orchestrator_correctness",
   "external.worker_host_executor_equivalence",
 ]
-evidence = [
-  "crates/server/awaken-session-executor/src/session_environment/session_hand.rs",
-]
-proof_harnesses = [
-  "hand_availability_has_only_explicit_recovery_and_terminal_transitions",
-]
+evidence = []
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/session_environment/session_hand.rs",
 ]

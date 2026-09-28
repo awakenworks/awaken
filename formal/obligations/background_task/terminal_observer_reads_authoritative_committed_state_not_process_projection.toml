@@ -8,7 +8,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/BackgroundTask.tla",
   "formal/tla/BackgroundTask.cfg",
-  "crates/server/awaken-session-executor/src/store.rs",
   "crates/server/awaken-session-executor/src/background_task.rs",
   "crates/server/awaken-session-executor/src/background_task/ownership.rs",
   "crates/server/awaken-session-executor/src/host/session.rs",
@@ -17,9 +16,6 @@ evidence = [
   "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
-]
-proof_harnesses = [
-  "recovery_projection_cannot_mint_committed_authority",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/store.rs",

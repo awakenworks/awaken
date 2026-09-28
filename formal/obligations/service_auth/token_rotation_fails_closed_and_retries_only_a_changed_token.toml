@@ -5,11 +5,7 @@ tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
 evidence = [
-  "crates/contract/awaken-service-auth-contract/src/lib.rs",
   "crates/bin/awaken-cli/src/config/service_boundary.rs",
-]
-proof_harnesses = [
-  "service_token_retry_is_enabled_only_for_an_exact_changed_token",
 ]
 production_entrypoints = [
   "crates/contract/awaken-service-auth-contract/src/lib.rs",

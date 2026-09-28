@@ -7,13 +7,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/CheckpointRecovery.tla",
-  "crates/runtime/awaken-runtime/src/engine/progress.rs",
   "crates/runtime/awaken-runtime/src/engine/tests.rs",
   "crates/runtime/awaken-runtime/tests/per_step_commit.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "durable_watermark_successor_is_exact_or_rejected_without_rollback",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-runtime/src/engine/progress.rs",

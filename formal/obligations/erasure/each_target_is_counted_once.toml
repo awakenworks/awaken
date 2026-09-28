@@ -7,12 +7,7 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/ErasureSaga.tla",
   "crates/control/awaken-data-subject-application/src/lib.rs",
-  "crates/control/awaken-data-subject-application/src/erasure_verification.rs",
   "crates/control/awaken-data-subject-application/src/tests.rs",
-]
-proof_harnesses = [
-  "erasure_progress_selects_exact_first_pending_target",
-  "erasure_progress_counts_selected_target_once_or_preserves_overflow",
 ]
 production_entrypoints = [
   "crates/control/awaken-data-subject-application/src/lib.rs",

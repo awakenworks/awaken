@@ -11,17 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-import formal_ledger
+from formal_gate_mutations import must_fail, run_gate_mutations, write_json
 from formal_model_mutation_runner import check_tlc_model_mutations
 from formal_config_mutations import check_config_cas_model_mutant, check_config_activation_model_mutants
 from formal_worker_registration_mutations import check_worker_registration_model_mutants
@@ -56,295 +53,6 @@ from formal_background_mutations import check_background_completion_model_mutant
 
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def prepare_case(case_root: Path) -> None:
-    # Copy every writable mutation target and its checker dependencies. The old
-    # fixture omitted formal/tla and Web classifications, so an unmutated case
-    # already failed and any nonzero-exit oracle reported false kills.
-    ignore = shutil.ignore_patterns("__pycache__", ".tlacache")
-    shutil.copytree(ROOT / "scripts/ci", case_root / "scripts/ci", ignore=ignore)
-    shutil.copytree(ROOT / "formal", case_root / "formal", ignore=ignore)
-    for source in (ROOT / "scripts").iterdir():
-        if source.name != "ci":
-            os.symlink(source, case_root / "scripts" / source.name, target_is_directory=source.is_dir())
-    for source in ROOT.iterdir():
-        if source.name not in {".git", "scripts", "formal", "target", "node_modules"}:
-            os.symlink(source, case_root / source.name, target_is_directory=source.is_dir())
-
-
-def run_checker(case_root: Path, checker: str, *arguments: str) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(
-            [sys.executable, str(case_root / "scripts/ci" / checker), *arguments],
-            cwd=case_root, text=True, capture_output=True, check=False, timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise SystemExit(f"formal mutation infrastructure failure: {checker}: {error}") from error
-
-
-def must_fail(case_root: Path, checker: str, label: str, *arguments: str, expected: str) -> None:
-    result = run_checker(case_root, checker, *arguments)
-    if result.returncode == 0:
-        raise SystemExit(f"formal mutation survived: {label}")
-    if result.returncode != 1 or "Traceback" in result.stderr or expected not in result.stderr:
-        raise SystemExit(
-            f"formal mutation wrong failure: {label}; expected {expected!r}; "
-            f"exit={result.returncode}; stderr={result.stderr}"
-        )
-
-
-def require_green_baseline(case_root: Path) -> None:
-    for checker, args in (
-        ("check_formal_coverage.py", ("--require-evidence-complete",)),
-        ("check_feature_coverage.py", ("--require-complete",)),
-        ("check_proof_boundaries.py", ()),
-    ):
-        result = run_checker(case_root, checker, *args)
-        if result.returncode != 0:
-            raise SystemExit(f"formal mutation baseline failed: {checker}: {result.stderr}")
-
-
-def mutation_targets(case_root: Path) -> dict[Path, bytes]:
-    paths = [path for path in (case_root / "formal").rglob("*") if path.is_file()]
-    return {path: path.read_bytes() for path in [*paths, case_root / "scripts/ci/check_formal.sh"]}
-
-
-def write_json(path: Path, value: object) -> None:
-    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-
-
-def mutate_removed_harness(case_root: Path) -> None:
-    ledger = formal_ledger.load(case_root)
-    harness = next(row["proof_harnesses"][0] for row in ledger["obligations"] if row.get("proof_harnesses"))
-    gate = case_root / "scripts" / "ci" / "check_formal.sh"
-    source = gate.read_text()
-    needle = f"--harness {harness}"
-    if needle not in source:
-        raise SystemExit(f"mutation fixture missing strict-CI harness {harness}")
-    gate.write_text(source.replace(needle, f"--harness removed_{harness}", 1))
-    must_fail(case_root, "check_formal_coverage.py", "removed Kani harness from strict CI",
-              expected=f"Kani harness {harness} is absent from strict CI")
-
-
-def mutate_downgraded_claim(case_root: Path) -> None:
-    ledger = formal_ledger.load(case_root)
-    row = next(item for item in ledger["obligations"] if item["status"] == "kernel_proved")
-    row["status"] = "executable_only"
-    row.pop("proof_harnesses", None)
-    formal_ledger.write(case_root, ledger)
-    must_fail(case_root, "check_formal_coverage.py", "downgraded proved obligation",
-              expected=f"{row['id']} production-kernel grade has no Kani harness")
-
-
-def mutate_commented_harness(case_root: Path) -> None:
-    # H1: exact source proof and ledger survive, but its runner argument becomes
-    # a shell comment. Text presence is not execution selection; reject it.
-    gate = case_root / "scripts/ci/check_formal.sh"
-    source = gate.read_text()
-    harness = "work_lease_epoch_is_exact_nonnegative_and_nonwrapping"
-    source = source.replace(f"--harness {harness}", f"--harness removed_{harness}", 1)
-    gate.write_text(source + f"\n# --harness {harness}\n")
-    must_fail(case_root, "check_formal_coverage.py", "comment-only Kani selection",
-              expected=f"Kani harness {harness} is absent from strict CI")
-
-
-def mutate_wrong_harness_package(case_root: Path) -> None:
-    # H2: unchanged exact harness name under a different package must not earn
-    # proof credit. Package ownership comes from Cargo, not directory spelling.
-    gate = case_root / "scripts/ci/check_formal.sh"
-    source = gate.read_text()
-    batch = source[source.index("run_kani awaken-work-store"):]
-    batch = batch[:batch.index("\n  run_kani ", 1)]
-    moved = set(re.findall(r"--harness ([A-Za-z0-9_]+)", batch))
-    gate.write_text(source.replace("run_kani awaken-work-store", "run_kani awaken-config-resolver", 1))
-    # The checker reports the first moved harness in ledger order.
-    harness = next(name for row in formal_ledger.load(case_root)["obligations"]
-                   for name in row.get("proof_harnesses", []) if name in moved)
-    must_fail(case_root, "check_formal_coverage.py", "Kani selection in wrong package",
-              expected=f"Kani harness {harness} is selected from wrong package")
-
-
-def mutate_harness_name_prefix(case_root: Path) -> None:
-    # H3: adding a short name that is merely a prefix of a real proof, plus a
-    # comment mentioning that name, cannot manufacture a proof definition.
-    ledger = formal_ledger.load(case_root)
-    row = next(item for item in ledger["obligations"] if item["id"] == "work.persisted_epoch_is_exact_nonnegative_and_nonwrapping")
-    row["proof_harnesses"].append("work_lease_epoch")
-    formal_ledger.write(case_root, ledger)
-    gate = case_root / "scripts/ci/check_formal.sh"
-    gate.write_text(gate.read_text() + "\n# --harness work_lease_epoch\n")
-    must_fail(case_root, "check_formal_coverage.py", "prefix is not a proof definition",
-              expected="Kani harness work_lease_epoch is not a unique proof definition in its evidence")
-
-
-def mutate_duplicate_harness_selection(case_root: Path) -> None:
-    # H4: repeating one proof invocation cannot satisfy a second proof identity
-    # or obscure an ambiguous runner binding. One source has one exact selection.
-    gate = case_root / "scripts/ci/check_formal.sh"
-    gate.write_text(gate.read_text() + "\nrun_kani awaken-work-store --harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping\n")
-    must_fail(case_root, "check_formal_coverage.py", "duplicate Kani selection",
-              expected="Kani harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping is selected from wrong package or more than once")
-
-
-def mutate_unchecked_model(case_root: Path) -> None:
-    gate = case_root / "scripts" / "ci" / "check_formal.sh"
-    source = gate.read_text()
-    ledger = formal_ledger.load(case_root)
-    model = next(
-        evidence
-        for row in ledger["obligations"]
-        for evidence in row["evidence"]
-        if evidence.startswith("formal/tla/") and evidence.endswith(".tla") and evidence in source
-    )
-    gate.write_text(source.replace(model, "formal/tla/RemovedModel.tla"))
-    must_fail(case_root, "check_formal_coverage.py", "formal model removed from strict CI",
-              expected=f"formal evidence {model} is absent from strict CI")
-
-
-def mutate_commented_release_self_test(case_root: Path) -> None:
-    # P1: the Python authority, model and direct Rust kernel still exist, but the
-    # production entrypoint's only strict-CI self-test is commented out. Static
-    # source/harness presence cannot replace execution of the composing owner.
-    gate = case_root / "scripts/ci/check_formal.sh"
-    source = gate.read_text()
-    anchor = "python3 scripts/release/verification_manifest.py self-test"
-    if source.count(anchor) != 1:
-        raise SystemExit("release self-test mutation anchor drifted")
-    gate.write_text(source.replace(anchor, "# " + anchor))
-    # The checker reports the first owner in ledger order; name that exact row.
-    owner = next(row["id"] for row in formal_ledger.load(case_root)["obligations"]
-                 if "scripts/release/verification_manifest.py" in row["production_entrypoints"])
-    must_fail(case_root, "check_formal_coverage.py", "comment-only Python self-test",
-              expected=f"{owner} release entrypoint needs exactly one strict-CI self-test: scripts/release/verification_manifest.py")
-
-
-def mutate_missing_proof_grade(case_root: Path) -> None:
-    ledger = formal_ledger.load(case_root)
-    ledger["obligations"][0].pop("proof_grade")
-    formal_ledger.write(case_root, ledger)
-    must_fail(case_root, "check_formal_coverage.py", "proof grade removed",
-              expected=f"{ledger['obligations'][0]['id']} has unknown or missing proof_grade None")
-
-
-def mutate_false_production_grade(case_root: Path) -> None:
-    ledger = formal_ledger.load(case_root)
-    row = next(
-        item
-        for item in ledger["obligations"]
-        if item["proof_grade"] == "abstract_model_checked"
-        and not item.get("proof_harnesses")
-    )
-    row["proof_grade"] = "production_kernel_proved"
-    formal_ledger.write(case_root, ledger)
-    must_fail(
-        case_root,
-        "check_formal_coverage.py",
-        "abstract model relabeled as production proof",
-        expected=f"{row['id']} production-kernel grade has no Kani harness",
-    )
-
-
-def mutate_missing_boundary(case_root: Path) -> None:
-    path = case_root / "formal" / "proof-boundaries.json"
-    ledger = json.loads(path.read_text())
-    removed = ledger["boundaries"].pop()
-    write_json(path, ledger)
-    must_fail(case_root, "check_proof_boundaries.py", "missing residual boundary",
-              expected=f"proof boundaries: missing ['{removed['requirement_id']}']")
-
-
-def mutate_false_refinement_grade(case_root: Path) -> None:
-    ledger = formal_ledger.load(case_root)
-    row = next(item for item in ledger["obligations"] if
-               "crates/runtime/awaken-runtime/tests/formal_refinement.rs" in item["evidence"])
-    row["proof_grade"] = "implementation_refined"
-    formal_ledger.write(case_root, ledger)
-    must_fail(case_root, "check_formal_coverage.py", "trace relabeled as universal refinement",
-              expected=f"{row['id']} implementation_refined requires a checked universal production refinement")
-
-
-def mutate_invented_boundary(case_root: Path) -> None:
-    path = case_root / "formal" / "proof-boundaries.json"
-    ledger = json.loads(path.read_text())
-    mutant = dict(ledger["boundaries"][0])
-    mutant["requirement_id"] = "invented.requirement.boundary"
-    ledger["boundaries"].append(mutant)
-    write_json(path, ledger)
-    must_fail(case_root, "check_proof_boundaries.py", "invented residual boundary",
-              expected="proof boundaries: extra ['invented.requirement.boundary']")
-
-
-def mutate_unlinked_product_obligation(case_root: Path) -> None:
-    path = case_root / "formal" / "features.json"
-    ledger = json.loads(path.read_text())
-    target = "sandbox_control.single_publication_is_stale_fenced_non_wrapping_and_close_absorbing"
-    owner = next(
-        requirement
-        for feature in ledger["features"]
-        for requirement in feature["requirements"]
-        if target in requirement.get("obligations", [])
-    )
-    owner["obligations"].remove(target)
-    write_json(path, ledger)
-    must_fail(
-        case_root,
-        "check_feature_coverage.py",
-        "formal obligation detached from its product requirement",
-        "--require-complete",
-        expected=f"formal obligations are disconnected from every product journey: {target}",
-    )
-
-
-def mutate_reopened_external_assumption(case_root: Path) -> None:
-    path = case_root / "formal" / "assumptions.json"
-    ledger = json.loads(path.read_text())
-    ledger["assumptions"][0]["status"] = "open"
-    write_json(path, ledger)
-    must_fail(
-        case_root,
-        "check_feature_coverage.py",
-        "evidenced external assumption reopened",
-        "--require-complete",
-        expected="completion required but gaps remain: requirements=0, assumptions=1",
-    )
-
-
-def mutate_missing_tcb_contract(case_root: Path) -> None:
-    path = case_root / "formal" / "assumptions.json"
-    ledger = json.loads(path.read_text())
-    ledger["assumptions"][0].pop("fail_closed_behavior")
-    write_json(path, ledger)
-    must_fail(
-        case_root,
-        "check_feature_coverage.py",
-        "external assumption lost fail-closed contract",
-        "--require-complete",
-        expected=f"{ledger['assumptions'][0]['id']} has no fail_closed_behavior",
-    )
-
-
-def mutate_disconnected_product_feature(case_root: Path) -> None:
-    path = case_root / "formal" / "features.json"
-    ledger = json.loads(path.read_text())
-    # This feature is not a journey's sole formal anchor owner: removing it
-    # isolates feature disconnection instead of failing anchor admission first.
-    target = "runtime.compaction"
-    removed = False
-    for journey in ledger["product_journeys"]:
-        if target in journey["stages"]:
-            journey["stages"].remove(target)
-            removed = True
-    if not removed:
-        raise SystemExit(f"mutation fixture has no product journey stage {target}")
-    write_json(path, ledger)
-    must_fail(
-        case_root,
-        "check_feature_coverage.py",
-        "product feature disconnected from every assurance journey",
-        "--require-complete",
-        expected=f"product features are disconnected from every assurance journey: {target}",
-    )
 
 
 class MutationOracleTests(unittest.TestCase):
@@ -576,7 +284,7 @@ class MutationOracleTests(unittest.TestCase):
             (2, "expected rule", False), (1, "Traceback: expected rule", False),
         ):
             with self.subTest(code=code, stderr=stderr), patch(
-                f"{__name__}.run_checker",
+                "formal_gate_mutations.run_checker",
                 return_value=subprocess.CompletedProcess([], code, "", stderr),
             ):
                 if killed:
@@ -659,50 +367,7 @@ def main() -> None:
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(MutationOracleTests)
     if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
         raise SystemExit(1)
-    # Cause/effect decision table: removing a strict-CI proof, downgrading a
-    # claim, detaching a model, omitting/inventing a residual boundary,
-    # inventing a production proof grade, deleting a proof grade or TCB
-    # fail-closed contract, orphaning a formal obligation, reopening an external
-    # assumption, or disconnecting a product feature from every end-to-end
-    # assurance journey must each make its existing authoritative gate fail. No
-    # mutant may introduce a second ledger or a test-only acceptance path.
-    mutations = (
-        mutate_removed_harness,
-        mutate_commented_release_self_test,
-        mutate_commented_harness,
-        mutate_wrong_harness_package,
-        mutate_harness_name_prefix,
-        mutate_duplicate_harness_selection,
-        mutate_downgraded_claim,
-        mutate_unchecked_model,
-        mutate_missing_proof_grade,
-        mutate_false_production_grade,
-        mutate_false_refinement_grade,
-        mutate_missing_boundary,
-        mutate_invented_boundary,
-        mutate_unlinked_product_obligation,
-        mutate_reopened_external_assumption,
-        mutate_missing_tcb_contract,
-        mutate_disconnected_product_feature,
-    )
-    with tempfile.TemporaryDirectory(prefix="awaken-formal-mutations-") as temp:
-        temp_root = Path(temp)
-        for index, mutation in enumerate(mutations):
-            case_root = temp_root / str(index)
-            prepare_case(case_root)
-            require_green_baseline(case_root)
-            # Only the copied formal/ tree and the copied gate are writable
-            # mutation targets. Restore exact bytes (and drop any file a
-            # mutation added) and prove the baseline again so a secondary
-            # fixture failure cannot count as the requested kill.
-            original = mutation_targets(case_root)
-            mutation(case_root)
-            for path in set(mutation_targets(case_root)) - set(original):
-                path.unlink()
-            for path, content in original.items():
-                path.write_bytes(content)
-            require_green_baseline(case_root)
-    print(f"formal gate mutation score: {len(mutations)}/{len(mutations)} killed")
+    run_gate_mutations()
 
 
 

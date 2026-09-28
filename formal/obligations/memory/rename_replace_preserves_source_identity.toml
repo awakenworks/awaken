@@ -10,15 +10,11 @@ evidence = [
   "formal/tla/MemoryCAS.cfg",
   "docs/adr/0053-memory-store-fuse-mount.md",
   "crates/contract/awaken-resource-contract/src/lib.rs",
-  "crates/resources/awaken-memory-store/src/repository.rs",
   "crates/resources/awaken-memory-store/src/sqlite.rs",
   "crates/resources/awaken-memory-store/src/postgres.rs",
   "crates/resources/awaken-memory-store/tests/common/memory_repository.rs",
   "crates/resources/awaken-memory-store/tests/conformance.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "memory_rename_replace_preserves_source_identity",
 ]
 production_entrypoints = [
   "crates/resources/awaken-memory-store/src/repository.rs",

@@ -7,13 +7,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ExecutableProjectionRefreshProof.tla",
-  "crates/server/awaken-durable-projection/src/lib.rs",
   "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
   "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "projection_refresh_domain_permit_is_exclusive",
 ]
 production_entrypoints = [
   "crates/server/awaken-durable-projection/src/lib.rs",

@@ -159,6 +159,8 @@ fn reject_current_only_field(
 }
 
 #[cfg(kani)]
+/// @obligation managed_user_profiles.capability_and_field_projection_is_total_exclusive_and_exact
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 fn user_profile_capability_and_field_projection_is_total_exclusive_and_exact() {
     // Exactly one selector chooses a projection; none or several choose

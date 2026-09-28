@@ -416,6 +416,7 @@ impl CredentialRealizationReceipt {
 }
 
 #[cfg(kani)]
+/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
 #[kani::proof]
 #[kani::unwind(20)]
 fn credential_realization_receipt_requires_every_exact_binding_coordinate() {
@@ -733,6 +734,7 @@ impl AttemptCredentialRealization {
 }
 
 #[cfg(kani)]
+/// @obligation credential.attempt_delivery_is_exact_epoch_bound_and_authority_preserving
 #[kani::proof]
 fn attempt_delivery_requires_unique_exact_binding_envelope_and_unchanged_authority() {
     // Cause/effect proof input: symbolic candidate, binding coordinates,

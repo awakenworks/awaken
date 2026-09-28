@@ -234,6 +234,7 @@ mod tests {
 mod verification {
     use super::BoundaryPriority;
 
+    /// @obligation live_inbox.boundary_priority_is_pause_then_input_then_idle
     #[kani::proof]
     fn boundary_priority_is_pause_then_input_then_idle() {
         let paused = kani::any::<bool>();

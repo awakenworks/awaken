@@ -7,12 +7,7 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/server/awaken-worker-transport-security/src/lib.rs",
   "crates/bin/awaken-worker/src/bootstrap.rs",
-]
-proof_harnesses = [
-  "worker_transport_selector_admits_only_supported_exact_postures",
-  "remote_transport_never_downgrades_or_widens_identity",
 ]
 production_entrypoints = [
   "crates/server/awaken-worker-transport-security/src/lib.rs",

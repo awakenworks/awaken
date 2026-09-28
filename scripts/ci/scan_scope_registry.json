@@ -1,6 +1,6 @@
 {
   "baseline": {
-    "scanners_without_input_globs": 20,
+    "scanners_without_input_globs": 19,
     "scope_lists": 33
   },
   "comment": [
@@ -48,10 +48,6 @@
     "check_feature_matrix.py": {
       "reason": "runs inside the rust shell gate, which owns one hand-written trigger for every checker it invokes rather than one trigger per checker",
       "runner": "scripts/ci/check-rust.sh"
-    },
-    "check_formal_mutations.py": {
-      "reason": "runs inside the formal gate, which is scheduled rather than file-triggered because a proof run costs minutes, not milliseconds",
-      "runner": "scripts/ci/check_formal.sh"
     },
     "check_formal_web_surface.py": {
       "reason": "runs inside the formal gate, which is scheduled rather than file-triggered because a proof run costs minutes, not milliseconds",

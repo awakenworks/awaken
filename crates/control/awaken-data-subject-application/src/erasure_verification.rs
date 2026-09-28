@@ -151,6 +151,8 @@ fn arbitrary_target() -> Option<ErasureTarget> {
 }
 
 #[cfg(kani)]
+/// @obligation erasure.each_target_is_counted_once
+/// @kani profile=erasure-progress-selection-v1
 #[kani::proof]
 #[kani::unwind(32)]
 fn erasure_progress_selects_exact_first_pending_target() {
@@ -164,6 +166,8 @@ fn erasure_progress_selects_exact_first_pending_target() {
 }
 
 #[cfg(kani)]
+/// @obligation erasure.each_target_is_counted_once
+/// @kani profile=erasure-progress-count-v1
 #[kani::proof]
 #[kani::unwind(32)]
 fn erasure_progress_counts_selected_target_once_or_preserves_overflow() {
@@ -229,6 +233,9 @@ fn check_action(
 }
 
 #[cfg(kani)]
+/// @obligation erasure.accountability_stamp_follows_all_targets
+/// @obligation erasure.completion_requires_accountability_stamp
+/// @kani profile=erasure-progress-selection-v1
 #[kani::proof]
 #[kani::unwind(32)]
 fn erasure_checkpoint_action_requires_all_targets_and_accountability() {
@@ -345,6 +352,8 @@ fn erasure_checkpoint_successor_decision_table() {
 // must fail, not silently remove paths. Full-frame capture above avoids copies
 // made only for the oracle; production follows is unchanged.
 #[cfg(kani)]
+/// @obligation erasure.checkpoint_never_forgets_completed_targets
+/// @kani profile=erasure-checkpoint-successor-v1
 #[kani::proof]
 #[kani::unwind(3)]
 fn erasure_checkpoint_successor_preserves_all_completed_targets() {

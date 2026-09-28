@@ -106,7 +106,12 @@ pub const fn tcb_admission(facts: TcbFacts) -> TcbAdmission {
     }
 }
 
+// The package also owns a production CLI binary: `target=lib` selects the
+// library target, so these proofs cannot be redirected to another target.
 #[cfg(kani)]
+/// @obligation assembly_role.release_consumption_requires_exact_artifact_profile_and_completed_proofs
+/// @obligation assembly_role.verified_admission_requires_exact_fresh_tcb_fingerprint
+/// @kani target=lib
 #[kani::proof]
 fn verified_release_and_tcb_admission_are_total_exact_and_fail_closed() {
     // Cause/effect decision table for both production-consumed dispositions:

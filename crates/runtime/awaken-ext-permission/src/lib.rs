@@ -449,6 +449,7 @@ mod kani_proofs {
         }
     }
 
+    /// @obligation permission.extension_policy_merge_is_exact_and_fail_closed
     #[kani::proof]
     fn retired_mode_compiles_into_one_exact_unmatched_default() {
         // The mode axis is gone; a historical section's mode folds into the one
@@ -499,6 +500,7 @@ mod kani_proofs {
         [entry(), entry(), entry()]
     }
 
+    /// @obligation permission.extension_policy_merge_is_exact_and_fail_closed
     #[kani::proof]
     #[kani::unwind(5)]
     fn a_matching_deny_decides_the_whole_fold_whatever_else_matched() {
@@ -541,6 +543,7 @@ mod kani_proofs {
         assert_eq!(decided.is_some(), !nothing_matched, "D2/D3");
     }
 
+    /// @obligation permission.extension_policy_merge_is_exact_and_fail_closed
     #[kani::proof]
     #[kani::unwind(5)]
     fn the_fold_returns_a_behavior_some_matching_rule_actually_carried() {
@@ -563,6 +566,7 @@ mod kani_proofs {
         }
     }
 
+    /// @obligation permission.extension_policy_merge_is_exact_and_fail_closed
     #[kani::proof]
     fn matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority() {
         let existing = if kani::any() {

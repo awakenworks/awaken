@@ -68,6 +68,7 @@ impl SessionRealizationControlFailure {
 }
 
 #[cfg(kani)]
+/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 #[kani::proof]
 fn session_realization_control_failure_disposition_is_total_exact_and_fail_closed() {
     let selector = kani::any::<u8>() % 8;
@@ -94,6 +95,7 @@ fn session_realization_control_failure_disposition_is_total_exact_and_fail_close
 }
 
 #[cfg(kani)]
+/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 #[kani::proof]
 fn realization_ownership_loss_proof_is_total_and_exact() {
     let selector = kani::any::<u8>() % 8;

@@ -9,7 +9,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
   "formal/tla/WorkerReplacement.tla",
-  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite.rs",
   "crates/server/awaken-dispatch/src/postgres.rs",
@@ -20,10 +19,6 @@ evidence = [
   "crates/server/awaken-coordinator/src/artifact_publication.rs",
   "crates/resources/awaken-resource-worker-http/src/artifact_publication_http.rs",
   "crates/resources/awaken-resource-worker-http/tests/artifact_publication_transport.rs",
-]
-proof_harnesses = [
-  "commit_epoch_guard_admits_only_complete_exact_claim",
-  "commit_epoch_completion_requires_observed_release",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",

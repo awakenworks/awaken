@@ -98,6 +98,7 @@ impl SessionExecutionState {
 }
 
 #[cfg(kani)]
+/// @obligation session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
 #[kani::proof]
 fn initial_realization_recovery_is_exact_for_every_execution_state() {
     // Causes: C1 is each closed SessionExecutionState variant. Effects: E1 the

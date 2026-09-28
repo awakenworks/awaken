@@ -68,6 +68,7 @@ fn check_publication_source_admission(current: Option<u64>, source_revision: u64
 }
 
 #[cfg(kani)]
+/// @obligation config_activation.stale_publication_never_installs
 #[kani::proof]
 fn publication_source_admission_requires_present_exact_revision() {
     // No assumptions: all Option<u64> current source states x every embedded
@@ -229,6 +230,8 @@ fn check_config_revision_admission(current_revision: Option<u64>, expected: u64)
 }
 
 #[cfg(kani)]
+/// @obligation config.generation_is_monotonic
+/// @obligation config.stale_writer_never_applies
 #[kani::proof]
 fn config_revision_admission_is_exact_and_nonwrapping() {
     // No assumptions: exhaust every Option<u64> observed row x independent
@@ -254,6 +257,8 @@ pub(crate) fn management_effect_retirement_is_admitted(
 }
 
 #[cfg(kani)]
+/// @obligation resource_binding.pending_effect_survives_until_readback
+/// @obligation resource_binding.replay_is_idempotent_and_identity_stable
 #[kani::proof]
 fn management_effect_retirement_requires_present_matching_receipt() {
     // C1 current pending row exists; C2 its complete payload matches the receipt.

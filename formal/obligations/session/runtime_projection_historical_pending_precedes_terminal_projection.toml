@@ -9,12 +9,7 @@ evidence = [
   "formal/tla/SessionRuntimeProjection.cfg",
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection/historical_pending.rs",
   "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "canonical_event_order_never_depends_on_wall_time",
-  "historical_pending_order_precedes_every_admitted_terminal",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection/historical_pending.rs",

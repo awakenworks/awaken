@@ -2,12 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/runtime/awaken-ext-mcp/src/router.rs",
-]
-proof_harnesses = [
-  "notification_admission_is_exact_and_unknown_fails_closed",
-]
+evidence = []
 production_entrypoints = [
   "crates/runtime/awaken-ext-mcp/src/router.rs",
 ]

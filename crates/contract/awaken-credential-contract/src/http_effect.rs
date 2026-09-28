@@ -421,6 +421,7 @@ mod verification {
     /// Exhaustively proves a named-material usage cannot silently drop, add, or
     /// merge fields: scalar material binds exactly one declared field, while
     /// structured material requires non-empty exact key equality.
+    /// @obligation credential.http_effect_usage_binds_exact_fields_and_placements
     #[kani::proof]
     fn named_material_shape_is_exact_and_non_widening() {
         let declared_fields = kani::any::<usize>();

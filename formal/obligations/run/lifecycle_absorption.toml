@@ -6,11 +6,7 @@ evidence = [
   "formal/tla/RuntimeSystemProof.tla",
   "formal/tla/SessionRunProtocol.tla",
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/contract/awaken-agent-contract/src/agent/run.rs",
   "crates/server/awaken-session-executor/src/commit_ingest.rs",
-]
-proof_harnesses = [
-  "ended_is_absorbing_for_every_next_state",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/agent/run.rs",

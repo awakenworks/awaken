@@ -134,6 +134,8 @@ impl CircuitKernel {
 mod proofs {
     use super::*;
 
+    /// @obligation circuit.half_open_probe_capacity
+    /// @obligation circuit.probe_generation_fencing
     #[kani::proof]
     fn circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters() {
         // Causes: arbitrary u32 capacity/probes, u64 epoch, phase, cooldown.
@@ -176,6 +178,8 @@ mod proofs {
         }
     }
 
+    /// @obligation circuit.abandoned_probe_reopens
+    /// @obligation circuit.probe_generation_fencing
     #[kani::proof]
     fn circuit_completion_requires_exact_phase_and_generation_for_every_outcome() {
         // F1 stale phase or epoch => exact stutter for success/failure/drop.

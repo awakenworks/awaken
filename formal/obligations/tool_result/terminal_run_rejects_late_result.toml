@@ -6,21 +6,11 @@ evidence = [
   "formal/tla/ToolResultProtocol.tla",
   "formal/tla/ToolResultProtocol.cfg",
   "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/recovery/selection_tests.rs",
   "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
   "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
   "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
-  "crates/contract/awaken-runtime-contract/src/terminal.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
   "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
-  "crates/contract/awaken-agent-contract/src/agent/run.rs",
   "scripts/ci/formal_event_batch_mutations.py",
-]
-proof_harnesses = [
-  "managed_ticket_admission_preserves_terminal_and_identity_priority",
-  "pending_signal_is_deliverable_only_without_consuming_commit",
-  "committed_terminal_projection_admits_only_exact_ended_identity",
-  "ended_is_absorbing_for_every_next_state",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",

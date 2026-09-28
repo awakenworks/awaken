@@ -9,7 +9,6 @@ evidence = [
   "formal/tla/RunIngress.tla",
   "formal/tla/RunIngress.cfg",
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/clock.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/memory/store.rs",
   "crates/server/awaken-dispatch/src/sqlite.rs",
@@ -20,9 +19,6 @@ evidence = [
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
   "e2e/remote_worker_recovery_e2e.ts",
-]
-proof_harnesses = [
-  "store_deadline_is_monotonic_saturating_and_never_wraps",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",

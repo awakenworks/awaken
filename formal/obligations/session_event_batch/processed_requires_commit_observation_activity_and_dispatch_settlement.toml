@@ -8,21 +8,10 @@ evidence = [
   "crates/server/awaken-session-application/src/event_batches.rs",
   "crates/server/awaken-dispatch/src/worker.rs",
   "crates/contract/awaken-session-event-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/activity.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/contract/awaken-session-event-contract/src/dispatch_settlement.rs",
   "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
   "crates/server/awaken-session-application/src/coordination.rs",
   "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
   "crates/server/awaken-dispatch-http/tests/dispatch_transport_http.rs",
-  "crates/contract/awaken-session-event-contract/src/observation_proofs.rs",
-]
-proof_harnesses = [
-  "processed_event_time_is_first_observation_or_atomic_rejection",
-  "session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed",
-  "exact_dispatch_settlement_is_terminal_or_awaiting_only",
-  "user_event_processing_requires_exact_applied_dispatch_and_activity_settlement",
-  "retained_input_idling_is_exactly_settled_or_only_blocked_users",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/event_batches.rs",

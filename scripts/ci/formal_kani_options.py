@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Audited Kani loop options shared by the existing runner and ledger checker.
+"""Audited Kani solver and loop profiles: the one owner of non-default Kani options.
 
-These bounds change finite loop expansion, not the input domain or checks. Every
+A harness opts into a profile with its own `/// @kani profile=<name>` tag; the
+derived plan (``formal_plan.py``) serializes the profile into the batch argv.
+Loop bounds change finite loop expansion, not the input domain or checks. Every
 unwinding assertion remains enabled, so a reachable extra iteration fails proof.
-Pinned Kani/std v0 identities select audited library loops. All unlisted loops and recursion
-retain each harness's global bound; optional solver choices are fixed per profile.
+Pinned Kani/std v0 identities select audited library loops. All unlisted loops
+and recursion retain each harness's global bound; optional solver choices are
+fixed per profile.
 """
 
-import re
-import sys
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 
 # Pinned nightly-2026-05-01 / Kani 0.67 std loop identities. No shell expansion.
@@ -80,35 +84,44 @@ ERASURE_PROGRESS_LOOPS = (
     ('_RINvNtCsjxLPRqQEPX2_4core5array18try_from_fn_erasedINtNtNtB4_3ops9try_trait17NeverShortCircuitbEQINtNtB2_5drain5DrainuKj2_INtBQ_7WrappedbuNCINvYbNtCsjPMFoRXFuRd_4kani9Arbitrary9any_arrayKB1T_E0EEECs7LhrEI5S3s3_31awaken_data_subject_application.0', 3),
 )
 
-# Profiles bind solver options to their exact production package and harnesses.
-PROFILES = {
-    "resume-validator-empty-object-v1": (
-        "awaken-runtime-contract",
-        frozenset({"resume_validator_preserves_complete_binding_decision_table"}),
-        TOOL_RESULT_EMPTY_OBJECT_LOOPS,
-        "cadical",
+
+@dataclass(frozen=True)
+class Profile:
+    """One audited option set. Consumer: ``formal_plan`` serializes it per batch.
+
+    ``package`` binds a profile whose loop identities are mangled against one
+    crate; ``None`` admits any package (a solver choice or a builtin symbol).
+    """
+
+    package: str | None
+    loops: tuple[tuple[str, int], ...]
+    solver: str | None
+
+
+# Profiles bind solver options, and loop identities, to their production package.
+# Harness membership is not listed here: each harness names its profile itself.
+PROFILES: dict[str, Profile] = {
+    "resume-validator-empty-object-v1": Profile(
+        "awaken-runtime-contract", TOOL_RESULT_EMPTY_OBJECT_LOOPS, "cadical",
     ),
-    'erasure-progress-selection-v1': (
+    "erasure-progress-selection-v1": Profile(
         "awaken-data-subject-application",
-        frozenset({'erasure_progress_selects_exact_first_pending_target', 'erasure_checkpoint_action_requires_all_targets_and_accountability'}),
         ERASURE_PROGRESS_LOOPS + (
             # index_range.rs:167: first-match scan of two adapter references, plus exit.
             ('_RINvXs_NtNtCsjxLPRqQEPX2_4core3ops11index_rangeNtB5_10IndexRangeNtNtNtNtB9_4iter6traits8iterator8Iterator8try_folduNCINvMs6_NtNtNtB9_5array4iter10iter_innerINtB1Y_15PolymorphicIterSINtNtNtB9_3mem12maybe_uninit11MaybeUninitTNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtNtB9_6option6OptionRhEEEE8try_folduNCINvNvB10_4find5checkB3y_NCINvMs0_B3B_NtB3B_15ErasureProgress14pending_targetB4X_E0E0INtNtB7_12control_flow11ControlFlowB3y_EE0B6B_EB3B_.0', 3),
         ),
         "cadical",  # Explicitly retains Kani's default solver.
     ),
-    'erasure-checkpoint-successor-v1': (
+    "erasure-checkpoint-successor-v1": Profile(
         "awaken-data-subject-application",
-        frozenset({'erasure_checkpoint_successor_preserves_all_completed_targets'}),
         ERASURE_PROGRESS_LOOPS + (
             # slice/iter/macros.rs:314: all visits at most two old rows plus exit.
             ('_RINvXs2J_NtNtCsjxLPRqQEPX2_4core5slice4iterINtB7_4IterNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetENtNtNtNtBb_4iter6traits8iterator8Iterator3allNCNvMs0_BS_NtBS_15ErasureProgress7follows0EBS_.0', 3),
         ),
         "cadical",  # Same default solver; global 32 retains allocation and Drop.
     ),
-    'erasure-progress-count-v1': (
+    "erasure-progress-count-v1": Profile(
         "awaken-data-subject-application",
-        frozenset({'erasure_progress_counts_selected_target_once_or_preserves_overflow'}),
         ERASURE_PROGRESS_LOOPS + (
             # index_range.rs:167: the same two-slot scan with unit adapter payloads.
             ('_RINvXs_NtNtCsjxLPRqQEPX2_4core3ops11index_rangeNtB5_10IndexRangeNtNtNtNtB9_4iter6traits8iterator8Iterator8try_folduNCINvMs6_NtNtNtB9_5array4iter10iter_innerINtB1Y_15PolymorphicIterSINtNtNtB9_3mem12maybe_uninit11MaybeUninitTNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtNtB9_6option6OptionuEEEE8try_folduNCINvNvB10_4find5checkB3y_NCINvMs0_B3B_NtB3B_15ErasureProgress14pending_targetuE0E0INtNtB7_12control_flow11ControlFlowB3y_EE0B6x_EB3B_.0', 3),
@@ -117,18 +130,18 @@ PROFILES = {
         ),
         "cadical",  # Explicitly retains Kani's default solver.
     ),
-    "fingerprint-fnv-hex-v1": (
+    # Exact final wire encoding only: SHA/FNV algorithms and enclosing request
+    # histories keep their separate obligations. Every default check stays on.
+    "fingerprint-fnv-hex-v1": Profile(
         "awaken-agent-contract",
-        frozenset({"fnv_hex_output_preserves_every_u64"}),
         # 24 ASCII wire bytes: at most seven alignment bytes, one 16-byte
         # block, eight tail bytes; bounds include exit. mod_inv needs <=4
         # iterations on the pinned 64-bit target. Global unwind remains 18.
         tuple(zip(FINGERPRINT_ENCODING_LOOPS, (2, 9, 9, 5))),
         "z3",
     ),
-    "fingerprint-sha256-hex-v1": (
+    "fingerprint-sha256-hex-v1": Profile(
         "awaken-agent-contract",
-        frozenset({"sha256_hex_output_preserves_every_digest_byte"}),
         # 71 ASCII wire bytes: <=7 alignment bytes and four 16-byte blocks;
         # tail 17 is conservative, outer 9 includes exit. Global unwind 66
         # retains every one of the 256 unconstrained input bits. CaDiCaL is
@@ -136,24 +149,16 @@ PROFILES = {
         tuple(zip(FINGERPRINT_ENCODING_LOOPS, (5, 17, 9, 5))),
         "cadical",
     ),
-    "activity-admission-height-v1": (
-        "awaken-session-state-contract",
-        frozenset({
-            "activity_next_epoch_inserts_exact_checked_successor",
-            "activity_exact_epoch_inserts_only_fresh_positive_member",
-        }),
-        ACTIVITY_HEIGHT_LOOPS,
-        None,
+    "activity-admission-height-v1": Profile(
+        "awaken-session-state-contract", ACTIVITY_HEIGHT_LOOPS, None,
     ),
-    "activity-terminal-height-v1": (
-        "awaken-session-state-contract",
-        frozenset({"activity_terminal_transition_clears_one_real_member"}),
-        ACTIVITY_HEIGHT_LOOPS[:7],
-        None,
+    "activity-terminal-height-v1": Profile(
+        "awaken-session-state-contract", ACTIVITY_HEIGHT_LOOPS[:7], None,
     ),
-    "retained-accepted-two-replay-v1": (
+    # Real two-ID output reversal swaps three 8-byte chunks of each String.
+    # The bound and solver are owned by this profile, as the ledger states.
+    "retained-accepted-two-replay-v1": Profile(
         "awaken-session-application-contract",
-        frozenset({"deleted_admission_one_retained_accepted_two_27"}),
         (
             ("memcmp.0", 2),
             # core/ptr/mod.rs:1452: 24-byte String swaps three 8-byte chunks;
@@ -162,86 +167,40 @@ PROFILES = {
         ),
         "z3",
     ),
+    # Builtin `memcmp` loop budgets. Every unwinding assertion stays on; only
+    # the string comparison's loop gets the bound (bound includes loop exit).
+    "unwind-memcmp-2-v1": Profile(None, (("memcmp.0", 2),), None),
+    "unwind-memcmp-64-v1": Profile(None, (("memcmp.0", 64),), None),
+    # A complete 64-byte conflict message also needs its loop-exit check.
+    "unwind-memcmp-65-v1": Profile(None, (("memcmp.0", 65),), None),
+    # Two-slot material collections do not need the string comparison's loop
+    # budget: only builtin memcmp gets 16. The owned predecessor-set iterator
+    # uses the bundled MiniSAT backend.
+    "minisat-unwind-memcmp-16-v1": Profile(None, (("memcmp.0", 16),), "minisat"),
+    # Solver choices alone. CaDiCaL and MiniSAT are compiled into CBMC; Z3 must
+    # be the pinned version; kissat ships in the released Kani bundle.
+    "solver-cadical-v1": Profile(None, (), "cadical"),
+    "solver-kissat-v1": Profile(None, (), "kissat"),
+    "solver-minisat-v1": Profile(None, (), "minisat"),
+    "solver-z3-v1": Profile(None, (), "z3"),
 }
 
 
-def _harnesses(options: list[str]) -> list[str]:
-    if not options or len(options) % 2 or any(
-        options[index] != "--harness" for index in range(0, len(options), 2)
-    ):
-        raise ValueError("checked Kani profile permits only literal harness selections")
-    names = options[1::2]
-    if len(names) != len(set(names)):
-        raise ValueError("checked Kani profile rejects duplicate harnesses")
-    return names
+def serialize(name: str, package: str, selection: list[str]) -> list[str]:
+    """The Kani argv of profile ``name`` around ``selection`` (the harness filter).
 
+    ``--cbmc-args`` consumes the rest of the command line, so the selection
+    sits between the solver and it. A loop profile needs ``-Z unstable-options``;
+    a solver-only profile does not, and its argv carries no loop override.
+    """
 
-def _bind(package: str, options: list[str], profile: tuple) -> None:
-    expected_package, allowed, _, _ = profile
-    names = _harnesses(options)
-    if package != expected_package or not set(names) <= allowed:
-        raise ValueError("checked Kani profile package/harness binding mismatch")
-
-
-def _serialize(profile: tuple, selected: list[str]) -> list[str]:
-    # Both invocation expansion and qualification compare this exact argv.
-    # The profile owns optional solver selection; callers supply harnesses only.
-    _, _, loops, solver = profile
-    solver_options = ["--solver", solver] if solver is not None else []
-    return ["-Z", "unstable-options", *solver_options, *selected,
-            "--cbmc-args", "--unwindset",
-            ",".join(f"{name}:{bound}" for name, bound in loops)]
-
-
-def expand_options(package: str, options: list[str]) -> list[str]:
-    if "--checked-loop-profile" not in options:
-        return options
-    if len(options) < 4 or options[0] != "--checked-loop-profile":
-        raise ValueError("checked Kani profile must be the first and sole option owner")
-    profile = PROFILES.get(options[1])
+    profile = PROFILES.get(name)
     if profile is None:
-        raise ValueError("unknown checked Kani profile")
-    selected = options[2:]
-    _bind(package, selected, profile)
-    return _serialize(profile, selected)
-
-
-def checked_loop_override(package: str, prefix: list[str], tail: list[str], unstable: bool) -> bool:
-    if not unstable or len(tail) != 3 or tail[:2] != ["--cbmc-args", "--unwindset"]:
-        return False
-    for profile in PROFILES.values():
-        selected = prefix[4 if profile[3] is not None else 2:]
-        try:
-            _bind(package, selected, profile)
-        except ValueError:
-            continue
-        if prefix + tail == _serialize(profile, selected):
-            return True
-    # A fixed-solver profile is a newly reserved harness invocation. Removing
-    # its other loops or solver must not fall through to the older memcmp-only
-    # path. Existing Activity profiles and legacy memcmp calls keep their argv.
-    if any(solver is not None and not allowed.isdisjoint(prefix)
-           for _, allowed, _, solver in PROFILES.values()):
-        return False
-    return re.fullmatch(r"memcmp\.0:[1-9][0-9]*", tail[2]) is not None
-
-
-def main() -> int:
-    try:
-        if len(sys.argv) < 3:
-            raise ValueError("checked Kani options require package and selections")
-        options = expand_options(sys.argv[1], sys.argv[2:])
-        for option in options:
-            print(option)
-        return 0
-    except ValueError as error:
-        # Name the calling convention on every refusal. A helper that only says
-        # what it disliked leaves the caller guessing at the spelling, which is
-        # the same failure mode as accepting the wrong one.
-        print("usage: formal_kani_options.py PACKAGE SELECTION [SELECTION ...]", file=sys.stderr)
-        print(f"formal Kani options: {error}", file=sys.stderr)
-        return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        raise ValueError(f"unknown Kani profile {name!r}")
+    if profile.package is not None and profile.package != package:
+        raise ValueError(f"Kani profile {name} is bound to package {profile.package}, not {package}")
+    solver = ["--solver", profile.solver] if profile.solver is not None else []
+    if not profile.loops:
+        return [*solver, *selection]
+    return ["-Z", "unstable-options", *solver, *selection,
+            "--cbmc-args", "--unwindset", ",".join(f"{loop}:{bound}" for loop, bound in profile.loops)]

@@ -6,13 +6,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/MemoryCAS.tla",
-  "crates/resources/awaken-memory-store/src/repository.rs",
   "crates/resources/awaken-memory-store/src/sqlite.rs",
   "crates/resources/awaken-memory-store/src/postgres.rs",
   "crates/resources/awaken-memory-store/tests/conformance.rs",
-]
-proof_harnesses = [
-  "memory_conditional_delete_admission_is_exact",
 ]
 production_entrypoints = [
   "crates/resources/awaken-memory-store/src/repository.rs",

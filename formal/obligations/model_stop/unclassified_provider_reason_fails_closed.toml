@@ -2,12 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/runtime/awaken-provider-genai/src/stop_reason.rs",
-]
-proof_harnesses = [
-  "unclassified_provider_stop_reason_fails_closed",
-]
+evidence = []
 production_entrypoints = [
   "crates/runtime/awaken-provider-genai/src/stop_reason.rs",
 ]

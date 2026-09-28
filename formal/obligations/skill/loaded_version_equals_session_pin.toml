@@ -9,15 +9,11 @@ evidence = [
   "formal/tla/SkillVersionPin.tla",
   "formal/tla/SkillVersionPin.cfg",
   "docs/adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md",
-  "crates/contract/awaken-session-configuration-contract/src/skill_execution.rs",
   "crates/resources/awaken-resource-application/src/execution_sources.rs",
   "crates/resources/awaken-resource-worker-http/src/skill_bundle_transport.rs",
   "crates/resources/awaken-resource-worker-http/tests/skill_bundle_transport.rs",
   "crates/server/awaken-session-executor/src/skill_catalog.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "skill_execution_pin_requires_exact_workspace_revision_and_hash",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-configuration-contract/src/skill_execution.rs",

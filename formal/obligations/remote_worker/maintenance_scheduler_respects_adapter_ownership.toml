@@ -10,16 +10,12 @@ evidence = [
   "crates/server/awaken-coordinator-client/tests/dispatch_client.rs",
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
   "crates/server/awaken-dispatch/src/pool.rs",
-  "crates/server/awaken-dispatch/src/service.rs",
   "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
   "crates/server/awaken-dispatch/tests/pool_memory/maintenance_observations.rs",
   "crates/server/awaken-dispatch/tests/harness/maintenance.rs",
   "formal/runtime-refinement-manifest.json",
   "scripts/ci/render_runtime_refinement_traces.py",
   "scripts/ci/check-reliability.sh",
-]
-proof_harnesses = [
-  "maintenance_schedule_exists_only_for_the_owning_adapter",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",

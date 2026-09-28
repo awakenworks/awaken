@@ -315,6 +315,7 @@ mod root_observation_proofs {
     }
 
     #[cfg(kani)]
+    /// @obligation session_time.root_observations_are_revision_bound_and_replay_stable
     #[kani::proof]
     fn session_root_replacement_preserves_creation_and_monotonic_update_observations() {
         // Causes: C1 old/new creation identity (including None); C2 old update

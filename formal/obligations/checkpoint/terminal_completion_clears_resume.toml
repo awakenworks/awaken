@@ -7,16 +7,12 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/CheckpointRecovery.tla",
-  "crates/runtime/awaken-runtime/src/engine/inference.rs",
   "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
   "crates/runtime/awaken-runtime/src/engine/tests.rs",
   "crates/runtime/awaken-runtime/tests/checkpoint.rs",
   "crates/runtime/awaken-store-inmem/tests/inmem_units.rs",
   "crates/server/awaken-dispatch/tests/checkpoint_fence.rs",
   "crates/server/awaken-dispatch/tests/durable_postgres.rs",
-]
-proof_harnesses = [
-  "checkpoint_clear_requires_unvetoed_terminal_completion",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-runtime/src/engine/inference.rs",

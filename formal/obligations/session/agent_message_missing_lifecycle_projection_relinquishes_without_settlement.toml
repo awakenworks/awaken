@@ -11,10 +11,6 @@ evidence = [
   "crates/server/awaken-session-application/src/coordination.rs",
   "crates/server/awaken-dispatch/src/pool.rs",
   "crates/server/awaken-session-application/src/tests/authority.rs",
-  "crates/contract/awaken-session-execution-contract/src/coordination.rs",
-]
-proof_harnesses = [
-  "session_agent_boundary_requires_a_visible_committed_target",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/coordination.rs",

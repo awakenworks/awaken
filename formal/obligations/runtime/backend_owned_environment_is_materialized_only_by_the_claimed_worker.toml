@@ -3,13 +3,9 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/server/awaken-session-application/src/application.rs",
   "crates/server/awaken-session-executor/src/host/session/environment_realization.rs",
   "crates/server/awaken-session-executor/src/host/session/child_substrate.rs",
   "crates/server/awaken-session-executor/src/host/tests.rs",
-]
-proof_harnesses = [
-  "environment_owner_topology_is_exact_and_frozen",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/application.rs",

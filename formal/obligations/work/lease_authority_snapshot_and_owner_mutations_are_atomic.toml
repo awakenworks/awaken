@@ -14,10 +14,6 @@ evidence = [
   "crates/stores/awaken-work-store/src/schema.rs",
   "crates/stores/awaken-work-store/src/inmem/loom_tests.rs",
   "scripts/ci/check_formal.sh",
-  "crates/stores/awaken-work-store/src/mutation.rs",
-]
-proof_harnesses = [
-  "work_lease_authority_transition_is_complete_and_fenced",
 ]
 production_entrypoints = [
   "crates/stores/awaken-work-store/src/lease_book.rs",

@@ -8,7 +8,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/SessionRuntimeProjection.tla",
   "formal/tla/SessionRuntimeProjection.cfg",
-  "crates/server/awaken-protocol-managed/src/project.rs",
   "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
   "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
   "crates/server/awaken-protocol-managed/src/state/events/lifecycle_projection.rs",
@@ -18,13 +17,8 @@ evidence = [
   "web/src/lib/session-log.test.ts",
   "web/src/surfaces/session-detail.tsx",
   "web/src/surfaces/sessions.tsx",
-  "crates/server/awaken-protocol-managed/src/state/events/recovery/selection_tests.rs",
   "scripts/ci/check_formal.sh",
   "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
-]
-proof_harnesses = [
-  "managed_reply_anchor_selects_exact_fenced_commit",
-  "runtime_tool_projection_phase_is_total_distinct_and_fail_closed",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/project.rs",

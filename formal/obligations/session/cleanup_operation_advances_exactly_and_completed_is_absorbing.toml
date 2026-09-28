@@ -3,11 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-session-state-contract/src/terminal_cleanup.rs",
   "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-]
-proof_harnesses = [
-  "session_cleanup_phase_advances_only_not_requested_fenced_requested_completed",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/terminal_cleanup.rs",

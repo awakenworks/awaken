@@ -65,6 +65,7 @@ pub(crate) const fn acp_tool_export_admitted(
 }
 
 #[cfg(kani)]
+/// @obligation acp.tool_export_requires_claim_execution_environment
 #[kani::proof]
 fn acp_tool_export_requires_claim_execution_environment() {
     // Causes: C1 coordination/execution purpose; C2 ACP/native backend; C3 a
@@ -87,6 +88,8 @@ fn acp_tool_export_requires_claim_execution_environment() {
 }
 
 #[cfg(kani)]
+/// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
+/// @obligation session_run.reservation_never_executes
 #[kani::proof]
 fn runtime_environment_admission_is_total_and_coordination_never_borrows() {
     // Causes: C1 coordination/execution purpose; C2 a resident Environment;
@@ -145,6 +148,8 @@ pub(crate) const fn runtime_context_cache_reuse_admitted(
 }
 
 #[cfg(kani)]
+/// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
+/// @obligation session_run.reservation_never_executes
 #[kani::proof]
 fn coordination_envelope_never_satisfies_execution_cache_admission() {
     let cache_matches_attempt = kani::any::<bool>();

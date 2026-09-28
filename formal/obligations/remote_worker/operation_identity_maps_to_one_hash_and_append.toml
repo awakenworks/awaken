@@ -8,22 +8,15 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
   "crates/runtime/awaken-store-inmem/src/lib.rs",
   "crates/stores/awaken-store-fs/src/lib.rs",
   "crates/stores/awaken-store-sqlite/src/lib.rs",
   "crates/stores/awaken-store-postgres/src/lib.rs",
   "crates/stores/awaken-store-conformance/src/lib.rs",
   "crates/server/awaken-session-executor/src/commit_ingest.rs",
-  "crates/contract/awaken-agent-contract/src/fingerprint.rs",
   "scripts/ci/formal_kani_options.py",
   "scripts/ci/test_formal_profile.py",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "operation_identity_replays_only_the_same_run_and_payload",
-  "operation_append_requires_exact_prefix_and_nonwrapping_version",
-  "sha256_hex_output_preserves_every_digest_byte",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",

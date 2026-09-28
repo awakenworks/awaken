@@ -5,10 +5,6 @@ tcb_assumptions = []
 evidence = [
   "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/terminal_preparation.rs",
   "crates/server/awaken-session-executor/src/host/session/environment_lifecycle.rs",
-  "crates/server/awaken-session-application/src/application.rs",
-]
-proof_harnesses = [
-  "environment_owner_topology_is_exact_and_frozen",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/application.rs",

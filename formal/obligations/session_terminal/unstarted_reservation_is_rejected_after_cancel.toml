@@ -3,12 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/server/awaken-session-executor/src/host/run/quiescence.rs",
   "crates/server/awaken-session-executor/src/host/tests.rs",
   "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
-]
-proof_harnesses = [
-  "terminal_quiescence_rejects_only_unstarted_reservations",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/host/run/quiescence.rs",

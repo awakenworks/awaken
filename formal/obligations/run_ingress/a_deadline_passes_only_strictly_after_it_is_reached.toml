@@ -10,10 +10,6 @@ evidence = [
   "crates/server/awaken-dispatch/src/clock.rs",
   "crates/server/awaken-dispatch/src/dispatch.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/model.rs",
-]
-proof_harnesses = [
-  "a_deadline_passes_only_strictly_after_it_is_reached",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch.rs",

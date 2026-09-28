@@ -24,6 +24,7 @@ pub(crate) const fn merge_capability_evidence(
 }
 
 #[cfg(kani)]
+/// @obligation worker.acp_capability_is_detected_only_after_a_verified_handshake
 #[kani::proof]
 fn incompatible_capability_evidence_never_recovers_to_available() {
     let state = match kani::any::<u8>() % 3 {

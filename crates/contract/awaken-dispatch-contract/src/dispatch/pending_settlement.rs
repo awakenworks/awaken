@@ -148,6 +148,7 @@ mod pending_settlement_tests {
 }
 
 #[cfg(kani)]
+/// @obligation ingress.pending_input_exactly_once
 #[kani::proof]
 fn pending_settlement_plan_is_the_exact_dispatch_projection() {
     // C1-C4/E1-E3 from the native table: quantify every production Dispatch

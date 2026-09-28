@@ -182,6 +182,8 @@ const fn permission_effect_plan(project_call: bool) -> [PermissionEffect; 3] {
 }
 
 #[cfg(kani)]
+/// @obligation acp.boundary_preserves_permission_authority_and_effect_order
+/// @kani features=real-acp
 #[kani::proof]
 fn acp_permission_effect_plan_preserves_authority_order() {
     // Cause/effect decision table for the production-consumed local plan:
@@ -358,6 +360,8 @@ fn permission_ask(raw: &serde_json::Value, context: &PermissionContext) -> Permi
 }
 
 #[cfg(kani)]
+/// @obligation acp.permission_tool_identity_normalization_is_exact
+/// @kani features=real-acp
 #[kani::proof]
 fn acp_permission_tool_identity_normalization_is_exact() {
     let requested_value: u16 = kani::any();
@@ -450,6 +454,8 @@ const fn project_permission_option(
 }
 
 #[cfg(kani)]
+/// @obligation acp.permission_outcome_never_widens_resolved_authority
+/// @kani features=real-acp
 #[kani::proof]
 fn acp_permission_projection_is_total_exact_and_non_widening() {
     let verdict = crate::arbitrary_permission_consensus(kani::any(), kani::any());

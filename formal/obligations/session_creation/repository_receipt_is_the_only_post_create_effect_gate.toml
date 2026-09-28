@@ -3,12 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/server/awaken-session-application/src/creation.rs",
   "crates/server/awaken-protocol-managed/src/state/deployment_sessions.rs",
-]
-proof_harnesses = [
-  "only_an_applied_awaited_create_may_enter_post_create_effects",
-  "nonterminal_control_failures_only_replay_the_durable_create_root",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/creation.rs",

@@ -8,7 +8,6 @@ evidence = [
   "formal/tla/WorkQueueProof.tla",
   "formal/tla/SessionRunProtocol.tla",
   "formal/tla/SessionStartProtocol.tla",
-  "crates/contract/awaken-session-work-contract/src/lib.rs",
   "crates/stores/awaken-work-store/src/lib.rs",
   "crates/stores/awaken-work-store/src/inmem.rs",
   "crates/stores/awaken-work-store/tests/work_queue_conformance.rs",
@@ -18,9 +17,6 @@ evidence = [
   "formal/tla/WorkQueue.tla",
   "formal/tla/WorkQueue.cfg",
   "scripts/ci/check_formal_mutations.py",
-]
-proof_harnesses = [
-  "session_work_release_requires_exact_owner_and_epoch",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-work-contract/src/lib.rs",

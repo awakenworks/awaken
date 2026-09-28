@@ -3,12 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/control/awaken-control/src/authz/roles.rs",
   "crates/control/awaken-control/src/authz.rs",
   "crates/control/awaken-control/src/authz/migration_tests.rs",
-]
-proof_harnesses = [
-  "legacy_workspace_binding_migration_is_idempotent_and_authority_exact",
 ]
 production_entrypoints = [
   "crates/control/awaken-control/src/authz/roles.rs",

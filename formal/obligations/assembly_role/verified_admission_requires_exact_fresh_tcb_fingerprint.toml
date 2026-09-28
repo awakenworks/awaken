@@ -8,13 +8,9 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/VerifiedProfileAdmission.tla",
   "scripts/release/verification_manifest.py",
-  "crates/server/awaken-service-lifecycle/src/release_admission.rs",
   "crates/server/awaken-service-lifecycle/src/release_admission_main.rs",
   "scripts/ci/check_formal_mutations.py",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "verified_release_and_tcb_admission_are_total_exact_and_fail_closed",
 ]
 production_entrypoints = [
   "scripts/release/verification_manifest.py",

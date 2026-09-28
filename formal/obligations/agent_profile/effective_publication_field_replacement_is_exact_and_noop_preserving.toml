@@ -3,11 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-session-realization-contract/src/session_realization/agent_publication_projection.rs",
   "crates/server/awaken-session-application/src/tests/creation.rs",
-]
-proof_harnesses = [
-  "effective_publication_field_replacement_is_exact_and_noop_preserving",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-realization-contract/src/session_realization/agent_publication_projection.rs",

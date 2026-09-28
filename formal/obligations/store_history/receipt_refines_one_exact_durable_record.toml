@@ -7,18 +7,12 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/StoreHistory.tla",
   "formal/tla/StoreHistory.cfg",
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
   "crates/contract/awaken-dispatch-contract/src/claimed_commit.rs",
   "crates/stores/awaken-store-conformance/src/lib.rs",
   "crates/runtime/awaken-store-inmem/src/lib.rs",
   "crates/stores/awaken-store-fs/src/lib.rs",
   "crates/stores/awaken-store-sqlite/src/lib.rs",
   "crates/stores/awaken-store-postgres/src/lib.rs",
-]
-proof_harnesses = [
-  "operation_identity_replays_only_the_same_run_and_payload",
-  "operation_append_requires_exact_prefix_and_nonwrapping_version",
-  "applied_receipt_is_exact_and_names_one_successor_record",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",

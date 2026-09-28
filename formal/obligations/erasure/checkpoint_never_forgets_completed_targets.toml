@@ -9,14 +9,10 @@ evidence = [
   "crates/control/awaken-data-subject-application/src/lib.rs",
   "crates/stores/awaken-data-subject-store/src/sqlite.rs",
   "crates/stores/awaken-data-subject-store/src/postgres.rs",
-  "crates/control/awaken-data-subject-application/src/erasure_verification.rs",
   "crates/control/awaken-data-subject-application/src/tests.rs",
   "crates/stores/awaken-data-subject-store/tests/repo_conformance.rs",
   "formal/tla/ErasureSaga.cfg",
   "scripts/ci/check_formal_mutations.py",
-]
-proof_harnesses = [
-  "erasure_checkpoint_successor_preserves_all_completed_targets",
 ]
 production_entrypoints = [
   "crates/control/awaken-data-subject-application/src/lib.rs",

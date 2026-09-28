@@ -15,10 +15,6 @@ evidence = [
   "crates/server/awaken-dispatch/tests/harness/mod.rs",
   "crates/server/awaken-dispatch/tests/pool_memory.rs",
   "e2e/remote_attempt_lifecycle_e2e.ts",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/model.rs",
-]
-proof_harnesses = [
-  "lease_renewal_observation_preserves_claim_and_attempt_fences",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch.rs",

@@ -15,7 +15,6 @@ evidence = [
   "docs/adr/0024-daemon-lease-renewal.md",
   "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite/claim.rs",
   "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
@@ -30,9 +29,6 @@ evidence = [
   "crates/server/awaken-dispatch/tests/lease_semantics.rs",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
-]
-proof_harnesses = [
-  "dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",

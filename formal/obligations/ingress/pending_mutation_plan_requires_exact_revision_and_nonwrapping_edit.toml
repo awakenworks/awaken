@@ -6,15 +6,11 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "crates/server/awaken-dispatch/src/inbox_mutation.rs",
   "crates/server/awaken-dispatch/src/memory/inbox.rs",
   "crates/server/awaken-dispatch/src/sqlite/message_ports.rs",
   "crates/server/awaken-dispatch/src/postgres/message_ports.rs",
   "crates/server/awaken-dispatch/tests/harness/mod.rs",
   "crates/server/awaken-dispatch/tests/durable_postgres.rs",
-]
-proof_harnesses = [
-  "pending_input_mutation_plan_is_exact_revision_fenced_and_nonwrapping",
 ]
 production_entrypoints = [
   "crates/server/awaken-dispatch/src/inbox_mutation.rs",

@@ -1050,6 +1050,7 @@ mod workspace_proofs {
     }
 
     #[cfg(kani)]
+    /// @obligation credential.vault_workspace_authority_admission_is_exact_and_non_widening
     #[kani::proof]
     #[kani::unwind(4)]
     fn managed_credential_insert_checks_actual_workspace_and_parent() {
@@ -1114,6 +1115,7 @@ mod workspace_proofs {
 mod verification {
     use super::*;
 
+    /// @obligation credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
     #[kani::proof]
     fn injection_location_represents_exactly_the_three_usable_states() {
         let header = kani::any::<bool>();
@@ -1127,6 +1129,7 @@ mod verification {
         }
     }
 
+    /// @obligation credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
     #[kani::proof]
     fn injection_location_partial_update_is_exact_and_never_allows_both_disabled() {
         let current = match kani::any::<u8>() % 3 {
@@ -1149,6 +1152,7 @@ mod verification {
         }
     }
 
+    /// @obligation credential.vault_workspace_authority_admission_is_exact_and_non_widening
     #[kani::proof]
     fn managed_vault_workspace_admission_is_exact_and_non_widening() {
         // V1: proposed owner differs => deny regardless of durable owner.
@@ -1177,6 +1181,7 @@ mod verification {
         }
     }
 
+    /// @obligation credential.managed_vault_child_admission_requires_active_parent_capacity_and_unique_key
     #[kani::proof]
     fn managed_credential_insert_requires_every_aggregate_invariant() {
         let workspace_matches = kani::any();
@@ -1198,6 +1203,7 @@ mod verification {
         );
     }
 
+    /// @obligation credential.managed_vault_replacement_rejects_stale_and_non_successor_revisions
     #[kani::proof]
     fn managed_vault_replacement_requires_exact_revision_successor() {
         let stored_revision = kani::any();
@@ -1221,6 +1227,7 @@ mod verification {
         }
     }
 
+    /// @obligation credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
     #[kani::proof]
     fn managed_vault_delete_is_monotonic_identity_bound_and_absorbing() {
         let current = match kani::any::<u8>() % 3 {
@@ -1249,6 +1256,7 @@ mod verification {
         }
     }
 
+    /// @obligation credential.managed_mutation_requires_exact_source_and_child_successor_fences
     #[kani::proof]
     fn managed_credential_replacement_requires_both_fences_and_exact_successor() {
         let stored_revision = kani::any();
@@ -1274,6 +1282,7 @@ mod verification {
         );
     }
 
+    /// @obligation credential.managed_deleted_lifecycle_is_absorbing
     #[kani::proof]
     fn deleted_managed_credential_is_absorbing() {
         let after = if kani::any::<bool>() {

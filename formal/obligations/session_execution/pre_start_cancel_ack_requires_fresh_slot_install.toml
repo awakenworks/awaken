@@ -9,10 +9,6 @@ evidence = [
   "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
   "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
   "crates/server/awaken-dispatch/tests/lease_semantics.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/model.rs",
-]
-proof_harnesses = [
-  "pre_start_no_effect_ack_requires_fresh_install_admission",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch.rs",

@@ -11,7 +11,6 @@ evidence = [
   "formal/tla/RunIngress.cfg",
   "docs/adr/0010-idempotent-pending-consumption.md",
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/pending_settlement.rs",
   "crates/server/awaken-dispatch/src/worker.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/memory/settlement.rs",
@@ -22,9 +21,6 @@ evidence = [
   "crates/server/awaken-dispatch/tests/crash_before_settle.rs",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
-]
-proof_harnesses = [
-  "pending_settlement_plan_is_the_exact_dispatch_projection",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",

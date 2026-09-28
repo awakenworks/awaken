@@ -9,27 +9,17 @@ evidence = [
   "formal/tla/ResourceDispatch.tla",
   "formal/tla/ResourceDispatch.cfg",
   "crates/contract/awaken-worker-contract/src/requirements.rs",
-  "crates/contract/awaken-worker-contract/src/lib.rs",
   "crates/server/awaken-session-executor/src/host/placement.rs",
   "crates/bin/awaken-worker/src/manifest.rs",
   "crates/bin/awaken-worker/src/lib.rs",
   "crates/bin/awaken-worker/src/tests.rs",
-  "crates/server/awaken-session-executor/src/dispatch_session_runtime.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_dispatch.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
   "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
   "crates/server/awaken-session-executor/src/skill_catalog.rs",
-  "crates/contract/awaken-resource-contract/src/registry.rs",
   "crates/resources/awaken-resource-application/src/registry.rs",
-  "crates/contract/awaken-session-configuration-contract/src/skill_execution.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/tests.rs",
   "crates/server/awaken-session-executor/src/host/tests.rs",
-]
-proof_harnesses = [
-  "required_worker_capability_cannot_be_omitted",
-  "dispatched_resource_manifest_requires_exact_nonempty_scope",
-  "live_resource_binding_requires_exact_scope_active_state_and_existing_pin",
-  "skill_execution_pin_requires_exact_workspace_revision_and_hash",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/requirements.rs",
