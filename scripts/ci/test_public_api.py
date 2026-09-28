@@ -51,7 +51,10 @@ elif args == ["metadata", "--no-deps", "--format-version", "1"]:
     if os.environ.get("API_TEST_EMPTY_WORKSPACE"):
         print(json.dumps({"packages": []}))
         sys.exit(0)
-    print(json.dumps({"packages": [{"name": "fixture"}]}))
+    packages = [{"name": "fixture", "metadata": {"awaken": {"api_snapshot": True}}}]
+    if os.environ.get("API_TEST_UNSELECTED_MEMBER"):
+        packages.append({"name": "internal", "metadata": {"awaken": {}}})
+    print(json.dumps({"packages": packages}))
 else:
     assert args == ["+nightly-2026-07-14", "public-api", "-p", "fixture",
                     "--simplified", "--omit", "blanket-impls,auto-trait-impls,auto-derived-impls"], args
@@ -79,6 +82,23 @@ else:
     def seed(self, content):
         self.snapshot.parent.mkdir(exist_ok=True)
         self.snapshot.write_bytes(content)
+
+    def test_selection_is_positive_and_an_unselected_snapshot_is_an_orphan(self):
+        # S1 a member without api_snapshot is never computed (the fake cargo
+        # refuses any `-p` but the fixture) and the gate still passes on the
+        # selected one; S2 a snapshot file for an unselected member is an
+        # orphan and fails before anything is computed, in check and in bless.
+        self.seed(SURFACE)
+        result = self.invoke("--require-tools", API_TEST_UNSELECTED_MEMBER="1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        orphan = self.root / "public-api/internal.txt"
+        orphan.write_bytes(b"pub mod internal\n")
+        for arguments in (("--require-tools",), ("--bless", "--require-tools")):
+            with self.subTest(arguments=arguments):
+                result = self.invoke(*arguments, API_TEST_UNSELECTED_MEMBER="1")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("without a selecting crate", result.stderr)
+                self.assertTrue(orphan.exists(), "an orphan is reported, never deleted")
 
     def test_check_is_read_only_and_requires_a_comparable_reviewed_baseline(self):
         # Causes: C1 baseline exists; C2 computed surface matches; C3 generation
@@ -177,11 +197,13 @@ else:
         refuses emptiness rather than refusing success.
         """
 
-        self.seed(SURFACE)
+        # No snapshot is seeded for Z1: with an empty inventory a seeded file
+        # would be an orphan, which is refused earlier and for its own reason.
         empty = self.invoke("--require-tools", API_TEST_EMPTY_WORKSPACE="1")
         self.assertNotEqual(empty.returncode, 0, empty.stdout + empty.stderr)
         self.assertIn("compared 0 crates", empty.stderr)
         self.assertFalse((self.root / "computed").exists())
+        self.seed(SURFACE)
         populated = self.invoke("--require-tools")
         self.assertEqual(populated.returncode, 0, populated.stdout + populated.stderr)
         self.assertIn("1 crates compared", populated.stdout)

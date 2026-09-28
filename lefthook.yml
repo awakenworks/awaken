@@ -217,7 +217,9 @@ pre-commit:
       # >>> generated glob from check_contract_shape.py INPUT_GLOBS — do not edit
       glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_contract_shape.py,scripts/ci/contract_shape_baseline.json}"
       # <<< generated glob
-      run: python3 scripts/ci/check_contract_shape.py --self-test && python3 scripts/ci/check_contract_shape.py
+      # A fall is recorded here, by the tool, and staged with the commit that
+      # achieved it; only growth needs a person (--write-baseline --reason).
+      run: python3 scripts/ci/check_contract_shape.py --self-test && python3 scripts/ci/check_contract_shape.py --tighten --stage
 
     # Protocol/credential codec changes must exercise the existing cross-language
     # drift test even when no E2E file changed. Its decision table owns the

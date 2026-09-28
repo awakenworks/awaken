@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
+# Reviewed public API snapshot (public-api/awaken-mcp-wire.txt): the fuzz workspace links it from outside this workspace.
+api_snapshot = true
 context = "shared"
 layer = "infrastructure"
 authority = "mcp-wire"
