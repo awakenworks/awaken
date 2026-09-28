@@ -17,7 +17,7 @@ from _session_effect_fitness import _rust_function
 # registry, or a future edit that puts a bare Session id back beside the permit
 # and lets the driver run for a Session the permit does not name.
 REALIZATION_DRIVER_DEFINITION = (
-    "crates/server/awaken-session-application/src/session_realization_driver.rs"
+    "crates/server/awaken-session-realization-driver/src/session_realization_driver.rs"
 )
 REALIZATION_PERMIT_DEFINITION = (
     "crates/contract/awaken-session-realization-contract/src/session_realization/exclusion.rs"
@@ -42,11 +42,12 @@ REALIZATION_DRIVER_ENTRIES = {
         "self.local_realization_locks().acquire(session_id.as_str())"
     ),
 }
-# The driver lives in `awaken-session-application`: its owning crate reaches it
-# through `crate::`, every other crate through the package path. Both spellings
-# name the same single driver.
+# The driver lives in `awaken-session-realization-driver`, re-exported by
+# `awaken-session-application`: the application reaches it through `crate::`,
+# every other crate through either package path. Every spelling names the same
+# single driver.
 REALIZATION_DRIVER_CALL = re.compile(
-    r"\b(?:awaken_session_application|crate)::drive_session_realization\s*\("
+    r"\b(?:awaken_session_application|awaken_session_realization_driver|crate)::drive_session_realization\s*\("
 )
 # The co-located registry type has exactly one owner, one re-export and one
 # composition-root field; a second instance would be a second exclusion.
@@ -194,7 +195,7 @@ SessionRealizationPermit::acquire(session_id, || registry.entry(session_id.to_st
 """,
         "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/driver.rs": """
 let realization = host.session_slots.acquire_realization(session_id).await;
-awaken_session_application::drive_session_realization(realization, None)
+awaken_session_realization_driver::drive_session_realization(realization, None)
 """,
         "crates/server/awaken-session-application/src/realization.rs": """
 pub(crate) use local_lock::LocalRealizationLocks;

@@ -207,6 +207,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             "awaken-sandbox",
             std::time::Duration::ZERO,
             residency,
+            awaken_lease_contract::system_clock(),
         );
         let thread = "session-container";
         let host = Arc::new(crate::SharedHost::new(

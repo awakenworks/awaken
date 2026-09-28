@@ -1283,6 +1283,7 @@ impl WorkerNode {
             deployment.clone(),
             self.clock.clone(),
         )
+        .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes())
         .with_artifact_publisher(remote_artifacts)
         // Every execution topology installs the same Session MCP adapter.
         // Host permission grants and Environment-bound executors remain owners.

@@ -121,13 +121,18 @@ impl SkillCatalog {
 
     /// Builder: wire the durable delivered-skill catalog.
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn set_store(&mut self, store: Arc<dyn awaken_resource_contract::SkillStore>) {
-        self.bundle_source = Some(Arc::new(
-            awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
-        ));
-        self.application = Some(Arc::new(
-            awaken_resource_application::StoreSkillCatalogApplication::new(store.clone()),
-        ));
+    pub(crate) fn set_store(
+        &mut self,
+        store: Arc<dyn awaken_resource_contract::SkillStore>,
+        bundle_source: Arc<
+            dyn awaken_session_configuration_contract::SkillBundleSource<
+                    awaken_dispatch::ResourceOperationFence,
+                >,
+        >,
+        application: Arc<dyn SkillCatalogApplication>,
+    ) {
+        self.bundle_source = Some(bundle_source);
+        self.application = Some(application);
         self.test_store = Some(store);
     }
 
@@ -569,10 +574,25 @@ mod tests {
         );
     }
 
+    /// Install a Skill store through the Resources applications the Host
+    /// reads Skills with.
+    fn set_test_store(
+        catalog: &mut SkillCatalog,
+        store: Arc<dyn awaken_resource_contract::SkillStore>,
+    ) {
+        catalog.set_store(
+            store.clone(),
+            Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
+                store.clone(),
+            )),
+            Arc::new(awaken_resource_application::StoreSkillCatalogApplication::new(store)),
+        );
+    }
+
     #[tokio::test]
     async fn frozen_binding_keeps_v1_after_v2_and_is_workspace_scoped() {
         let mut catalog = SkillCatalog::new();
-        catalog.set_store(Arc::new(InMemorySkillStore::new()));
+        set_test_store(&mut catalog, Arc::new(InMemorySkillStore::new()));
         catalog
             .create(
                 SkillDefinition {
@@ -658,7 +678,7 @@ mod tests {
             "S9"
         );
 
-        catalog.set_store(Arc::new(InMemorySkillStore::new()));
+        set_test_store(&mut catalog, Arc::new(InMemorySkillStore::new()));
         catalog
             .create(
                 SkillDefinition {

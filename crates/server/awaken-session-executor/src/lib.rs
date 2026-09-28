@@ -33,6 +33,7 @@ pub struct PoolDrainFence {
 }
 
 mod authority;
+mod auxiliary_sandbox;
 mod background;
 mod background_task;
 mod cache_volume;
@@ -118,6 +119,8 @@ pub use crate::cache_volume::{
     CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
 };
 pub use crate::host::capability::ContainerEnvironmentComponents;
+#[cfg(any(test, feature = "test-support"))]
+pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts};
 pub use crate::host::{
     AttemptExecutorDecorator, DispatchPoolSizing, HostResume, RemoteAttemptInstallation,
     SharedHost, remote_worker_placement, self_hosted_inference_holder,

@@ -477,10 +477,7 @@ impl SharedHost {
         let epoch = LOCAL_ATTEMPT_EPOCH
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             .max(1);
-        let now_unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or_default();
+        let now_unix_ms = awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref());
         let mut bindings = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for candidate in &candidates {

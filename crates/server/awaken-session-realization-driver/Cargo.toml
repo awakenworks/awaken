@@ -1,0 +1,40 @@
+[package]
+name = "awaken-session-realization-driver"
+description = "The topology-neutral, stateless executors of the actions the Session aggregate projects for realization and terminal cleanup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+layer = "domain"
+authority = "session-realization"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-session-error-contract.workspace = true
+awaken-session-mcp-contract.workspace = true
+awaken-session-realization-contract.workspace = true
+awaken-session-resource-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-types.workspace = true
+serde_json.workspace = true
+
+[features]
+# The realization observation checkpoints scenario tests read.
+test-support = ["awaken-session-realization-contract/test-support"]
+
+[dev-dependencies]
+async-trait.workspace = true
+awaken-credential-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-session-application-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-session-realization-contract = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+
+[lints]
+workspace = true

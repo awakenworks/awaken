@@ -19,6 +19,15 @@ pub use container::{
     ContainerTierPolicy, build_container_environment_for_realization, package_image_provisioner,
 };
 
+/// The auxiliary-run sandboxes every process root installs on its Host
+/// (`SharedHost::with_auxiliary_sandboxes`): fresh Workdir roots under the
+/// process temp directory, one per auxiliary purpose.
+#[must_use]
+pub fn local_auxiliary_sandboxes()
+-> Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory> {
+    Arc::new(awaken_sandbox_local::LocalAuxiliarySandboxes::in_process_temp_dir())
+}
+
 /// Install the container-tier Session provider a container deployment names.
 ///
 /// A non-container tier, or a Host whose startup already installed its Session

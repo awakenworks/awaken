@@ -13,6 +13,8 @@ authority = "runtime-host"
 [dependencies]
 # The backend-erased container environment ports the Session owner holds.
 awaken-container-contract.workspace = true
+# The auxiliary-run sandbox ports the process composition injects.
+awaken-session-environment-contract.workspace = true
 # The neutral session substrate (SharedHost) and the two port adapters
 # (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
@@ -31,11 +33,10 @@ awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-session-work-contract.workspace = true
 awaken-environment-contract.workspace = true
-# The one topology-neutral terminal cleanup driver is Session application
-# orchestration over contract ports; local and remote Workers both call it.
-awaken-session-application.workspace = true
+# The topology-neutral Session realization and terminal-cleanup drivers over
+# contract ports; the Session application and this Host's Workers both call them.
+awaken-session-realization-driver.workspace = true
 awaken-resource-contract.workspace = true
-awaken-resource-application = { workspace = true, optional = true }
 awaken-runtime = { workspace = true }
 # Volatile commit/checkpoint reference adapters are available only to explicit
 # test/scenario deployments. Product builds do not link this backend.
@@ -50,20 +51,11 @@ awaken-ext-mcp = { workspace = true }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 awaken-ext-background-task.workspace = true
-# Resource implementations are available only to test-support fixture builders;
-# product Runtime Host consumes the contract traits injected by startup.
-awaken-memory-store = { workspace = true, optional = true }
-awaken-skill-store = { workspace = true, optional = true }
 awaken-sandbox-local = { workspace = true }
 awaken-sandbox-control.workspace = true
-# The content-addressed store the host serves files/artifacts from + adapts behind
-# the sandbox providers' BlobSource port (was re-exported via awaken-sandbox-local,
-# now a direct dependency since that worker-tier crate no longer links it).
-awaken-file-store = { workspace = true, optional = true }
 # The neutral sandbox vocabulary the sandboxed ACP channel source speaks
 # (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
 awaken-provisioning-contract = { workspace = true }
-awaken-session-store = { workspace = true, optional = true }
 awaken-tenancy = { workspace = true }
 awaken-dispatch = { workspace = true, default-features = false }
 awaken-dispatch-contract.workspace = true
@@ -71,7 +63,6 @@ awaken-worker-transport-security = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-connection-plan.workspace = true
 awaken-acp-contract = { workspace = true }
-awaken-credential-vault = { workspace = true, optional = true }
 awaken-credential-contract.workspace = true
 awaken-credential.workspace = true
 awaken-credential-materializer = { workspace = true }
@@ -108,19 +99,7 @@ default = []
 test-support = [
     "awaken-sandbox-local/test-support",
     "dep:awaken-store-inmem",
-    "dep:awaken-file-store",
-    "dep:awaken-memory-store",
-    "dep:awaken-skill-store",
-    "dep:awaken-session-store",
-    "dep:awaken-resource-application",
-    "dep:awaken-credential-vault",
-    "awaken-credential-materializer/authority",
-    "awaken-file-store/test-support",
-    "awaken-credential-vault/test-support",
-    "awaken-memory-store/sqlite",
-    "awaken-memory-store/test-support",
     "awaken-dispatch/test-support",
-    "awaken-session-store/test-support",
 ]
 # Live-backend tests only. The container tiers themselves are assembled by
 # `awaken-execution-composition`; these features enable a real backend in the

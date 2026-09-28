@@ -1,0 +1,30 @@
+[package]
+name = "awaken-runtime-host-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.awaken]
+context = "devtools"
+layer = "tooling"
+authority = "runtime-host"
+description = "Local Resources, Skill and Memory-extraction adapters handed to test and scenario Runtime Hosts behind their ports"
+
+[dependencies]
+awaken-session-executor = { workspace = true, features = ["test-support"] }
+awaken-runtime-contract.workspace = true
+awaken-resource-application.workspace = true
+awaken-resource-contract.workspace = true
+awaken-ext-memory.workspace = true
+awaken-lease-contract.workspace = true
+awaken-file-store = { workspace = true, features = ["test-support"] }
+awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"] }
+awaken-session-store = { workspace = true, features = ["test-support"] }
+
+[dev-dependencies]
+awaken-resource-persistence = { workspace = true, features = ["test-support"] }
+tempfile = "3"
+
+[lints]
+workspace = true

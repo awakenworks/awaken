@@ -227,8 +227,9 @@ pub(crate) fn resource_host_with_deployment(
     // resource application must preserve the caller's complete typed Deployment;
     // rebuilding through the convenience constructor here silently replaced an
     // explicit Local sandbox tier with the fail-closed Namespace default.
-    let extraction_repository =
-        SharedHost::test_memory_extraction_repository(deployment.storage_dir.as_deref());
+    let extraction_repository = awaken_runtime_host_testkit::memory_extraction_repository(
+        deployment.storage_dir.as_deref(),
+    );
     // A durable scenario root always carries its installation marker, even when
     // an explicit scenario Workspace overrides the coordinate below.
     let installation_workspace = installation_workspace(&deployment);
@@ -238,7 +239,7 @@ pub(crate) fn resource_host_with_deployment(
     let mut host = SharedHost::new_with_resources_and_deployment(
         llm,
         model_ref,
-        resources.authorities(),
+        awaken_runtime_host_testkit::local_resource_ports(&resources.authorities()),
         extraction_repository,
         scenario_workspace.unwrap_or(installation_workspace),
         deployment,
@@ -248,7 +249,8 @@ pub(crate) fn resource_host_with_deployment(
         resources.file_content_source(),
         resources.artifact_publisher(),
     )
-    .with_skill_bundle_source(resources.skill_bundle_source());
+    .with_skill_bundle_source(resources.skill_bundle_source())
+    .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
     if let Some(authority) = SCENARIO_RUNTIME_AUTHORITY.get() {
         host = host.with_runtime_authority(authority.clone());
     }

@@ -185,30 +185,45 @@ impl SharedHost {
         self
     }
 
-    /// Test/scenario shorthand for a filesystem Skill store.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_skill_store(mut self, dir: impl Into<PathBuf>) -> Self {
+    /// A filesystem Skill store for this crate's own unit tests. Other
+    /// compositions install their catalog through
+    /// [`Self::with_skill_store_ports`].
+    #[cfg(test)]
+    pub fn with_skill_store(self, dir: impl Into<PathBuf>) -> Self {
         let store = Arc::new(
             awaken_skill_store::FsSkillStore::open(dir.into())
                 .expect("open durable skill store root"),
         );
-        self.tools.skills.set_bundle_source(Arc::new(
-            awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
-        ));
-        self.tools.skills.set_store(store);
-        self
+        self.with_skill_store_backend(store)
     }
 
-    /// Test-support replacement of a volatile fixture's Skill store.
-    #[cfg(any(test, feature = "test-support"))]
+    /// A Skill store backend for this crate's own unit tests, adapted through
+    /// the Resources applications the Host reads Skills with.
+    #[cfg(test)]
     pub fn with_skill_store_backend(
-        mut self,
+        self,
         store: Arc<dyn awaken_resource_contract::SkillStore>,
     ) -> Self {
-        self.tools.skills.set_bundle_source(Arc::new(
-            awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
-        ));
-        self.tools.skills.set_store(store);
+        let ports = crate::LocalSkillPorts {
+            bundle_source: Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
+                store.clone(),
+            )),
+            application: Arc::new(
+                awaken_resource_application::StoreSkillCatalogApplication::new(store.clone()),
+            ),
+            store,
+        };
+        self.with_skill_store_ports(ports)
+    }
+
+    /// Test-support replacement of a volatile fixture's Skill catalog: the
+    /// store and the Resources applications over it, supplied by the
+    /// composition that owns them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_skill_store_ports(mut self, ports: crate::LocalSkillPorts) -> Self {
+        self.tools
+            .skills
+            .set_store(ports.store, ports.bundle_source, ports.application);
         self
     }
 

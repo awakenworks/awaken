@@ -32,6 +32,7 @@ awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
 # The pure timeline domain: the projection evidence value this application reads.
 awaken-managed-session-events.workspace = true
+awaken-session-realization-driver.workspace = true
 awaken-session-work-contract.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
@@ -44,7 +45,10 @@ tokio = { workspace = true, features = ["rt", "time"] }
 tracing = "0.1"
 
 [features]
-test-support = ["awaken-session-realization-contract/test-support"]
+test-support = [
+    "awaken-session-realization-contract/test-support",
+    "awaken-session-realization-driver/test-support",
+]
 
 [dev-dependencies]
 awaken-lease-testkit.workspace = true

@@ -1448,7 +1448,7 @@ mod tests {
                 .unwrap();
             let lifecycle = Arc::new(WorkerSupervisor {
                 authority: authority.clone(),
-                host: Arc::new(SharedHost::new(
+                host: Arc::new(awaken_runtime_host_testkit::volatile_host(
                     Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
                     "none",
                 )),

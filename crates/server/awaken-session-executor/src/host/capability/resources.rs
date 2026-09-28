@@ -13,32 +13,36 @@ pub(in crate::host) struct WorkerContentAdapters {
     pub(in crate::host) memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
 }
 
-/// Local Resource authorities a test/scenario composition hands to the Host
-/// as one unit.
-pub(in crate::host) struct LocalResourceAdapters {
-    pub(in crate::host) memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(in crate::host) file_store: Arc<dyn awaken_resource_contract::FileStore>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(in crate::host) file_catalog: Arc<dyn awaken_resource_contract::FileCatalog>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(in crate::host) skill_store: Arc<dyn awaken_resource_contract::SkillStore>,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(in crate::host) reclamation:
-        Arc<dyn awaken_resource_contract::ResourceReclamationRepository>,
+/// Local Resource authorities a test or scenario composition hands to the
+/// Host as one unit: the ports its Resources application exposes. Consumer:
+/// `SharedHost::new_with_resources*`; `awaken-runtime-host-testkit` builds it
+/// from a Resources application, which this crate no longer links.
+#[cfg(any(test, feature = "test-support"))]
+pub struct LocalResourcePorts {
+    pub memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+    pub file_store: Arc<dyn awaken_resource_contract::FileStore>,
+    pub file_catalog: Arc<dyn awaken_resource_contract::FileCatalog>,
+    /// The durable delivered-Skill catalog, when the composition has one.
+    pub skills: Option<LocalSkillPorts>,
+    /// Resource lifecycle/reference state, when the composition has one.
+    pub reclamation: Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>>,
+    /// The composition's clock, which also becomes the Host's process clock.
+    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
+/// The durable Skill catalog and the two Resources applications over it that
+/// the Host reads and freezes custom Skills through. Consumer:
+/// [`LocalResourcePorts`].
 #[cfg(any(test, feature = "test-support"))]
-impl From<awaken_resource_application::ResourceAuthorities> for LocalResourceAdapters {
-    fn from(authorities: awaken_resource_application::ResourceAuthorities) -> Self {
-        Self {
-            memory_repository: authorities.memory_repository(),
-            file_store: authorities.file_store(),
-            file_catalog: authorities.file_catalog(),
-            skill_store: authorities.skill_store(),
-            reclamation: authorities.reclamation(),
-        }
-    }
+#[derive(Clone)]
+pub struct LocalSkillPorts {
+    pub store: Arc<dyn awaken_resource_contract::SkillStore>,
+    pub bundle_source: Arc<
+        dyn awaken_session_configuration_contract::SkillBundleSource<
+                awaken_dispatch::ResourceOperationFence,
+            >,
+    >,
+    pub application: Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>,
 }
 
 /// The Resource inputs of one Host construction, selected together so
@@ -46,7 +50,8 @@ impl From<awaken_resource_application::ResourceAuthorities> for LocalResourceAda
 /// `SharedHost::build`.
 pub(in crate::host) struct ResourceInputs {
     /// Local authorities of a test/scenario composition.
-    pub(in crate::host) local: Option<LocalResourceAdapters>,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(in crate::host) local: Option<LocalResourcePorts>,
     /// Remote content adapters of a Worker or Coordinator-local Host.
     pub(in crate::host) worker_content: Option<WorkerContentAdapters>,
     /// Explicit Memory extraction authority.
@@ -107,27 +112,35 @@ impl ResourcePorts {
         inputs: ResourceInputs,
         store_dir: Option<&std::path::Path>,
         clock: &Arc<dyn awaken_lease_contract::WallClock>,
+        memory_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     ) -> Self {
         let ResourceInputs {
-            local: resources,
+            #[cfg(any(test, feature = "test-support"))]
+                local: resources,
             worker_content,
             extraction_repository,
         } = inputs;
         #[cfg(not(test))]
-        let _ = clock;
-        #[cfg(not(any(test, feature = "test-support")))]
         let _ = store_dir;
+        #[cfg(any(test, feature = "test-support"))]
+        let local_memory = resources
+            .as_ref()
+            .map(|plane| plane.memory_repository.clone());
+        #[cfg(not(any(test, feature = "test-support")))]
+        let local_memory: Option<Arc<dyn awaken_resource_contract::MemoryRepository>> = None;
         let memory_stores = if let Some(content) = &worker_content {
             crate::memory_stores::MemoryStores::with_repository(content.memory_repository.clone())
-        } else if let Some(plane) = &resources {
-            crate::memory_stores::MemoryStores::with_repository(plane.memory_repository.clone())
+        } else if let Some(repository) = local_memory {
+            crate::memory_stores::MemoryStores::with_repository(repository)
         } else {
-            #[cfg(any(test, feature = "test-support"))]
+            // Only the Host's own unit tests construct without a Resource
+            // component; every other composition injects one.
+            #[cfg(test)]
             {
                 crate::memory_stores::MemoryStores::open(store_dir)
             }
-            #[cfg(not(any(test, feature = "test-support")))]
-            unreachable!("product Host construction requires explicit Resource authorities")
+            #[cfg(not(test))]
+            unreachable!("Host construction requires explicit Resource authorities")
         };
         let extraction_repository = match extraction_repository {
             Some(repository) => repository,
@@ -136,21 +149,20 @@ impl ResourcePorts {
                     as Arc<dyn awaken_ext_memory::MemoryExtractionRepository>
             }
             None => {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(test)]
                 {
                     local_memory_extraction_repository(store_dir)
                 }
-                #[cfg(not(any(test, feature = "test-support")))]
-                unreachable!(
-                    "product Host construction requires an explicit Memory extraction repository"
-                )
+                #[cfg(not(test))]
+                unreachable!("Host construction requires an explicit Memory extraction repository")
             }
         };
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),
-            Arc::new(LocalProvider::new(sub_base("mem"))),
+            memory_sandboxes,
             Arc::new(BackgroundRuns::new()),
             extraction_repository,
+            clock.clone(),
         ));
         #[cfg(any(test, feature = "test-support"))]
         let (file_store, file_catalog) = if worker_content.is_some() {
@@ -166,7 +178,7 @@ impl ResourcePorts {
                         "product Host construction requires an injected Resource component"
                     ),
                     None => {
-                        #[cfg(any(test, feature = "test-support"))]
+                        #[cfg(test)]
                         {
                             let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
                             (
@@ -174,17 +186,17 @@ impl ResourcePorts {
                                 files as Arc<dyn awaken_resource_contract::FileCatalog>,
                             )
                         }
-                        #[cfg(not(any(test, feature = "test-support")))]
-                        unreachable!(
-                            "product Host construction requires an explicit Resource component"
-                        )
+                        #[cfg(not(test))]
+                        unreachable!("Host construction requires an explicit Resource component")
                     }
                 },
                 |plane| (plane.file_store.clone(), plane.file_catalog.clone()),
             )
         };
         #[cfg(any(test, feature = "test-support"))]
-        let resource_reclamation = resources.as_ref().map(|plane| plane.reclamation.clone());
+        let resource_reclamation = resources
+            .as_ref()
+            .and_then(|plane| plane.reclamation.clone());
         #[cfg(test)]
         let resource_reclamation =
             resource_reclamation.or_else(|| Some(crate::host::tests::test_resource_reclamation()));
@@ -254,10 +266,10 @@ impl ResourcePorts {
 }
 
 impl SharedHost {
-    /// Test-support selection of the same local extraction repository used by
-    /// volatile/local host fixtures. Product startup injects its role-owned
-    /// repository directly into the production constructor.
-    #[cfg(any(test, feature = "test-support"))]
+    /// The local extraction repository the Host's own volatile/local unit
+    /// fixtures use. Other compositions obtain theirs from
+    /// `awaken-runtime-host-testkit` or inject a role-owned one.
+    #[cfg(test)]
     pub fn test_memory_extraction_repository(
         storage_dir: Option<&std::path::Path>,
     ) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
@@ -367,7 +379,7 @@ impl SharedHost {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn local_memory_extraction_repository(
     storage_dir: Option<&std::path::Path>,
 ) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {

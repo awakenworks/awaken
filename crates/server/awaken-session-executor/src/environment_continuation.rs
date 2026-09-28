@@ -112,7 +112,9 @@ impl ManagedHost {
             .sandbox_effect_fence()
             .map_err(|error| RunError::internal(error.to_string()))?;
         effect_fence
-            .validate_live_at(crate::terminal_repository_publication::runtime_unix_now_ms())
+            .validate_live_at(awaken_lease_contract::WallClockExt::now_ms(
+                self.host.clock.as_ref(),
+            ))
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         Ok(effect_fence)
     }
@@ -136,7 +138,9 @@ impl ManagedHost {
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         provider_authorization
             .effect_fence()
-            .validate_live_at(crate::terminal_repository_publication::runtime_unix_now_ms())
+            .validate_live_at(awaken_lease_contract::WallClockExt::now_ms(
+                self.host.clock.as_ref(),
+            ))
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         Ok(provider_authorization)
     }
