@@ -21,9 +21,8 @@ async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
             &spec,
             crate::session_environment::ProviderEffect::Unattached,
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Rebuild {
-                source_incarnation: "source".into(),
-                source_runtime_handle: None,
+            awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+                source: Box::new(pc::SandboxHandle::new("container", "source")),
             },
         )
         .await;
@@ -37,7 +36,7 @@ async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
             &spec,
             crate::session_environment::ProviderEffect::Unattached,
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .expect("U2");
@@ -66,7 +65,7 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
             &spec,
             crate::session_environment::ProviderEffect::Unattached,
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .unwrap();
@@ -130,8 +129,8 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
     let handle = current_fake_container_handle(&spec);
     let fence = pc::SandboxEffectFence::new("observe", "owner", "boot", 1, u64::MAX).unwrap();
     for purpose in [
-        awaken_sandbox_container::ContainerObservationPurpose::Recovery,
-        awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup,
+        awaken_container_contract::ContainerObservationPurpose::Recovery,
+        awaken_container_contract::ContainerObservationPurpose::TerminalCleanup,
     ] {
         assert_eq!(
             provider
@@ -165,7 +164,7 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
                     spec: &spec,
                     effect_fence: &fence,
                 },
-                awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup
+                awaken_container_contract::ContainerObservationPurpose::TerminalCleanup
             )
             .await
             .is_err()

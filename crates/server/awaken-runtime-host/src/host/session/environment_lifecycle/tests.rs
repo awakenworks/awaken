@@ -42,7 +42,7 @@ async fn environment(
                     ),
                 },
                 None,
-                awaken_sandbox_container::ContainerRealizationIntent::Create,
+                awaken_container_contract::EnvironmentRealizationIntent::Create,
             )
             .await
             .expect("test Environment"),

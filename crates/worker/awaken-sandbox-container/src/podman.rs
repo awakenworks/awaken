@@ -34,7 +34,7 @@ use crate::runtime::{
     sandbox_observation,
 };
 use crate::{
-    ContainerCreateAttempt, ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
+    ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
     PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeAgentProcess,
     RuntimeError, RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
@@ -806,7 +806,7 @@ impl ContainerRuntime for PodmanRuntime {
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
         let fingerprint = legacy_unfenced_fingerprint(id);
-        let attempt = ContainerCreateAttempt::fresh();
+        let attempt = crate::fresh_create_attempt();
         let intent = ContainerRealizationIntent::Create;
         let context = ContainerRealizationContext::new(id, &fingerprint, None, &intent, &attempt);
         self.create_for_effect(&context, plan, &fingerprint).await

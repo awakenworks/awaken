@@ -1144,13 +1144,13 @@ async fn reverse_channels_are_safe_noops_without_a_live_session() {
 }
 
 struct BatchArtifactContainerProvider {
-    files: Vec<awaken_sandbox_container::EnvironmentFile>,
+    files: Vec<awaken_container_contract::EnvironmentFile>,
     scans: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 struct BatchArtifactContainer {
     handle: pc::SandboxHandle,
-    files: Vec<awaken_sandbox_container::EnvironmentFile>,
+    files: Vec<awaken_container_contract::EnvironmentFile>,
     scans: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -1177,15 +1177,32 @@ fn batch_artifact_container_handle(spec: &pc::SandboxSpec) -> pc::SandboxHandle 
 }
 
 #[async_trait::async_trait]
-impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactContainerProvider {
+impl awaken_container_contract::ContainerEnvironmentProvider for BatchArtifactContainerProvider {
+    fn adoption_layout(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        awaken_container_contract::ContainerAdoptionLayout,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_sandbox_container::container_adoption_layout(handle)
+    }
+
+    fn physical_incarnation(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::container_physical_incarnation(handle)
+    }
+
     async fn create_environment_for_effect(
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-        _intent: awaken_sandbox_container::ContainerRealizationIntent,
+        _intent: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<
-        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -1194,7 +1211,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactCon
     }
     async fn observe_environment(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
         _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
     ) -> Result<
         awaken_provisioning_contract::SandboxObservation,
@@ -1206,11 +1223,11 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactCon
     }
     async fn adopt_environment_for_effect(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+        _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     ) -> Result<
-        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -1221,11 +1238,11 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactCon
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
         _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-        _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
-        _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+        _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     ) -> Result<
-        Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        Option<std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -1257,7 +1274,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactCon
     async fn create_unattached_environment(
         &self,
         spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
         Ok(Arc::new(BatchArtifactContainer {
             handle: batch_artifact_container_handle(spec),
             files: self.files.clone(),
@@ -1267,8 +1284,8 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactCon
 
     async fn adopt_unattached_environment(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+        _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
         Err(pc::SandboxError::unsupported(
             "batch Artifact fixture never adopts an Environment",
         ))
@@ -1276,11 +1293,53 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for BatchArtifactCon
 }
 
 #[async_trait::async_trait]
-impl awaken_sandbox_container::ContainerEnvironment for BatchArtifactContainer {
+impl awaken_container_contract::ContainerEnvironment for BatchArtifactContainer {
+    async fn checkpoint_upload(
+        &self,
+        _access: awaken_container_contract::ContainerCheckpointAccess<'_>,
+        _mutation: awaken_container_contract::ContainerCheckpointMutation<'_>,
+    ) -> Result<
+        Option<awaken_provisioning_contract::SandboxCheckpointUpload>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test container environment does not implement a fenced checkpoint participant",
+        ))
+    }
+
+    async fn remove_live_input_path(
+        &self,
+        _path: &str,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "late mount removal is unsupported on this test container",
+        ))
+    }
+
+    fn record_owned_path(
+        &self,
+        _path: &str,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test container environment does not support durable owned-path evidence",
+        ))
+    }
+
+    async fn open_agent_channel(
+        &self,
+    ) -> Result<
+        Box<dyn awaken_agent_channel::AgentChannel>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test container environment does not expose a resident agent channel",
+        ))
+    }
+
     async fn spawn_agent_process(
         &self,
         _command: pc::Command,
-    ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
+    ) -> Result<awaken_container_contract::RuntimeAgentProcess, pc::SandboxError> {
         Err(pc::SandboxError::unsupported(
             "batch Artifact fixture never spawns an Agent",
         ))
@@ -1289,7 +1348,7 @@ impl awaken_sandbox_container::ContainerEnvironment for BatchArtifactContainer {
     async fn read_files(
         &self,
         root: &str,
-    ) -> Result<Vec<awaken_sandbox_container::EnvironmentFile>, pc::SandboxError> {
+    ) -> Result<Vec<awaken_container_contract::EnvironmentFile>, pc::SandboxError> {
         assert_eq!(root, "/outputs", "B1/C1 canonical output root");
         self.scans.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.files.clone())
@@ -1425,15 +1484,15 @@ async fn live_container_artifact_harvest_reads_one_complete_batch() {
     // Files/ArtifactPublisher remains the sole durable output authority.
     let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let files = vec![
-        awaken_sandbox_container::EnvironmentFile {
+        awaken_container_contract::EnvironmentFile {
             path: "a.txt".into(),
             bytes: b"alpha".to_vec(),
         },
-        awaken_sandbox_container::EnvironmentFile {
+        awaken_container_contract::EnvironmentFile {
             path: "nested/b.bin".into(),
             bytes: vec![0, 0xff],
         },
-        awaken_sandbox_container::EnvironmentFile {
+        awaken_container_contract::EnvironmentFile {
             path: "c.json".into(),
             bytes: br#"{"ok":true}"#.to_vec(),
         },
@@ -1848,7 +1907,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
     // before output or catalog I/O; it never broadens non-terminal authority.
     let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let provider = Arc::new(BatchArtifactContainerProvider {
-        files: vec![awaken_sandbox_container::EnvironmentFile {
+        files: vec![awaken_container_contract::EnvironmentFile {
             path: "must-not-be-read.txt".into(),
             bytes: b"already durable".to_vec(),
         }],
@@ -2549,11 +2608,11 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
         let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let provider = Arc::new(BatchArtifactContainerProvider {
             files: vec![
-                awaken_sandbox_container::EnvironmentFile {
+                awaken_container_contract::EnvironmentFile {
                     path: "a.txt".into(),
                     bytes: b"a".to_vec(),
                 },
-                awaken_sandbox_container::EnvironmentFile {
+                awaken_container_contract::EnvironmentFile {
                     path: "b.txt".into(),
                     bytes: b"b".to_vec(),
                 },

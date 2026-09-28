@@ -159,6 +159,7 @@ awaken-config-store = { path = "crates/control/awaken-config-store" }
 awaken-config-service = { path = "crates/control/awaken-config-service" }
 awaken-credential-materializer = { path = "crates/server/awaken-credential-materializer", default-features = false }
 awaken-provisioning-contract = { path = "crates/contract/awaken-provisioning-contract" }
+awaken-container-contract = { path = "crates/contract/awaken-container-contract" }
 awaken-local-process = { path = "crates/worker/awaken-local-process" }
 awaken-sandbox-fs = { path = "crates/worker/awaken-sandbox-fs" }
 awaken-installation-workspace = { path = "crates/worker/awaken-installation-workspace" }

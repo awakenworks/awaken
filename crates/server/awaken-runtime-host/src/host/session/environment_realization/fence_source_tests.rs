@@ -395,7 +395,24 @@ struct ProjectionProbe {
 }
 
 #[async_trait::async_trait]
-impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe {
+impl awaken_container_contract::ContainerEnvironmentProvider for ProjectionProbe {
+    fn adoption_layout(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        awaken_container_contract::ContainerAdoptionLayout,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_sandbox_container::container_adoption_layout(handle)
+    }
+
+    fn physical_incarnation(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::container_physical_incarnation(handle)
+    }
+
     fn sandbox_capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
         awaken_provisioning_contract::SandboxCapabilities {
             isolation: awaken_provisioning_contract::IsolationClass::Container,
@@ -413,7 +430,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
         &self,
         _: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<
-        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        Arc<dyn awaken_container_contract::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         // An unattached creation has no authority source to forward: the
@@ -427,9 +444,9 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
 
     async fn adopt_unattached_environment(
         &self,
-        _: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
     ) -> Result<
-        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        Arc<dyn awaken_container_contract::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         panic!("creation must not adopt")
@@ -437,7 +454,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
 
     async fn observe_environment(
         &self,
-        _: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
         basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
     ) -> Result<
         awaken_provisioning_contract::SandboxObservation,
@@ -458,11 +475,11 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
 
     async fn adopt_environment_for_effect(
         &self,
-        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
         fence: &SandboxEffectFence,
         source: &dyn CurrentExecutionAuthority,
     ) -> Result<
-        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        Arc<dyn awaken_container_contract::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         // Same projection recorder for both provider entrances, no mock lease.
@@ -470,7 +487,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
             adoption.spec,
             fence,
             source,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
     }
@@ -480,9 +497,9 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
         _: &awaken_provisioning_contract::SandboxSpec,
         fence: &SandboxEffectFence,
         source: &dyn CurrentExecutionAuthority,
-        _: awaken_sandbox_container::ContainerRealizationIntent,
+        _: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<
-        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        Arc<dyn awaken_container_contract::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         self.boundary.pause().await;
@@ -502,7 +519,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
         _: &SandboxEffectFence,
         _: &dyn CurrentExecutionAuthority,
     ) -> Result<
-        Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        Option<Arc<dyn awaken_container_contract::ContainerEnvironment>>,
         awaken_provisioning_contract::SandboxError,
     > {
         panic!("creation must not prepare terminal cleanup")
@@ -683,7 +700,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
                 .as_ref()
                 .map(|source| source as &dyn CurrentExecutionAuthority),
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         );
         let transition = async {
             if rule == "initial_closed" {

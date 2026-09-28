@@ -13,6 +13,8 @@ layer = "infrastructure"
 authority = "sandbox-container"
 
 [dependencies]
+# The backend-erased container ports this provider implements.
+awaken-container-contract.workspace = true
 awaken-lease-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-outbound-http = { workspace = true, optional = true }

@@ -273,7 +273,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // explicitly unattached creation continues through this same path.
         let admit = || effect.admit();
         admit()?;
-        let create_attempt = ContainerCreateAttempt::fresh();
+        let create_attempt = crate::fresh_create_attempt();
         // Fail closed against our capabilities before touching the runtime.
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
             .map_err(pc::SandboxError::from)?;
@@ -1199,13 +1199,25 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         Ok(Arc::new(self.create_container(spec).await?))
     }
 
+    fn adoption_layout(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<awaken_container_contract::ContainerAdoptionLayout, pc::SandboxError> {
+        crate::container_adoption_layout(handle)
+    }
+
+    fn physical_incarnation(&self, handle: &pc::SandboxHandle) -> Result<String, pc::SandboxError> {
+        crate::container_physical_incarnation(handle)
+    }
+
     async fn create_environment_for_effect(
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: &ContainerEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
-        intent: ContainerRealizationIntent,
+        intent: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
+        let intent = ContainerRealizationIntent::from_environment(intent)?;
         Ok(Arc::new(
             self.create_container_for_effect(
                 spec,

@@ -4,7 +4,6 @@
 //! Backend-erased contracts for Session-owned container environments.
 
 use crate::ContainerHandleCodec as _;
-use std::sync::Arc;
 
 /// Source-compatible container name for the provider-neutral effect fence.
 /// The contract crate is the sole field/validation authority.
@@ -53,12 +52,15 @@ impl PreparedContainer {
     }
 }
 
-use async_trait::async_trait;
-use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_control::SandboxControlServicePublisher;
-
-use crate::RuntimeAgentProcess;
+// The backend-erased port family lives in the provisioning contract; the
+// provider re-exports it under its historical paths.
+pub use awaken_container_contract::{
+    ContainerCreateAttempt, ContainerEnvironment, ContainerEnvironmentAdoption,
+    ContainerEnvironmentProvider, ContainerObservationPurpose, EnvironmentFile,
+    EnvironmentRealizationIntent, RestorableContainerEnvironmentProvider,
+    RestoreTargetContainerEnvironmentProvider, restore_ladder_is_consistent,
+};
 
 /// Stable namespace used to discover a provider effect after a Worker process
 /// replacement. Construction is centralized here so adapters cannot disagree
@@ -153,6 +155,22 @@ pub enum ContainerRealizationIntent {
 }
 
 impl ContainerRealizationIntent {
+    /// Interpret the backend-erased intent a Session owner sends: a rebuild's
+    /// source handle is decoded by this provider's own codec into the exact
+    /// physical incarnation and runtime continuation evidence it replaces. A
+    /// handle this codec cannot read fails closed before any backend effect.
+    pub fn from_environment(
+        intent: EnvironmentRealizationIntent,
+    ) -> Result<Self, pc::SandboxError> {
+        match intent {
+            EnvironmentRealizationIntent::Create => Ok(Self::Create),
+            EnvironmentRealizationIntent::Rebuild { source } => Ok(Self::Rebuild {
+                source_incarnation: source.container_physical_incarnation()?,
+                source_runtime_handle: source.container_payload()?.runtime_handle,
+            }),
+        }
+    }
+
     #[must_use]
     pub fn source_incarnation(&self) -> Option<&str> {
         match self {
@@ -172,24 +190,6 @@ impl ContainerRealizationIntent {
                 ..
             } => source_runtime_handle.as_ref(),
         }
-    }
-}
-
-/// Ephemeral lifecycle witness for one in-process create attempt. It is stamped
-/// on the backend object only to distinguish response loss in this call (whose
-/// host staging and Memory handles are still alive) from a prior process/call
-/// that must be recreated. It is never a durable identity or deletion fence.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContainerCreateAttempt(pub(crate) String);
-
-impl ContainerCreateAttempt {
-    pub(crate) fn fresh() -> Self {
-        Self(crate::runtime_owner_id())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
     }
 }
 
@@ -277,8 +277,8 @@ mod realization_context_tests {
         let fence =
             ContainerEffectFence::new("operation-a", "owner-a", "runtime-a", 1, u64::MAX).unwrap();
         let intent = ContainerRealizationIntent::Create;
-        let attempt = ContainerCreateAttempt("attempt-a".into());
-        let recovery_attempt = ContainerCreateAttempt("attempt-recovery".into());
+        let attempt = ContainerCreateAttempt::new("attempt-a");
+        let recovery_attempt = ContainerCreateAttempt::new("attempt-recovery");
 
         let context = ContainerRealizationContext::new(
             &spec.scope,
@@ -301,134 +301,6 @@ mod realization_context_tests {
             "Q2 adoption"
         );
     }
-}
-
-/// Object-safe live container environment owned by one Session.
-#[async_trait]
-pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
-    /// Exact, retained process containment from the owning runtime. Absence is
-    /// unsupported containment, not absence of effects. The tool owner persists
-    /// this opaque reference before invoking an executable.
-    async fn owned_process_binding(&self) -> Result<Option<String>, pc::SandboxError> {
-        Ok(None)
-    }
-    /// Persist/replay the exact upload within this provider's physical owner.
-    /// Does not capture bytes, upload objects, dispose, or commit Session state.
-    async fn checkpoint_upload(
-        &self,
-        _access: crate::ContainerCheckpointAccess<'_>,
-        _mutation: crate::ContainerCheckpointMutation<'_>,
-    ) -> Result<Option<pc::SandboxCheckpointUpload>, pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "container environment does not implement a fenced checkpoint participant",
-        ))
-    }
-
-    /// Borrowed proof that the creating wrapper still owns its local participants.
-    /// Never serialized in a SandboxHandle or reconstructed after process loss.
-    fn retained_create_attempt(&self) -> Option<&ContainerCreateAttempt> {
-        None
-    }
-
-    fn outputs_path(&self) -> &str {
-        "/outputs"
-    }
-
-    fn is_recovered(&self) -> bool {
-        false
-    }
-
-    fn supports_live_mount_replacement(
-        &self,
-        _previous: &[pc::MountRequirement],
-        _next: &[pc::MountRequirement],
-    ) -> bool {
-        false
-    }
-
-    async fn remove_live_input_path(&self, _path: &str) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "late mount removal is unsupported on this container tier",
-        ))
-    }
-
-    /// Record one successfully materialized sandbox-visible tree in the
-    /// provider's current V2 durable-handle evidence.
-    fn record_owned_path(&self, _path: &str) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "container environment does not support durable owned-path evidence",
-        ))
-    }
-
-    async fn spawn_agent_process(
-        &self,
-        command: pc::Command,
-    ) -> Result<RuntimeAgentProcess, pc::SandboxError>;
-
-    async fn open_agent_channel(&self) -> Result<Box<dyn AgentChannel>, pc::SandboxError> {
-        Err(pc::SandboxError::unsupported(
-            "container environment does not expose a resident agent channel",
-        ))
-    }
-
-    async fn read_files(&self, root: &str) -> Result<Vec<EnvironmentFile>, pc::SandboxError>;
-}
-
-/// One file harvested from a live container environment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EnvironmentFile {
-    pub path: String,
-    pub bytes: Vec<u8>,
-}
-
-/// Canonical inputs required to reattach one existing container environment.
-///
-/// The durable handle identifies the runtime object; the frozen Sandbox
-/// specification remains the authority for security-sensitive mount and
-/// writable-root policy. Keeping both inputs in one typed request prevents
-/// adapters from reconstructing policy from an intentionally minimal handle.
-#[derive(Debug, Clone, Copy)]
-pub struct ContainerEnvironmentAdoption<'a> {
-    pub spec: &'a pc::SandboxSpec,
-    pub handle: &'a pc::SandboxHandle,
-    pub retained_attempt: Option<&'a ContainerCreateAttempt>,
-    /// Observation semantics only; never authorizes adoption or deletion.
-    pub observation_purpose: ContainerObservationPurpose,
-}
-
-impl<'a> ContainerEnvironmentAdoption<'a> {
-    /// The observation basis for revalidating this adoption at an
-    /// aggregate-authorized effect boundary: its own effective spec and `fence`.
-    #[must_use]
-    pub const fn effect_basis(
-        &self,
-        effect_fence: &'a pc::SandboxEffectFence,
-    ) -> pc::SandboxObservationBasis<'a> {
-        pc::SandboxObservationBasis::Effect {
-            spec: self.spec,
-            effect_fence,
-        }
-    }
-
-    #[must_use]
-    pub const fn new(spec: &'a pc::SandboxSpec, handle: &'a pc::SandboxHandle) -> Self {
-        Self {
-            spec,
-            handle,
-            retained_attempt: None,
-            observation_purpose: ContainerObservationPurpose::Recovery,
-        }
-    }
-}
-
-/// What absence must establish for the caller. Recovery may retain durable
-/// continuation bytes; terminal cleanup must never acknowledge those bytes as
-/// gone merely because their execution process disappeared. Neither purpose
-/// authorizes a mutation or substitutes for the aggregate effect fence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContainerObservationPurpose {
-    Recovery,
-    TerminalCleanup,
 }
 
 /// Complete durable evidence presented to one runtime's effect-free observer.
@@ -531,157 +403,4 @@ impl<'a> ContainerEffect<'a> {
             }
         }
     }
-}
-
-/// Backend-erased provider for Session-owned container environments.
-///
-/// This is the container projection of [`pc::SandboxProvider`]: the same
-/// ownership split (an unattached environment versus one owned by an aggregate
-/// effect), the same typed observation basis, and the same required terminal
-/// obligation. It differs only where containers genuinely differ: environments
-/// are shared `Arc<dyn ContainerEnvironment>` values carrying create-attempt and
-/// checkpoint-upload participants, adoption carries retained attempt evidence,
-/// and the Memory mounter and Secret broker are installed after composition.
-/// There is no `Option` fence: an unfenced path is a separately named method.
-#[async_trait]
-pub trait ContainerEnvironmentProvider: Send + Sync {
-    /// Prepare only immutable images from canonical mount-less specs. No Session
-    /// filesystem is allocated and success acknowledges demand, not readiness.
-    async fn prewarm_images(&self, _specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
-        Ok(())
-    }
-
-    fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
-        pc::SandboxCapabilities::default()
-    }
-
-    fn checkpoint_formats(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {}
-
-    fn install_secret_broker(&self, _broker: Arc<dyn pc::SecretBroker>) {}
-
-    async fn probe_ready(&self) -> Result<(), pc::SandboxError>;
-
-    /// Create an environment no aggregate effect owns: warm capacity, a
-    /// capability probe, a cache-volume initializer, or an unowned Session.
-    async fn create_unattached_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
-
-    /// Realize one environment for an aggregate-authorized effect. The fence is
-    /// recorded as backend evidence; `authority` is re-entered after every
-    /// backend wait and before publishing the result.
-    async fn create_environment_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        effect_fence: &ContainerEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-        intent: ContainerRealizationIntent,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
-
-    /// Observe one exact durable handle without creating, adopting, renewing,
-    /// or deleting it. `basis` has the same meaning as for
-    /// [`pc::SandboxProvider::observe`]; with an effect basis, its spec must be
-    /// the adoption's effective spec.
-    async fn observe_environment(
-        &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
-        basis: pc::SandboxObservationBasis<'_>,
-    ) -> Result<pc::SandboxObservation, pc::SandboxError>;
-
-    /// Adopt an environment no aggregate effect owns.
-    async fn adopt_unattached_environment(
-        &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
-
-    /// Revalidate and adopt under the already-authorized Session Environment
-    /// effect, re-observing the exact handle without treating an indeterminate
-    /// backend failure as Gone.
-    async fn adopt_environment_for_effect(
-        &self,
-        adoption: ContainerEnvironmentAdoption<'_>,
-        effect_fence: &ContainerEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
-
-    /// Reconstruct the exact terminal substrate and its frozen cleanup
-    /// participants without renewing it or making it runnable. The caller has
-    /// supplied the current operation-bound authority; implementations must
-    /// re-enter it after waits and before subsequent effects or success,
-    /// including exact absence. Implementations must re-observe
-    /// the exact optional handle before returning an environment that may first
-    /// enter `Sandbox::prepare_disposal_for_effect` and, only after aggregate
-    /// admission of that preparation, `Sandbox::dispose_for_effect`. A prior
-    /// effect fence is evidence for an
-    /// in-flight continuation takeover, never mutation authority. Returning
-    /// `None` is reserved for provider-proved exact absence.
-    async fn prepare_terminal_environment_for_effect(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: Option<&pc::SandboxHandle>,
-        expected_effect_fence: Option<&ContainerEffectFence>,
-        terminal_effect_fence: &ContainerEffectFence,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Option<Arc<dyn ContainerEnvironment>>, pc::SandboxError>;
-
-    /// Exact-restore target capability. `None` means this provider cannot own
-    /// a restore target, and the caller refuses at selection time instead of
-    /// discovering it at the physical effect (ADR-0081 capability ladder).
-    fn restore_targets(&self) -> Option<&dyn RestoreTargetContainerEnvironmentProvider> {
-        None
-    }
-
-    /// Checkpoint-byte restoration capability. Restorable providers also own
-    /// restore targets; [`restore_ladder_is_consistent`] states that law.
-    fn restorable(&self) -> Option<&dyn RestorableContainerEnvironmentProvider> {
-        None
-    }
-}
-
-/// Ladder law: a provider that can restore checkpoint bytes must also be able
-/// to acquire and dispose the exact physical target those bytes land in.
-#[must_use]
-pub fn restore_ladder_is_consistent(provider: &dyn ContainerEnvironmentProvider) -> bool {
-    provider.restorable().is_none() || provider.restore_targets().is_some()
-}
-
-/// Container providers that own the one physical target of an exact restore
-/// effect. Canonical checkpoint decorators use this instead of ordinary create.
-#[async_trait]
-pub trait RestoreTargetContainerEnvironmentProvider: ContainerEnvironmentProvider {
-    /// Acquire the one physical target for an exact restore effect.
-    async fn acquire_restore_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-    ) -> Result<pc::SandboxRestoreTarget<Arc<dyn ContainerEnvironment>>, pc::SandboxError>;
-
-    /// Remove only the unpublished physical target named by one durable
-    /// restoring tuple under the current disposal authorization.
-    async fn dispose_restored_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-        authorization: &pc::SandboxDisposalAuthorization,
-        authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<(), pc::SandboxError>;
-}
-
-/// Container providers that can materialize verified checkpoint bytes into an
-/// acquired restore target and return canonical restore evidence.
-#[async_trait]
-pub trait RestorableContainerEnvironmentProvider:
-    RestoreTargetContainerEnvironmentProvider
-{
-    async fn restore_environment(
-        &self,
-        spec: &pc::SandboxSpec,
-        request: &pc::SandboxRestoreRequest,
-        store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<pc::SandboxRestoreResult<Arc<dyn ContainerEnvironment>>, pc::SandboxError>;
 }

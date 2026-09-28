@@ -1007,7 +1007,7 @@ async fn fenced_prepare_reserves_then_exact_activation_starts_once() {
     };
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec);
     let fence = pc::SandboxEffectFence::new("effect", "owner", "runtime", 1, u64::MAX).unwrap();
-    let attempt = ContainerCreateAttempt("attempt".into());
+    let attempt = crate::ContainerCreateAttempt::new("attempt");
     let intent = ContainerRealizationIntent::Create;
     let context = ContainerRealizationContext::new(
         &spec.scope,

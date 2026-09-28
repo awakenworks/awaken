@@ -6,10 +6,10 @@ use awaken_provisioning_contract::{
     IsolationClass, NetworkPolicy, ResourceLimits, SandboxProvider, SandboxSpec,
 };
 
+use awaken_container_contract::ContainerEnvironmentProvider as _;
 use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::ToolExecutor;
-use awaken_sandbox_container::ContainerEnvironmentProvider as _;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::{
     PublishedSandboxControlService, SandboxControlPublishError, SandboxControlService,
@@ -34,7 +34,7 @@ mod shared_environment;
 struct FakeContainerProvider {
     observations: std::sync::Mutex<
         Vec<(
-            awaken_sandbox_container::ContainerObservationPurpose,
+            awaken_container_contract::ContainerObservationPurpose,
             pc::SandboxEffectFence,
         )>,
     >,
@@ -177,15 +177,32 @@ impl pc::ProcessHandle for SlowReapProcess {
 }
 
 #[async_trait]
-impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerProvider {
+impl awaken_container_contract::ContainerEnvironmentProvider for FakeContainerProvider {
+    fn adoption_layout(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        awaken_container_contract::ContainerAdoptionLayout,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_sandbox_container::container_adoption_layout(handle)
+    }
+
+    fn physical_incarnation(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::container_physical_incarnation(handle)
+    }
+
     async fn create_environment_for_effect(
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-        _intent: awaken_sandbox_container::ContainerRealizationIntent,
+        _intent: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<
-        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -194,11 +211,11 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
     }
     async fn adopt_environment_for_effect(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+        _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     ) -> Result<
-        std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -209,11 +226,11 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
         _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-        _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
-        _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+        _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
     ) -> Result<
-        Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        Option<std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>>,
         awaken_provisioning_contract::SandboxError,
     > {
         Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -246,7 +263,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
 
     async fn observe_environment(
         &self,
-        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
         basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         if let pc::SandboxObservationBasis::Effect { effect_fence, .. } = basis {
@@ -272,7 +289,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
     async fn create_unattached_environment(
         &self,
         spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
         self.creates
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.specs.lock().unwrap().push(spec.clone());
@@ -289,8 +306,8 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerPro
 
     async fn adopt_unattached_environment(
         &self,
-        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+        adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
         self.adopts.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::new(FakeContainer {
             handle: adoption.handle.clone(),
@@ -371,7 +388,8 @@ impl pc::Sandbox for FakeContainer {
         requirement: pc::MountRequirement,
     ) -> Result<pc::RealizedMount, pc::SandboxError> {
         if let pc::MountSource::InlineBytes { contents, .. } = &requirement.source
-            && awaken_sandbox_container::live_input_relative_path(&requirement.mount_path).is_some()
+            && awaken_container_contract::live_input_relative_path(&requirement.mount_path)
+                .is_some()
             && requirement.access == pc::MountAccess::ReadOnly
         {
             self.shared

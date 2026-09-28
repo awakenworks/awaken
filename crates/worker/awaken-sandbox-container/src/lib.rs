@@ -70,7 +70,7 @@ pub(crate) use exec_attempts::{exec_pid_file, exec_pid_file_prelude};
 pub use handle::{
     ContainerContinuationHandle, ContainerHandleCodec, ContainerSandboxHandleV1,
     ContainerSandboxHandleV2, HostBindRestorationHandle, KubernetesPodUid,
-    SandboxControlIncarnation,
+    SandboxControlIncarnation, container_adoption_layout, container_physical_incarnation,
 };
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
@@ -83,10 +83,18 @@ pub use provider_contract::{
     ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
     ContainerObservationPurpose, ContainerRealizationContext, ContainerRealizationIntent,
-    ContainerRealizationNamespace, DecodedContainerHandle, EnvironmentFile, PreparedContainer,
-    PreparedContainerDisposition, RestorableContainerEnvironmentProvider,
-    RestoreTargetContainerEnvironmentProvider, restore_ladder_is_consistent,
+    ContainerRealizationNamespace, DecodedContainerHandle, EnvironmentFile,
+    EnvironmentRealizationIntent, PreparedContainer, PreparedContainerDisposition,
+    RestorableContainerEnvironmentProvider, RestoreTargetContainerEnvironmentProvider,
+    restore_ladder_is_consistent,
 };
+
+/// Mint the ephemeral witness for one in-process create attempt from this
+/// process's runtime owner identity. Only this provider creates backend objects,
+/// so it is the only minter.
+pub(crate) fn fresh_create_attempt() -> ContainerCreateAttempt {
+    ContainerCreateAttempt::new(runtime_owner_id())
+}
 pub use resident_hand::ResidentHandConfig;
 #[cfg(any(test, feature = "docker", feature = "podman"))]
 use restore_target::remove_host_staging_path;
@@ -1297,38 +1305,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
     }
 }
 
-/// Backend-erased lifecycle for never-used container capacity.
-///
-/// This is deliberately separate from [`ContainerEnvironmentProvider`]: every
-/// container backend can create a Session environment, while only a deployment
-/// that opted into a warm pool owns pre-created capacity. A composition root keeps
-/// this handle long enough to prewarm before advertising readiness and to drain the
-/// unused capacity during shutdown.
-#[async_trait]
-pub trait ContainerEnvironmentCapacity: Send + Sync {
-    /// Ensure at least `target` ready, never-used containers exist for `spec`'s
-    /// exact creation shape. Returns the resulting ready count. Non-poolable specs
-    /// (currently any spec with mounts) return zero without creating anything.
-    async fn prewarm_to(
-        &self,
-        spec: &pc::SandboxSpec,
-        target: usize,
-    ) -> Result<usize, pc::SandboxError>;
-
-    /// Current ready, never-used capacity for one exact shape. Receipts are
-    /// derived from this value so an eviction or Session checkout cannot leave a
-    /// stale positive placement hint.
-    fn ready_capacity(&self, spec: &pc::SandboxSpec) -> usize;
-
-    /// Dispose unused capacity for one exact shape. This is used when the
-    /// authoritative current Environment catalog no longer desires an older
-    /// revision; active Session environments have already left capacity.
-    async fn discard_shape(&self, spec: &pc::SandboxSpec);
-
-    /// Stop replenishment and dispose all never-used capacity. Active Session
-    /// environments have already left the pool and are not affected.
-    async fn shutdown_capacity(&self);
-}
+pub use awaken_container_contract::ContainerEnvironmentCapacity;
 
 struct ContainerCleanupState {
     staging: std::sync::Mutex<Option<StagingGuard>>,
@@ -1841,9 +1818,7 @@ pub mod docker;
 
 #[cfg(feature = "k8s")]
 pub mod k8s;
-/// Public internal-CA path mounted by the hosted Kubernetes Repository transport.
-/// Only the exact Repository clone/push process opts into this trust root.
-pub const REPOSITORY_GATEWAY_CA_PATH: &str = "/var/run/awaken/repository-trust/ca.crt";
+pub use awaken_container_contract::REPOSITORY_GATEWAY_CA_PATH;
 
 /// Deployment-owned public trust and exact network coordinate for hosted
 /// Repository Git. It carries no credential or Repository authority.

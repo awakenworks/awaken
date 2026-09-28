@@ -248,7 +248,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                     ),
                 },
                 None,
-                awaken_sandbox_container::ContainerRealizationIntent::Create,
+                awaken_container_contract::EnvironmentRealizationIntent::Create,
             )
             .await
             .expect("M1 initial Fuse participant");
@@ -283,7 +283,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                     ),
                 },
                 None,
-                awaken_sandbox_container::ContainerRealizationIntent::Create,
+                awaken_container_contract::EnvironmentRealizationIntent::Create,
             )
             .await
             .expect("M1 Ready replay reuses Fuse");
@@ -373,7 +373,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .expect("M2 initial Copy participant");
@@ -406,7 +406,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .expect("M2 Ready replay retains Copy");
@@ -459,7 +459,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .expect("M3 initial Fuse participant");
@@ -483,7 +483,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
     {
@@ -542,7 +542,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .expect("T1 hot Fuse create");
@@ -623,7 +623,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
                     ),
                 },
                 None,
-                awaken_sandbox_container::ContainerRealizationIntent::Create,
+                awaken_container_contract::EnvironmentRealizationIntent::Create,
             )
             .await
             .expect("T2 create Fuse");
@@ -825,7 +825,7 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                                 ),
                         },
                         None,
-                        awaken_sandbox_container::ContainerRealizationIntent::Create,
+                        awaken_container_contract::EnvironmentRealizationIntent::Create,
                     )
                     .await
                     .unwrap();
@@ -1002,7 +1002,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .unwrap();
@@ -1038,7 +1038,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
                 spec: &namespace_spec,
                 effect_fence: &terminal_fence,
             },
-            awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup,
+            awaken_container_contract::ContainerObservationPurpose::TerminalCleanup,
         )
         .await
         .unwrap();

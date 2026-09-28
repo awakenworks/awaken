@@ -4285,7 +4285,7 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                             &requested,
                             &fence,
                             &authority,
-                            ContainerRealizationIntent::Create,
+                            awaken_container_contract::EnvironmentRealizationIntent::Create,
                         )
                         .await
                         .map(|_| ())

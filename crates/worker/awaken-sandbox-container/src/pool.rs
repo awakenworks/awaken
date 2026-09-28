@@ -27,9 +27,8 @@ use awaken_provisioning_contract as pc;
 
 use crate::{
     ContainerEffectFence, ContainerEnvironment, ContainerEnvironmentCapacity,
-    ContainerEnvironmentProvider, ContainerProvider, ContainerRealizationIntent, ContainerRuntime,
-    ContainerSandbox, RestorableContainerEnvironmentProvider,
-    RestoreTargetContainerEnvironmentProvider,
+    ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime, ContainerSandbox,
+    RestorableContainerEnvironmentProvider, RestoreTargetContainerEnvironmentProvider,
 };
 
 pub mod lease;
@@ -881,12 +880,23 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         Ok(Arc::new(environment))
     }
 
+    fn adoption_layout(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<awaken_container_contract::ContainerAdoptionLayout, pc::SandboxError> {
+        self.inner.adoption_layout(handle)
+    }
+
+    fn physical_incarnation(&self, handle: &pc::SandboxHandle) -> Result<String, pc::SandboxError> {
+        self.inner.physical_incarnation(handle)
+    }
+
     async fn create_environment_for_effect(
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: &ContainerEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
-        intent: ContainerRealizationIntent,
+        intent: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         // Cause/effect rule: a durable fence requires exact provider
         // realization identity. A warm candidate has none and `bind_scope`
@@ -1360,7 +1370,7 @@ mod tests {
                 &ephemeral,
                 &fence,
                 &authority,
-                crate::ContainerRealizationIntent::Create,
+                awaken_container_contract::EnvironmentRealizationIntent::Create,
             )
             .await
             .unwrap();

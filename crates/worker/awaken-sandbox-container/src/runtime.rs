@@ -329,26 +329,7 @@ pub struct MemoryMount {
     pub snapshot_tar: Vec<u8>,
 }
 
-/// Deployment-owned policy for a Kubernetes Session's retained active volume.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct K8sContinuationVolume {
-    pub storage_class_name: Option<String>,
-    pub size: String,
-}
-
-impl K8sContinuationVolume {
-    /// Shared admission for configured and directly constructed PVC policy.
-    /// Kubernetes remains the authority for quantities and StorageClass existence.
-    pub fn validate(&self) -> Result<(), RuntimeError> {
-        if self.size.trim().is_empty() {
-            return Err(RuntimeError::Backend(
-                "k8s continuation volume size cannot be empty".into(),
-            ));
-        }
-        Ok(())
-    }
-}
+pub use awaken_container_contract::K8sContinuationVolume;
 
 #[cfg(feature = "k8s")]
 pub(crate) fn validate_runtime_effect_fence(
@@ -673,8 +654,8 @@ mod realization_tests {
         let fence =
             crate::ContainerEffectFence::new("operation-1", "owner-1", "runtime-1", 1, u64::MAX)
                 .unwrap();
-        let attempt = crate::ContainerCreateAttempt("attempt-1".into());
-        let replacement_attempt = crate::ContainerCreateAttempt("attempt-2".into());
+        let attempt = crate::ContainerCreateAttempt::new("attempt-1");
+        let replacement_attempt = crate::ContainerCreateAttempt::new("attempt-2");
         assert_eq!(
             realization_decision_for_test(
                 Some(&exact),
@@ -902,7 +883,7 @@ mod realization_tests {
             u64::MAX,
         )
         .unwrap();
-        let attempt = crate::ContainerCreateAttempt("rebuild-attempt".into());
+        let attempt = crate::ContainerCreateAttempt::new("rebuild-attempt");
         let intent = crate::ContainerRealizationIntent::Rebuild {
             source_incarnation: "incarnation-1".into(),
             source_runtime_handle: Some(
@@ -994,8 +975,8 @@ mod realization_tests {
         // fault -> Incompatible even with an exact retained wrapper. Terminal
         // observation uses the existing exact-incarnation disposal rules.
         let exact = fingerprint("exact");
-        let retained = crate::ContainerCreateAttempt("attempt-1".into());
-        let other = crate::ContainerCreateAttempt("other-attempt".into());
+        let retained = crate::ContainerCreateAttempt::new("attempt-1");
+        let other = crate::ContainerCreateAttempt::new("other-attempt");
         for phase in [
             ExistingRealizationPhase::Creating,
             ExistingRealizationPhase::Ready,
@@ -1369,11 +1350,7 @@ mod realization_tests {
     }
 }
 
-/// One opaque agent process started inside an already-running container.
-pub struct RuntimeAgentProcess {
-    pub process: Box<dyn pc::ProcessHandle>,
-    pub channel: Box<dyn AgentChannel>,
-}
+pub use awaken_container_contract::RuntimeAgentProcess;
 
 /// Independent package-image build/publish port.
 #[async_trait]

@@ -274,12 +274,12 @@ impl ContainerMcpRelayExposure {
         let expected = self
             .advertised_origin
             .host_str()
-            .and_then(|host| awaken_sandbox_container::normalize_hostname(host).ok());
-        let upstream = awaken_sandbox_container::normalize_hostname(upstream_host).ok();
+            .and_then(awaken_container_contract::normalize_allowlist_host);
+        let upstream = awaken_container_contract::normalize_allowlist_host(upstream_host);
         expected.is_some_and(|expected| {
             let normalized = hosts
                 .iter()
-                .filter_map(|host| awaken_sandbox_container::normalize_hostname(host).ok())
+                .filter_map(|host| awaken_container_contract::normalize_allowlist_host(host))
                 .collect::<Vec<_>>();
             normalized.iter().any(|candidate| candidate == &expected)
                 && upstream.is_none_or(|upstream| {
@@ -388,9 +388,9 @@ pub struct SandboxSettings {
     /// Optional retained active-filesystem PVC policy. Association is derived
     /// from the existing Session Sandbox realization; this is provisioning
     /// policy, not a second lifecycle registry.
-    pub k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
+    pub k8s_continuation_volume: Option<awaken_container_contract::K8sContinuationVolume>,
     /// Optional native node-image prewarming, independent of container pooling.
-    pub k8s_image_prewarm: Option<awaken_sandbox_container::K8sImagePrewarm>,
+    pub k8s_image_prewarm: Option<awaken_container_contract::K8sImagePrewarm>,
     /// Executable path for the Awaken Hand inside a container image.
     pub container_hand_bin: String,
     /// Whether the container Hand is Worker-attached or Environment-resident.

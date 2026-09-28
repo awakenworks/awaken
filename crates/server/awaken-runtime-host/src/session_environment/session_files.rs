@@ -294,7 +294,7 @@ impl SessionEnvironment {
     ) -> Result<(), pc::SandboxError> {
         if let Self::Container { sandbox, .. } = self {
             for requirement in requirements {
-                if awaken_sandbox_container::live_input_relative_path(&requirement.mount_path)
+                if awaken_container_contract::live_input_relative_path(&requirement.mount_path)
                     .is_some()
                     && requirement.access == pc::MountAccess::ReadOnly
                     && matches!(
@@ -367,7 +367,7 @@ impl SessionEnvironment {
             Self::Workdir { sandbox, .. } => sandbox.remove_inline(logical),
             Self::Namespace { sandbox, .. } => sandbox.remove_mount(logical),
             Self::Container { sandbox, .. } => {
-                if awaken_sandbox_container::live_input_relative_path(logical).is_some() {
+                if awaken_container_contract::live_input_relative_path(logical).is_some() {
                     sandbox.remove_live_input_path(logical).await
                 } else {
                     container_files::remove(sandbox.as_ref(), logical).await

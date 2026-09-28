@@ -648,15 +648,32 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     struct SecureExternalProvider;
 
     #[async_trait::async_trait]
-    impl awaken_sandbox_container::ContainerEnvironmentProvider for SecureExternalProvider {
+    impl awaken_container_contract::ContainerEnvironmentProvider for SecureExternalProvider {
+        fn adoption_layout(
+            &self,
+            handle: &awaken_provisioning_contract::SandboxHandle,
+        ) -> Result<
+            awaken_container_contract::ContainerAdoptionLayout,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            awaken_sandbox_container::container_adoption_layout(handle)
+        }
+
+        fn physical_incarnation(
+            &self,
+            handle: &awaken_provisioning_contract::SandboxHandle,
+        ) -> Result<String, awaken_provisioning_contract::SandboxError> {
+            awaken_sandbox_container::container_physical_incarnation(handle)
+        }
+
         async fn create_environment_for_effect(
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
-            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-            _intent: awaken_sandbox_container::ContainerRealizationIntent,
+            _intent: awaken_container_contract::EnvironmentRealizationIntent,
         ) -> Result<
-            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -665,7 +682,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         }
         async fn observe_environment(
             &self,
-            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
             _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
         ) -> Result<
             awaken_provisioning_contract::SandboxObservation,
@@ -677,11 +694,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         }
         async fn adopt_environment_for_effect(
             &self,
-            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+            _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
         ) -> Result<
-            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -692,11 +709,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
             _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-            _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
-            _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+            _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
         ) -> Result<
-            Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+            Option<std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -716,7 +733,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
         ) -> Result<
-            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -726,9 +743,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
         async fn adopt_unattached_environment(
             &self,
-            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
         ) -> Result<
-            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(

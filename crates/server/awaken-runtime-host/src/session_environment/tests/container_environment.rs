@@ -2,7 +2,7 @@
 use super::*;
 
 #[async_trait]
-impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
+impl awaken_container_contract::ContainerEnvironment for FakeContainer {
     async fn owned_process_binding(&self) -> Result<Option<String>, pc::SandboxError> {
         let shared = self.shared.lock().unwrap();
         if shared.contains_key("__process_binding_error") {
@@ -11,6 +11,28 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
         Ok(shared.get("__process_binding").map(|bytes| {
             String::from_utf8(bytes.clone()).expect("fixture process reference is UTF-8")
         }))
+    }
+
+    async fn checkpoint_upload(
+        &self,
+        _access: awaken_container_contract::ContainerCheckpointAccess<'_>,
+        _mutation: awaken_container_contract::ContainerCheckpointMutation<'_>,
+    ) -> Result<
+        Option<awaken_provisioning_contract::SandboxCheckpointUpload>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test container environment does not implement a fenced checkpoint participant",
+        ))
+    }
+
+    async fn remove_live_input_path(
+        &self,
+        _path: &str,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "late mount removal is unsupported on this test container",
+        ))
     }
 
     fn record_owned_path(&self, path: &str) -> Result<(), pc::SandboxError> {
@@ -36,7 +58,7 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
     async fn spawn_agent_process(
         &self,
         command: pc::Command,
-    ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
+    ) -> Result<awaken_container_contract::RuntimeAgentProcess, pc::SandboxError> {
         let (ours, theirs) = tokio::io::duplex(64 * 1024);
         let repository_export = command.argv.iter().any(|part| part == "awaken-repo-push");
         if command.argv.iter().any(|part| part == "--stdio") {
@@ -135,7 +157,7 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
         } else {
             Box::new(DoneProcess::exited("container-exec", exit_code))
         };
-        Ok(awaken_sandbox_container::RuntimeAgentProcess {
+        Ok(awaken_container_contract::RuntimeAgentProcess {
             process,
             channel: Box::new(ours),
         })
@@ -144,7 +166,7 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
     async fn read_files(
         &self,
         _root: &str,
-    ) -> Result<Vec<awaken_sandbox_container::EnvironmentFile>, pc::SandboxError> {
+    ) -> Result<Vec<awaken_container_contract::EnvironmentFile>, pc::SandboxError> {
         if self
             .shared
             .lock()
@@ -161,7 +183,7 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
             .lock()
             .unwrap()
             .iter()
-            .map(|(path, bytes)| awaken_sandbox_container::EnvironmentFile {
+            .map(|(path, bytes)| awaken_container_contract::EnvironmentFile {
                 path: path.clone(),
                 bytes: bytes.clone(),
             })
