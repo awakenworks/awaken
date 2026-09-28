@@ -1397,6 +1397,7 @@ async fn store_found_conflicts_answer_the_contract_only_when_already_at_the_requ
                 winner_content: winner_content.map(str::to_string),
             }),
             resources.memory_stores(),
+            awaken_lease_contract::system_clock(),
         );
         let store = create_store(&router, "race-host").await;
         let created = call(
