@@ -1695,8 +1695,10 @@ pub awaken_runtime_contract::runtime_context::TranscriptContextDestination::Mode
 pub struct awaken_runtime_contract::runtime_context::AttemptQuiescence
 impl awaken_runtime_contract::runtime_context::AttemptQuiescence
 pub fn awaken_runtime_contract::runtime_context::AttemptQuiescence::can_acknowledge_return(&self) -> bool
+pub async fn awaken_runtime_contract::runtime_context::AttemptQuiescence::close_and_wait(&self) -> bool
 pub fn awaken_runtime_contract::runtime_context::AttemptQuiescence::mark_uncertain(&self)
 pub async fn awaken_runtime_contract::runtime_context::AttemptQuiescence::observe_return<T>(&self, impl core::future::future::Future<Output = T>) -> T
+pub fn awaken_runtime_contract::runtime_context::AttemptQuiescence::permits_execution(&self) -> bool
 pub struct awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::runtime_context::CaptureContext::decision: awaken_runtime_contract::capture::CaptureDecision
 pub awaken_runtime_contract::runtime_context::CaptureContext::sink: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>>
