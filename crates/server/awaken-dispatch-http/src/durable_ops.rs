@@ -21,11 +21,17 @@ use std::sync::Arc;
 
 /// The durable operations router. Mounted on every server; each route fails
 /// closed with 400 when the server is not in durable mode.
-pub fn durable_ops_router(application: Arc<dyn DurableRunOperations>) -> Router {
+/// `clock` is the composing process's wall clock; an operator quarantine
+/// without an explicit cutoff is judged at its reading.
+pub fn durable_ops_router(
+    application: Arc<dyn DurableRunOperations>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> Router {
     durable_ops_router_with_session_commands(
         application.clone(),
         BackgroundApplication::Legacy(application.clone()),
         SupersedeApplication::Legacy(application),
+        clock,
     )
 }
 
@@ -37,6 +43,7 @@ pub fn durable_ops_router_with_session_admission(
     application: Arc<dyn DurableRunOperations>,
     background: Arc<dyn SessionRunBackgroundApplication>,
     supersede: Arc<dyn SessionRunReplacementApplication>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Router {
     durable_ops_router_with_session_commands(
         application.clone(),
@@ -45,6 +52,7 @@ pub fn durable_ops_router_with_session_admission(
             application: supersede,
             operations: application,
         },
+        clock,
     )
 }
 
@@ -67,7 +75,14 @@ fn durable_ops_router_with_session_commands(
     application: Arc<dyn DurableRunOperations>,
     background_application: BackgroundApplication,
     supersede_application: SupersedeApplication,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Router {
+    let quarantine = Router::new()
+        .route(
+            "/v1/durable/threads/{thread}/quarantine-retry-exhausted",
+            post(quarantine_retry_exhausted),
+        )
+        .with_state((application.clone(), clock));
     Router::new()
         .route("/v1/durable/threads/{thread}/cancel", post(cancel))
         .route("/v1/durable/threads/{thread}/pause", post(pause))
@@ -78,10 +93,6 @@ fn durable_ops_router_with_session_commands(
         .route("/v1/durable/threads/{thread}/dispatches", get(dispatches))
         .route("/v1/durable/threads/{thread}/messages", get(messages))
         .route("/v1/durable/threads/{thread}/reconcile", post(reconcile))
-        .route(
-            "/v1/durable/threads/{thread}/quarantine-retry-exhausted",
-            post(quarantine_retry_exhausted),
-        )
         .route(
             "/v1/durable/threads/{thread}/dead-letters",
             get(dead_letters),
@@ -95,6 +106,7 @@ fn durable_ops_router_with_session_commands(
             post(purge),
         )
         .with_state(application)
+        .merge(quarantine)
         .merge(
             Router::new()
                 .route(
@@ -374,7 +386,10 @@ async fn reconcile(
 }
 
 async fn quarantine_retry_exhausted(
-    State(application): State<Arc<dyn DurableRunOperations>>,
+    State((application, clock)): State<(
+        Arc<dyn DurableRunOperations>,
+        Arc<dyn awaken_lease_contract::WallClock>,
+    )>,
     Path(thread): Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> (StatusCode, Json<Value>) {
@@ -387,7 +402,7 @@ async fn quarantine_retry_exhausted(
     let now = query
         .get("now_ms")
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or_else(now_ms);
+        .unwrap_or_else(|| awaken_lease_contract::WallClockExt::now_ms(clock.as_ref()));
     respond(
         application
             .quarantine_retry_exhausted(&thread, max_attempts, now)
@@ -438,13 +453,6 @@ async fn purge(
             .await
             .map(|n| json!({ "purged": n })),
     )
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 fn respond(result: Result<Value, ApplicationError>) -> (StatusCode, Json<Value>) {

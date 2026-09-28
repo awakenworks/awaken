@@ -211,6 +211,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         Arc::new(ClaimedCommitService::new(dispatch, coordinator.clone())),
         directory,
         Arc::new(HeaderWorkerAuthenticator),
+        awaken_lease_contract::system_clock(),
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -541,6 +541,7 @@ pub(super) async fn prepare_runtime_routers(
         Arc::new(awaken_coordinator::ClaimFencedArtifactPublisher::new(
             artifact_publisher.clone(),
             dispatch,
+            clock.clone(),
         ))
     });
     let artifact_publisher =

@@ -2,6 +2,7 @@
 // @formal entrypoint dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
 //! Coordinator-owned Dream process application.
 
+use awaken_lease_contract::WallClockExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -310,15 +311,6 @@ fn timestamp(value: u64) -> String {
     awaken_session_application_contract::epoch_millis_to_rfc3339(value)
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum DreamApiError {
     #[error("{0}")]
@@ -413,12 +405,16 @@ pub struct DreamApplication {
     session_source: Mutex<Option<Arc<dyn DreamSessionSource>>>,
     model_readiness: Mutex<Option<Arc<dyn DreamModelReadiness>>>,
     runtime_budget: Duration,
+    /// The composing process's wall clock: every Dream process instant is
+    /// stamped on it.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl DreamApplication {
     pub fn with_store(
         executor: Arc<dyn DreamExecutor>,
         store: Arc<dyn DreamProcessStore>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Self, DreamApiError> {
         let processes = store
             .dream_processes()
@@ -448,6 +444,7 @@ impl DreamApplication {
             session_source: Mutex::new(None),
             model_readiness: Mutex::new(None),
             runtime_budget: DEFAULT_DREAM_RUNTIME_BUDGET,
+            clock,
         })
     }
 
@@ -560,7 +557,7 @@ impl DreamApplication {
             memory_store_id: memory_store_id.to_string(),
             next_due_ms: current
                 .as_ref()
-                .map_or_else(now_ms, |value| value.next_due_ms),
+                .map_or_else(|| self.clock.now_ms(), |value| value.next_due_ms),
             last_completed_cutoff_ms: current
                 .as_ref()
                 .map_or(0, |value| value.last_completed_cutoff_ms),
@@ -817,7 +814,7 @@ impl DreamApplication {
             session_id: None,
             transcript_file_ids: Vec::new(),
             cleanup_pending: false,
-            created_at: now_ms(),
+            created_at: self.clock.now_ms(),
             ended_at: None,
             archived_at: None,
             error: None,
@@ -996,7 +993,7 @@ impl DreamApplication {
                         .ok_or_else(|| {
                             DreamApiError::Conflict("only a running Dream can complete".into())
                         })?;
-                    job.ended_at = Some(now_ms());
+                    job.ended_at = Some(self.clock.now_ms());
                 }
                 Err(error) => {
                     job.status =
@@ -1006,7 +1003,7 @@ impl DreamApplication {
                                 DreamApiError::Conflict("only a running Dream can fail".into())
                             })?;
                     job.error = Some(error.clone());
-                    job.ended_at = Some(now_ms());
+                    job.ended_at = Some(self.clock.now_ms());
                 }
             }
             job.cleanup_pending = !cleanup_completed;
@@ -1109,7 +1106,7 @@ impl DreamApplication {
             if let Some(failed) = job.status.transition(DreamStatusEvent::Fail) {
                 job.status = failed;
                 job.error = Some(error);
-                job.ended_at = Some(now_ms());
+                job.ended_at = Some(self.clock.now_ms());
             }
             Ok(())
         })?;
@@ -1196,7 +1193,7 @@ impl DreamApplication {
                             "only pending or running Dreams can be canceled".into(),
                         )
                     })?;
-                job.ended_at = Some(now_ms());
+                job.ended_at = Some(self.clock.now_ms());
                 job.cleanup_pending = true;
                 Ok(())
             })?;
@@ -1238,7 +1235,7 @@ impl DreamApplication {
             return self.project_process(&current).await;
         }
         let job = self.commit_job_update(id, |job| {
-            job.archived_at = Some(now_ms());
+            job.archived_at = Some(self.clock.now_ms());
             Ok(())
         })?;
         self.project_process(&job).await
@@ -1490,6 +1487,7 @@ mod tests {
         let application = DreamApplication::with_store(
             Arc::new(NoopExecutor),
             Arc::new(InMemoryDreamProcessStore::default()),
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
 
@@ -1533,6 +1531,7 @@ mod tests {
         let without_source = DreamApplication::with_store(
             Arc::new(NoopExecutor),
             Arc::new(InMemoryDreamProcessStore::default()),
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         assert_eq!(
@@ -1648,6 +1647,7 @@ mod tests {
             let mut application = DreamApplication::with_store(
                 executor.clone(),
                 Arc::new(InMemoryDreamProcessStore::default()),
+                awaken_lease_contract::system_clock(),
             )
             .unwrap();
             application.runtime_budget = Duration::from_millis(5);

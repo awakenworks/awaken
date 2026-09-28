@@ -386,7 +386,8 @@ async fn open_process_stores(
     let coordinator = if role_owns_managed_execution(role) {
         ensure_store_parent(&coordinator_cfg.captured_content)?;
         let application_access =
-            open_application_access(&coordinator_cfg.sessions, postgres_schema).await?;
+            open_application_access(&coordinator_cfg.sessions, postgres_schema, clock.clone())
+                .await?;
         let process_stores::SessionStoreViews {
             sessions,
             deployments,

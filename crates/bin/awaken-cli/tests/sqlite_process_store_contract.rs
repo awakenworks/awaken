@@ -22,9 +22,12 @@ async fn colocated_process_stores_share_wal_and_wait_for_transient_writers() {
     let _sessions =
         awaken_session_store::SqliteManagedSessionRepository::open(&path).expect("Sessions");
     let _application_access =
-        awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite(&path)
-            .await
-            .expect("application access");
+        awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite(
+            &path,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .expect("application access");
 
     let mut writer = Connection::open(&path).expect("independent writer");
     let journal_mode: String = writer

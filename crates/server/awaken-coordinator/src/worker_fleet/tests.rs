@@ -92,7 +92,7 @@ impl WorkerDirectory for ScriptedDirectory {
 }
 
 async fn call(directory: ScriptedDirectory, uri: &str) -> (StatusCode, serde_json::Value) {
-    let response = router(Arc::new(directory))
+    let response = router(Arc::new(directory), awaken_lease_contract::system_clock())
         .oneshot(
             Request::builder()
                 .uri(uri)
