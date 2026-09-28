@@ -1230,13 +1230,13 @@ mod tests {
             .expect("deserializes");
         assert_eq!(back, lease);
 
-        // A pre-fence lease row (no `epoch` key) loads with epoch 0 — the neutral
-        // value a never-claimed row carries, so an old persisted/wire lease is not
-        // rejected (the fence only fires when a HIGHER epoch supersedes it).
+        // A pre-fence wire lease (no `epoch` key) is refused rather than read
+        // as epoch 0, a value no claim grants. Dispatch rows keep the epoch in
+        // their own column, so no persisted lease JSON depends on the default;
+        // like renewal, the transport requires a coordinated cutover.
         let mut v = serde_json::to_value(&lease).expect("to value");
         v.as_object_mut().expect("object").remove("epoch");
-        let legacy: Lease = serde_json::from_value(v).expect("legacy lease loads");
-        assert_eq!(legacy.epoch, 0);
+        assert!(serde_json::from_value::<Lease>(v).is_err());
 
         for outcome in [DispatchOutcome::Done, DispatchOutcome::Awaiting] {
             let back: DispatchOutcome =
