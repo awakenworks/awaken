@@ -510,6 +510,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
             b"fixture-secret".to_vec(),
         )
         .expect("signing credential is valid"),
+        awaken_lease_contract::system_clock(),
     ));
     let registered_identity = Arc::new(Mutex::new(None));
     let observed = registered_identity.clone();

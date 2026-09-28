@@ -42,11 +42,12 @@ use awaken_dispatch::{
     WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
+use awaken_lease_contract::{WallClock, WallClockExt};
 use awaken_dispatch::{ApplicationError as HostError, ApplicationErrorKind};
 use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock, VerifiedWorkerContext,
-    WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, authenticate_worker_request,
-    verify_current_worker_identity, verify_worker_identity,
+    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, VerifiedWorkerContext, WorkerLeasePolicy,
+    WorkerRequestAuthenticator, authenticate_worker_request, verify_current_worker_identity,
+    verify_worker_identity,
 };
 
 mod run_dispatch_endpoints;
@@ -88,34 +89,21 @@ use terminal_repository_publication::{
 
 /// Read-only, authenticated projection of current Environment warm demand.
 /// Desired state remains in `EnvironmentWarmupSource`; this adapter owns no
-/// queue, cache, or receipt store.
+/// queue, cache, or receipt store. `clock` judges the Worker's registered
+/// incarnation and is the Coordinator's one clock (production and tests alike
+/// inject it; there is no defaulted variant).
 pub fn worker_environment_warmup_router(
     source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
     directory: Arc<dyn WorkerDirectory>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
-) -> Router {
-    worker_environment_warmup_router_with_clock(
-        source,
-        directory,
-        authenticator,
-        Arc::new(SystemWorkerClock),
-    )
-}
-
-/// Clock-injected form used by the same deterministic Worker transport tests as
-/// registration and dispatch. Production calls [`worker_environment_warmup_router`].
-pub fn worker_environment_warmup_router_with_clock(
-    source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
-    directory: Arc<dyn WorkerDirectory>,
-    authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    clock: Arc<dyn WorkerClock>,
+    clock: Arc<dyn WallClock>,
 ) -> Router {
     #[derive(Clone)]
     struct WarmupState {
         source: Arc<dyn awaken_session_configuration_contract::EnvironmentWarmupSource>,
         directory: Arc<dyn WorkerDirectory>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
-        clock: Arc<dyn WorkerClock>,
+        clock: Arc<dyn WallClock>,
     }
 
     async fn current(
@@ -163,7 +151,7 @@ pub fn worker_environment_warmup_router_with_clock(
 pub struct WorkerDispatchService {
     dispatch: Arc<dyn ControlDispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
-    clock: Arc<dyn WorkerClock>,
+    clock: Arc<dyn WallClock>,
     lease_policy: Arc<dyn WorkerLeasePolicy>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     placement_policy: Option<Arc<dyn PlacementPolicy>>,
@@ -195,7 +183,7 @@ impl WorkerDispatchService {
     pub fn new(
         dispatch: Arc<dyn ControlDispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
-        clock: Arc<dyn WorkerClock>,
+        clock: Arc<dyn WallClock>,
         lease_policy: Arc<dyn WorkerLeasePolicy>,
     ) -> Self {
         Self {
@@ -384,11 +372,11 @@ impl WorkerDispatchService {
     /// Local/test composition. Managed deployments should use [`Self::new`] with
     /// their WorkerLease/mTLS authenticator.
     #[must_use]
-    pub fn local(dispatch: Arc<dyn ControlDispatchQueue>) -> Self {
+    pub fn local(dispatch: Arc<dyn ControlDispatchQueue>, clock: Arc<dyn WallClock>) -> Self {
         Self::new(
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(SystemWorkerClock),
+            clock,
             Arc::new(FixedWorkerLeasePolicy::default()),
         )
     }
@@ -497,6 +485,9 @@ pub struct RegisteredDispatchDependencies {
     pub stream_sink: Arc<dyn StreamSink>,
     pub credential_deliveries:
         Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
+    /// The Coordinator's one wall clock: claim leases, registry freshness and
+    /// Worker assertions are judged on the timeline every other owner uses.
+    pub clock: Arc<dyn WallClock>,
 }
 
 pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) -> Router {
@@ -517,11 +508,12 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         terminal_observer,
         stream_sink,
         credential_deliveries,
+        clock,
     } = dependencies;
     let service = WorkerDispatchService::new(
         dispatch,
         authenticator,
-        Arc::new(SystemWorkerClock),
+        clock,
         Arc::new(FixedWorkerLeasePolicy::default()),
     )
     .with_worker_directory(directory, 30_000)

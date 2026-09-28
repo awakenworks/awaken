@@ -12,9 +12,9 @@ pub mod kubernetes;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use awaken_lease_contract::{NotBefore, UtcTime, WallClock, WallClockExt};
 use awaken_dispatch_contract::RunClaim;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity, WorkerSnapshot, WorkerState};
 use axum::Json;
@@ -268,6 +268,7 @@ pub fn parse_projected_signing_credentials(
 pub fn projected_request_authorizer(
     source: &str,
     worker_id: &str,
+    clock: Arc<dyn WallClock>,
 ) -> Result<Arc<dyn WorkerRequestAuthorizer>, String> {
     let mut credentials = parse_projected_signing_credentials(source)?;
     if credentials.len() != 1 || credentials[0].worker_id() != worker_id {
@@ -277,6 +278,7 @@ pub fn projected_request_authorizer(
     }
     Ok(Arc::new(SignedWorkerRequestAuthorizer::new(
         credentials.remove(0),
+        clock,
     )))
 }
 
@@ -284,10 +286,11 @@ pub fn projected_request_authorizer(
 pub fn load_projected_request_authorizer(
     path: &std::path::Path,
     worker_id: &str,
+    clock: Arc<dyn WallClock>,
 ) -> Result<Arc<dyn WorkerRequestAuthorizer>, String> {
     let source = std::fs::read_to_string(path)
         .map_err(|error| format!("read Worker request credential {}: {error}", path.display()))?;
-    projected_request_authorizer(&source, worker_id)
+    projected_request_authorizer(&source, worker_id, clock)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,25 +330,23 @@ fn encode_assertion(
 pub struct SignedWorkerRequestAuthorizer {
     credential: WorkerSigningCredential,
     identity: Option<WorkerIdentity>,
-    clock: Arc<dyn WorkerClock>,
+    clock: Arc<dyn WallClock>,
     assertion_ttl_ms: u64,
 }
 
 impl SignedWorkerRequestAuthorizer {
+    /// `clock` stamps every assertion's issue time and request id. It is
+    /// required: the Worker process composes one clock, and an authorizer that
+    /// silently read the host clock instead is how a request id and the
+    /// `issued_at_ms` beside it came to disagree under test.
     #[must_use]
-    pub fn new(credential: WorkerSigningCredential) -> Self {
+    pub fn new(credential: WorkerSigningCredential, clock: Arc<dyn WallClock>) -> Self {
         Self {
             credential,
             identity: None,
-            clock: Arc::new(SystemWorkerClock),
+            clock,
             assertion_ttl_ms: 30_000,
         }
-    }
-
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn WorkerClock>) -> Self {
-        self.clock = clock;
-        self
     }
 
     #[must_use]
@@ -354,13 +355,14 @@ impl SignedWorkerRequestAuthorizer {
         self
     }
 
-    fn request_id() -> Result<String, WorkerCredentialError> {
+    /// A process-unique request id: a sequence number plus the issuing
+    /// reading, from the same injected clock as `issued_at_ms`.
+    fn request_id(issued_at_ms: u64) -> String {
         static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
-        Ok(format!(
-            "{}-{}",
-            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            SystemWorkerClock.now_ms()
-        ))
+        format!(
+            "{}-{issued_at_ms}",
+            REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        )
     }
 }
 
@@ -384,7 +386,7 @@ impl WorkerRequestAuthorizer for SignedWorkerRequestAuthorizer {
             identity: self.identity.clone(),
             method: method.to_ascii_uppercase(),
             path: path.to_string(),
-            request_id: Self::request_id().map_err(|error| error.to_string())?,
+            request_id: Self::request_id(issued_at_ms),
             issued_at_ms,
             expires_at_ms: issued_at_ms.saturating_add(self.assertion_ttl_ms),
         };
@@ -421,30 +423,26 @@ pub struct SignedWorkerAuthenticator {
     credentials: RwLock<BTreeMap<(String, String), EnrolledWorkerCredential>>,
     revoked_credentials: RwLock<HashSet<String>>,
     seen_requests: Mutex<HashMap<(String, String), u64>>,
-    clock: Arc<dyn WorkerClock>,
+    clock: Arc<dyn WallClock>,
     max_assertion_ttl_ms: u64,
     clock_skew_ms: u64,
 }
 
 impl SignedWorkerAuthenticator {
+    /// `clock` judges assertion windows and replay retention; it is the
+    /// Coordinator process's one clock, never a default.
     #[must_use]
-    pub fn new(credential: WorkerSigningCredential) -> Self {
+    pub fn new(credential: WorkerSigningCredential, clock: Arc<dyn WallClock>) -> Self {
         let authenticator = Self {
             credentials: RwLock::new(BTreeMap::new()),
             revoked_credentials: RwLock::new(HashSet::new()),
             seen_requests: Mutex::new(HashMap::new()),
-            clock: Arc::new(SystemWorkerClock),
+            clock,
             max_assertion_ttl_ms: 60_000,
             clock_skew_ms: 5_000,
         };
         authenticator.enroll(credential);
         authenticator
-    }
-
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn WorkerClock>) -> Self {
-        self.clock = clock;
-        self
     }
 
     #[must_use]
@@ -536,13 +534,19 @@ impl SignedWorkerAuthenticator {
         mac.verify_slice(&signature).map_err(|_| {
             WorkerAuthError::Invalid("worker assertion signature is invalid".into())
         })?;
-        let now_ms = self.clock.now_ms();
+        let now = self.clock.now();
+        let now_ms = now.as_epoch_ms();
+        // An assertion is admissible from its issue time less the permitted
+        // skew on: the one not-before law, not a hand-written comparison.
+        let issued = NotBefore::at(UtcTime::from_epoch_ms(
+            assertion.issued_at_ms.saturating_sub(self.clock_skew_ms),
+        ));
         if assertion.version != 1
             || assertion.worker_id != credential.worker_id
             || assertion.worker_id != header_worker
             || assertion.method != parts.method.as_str().to_ascii_uppercase()
             || assertion.path != parts.uri.path()
-            || assertion.issued_at_ms > now_ms.saturating_add(self.clock_skew_ms)
+            || !issued.is_due_at(now)
             || assertion.expires_at_ms.saturating_add(self.clock_skew_ms) < now_ms
             || assertion.expires_at_ms < assertion.issued_at_ms
             || assertion
@@ -881,6 +885,7 @@ impl WorkerUpstream {
         base_url: impl Into<String>,
         worker_id: impl Into<String>,
         mut credentials: Vec<WorkerSigningCredential>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Self, String> {
         let base_url = base_url.into();
         let worker_id = worker_id.into();
@@ -904,7 +909,9 @@ impl WorkerUpstream {
             .expect("admitted remote transport has exactly one credential");
         Ok(Self::new(base_url)
             .with_worker_id(worker_id)
-            .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(credential))))
+            .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(
+                credential, clock,
+            ))))
     }
 
     /// Construct the production remote transport and trust one operator-
@@ -916,8 +923,9 @@ impl WorkerUpstream {
         worker_id: impl Into<String>,
         credentials: Vec<WorkerSigningCredential>,
         ca_certificate_pem: &[u8],
+        clock: Arc<dyn WallClock>,
     ) -> Result<Self, String> {
-        let upstream = Self::remote(base_url, worker_id, credentials)?;
+        let upstream = Self::remote(base_url, worker_id, credentials, clock)?;
         upstream.with_server_ca(Some(ca_certificate_pem))
     }
 
@@ -1210,43 +1218,6 @@ impl WorkerRequestAuthenticator for HeaderWorkerAuthenticator {
     }
 }
 
-pub trait WorkerClock: Send + Sync {
-    fn now_ms(&self) -> u64;
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemWorkerClock;
-
-impl WorkerClock for SystemWorkerClock {
-    fn now_ms(&self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
-    }
-}
-
-/// Deterministic server clock for conformance and fault-window tests.
-#[derive(Debug)]
-pub struct ManualWorkerClock(AtomicU64);
-
-impl ManualWorkerClock {
-    #[must_use]
-    pub fn new(now_ms: u64) -> Self {
-        Self(AtomicU64::new(now_ms))
-    }
-
-    pub fn set(&self, now_ms: u64) {
-        self.0.store(now_ms, Ordering::SeqCst);
-    }
-}
-
-impl WorkerClock for ManualWorkerClock {
-    fn now_ms(&self) -> u64 {
-        self.0.load(Ordering::SeqCst)
-    }
-}
-
 pub trait WorkerLeasePolicy: Send + Sync {
     fn lease_ms(&self, worker: &VerifiedWorkerContext) -> u64;
 }
@@ -1280,6 +1251,11 @@ impl WorkerLeasePolicy for FixedWorkerLeasePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_lease_testkit::ManualClock;
+
+    fn clock() -> Arc<dyn WallClock> {
+        Arc::new(ManualClock::new(1_000))
+    }
 
     /// Cause/effect decision table: C1 document shape is one object or an
     /// enrollment array, C2 base64 is valid, C3 required identity/key/secret
@@ -1302,9 +1278,12 @@ mod tests {
             2,
             "R1 array"
         );
-        assert!(projected_request_authorizer(one, "worker-a").is_ok(), "R1");
         assert!(
-            projected_request_authorizer(one, "worker-b").is_err(),
+            projected_request_authorizer(one, "worker-a", clock()).is_ok(),
+            "R1"
+        );
+        assert!(
+            projected_request_authorizer(one, "worker-b", clock()).is_err(),
             "R2 identity mismatch"
         );
         for invalid in [
@@ -1333,6 +1312,7 @@ mod tests {
                 "https://coordinator.invalid",
                 "worker-signed",
                 vec![credential("remote")],
+                clock(),
             )
             .is_ok()
         );
@@ -1341,17 +1321,25 @@ mod tests {
                 "http://coordinator.invalid",
                 "worker-signed",
                 vec![credential("remote")],
+                clock(),
             ),
             WorkerUpstream::remote(
                 "https://coordinator.invalid",
                 "worker-other",
                 vec![credential("remote")],
+                clock(),
             ),
-            WorkerUpstream::remote("https://coordinator.invalid", "worker-signed", Vec::new()),
+            WorkerUpstream::remote(
+                "https://coordinator.invalid",
+                "worker-signed",
+                Vec::new(),
+                clock(),
+            ),
             WorkerUpstream::remote(
                 "https://coordinator.invalid",
                 "worker-signed",
                 vec![credential("one"), credential("two")],
+                clock(),
             ),
         ] {
             assert!(rejected.is_err());
@@ -1371,7 +1359,8 @@ mod tests {
                     "https://coordinator.invalid",
                     "worker-signed",
                     vec![credential("ca")],
-                    pem.as_bytes()
+                    pem.as_bytes(),
+                    clock(),
                 )
                 .is_err(),
                 "CA2"
@@ -1481,18 +1470,110 @@ mod tests {
         builder.body(()).unwrap().into_parts().0
     }
 
+    fn signed_assertion(parts: &Parts) -> WorkerRequestAssertion {
+        let header = parts.headers[axum::http::header::AUTHORIZATION]
+            .to_str()
+            .unwrap()
+            .strip_prefix(SIGNED_WORKER_SCHEME)
+            .unwrap()
+            .trim();
+        let (payload, _signature) = header.split_once('.').unwrap();
+        serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn assertion_times_come_from_the_one_injected_clock() {
+        // Cause/effect decision table. The injected clock reads t; the host
+        // clock reads something else entirely.
+        // | Rule | Clock moves | issued_at_ms | request id time | ids distinct |
+        // | R1   | no          | t            | t               | -            |
+        // | R2   | no (again)  | t            | t               | yes (seq)    |
+        // | R3   | to t2       | t2           | t2              | yes          |
+        // | R4   | Coordinator on the same clock admits the assertion      |
+        // Before the fix the request id's time came from the host clock while
+        // `issued_at_ms` came from the injected one (R1 failed).
+        let clock = Arc::new(ManualClock::new(123_456));
+        let credential = credential("clocked");
+        let authorizer = SignedWorkerRequestAuthorizer::new(credential.clone(), clock.clone());
+        let authenticator =
+            SignedWorkerAuthenticator::new(credential, clock.clone()).with_time_policy(60_000, 0);
+        let request_time = |assertion: &WorkerRequestAssertion| {
+            assertion
+                .request_id
+                .rsplit_once('-')
+                .unwrap()
+                .1
+                .parse::<u64>()
+                .unwrap()
+        };
+        let first_parts = signed_parts(&authorizer, "POST", "/v1/worker/drain", "/v1/worker/drain");
+        let first = signed_assertion(&first_parts);
+        assert_eq!(first.issued_at_ms, 123_456, "R1");
+        assert_eq!(request_time(&first), 123_456, "R1");
+        let second = signed_assertion(&signed_parts(
+            &authorizer,
+            "POST",
+            "/v1/worker/drain",
+            "/v1/worker/drain",
+        ));
+        assert_eq!(request_time(&second), 123_456, "R2");
+        assert_ne!(first.request_id, second.request_id, "R2");
+        clock.set(200_000);
+        let third = signed_assertion(&signed_parts(
+            &authorizer,
+            "POST",
+            "/v1/worker/drain",
+            "/v1/worker/drain",
+        ));
+        assert_eq!(third.issued_at_ms, 200_000, "R3");
+        assert_eq!(request_time(&third), 200_000, "R3");
+        clock.set(123_456);
+        assert!(authenticator.authenticate(&first_parts).await.is_ok(), "R4");
+    }
+
+    #[tokio::test]
+    async fn issue_time_admission_follows_the_not_before_law() {
+        // Cause/effect decision table over an assertion issued at t=10_000 with
+        // a permitted skew of 500ms: admissible from t - skew = 9_500 on.
+        // | Coordinator reads | admitted |
+        // | 9_499             | no       |
+        // | 9_500             | yes      |
+        // | 10_000            | yes      |
+        let worker_clock = Arc::new(ManualClock::new(10_000));
+        for (coordinator_ms, admitted) in [(9_499, false), (9_500, true), (10_000, true)] {
+            let credential = credential("skew");
+            let authorizer =
+                SignedWorkerRequestAuthorizer::new(credential.clone(), worker_clock.clone())
+                    .with_assertion_ttl_ms(1_000);
+            let authenticator = SignedWorkerAuthenticator::new(
+                credential,
+                Arc::new(ManualClock::new(coordinator_ms)),
+            )
+            .with_time_policy(2_000, 500);
+            let parts = signed_parts(&authorizer, "POST", "/v1/worker/drain", "/v1/worker/drain");
+            assert_eq!(
+                authenticator.authenticate(&parts).await.is_ok(),
+                admitted,
+                "coordinator at {coordinator_ms}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn signed_assertion_binds_route_incarnation_and_rejects_replay() {
-        let clock = Arc::new(ManualWorkerClock::new(10_000));
+        let clock = Arc::new(ManualClock::new(10_000));
         let credential = credential("primary");
-        let authorizer = SignedWorkerRequestAuthorizer::new(credential.clone())
-            .with_clock(clock.clone())
+        let authorizer = SignedWorkerRequestAuthorizer::new(credential.clone(), clock.clone())
             .with_assertion_ttl_ms(1_000);
         let identity = WorkerIdentity::new("worker-signed", "boot-a", 7);
         let authorizer = authorizer.bind_worker_identity(&identity);
-        let authenticator = SignedWorkerAuthenticator::new(credential)
-            .with_clock(clock)
-            .with_time_policy(2_000, 0);
+        let authenticator =
+            SignedWorkerAuthenticator::new(credential, clock).with_time_policy(2_000, 0);
         let parts = signed_parts(
             authorizer.as_ref(),
             "POST",
@@ -1512,13 +1593,11 @@ mod tests {
 
     #[tokio::test]
     async fn signed_assertion_rejects_route_tampering_expiry_and_revocation() {
-        let clock = Arc::new(ManualWorkerClock::new(20_000));
+        let clock = Arc::new(ManualClock::new(20_000));
         let credential = credential("rotation-a");
-        let authorizer = SignedWorkerRequestAuthorizer::new(credential.clone())
-            .with_clock(clock.clone())
+        let authorizer = SignedWorkerRequestAuthorizer::new(credential.clone(), clock.clone())
             .with_assertion_ttl_ms(500);
-        let authenticator = SignedWorkerAuthenticator::new(credential.clone())
-            .with_clock(clock.clone())
+        let authenticator = SignedWorkerAuthenticator::new(credential.clone(), clock.clone())
             .with_time_policy(1_000, 0);
 
         let tampered = signed_parts(
@@ -1551,14 +1630,12 @@ mod tests {
 
     #[tokio::test]
     async fn credential_rotation_overlaps_then_old_key_is_retired() {
-        let clock = Arc::new(ManualWorkerClock::new(30_000));
+        let clock = Arc::new(ManualClock::new(30_000));
         let old = credential("old");
         let new = credential("new");
-        let old_authorizer =
-            SignedWorkerRequestAuthorizer::new(old.clone()).with_clock(clock.clone());
-        let new_authorizer =
-            SignedWorkerRequestAuthorizer::new(new.clone()).with_clock(clock.clone());
-        let authenticator = SignedWorkerAuthenticator::new(old.clone()).with_clock(clock.clone());
+        let old_authorizer = SignedWorkerRequestAuthorizer::new(old.clone(), clock.clone());
+        let new_authorizer = SignedWorkerRequestAuthorizer::new(new.clone(), clock.clone());
+        let authenticator = SignedWorkerAuthenticator::new(old.clone(), clock.clone());
         authenticator.enroll(new);
 
         let old_request = signed_parts(

@@ -101,6 +101,9 @@ pub struct CoordinatorDependencies {
     /// AllInOne uses an in-process rollout target and leaves this absent.
     pub service_authenticator:
         Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
+    /// The process's one wall clock, chosen by the binary that composes the
+    /// Coordinator; every Coordinator-owned judgement of time reads it.
+    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 /// Complete Coordinator application surface.
@@ -264,6 +267,7 @@ pub async fn build_coordinator_component(
         default_workspace,
         private_router,
         service_authenticator,
+        clock,
     } = dependencies;
 
     deployment_application.bind_executable_agents(executable_agents);
@@ -306,6 +310,7 @@ pub async fn build_coordinator_component(
                 repository_transport_authorizer,
                 worker_directory,
                 ai_sdk_browser_cors,
+                worker_clock: clock.clone(),
             },
         )?;
     let managed = crate::with_local_workspace_scope(managed, default_workspace.clone());
@@ -341,6 +346,7 @@ pub async fn build_coordinator_component(
     // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.
     let scheduled_deployments = deployment_application;
+    let scheduler_clock = clock;
     service_lifecycle.spawn(
         "coordinator-deployment-dream-scheduler",
         move |cancel| async move {
@@ -351,10 +357,7 @@ pub async fn build_coordinator_component(
                     () = cancel.cancelled() => break,
                     _ = interval.tick() => {}
                 }
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_millis() as u64)
-                    .unwrap_or_default();
+                let now_ms = awaken_lease_contract::WallClockExt::now_ms(&*scheduler_clock);
                 if let Err(error) = scheduled_deployments.tick_and_launch(now_ms).await {
                     eprintln!("scheduled Deployment tick failed: {error}");
                 }

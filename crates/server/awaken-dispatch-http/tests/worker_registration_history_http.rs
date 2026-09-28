@@ -4,6 +4,7 @@
 //! application retries, not an attempt to bypass the signature nonce cache.
 mod postgres_support;
 
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{MemoryDispatchStore, WorkerDirectory, WorkerManifest};
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_worker_registry::{
@@ -11,8 +12,8 @@ use awaken_worker_registry::{
 };
 use awaken_coordinator_client::WorkerControlClient;
 use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, ManualWorkerClock, SignedWorkerAuthenticator,
-    SignedWorkerRequestAuthorizer, WorkerSigningCredential, WorkerUpstream,
+    FixedWorkerLeasePolicy, SignedWorkerAuthenticator, SignedWorkerRequestAuthorizer,
+    WorkerSigningCredential, WorkerUpstream,
 };
 use std::sync::Arc;
 
@@ -23,12 +24,11 @@ async fn assert_registration_history(directory: Arc<dyn WorkerDirectory>, worker
     // T5 fresh C -> generation 3. The independent domain table owns all Worker
     // lifecycle states; this table checks production client/route composition.
     // Kubernetes immutable-domain registration remains in its existing suite.
-    let clock = Arc::new(ManualWorkerClock::new(100));
+    let clock = Arc::new(ManualClock::new(100));
     let credential =
         WorkerSigningCredential::new(worker_id, "key", "fixture", b"history-test-only".to_vec())
             .unwrap();
-    let auth = SignedWorkerAuthenticator::new(credential.clone())
-        .with_clock(clock.clone())
+    let auth = SignedWorkerAuthenticator::new(credential.clone(), clock.clone())
         .with_time_policy(60_000, 0);
     let service = WorkerDispatchService::new(
         Arc::new(MemoryDispatchStore::new(
@@ -59,9 +59,10 @@ async fn assert_registration_history(directory: Arc<dyn WorkerDirectory>, worker
     let _server = Server(server);
     let upstream = WorkerUpstream::new(format!("http://{address}"))
         .with_worker_id(worker_id)
-        .with_request_authorizer(Arc::new(
-            SignedWorkerRequestAuthorizer::new(credential).with_clock(clock.clone()),
-        ));
+        .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(
+            credential,
+            clock.clone(),
+        )));
     let client = WorkerControlClient::new(upstream);
     let mut manifest = WorkerManifest::default();
     manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;

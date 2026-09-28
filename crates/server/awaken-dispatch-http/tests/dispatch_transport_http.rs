@@ -21,6 +21,7 @@ use awaken_agent_contract::stream::event::{
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     DispatchQueue, DispatchSettlementError, DispatchSettlementObserver, MemoryDispatchStore,
     RunClaim, RunDispatch, StreamEventRequest, StreamObservationRequest, WorkerIdentity,
@@ -32,9 +33,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryStreamSink;
-use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock,
-};
+use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -375,7 +374,7 @@ async fn foreign_session_work_defers_only_its_dispatch_and_leaves_other_sessions
         WorkerDispatchService::new(
             store.clone(),
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(ManualClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),
         )
         .with_session_work_authority(work.clone()),
@@ -563,7 +562,7 @@ async fn applied_remote_dispatch_invokes_one_exact_post_settlement_callback() {
         WorkerDispatchService::new(
             store,
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(ManualClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),
         )
         .with_recovery_source(recovery)
@@ -634,7 +633,7 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
         WorkerDispatchService::new(
             store,
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(ManualClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),
         )
         .with_recovery_source(recovery.clone())
@@ -742,14 +741,14 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     // claim *epoch*, not by a deadline: the stale-owner settles it rejects carry
     // a non-current epoch, and the 30s lease never lapses inside a test that
     // runs in milliseconds. The manual clock drives the service's lease policy,
-    // which is `WorkerClock`'s job. Handing the store a second, mirrored clock —
+    // which is the injected `WallClock`'s job. Handing the store a second, mirrored clock —
     // as `signed_worker_transport_http.rs` legitimately does, because there the
     // store does judge a deadline — would add machinery here that decides
     // nothing.
     let mem = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let clock = Arc::new(ManualWorkerClock::new(0));
+    let clock = Arc::new(ManualClock::new(0));
     let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
         mem as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
@@ -889,7 +888,7 @@ async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() 
             WorkerDispatchService::new(
                 store.clone(),
                 Arc::new(HeaderWorkerAuthenticator),
-                Arc::new(ManualWorkerClock::new(0)),
+                Arc::new(ManualClock::new(0)),
                 Arc::new(FixedWorkerLeasePolicy::new(30_000)),
             )
             .with_recovery_source(recovery.clone())
@@ -963,7 +962,7 @@ async fn terminal_observer_failure_withholds_remote_child_done_and_parent_work_r
         WorkerDispatchService::new(
             store.clone(),
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(ManualClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),
         )
         .with_recovery_source(recovery.clone())
@@ -1124,7 +1123,7 @@ async fn remote_done_requires_one_exact_committed_terminal_recovery_prefix() {
         let mut service = WorkerDispatchService::new(
             store.clone(),
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(ManualClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),
         )
         .with_terminal_observer(observer.clone())
@@ -1270,7 +1269,7 @@ async fn committed_root_done_settles_after_work_retirement_without_reopening_exe
         let mut service = WorkerDispatchService::new(
             store.clone(),
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(ManualClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),
         )
         .with_recovery_source(recovery.clone())
@@ -1365,7 +1364,7 @@ async fn work_release_response_loss_retries_done_from_the_same_committed_run() {
         WorkerDispatchService::new(
             store.clone(),
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(ManualClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),
         )
         .with_recovery_source(recovery.clone())
@@ -1430,7 +1429,7 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
         WorkerDispatchService::new(
             mem.clone() as Arc<dyn ControlDispatchQueue>,
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(ManualClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),
         )
         .with_stream_sink(stream.clone()),

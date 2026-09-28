@@ -316,6 +316,8 @@ async fn prepare_control_process_with_model_supply_and_installations(
         seal_key: Some(key),
         role: config::Role::Control,
         postgres_schema: PostgresSchemaMode::Verify,
+        // The Control process chooses its one wall clock here.
+        clock: awaken_lease_contract::system_clock(),
     })
     .await?;
     let identity = identity_wiring(

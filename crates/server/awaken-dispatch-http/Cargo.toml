@@ -10,6 +10,7 @@ layer = "interface"
 authority = "run-ingress-http"
 
 [dependencies]
+awaken-lease-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-observability.workspace = true
 awaken-resource-contract.workspace = true
@@ -58,7 +59,6 @@ awaken-store-postgres.workspace = true
 awaken-tenancy.workspace = true
 awaken-coordinator-client.workspace = true
 async-trait.workspace = true
-awaken-lease-contract.workspace = true
 awaken-lease-testkit.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }

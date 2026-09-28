@@ -93,6 +93,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 awaken_worker_transport_security::load_projected_request_authorizer(
                     std::path::Path::new(&path),
                     &worker_id,
+                    awaken_lease_contract::system_clock(),
                 )
             })
             .transpose()?;

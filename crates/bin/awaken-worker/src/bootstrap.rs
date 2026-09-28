@@ -94,6 +94,9 @@ impl WorkerBootstrap {
         use awaken_worker_transport_security::{
             WorkerUpstream, parse_projected_signing_credentials, projected_request_authorizer,
         };
+        // The Worker process's wall clock for signed request assertions. This
+        // bootstrap is the Worker's composition boundary, so it chooses it here.
+        let clock = awaken_lease_contract::system_clock();
         let source = self
             .request_credential_file
             .as_ref()
@@ -108,7 +111,7 @@ impl WorkerBootstrap {
                 let upstream = WorkerUpstream::new(server).with_worker_id(&self.worker_id);
                 match source {
                     Some(source) => Ok(upstream.with_request_authorizer(
-                        projected_request_authorizer(&source, &self.worker_id)?,
+                        projected_request_authorizer(&source, &self.worker_id, clock)?,
                     )),
                     None => Ok(upstream),
                 }
@@ -126,8 +129,9 @@ impl WorkerBootstrap {
                         &self.worker_id,
                         credentials,
                         ca,
+                        clock,
                     ),
-                    None => WorkerUpstream::remote(server, &self.worker_id, credentials),
+                    None => WorkerUpstream::remote(server, &self.worker_id, credentials, clock),
                 }
             }
         }

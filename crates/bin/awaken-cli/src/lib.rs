@@ -44,7 +44,6 @@ mod worker_transport_security;
 use std::sync::Arc;
 
 use awaken_config_service::ManagementAuditPlane;
-use awaken_lease_contract::system_clock;
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_session_executor::{ExtMcpProbe, ManagedHost, SharedHost};
@@ -256,6 +255,8 @@ struct ProcessStoreOpenOptions<'a> {
     seal_key: Option<&'a [u8; 32]>,
     role: config::Role,
     postgres_schema: PostgresSchemaMode,
+    /// The process's one wall clock; see [`ProcessStores::clock`].
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 async fn open_process_stores(
@@ -273,6 +274,7 @@ async fn open_process_stores(
         seal_key: key,
         role,
         postgres_schema,
+        clock,
     } = options;
 
     let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
@@ -370,7 +372,10 @@ async fn open_process_stores(
     let mut platform_workspace = remote_platform_workspace;
 
     let environment_work = if role_owns_managed_execution(role) {
-        Some(open_environment_work(&coordinator_cfg.sessions, postgres_schema).await?)
+        Some(
+            open_environment_work(&coordinator_cfg.sessions, postgres_schema, clock.clone())
+                .await?,
+        )
     } else {
         None
     };
@@ -497,7 +502,7 @@ async fn open_process_stores(
                 Arc::new(
                     awaken_env_store::SqliteEnvRegistry::open(
                         &path(environment_path),
-                        system_clock(),
+                        clock.clone(),
                     )
                     .map_err(|error| format!("open environments SQLite: {error}"))?,
                 ) as Arc<dyn awaken_environment_contract::EnvRegistry>,
@@ -512,10 +517,10 @@ async fn open_process_stores(
             StoreBackend::Postgres(url) => {
                 let environments = match postgres_schema {
                     PostgresSchemaMode::Migrate => {
-                        awaken_env_store::PostgresEnvRegistry::connect(url, system_clock()).await
+                        awaken_env_store::PostgresEnvRegistry::connect(url, clock.clone()).await
                     }
                     PostgresSchemaMode::Verify => {
-                        awaken_env_store::PostgresEnvRegistry::connect_existing(url, system_clock())
+                        awaken_env_store::PostgresEnvRegistry::connect_existing(url, clock.clone())
                             .await
                     }
                 }
@@ -568,6 +573,7 @@ async fn open_process_stores(
     Ok(ProcessStores {
         workspace_root: Some(workspace_root),
         platform_workspace,
+        clock,
         control: if opens_control {
             let (environments, sandbox_policies) =
                 control_environment.expect("Control role opens Environment stores");
