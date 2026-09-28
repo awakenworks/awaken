@@ -301,18 +301,19 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
             return Ok(awaken_session_work_contract::SessionWorkOwnership::Unowned);
         }
         Ok(awaken_session_work_contract::SessionWorkOwnership::Leased(
-            awaken_session_work_contract::SessionWorkLease {
-                work_id: format!("work-{session_id}"),
-                environment_id: "env".into(),
-                session_id: session_id.clone(),
-                owner: if foreign {
-                    "other-worker".into()
+            awaken_session_work_contract::SessionWorkLease::from_persisted(
+                format!("work-{session_id}"),
+                "env",
+                session_id.clone(),
+                if foreign {
+                    "other-worker"
                 } else {
-                    worker_owner.into()
+                    worker_owner
                 },
-                epoch: self.epoch.load(Ordering::SeqCst).max(1),
-                expires_at_unix_ms: now_ms + 60_000,
-            },
+                self.epoch.load(Ordering::SeqCst).max(1),
+                now_ms + 60_000,
+            )
+            .expect("nonzero epoch"),
         ))
     }
 

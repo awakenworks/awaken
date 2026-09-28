@@ -87,7 +87,7 @@ impl SqliteWorkQueue {
         ) else {
             return Err(WorkQueueError::Storage("work lease epoch exhausted".into()));
         };
-        let next_epoch = stored_lease_epoch(next_authority.epoch)?;
+        let next_epoch = stored_lease_epoch(next_authority.granted_epoch()?)?;
         let session_access = session_access.filter(|_| data_type == "session");
         let token_hash = session_access.as_ref().map(SessionAccessDigest::as_str);
         tx.execute(
@@ -120,11 +120,10 @@ impl SqliteWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        expected_epoch: Option<u64>,
+        fence: LeaseFence,
     ) -> Result<bool, WorkQueueError> {
         let authority = Self::lease_authority(tx, env_id, wid)?;
-        Ok(authority.owner.as_deref() == Some(worker_id)
-            && expected_epoch.is_none_or(|expected| expected == authority.epoch))
+        Ok(authority.owner.as_deref() == Some(worker_id) && fence.admits(authority.epoch))
     }
 
     fn lease_authority(
@@ -148,7 +147,7 @@ impl SqliteWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        expected_epoch: Option<u64>,
+        fence: LeaseFence,
         acknowledged_at: String,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let tx = conn
@@ -157,7 +156,7 @@ impl SqliteWorkQueue {
         let Some(current) = Self::owned(&tx, env_id, wid)? else {
             return Ok(WorkMutationResult::NotFound);
         };
-        if !Self::lease_matches(&tx, env_id, wid, worker_id, expected_epoch)? {
+        if !Self::lease_matches(&tx, env_id, wid, worker_id, fence)? {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
         let next = ack_next_state(&current);
@@ -178,7 +177,7 @@ impl SqliteWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        expected_epoch: Option<u64>,
+        fence: LeaseFence,
         now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
@@ -190,7 +189,7 @@ impl SqliteWorkQueue {
         };
         let admission = awaken_session_work_contract::work_lease_mutation_admission(
             true,
-            Self::lease_matches(&tx, env_id, wid, worker_id, expected_epoch)?,
+            Self::lease_matches(&tx, env_id, wid, worker_id, fence)?,
             heartbeat
                 .condition
                 .permits(current.latest_heartbeat_at.as_deref()),
@@ -206,7 +205,7 @@ impl SqliteWorkQueue {
                 Self::lease_authority(&tx, env_id, wid)?,
                 LeaseAuthorityCommand::Renew {
                     owner: worker_id.to_string(),
-                    expected_epoch,
+                    fence,
                     refreshed_at: db_millis(now_ms),
                     expires_at: lease_expiry(now_ms, ttl_seconds),
                 },
@@ -243,7 +242,7 @@ impl SqliteWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        expected_epoch: Option<u64>,
+        fence: LeaseFence,
         stopped_at: String,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let tx = conn
@@ -253,17 +252,14 @@ impl SqliteWorkQueue {
             return Ok(WorkMutationResult::NotFound);
         }
         let authority = Self::lease_authority(&tx, env_id, wid)?;
-        if authority.owner.as_deref() != Some(worker_id)
-            || expected_epoch.is_some_and(|expected| expected != authority.epoch)
-        {
+        if authority.owner.as_deref() != Some(worker_id) || !fence.admits(authority.epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
-        let authority_epoch = authority.epoch;
         let LeaseAuthorityDecision::Apply(next_authority) = lease_authority_transition(
             authority,
             LeaseAuthorityCommand::Release {
                 owner: worker_id.to_string(),
-                expected_epoch: expected_epoch.unwrap_or(authority_epoch),
+                fence,
             },
         ) else {
             return Ok(WorkMutationResult::PreconditionFailed);
@@ -319,19 +315,22 @@ impl SqliteWorkQueue {
                 let owner = current.1.clone().ok_or_else(|| {
                     WorkQueueError::Storage("active Session Work has no lease owner".into())
                 })?;
-                let (_, epoch) = lease_epoch(current.2, false)?;
+                let epoch = stored_epoch(current.2)?.ok_or_else(|| {
+                    WorkQueueError::Storage("active Session Work has no lease epoch".into())
+                })?;
                 let expires_at_unix_ms = u64::try_from(current.3.unwrap_or_default())
                     .map_err(|_| WorkQueueError::Storage("negative Session Work expiry".into()))?;
-                return Ok(Some(SessionWorkLease {
-                    work_id, environment_id: env_id, session_id: awaken_session_types::SessionId::from(&session_id), owner, epoch, expires_at_unix_ms,
-                }));
+                return Ok(Some(SessionWorkLease::granted(
+                    work_id, env_id, awaken_session_types::SessionId::from(&session_id), owner, epoch,
+                    Expiry::from_unix_ms(expires_at_unix_ms),
+                )));
             }
             let epoch = if current.0 == "active"
                 && current.1.as_deref() == Some(worker_owner.as_str())
             {
                 let Some(next) = renew_stored_lease_authority(
                     StoredLeaseAuthorityInput { owner: current.1.clone(), epoch: current.2, refreshed_at: current.4, expires_at: current.3 },
-                    worker_owner.clone(), None, db_millis(now_ms), lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
+                    worker_owner.clone(), LeaseFence::OwnerOnly, db_millis(now_ms), lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
                 )? else {
                     return Err(WorkQueueError::Storage("active Session Work has incomplete lease authority".into()));
                 };
@@ -340,7 +339,7 @@ impl SqliteWorkQueue {
                      WHERE work_id = ?3 AND environment_id = ?4 AND lease_owner = ?5",
                     params![next.expires_at, next.refreshed_at, work_id, env_id, worker_owner],
                 ).map_err(storage)?;
-                next.epoch
+                next.granted_epoch()?
             } else {
                 let active: i64 = tx.query_row(
                     "SELECT COUNT(*) FROM work_queue_item WHERE environment_id = ?1 AND state = 'active'",
@@ -351,20 +350,20 @@ impl SqliteWorkQueue {
                     current.1.clone(), current.2, current.4, current.3, worker_owner.clone(),
                     db_millis(now_ms), lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
                 )?;
-                let epoch_db = stored_lease_epoch(next.epoch)?;
+                let epoch_db = stored_lease_epoch(next.granted_epoch()?)?;
                 tx.execute(
                     "UPDATE work_queue_item SET state = 'active', started_at = ?1, \
                      lease_owner = ?2, lease_epoch = ?3, lease_expires_ms = ?4, \
                      lease_refreshed_ms = ?5, latest_heartbeat_at = NULL WHERE work_id = ?6",
                     params![started_at, next.owner, epoch_db, next.expires_at, next.refreshed_at, work_id],
                 ).map_err(storage)?;
-                next.epoch
+                next.granted_epoch()?
             };
             tx.commit().map_err(storage)?;
-            Ok(Some(SessionWorkLease {
-                work_id, environment_id: env_id, session_id: awaken_session_types::SessionId::from(&session_id), owner: worker_owner, epoch,
-                expires_at_unix_ms: now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000),
-            }))
+            Ok(Some(SessionWorkLease::granted(
+                work_id, env_id, awaken_session_types::SessionId::from(&session_id), worker_owner, epoch,
+                Expiry::from_unix_ms(now_ms.saturating_add(HEARTBEAT_TTL_SECONDS * 1_000)),
+            )))
         }).await
     }
 }
@@ -451,7 +450,7 @@ impl PostgresWorkQueue {
         ) else {
             return Err(WorkQueueError::Storage("work lease epoch exhausted".into()));
         };
-        let next_epoch = stored_lease_epoch(next_authority.epoch)?;
+        let next_epoch = stored_lease_epoch(next_authority.granted_epoch()?)?;
         let session_access = session_access.filter(|_| data_type == "session");
         let token_hash = session_access.as_ref().map(SessionAccessDigest::as_str);
         sqlx::query(
@@ -492,7 +491,7 @@ impl PostgresWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        expected_epoch: Option<u64>,
+        fence: LeaseFence,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let current: Option<(String, Option<String>, i64)> = sqlx::query_as(
@@ -507,10 +506,8 @@ impl PostgresWorkQueue {
         let Some((state, owner, epoch)) = current else {
             return Ok(WorkMutationResult::NotFound);
         };
-        let epoch = u64::try_from(epoch).map_err(storage)?;
-        if owner.as_deref() != Some(worker_id)
-            || expected_epoch.is_some_and(|expected| expected != epoch)
-        {
+        let epoch = stored_epoch(epoch)?;
+        if owner.as_deref() != Some(worker_id) || !fence.admits(epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
         let next = awaken_session_work_contract::WorkState::from_wire(&state)
@@ -541,7 +538,7 @@ impl PostgresWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        expected_epoch: Option<u64>,
+        fence: LeaseFence,
         now_ms: u64,
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError> {
@@ -562,14 +559,12 @@ impl PostgresWorkQueue {
         // By name, not by position: the projection's column list grows, and an
         // ordinal that silently shifts decodes the wrong column.
         let owner: Option<String> = row.try_get("lease_owner").map_err(storage)?;
-        let epoch = u64::try_from(row.try_get::<i64, _>("lease_epoch").map_err(storage)?)
-            .map_err(storage)?;
+        let epoch = stored_epoch(row.try_get::<i64, _>("lease_epoch").map_err(storage)?)?;
         let refreshed: Option<i64> = row.try_get("lease_refreshed_ms").map_err(storage)?;
         let expires: Option<i64> = row.try_get("lease_expires_ms").map_err(storage)?;
         let admission = awaken_session_work_contract::work_lease_mutation_admission(
             true,
-            owner.as_deref() == Some(worker_id)
-                && expected_epoch.is_none_or(|expected| expected == epoch),
+            owner.as_deref() == Some(worker_id) && fence.admits(epoch),
             heartbeat
                 .condition
                 .permits(current.latest_heartbeat_at.as_deref()),
@@ -590,7 +585,7 @@ impl PostgresWorkQueue {
                 },
                 LeaseAuthorityCommand::Renew {
                     owner: worker_id.to_string(),
-                    expected_epoch,
+                    fence,
                     refreshed_at: db_millis(now_ms),
                     expires_at: lease_expiry(now_ms, ttl_seconds),
                 },
@@ -626,7 +621,7 @@ impl PostgresWorkQueue {
         env_id: &str,
         wid: &str,
         worker_id: &str,
-        expected_epoch: Option<u64>,
+        fence: LeaseFence,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let authority: Option<StoredLeaseAuthority> = sqlx::query_as(
@@ -641,10 +636,8 @@ impl PostgresWorkQueue {
         let Some((owner, epoch, refreshed, expires)) = authority else {
             return Ok(WorkMutationResult::NotFound);
         };
-        let epoch = u64::try_from(epoch).map_err(storage)?;
-        if owner.as_deref() != Some(worker_id)
-            || expected_epoch.is_some_and(|expected| expected != epoch)
-        {
+        let epoch = stored_epoch(epoch)?;
+        if owner.as_deref() != Some(worker_id) || !fence.admits(epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
         let LeaseAuthorityDecision::Apply(next_authority) = lease_authority_transition(
@@ -656,7 +649,7 @@ impl PostgresWorkQueue {
             },
             LeaseAuthorityCommand::Release {
                 owner: worker_id.to_string(),
-                expected_epoch: expected_epoch.unwrap_or(epoch),
+                fence,
             },
         ) else {
             return Ok(WorkMutationResult::PreconditionFailed);

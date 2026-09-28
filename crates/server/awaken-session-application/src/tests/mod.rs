@@ -4787,14 +4787,14 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
         awaken_session_work_contract::WorkQueueError,
     > {
         Ok(self.awakened.lock().unwrap().contains(session_id).then(|| {
-            awaken_session_work_contract::SessionWorkLease {
-                work_id: format!("work:{session_id}"),
-                environment_id: environment_id.to_string(),
-                session_id: SessionId::from(session_id),
-                owner: worker_owner.to_string(),
-                epoch: 1,
-                expires_at_unix_ms: now_ms.saturating_add(30_000),
-            }
+            awaken_session_work_contract::SessionWorkLease::granted(
+                format!("work:{session_id}"),
+                environment_id,
+                SessionId::from(session_id),
+                worker_owner,
+                awaken_lease_contract::fence::Epoch::FIRST,
+                awaken_lease_contract::Expiry::from_unix_ms(now_ms.saturating_add(30_000)),
+            )
         }))
     }
 }

@@ -201,7 +201,7 @@ mod tests {
             environment_id: "env_1".into(),
             session_id: "sesn_1".into(),
             lease_owner: "owner".into(),
-            lease_epoch: 2,
+            lease_epoch: awaken_lease_contract::fence::Epoch::from_persisted(2).unwrap(),
             expires_at_unix_ms: 100,
         }
     }

@@ -127,7 +127,8 @@ fn token_authentication_never_borrows_a_replacement_epoch() {
                 "token and owner must come from one claim"
             );
             assert_eq!(
-                access.lease_epoch, 1,
+                access.lease_epoch.get(),
+                1,
                 "token and epoch must come from one claim"
             );
         }
@@ -173,7 +174,7 @@ fn owner_teardown_cannot_clear_an_intervening_reclaim() {
             .unwrap()
             .expect("teardown of A cannot revoke B's claim");
         assert_eq!(
-            (access.lease_owner.as_str(), access.lease_epoch),
+            (access.lease_owner.as_str(), access.lease_epoch.get()),
             ("owner-b", 2)
         );
     });
@@ -215,22 +216,22 @@ fn renewal_and_reclaim_return_complete_lease_snapshots() {
         };
         assert_eq!(
             (
-                current.owner.as_str(),
-                current.epoch,
-                current.expires_at_unix_ms
+                current.owner(),
+                current.epoch(),
+                current.expires_at_unix_ms()
             ),
             expected
         );
         assert!(
             (
-                renewed.owner.as_str(),
-                renewed.epoch,
-                renewed.expires_at_unix_ms
+                renewed.owner(),
+                renewed.epoch(),
+                renewed.expires_at_unix_ms()
             ) == ("owner-a", 1, LEASE_TTL_MS + 1)
                 || (
-                    renewed.owner.as_str(),
-                    renewed.epoch,
-                    renewed.expires_at_unix_ms
+                    renewed.owner(),
+                    renewed.epoch(),
+                    renewed.expires_at_unix_ms()
                 ) == ("owner-b", 2, LEASE_TTL_MS * 2),
             "renewal must return one complete claim snapshot"
         );

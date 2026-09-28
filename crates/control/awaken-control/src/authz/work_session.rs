@@ -63,7 +63,7 @@ mod tests {
                         environment_id: "env_1".into(),
                         session_id: "sesn_1".into(),
                         lease_owner: "owner".into(),
-                        lease_epoch: 1,
+                        lease_epoch: awaken_lease_contract::fence::Epoch::FIRST,
                         expires_at_unix_ms: 10,
                     });
             }
