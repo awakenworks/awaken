@@ -208,7 +208,7 @@ pub struct SessionRunReservationResolutionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettleRequest {
     pub run_id: String,
-    #[serde(default)]
+    /// Required: a missing epoch used to decode as 0, which names no claim.
     pub epoch: u64,
     pub outcome: DispatchOutcome,
     #[serde(default)]
@@ -295,6 +295,42 @@ mod tests {
             }))
             .is_err(),
             "R2 missing epoch fails closed"
+        );
+    }
+
+    /// Settle and claim wires require the fencing epoch like renewal does.
+    /// | Rule | wire                                  | effect            |
+    /// | S1   | settle with epoch                     | decodes exactly   |
+    /// | S2   | settle without epoch                  | refused on decode |
+    /// | L1   | claimed lease without epoch           | refused on decode |
+    #[test]
+    fn settle_and_lease_wires_require_the_canonical_fencing_epoch() {
+        let settle = serde_json::json!({
+            "run_id": "run-settle",
+            "epoch": 4,
+            "outcome": serde_json::to_value(crate::DispatchOutcome::Done).unwrap(),
+        });
+        assert_eq!(
+            serde_json::from_value::<SettleRequest>(settle.clone())
+                .expect("S1")
+                .epoch,
+            4,
+            "S1"
+        );
+        let mut missing = settle;
+        missing.as_object_mut().unwrap().remove("epoch");
+        assert!(
+            serde_json::from_value::<SettleRequest>(missing).is_err(),
+            "S2"
+        );
+        assert!(
+            serde_json::from_value::<crate::Lease>(serde_json::json!({
+                "run_id": "run-settle",
+                "owner": "worker",
+                "expires_ms": 10,
+            }))
+            .is_err(),
+            "L1"
         );
     }
 

@@ -14,8 +14,13 @@ pub struct Lease {
     /// owner: the store rejects a settle whose epoch is not the row's current one.
     /// This is the canonical fencing token (Kleppmann): owner strings can collide
     /// or be reused, but a monotone epoch cannot, so the fence is topology- and
-    /// owner-name-independent. A row that has never been claimed has epoch 0.
-    #[serde(default)]
+    /// owner-name-independent. A row that has never been claimed has epoch 0,
+    /// so a lease — which only a claim mints — never carries 0.
+    ///
+    /// Required on the wire: a missing epoch used to decode as 0 through
+    /// `#[serde(default)]`, a value no claim grants. Dispatch rows persist the
+    /// epoch in their own `lease_epoch` column, never as this JSON, so only the
+    /// Control/Worker transport (one release on both ends) carries this field.
     pub epoch: u64,
 }
 
