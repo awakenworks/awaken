@@ -2,50 +2,54 @@
 
 use std::sync::Arc;
 
-use awaken_provisioning_contract as pc;
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
+use awaken_session_executor::ContainerEnvironmentComponents;
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 use awaken_sandbox_container::ContainerProvider;
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 use awaken_sandbox_container::{ContainerEnvironmentCapacity, ContainerEnvironmentProvider};
 
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-use crate::deployment_config::ContainerHandResidency;
-use crate::deployment_config::SandboxTier;
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-use crate::sandbox_source::container_image;
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+use awaken_session_executor::ContainerHandResidency;
+use awaken_session_executor::SandboxTier;
 
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
+/// Deployment-owned security coordinates of the container tier that the plain
+/// deployment configuration cannot synthesize: a no-bypass allowlist proxy
+/// (whose signing key is mounted only into the Worker and Gateway) and the
+/// hosted Repository Gateway trust. Standalone configuration leaves both
+/// absent; a downstream composition that owns them sets them here.
+/// Consumer: [`build_container_environment_for_realization`].
+#[derive(Clone, Debug, Default)]
+pub struct ContainerTierPolicy {
+    /// Capability-authenticated proxy used only when the container runtime has
+    /// independently attested a no-bypass allowlist network boundary.
+    pub allowlist_proxy: Option<awaken_sandbox_container::AllowlistProxy>,
+    /// Public CA and exact host alias for the hosted private Repository Gateway.
+    /// This is transport trust, not a credential or Repository authority.
+    pub repository_gateway_trust: Option<awaken_sandbox_container::K8sRepositoryGatewayTrust>,
+}
+
+/// The image a container tier requires, or a fail-closed error naming the config var.
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
+fn container_image(image: Option<&str>) -> Result<String, String> {
+    image
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "a container sandbox tier requires AWAKEN_CONTAINER_IMAGE".to_string())
+}
+
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 struct BuiltContainerEnvironment {
     provider: Arc<dyn ContainerEnvironmentProvider>,
     capacity: Option<Arc<dyn ContainerEnvironmentCapacity>>,
 }
 
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 const RESIDENT_HAND_PORT: u16 = 7777;
 
-#[cfg(feature = "container-k8s")]
+#[cfg(feature = "k8s")]
 fn k8s_sandbox_control_forwarder(
     image: Option<&str>,
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
 ) -> Result<awaken_sandbox_container::k8s::K8sSandboxControlForwarder, String> {
     awaken_sandbox_container::k8s::K8sSandboxControlForwarder::new(
         container_image(image)?,
@@ -55,28 +59,12 @@ fn k8s_sandbox_control_forwarder(
     .map_err(|error| format!("Kubernetes Sandbox control forwarder: {error}"))
 }
 
-/// The one container-environment realization assembled from a deployment.
-///
-/// A downstream composition may decorate `provider` while retaining the exact
-/// capacity and cache-volume owners created by this canonical builder. This
-/// prevents product integrations from reproducing Kubernetes/Podman/Docker
-/// construction merely to add an infrastructure concern such as checkpointing.
-pub struct ContainerEnvironmentComponents {
-    pub provider: Arc<dyn ContainerEnvironmentProvider>,
-    pub capacity: Option<Arc<dyn ContainerEnvironmentCapacity>>,
-    pub extra_mounts: Vec<pc::MountRequirement>,
-    pub cache_volume_initializer: Option<Arc<dyn crate::CacheVolumeInitializer>>,
-}
-
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 async fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     provider: ContainerProvider<R>,
     leased: bool,
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<BuiltContainerEnvironment, String> {
     let size = settings.warm_pool_size;
     if size == 0 {
@@ -96,11 +84,10 @@ async fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     // expired, and keeps this pool's own records renewed. A runtime that names
     // no lease domain (Kubernetes) keeps process-local warm capacity.
     if leased {
-        // The host lease records are judged on the host's wall clock.
-        let leases = awaken_sandbox_container::pool::WarmCapacityLeases::host_default(
-            awaken_lease_contract::system_clock(),
-        )
-        .map_err(|error| format!("warm capacity leases: {error}"))?;
+        // The host lease records are judged on the process clock the
+        // composition chose for the Host.
+        let leases = awaken_sandbox_container::pool::WarmCapacityLeases::host_default(clock)
+            .map_err(|error| format!("warm capacity leases: {error}"))?;
         pool = pool
             .with_capacity_leases(leases)
             .await
@@ -113,16 +100,14 @@ async fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     })
 }
 
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     runtime: Arc<R>,
     image: Option<&str>,
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
+    policy: &ContainerTierPolicy,
     package_provisioner: Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<BuiltContainerEnvironment, String> {
     let leased = runtime.capacity_lease_domain().is_some();
     let mut provider = ContainerProvider::new(runtime, container_image(image)?);
@@ -144,16 +129,16 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
             url: url.to_owned(),
         });
     }
-    if let Some(proxy) = &settings.container_allowlist_proxy {
+    if let Some(proxy) = &policy.allowlist_proxy {
         provider = provider.with_allowlist_proxy(proxy.clone());
     }
-    wrap(provider, leased, settings).await
+    wrap(provider, leased, settings, clock).await
 }
 
-#[cfg(feature = "container-docker")]
+#[cfg(feature = "docker")]
 fn configure_docker_runtime(
     mut runtime: awaken_sandbox_container::docker::DockerRuntime,
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
 ) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
     if let Some(registry) = &settings.package_image_registry {
         runtime = runtime.with_package_registry(registry);
@@ -170,9 +155,9 @@ fn configure_docker_runtime(
         )))
 }
 
-#[cfg(feature = "container-docker")]
+#[cfg(feature = "docker")]
 fn docker_runtime(
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
 ) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
     configure_docker_runtime(
         awaken_sandbox_container::docker::DockerRuntime::connect_local(8080)
@@ -181,10 +166,10 @@ fn docker_runtime(
     )
 }
 
-#[cfg(feature = "container-docker")]
+#[cfg(feature = "docker")]
 fn docker_runtime_for_realization(
     realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
 ) -> Result<awaken_sandbox_container::docker::DockerRuntime, String> {
     configure_docker_runtime(
         awaken_sandbox_container::docker::DockerRuntime::connect_local_for_realization(
@@ -196,10 +181,10 @@ fn docker_runtime_for_realization(
     )
 }
 
-#[cfg(feature = "container-podman")]
+#[cfg(feature = "podman")]
 fn configure_podman_runtime(
     mut runtime: awaken_sandbox_container::podman::PodmanRuntime,
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
 ) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
     if let Some(registry) = &settings.package_image_registry {
         runtime = runtime.with_package_registry(registry);
@@ -216,9 +201,9 @@ fn configure_podman_runtime(
         )))
 }
 
-#[cfg(feature = "container-podman")]
+#[cfg(feature = "podman")]
 fn podman_runtime(
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
 ) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
     configure_podman_runtime(
         awaken_sandbox_container::podman::PodmanRuntime::with_bin(
@@ -229,10 +214,10 @@ fn podman_runtime(
     )
 }
 
-#[cfg(feature = "container-podman")]
+#[cfg(feature = "podman")]
 fn podman_runtime_for_realization(
     realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
 ) -> Result<awaken_sandbox_container::podman::PodmanRuntime, String> {
     configure_podman_runtime(
         awaken_sandbox_container::podman::PodmanRuntime::with_bin_for_realization(
@@ -244,9 +229,9 @@ fn podman_runtime_for_realization(
     )
 }
 
-#[cfg(feature = "container-k8s")]
+#[cfg(feature = "k8s")]
 async fn k8s_package_provisioner(
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
 ) -> Result<Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>, String> {
     let Some(builder) = settings.package_image_builder else {
         return Ok(None);
@@ -255,19 +240,23 @@ async fn k8s_package_provisioner(
         "a Kubernetes package builder requires package_image_registry".to_string()
     })?;
     match builder {
-        #[cfg(feature = "container-docker")]
-        crate::PackageImageBuilder::Docker => Ok(Some(Arc::new(docker_runtime(settings)?))),
-        #[cfg(not(feature = "container-docker"))]
-        crate::PackageImageBuilder::Docker => {
+        #[cfg(feature = "docker")]
+        awaken_session_executor::PackageImageBuilder::Docker => {
+            Ok(Some(Arc::new(docker_runtime(settings)?)))
+        }
+        #[cfg(not(feature = "docker"))]
+        awaken_session_executor::PackageImageBuilder::Docker => {
             Err("package_image_builder=docker needs the `container-docker` feature".into())
         }
-        #[cfg(feature = "container-podman")]
-        crate::PackageImageBuilder::Podman => Ok(Some(Arc::new(podman_runtime(settings)?))),
-        #[cfg(not(feature = "container-podman"))]
-        crate::PackageImageBuilder::Podman => {
+        #[cfg(feature = "podman")]
+        awaken_session_executor::PackageImageBuilder::Podman => {
+            Ok(Some(Arc::new(podman_runtime(settings)?)))
+        }
+        #[cfg(not(feature = "podman"))]
+        awaken_session_executor::PackageImageBuilder::Podman => {
             Err("package_image_builder=podman needs the `container-podman` feature".into())
         }
-        crate::PackageImageBuilder::Kubernetes => {
+        awaken_session_executor::PackageImageBuilder::Kubernetes => {
             let mut provisioner =
                 awaken_sandbox_container::k8s::K8sPackageImageProvisioner::connect(
                     settings.k8s_namespace.clone(),
@@ -299,21 +288,21 @@ async fn k8s_package_provisioner(
 /// and Coordinator's one Environment build-job state machine. It deliberately
 /// owns no journal, lease, or Environment-domain state.
 pub async fn package_image_provisioner(
-    deployment: &crate::DeploymentConfig,
+    deployment: &awaken_session_executor::DeploymentConfig,
 ) -> Result<Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>, String> {
     match deployment.sandbox_tier {
-        #[cfg(feature = "container-docker")]
+        #[cfg(feature = "docker")]
         SandboxTier::Docker => Ok(Some(Arc::new(docker_runtime(&deployment.sandbox)?))),
-        #[cfg(feature = "container-podman")]
+        #[cfg(feature = "podman")]
         SandboxTier::Podman => Ok(Some(Arc::new(podman_runtime(&deployment.sandbox)?))),
-        #[cfg(feature = "container-k8s")]
+        #[cfg(feature = "k8s")]
         SandboxTier::K8s => k8s_package_provisioner(&deployment.sandbox).await,
         SandboxTier::Local | SandboxTier::Namespace => Ok(None),
-        #[cfg(not(feature = "container-docker"))]
+        #[cfg(not(feature = "docker"))]
         SandboxTier::Docker => Ok(None),
-        #[cfg(not(feature = "container-podman"))]
+        #[cfg(not(feature = "podman"))]
         SandboxTier::Podman => Ok(None),
-        #[cfg(not(feature = "container-k8s"))]
+        #[cfg(not(feature = "k8s"))]
         SandboxTier::K8s => Ok(None),
     }
 }
@@ -324,16 +313,14 @@ pub async fn package_image_provisioner(
 /// Canonical durable-Session builder. Every concrete runtime receives the same
 /// installation-stable namespace; adapters may project it but must not derive a
 /// process/lease identity independently.
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 pub async fn build_container_environment_for_realization(
     realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
     tier: SandboxTier,
     image: Option<&str>,
-    settings: &crate::deployment_config::SandboxSettings,
+    settings: &awaken_session_executor::SandboxSettings,
+    policy: &ContainerTierPolicy,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<ContainerEnvironmentComponents, String> {
     if let Some(policy) = &settings.k8s_image_prewarm {
         policy.validate()?;
@@ -347,23 +334,39 @@ pub async fn build_container_environment_for_realization(
         return Err("resident container Hand currently requires the Kubernetes Pod channel".into());
     }
     let built = match tier {
-        #[cfg(feature = "container-docker")]
+        #[cfg(feature = "docker")]
         SandboxTier::Docker => {
             let runtime = Arc::new(docker_runtime_for_realization(
                 realization_namespace.clone(),
                 settings,
             )?);
-            finish(runtime.clone(), image, settings, Some(runtime)).await?
+            finish(
+                runtime.clone(),
+                image,
+                settings,
+                policy,
+                Some(runtime),
+                clock,
+            )
+            .await?
         }
-        #[cfg(feature = "container-podman")]
+        #[cfg(feature = "podman")]
         SandboxTier::Podman => {
             let runtime = Arc::new(podman_runtime_for_realization(
                 realization_namespace.clone(),
                 settings,
             )?);
-            finish(runtime.clone(), image, settings, Some(runtime)).await?
+            finish(
+                runtime.clone(),
+                image,
+                settings,
+                policy,
+                Some(runtime),
+                clock,
+            )
+            .await?
         }
-        #[cfg(feature = "container-k8s")]
+        #[cfg(feature = "k8s")]
         SandboxTier::K8s => {
             let namespace = settings.k8s_namespace.clone();
             // Exec-attached Session environments do not publish an ACP port. Keep the
@@ -373,7 +376,7 @@ pub async fn build_container_environment_for_realization(
                 namespace,
                 realization_namespace,
                 inert,
-                settings.k8s_repository_gateway_trust.clone(),
+                policy.repository_gateway_trust.clone(),
             )
             .await
             .map_err(|error| format!("k8s runtime: {error}"))?
@@ -393,28 +396,28 @@ pub async fn build_container_environment_for_realization(
             }
             let runtime = Arc::new(runtime);
             let package_provisioner = k8s_package_provisioner(settings).await?;
-            finish(runtime, image, settings, package_provisioner).await?
+            finish(runtime, image, settings, policy, package_provisioner, clock).await?
         }
         SandboxTier::Local | SandboxTier::Namespace => {
             return Err("local/namespace tiers do not use a container provider".into());
         }
-        #[cfg(not(feature = "container-docker"))]
+        #[cfg(not(feature = "docker"))]
         SandboxTier::Docker => {
             return Err("AWAKEN_SANDBOX_TIER=docker needs the `container-docker` feature".into());
         }
-        #[cfg(not(feature = "container-podman"))]
+        #[cfg(not(feature = "podman"))]
         SandboxTier::Podman => {
             return Err("AWAKEN_SANDBOX_TIER=podman needs the `container-podman` feature".into());
         }
-        #[cfg(not(feature = "container-k8s"))]
+        #[cfg(not(feature = "k8s"))]
         SandboxTier::K8s => {
             return Err("AWAKEN_SANDBOX_TIER=k8s needs the `container-k8s` feature".into());
         }
     };
     let cache_volume_initializer = matches!(tier, SandboxTier::K8s).then(|| {
-        Arc::new(crate::cache_volume::SandboxCacheVolumeInitializer::new(
+        Arc::new(awaken_session_executor::SandboxCacheVolumeInitializer::new(
             built.provider.clone(),
-        )) as Arc<dyn crate::CacheVolumeInitializer>
+        )) as Arc<dyn awaken_session_executor::CacheVolumeInitializer>
     });
     Ok(ContainerEnvironmentComponents {
         provider: built.provider,
@@ -424,16 +427,14 @@ pub async fn build_container_environment_for_realization(
     })
 }
 
-#[cfg(not(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-)))]
+#[cfg(not(any(feature = "docker", feature = "podman", feature = "k8s")))]
 pub async fn build_container_environment_for_realization(
     _realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
     tier: SandboxTier,
     _image: Option<&str>,
-    _settings: &crate::deployment_config::SandboxSettings,
+    _settings: &awaken_session_executor::SandboxSettings,
+    _policy: &ContainerTierPolicy,
+    _clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<ContainerEnvironmentComponents, String> {
     Err(format!(
         "AWAKEN_SANDBOX_TIER={} needs its matching container feature",
@@ -447,9 +448,10 @@ pub async fn build_container_environment_for_realization(
     ))
 }
 
-#[cfg(all(test, feature = "container-podman"))]
+#[cfg(all(test, feature = "podman"))]
 mod tests {
     use super::*;
+    use awaken_provisioning_contract as pc;
 
     #[tokio::test]
     async fn resident_hand_rejects_a_runtime_without_the_private_pod_channel() {
@@ -461,7 +463,7 @@ mod tests {
          * creates an unreachable Hand (S4/O3/D2); centralized builder rejection
          * prevents downstream compositions from bypassing CLI validation.
          */
-        let settings = crate::deployment_config::SandboxSettings {
+        let settings = awaken_session_executor::SandboxSettings {
             container_hand_residency: ContainerHandResidency::Resident,
             ..Default::default()
         };
@@ -475,6 +477,8 @@ mod tests {
             SandboxTier::Podman,
             Some("sandbox:latest"),
             &settings,
+            &ContainerTierPolicy::default(),
+            awaken_lease_contract::system_clock(),
         )
         .await
         {
@@ -488,20 +492,34 @@ mod tests {
     async fn provider_selection_supports_direct_and_warm_pool_shapes() {
         use awaken_sandbox_container::podman::PodmanRuntime;
 
-        let settings = crate::deployment_config::SandboxSettings {
+        let settings = awaken_session_executor::SandboxSettings {
             warm_pool_size: 0,
             ..Default::default()
         };
         let direct = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
-        let direct = wrap(direct, false, &settings).await.unwrap();
+        let direct = wrap(
+            direct,
+            false,
+            &settings,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         assert!(direct.capacity.is_none());
 
-        let settings = crate::deployment_config::SandboxSettings {
+        let settings = awaken_session_executor::SandboxSettings {
             warm_pool_size: 2,
             ..Default::default()
         };
         let pooled = ContainerProvider::new(Arc::new(PodmanRuntime::new(8080)), "busybox");
-        let pooled = wrap(pooled, false, &settings).await.unwrap();
+        let pooled = wrap(
+            pooled,
+            false,
+            &settings,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         assert!(pooled.capacity.is_some());
     }
 
@@ -509,18 +527,27 @@ mod tests {
     async fn provider_selection_requires_an_image() {
         use awaken_sandbox_container::podman::PodmanRuntime;
 
-        let settings = crate::deployment_config::SandboxSettings::default();
+        let settings = awaken_session_executor::SandboxSettings::default();
         assert!(
-            finish(Arc::new(PodmanRuntime::new(8080)), None, &settings, None)
-                .await
-                .is_err()
+            finish(
+                Arc::new(PodmanRuntime::new(8080)),
+                None,
+                &settings,
+                &ContainerTierPolicy::default(),
+                None,
+                awaken_lease_contract::system_clock()
+            )
+            .await
+            .is_err()
         );
         assert!(
             finish(
                 Arc::new(PodmanRuntime::new(8080)),
                 Some("busybox"),
                 &settings,
-                None
+                &ContainerTierPolicy::default(),
+                None,
+                awaken_lease_contract::system_clock(),
             )
             .await
             .is_ok()
@@ -557,7 +584,7 @@ mod tests {
             ])
             .unwrap();
         let domain = format!("podman/{}", namespace.as_str());
-        let settings = crate::deployment_config::SandboxSettings {
+        let settings = awaken_session_executor::SandboxSettings {
             warm_pool_size: 1,
             ..Default::default()
         };
@@ -566,6 +593,8 @@ mod tests {
             SandboxTier::Podman,
             Some(IMAGE),
             &settings,
+            &ContainerTierPolicy::default(),
+            awaken_lease_contract::system_clock(),
         )
         .await
         .expect("production Podman composition");
@@ -621,7 +650,7 @@ mod tests {
         assert_eq!(records(), 0, "L7 shutdown released it after disposal");
     }
 
-    #[cfg(feature = "container-k8s")]
+    #[cfg(feature = "k8s")]
     #[test]
     fn kubernetes_control_forwarder_reuses_the_exact_sandbox_artifact() {
         /*
@@ -636,7 +665,7 @@ mod tests {
          * this Kubernetes sidecar transport.
          */
         let pinned = "registry.invalid/awaken-sandbox@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let settings = crate::deployment_config::SandboxSettings::default();
+        let settings = awaken_session_executor::SandboxSettings::default();
         assert!(
             k8s_sandbox_control_forwarder(Some(pinned), &settings).is_ok(),
             "E1 exact image and companion path"

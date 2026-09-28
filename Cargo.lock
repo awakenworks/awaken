@@ -459,6 +459,7 @@ dependencies = [
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
+ "awaken-execution-composition",
  "awaken-ext-builtin-tools",
  "awaken-ext-goal",
  "awaken-ext-mcp",
@@ -1352,6 +1353,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "awaken-execution-composition"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-container-contract",
+ "awaken-lease-contract",
+ "awaken-provisioning-contract",
+ "awaken-sandbox-container",
+ "awaken-session-executor",
+ "tokio",
 ]
 
 [[package]]
@@ -2502,6 +2516,7 @@ dependencies = [
  "awaken-dream-application",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
+ "awaken-execution-composition",
  "awaken-ext-builtin-tools",
  "awaken-ext-memory",
  "awaken-ext-permission",
@@ -3236,6 +3251,7 @@ dependencies = [
  "awaken-coordinator-client",
  "awaken-credential-materializer",
  "awaken-environment-contract",
+ "awaken-execution-composition",
  "awaken-ext-builtin-tools",
  "awaken-ext-mcp",
  "awaken-installation-workspace",

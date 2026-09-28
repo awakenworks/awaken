@@ -1,0 +1,36 @@
+[package]
+name = "awaken-execution-composition"
+description = "Worker-plane composition of Session execution environments for Awaken processes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "worker"
+layer = "bootstrap"
+authority = "execution-composition"
+
+[dependencies]
+# The Session owner whose container-tier provider this crate selects and installs.
+awaken-session-executor.workspace = true
+# The backend-erased container ports the Session owner holds.
+awaken-container-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-lease-contract.workspace = true
+# The container tier (podman/docker/k8s) this composition realizes; each backend
+# is enabled by the matching feature below.
+awaken-sandbox-container.workspace = true
+async-trait.workspace = true
+
+[features]
+# Container Session tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s). Off by default:
+# a build without them fails closed when the deployment names a container backend.
+docker = ["awaken-sandbox-container/docker"]
+podman = ["awaken-sandbox-container/podman"]
+k8s = ["awaken-sandbox-container/k8s"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

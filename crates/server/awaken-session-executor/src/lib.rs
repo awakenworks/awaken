@@ -40,12 +40,7 @@ mod capabilities;
 mod commit_ingest;
 mod compact;
 mod config;
-mod container_environment;
 mod coordination;
-pub use container_environment::{
-    ContainerEnvironmentComponents, build_container_environment_for_realization,
-    package_image_provisioner,
-};
 mod delegate;
 mod deployment_config;
 mod dispatch_session_runtime;
@@ -119,7 +114,10 @@ pub use crate::host::{
 };
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
-pub use crate::cache_volume::{CacheVolumeInitializer, CacheVolumeWarmup};
+pub use crate::cache_volume::{
+    CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
+};
+pub use crate::host::capability::ContainerEnvironmentComponents;
 pub use crate::host::{
     AttemptExecutorDecorator, DispatchPoolSizing, HostResume, RemoteAttemptInstallation,
     SharedHost, remote_worker_placement, self_hosted_inference_holder,

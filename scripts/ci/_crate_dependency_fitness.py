@@ -85,7 +85,6 @@ KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
         ("awaken-session-executor", target): "runtime-host links execution-plane implementations; inject them from the bin through provisioning/environment ports"
         for target in (
             "awaken-run-executor-acp",
-            "awaken-sandbox-container",
             "awaken-sandbox-local",
         )
     },

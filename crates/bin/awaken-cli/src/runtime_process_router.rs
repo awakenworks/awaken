@@ -574,16 +574,24 @@ pub(super) async fn prepare_runtime_routers(
         == awaken_session_application::SessionExecutionPlacement::LocalWorker
     {
         let hand_factory = awaken_worker::relay_hand_executor_factory();
+        let containers = awaken_execution_composition::ContainerTierPolicy::default();
         let host_builder = match namespace_hand_path {
             Some(path) => {
-                host_builder
-                    .with_session_environment_from_deployment_at(Some(hand_factory), path)
-                    .await?
+                awaken_execution_composition::with_session_environment_from_deployment_at(
+                    host_builder,
+                    Some(hand_factory),
+                    path,
+                    &containers,
+                )
+                .await?
             }
             None => {
-                host_builder
-                    .with_session_environment_from_deployment(Some(hand_factory))
-                    .await?
+                awaken_execution_composition::with_session_environment_from_deployment(
+                    host_builder,
+                    Some(hand_factory),
+                    &containers,
+                )
+                .await?
             }
         };
         host_builder

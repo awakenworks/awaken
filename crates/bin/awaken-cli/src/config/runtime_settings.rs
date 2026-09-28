@@ -74,16 +74,12 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .sandbox_warm_pool_idle_ttl_secs
             .unwrap_or(sandbox_defaults.warm_pool_idle_ttl_secs),
         container_forward_proxy: file.container_forward_proxy.clone(),
-        // A no-bypass allowlist requires a deployment-mounted signing key and
-        // an attested gateway; standalone configuration cannot synthesize it.
-        container_allowlist_proxy: None,
         container_mcp_relay,
         k8s_namespace: file
             .k8s_namespace
             .clone()
             .unwrap_or_else(|| "default".to_owned()),
         k8s_image_pull_secrets: Vec::new(),
-        k8s_repository_gateway_trust: None,
         // The operator selects the existing retained-PVC policy. Omission
         // preserves ephemeral roots and cannot advertise retained Session support.
         k8s_continuation_volume: file.k8s_continuation_volume.clone(),
