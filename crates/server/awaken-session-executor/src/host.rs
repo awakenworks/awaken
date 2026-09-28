@@ -111,6 +111,7 @@ where
 }
 
 mod build;
+pub use build::HostProcess;
 pub(crate) mod capability;
 pub use capability::DispatchPoolSizing;
 mod completion;

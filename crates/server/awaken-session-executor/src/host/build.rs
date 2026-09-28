@@ -11,6 +11,20 @@ mod environment_capacity;
 
 use awaken_runtime_contract::delegation::RunDelegationService;
 
+/// The process a Host is constructed in: the installation's resolved platform
+/// Workspace, the typed Deployment, and the one process clock. The process
+/// composition resolves all three once; every Host constructor receives them
+/// together so none can pair a Workspace or clock from a different process
+/// selection. Consumer: the public `SharedHost` constructors and `build`.
+pub struct HostProcess {
+    /// The installation's resolved platform Workspace coordinate.
+    pub local_workspace: String,
+    /// The typed Deployment this Host serves.
+    pub deployment: crate::DeploymentConfig,
+    /// The process wall clock the Host drives its Workers on.
+    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
+}
+
 impl SharedHost {
     /// Mint a fresh process-unique platform Workspace coordinate. This Host
     /// owns the coordinate's format; it never persists one. A durable
@@ -61,9 +75,11 @@ impl SharedHost {
                 worker_content: None,
                 extraction_repository: None,
             },
-            Self::mint_local_workspace(),
-            deployment,
-            awaken_lease_contract::system_clock(),
+            HostProcess {
+                local_workspace: Self::mint_local_workspace(),
+                deployment,
+                clock: awaken_lease_contract::system_clock(),
+            },
         )
     }
 
@@ -123,9 +139,11 @@ impl SharedHost {
                 worker_content: None,
                 extraction_repository: Some(extraction_repository),
             },
-            Self::mint_local_workspace(),
-            crate::deployment_config::DeploymentConfig::ephemeral(),
-            clock,
+            HostProcess {
+                local_workspace: Self::mint_local_workspace(),
+                deployment: crate::deployment_config::DeploymentConfig::ephemeral(),
+                clock,
+            },
         )
     }
 
@@ -150,9 +168,11 @@ impl SharedHost {
                 worker_content: None,
                 extraction_repository: Some(extraction_repository),
             },
-            local_workspace.into(),
-            deployment,
-            clock,
+            HostProcess {
+                local_workspace: local_workspace.into(),
+                deployment,
+                clock,
+            },
         )
     }
 
@@ -160,7 +180,6 @@ impl SharedHost {
     /// installed before any Resource data store is selected. Management-only
     /// File and durable extraction authorities fail closed; the Worker opens no
     /// File, Memory-content, or Memory-extraction authority database.
-    /// `local_workspace` is the installation's resolved platform Workspace.
     pub fn new_worker_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -168,9 +187,7 @@ impl SharedHost {
             dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
         >,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
-        local_workspace: impl Into<String>,
-        deployment: crate::DeploymentConfig,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        process: HostProcess,
     ) -> Self {
         Self::build(
             llm,
@@ -184,19 +201,14 @@ impl SharedHost {
                 }),
                 extraction_repository: None,
             },
-            local_workspace.into(),
-            deployment,
-            clock,
+            process,
         )
     }
 
     /// Construct a Coordinator-local Runtime Host from only its execution data
     /// capability. Resources catalog, File commands, Skill authoring, and
     /// reclamation remain outside and are injected through narrow applications.
-    /// `local_workspace` is the installation's resolved platform Workspace.
-    // Each argument is a separately injected startup authority of the
-    // Coordinator composition; bundling them would only rename this list.
-    #[allow(clippy::too_many_arguments)]
+    /// `process` is the Coordinator composition's resolved process.
     pub fn new_with_runtime_resources_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -205,9 +217,7 @@ impl SharedHost {
         >,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
-        local_workspace: impl Into<String>,
-        deployment: crate::DeploymentConfig,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        process: HostProcess,
     ) -> Self {
         Self::build(
             llm,
@@ -221,9 +231,7 @@ impl SharedHost {
                 }),
                 extraction_repository: Some(extraction_repository),
             },
-            local_workspace.into(),
-            deployment,
-            clock,
+            process,
         )
     }
 
@@ -231,10 +239,13 @@ impl SharedHost {
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
         resources: capability::ResourceInputs,
-        local_workspace: String,
-        deployment: crate::DeploymentConfig,
-        clock: Arc<dyn awaken_lease_contract::WallClock>,
+        process: HostProcess,
     ) -> Self {
+        let HostProcess {
+            local_workspace,
+            deployment,
+            clock,
+        } = process;
         assert!(
             !local_workspace.trim().is_empty(),
             "local workspace must not be empty"
@@ -564,9 +575,11 @@ mod startup_tests {
                 worker_content: None,
                 extraction_repository: Some(expected.clone()),
             },
-            SharedHost::mint_local_workspace(),
-            crate::DeploymentConfig::ephemeral(),
-            awaken_lease_contract::system_clock(),
+            HostProcess {
+                local_workspace: SharedHost::mint_local_workspace(),
+                deployment: crate::DeploymentConfig::ephemeral(),
+                clock: awaken_lease_contract::system_clock(),
+            },
         );
 
         assert!(

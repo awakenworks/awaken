@@ -1279,9 +1279,11 @@ impl WorkerNode {
             "worker",
             remote_files,
             remote_memory,
-            local_workspace,
-            deployment.clone(),
-            self.clock.clone(),
+            awaken_session_executor::HostProcess {
+                local_workspace,
+                deployment: deployment.clone(),
+                clock: self.clock.clone(),
+            },
         )
         .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes())
         .with_artifact_publisher(remote_artifacts)
