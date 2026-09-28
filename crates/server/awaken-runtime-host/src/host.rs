@@ -285,6 +285,11 @@ pub struct SharedHost {
     /// [`with_worker_upstream`](Self::with_worker_upstream); `None` is a
     /// store-owning server/host.
     pub(crate) upstream: Option<awaken_worker_transport_security::WorkerUpstream>,
+    /// Claim-fenced commit transport a database-less Worker injects beside its
+    /// upstream ([`with_worker_claimed_commit`](Self::with_worker_claimed_commit)).
+    /// The Host holds only the neutral port; the wire client is composed by the
+    /// Worker binary.
+    pub(crate) claimed_commit: Option<Arc<dyn awaken_run_ingress::ClaimedRunCommit>>,
     /// Optional Resource-transport encoder installed by a remote Worker. The
     /// runtime knows only the neutral Resources contract, never an HTTP wire type.
     pub(crate) memory_reference_encoder: Option<Arc<dyn RuntimeMemoryReferenceEncoder>>,

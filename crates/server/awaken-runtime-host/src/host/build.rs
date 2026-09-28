@@ -549,6 +549,7 @@ impl SharedHost {
                 .clone()
                 .map(|root| Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root))),
             upstream: None,
+            claimed_commit: None,
             memory_reference_encoder: None,
             worker_credential_resolver: None,
             deployment,
@@ -979,6 +980,18 @@ impl SharedHost {
         upstream: awaken_worker_transport_security::WorkerUpstream,
     ) -> Self {
         self.upstream = Some(upstream);
+        self
+    }
+
+    /// Install the claim-fenced commit transport of a database-less Worker.
+    /// It is consulted only once [`Self::with_worker_upstream`] made this Host a
+    /// Worker; a Worker without it fails closed when it executes a claim.
+    #[must_use]
+    pub fn with_worker_claimed_commit(
+        mut self,
+        claimed_commit: Arc<dyn awaken_run_ingress::ClaimedRunCommit>,
+    ) -> Self {
+        self.claimed_commit = Some(claimed_commit);
         self
     }
 
@@ -1585,11 +1598,7 @@ impl SharedHost {
         // parent's checkpoint/commit projection instead of a child claim.
         let scheduler = if self.runs_local_dispatch_pool() {
             let recovery_projection = commit.recovery_projection();
-            let claimed_commit = self
-                .upstream
-                .as_ref()
-                .map(crate::commit_ingest::remote_claimed_commit)
-                .transpose()?;
+            let claimed_commit = self.worker_claimed_commit()?;
             Some(crate::agent_runner::RunScheduler {
                 store: self.dispatch_store()?,
                 commit: commit.clone(),

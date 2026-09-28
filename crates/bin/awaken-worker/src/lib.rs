@@ -1237,6 +1237,9 @@ impl WorkerNode {
             ),
             None => SharedHost::mint_local_workspace(),
         };
+        // Claimed Runs commit back to the Coordinator under this registered
+        // identity; the Host holds only the neutral claim-fenced port.
+        let claimed_commit = awaken_worker_runtime::remote_claimed_commit(&upstream)?;
         let mut host = SharedHost::new_worker_with_deployment(
             Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             "worker",
@@ -1250,6 +1253,7 @@ impl WorkerNode {
         // Host permission grants and Environment-bound executors remain owners.
         .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
         .with_worker_upstream(upstream)
+        .with_worker_claimed_commit(claimed_commit)
         .with_memory_reference_encoder(Arc::new(
             awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
         ))
