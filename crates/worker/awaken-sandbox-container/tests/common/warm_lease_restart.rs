@@ -14,23 +14,15 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use awaken_lease_testkit::ManualClock;
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_container::pool::{WarmCapacityLeasePolicy, WarmCapacityLeases, WarmLeaseClock};
+use awaken_sandbox_container::pool::{WarmCapacityLeasePolicy, WarmCapacityLeases};
 use awaken_sandbox_container::{
     ContainerEnvironmentProvider, ContainerProvider, ContainerRealizationNamespace,
     ContainerRuntime, DecodedContainerHandle, WarmContainerPool,
 };
-
-struct ManualClock(AtomicU64);
-
-impl WarmLeaseClock for ManualClock {
-    fn now_ms(&self) -> u64 {
-        self.0.load(Ordering::SeqCst)
-    }
-}
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
@@ -244,14 +236,11 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
-    let clock = Arc::new(ManualClock(AtomicU64::new(t0)));
+    let clock = Arc::new(ManualClock::new(t0));
     let namespace =
         ContainerRealizationNamespace::from_stable_parts(["warm-lease-restart-it", nonce.as_str()])
             .unwrap();
-    let leases = || {
-        WarmCapacityLeases::new(root.path(), policy)
-            .with_clock(clock.clone() as Arc<dyn WarmLeaseClock>)
-    };
+    let leases = || WarmCapacityLeases::new(root.path(), policy, clock.clone());
 
     // Worker A: prewarm two, check one out to a Session, then die.
     let worker_a = current_thread_runtime();
@@ -318,7 +307,7 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
             "L1 startup reclamation leaves a live lease alone"
         );
 
-        clock.0.store(t0 + ttl - 1, Ordering::SeqCst);
+        clock.set(t0 + ttl - 1);
         let early = pool.reclaim_expired_capacity().await.unwrap();
         assert_eq!(
             early,
@@ -327,7 +316,7 @@ pub(crate) fn a_restarted_worker_reclaims_only_expired_never_checked_out_capacit
         );
         assert_eq!(containers(cli, &nonce), before, "L1 one millisecond early");
 
-        clock.0.store(t0 + ttl, Ordering::SeqCst);
+        clock.set(t0 + ttl);
         let due = pool.reclaim_expired_capacity().await.unwrap();
         assert_eq!(due.reclaimed.len(), 1, "L2 {due:?}");
         assert!(due.failed.is_empty(), "L2 {due:?}");
