@@ -69,7 +69,7 @@ pub use session::{
     CoordinationRuntime, EnvironmentRuntime, LiveInboxApplication, LiveInboxApplicationError,
     LiveInboxEntry, LiveInboxError, LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer,
     NeutralRuntime, OutcomeDrive, OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime,
-    RealizationRuntime, SessionEnvironmentBindingSink, SessionRuntime,
+    RealizationRuntime, SessionEnvironmentBindingSink, SessionProjectionSource, SessionRuntime,
     SessionThreadLiveSubscription, StreamingRunRuntime, TerminalCleanupRuntime, ThreadReadRuntime,
     ToolPermissionDecision, drain_mcp_generation_receipt, publish_mcp_generation_receipt,
 };

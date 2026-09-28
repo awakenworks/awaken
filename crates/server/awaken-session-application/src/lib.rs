@@ -224,7 +224,12 @@ mod event_batches;
 pub use event_batches::SessionEventBatchIdempotency;
 mod outcome_reconciliation;
 mod projection;
+mod projection_evidence;
 pub use credentials::SessionPreparationError;
+pub use projection_evidence::{
+    ProjectionThreadSnapshots, SessionProjectionEvidence, SessionProjectionReadTimings,
+    committed_lifecycle_prefix,
+};
 mod mcp;
 mod realization;
 mod resource_reconciliation;

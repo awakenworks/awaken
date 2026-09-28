@@ -392,24 +392,6 @@ impl DurableOutcomeProjection {
     }
 }
 
-fn retained_outcome_ids(
-    batches: &[awaken_session_event_contract::SessionEventBatch],
-) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    batches
-        .iter()
-        .flat_map(|batch| &batch.events)
-        .filter_map(|entry| match &entry.event {
-            SessionEventCommand::DefineOutcome { outcome_id, .. }
-                if seen.insert(outcome_id.clone()) =>
-            {
-                Some(outcome_id.clone())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 fn validate_durable_outcome_projection(
     outcome_id: String,
     terminal: CommittedOutcomeProjection,

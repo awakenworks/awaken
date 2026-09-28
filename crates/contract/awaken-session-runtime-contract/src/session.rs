@@ -6,10 +6,12 @@
 //! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
 
 mod neutral;
+mod projection_source;
 mod roles;
 
 pub use awaken_session_budget_contract::SessionUsage;
 pub use neutral::NeutralRuntime;
+pub use projection_source::SessionProjectionSource;
 pub use roles::*;
 use std::sync::Arc;
 

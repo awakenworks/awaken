@@ -133,48 +133,32 @@ impl ManagedState {
             })
             .collect::<Result<Vec<_>, StateError>>()?;
         let initial_cursor = base_record.checkpoint.source.lifecycle_cursor;
-        // Read Outcome observation before the root recovery fence. A terminal
-        // Outcome projection is derived from that same Thread aggregate and its
-        // evaluation/state command is the immutable public-order anchor. Reading
-        // the fence first could pair an older state prefix with a newer terminal
-        // and manufacture an unanchored public event during a concurrent commit.
-        let mut durable_outcome_projections = Vec::new();
-        for outcome_id in retained_outcome_ids(&persisted.event_batches) {
-            if let Some(terminal) = self
-                .application
-                .committed_outcome_projection(session_id, &outcome_id)
-                .await
-                .map_err(StateError::Run)?
-            {
-                durable_outcome_projections
-                    .push(validate_durable_outcome_projection(outcome_id, terminal)?);
-            }
-        }
-        // Read the root fence once and reuse that atomic prefix for the initial
-        // relationship projection. It includes every coordinated link committed
-        // at or before this fence, so an unknown lifecycle event is classifiable
-        // without guessing from its Thread id. An event beyond the fence remains
-        // unconsumed until the next refresh. The final relationship and root
-        // reads below still observe fresh prefixes after the child reads.
-        let outcomes_done = started.elapsed();
-        let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
-        let durable_outcome_projections = durable_outcome_projections
+        // The Session application reads the Runtime evidence through its
+        // read-only projection port, in the order that keeps it one prefix:
+        // retained terminal Outcomes before the root fence, then the root,
+        // its coordinated links and children, then their merged lifecycle.
+        let awaken_session_application::SessionProjectionEvidence {
+            outcome_terminals,
+            root: root_snapshot,
+            links,
+            children: child_snapshots,
+            lifecycle: lifecycle_events,
+            timings: read_timings,
+        } = self
+            .application
+            .read_projection_evidence(&persisted, started)
+            .await
+            .map_err(StateError::Run)?;
+        let durable_outcome_projections = outcome_terminals
+            .into_iter()
+            .map(|(outcome_id, terminal)| validate_durable_outcome_projection(outcome_id, terminal))
+            .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .filter_map(|projection| projection.anchor(root_snapshot.as_ref()))
             .collect::<Vec<_>>();
-        let (links, child_snapshots) = self
-            .coordinated_projection_prefix(session_id, root_snapshot.as_ref())
-            .await?;
-        // Lifecycle is derived from these exact atomic prefixes, alongside their
-        // transcript, tickets and disposition. Reopening the global feed would
-        // scan unrelated Sessions and introduce a second observation to fence.
-        // The disposable cursor is only a live-delivery optimization. Canonical
-        // list reconstruction always folds the complete retained lifecycle so a
-        // cold replica and a warm replica derive the same interval buckets.
-        let snapshots_done = started.elapsed();
-        let lifecycle_events =
-            Self::committed_lifecycle_prefix(root_snapshot.iter().chain(child_snapshots.values()))?;
-        let lifecycle_done = started.elapsed();
+        let outcomes_done = read_timings.outcomes;
+        let snapshots_done = read_timings.snapshots;
+        let lifecycle_done = read_timings.lifecycle;
         let mut transcripts = child_snapshots
             .iter()
             .map(|(thread_id, snapshot)| (thread_id.clone(), snapshot.messages.clone()))

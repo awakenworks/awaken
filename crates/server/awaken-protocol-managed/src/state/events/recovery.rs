@@ -5,163 +5,6 @@
 
 use super::*;
 
-struct LifecycleMergeEntry {
-    event: RunLifecycleEvent,
-    stream_index: usize,
-}
-
-impl PartialEq for LifecycleMergeEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.event.cursor == other.event.cursor && self.stream_index == other.stream_index
-    }
-}
-
-impl Eq for LifecycleMergeEntry {}
-
-impl PartialOrd for LifecycleMergeEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for LifecycleMergeEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // BinaryHeap is a max-heap; reverse cursor/source comparison to pop the
-        // smallest cursor first. Source order preserves sort_by_key's prior
-        // stable tie behavior for equal cursors.
-        other
-            .event
-            .cursor
-            .cmp(&self.event.cursor)
-            .then_with(|| other.stream_index.cmp(&self.stream_index))
-    }
-}
-
-fn merge_ordered_lifecycle_streams(streams: Vec<Vec<RunLifecycleEvent>>) -> Vec<RunLifecycleEvent> {
-    debug_assert!(streams.iter().all(|events| {
-        events
-            .windows(2)
-            .all(|pair| pair[0].cursor <= pair[1].cursor)
-    }));
-    let capacity = streams.iter().map(Vec::len).sum();
-    let mut streams = streams.into_iter().map(Vec::into_iter).collect::<Vec<_>>();
-    let mut heap = std::collections::BinaryHeap::with_capacity(streams.len());
-    for (stream_index, stream) in streams.iter_mut().enumerate() {
-        if let Some(event) = stream.next() {
-            heap.push(LifecycleMergeEntry {
-                event,
-                stream_index,
-            });
-        }
-    }
-    let mut merged = Vec::with_capacity(capacity);
-    while let Some(entry) = heap.pop() {
-        let stream_index = entry.stream_index;
-        merged.push(entry.event);
-        if let Some(event) = streams[stream_index].next() {
-            heap.push(LifecycleMergeEntry {
-                event,
-                stream_index,
-            });
-        }
-    }
-    merged
-}
-
-#[cfg(test)]
-mod lifecycle_merge_tests {
-    use super::*;
-
-    fn event(cursor: u64, stream: usize) -> RunLifecycleEvent {
-        RunLifecycleEvent {
-            cursor: awaken_agent_contract::RunLifecycleCursor(cursor),
-            source_commit_cursor: cursor,
-            thread_id: awaken_agent_contract::ThreadId(format!("thread-{stream}")),
-            run_id: awaken_agent_contract::RunId(format!("run-{stream}-{cursor}")),
-            kind: awaken_agent_contract::RunLifecycleEventKind::Running,
-            state: awaken_agent_contract::agent::run::RunState::Running,
-            await_reason: None,
-        }
-    }
-
-    #[test]
-    fn ordered_lifecycle_merge_matches_stable_full_sort() {
-        // Causes: C1 zero/one/many source streams; C2 each stream is empty or
-        // carries an ordered subset; C3 cursors may tie across streams. Effects:
-        // E1 every event is retained once; E2 cursors are globally ordered; E3
-        // equal cursors retain input-stream order. Exhaust every assignment of
-        // six distinct cursors to three streams, then cover equal cursors.
-        assert!(merge_ordered_lifecycle_streams(Vec::new()).is_empty(), "M1");
-        for assignment in 0_u32..3_u32.pow(6) {
-            let mut value = assignment;
-            let mut streams = vec![Vec::new(), Vec::new(), Vec::new()];
-            for cursor in 1..=6 {
-                let stream = (value % 3) as usize;
-                value /= 3;
-                streams[stream].push(event(cursor, stream));
-            }
-            let mut expected = streams.iter().flatten().cloned().collect::<Vec<_>>();
-            expected.sort_by_key(|item| item.cursor);
-            let merged = merge_ordered_lifecycle_streams(streams);
-            assert_eq!(
-                merged.iter().map(|item| item.cursor.0).collect::<Vec<_>>(),
-                expected
-                    .iter()
-                    .map(|item| item.cursor.0)
-                    .collect::<Vec<_>>(),
-                "M2 assignment {assignment}",
-            );
-        }
-        let tied = merge_ordered_lifecycle_streams(vec![
-            vec![event(1, 0), event(3, 0)],
-            vec![event(1, 1), event(2, 1)],
-        ]);
-        assert_eq!(
-            tied.iter()
-                .map(|item| (item.cursor.0, item.thread_id.0.as_str()))
-                .collect::<Vec<_>>(),
-            vec![
-                (1, "thread-0"),
-                (1, "thread-1"),
-                (2, "thread-1"),
-                (3, "thread-0")
-            ],
-            "M3 stable tie order",
-        );
-    }
-
-    #[test]
-    fn lifecycle_merge_scaling_matrix_preserves_every_ordered_prefix() {
-        // Scaling matrix: H=100/1k/10k lifecycle facts x S=1/8/25 ordered
-        // Thread streams. Effects: every fact appears once, global cursor order
-        // is monotonic, and elapsed observations remain diagnostic rather than a
-        // machine-speed correctness threshold. K3D owns the public p95 gate.
-        for total in [100_usize, 1_000, 10_000] {
-            for source_count in [1_usize, 8, 25] {
-                let mut streams = vec![Vec::new(); source_count];
-                for cursor in 1..=total {
-                    let source = cursor % source_count;
-                    streams[source].push(event(cursor as u64, source));
-                }
-                let started = std::time::Instant::now();
-                let merged = merge_ordered_lifecycle_streams(streams);
-                let elapsed = started.elapsed();
-                assert_eq!(merged.len(), total, "H={total} S={source_count}");
-                assert!(
-                    merged
-                        .windows(2)
-                        .all(|pair| pair[0].cursor <= pair[1].cursor),
-                    "H={total} S={source_count}"
-                );
-                eprintln!(
-                    "LIFECYCLE_MERGE_BENCH {{\"history\":{total},\"sources\":{source_count},\"elapsed_us\":{}}}",
-                    elapsed.as_micros(),
-                );
-            }
-        }
-    }
-}
-
 #[cfg(any(test, kani))]
 mod selection_tests;
 
@@ -299,27 +142,6 @@ impl ManagedState {
         })
     }
 
-    /// Derive the complete lifecycle from already observed atomic prefixes.
-    /// Admission and projection use this same helper so neither
-    /// can silently truncate or reinterpret Awaiting commit coordinates.
-    pub(super) fn committed_lifecycle_prefix<'a>(
-        snapshots: impl IntoIterator<
-            Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-        >,
-    ) -> Result<Vec<RunLifecycleEvent>, StateError> {
-        let mut lifecycle_streams = Vec::new();
-        for snapshot in snapshots {
-            let page = snapshot
-                .lifecycle_events_after(
-                    awaken_agent_contract::RunLifecycleCursor::default(),
-                    usize::MAX,
-                )
-                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-            lifecycle_streams.push(page.events);
-        }
-        Ok(merge_ordered_lifecycle_streams(lifecycle_streams))
-    }
-
     /// Classify one coordinated child from the same Runtime prefix already read
     /// for Event admission. Link membership is the topology authority; committed
     /// Thread disposition and latest Run state are its terminal authorities.
@@ -402,9 +224,8 @@ impl ManagedState {
         Ok(targets)
     }
 
-    /// Read one logical Thread through the Runtime's existing recovery snapshot
-    /// boundary. Transcript, resume ticket, disposition and commit watermark are
-    /// one prefix; Managed never assembles those facts from independent reads.
+    /// Read one logical Thread through the Session application's read-only
+    /// projection port; the prefix/identity rules live there.
     pub(super) async fn recovery_snapshot(
         &self,
         session_id: &str,
@@ -413,53 +234,17 @@ impl ManagedState {
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
         StateError,
     > {
-        let snapshot = self
-            .application
-            .session_thread_recovery_snapshot(
+        self.application
+            .projection_thread_snapshot(
                 &awaken_session_types::SessionId::from(session_id),
                 thread_id,
             )
             .await
-            .map_err(StateError::Run)?;
-        if snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.thread_id.0 != thread_id)
-        {
-            return Err(StateError::Run(RunError::internal(
-                "Runtime returned a recovery snapshot for a different Session Thread",
-            )));
-        }
-        Ok(snapshot)
+            .map_err(StateError::Run)
     }
 
-    /// Read each coordinated Thread through that same consistency boundary.
-    pub(super) async fn coordinated_recovery_snapshots(
-        &self,
-        session_id: &str,
-        links: &[CoordinatedThreadLink],
-    ) -> Result<
-        std::collections::HashMap<
-            String,
-            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-        >,
-        StateError,
-    > {
-        let mut children = std::collections::HashMap::new();
-        for link in links {
-            let Some(snapshot) = self
-                .recovery_snapshot(session_id, &link.thread_id.0)
-                .await?
-            else {
-                continue;
-            };
-            children.insert(link.thread_id.0.clone(), snapshot);
-        }
-        Ok(children)
-    }
-
-    /// Collect one deterministic coordinated-Thread prefix. Callers compare two
-    /// collections around projection reads so independent child commits cannot
-    /// form a mixed public prefix.
+    /// Collect one deterministic coordinated-Thread prefix through the Session
+    /// application's read-only projection port.
     pub(super) async fn coordinated_projection_prefix(
         &self,
         session_id: &str,
@@ -467,31 +252,26 @@ impl ManagedState {
     ) -> Result<
         (
             Vec<CoordinatedThreadLink>,
-            std::collections::HashMap<
-                String,
-                awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-            >,
+            awaken_session_application::ProjectionThreadSnapshots,
         ),
         StateError,
     > {
-        let mut links = self
-            .application
-            .coordinated_threads(
+        self.application
+            .projection_coordinated_prefix(
                 &awaken_session_types::SessionId::from(session_id),
                 observed_root,
             )
             .await
-            .map_err(StateError::Run)?;
-        let snapshots = self
-            .coordinated_recovery_snapshots(session_id, &links)
-            .await?;
-        for link in &mut links {
-            if let Some(snapshot) = snapshots.get(&link.thread_id.0) {
-                link.latest_run_id = snapshot.latest_run_id.clone();
-            }
-        }
-        links.sort_by(|left, right| left.thread_id.0.cmp(&right.thread_id.0));
-        Ok((links, snapshots))
+            .map_err(StateError::Run)
+    }
+
+    /// Merge the complete lifecycle of already observed atomic prefixes.
+    pub(super) fn committed_lifecycle_prefix<'a>(
+        snapshots: impl IntoIterator<
+            Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        >,
+    ) -> Result<Vec<RunLifecycleEvent>, StateError> {
+        awaken_session_application::committed_lifecycle_prefix(snapshots).map_err(StateError::Run)
     }
 
     pub(super) fn pending_ticket_from_recovery_snapshot(
