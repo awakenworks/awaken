@@ -226,14 +226,14 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
             "crates/server/awaken-session-executor/Cargo.toml: Resources application must be "
             "test-support-only; product Runtime Host accepts exact execution capabilities"
         )
-    host_source = (
-        repo_root / "crates/server/awaken-session-executor/src/host.rs"
-    ).read_text(encoding="utf-8")
+    # The Host's Resources-context ports are its `ResourcePorts` capability group.
+    host_resources = "crates/server/awaken-session-executor/src/host/capability/resources.rs"
+    host_source = (repo_root / host_resources).read_text(encoding="utf-8")
     for field in ("file_store", "file_catalog", "file_application", "resource_reclamation"):
         pattern = rf'#\[cfg\(any\(test, feature = "test-support"\)\)\]\s+pub\(crate\) {field}:'
         if re.search(pattern, host_source) is None:
             errors.append(
-                f"crates/server/awaken-session-executor/src/host.rs: {field} must not exist in "
+                f"{host_resources}: {field} must not exist in "
                 "the product Runtime Host"
             )
     dream_source_path = repo_root / "crates/server/awaken-coordinator/src/dream.rs"

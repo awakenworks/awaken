@@ -505,7 +505,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         },
     );
     let fresh =
-        host.sandbox_substrate_spec_for_provider("checkpoint-memory", &host.session_provider);
+        host.sandbox_substrate_spec_for_provider("checkpoint-memory", &host.env.session_provider);
     assert_eq!(fresh.mounts.len(), 1, "M3/E3");
     assert_eq!(
         consistency(&fresh),
@@ -574,7 +574,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     let cold = host.sandbox_spec_for_resolved_resources_and_provider(
         "checkpoint-memory",
         &resolved,
-        &host.session_provider,
+        &host.env.session_provider,
     );
     assert_eq!(cold.mounts.len(), 1, "M4/E3");
     assert_eq!(
@@ -1407,7 +1407,7 @@ async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, wor
     host.register_thread_workspace(thread, workspace);
     let spec = host.sandbox_spec(thread);
     let environment = Arc::new(
-        host.create_session_environment(&host.session_provider, &spec)
+        host.create_session_environment(&host.env.session_provider, &spec)
             .await
             .expect("create batch Artifact Container Environment"),
     );
@@ -1513,7 +1513,8 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .sandbox_effect_fence("session-artifacts-create")
         .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        host.provider
+        host.env
+            .provider
             .create_sandbox_for_effect(
                 &spec,
                 &create_fence,
@@ -1672,7 +1673,8 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .sandbox_effect_fence("artifact-response-loss-create")
         .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        host.provider
+        host.env
+            .provider
             .create_sandbox_for_effect(
                 &spec,
                 &create_fence,
@@ -1857,7 +1859,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         provider,
         Arc::new(crate::session_environment::UnusedHandExecutorFactory),
     );
-    raw_host.artifact_publisher = publisher.clone();
+    raw_host.resources.artifact_publisher = publisher.clone();
     let host = Arc::new(raw_host);
     let thread = "container-artifact-receipt-only";
     install_batch_artifact_environment(host.as_ref(), thread, "workspace-a").await;
@@ -2197,7 +2199,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     let storage = tempfile::tempdir().unwrap();
     let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test").with_store_dir(storage.path());
     let catalog = Arc::new(FailingFileCatalog);
-    raw_host.file_catalog = catalog.clone();
+    raw_host.resources.file_catalog = catalog.clone();
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         raw_host.file_store(),
         catalog,
@@ -2227,7 +2229,8 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         .sandbox_effect_fence("session-harvest-failure-create")
         .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        host.provider
+        host.env
+            .provider
             .create_sandbox_for_effect(
                 &spec,
                 &create_fence,
@@ -2312,7 +2315,8 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
     .unwrap();
 
     assert!(
-        host.skills
+        host.tools
+            .skills
             .definitions(host.local_workspace())
             .await
             .unwrap()
@@ -2328,7 +2332,8 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
 
     env.dispose().await.unwrap();
     assert!(
-        host.skills
+        host.tools
+            .skills
             .definitions(host.local_workspace())
             .await
             .unwrap()
@@ -2348,7 +2353,8 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
     // `managed_session_folds_builtins_into_the_agent_toolset`.
     let dir = std::env::temp_dir().join(format!("awaken-skillid-{}", std::process::id()));
     let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
-    host.skills
+    host.tools
+        .skills
         .persist_authored(
             host.local_workspace(),
             "Greeter",
@@ -2358,12 +2364,13 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
 
     let cid = "Greeter".to_string();
     assert_eq!(
-        host.skills.managed_ids_in(host.local_workspace()),
+        host.tools.skills.managed_ids_in(host.local_workspace()),
         vec![cid.clone()],
         "Managed advertisement contains only the version-backed catalog id"
     );
 
     let version = host
+        .tools
         .skills
         .cache_snapshot_in(host.local_workspace())
         .into_iter()
@@ -2371,7 +2378,8 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
         .expect("the advertised resource id must resolve to the Skill version");
     assert!(version.skill_md().unwrap().ends_with(b"say hi"));
     assert!(
-        host.skills
+        host.tools
+            .skills
             .cache_snapshot_in(host.local_workspace())
             .into_iter()
             .find(|version| version.skill_id.as_str() == "skill_deadbeefdeadbeef")
@@ -2565,12 +2573,12 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
         };
         application.replace_artifact_capture(request).await.unwrap();
         let publisher = Arc::new(CaptureFaultPublisher {
-            inner: host.artifact_publisher.clone(),
+            inner: host.resources.artifact_publisher.clone(),
             mode,
             scans: scans.clone(),
             calls: std::sync::Mutex::new([0; 3]),
         });
-        host.artifact_publisher = publisher.clone();
+        host.resources.artifact_publisher = publisher.clone();
         install_batch_artifact_environment(&host, "capture-fault", "workspace-a").await;
         let result = host.harvest_thread_artifacts("capture-fault").await;
         assert_eq!(result.is_ok(), success, "{mode}: {result:?}");

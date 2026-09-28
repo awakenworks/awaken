@@ -490,7 +490,7 @@ impl SharedHost {
         ArtifactHarvester {
             session_slots: self.session_slots.clone(),
             local_workspace: self.local_workspace.clone(),
-            publisher: self.artifact_publisher.clone(),
+            publisher: self.resources.artifact_publisher.clone(),
         }
     }
 
@@ -632,7 +632,7 @@ impl SharedHost {
             thread,
             resource_mounts,
             has_repositories,
-            self.session_provider.capabilities().network_isolation,
+            self.env.session_provider.capabilities().network_isolation,
         )
     }
 
@@ -769,14 +769,14 @@ impl SharedHost {
     /// The content-addressed blob store (Files API, file-resource mounts, artifacts).
     #[cfg(any(test, feature = "test-support"))]
     pub fn file_store(&self) -> Arc<dyn FileStore> {
-        self.file_store.clone()
+        self.resources.file_store.clone()
     }
 
     /// The sole durable logical-file catalog. Public Files identities resolve
     /// through this catalog before their private content-addressed blob is read.
     #[cfg(any(test, feature = "test-support"))]
     pub fn file_catalog(&self) -> Arc<dyn FileCatalog> {
-        self.file_catalog.clone()
+        self.resources.file_catalog.clone()
     }
 
     /// The sole Resources-owned logical-File command application. Database-less
@@ -785,7 +785,7 @@ impl SharedHost {
     pub fn file_application(
         &self,
     ) -> Option<Arc<dyn awaken_resource_contract::FileApplicationService>> {
-        self.file_application.clone()
+        self.resources.file_application.clone()
     }
 
     /// Realize a thread's resolved Repository inputs into its freshly-created
@@ -902,6 +902,7 @@ impl SharedHost {
         let publication_transport = match (publication_authority.as_ref(), &self.upstream) {
             (Some(fence), Some(_)) => {
                 let verifier = self
+                    .dispatch
                     .dispatch_session_runtime
                     .read()
                     .map_err(|_| {
@@ -974,7 +975,7 @@ impl SharedHost {
                         "direct Repository changed its frozen transport URL",
                     ));
                 }
-                let materializer = self.credential_materializer.as_ref().ok_or_else(|| {
+                let materializer = self.exec.credential_materializer.as_ref().ok_or_else(|| {
                     crate::host::HostError::internal(
                         "repository credential requires a configured credential materializer",
                     )
@@ -1001,6 +1002,7 @@ impl SharedHost {
                     Some(transport) => transport,
                     None => {
                         let verifier = self
+                            .dispatch
                             .dispatch_session_runtime
                             .read()
                             .map_err(|_| {
@@ -1389,7 +1391,8 @@ impl SharedHost {
     /// The client-executed (custom) tools advertised on a managed session: their
     /// descriptors, so the adapter can shape each as a `custom` tool definition.
     pub fn custom_tools(&self) -> Vec<ToolDescriptor> {
-        self.client_tools
+        self.tools
+            .client_tools
             .iter()
             .map(|id| crate::config::client_tool_descriptor(id))
             .collect()
@@ -1397,7 +1400,8 @@ impl SharedHost {
 
     /// The default Agent's published delegation targets in one Workspace.
     pub fn delegate_ids_in(&self, workspace: &str) -> Vec<String> {
-        self.agent_publications
+        self.agent
+            .agent_publications
             .as_ref()
             .and_then(|source| {
                 source.current(

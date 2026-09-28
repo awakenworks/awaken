@@ -43,7 +43,7 @@ impl SharedHost {
     ) -> Result<bool, HostError> {
         use awaken_dispatch::DispatchQueue as _;
 
-        let accepted = if let Some(pool) = self.dispatch_pool.get() {
+        let accepted = if let Some(pool) = self.dispatch.dispatch_pool.get() {
             pool.cancel(run_id)
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?

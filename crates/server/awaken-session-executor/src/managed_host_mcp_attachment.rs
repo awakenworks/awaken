@@ -258,7 +258,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
                                 "an external authenticated ACP MCP relay requires the frozen Environment allowlist to contain its advertised origin and exclude the exact upstream target",
                             ));
                         }
-                        if !self.host.mcp_relay.get().is_some_and(|relay| {
+                        if !self.host.mcp.mcp_relay.get().is_some_and(|relay| {
                             relay.matches_exposure(exposure) && relay.is_live()
                         }) {
                             return Err(RunError::unavailable_classified(
@@ -656,6 +656,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
             if is_acp && actual_realization_kind == Some(CredentialRealizationKind::WorkerRelay) {
                 let relay = self
                     .host
+                    .mcp
                     .mcp_relay
                     .get_or_try_init(|| {
                         crate::mcp_relay::McpRelay::for_host(Arc::downgrade(&self.host))

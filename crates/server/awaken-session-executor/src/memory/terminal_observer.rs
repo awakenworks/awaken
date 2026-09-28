@@ -170,7 +170,9 @@ impl crate::host::SharedHost {
             }
             None => {
                 let config = awaken_ext_memory::MemoryConfig::from_value(
-                    self.plugin_config.get(awaken_ext_memory::MEMORY_PLUGIN_ID),
+                    self.tools
+                        .plugin_config
+                        .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
                 )
                 .map_err(|error| {
                     crate::HostError::internal(format!(

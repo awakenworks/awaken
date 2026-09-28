@@ -60,7 +60,7 @@ impl HostWorkerResolver {
             &snapshot.resolved_spec.plugin_config.agent.toolsets,
         );
         let runtime = crate::config::build_runtime_with_authorization(
-            host.llm.clone(),
+            host.agent.llm.clone(),
             environment.as_ref(),
             &authorization,
         );
@@ -108,7 +108,7 @@ impl HostWorkerResolver {
             .attempt_context
             .with_model_content_materializer(Arc::new(
                 crate::model_content_materializer::ResourceModelContentMaterializer::new(
-                    host.file_content_source.clone(),
+                    host.resources.file_content_source.clone(),
                     workspace_id,
                     claimed.request.thread_id().0.clone(),
                     Some(awaken_dispatch::RunClaim::from(&claimed.lease)),

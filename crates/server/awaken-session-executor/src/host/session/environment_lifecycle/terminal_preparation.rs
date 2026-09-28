@@ -900,7 +900,8 @@ impl SharedHost {
                     Some(_) => awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
                         awaken_session_state_contract::SessionTerminalMemoryIntent,
                     >::encode(
-                        self.memory_reference_encoder
+                        self.worker
+                            .memory_reference_encoder
                             .as_ref()
                             .ok_or_else(|| {
                                 HostError::internal(
@@ -967,12 +968,16 @@ impl SharedHost {
         if checkpoint.is_none() && pending_checkpoint.is_none() {
             return Ok(());
         }
-        let store = self.environment_checkpoint_store.as_ref().ok_or_else(|| {
-            HostError::unavailable_classified(
-                "session_environment_checkpoint_store_unavailable",
-                "No Session environment checkpoint store is installed",
-            )
-        })?;
+        let store = self
+            .env
+            .environment_checkpoint_store
+            .as_ref()
+            .ok_or_else(|| {
+                HostError::unavailable_classified(
+                    "session_environment_checkpoint_store_unavailable",
+                    "No Session environment checkpoint store is installed",
+                )
+            })?;
         let terminal_effect_fence = self.terminal_cleanup_effect_fence(effect)?;
         let authority = self.session_slots.provider_effect_authority(
             effect.command.session_id.as_str(),

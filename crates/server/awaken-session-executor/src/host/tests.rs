@@ -334,7 +334,8 @@ async fn install_pinned_managed_skill_session_with_tools(
 ) -> Result<(), awaken_session_error_contract::RunError> {
     let workspace = host.local_workspace().to_string();
     if seed_version {
-        host.skills
+        host.tools
+            .skills
             .create(
                 awaken_skill_store::SkillDefinition {
                     id: version.skill_id.clone(),
@@ -708,7 +709,7 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
     let handle = host.platform_memory_handle(store_id.to_string(), writable);
     host.register_thread_memory(
         thread,
-        Some(Arc::new(host.memory.bind(
+        Some(Arc::new(host.resources.memory.bind(
             thread,
             "default",
             handle,
@@ -1402,12 +1403,17 @@ async fn install_complete_test_session(
             &awaken_session_execution_contract::CapabilityRuntime::capabilities(managed),
         )
     });
-    let publication = managed.host.agent_publications.as_ref().and_then(|source| {
-        source.current(
-            &workspace_id,
-            &awaken_runtime_contract::snapshot::AgentId(agent_id.clone()),
-        )
-    });
+    let publication = managed
+        .host
+        .agent
+        .agent_publications
+        .as_ref()
+        .and_then(|source| {
+            source.current(
+                &workspace_id,
+                &awaken_runtime_contract::snapshot::AgentId(agent_id.clone()),
+            )
+        });
     let primary = publication.as_ref().map_or_else(
         || {
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
@@ -3780,7 +3786,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
             source,
         )))
         .with_acp_tool_exporter(exporter.clone());
-    raw_host.session_provider =
+    raw_host.env.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.path(),
             false,
@@ -4677,7 +4683,8 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     .expect("Thread 1 Run");
     assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
     assert!(
-        host.memory_stores
+        host.resources
+            .memory_stores
             .fs()
             .get_by_path(&store, "/beverage-preference.md")
             .await
@@ -4799,6 +4806,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     );
     assert!(
         second
+            .resources
             .memory_stores
             .fs()
             .get_by_path("outbox-store", "/user-prefs.md")
@@ -4841,7 +4849,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             .with_agent_publications(Arc::new(publications)),
     );
     let unbound_store = test_memory_store_id();
-    host.memory_stores
+    host.resources
+        .memory_stores
         .fs()
         .create(&unbound_store, "/must-not-leak.md", "the user prefers tea")
         .await
@@ -4897,7 +4906,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     .unwrap();
     assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
     assert!(
-        host.memory_stores
+        host.resources
+            .memory_stores
             .fs()
             .get_by_path(&store_a, "/beverage-preference.md")
             .await
@@ -4906,7 +4916,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         "extraction writes the bound platform store"
     );
     assert!(
-        host.memory_stores
+        host.resources
+            .memory_stores
             .fs()
             .list(&store_b, "/")
             .await
@@ -4994,7 +5005,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
 
     let sandbox_roots = tempfile::tempdir().unwrap();
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
-    raw_host.session_provider =
+    raw_host.env.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_roots.path().to_path_buf(),
             false,
@@ -5005,7 +5016,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     let host = Arc::new(raw_host);
     install_test_memory_mounter(&host);
     let store = test_memory_store_id();
-    host.memory_stores
+    host.resources
+        .memory_stores
         .fs()
         .create(&store, "/seed.md", "seed")
         .await
@@ -5283,7 +5295,8 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
     );
     install_test_memory_mounter(&host);
     let store = test_memory_store_id();
-    host.memory_stores
+    host.resources
+        .memory_stores
         .fs()
         .create(&store, "/existing.md", "the user prefers tea")
         .await
@@ -5321,7 +5334,8 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
     assert_eq!(reply, "ok", "disabled recall does not inject store content");
     assert!(host.drain_runtime(std::time::Duration::from_secs(1)).await);
     assert!(
-        host.memory_stores
+        host.resources
+            .memory_stores
             .fs()
             .get_by_path(&store, "/beverage-preference.md")
             .await
@@ -5443,6 +5457,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
 
     assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
     let saved = host
+        .resources
         .memory_stores
         .fs()
         .get_by_path(&store, "/resumed.md")
@@ -5534,6 +5549,7 @@ async fn extraction_cursor_only_processes_new_messages() {
 
     // The second extraction saw only "beta" — Run 1's "alpha" was past the cursor.
     let seen = host
+        .resources
         .memory_stores
         .fs()
         .get_by_path(&store, "/seen.md")
@@ -5578,6 +5594,7 @@ async fn run_end_fires_background_memory_extraction() {
     assert!(drained, "memory extraction should drain");
 
     let saved = host
+        .resources
         .memory_stores
         .fs()
         .get_by_path(&store, "/user-prefs.md")
@@ -5634,7 +5651,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     //
     // This test owns R2. Run-ingress sandbox-binding conformance owns R3.
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
-    raw_host.session_provider =
+    raw_host.env.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             std::env::temp_dir().join(format!(
                 "awaken-hot-attach-namespace-{}",
@@ -5846,7 +5863,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
 
     let storage = tempfile::tempdir().unwrap();
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
-    raw_host.session_provider =
+    raw_host.env.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
             false,
@@ -6014,7 +6031,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     git(&["commit", "-q", "-m", "seed"]);
 
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
-    raw_host.session_provider =
+    raw_host.env.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             fixture.path().join("sandboxes"),
             false,
@@ -6022,7 +6039,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
             "/bin/sh",
             std::time::Duration::ZERO,
         );
-    let repository_path_fidelity = raw_host.session_provider.capabilities().path_fidelity;
+    let repository_path_fidelity = raw_host.env.session_provider.capabilities().path_fidelity;
     let host = Arc::new(raw_host);
     let managed = managed_with_resource_source(host.clone());
     let desired = effective_resources(vec![TestInput {
@@ -6953,7 +6970,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         "P6: {realization_error:?}"
     );
     let mut physical = SharedHost::new(Arc::new(OkModel), "stub");
-    physical.backend_owned_session_provider = Some(
+    physical.env.backend_owned_session_provider = Some(
         crate::session_environment::SessionEnvironmentProvider::workdir_with_agent_stderr(
             std::env::temp_dir().join("awaken-worker-layout-provider"),
             false,
@@ -7011,7 +7028,7 @@ fn frozen_environment_selects_trusted_host_exactly() {
     let trusted_root = tempfile::tempdir().unwrap();
     let mut host = SharedHost::new(Arc::new(OkModel), "stub");
     host.deployment.sandbox.trusted_host_enabled = true;
-    host.session_provider =
+    host.env.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),
             false,
@@ -7019,7 +7036,7 @@ fn frozen_environment_selects_trusted_host_exactly() {
             "/bin/sh",
             std::time::Duration::ZERO,
         );
-    host.backend_owned_session_provider = Some(
+    host.env.backend_owned_session_provider = Some(
         crate::session_environment::SessionEnvironmentProvider::
             trusted_host_workdir_with_agent_stderr(trusted_root.path(), false),
     );
@@ -7043,7 +7060,7 @@ fn frozen_environment_selects_trusted_host_exactly() {
 
     let mut absent = SharedHost::new(Arc::new(OkModel), "stub");
     absent.deployment.sandbox.trusted_host_enabled = true;
-    absent.session_provider =
+    absent.env.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),
             false,
@@ -7718,7 +7735,8 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         "Never project without a binding.",
         &[],
     );
-    host.skills
+    host.tools
+        .skills
         .create(
             awaken_skill_store::SkillDefinition {
                 id: durable.skill_id.clone(),
@@ -7734,7 +7752,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         .expect("durable Skill store configured")
         .expect("cache unbound Skill version");
     assert_eq!(
-        host.skills.managed_ids_in(host.local_workspace()),
+        host.tools.skills.managed_ids_in(host.local_workspace()),
         vec!["cached".to_string()],
         "A1/C4 proves the live catalog contains an otherwise advertisable Skill"
     );
@@ -8070,6 +8088,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
     ];
     let hash = bundle_sha256(&files);
     catalog_host
+        .tools
         .skills
         .create(
             SkillDefinition {
@@ -8103,7 +8122,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             .with_store_dir(storage.path()),
     );
     assert!(
-        host.skills.cache_snapshot_in(&workspace).is_empty(),
+        host.tools.skills.cache_snapshot_in(&workspace).is_empty(),
         "L8 starts from a cold process cache"
     );
     let managed = managed_with_resource_source(host.clone());
@@ -8597,7 +8616,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     let ephemeral = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     assert!(!ephemeral.deployment.durable, "T1 precondition");
     ephemeral.ensure_dispatch_pool();
-    assert!(ephemeral.dispatch_pool.get().is_some(), "T1/E1");
+    assert!(ephemeral.dispatch.dispatch_pool.get().is_some(), "T1/E1");
 
     let local_store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite(":memory:", system_clock()).unwrap(),
@@ -8606,7 +8625,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(local_store));
     assert!(local.runs_local_dispatch_pool(), "local");
     local.ensure_dispatch_pool();
-    assert!(local.dispatch_pool.get().is_some(), "T2/E1");
+    assert!(local.dispatch.dispatch_pool.get().is_some(), "T2/E1");
 
     let coordinator_store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite(":memory:", system_clock()).unwrap(),
@@ -8617,7 +8636,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     );
     assert!(!coordinator.runs_local_dispatch_pool(), "coordinator");
     coordinator.ensure_dispatch_pool();
-    assert!(coordinator.dispatch_pool.get().is_none(), "T3/E2");
+    assert!(coordinator.dispatch.dispatch_pool.get().is_none(), "T3/E2");
 }
 
 #[tokio::test]
@@ -8654,7 +8673,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         );
         worker.ensure_dispatch_pool();
         assert_eq!(
-            worker.dispatch_pool.get().unwrap().concurrency(),
+            worker.dispatch.dispatch_pool.get().unwrap().concurrency(),
             capacity,
             "R2 actual slots"
         );
@@ -8678,7 +8697,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
                 )),
         );
         coordinator.ensure_dispatch_pool();
-        assert!(coordinator.dispatch_pool.get().is_none(), "R3");
+        assert!(coordinator.dispatch.dispatch_pool.get().is_none(), "R3");
     }
     // A manifest that registers no capacity yields no installable registration:
     // the zero can never reach the installer as a silently clamped default.
@@ -9071,7 +9090,8 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
     // Seed a memory store with known bytes. The control plane has already resolved
     // this resource into the SessionInit passed across the runtime boundary.
     let store_id = test_memory_store_id();
-    host.memory_stores
+    host.resources
+        .memory_stores
         .fs()
         .create(&store_id, "/facts.md", "the secret code is BANANA-42")
         .await
@@ -9835,7 +9855,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let mut raw_host =
         SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
-    raw_host.session_provider =
+    raw_host.env.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.clone(),
             false,
@@ -9843,7 +9863,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
             "/bin/sh",
             std::time::Duration::ZERO,
         );
-    let repository_path_fidelity = raw_host.session_provider.capabilities().path_fidelity;
+    let repository_path_fidelity = raw_host.env.session_provider.capabilities().path_fidelity;
     let host = Arc::new(raw_host);
     let workspace_id = host.local_workspace().to_string();
     let managed = managed_with_resource_source(host.clone());
@@ -10236,7 +10256,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     let mut raw_replacement = SharedHost::new(Arc::new(OkModel), "stub")
         .with_session_recovery_control(control.clone())
         .with_local_workspace(workspace_id);
-    raw_replacement.session_provider =
+    raw_replacement.env.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root,
             false,
@@ -10376,10 +10396,10 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
     let declared_blob_id = awaken_sandbox_local::content_fingerprint(b"declared bytes");
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     let corrupt_store = Arc::new(CorruptFileStore);
-    raw_host.file_store = corrupt_store.clone();
+    raw_host.resources.file_store = corrupt_store.clone();
     let application = Arc::new(awaken_resource_application::FileApplication::new(
         corrupt_store,
-        raw_host.file_catalog.clone(),
+        raw_host.resources.file_catalog.clone(),
         raw_host
             .resource_reclamation()
             .expect("test lifecycle repository"),
@@ -11380,7 +11400,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let default_transport = crate::mcp::project_mcp_session_transport(
         default_projection.server.as_ref().unwrap(),
         &default_projection.request,
-        default_relay_host.mcp_relay.get(),
+        default_relay_host.mcp.mcp_relay.get(),
         &default_projection.receipt,
         awaken_run_executor_acp::acp_cli("codex").unwrap(),
     )
@@ -11451,7 +11471,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let mut backend_secure_host =
         SharedHost::new_with_deployment(Arc::new(OkModel), "stub", backend_deployment)
             .with_acp(executor.clone());
-    backend_secure_host.backend_owned_session_provider = Some(
+    backend_secure_host.env.backend_owned_session_provider = Some(
         crate::session_environment::SessionEnvironmentProvider::container(
             Arc::new(SecureExternalProvider),
             Vec::new(),
@@ -11494,7 +11514,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             Arc::new(SecureExternalProvider),
             Arc::new(UnusedHandFactory),
         );
-    default_secure_host.backend_owned_session_provider = Some(
+    default_secure_host.env.backend_owned_session_provider = Some(
         crate::session_environment::SessionEnvironmentProvider::workdir(weak_backend_root.path()),
     );
     let default_secure_host = Arc::new(default_secure_host);
@@ -11550,7 +11570,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let projected = crate::mcp::project_mcp_session_transport(
         projection.server.as_ref().expect("H20 private material"),
         &projection.request,
-        secure_acp_host.mcp_relay.get(),
+        secure_acp_host.mcp.mcp_relay.get(),
         &projection.receipt,
         awaken_run_executor_acp::acp_cli("codex").unwrap(),
     )
@@ -11570,12 +11590,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H20 projects only the prepared external transport origin: {route}"
     );
     secure_acp_host
+        .mcp
         .mcp_relay
         .get()
         .expect("H32 prepared relay")
         .abort_for_test();
     for _ in 0..100 {
-        if !secure_acp_host.mcp_relay.get().unwrap().is_live() {
+        if !secure_acp_host.mcp.mcp_relay.get().unwrap().is_live() {
             break;
         }
         tokio::task::yield_now().await;
@@ -11652,7 +11673,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .as_ref()
             .expect("H23 private material"),
         &client_projection.request,
-        secure_acp_host.mcp_relay.get(),
+        secure_acp_host.mcp.mcp_relay.get(),
         &client_projection.receipt,
         awaken_run_executor_acp::acp_cli("claude").unwrap(),
     )
@@ -12006,7 +12027,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     };
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
     assert!(
-        host.mcp_relay.set(relay.clone()).is_ok(),
+        host.mcp.mcp_relay.set(relay.clone()).is_ok(),
         "install the canonical Host relay"
     );
 
@@ -12293,7 +12314,7 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
     // route registry, or Removed receipt.
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
-    assert!(host.mcp_relay.set(relay.clone()).is_ok());
+    assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok());
     let generation = McpGenerationRef {
         session_id: "mcp-worker-relay-drain".into(),
         generation: McpGeneration::of_bare_target(
@@ -13288,7 +13309,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     );
 
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
-    assert!(host.mcp_relay.set(relay.clone()).is_ok(), "S2 setup");
+    assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok(), "S2 setup");
     assert!(
         host.publish_mcp_projection(&generation).await.is_err(),
         "S2"
@@ -13378,7 +13399,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
     host.publish_mcp_projection(&generation).await.unwrap();
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
     relay.set_route(&generation, &server);
-    assert!(host.mcp_relay.set(relay.clone()).is_ok(), "A1 setup");
+    assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok(), "A1 setup");
     assert!(relay.route_url(&generation).is_some(), "A1 setup");
 
     assert_eq!(
@@ -14275,7 +14296,8 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     use awaken_provisioning_contract::MountAccess;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
-    host.memory_stores
+    host.resources
+        .memory_stores
         .fs()
         .create(&store_id, "/seed.md", "seed")
         .await
@@ -14578,7 +14600,8 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
         install_test_memory_mounter(&host);
         let stores = [test_memory_store_id(), test_memory_store_id()];
         for store in &stores {
-            host.memory_stores
+            host.resources
+                .memory_stores
                 .fs()
                 .create(store, "/seed.md", rule)
                 .await
@@ -14643,7 +14666,8 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
 async fn runtime_stages_exactly_the_effective_resource_list() {
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let s2 = test_memory_store_id();
-    host.memory_stores
+    host.resources
+        .memory_stores
         .fs()
         .create(&s2, "/wire.md", "WIRE-BYTES")
         .await
@@ -14863,7 +14887,8 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         },
     ];
     let hash = bundle_sha256(&files);
-    host.skills
+    host.tools
+        .skills
         .create(
             SkillDefinition {
                 id: "governed".into(),
@@ -14981,6 +15006,7 @@ async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository
     let db_less = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let store_id = test_memory_store_id();
     db_less
+        .resources
         .memory_stores
         .fs()
         .create(&store_id, "/carried.md", "CARRIED-BYTES")
@@ -15909,7 +15935,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
             .adopt_bound_session_environment(
                 thread,
                 Some(&binding),
-                &replacement.session_provider,
+                &replacement.env.session_provider,
                 None,
                 false,
             )
@@ -15958,7 +15984,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         host.adopt_bound_session_environment(
             "t-resident-adoption",
             Some(&resident_binding),
-            &host.session_provider,
+            &host.env.session_provider,
             None,
             false,
         )
@@ -15977,6 +16003,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     );
 
     let foreign = host
+        .env
         .session_provider
         .create(&host.sandbox_spec("t-foreign-resident"))
         .await
@@ -15986,7 +16013,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .adopt_bound_session_environment(
             "t-resident-adoption",
             Some(&foreign_binding),
-            &host.session_provider,
+            &host.env.session_provider,
             None,
             false,
         )
@@ -16029,6 +16056,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     drop(original);
 
     let foreign = host
+        .env
         .session_provider
         .create(&host.sandbox_spec("t-foreign-retained"))
         .await
@@ -16038,7 +16066,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .adopt_bound_session_environment(
             "t-retained-adoption",
             Some(&foreign_binding),
-            &host.session_provider,
+            &host.env.session_provider,
             None,
             false,
         )
@@ -16058,7 +16086,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         host.adopt_bound_session_environment(
             "t-retained-adoption",
             Some(&retained_binding),
-            &host.session_provider,
+            &host.env.session_provider,
             None,
             false,
         )
@@ -20156,7 +20184,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
         provider,
         Arc::new(crate::session_environment::UnusedHandExecutorFactory),
     );
-    raw_host.artifact_publisher = Arc::new(RecordingTerminalArtifactRecovery {
+    raw_host.resources.artifact_publisher = Arc::new(RecordingTerminalArtifactRecovery {
         events: events.clone(),
         receipt: receipt.clone(),
     });
@@ -20274,7 +20302,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         provider,
         Arc::new(crate::session_environment::UnusedHandExecutorFactory),
     );
-    raw_host.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
+    raw_host.resources.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
         events: events.clone(),
         records: source_records.clone(),
     });
@@ -20426,7 +20454,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
             expected_id: checkpoint_id.into(),
             delete_gate: None,
         }));
-    raw_host.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
+    raw_host.resources.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
         events: events.clone(),
         records: source_records.clone(),
     });
@@ -20593,7 +20621,8 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                 .sandbox_effect_fence("unacknowledged-auxiliary-create")
                 .unwrap();
             let environment = Arc::new(
-                host.session_provider
+                host.env
+                    .session_provider
                     .prepare_terminal_effective_for_effect(
                         &host.sandbox_spec(thread),
                         Some(&handle),
@@ -20706,7 +20735,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     let thread = "proved-absent-terminal-memory-evidence";
     let events = Arc::new(Mutex::new(Vec::new()));
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
-    raw_host.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
+    raw_host.resources.artifact_publisher = Arc::new(RecordingScopedArtifactAuthority {
         events: events.clone(),
         records: Arc::new(Mutex::new(Vec::new())),
     });
@@ -20910,6 +20939,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .sandbox_effect_fence("unacknowledged-memory-create")
                 .unwrap();
             let environment = host
+                .env
                 .session_provider
                 .prepare_terminal_effective_for_effect(
                     &host.sandbox_spec(&thread),
@@ -21096,7 +21126,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .adopt_bound_session_environment(
                     &thread,
                     Some(&binding),
-                    &host.session_provider,
+                    &host.env.session_provider,
                     None,
                     false,
                 )
@@ -21203,6 +21233,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .sandbox_effect_fence("terminal-test-create")
         .expect("project the exact create fence");
     let physical = host
+        .env
         .provider
         .create_sandbox_for_effect(
             &host.sandbox_spec("t-end"),
@@ -21493,7 +21524,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     assert!(host.registered_thread_workspace("t-end").is_none(), "T3/E5");
     assert!(!host.session_slots.contains("t-end"), "T3/E5");
     assert!(
-        host.inference_routing.override_for("t-end").is_none(),
+        host.agent.inference_routing.override_for("t-end").is_none(),
         "T3/E5"
     );
 
@@ -24102,6 +24133,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         .sandbox_effect_fence("remote-terminal-create")
         .expect("R1 create fence");
     let physical = host
+        .env
         .provider
         .create_sandbox_for_effect(
             &host.sandbox_spec("remote-terminal-worker"),
@@ -26825,7 +26857,7 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         });
 
     let environment = host
-        .create_session_environment(&host.session_provider, &spec)
+        .create_session_environment(&host.env.session_provider, &spec)
         .await
         .expect("cache preparation precedes Session environment creation");
     assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E1/E2");
@@ -26897,7 +26929,7 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
             required: false,
         });
     let error = match host
-        .create_session_environment(&host.session_provider, &spec)
+        .create_session_environment(&host.env.session_provider, &spec)
         .await
     {
         Ok(_) => panic!("P2 must fail before cache preparation"),

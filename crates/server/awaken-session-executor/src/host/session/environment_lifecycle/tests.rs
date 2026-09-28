@@ -606,7 +606,7 @@ async fn install_active_worker_relay(
         },
     };
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
-    assert!(host.mcp_relay.set(relay.clone()).is_ok());
+    assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok());
     relay.set_route(&generation, &server);
     host.insert_mcp_projection(crate::session_slot::McpGenerationProjection {
         receipt: awaken_session_mcp_contract::McpRealizationReceipt {
@@ -1630,7 +1630,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .adopt_bound_session_environment(
             ready_thread,
             Some(&ready_binding),
-            &ready_host.session_provider,
+            &ready_host.env.session_provider,
             None,
             true,
         )
@@ -1693,7 +1693,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .adopt_bound_session_environment(
             missing_thread,
             Some(&terminated_binding),
-            &missing_host.session_provider,
+            &missing_host.env.session_provider,
             None,
             true,
         )
@@ -2914,8 +2914,8 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     assert_eq!(activity_generation, durable_generation.id, "E1");
 
     let release = Arc::new(tokio::sync::Notify::new());
-    host.memory
-        .background()
+    let background = host.resources.memory.background();
+    background
         .spawn(
             crate::background::BackgroundWorkClass::SharedEnvironment {
                 session_id: thread.into(),
@@ -2932,16 +2932,13 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
         )
         .await;
     assert!(
-        host.memory
-            .background()
+        background
             .quiesce_shared_environment(thread, &physical_id, std::time::Duration::from_millis(1),)
             .await,
         "E2 physical id is not the durable activity owner"
     );
     assert!(
-        !host
-            .memory
-            .background()
+        !background
             .quiesce_shared_environment(
                 thread,
                 &activity_generation,
@@ -2952,8 +2949,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     );
     release.notify_one();
     assert!(
-        host.memory
-            .background()
+        background
             .quiesce_shared_environment(
                 thread,
                 &activity_generation,
@@ -3019,6 +3015,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .expect("C1 create exact durable Sandbox fence");
         let spec = host.sandbox_spec(thread);
         let physical = host
+            .env
             .provider
             .create_sandbox_for_effect(
                 &spec,
@@ -3099,8 +3096,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "C5 physical authored Skill exists before cleanup"
         );
         let release = Arc::new(tokio::sync::Notify::new());
-        host.memory
-            .background()
+        let background = host.resources.memory.background();
+        background
             .spawn(
                 crate::background::BackgroundWorkClass::SharedEnvironment {
                     session_id: thread.into(),
@@ -3209,7 +3206,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E1 zero harvest"
         );
         assert!(
-            host.skills
+            host.tools
+                .skills
                 .definitions("workspace")
                 .await
                 .unwrap()
@@ -3236,16 +3234,11 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E1 exact Arc retained under the canonical terminal fence"
         );
         assert!(
-            host.memory
-                .background()
-                .has_shared_environment_work(thread, &activity_generation_id),
+            background.has_shared_environment_work(thread, &activity_generation_id),
             "E2 exact owner-selected activity remains visible"
         );
         assert!(
-            !host
-                .memory
-                .background()
-                .has_shared_environment_work(thread, &other_generation_id),
+            !background.has_shared_environment_work(thread, &other_generation_id),
             "E2 the other identity domain is not a substitute activity key"
         );
 
@@ -3270,7 +3263,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E3 one durable Artifact"
         );
         assert!(
-            host.skills
+            host.tools
+                .skills
                 .definitions("workspace")
                 .await
                 .unwrap()
@@ -3396,6 +3390,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let fence = lease.sandbox_effect_fence(intent.effect_id()).unwrap();
     let spec = host.sandbox_spec(thread);
     let physical = host
+        .env
         .provider
         .create_sandbox_for_effect(
             &spec,
@@ -4096,7 +4091,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             host.adopt_bound_session_environment(
                 thread,
                 Some(&binding),
-                &host.session_provider,
+                &host.env.session_provider,
                 None,
                 false,
             )
@@ -4136,7 +4131,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         host.adopt_bound_session_environment(
             thread,
             Some(&binding),
-            &host.session_provider,
+            &host.env.session_provider,
             None,
             false,
         ),
