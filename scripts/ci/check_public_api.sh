@@ -98,14 +98,49 @@ if [ "$bless" = 1 ]; then
   mkdir -p public-api
 fi
 
-# Workspace member package names (no registry resolution).
-crates=$(cargo metadata --no-deps --format-version 1 \
-  | python3 -c "import json,sys; print('\n'.join(sorted(p['name'] for p in json.load(sys.stdin)['packages'])))")
+# The snapshotted crates are the members that declare
+# `[package.metadata.awaken] api_snapshot = true`: a surface something outside
+# the compiler's reach depends on (an INVARIANTS row, the out-of-workspace fuzz
+# crate, the plugin SPI). Every other member's consumers are workspace crates,
+# and the compiler already refuses a breaking change there, so a snapshot of it
+# was a second, hand-blessed copy of what `cargo check` proves -- and the most
+# co-edited file set in the tree (ADR-0081, 2026-09-28 amendment). Selection is
+# positive and lives beside the crate, so a new member is unsnapshotted unless
+# its manifest says otherwise.
+if ! metadata_json="$(cargo metadata --no-deps --format-version 1)"; then
+  echo "cargo metadata failed; the public API gate cannot enumerate its crates" >&2
+  exit 1
+fi
+crates=$(printf '%s' "$metadata_json" | python3 -c "
+import json, sys
+packages = json.load(sys.stdin)['packages']
+selected = sorted(
+    p['name'] for p in packages
+    if ((p.get('metadata') or {}).get('awaken') or {}).get('api_snapshot') is True
+)
+print('\n'.join(selected))
+")
 
-# The pinned nightly can document every current workspace member, including the
-# rust-version 1.96 scoped-migration dependency. Product adapters and startup
-# crates are intentionally included: a changing product surface still needs an
-# explicit reviewed snapshot update rather than an untracked exception.
+# A snapshot file for a crate that is not selected is an orphan: nothing checks
+# it, so it would silently rot while looking like a reviewed surface.
+orphans=()
+if [ -d public-api ]; then
+  for snap in public-api/*.txt; do
+    [ -e "$snap" ] || continue
+    name="$(basename "$snap" .txt)"
+    if ! printf '%s\n' $crates | grep -qx "$name"; then
+      orphans+=("$snap")
+    fi
+  done
+fi
+if [ "${#orphans[@]}" -ne 0 ]; then
+  {
+    echo "❌ public API snapshots without a selecting crate: ${orphans[*]}"
+    echo "   Delete them, or declare api_snapshot = true in the crate's"
+    echo "   [package.metadata.awaken] with the reason its surface needs review."
+  } >&2
+  exit 1
+fi
 
 fail=0
 drifted=()      # crates whose surface changed

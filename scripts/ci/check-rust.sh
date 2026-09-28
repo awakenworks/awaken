@@ -150,6 +150,13 @@ step "fmt" "cargo fmt --all" \
 step "runtime-host-neutral" "keep neutral Runtime Host ports available without enabling authority dependencies" \
   cargo check -p awaken-session-executor --no-default-features "${locked[@]}"
 
+# The fuzz crate is a separate workspace and the only Rust consumer of this
+# repository's crates outside it, so `cargo check --workspace` never compiles it.
+# It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);
+# compiling it is the check that its surface still builds.
+step "fuzz-consumer" "update the fuzz targets to the changed contract surface" \
+  cargo check --manifest-path fuzz/Cargo.toml --bins "${locked[@]}"
+
 # Compile-surface decision table: CR2 a database-less Worker consumes Ingress
 # without durable/test support -> compile its production library warning-free;
 # CR3 a workspace peer enables durable -> that unified graph cannot substitute
