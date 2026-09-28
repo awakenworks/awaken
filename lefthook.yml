@@ -206,7 +206,7 @@ pre-commit:
     # carries the owner and expiry that stop it becoming permanent.
     fabricated-facts:
       # >>> generated glob from check_fabricated_facts.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py,scripts/ci/fabricated_facts_baseline.json}"
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_degrading_defaults.py,scripts/ci/check_fabricated_facts.py,scripts/ci/fabricated_facts_baseline.json}"
       # <<< generated glob
       run: python3 scripts/ci/check_fabricated_facts.py --self-test && python3 scripts/ci/check_fabricated_facts.py
 
