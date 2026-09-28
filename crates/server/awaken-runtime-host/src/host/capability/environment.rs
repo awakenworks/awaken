@@ -144,6 +144,7 @@ impl SharedHost {
                 hand_bin,
                 std::time::Duration::from_secs(self.deployment.sandbox.container_hand_idle_secs),
                 self.deployment.sandbox.container_hand_residency,
+                self.clock.clone(),
             );
         self.env.session_provider_explicit = true;
         if let Some(mounter) = self.memory_mounter() {
@@ -174,6 +175,7 @@ impl SharedHost {
                     self.deployment.sandbox.container_hand_idle_secs,
                 ),
                 self.deployment.sandbox.container_hand_residency,
+                self.clock.clone(),
             );
         if let Some(initializer) = components.cache_volume_initializer {
             self.env.cache_volume_prewarmer =

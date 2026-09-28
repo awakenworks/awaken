@@ -170,6 +170,9 @@ impl ManagedHost {
     }
 }
 
+/// Test fixtures stamp lease expiries on the real clock; production reads the
+/// owning Host's injected clock instead.
+#[cfg(test)]
 pub(crate) fn runtime_unix_now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

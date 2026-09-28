@@ -789,7 +789,9 @@ impl crate::SharedHost {
             {
                 token.cancel();
             }
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = awaken_lease_contract::mono::MonoDeadline::after(
+                std::time::Duration::from_secs(10),
+            );
             loop {
                 if runtime
                     .active_run
@@ -799,7 +801,7 @@ impl crate::SharedHost {
                 {
                     break;
                 }
-                if tokio::time::Instant::now() >= deadline {
+                if deadline.has_passed() {
                     return Err(HostError::unavailable_classified(
                         "mcp_generation_quiescence_timeout",
                         "MCP generation drain could not quiesce the active Session Run",

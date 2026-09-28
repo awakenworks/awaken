@@ -81,6 +81,10 @@ pub(crate) struct ChildExecutionAdapters {
     /// The same host-configured plugin instance shape used by a root Native Run.
     /// The child snapshot still decides whether the plugin is selected.
     pub(crate) web_fetch: Option<Arc<awaken_ext_builtin_tools::WebFetchPlugin>>,
+    /// The parent Host's process clock, on which a directly delegated remote
+    /// child's credential bindings are stamped. Absent in a composition that
+    /// installs no remote child execution; such a child is then refused.
+    pub(crate) clock: Option<Arc<dyn awaken_lease_contract::WallClock>>,
 }
 
 /// Materializes the already-selected ACP execution edge for a child snapshot.
@@ -200,10 +204,12 @@ pub(super) fn bind_direct_child_credentials(
     let epoch = LOCAL_CHILD_ATTEMPT_EPOCH
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         .max(1);
-    let now_unix_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default();
+    let clock = adapters.clock.as_ref().ok_or_else(|| {
+        AgentRunError::Configuration(
+            "direct delegated remote execution requires the parent Host clock".to_string(),
+        )
+    })?;
+    let now_unix_ms = awaken_lease_contract::WallClockExt::now_ms(clock.as_ref());
     let holder = crate::host::self_hosted_inference_holder(activation)
         .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
     let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(

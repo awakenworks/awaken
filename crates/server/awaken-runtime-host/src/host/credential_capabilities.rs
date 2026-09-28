@@ -101,6 +101,7 @@ impl SharedHost {
             credential_capabilities: self.local_credential_realization_capabilities(),
             web_search: Some(self.web_search_plugin(thread, None)),
             web_fetch: Some(self.web_fetch_plugin(thread, None)),
+            clock: Some(self.clock.clone()),
         }
     }
 

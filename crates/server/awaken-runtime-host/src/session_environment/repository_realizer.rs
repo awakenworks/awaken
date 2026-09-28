@@ -22,12 +22,18 @@ impl pc::RepositoryRealizer for SessionEnvironment {
                 pc::RepositoryRealizer::realize_repository(sandbox.as_ref(), plan, credential).await
             }
             Self::Namespace { sandbox, .. } => sandbox.provision_repo(plan, credential),
-            Self::Container { sandbox, hand, .. } => {
+            Self::Container {
+                sandbox,
+                hand,
+                clock,
+                ..
+            } => {
                 container_repositories::provision(
                     sandbox.as_ref(),
                     hand.binary_path(),
                     plan,
                     credential,
+                    clock,
                 )
                 .await
             }
@@ -56,13 +62,19 @@ impl pc::RepositoryRealizer for SessionEnvironment {
                 .await
             }
             Self::Namespace { sandbox, .. } => sandbox.push_repo(plan, expectation, credential),
-            Self::Container { sandbox, hand, .. } => {
+            Self::Container {
+                sandbox,
+                hand,
+                clock,
+                ..
+            } => {
                 container_repositories::push(
                     sandbox.as_ref(),
                     hand.binary_path(),
                     plan,
                     expectation,
                     credential,
+                    clock,
                 )
                 .await
             }

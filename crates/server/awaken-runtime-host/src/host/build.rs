@@ -22,11 +22,10 @@ impl SharedHost {
     /// out: without a root this only ever minted a volatile value.
     #[must_use]
     pub fn mint_local_workspace() -> String {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-        format!("workspace_local_{:x}_{nonce:x}", std::process::id())
+        // Uniqueness, not a time fact: a random nonce keeps two mints in one
+        // process distinct without reading a clock.
+        let nonce = uuid::Uuid::new_v4().simple();
+        format!("workspace_local_{:x}_{nonce}", std::process::id())
     }
 
     /// Volatile test/scenario host over `llm`.

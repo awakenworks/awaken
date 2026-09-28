@@ -2,7 +2,7 @@
 //! Repository Git effects executed exclusively inside a container Sandbox.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_control::{
@@ -42,12 +42,15 @@ struct OperationRepositoryCredential {
     username: String,
     password: String,
     expires_at_unix_ms: u64,
+    /// The Host's process clock the expiry is stamped and judged on.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl OperationRepositoryCredential {
     fn new(
         remote_url: &str,
         credential: &pc::RepositoryHttpBasicCredential,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Self, pc::SandboxError> {
         let url = url::Url::parse(remote_url)
             .map_err(|_| pc::SandboxError::invalid("Repository transport URL is invalid"))?;
@@ -70,11 +73,12 @@ impl OperationRepositoryCredential {
                 "Repository transport URL has no path",
             ));
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| pc::SandboxError::backend("new", "system clock is before Unix epoch"))?;
-        let expires_at_unix_ms = u64::try_from((now + CREDENTIAL_OPERATION_TTL).as_millis())
-            .map_err(|_| {
+        let ttl_ms = u64::try_from(CREDENTIAL_OPERATION_TTL.as_millis()).map_err(|_| {
+            pc::SandboxError::backend("new", "Repository credential expiry overflow")
+        })?;
+        let expires_at_unix_ms = awaken_lease_contract::WallClockExt::now_ms(clock.as_ref())
+            .checked_add(ttl_ms)
+            .ok_or_else(|| {
                 pc::SandboxError::backend("new", "Repository credential expiry overflow")
             })?;
         Ok(Self {
@@ -84,6 +88,7 @@ impl OperationRepositoryCredential {
             username: credential.expose_username().to_owned(),
             password: credential.expose_password().to_owned(),
             expires_at_unix_ms,
+            clock,
         })
     }
 
@@ -98,11 +103,8 @@ impl OperationRepositoryCredential {
 impl SandboxControlService for OperationRepositoryCredential {
     async fn handle(&self, request: SandboxControlRequest) -> SandboxControlResponse {
         let SandboxControlRequest::RepositoryGitCredentialGet { query } = request;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_millis()).ok());
-        if !self.matches(&query) || now.is_none_or(|now| now >= self.expires_at_unix_ms) {
+        let now = awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref());
+        if !self.matches(&query) || now >= self.expires_at_unix_ms {
             return SandboxControlResponse::Denied;
         }
         let Ok(username) = SandboxControlSecret::new(self.username.clone()) else {
@@ -123,12 +125,17 @@ async fn publish_credential(
     sandbox: &dyn awaken_container_contract::ContainerEnvironment,
     remote_url: &str,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
+    clock: &Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<Option<Box<dyn awaken_sandbox_control::PublishedSandboxControlService>>, pc::SandboxError>
 {
     let Some(credential) = credential else {
         return Ok(None);
     };
-    let service = Arc::new(OperationRepositoryCredential::new(remote_url, credential)?);
+    let service = Arc::new(OperationRepositoryCredential::new(
+        remote_url,
+        credential,
+        clock.clone(),
+    )?);
     sandbox
         .publish_sandbox_control_service(
             SandboxControlServiceKind::RepositoryGitCredential,
@@ -146,9 +153,10 @@ pub(super) async fn provision(
     publisher_bin: &str,
     plan: &pc::RepositoryRealizationPlan,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
+    clock: &Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<(), pc::SandboxError> {
     plan.validate_mount_path()?;
-    let publication = publish_credential(sandbox, &plan.transport_url, credential).await?;
+    let publication = publish_credential(sandbox, &plan.transport_url, credential, clock).await?;
     let mut command = repository_clone_command(plan, publisher_bin, uuid::Uuid::new_v4())?;
     command
         .env
@@ -235,6 +243,7 @@ pub(super) async fn push(
     plan: &pc::RepositoryRealizationPlan,
     expectation: &pc::RepositoryPublicationExpectation,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
+    clock: &Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
     plan.validate_mount_path()
         .map_err(pc::RepositoryPublicationError::Unavailable)?;
@@ -246,7 +255,7 @@ pub(super) async fn push(
             pc::SandboxError::unauthorized("read-only repository cannot be published"),
         ));
     }
-    let publication = publish_credential(sandbox, &plan.transport_url, credential)
+    let publication = publish_credential(sandbox, &plan.transport_url, credential, clock)
         .await
         .map_err(pc::RepositoryPublicationError::Unavailable)?;
     let mut command = repository_push_command(plan, expectation, helper_bin);
@@ -715,6 +724,7 @@ exit 99
         let service = OperationRepositoryCredential::new(
             "https://github.example:8443/owner/repo.git",
             &credential,
+            awaken_lease_contract::system_clock(),
         )
         .unwrap();
         let response = service

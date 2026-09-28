@@ -255,6 +255,7 @@ fn bound_test_memory(
         Arc::new(LocalProvider::new(sandbox_base)),
         Arc::new(BackgroundRuns::new()),
         extractions.clone(),
+        awaken_lease_contract::system_clock(),
     ));
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
         memory_store_id: "test-store".into(),
@@ -927,6 +928,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         Arc::new(LocalProvider::new(storage.path().join("first-sandbox"))),
         Arc::new(BackgroundRuns::new()),
         first_repository.clone(),
+        awaken_lease_contract::system_clock(),
     ));
     let child_binding = first_runtime.bind(
         parent,

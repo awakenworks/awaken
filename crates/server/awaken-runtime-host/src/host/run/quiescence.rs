@@ -160,7 +160,9 @@ impl SharedHost {
                 if pass == 0
                     && let Some(ctx) = &resident
                 {
-                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                    let deadline = awaken_lease_contract::mono::MonoDeadline::after(
+                        std::time::Duration::from_secs(10),
+                    );
                     loop {
                         if ctx
                             .active_run
@@ -170,7 +172,7 @@ impl SharedHost {
                         {
                             break;
                         }
-                        if tokio::time::Instant::now() >= deadline {
+                        if deadline.has_passed() {
                             return Err(HostError::internal(format!(
                                 "terminal quiescence timed out for Thread `{thread}`"
                             )));
@@ -181,7 +183,9 @@ impl SharedHost {
                 // Cancellation is complete only after every local or remote
                 // Worker settles all root/parent-affined runnable rows. A local
                 // root join does not cover recovered child Workers.
-                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                let deadline = awaken_lease_contract::mono::MonoDeadline::after(
+                    std::time::Duration::from_secs(10),
+                );
                 let mut inspect_expired_physical = !expired_physical.is_empty();
                 loop {
                     let dispatches = store
@@ -221,7 +225,7 @@ impl SharedHost {
                         }
                         inspect_expired_physical = false;
                     }
-                    if tokio::time::Instant::now() >= deadline {
+                    if deadline.has_passed() {
                         return Err(HostError::internal(format!(
                             "terminal dispatch quiescence timed out for Session `{thread}`"
                         )));
@@ -235,7 +239,9 @@ impl SharedHost {
             if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
                 token.cancel();
             }
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = awaken_lease_contract::mono::MonoDeadline::after(
+                std::time::Duration::from_secs(10),
+            );
             loop {
                 if ctx
                     .active_run
@@ -245,7 +251,7 @@ impl SharedHost {
                 {
                     break;
                 }
-                if tokio::time::Instant::now() >= deadline {
+                if deadline.has_passed() {
                     return Err(HostError::internal(format!(
                         "terminal quiescence timed out for Thread `{thread}`"
                     )));

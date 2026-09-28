@@ -62,6 +62,8 @@ pub struct MemoryRuntime {
     background: Arc<BackgroundRuns>,
     claim_owner: String,
     extractions: RwLock<Arc<dyn MemoryExtractionRepository>>,
+    /// The Host's process clock extraction claims and receipts are stamped on.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 /// One Session-scoped MemoryStore binding shared by recall and extraction.
@@ -88,6 +90,8 @@ pub struct BoundMemory {
 /// that same aggregate.
 struct MemoryExtractionCredentialAuthority {
     repository: Arc<dyn MemoryExtractionRepository>,
+    /// The Host's process clock the claim lease is judged on.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     intent_id: String,
     owner: String,
     generation: u64,
@@ -102,7 +106,7 @@ impl MemoryExtractionCredentialAuthority {
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Memory extraction credential claim disappeared".to_string())?;
-        let now = memory_unix_ms();
+        let now = awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref());
         if intent.claim_owner.as_deref() != Some(self.owner.as_str())
             || intent.claim_generation != self.generation
             || intent
@@ -146,7 +150,7 @@ impl awaken_runtime_contract::CredentialRealizationRecorder
                 .record_credential_realization(
                     &self.owner,
                     self.generation,
-                    memory_unix_ms(),
+                    awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
                     receipt.clone(),
                 )
                 .map_err(|error| {
@@ -179,21 +183,16 @@ impl awaken_runtime_contract::CredentialRealizationRecorder
     }
 }
 
-fn memory_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
-}
-
 impl MemoryRuntime {
     pub fn new(
         llm: Arc<dyn LlmExecutor>,
         provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
         background: Arc<BackgroundRuns>,
         extractions: Arc<dyn MemoryExtractionRepository>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
+            clock,
             llm,
             inference_materializer: RwLock::new(None),
             provider: RwLock::new(provider),
@@ -301,7 +300,7 @@ impl MemoryRuntime {
                 Some(&holder),
                 &materializer.credential_realization_capabilities(),
                 intent.claim_generation,
-                memory_unix_ms(),
+                awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
             )
             .map_err(|error| error.to_string())?;
             let owner = intent
@@ -310,6 +309,7 @@ impl MemoryRuntime {
                 .ok_or_else(|| "Memory extractor has no durable claim owner".to_string())?;
             let authority = Arc::new(MemoryExtractionCredentialAuthority {
                 repository: self.extraction_repository(),
+                clock: self.clock.clone(),
                 intent_id: intent.intent_id.clone(),
                 owner,
                 generation: intent.claim_generation,

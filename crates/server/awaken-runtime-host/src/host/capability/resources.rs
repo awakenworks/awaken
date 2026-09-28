@@ -114,8 +114,6 @@ impl ResourcePorts {
             worker_content,
             extraction_repository,
         } = inputs;
-        #[cfg(not(test))]
-        let _ = clock;
         #[cfg(not(any(test, feature = "test-support")))]
         let _ = store_dir;
         let memory_stores = if let Some(content) = &worker_content {
@@ -152,6 +150,7 @@ impl ResourcePorts {
             memory_sandboxes,
             Arc::new(BackgroundRuns::new()),
             extraction_repository,
+            clock.clone(),
         ));
         #[cfg(any(test, feature = "test-support"))]
         let (file_store, file_catalog) = if worker_content.is_some() {
