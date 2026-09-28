@@ -393,7 +393,10 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
      * Effects: E1 create one annotated Pod/PVC and publish both physical UID fences;
      * E2 C2+C3 recover the identical handle; E3 C4 fails without reaping either
      * object; E4 terminal disposal removes both. Rules KR1=C1=>E1;
-     * KR2=C2+C3=>E2; KR3=C4=>E3; KR4=dispose=>E4. */
+     * KR2=C2+C3=>E2; KR3=C4=>E3; KR4=dispose=>E4. A new live
+     * invocation has a distinct restore effect, so a retained failed fixture
+     * cannot collide with KR1. Retries within this invocation retain the exact
+     * request; no previous fixture is deleted or adopted to satisfy KR1. */
     let Some(first_runtime) = live_runtime().await else {
         return;
     };
@@ -401,9 +404,14 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
         storage_class_name: None,
         size: "1Gi".into(),
     });
-    let scope = format!("k8s-restore-{}", std::process::id());
+    let invocation = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let scope = format!("k8s-restore-{}-{invocation}", std::process::id());
     let spec = common::exact_restore_spec(&scope);
-    let request = common::exact_restore_request(&scope);
+    let mut request = common::exact_restore_request(&scope);
+    request.effect_id = format!("blake3:{}", blake3::hash(scope.as_bytes()));
     // KR4 carries the caller's durable preparation/successor authorization
     // through every provider layer; the backend cannot manufacture it.
     let authorization = disposal_authorization(&effect_fence(
