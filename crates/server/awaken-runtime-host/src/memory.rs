@@ -619,14 +619,14 @@ impl crate::host::SharedHost {
     /// The Memory content data-plane port used by an outer process startup to
     /// construct a worker-side mounter. It carries no principal or policy state.
     pub fn memory_repository(&self) -> Arc<dyn awaken_resource_contract::MemoryRepository> {
-        self.memory_stores.fs_handle()
+        self.resources.memory_stores.fs_handle()
     }
 
     /// The Workspace-scoped Skill aggregate port shared by HTTP authoring and
     /// runtime activation. `None` means this host has no durable Skill plane.
     #[cfg(any(test, feature = "test-support"))]
     pub fn skill_store(&self) -> Option<Arc<dyn awaken_resource_contract::SkillStore>> {
-        self.skills.store_handle()
+        self.tools.skills.store_handle()
     }
 
     /// Install the worker adapter behind the neutral provisioning port. This is
@@ -636,13 +636,15 @@ impl crate::host::SharedHost {
         &self,
         mounter: Arc<dyn awaken_provisioning_contract::MemoryMounter>,
     ) {
-        self.provider.install_memory_mounter(mounter.clone());
-        self.session_provider
+        self.env.provider.install_memory_mounter(mounter.clone());
+        self.env
+            .session_provider
             .install_memory_mounter(mounter.clone());
-        if let Some(provider) = &self.backend_owned_session_provider {
+        if let Some(provider) = &self.env.backend_owned_session_provider {
             provider.install_memory_mounter(mounter.clone());
         }
         *self
+            .env
             .memory_mounter
             .write()
             .expect("memory mounter lock poisoned") = Some(mounter);
@@ -652,7 +654,8 @@ impl crate::host::SharedHost {
     /// adapter. Default platform wiring must preserve an explicit selection.
     #[must_use]
     pub fn has_memory_mounter(&self) -> bool {
-        self.memory_mounter
+        self.env
+            .memory_mounter
             .read()
             .expect("memory mounter lock poisoned")
             .is_some()
@@ -661,7 +664,8 @@ impl crate::host::SharedHost {
     pub(crate) fn memory_mounter(
         &self,
     ) -> Option<Arc<dyn awaken_provisioning_contract::MemoryMounter>> {
-        self.memory_mounter
+        self.env
+            .memory_mounter
             .read()
             .expect("memory mounter lock poisoned")
             .clone()
@@ -778,7 +782,7 @@ impl crate::host::SharedHost {
         writable: bool,
     ) -> Arc<PlatformMemoryHandle> {
         Arc::new(PlatformMemoryHandle::new(
-            self.memory_stores.fs_handle(),
+            self.resources.memory_stores.fs_handle(),
             store_id,
             writable,
         ))
@@ -798,7 +802,7 @@ impl crate::host::SharedHost {
     ) {
         let writable = access == awaken_resource_contract::ResourceAccess::ReadWrite;
         let handle = self.platform_memory_handle(config.memory_store_id.to_string(), writable);
-        let bound = self.memory.bind(
+        let bound = self.resources.memory.bind(
             thread,
             workspace_id,
             handle,
@@ -816,7 +820,7 @@ impl crate::host::SharedHost {
         &self,
         repository: Arc<dyn MemoryExtractionRepository>,
     ) {
-        self.memory.set_extraction_repository(repository);
+        self.resources.memory.set_extraction_repository(repository);
     }
 }
 
@@ -1794,7 +1798,7 @@ mod tests {
                 awaken_lease_contract::system_clock(),
             )),
         )));
-        let parent_binding = Arc::new(recovered_host.memory.bind(
+        let parent_binding = Arc::new(recovered_host.resources.memory.bind(
             parent,
             "ws-test",
             platform.clone(),
@@ -1802,7 +1806,7 @@ mod tests {
             &config,
             true,
         ));
-        let read_only_binding = Arc::new(recovered_host.memory.bind(
+        let read_only_binding = Arc::new(recovered_host.resources.memory.bind(
             parent,
             "ws-test",
             platform.clone(),
@@ -1815,7 +1819,7 @@ mod tests {
             version: awaken_resource_contract::ConfigVersion::INITIAL,
             retention_policy: Default::default(),
         };
-        let direct_binding = Arc::new(recovered_host.memory.bind(
+        let direct_binding = Arc::new(recovered_host.resources.memory.bind(
             parent,
             "ws-test",
             Arc::new(PlatformMemoryHandle::new(
@@ -1938,7 +1942,7 @@ mod tests {
             version: awaken_resource_contract::ConfigVersion::INITIAL,
             retention_policy: Default::default(),
         };
-        let binding = Arc::new(host.memory.bind(
+        let binding = Arc::new(host.resources.memory.bind(
             session,
             "worker-memory-workspace",
             Arc::new(PlatformMemoryHandle::new(

@@ -388,11 +388,14 @@ impl SharedHost {
             self.retain_session_publication(thread, installed.as_ref())?;
             let fallback_model_ref = claimed_attempt.as_ref().map_or_else(
                 || {
-                    let frozen_model_ref =
-                        installed.as_ref().map_or(self.model_ref.as_str(), |root| {
+                    let frozen_model_ref = installed
+                        .as_ref()
+                        .map_or(self.agent.model_ref.as_str(), |root| {
                             root.resolved_spec.model_binding.identity().1
                         });
-                    self.inference_routing.model_ref(thread, frozen_model_ref)
+                    self.agent
+                        .inference_routing
+                        .model_ref(thread, frozen_model_ref)
                 },
                 |attempt| attempt.effective_model_ref.clone(),
             );
@@ -407,7 +410,7 @@ impl SharedHost {
                     .map(|root| {
                         crate::agent_catalog::freeze_run_publications(
                             root,
-                            self.agent_publications.as_deref(),
+                            self.agent.agent_publications.as_deref(),
                             &workspace,
                         )
                     })
@@ -480,7 +483,8 @@ impl SharedHost {
                         .unwrap_or_default()
                 });
             if !session_dispatch && frozen_skill_versions.is_none() {
-                self.skills
+                self.tools
+                    .skills
                     .reload_cache_in(&workspace)
                     .await
                     .map_err(|error| HostError::internal(error.to_string()))?;
@@ -509,7 +513,8 @@ impl SharedHost {
             // physical Session side effect for work that can never be admitted.
             let background_tasks_enabled = installed.as_ref().map_or_else(
                 || {
-                    self.plugin_ids
+                    self.tools
+                        .plugin_ids
                         .iter()
                         .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID)
                 },
@@ -532,7 +537,8 @@ impl SharedHost {
                 ));
             }
             let background_attention = if background_tasks_enabled {
-                self.session_background_runs
+                self.dispatch
+                    .session_background_runs
                     .read()
                     .expect("Session background Run application lock poisoned")
                     .clone()
@@ -739,7 +745,7 @@ impl SharedHost {
                 .unwrap_or_else(|| {
                     awaken_runtime_contract::agent_bindings::ResolvedConfiguration::new(
                         Default::default(),
-                        self.plugin_config.clone(),
+                        self.tools.plugin_config.clone(),
                     )
                 });
             let published_toolsets = installed
@@ -757,6 +763,7 @@ impl SharedHost {
             // Management tools (ADR-0052) remain pre-authorized: they are read-only,
             // and only the reserved-scope assistant's config names them.
             let mut admin_ids: Vec<String> = self
+                .tools
                 .admin_tools
                 .iter()
                 .map(|t| t.id().to_string())
@@ -809,18 +816,20 @@ impl SharedHost {
             // switch needs no session rebuild, and a database-less worker runs the
             // configured model without a session-level registry.
             let mut runtime = match env.as_ref() {
-                Some(env) => {
-                    build_runtime_with_authorization(self.llm.clone(), env.as_ref(), &authorization)
-                }
+                Some(env) => build_runtime_with_authorization(
+                    self.agent.llm.clone(),
+                    env.as_ref(),
+                    &authorization,
+                ),
                 None => build_runtime_with_authorization(
-                    self.llm.clone(),
+                    self.agent.llm.clone(),
                     &crate::config::DeferredHandToolSource,
                     &authorization,
                 ),
             };
             // Register the management tool executables globally (ADR-0052 D3): the
             // registry stays global, the compile-time scope fence is what restricts them.
-            for tool in &self.admin_tools {
+            for tool in &self.tools.admin_tools {
                 runtime = runtime.with_tool(tool.clone());
             }
             // Delegation is a runtime concern: inject the executor so the kernel runs
@@ -884,8 +893,8 @@ impl SharedHost {
             // already-realized Resource projection. Only a direct Session without a
             // frozen manifest may fall back to the live compatibility catalog.
             let delivered = frozen_skill_versions.or_else(|| {
-                (!session_dispatch && self.skills.has_application())
-                    .then(|| self.skills.cache_snapshot_in(&workspace))
+                (!session_dispatch && self.tools.skills.has_application())
+                    .then(|| self.tools.skills.cache_snapshot_in(&workspace))
             });
             // A published Agent receives exactly its selected Skills. Embedded direct
             // Sessions without a publication use the host-configured catalog.
@@ -899,13 +908,14 @@ impl SharedHost {
             } else {
                 match &selected_skills {
                     Some(selected) => self
+                        .tools
                         .skills
                         .specs()
                         .iter()
                         .filter(|skill| selected.contains(&skill.id))
                         .cloned()
                         .collect(),
-                    None => self.skills.specs().to_vec(),
+                    None => self.tools.skills.specs().to_vec(),
                 }
             };
             let filtered_delivered = match (delivered, &selected_skills) {
@@ -977,12 +987,12 @@ impl SharedHost {
                     let adapter = crate::skills::semantic_skill_adapter(
                         registry.clone(),
                         env.clone(),
-                        self.llm.clone(),
-                        &self.model_ref,
+                        self.agent.llm.clone(),
+                        &self.agent.model_ref,
                         thread,
                         base_gate.clone(),
                         sub_base("skill-fork"),
-                        self.skill_fork_placement,
+                        self.tools.skill_fork_placement,
                         commit.clone(),
                     );
                     if installed.is_some() && !is_acp {
@@ -1043,7 +1053,7 @@ impl SharedHost {
             // This is the sole final gate replacement point. Skill wiring may decorate
             // the ordinary base gate above; an explicit host override intentionally
             // replaces that complete default chain (the scheduled-action scenario).
-            if let Some(gate) = &self.gate_override {
+            if let Some(gate) = &self.tools.gate_override {
                 runtime = runtime.with_gate(gate.clone());
             }
             // Memory recall is a plugin: it contributes a BeforeInference hook that
@@ -1051,7 +1061,7 @@ impl SharedHost {
             // it and list its id so it is active for the run (G30).
             // Seed with host-registered plugins (e.g. the tool state machine via
             // `with_state_machine`), then append the per-run memory/compact plugins.
-            let mut plugin_ids: Vec<String> = self.plugin_ids.clone();
+            let mut plugin_ids: Vec<String> = self.tools.plugin_ids.clone();
             let authored_memory = installed
                 .as_ref()
                 .and_then(|snapshot| {
@@ -1125,7 +1135,7 @@ impl SharedHost {
                         )
                         .map_err(HostError::bad_request)?;
                         Ok(Arc::new(crate::memory::AgentSelector::new(
-                            self.llm.clone(),
+                            self.agent.llm.clone(),
                             snapshot,
                             commit.clone(),
                         ))
@@ -1185,12 +1195,14 @@ impl SharedHost {
                 ),
                 None if installed.is_none()
                     && self
+                        .tools
                         .plugin_ids
                         .iter()
                         .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID) =>
                 {
                     Some(
-                        self.plugin_config
+                        self.tools
+                            .plugin_config
                             .get(awaken_ext_compact::COMPACT_PLUGIN_ID)
                             .cloned()
                             .map(serde_json::from_value::<awaken_ext_compact::CompactConfig>)
@@ -1230,8 +1242,9 @@ impl SharedHost {
                     )
                     .map_err(HostError::bad_request)?;
                     let agent_tool =
-                        build_compact_runner(self.llm.clone(), snapshot, commit.clone());
-                    let backend = build_compact_backend(agent_tool, self.memory.background());
+                        build_compact_runner(self.agent.llm.clone(), snapshot, commit.clone());
+                    let backend =
+                        build_compact_backend(agent_tool, self.resources.memory.background());
                     let plugin = CompactPlugin::new(compact_config).with_backend(thread, backend);
                     runtime = runtime.with_plugin(Arc::new(plugin));
                     if !plugin_ids
@@ -1274,14 +1287,17 @@ impl SharedHost {
             let mut config = match installed {
                 Some(installed) => installed,
                 None => {
-                    let model_ref = self.inference_routing.model_ref(thread, &self.model_ref);
+                    let model_ref = self
+                        .agent
+                        .inference_routing
+                        .model_ref(thread, &self.agent.model_ref);
                     server_config(
                         &selected_agent,
                         &model_ref,
-                        &self.client_tools,
+                        &self.tools.client_tools,
                         &session_delegates,
                         &plugin_ids,
-                        &self.plugin_config,
+                        &self.tools.plugin_config,
                         &dynamic_descriptors,
                         context_policy,
                     )
@@ -1408,7 +1424,7 @@ impl SharedHost {
             // Runtime construction consumes effects staged by the one public MCP
             // realization lifecycle.  It must not start a relay or recreate routes:
             // after restart, durable rehydration stages and publishes them first.
-            let relay = self.mcp_relay.get();
+            let relay = self.mcp.mcp_relay.get();
             let mut acp_mcp_servers = if is_acp {
                 let adapter = match &execution_backend {
                     awaken_runtime_contract::resolved::Backend::Acp(backend) => {
@@ -1572,7 +1588,7 @@ impl SharedHost {
                                 as Arc<dyn awaken_runtime_contract::tool::RawTool>
                         })
                         .collect();
-                    let exporter = self.acp_tool_exporter.as_ref().ok_or_else(|| {
+                    let exporter = self.exec.acp_tool_exporter.as_ref().ok_or_else(|| {
                         HostError::internal("ACP_TOOL_BRIDGE_MISSING: ACP Session tools require an installed tool-export adapter")
                     })?;
                     if matches!(
@@ -1607,6 +1623,7 @@ impl SharedHost {
             }
             let runtime = Arc::new(runtime);
             let acp_executor = self
+                .exec
                 .acp
                 .as_ref()
                 .zip(env.clone())
@@ -1642,9 +1659,10 @@ impl SharedHost {
                 Arc::new(crate::run_exec::SessionAttemptExecutor::new(
                     runtime.clone(),
                     acp_executor,
-                    self.remote_attempt_executor.clone(),
+                    self.agent.remote_attempt_executor.clone(),
                     &config.resolved_spec,
-                    self.judge_snapshot
+                    self.agent
+                        .judge_snapshot
                         .as_ref()
                         .map(|snapshot| &snapshot.resolved_spec),
                 ));
@@ -1661,6 +1679,7 @@ impl SharedHost {
                     thread,
                 ));
             let attempt_executor = self
+                .exec
                 .attempt_decorator
                 .as_ref()
                 .map_or(attempt_executor.clone(), |decorate| {
@@ -1670,6 +1689,7 @@ impl SharedHost {
             // concern. This one decorator therefore wraps the final executor used by
             // both direct and claimed durable attempts (including recovered runs).
             let capture_sink = self
+                .capture
                 .capture_sink
                 .read()
                 .expect("capture sink lock poisoned")
@@ -1677,9 +1697,9 @@ impl SharedHost {
             let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
                 Arc::new(crate::run_exec::CaptureContextAttemptExecutor::new(
                     attempt_executor,
-                    self.capture_decision.clone(),
+                    self.capture.capture_decision.clone(),
                     capture_sink,
-                    self.data_subject_consent.clone(),
+                    self.capture.data_subject_consent.clone(),
                 ));
             // This is the one post-attempt output edge. Because it wraps the final
             // executor shared by direct delivery and the durable Worker, claimed
@@ -1754,7 +1774,8 @@ impl SharedHost {
                     awaken_tenancy::ScopeId::from(workspace_id.as_str()),
                 ))
                 .with_tool_execution_admission(
-                    self.memory
+                    self.resources
+                        .memory
                         .background()
                         .tool_execution_admission(thread, &environment_generation),
                 );
@@ -1764,7 +1785,7 @@ impl SharedHost {
                 .flatten();
             let mut run_context = run_context.with_model_content_materializer(Arc::new(
                 crate::model_content_materializer::ResourceModelContentMaterializer::new(
-                    self.file_content_source.clone(),
+                    self.resources.file_content_source.clone(),
                     workspace_id,
                     thread,
                     dispatch_claim,
@@ -1811,7 +1832,7 @@ impl SharedHost {
                         config.clone(),
                         run_context.clone(),
                         background_commit,
-                        self.memory.background(),
+                        self.resources.memory.background(),
                         awaken_ext_background_task::process_supervisor(),
                         thread.to_string(),
                         environment_generation,

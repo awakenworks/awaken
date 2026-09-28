@@ -60,7 +60,7 @@ impl SharedHost {
         let agent = coordinates.agent();
         let frozen_revision = coordinates.agent_revision();
         let installed = delivered.or_else(|| {
-            self.agent_publications.as_ref().and_then(|source| {
+            self.agent.agent_publications.as_ref().and_then(|source| {
                 let agent_id = awaken_runtime_contract::snapshot::AgentId(agent.to_string());
                 match frozen_revision {
                     Some(revision) => source.at_revision(workspace, &agent_id, revision),
@@ -237,17 +237,19 @@ impl SharedHost {
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
         match provisioning {
-            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => {
-                self.backend_owned_session_provider.as_ref().ok_or_else(|| {
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => self
+                .env
+                .backend_owned_session_provider
+                .as_ref()
+                .ok_or_else(|| {
                     HostError::internal(
                         "BackendOwned provisioning requires a trusted-host Session provider",
                     )
-                })
-            }
+                }),
             awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
             | awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
             | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
-                Ok(&self.session_provider)
+                Ok(&self.env.session_provider)
             }
         }
     }
@@ -279,6 +281,7 @@ impl SharedHost {
                 ));
             }
             let provider = self
+                .env
                 .backend_owned_session_provider
                 .as_ref()
                 .ok_or_else(|| {
@@ -1072,7 +1075,8 @@ impl SharedHost {
                 .current_effect_fence(fence)
                 .map_err(|error| HostError::internal(error.to_string()))?;
         }
-        self.cache_volume_prewarmer
+        self.env
+            .cache_volume_prewarmer
             .prepare_mounts(&spec.mounts)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;

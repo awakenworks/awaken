@@ -282,7 +282,7 @@ impl SharedHost {
                             .any(crate::skills::version_requires_environment)
                     });
             if frozen_requires_filesystem
-                || self.skills.requires_environment_in(
+                || self.tools.skills.requires_environment_in(
                     &self.thread_workspace(thread),
                     selected_skills.as_ref(),
                 )
@@ -353,12 +353,14 @@ impl SharedHost {
             && filesystem_delivery
             && (frozen_has_selected
                 || self
+                    .tools
                     .skills
                     .has_selected_in(&workspace, selected_skills.as_ref()));
         slot_requires
             || filesystem_skill_projection
             || (!managed_session
                 && self
+                    .tools
                     .skills
                     .requires_environment_in(&workspace, selected_skills.as_ref()))
     }
@@ -411,7 +413,7 @@ impl SharedHost {
         let published_backend_is_acp = published_snapshot
             .cloned()
             .or_else(|| {
-                self.agent_publications.as_ref().and_then(|source| {
+                self.agent.agent_publications.as_ref().and_then(|source| {
                     source.current(
                         &workspace,
                         &awaken_runtime_contract::snapshot::AgentId(

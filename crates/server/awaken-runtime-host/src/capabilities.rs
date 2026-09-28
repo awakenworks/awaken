@@ -26,7 +26,7 @@ impl ManagedHost {
             // catalog versions. Host-static SkillSpec values belong to the
             // direct compatibility adapter and cannot truthfully satisfy a
             // Managed AgentSkillBinding.
-            skills: self.host.skills.managed_ids_in(workspace),
+            skills: self.host.tools.skills.managed_ids_in(workspace),
             delegates: self.host.delegate_ids_in(workspace),
         }
     }

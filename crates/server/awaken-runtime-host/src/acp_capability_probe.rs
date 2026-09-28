@@ -166,6 +166,7 @@ impl SessionAcpCapabilityNegotiator {
         let spec = crate::provisioning::agent_run_sandbox_spec(scope);
         let environment = self
             .host
+            .env
             .session_provider
             .create(&spec)
             .await

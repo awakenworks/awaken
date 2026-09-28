@@ -141,6 +141,7 @@ impl SharedHost {
         {
             let generation_id = owned.activity_generation_id();
             if !self
+                .resources
                 .memory
                 .background()
                 .quiesce_shared_environment(
@@ -620,7 +621,7 @@ impl SharedHost {
                 if !belongs_to_operation {
                     continue;
                 }
-                if let Some(relay) = self.mcp_relay.get() {
+                if let Some(relay) = self.mcp.mcp_relay.get() {
                     relay.remove_routes(&thread_id);
                 }
                 removed |= self.session_slots.remove(&thread_id).is_some();
@@ -649,7 +650,7 @@ impl SharedHost {
             if !belongs_to_operation {
                 continue;
             }
-            if let Some(relay) = self.mcp_relay.get() {
+            if let Some(relay) = self.mcp.mcp_relay.get() {
                 relay.remove_routes(&thread_id);
             }
             removed |= self.session_slots.remove(&thread_id).is_some();

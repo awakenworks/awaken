@@ -159,7 +159,7 @@ impl SharedHost {
         } else {
             self.ctx_for(thread, None).await?
         };
-        let binding = outcome_binding(&ctx.config, self.judge_snapshot.as_ref());
+        let binding = outcome_binding(&ctx.config, self.agent.judge_snapshot.as_ref());
         let host_grader = HostAgentGrader {
             host: self,
             worker_cancel: ctx.cancel.clone(),

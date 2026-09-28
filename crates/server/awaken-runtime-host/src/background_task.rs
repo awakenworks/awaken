@@ -1146,7 +1146,8 @@ mod tests {
         drop(application);
         drop(port);
         assert!(
-            host.session_background_runs
+            host.dispatch
+                .session_background_runs
                 .read()
                 .expect("Session background Run application lock poisoned")
                 .as_ref()

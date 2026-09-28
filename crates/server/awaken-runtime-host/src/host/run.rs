@@ -392,7 +392,7 @@ impl SharedHost {
                 .and_then(|ctx| ctx.delivery.is_durable().then_some(&ctx.claimed_worker)),
             active_run.as_ref(),
         ) {
-            if self.dispatch_pool.get().is_some() {
+            if self.dispatch.dispatch_pool.get().is_some() {
                 // The process pool is the sole durable claim driver. This edge
                 // accepts the cancellation intent and returns; its drainer owns
                 // the claim-fenced Runtime commit and settlement.
@@ -612,7 +612,7 @@ impl SharedHost {
         let baseline = self.authoritative_step_snapshot(&ctx, &run_id).await?;
         let before = baseline.messages.len();
         activation.run_id = run_id.clone();
-        activation.model_ref_override = self.inference_routing.override_for(thread);
+        activation.model_ref_override = self.agent.inference_routing.override_for(thread);
         activation.data_subject_id = data_subject_id;
         let expected_input_ids = activation
             .input
@@ -883,7 +883,7 @@ impl SharedHost {
             .prepare(&ctx.config, thread.to_string(), messages);
         // Stamp the Thread's per-Run model override (R2/R5) off the fingerprinted
         // snapshot, so the claiming worker resolves the effective model itself.
-        activation.model_ref_override = self.inference_routing.override_for(thread);
+        activation.model_ref_override = self.agent.inference_routing.override_for(thread);
         activation.run_id = uid.clone();
         let request = self.resolved_dispatch(activation)?;
         match self.dispatch_pool_or_err() {
@@ -932,7 +932,7 @@ impl SharedHost {
         let ctx = self.ctx_for(session_id, None).await?;
         let activation = ctx
             .resume_activation(ticket)
-            .with_model_ref_override(self.inference_routing.override_for(session_id));
+            .with_model_ref_override(self.agent.inference_routing.override_for(session_id));
         let request = self
             .resolved_dispatch(activation)?
             .for_session(ThreadId(session_id.to_string()))
@@ -1136,7 +1136,7 @@ impl SharedHost {
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        if let Some(pool) = self.dispatch_pool.get() {
+        if let Some(pool) = self.dispatch.dispatch_pool.get() {
             pool.notify().await;
         } else {
             store

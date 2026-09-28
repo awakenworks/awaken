@@ -598,7 +598,7 @@ impl crate::SharedHost {
                     // it can never fall through to process injection.
                     Some(awaken_runtime_contract::CredentialRealizationKind::WorkerRelay)
                     | None => {
-                        let relay = self.mcp_relay.get().ok_or_else(|| {
+                        let relay = self.mcp.mcp_relay.get().ok_or_else(|| {
                             HostError::internal("authenticated MCP generation has no staged relay")
                         })?;
                         if !relay.update_staged_route(generation, server) {
@@ -740,7 +740,7 @@ impl crate::SharedHost {
         // route owner's existing MCP call fence to the same drain barrier.
         // Removing the map entry is not quiescence because an accepted clone
         // can still hold its credential and upstream future.
-        if let Some(relay) = self.mcp_relay.get()
+        if let Some(relay) = self.mcp.mcp_relay.get()
             && let Some(fence) = relay.route_call_fence(generation)
         {
             call_fences.push(fence);
@@ -827,7 +827,7 @@ impl crate::SharedHost {
         // exact route fence, Runtime, staging, and process owners are quiescent;
         // cancellation or any failure above leaves the closed Route installed
         // with the Draining projection so retry retains the same proof owner.
-        if let Some(relay) = self.mcp_relay.get() {
+        if let Some(relay) = self.mcp.mcp_relay.get() {
             relay.remove_route(generation);
         }
 

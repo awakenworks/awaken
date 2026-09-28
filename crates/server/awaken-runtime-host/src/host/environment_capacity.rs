@@ -12,7 +12,7 @@ impl SharedHost {
         &self,
         volume: crate::CacheVolumeWarmup,
     ) -> Result<(), String> {
-        self.cache_volume_prewarmer.prewarm(volume).await
+        self.env.cache_volume_prewarmer.prewarm(volume).await
     }
 
     /// Reuse current Environment demand for node-image preparation, independently
@@ -31,12 +31,12 @@ impl SharedHost {
                 .map(|environment| {
                     crate::provisioning::environment_capacity_projection(
                         environment,
-                        self.session_provider.capabilities().network_isolation,
+                        self.env.session_provider.capabilities().network_isolation,
                     )
                     .spec
                 }),
         );
-        self.session_provider.prewarm_images(&specs).await
+        self.env.session_provider.prewarm_images(&specs).await
     }
 
     /// Warm the deployment's canonical empty Session shape to the target selected
@@ -51,7 +51,8 @@ impl SharedHost {
         {
             return Ok(0);
         }
-        self.session_provider
+        self.env
+            .session_provider
             .prewarm(
                 &crate::provisioning::default_session_sandbox_spec("environment-warmup"),
                 target,
@@ -70,7 +71,8 @@ impl SharedHost {
     }
 
     pub async fn discard_default_environment_capacity(&self) {
-        self.session_provider
+        self.env
+            .session_provider
             .discard_capacity(&crate::provisioning::default_session_sandbox_spec(
                 "environment-warmup",
             ))
@@ -94,9 +96,10 @@ impl SharedHost {
         }
         let projection = crate::provisioning::environment_capacity_projection(
             environment,
-            self.session_provider.capabilities().network_isolation,
+            self.env.session_provider.capabilities().network_isolation,
         );
-        self.session_provider
+        self.env
+            .session_provider
             .prewarm(&projection.spec, target)
             .await
     }
@@ -123,9 +126,9 @@ impl SharedHost {
     ) -> usize {
         let projection = crate::provisioning::environment_capacity_projection(
             environment,
-            self.session_provider.capabilities().network_isolation,
+            self.env.session_provider.capabilities().network_isolation,
         );
-        self.session_provider.ready_capacity(&projection.spec)
+        self.env.session_provider.ready_capacity(&projection.spec)
     }
 
     /// Exact identity published in Worker receipts for the same canonical spec
@@ -137,7 +140,7 @@ impl SharedHost {
     ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
         crate::provisioning::environment_capacity_projection(
             environment,
-            self.session_provider.capabilities().network_isolation,
+            self.env.session_provider.capabilities().network_isolation,
         )
         .shape_id
     }
@@ -150,9 +153,10 @@ impl SharedHost {
     ) {
         let projection = crate::provisioning::environment_capacity_projection(
             environment,
-            self.session_provider.capabilities().network_isolation,
+            self.env.session_provider.capabilities().network_isolation,
         );
-        self.session_provider
+        self.env
+            .session_provider
             .discard_capacity(&projection.spec)
             .await;
     }
@@ -160,6 +164,6 @@ impl SharedHost {
     /// Dispose never-used warm capacity after claim admission and in-flight work
     /// have drained. Active Session environments remain owned by their slots.
     pub async fn shutdown_environment_capacity(&self) {
-        self.session_provider.shutdown_capacity().await;
+        self.env.session_provider.shutdown_capacity().await;
     }
 }

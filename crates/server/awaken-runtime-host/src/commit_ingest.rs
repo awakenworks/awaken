@@ -80,7 +80,7 @@ impl SharedHost {
         if self.upstream.is_none() {
             return Ok(None);
         }
-        self.claimed_commit.clone().map(Some).ok_or_else(|| {
+        self.worker.claimed_commit.clone().map(Some).ok_or_else(|| {
             HostError::internal(
                 "database-less Worker requires an injected claimed-commit transport",
             )
@@ -311,6 +311,7 @@ mod tests {
             "{rule}: Memory extraction did not drain"
         );
         let intent = host
+            .resources
             .memory
             .extraction_repository()
             .get_extraction(intent_id)
@@ -332,7 +333,8 @@ mod tests {
         );
         assert_eq!(intent.attempts, 1, "{rule}: replay is idempotent");
         assert!(
-            host.memory_stores
+            host.resources
+                .memory_stores
                 .fs()
                 .get_by_path(store_id, "/user-prefs.md")
                 .await
@@ -341,7 +343,8 @@ mod tests {
             "{rule}: extraction must write the frozen MemoryStore"
         );
         assert_eq!(
-            host.memory_stores
+            host.resources
+                .memory_stores
                 .fs()
                 .list_versions(store_id)
                 .await
@@ -429,7 +432,8 @@ mod tests {
         assert_no_resident_session_projection(&host, thread, "R1/E5");
         let intent_id = format!("memory-extraction:{thread}:{}", run.0);
         assert!(
-            host.memory
+            host.resources
+                .memory
                 .extraction_repository()
                 .get_extraction(&intent_id)
                 .await
@@ -463,7 +467,8 @@ mod tests {
         assert!(!first.duplicate, "R2/E1");
         assert!(replay.duplicate, "R4/E1");
         assert!(
-            host.memory
+            host.resources
+                .memory
                 .extraction_repository()
                 .get_extraction(&intent_id)
                 .await
@@ -609,7 +614,8 @@ mod tests {
         assert!(ctx.delivery.is_durable(), "D1/C3 must use durable delivery");
         let intent_id = format!("memory-extraction:{thread}:{}", run.0);
         assert!(
-            host.memory
+            host.resources
+                .memory
                 .extraction_repository()
                 .get_extraction(&intent_id)
                 .await
@@ -838,7 +844,8 @@ mod tests {
         );
         let intent_id = format!("memory-extraction:{child_thread}:{}", child_run.0);
         assert!(
-            host.memory
+            host.resources
+                .memory
                 .extraction_repository()
                 .get_extraction(&intent_id)
                 .await

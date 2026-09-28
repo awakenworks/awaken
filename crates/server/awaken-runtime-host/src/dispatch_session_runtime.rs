@@ -429,7 +429,8 @@ impl SharedHost {
     }
 
     pub(crate) fn dispatch_session_runtime(&self) -> Result<DispatchSessionRuntime, RunError> {
-        self.dispatch_session_runtime
+        self.dispatch
+            .dispatch_session_runtime
             .read()
             .expect("dispatch Session Runtime lock poisoned")
             .clone()

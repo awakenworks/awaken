@@ -110,7 +110,7 @@ pub(super) async fn install_claimed_session_projection(
         }
         return Ok(());
     }
-    let Some(control) = host.session_control.as_ref() else {
+    let Some(control) = host.worker.session_control.as_ref() else {
         let projection_ready = host
             .session_slots
             .read(&thread_id.0, |slot| {

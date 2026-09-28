@@ -489,14 +489,18 @@ impl SharedHost {
             // execute that exact candidate. Unioning evidence across fallback
             // candidates would let one ACP route authorize another route.
             let installed = match &backend {
-                Backend::Native => self.inference_routing.credential_realization_capabilities(),
+                Backend::Native => self
+                    .agent
+                    .inference_routing
+                    .credential_realization_capabilities(),
                 Backend::Acp(_) => self
+                    .exec
                     .acp
                     .as_ref()
                     .ok_or_else(|| HostError::bad_request("ACP backend is not installed"))?
                     .credential_realization_capabilities(&backend)
                     .map_err(HostError::bad_request)?,
-                Backend::Remote(_) => self.remote_credential_realization.clone(),
+                Backend::Remote(_) => self.agent.remote_credential_realization.clone(),
                 Backend::Invalid(invalid) => {
                     return Err(HostError::bad_request(format!(
                         "invalid backend_ref {}",
@@ -542,6 +546,7 @@ impl SharedHost {
         // resolved through the host's InferenceExecutorMaterializer. `None` leaves
         // the runtime's bound host-default executor.
         if let Some(executor) = self
+            .agent
             .inference_routing
             .executor_for_activation(activation, &context)
             .map_err(HostError::bad_request)?
@@ -1055,8 +1060,8 @@ mod tests {
         let mut raw_host =
             SharedHost::new(Arc::new(NoLlm), "test").with_dispatch_store(dispatch.clone());
         let claims = Arc::new(std::sync::Mutex::new(Vec::new()));
-        raw_host.artifact_publisher = Arc::new(RecordingArtifactPublisher {
-            inner: raw_host.artifact_publisher.clone(),
+        raw_host.resources.artifact_publisher = Arc::new(RecordingArtifactPublisher {
+            inner: raw_host.resources.artifact_publisher.clone(),
             claims: claims.clone(),
             dispatch: dispatch.clone(),
         });
@@ -1333,8 +1338,8 @@ mod tests {
 
         let failed_storage = tempfile::tempdir().unwrap();
         let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
-        raw_host.file_application = None;
-        raw_host.artifact_publisher =
+        raw_host.resources.file_application = None;
+        raw_host.resources.artifact_publisher =
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher);
         let failed_host = Arc::new(raw_host);
         failed_host.register_thread_workspace(thread, "workspace-a");

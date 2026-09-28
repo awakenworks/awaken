@@ -69,7 +69,7 @@ impl SharedHost {
     pub fn worker_file_content_source(
         &self,
     ) -> Arc<dyn FileContentSource<awaken_run_ingress::ResourceOperationFence>> {
-        self.file_content_source.clone()
+        self.resources.file_content_source.clone()
     }
 
     pub fn worker_artifact_publisher(
@@ -79,7 +79,7 @@ impl SharedHost {
                 awaken_run_ingress::ArtifactPublicationFence,
             >,
     > {
-        self.artifact_publisher.clone()
+        self.resources.artifact_publisher.clone()
     }
 }
 
