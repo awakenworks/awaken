@@ -662,7 +662,9 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
         data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     };
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
     // The snapshot is internally consistent, so config produced exactly what the

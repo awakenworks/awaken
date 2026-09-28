@@ -145,7 +145,9 @@ fn queued(text: &str) -> Message {
 #[tokio::test]
 async fn queued_messages_are_folded_in_before_the_run_ends() {
     let runtime = runtime();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let inbox = LiveInbox::new();
     let _ = inbox.offer(queued("Queued follow-up."));
 
@@ -187,7 +189,9 @@ async fn a_requested_pause_awaits_the_run_at_the_next_boundary() {
     // ADR-0054: an operator pause is a durable await at the next safe boundary, not
     // a mid-Step freeze. The Run commits its response, then awaits (not ends).
     let runtime = runtime();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let pause = PauseSignal::new();
     pause.request();
 
@@ -218,7 +222,9 @@ async fn pause_preempts_queued_input_but_commits_the_complete_fold_before_awaiti
     // boundary outcome. Constraint: pause changes disposition, not input
     // ownership; no queued item may be omitted merely because Await won.
     let runtime = runtime();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let inbox = LiveInbox::new();
     let _ = inbox.offer(queued("Queued before pause."));
     let pause = PauseSignal::new();
@@ -260,7 +266,9 @@ async fn cancellation_preempts_pause_and_leaves_input_for_attempt_close() {
     // close/re-route policy. Constraint: cancellation cannot be rewritten as a
     // durable pause and LiveInbox cannot become a second durable ingress.
     let runtime = runtime();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let inbox = LiveInbox::new();
     let _ = inbox.offer(queued("route on close"));
     let pause = PauseSignal::new();
@@ -295,7 +303,7 @@ async fn failed_commit_after_boundary_drain_does_not_invent_a_retry_queue() {
     // and the rejected fold is absent from durable truth. Constraint: lossless
     // delivery belongs to durable Session ingress, not restoration into a
     // second LiveInbox acknowledgement/retry mechanism.
-    let durable = MemoryCommitCoordinator::new();
+    let durable = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     let commit = Arc::new(RejectFoldCommit {
         inner: durable.clone(),
     });
@@ -335,7 +343,9 @@ async fn a_batch_drains_in_order_with_sequential_ids() {
     // Rule D1+D2 => E1+E2+E3. Empty input and failed commit are the adjacent
     // rules, so this case owns the non-empty successful branch only.
     let runtime = runtime();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let inbox = LiveInbox::new();
     let _ = inbox.offer(queued("one"));
     let _ = inbox.offer(queued("two"));
@@ -370,7 +380,9 @@ async fn a_batch_drains_in_order_with_sequential_ids() {
 #[tokio::test]
 async fn an_empty_or_absent_inbox_leaves_the_run_untouched() {
     let runtime = runtime();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     // Absent inbox (the default context) — single echo Step, natural end.
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());

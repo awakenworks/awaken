@@ -119,7 +119,9 @@ async fn terminal_notification_reaches_inference_and_commits_without_result_look
         },
         supervisor.clone(),
     ));
-    let commits = Arc::new(MemoryCommitCoordinator::new());
+    let commits = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let runtime = Runtime::new()
         .with_llm(Arc::new(SubmitThenEnd {
             calls: AtomicUsize::new(0),
@@ -285,7 +287,9 @@ async fn runtime_commits_submission_through_the_ordinary_thread_state_boundary()
         }))
         .with_plugin(plugin)
         .with_tool(Arc::new(Bash));
-    let commits = Arc::new(MemoryCommitCoordinator::new());
+    let commits = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let outcome = runtime
         .execute(
             activation(vec![BACKGROUND_TASK_PLUGIN_ID.into()]),

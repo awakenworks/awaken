@@ -176,7 +176,9 @@ async fn a_guards_forced_continuation_count_survives_a_await_and_resume() {
         }));
     runtime.register_snapshot(snapshot());
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     // First leg: the guard steers once (fc 0 -> 1) and requests a pause, so the run
     // awaits at the next boundary with one steer-feedback message committed.

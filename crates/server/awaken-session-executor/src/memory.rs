@@ -1100,9 +1100,9 @@ mod tests {
             true,
         );
         bound.bind_execution(Arc::new(HostCommit::Local(Arc::new(
-            crate::LocalCommitAdapter::projected(
-                awaken_store_inmem::MemoryCommitCoordinator::new(),
-            ),
+            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            )),
         ))));
         (runtime, bound, repository, extractions)
     }
@@ -1259,7 +1259,9 @@ mod tests {
         // is returned. The forbidden complement (!C2 -> process-local fallback) is
         // unrepresentable because `AgentSelector::new` requires the authority.
         let commit = Arc::new(HostCommit::Local(Arc::new(
-            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new()),
+            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            )),
         )));
         let selector = AgentSelector::new(
             Arc::new(IndexModel),
@@ -1788,7 +1790,9 @@ mod tests {
             FailFirstRecoverableRead::new(recovered_repository.clone()),
         ));
         let parent_commit = Arc::new(HostCommit::Local(Arc::new(
-            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new()),
+            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            )),
         )));
         let parent_binding = Arc::new(recovered_host.memory.bind(
             parent,

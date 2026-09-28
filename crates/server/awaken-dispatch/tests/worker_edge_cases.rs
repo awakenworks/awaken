@@ -64,7 +64,9 @@ async fn duplicate_submit_same_run_id_drives_exactly_once() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     store
         .enqueue(RunDispatch::new(activation("run-1")))
@@ -165,7 +167,9 @@ async fn unbound_inbox_input_is_delivered_once_and_consumed_on_settle() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     // An unbound idle-thread message (empty run + correlation) waits for the thread.
     store
@@ -234,7 +238,9 @@ async fn a_non_input_unbound_row_does_not_desync_the_drain() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     // Two non-Input unbound rows precede one unbound Input, all on the idle thread.
     store
@@ -318,7 +324,9 @@ async fn fresh_continuations_on_one_thread_receive_only_their_bound_input() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     let mut first = RunDispatch::new(activation("run-bound-first"));
     first.activation.input.clear();
@@ -426,7 +434,9 @@ async fn stale_correlation_input_is_dropped_and_the_run_stays_awaiting() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let thread = ThreadId(THREAD.to_string());
     let run = RunId("run-1".to_string());
 

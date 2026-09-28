@@ -179,7 +179,7 @@ mod tests {
         // Decision table: R1 Awaiting -> awaiting; R2 NaturalEnd|MaxSteps ->
         // success; R3 every other EndCause -> error. This closes the former
         // `Ended(_)` wildcard that reclassified remote failures as empty success.
-        let reader = MemoryCommitCoordinator::new();
+        let reader = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
         let thread = ThreadId("child-terminal".into());
         assert!(matches!(
             settled_agent_boundary(&reader, &thread, RunState::Awaiting),

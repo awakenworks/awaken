@@ -191,7 +191,9 @@ mod tests {
         let store = Arc::new(MemoryDispatchStore::new(
             awaken_lease_contract::system_clock(),
         ));
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let worker = Arc::new(DispatchWorker::new(
             runtime,
             store,
@@ -269,7 +271,9 @@ mod tests {
         let store = Arc::new(MemoryDispatchStore::new(
             awaken_lease_contract::system_clock(),
         ));
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let worker = Arc::new(DispatchWorker::new(
             runtime,
             store.clone(),
@@ -299,7 +303,9 @@ mod tests {
         let store = Arc::new(MemoryDispatchStore::new(
             awaken_lease_contract::system_clock(),
         ));
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let worker = Arc::new(DispatchWorker::new(
             runtime,
             store.clone(),
@@ -365,7 +371,9 @@ mod tests {
         let store = Arc::new(MemoryDispatchStore::new(
             awaken_lease_contract::system_clock(),
         ));
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let worker = Arc::new(DispatchWorker::new(
             runtime.clone(),
             store,

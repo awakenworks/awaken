@@ -443,14 +443,14 @@ async fn insert_operation(
     operation: &DispatchOperation,
 ) -> Result<(), DispatchError> {
     let prefix = NS;
-    let recorded_at_ms = i64::try_from(crate::clock::system_now_ms()).unwrap_or(i64::MAX);
+    // Stamped by the database's authority clock, the one every claim and lease
+    // judgement of this store reads, in the same transaction as the transition.
     sqlx::query(&format!(
         "INSERT INTO {prefix}_dispatch_operation (run_id, operation, recorded_at_ms) \
-         VALUES ($1, $2, $3)"
+         VALUES ($1, $2, FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint)"
     ))
     .bind(&operation.run_id().0)
     .bind(Json(operation))
-    .bind(recorded_at_ms)
     .execute(&mut **tx)
     .await
     .map_err(store_error)?;

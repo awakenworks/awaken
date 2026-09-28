@@ -101,7 +101,9 @@ impl ToolFreeAcpRunner {
             data_subject_id: None,
             tool_capability_narrowing: Default::default(),
         };
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let context = RuntimeRunContext::new()
             .with_commit(commit.clone())
             .with_tool_permission_policy(Arc::new(DenyAllTools));

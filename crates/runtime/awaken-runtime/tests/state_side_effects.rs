@@ -309,7 +309,9 @@ async fn tool_with_no_state_commits_nothing_extra() {
         }))
         .with_gate(Arc::new(AllowGate));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation(&["plain"]), context)
@@ -369,7 +371,9 @@ async fn ordinary_tools_default_to_maximum_parallelism() {
         }))
         .with_gate(Arc::new(AllowGate));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let outcome = runtime
         .execute(
             activation(&["observed_a", "observed_b"]),
@@ -545,7 +549,9 @@ async fn run_observed_pair(
             barrier,
         }))
         .with_gate(Arc::new(AllowGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let outcome = tokio::time::timeout(
         Duration::from_secs(2),
         runtime.execute(
@@ -725,7 +731,9 @@ async fn batched_commutative_tool_writes_merge() {
         }))
         .with_gate(Arc::new(AllowGate));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation(&["mutate_a", "mutate_b"]), context)
@@ -790,7 +798,9 @@ async fn batched_exclusive_tool_writes_conflict_fail_closed() {
         }))
         .with_gate(Arc::new(AllowGate));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation(&["lock_a", "lock_b"]), context)

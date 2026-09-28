@@ -60,7 +60,9 @@ fn context(store: &Arc<MemoryCommitCoordinator>) -> RuntimeRunContext {
 
 #[tokio::test]
 async fn explicit_identity_preserves_the_ordinary_run_lifecycle() {
-    let direct_store = Arc::new(MemoryCommitCoordinator::new());
+    let direct_store = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let direct = Runtime::new().with_llm(Arc::new(FixedModel));
     let direct_state = direct
         .run_to_completion(
@@ -73,7 +75,9 @@ async fn explicit_identity_preserves_the_ordinary_run_lifecycle() {
         .await
         .expect("direct Run");
 
-    let explicit_store = Arc::new(MemoryCommitCoordinator::new());
+    let explicit_store = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let explicit = Runtime::new().with_llm(Arc::new(FixedModel));
     let explicit_id = RunId("stable-explicit-run".into());
     let explicit_state = explicit
@@ -121,7 +125,9 @@ async fn explicit_terminal_identity_cannot_move_to_another_thread() {
     // E2 exact replay returns committed truth; E3 foreign Thread fails without
     // inference. Decision table: R1 !C1 -> E1; R2 C1 && C2 -> E2;
     // R3 C1 && !C2 -> E3. The contract projection owns C1/C2 for Runtime and Host.
-    let store = Arc::new(MemoryCommitCoordinator::new());
+    let store = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let model = Arc::new(CountingModel(AtomicUsize::new(0)));
     let runtime = Runtime::new().with_llm(model.clone());
     let run_id = RunId("thread-bound-run".into());

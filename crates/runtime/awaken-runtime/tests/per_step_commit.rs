@@ -154,7 +154,9 @@ fn runtime_with(
 
 #[tokio::test]
 async fn each_continuing_step_commits_under_a_running_fact() {
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let runtime = runtime_with(2, &commit, &observations, Vec::new());
 
@@ -197,7 +199,9 @@ async fn each_continuing_step_commits_under_a_running_fact() {
 
 #[tokio::test]
 async fn committed_progress_is_visible_mid_run() {
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let runtime = runtime_with(2, &commit, &observations, Vec::new());
 
@@ -225,7 +229,9 @@ async fn committed_progress_is_visible_mid_run() {
 
 #[tokio::test]
 async fn cross_step_state_conflict_ends_the_run_and_keeps_committed_steps() {
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
     // Every tool step stages the same exclusive set: step 0's commits fine,
     // step 1's collides with it in the cumulative batch.
@@ -264,7 +270,9 @@ async fn cross_step_state_conflict_ends_the_run_and_keeps_committed_steps() {
 
 #[tokio::test]
 async fn text_only_run_commits_input_then_terminal() {
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let observations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let runtime = runtime_with(0, &commit, &observations, Vec::new());
 

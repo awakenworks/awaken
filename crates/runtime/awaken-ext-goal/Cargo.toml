@@ -16,6 +16,7 @@ async-trait.workspace = true
 awaken-runtime-contract.workspace = true
 
 [dev-dependencies]
+awaken-lease-contract.workspace = true
 tokio = { workspace = true }
 awaken-store-inmem.workspace = true
 

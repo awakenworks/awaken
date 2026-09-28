@@ -40,6 +40,9 @@ pub(super) enum SchemaAccess {
 
 pub struct DurableRuntimeAuthority {
     commit: CommitAuthorityConfig,
+    /// The Coordinator process's one wall clock. The dispatch store judges its
+    /// rows and every local commit store stamps its commits with this handle.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     dispatch: Arc<AnyDispatchStore>,
     wake: Option<Arc<dyn WakeSignal>>,
     postgres_commit: Option<Arc<PostgresCommitCoordinator>>,
@@ -215,6 +218,7 @@ impl DurableRuntimeAuthority {
     pub async fn open(
         deployment: &DeploymentConfig,
         schema: SchemaAccess,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Arc<Self>, String> {
         let postgres_pool = if deployment.dispatch_backend == DispatchBackend::Postgres
             || deployment.store == StoreKind::Postgres
@@ -232,7 +236,7 @@ impl DurableRuntimeAuthority {
         } else {
             None
         };
-        Self::open_with_postgres_pool(deployment, schema, postgres_pool).await
+        Self::open_with_postgres_pool(deployment, schema, postgres_pool, clock).await
     }
 
     /// Open every Runtime persistence adapter over the process's one
@@ -241,8 +245,10 @@ impl DurableRuntimeAuthority {
         deployment: &DeploymentConfig,
         schema: SchemaAccess,
         postgres_pool: Option<sqlx::PgPool>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Arc<Self>, String> {
-        let (dispatch, wake) = open_dispatch(deployment, schema, postgres_pool.clone()).await?;
+        let (dispatch, wake) =
+            open_dispatch(deployment, schema, postgres_pool.clone(), clock.clone()).await?;
         let postgres_commit = if deployment.store == StoreKind::Postgres {
             let pool = postgres_pool.ok_or_else(|| {
                 "Postgres commit requires the process-owned Coordinator pool".to_owned()
@@ -258,6 +264,7 @@ impl DurableRuntimeAuthority {
         };
         Ok(Arc::new(Self {
             commit: CommitAuthorityConfig::from(deployment),
+            clock,
             dispatch,
             wake,
             postgres_commit,
@@ -314,6 +321,7 @@ async fn open_dispatch(
     deployment: &DeploymentConfig,
     schema: SchemaAccess,
     postgres_pool: Option<sqlx::PgPool>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<(Arc<AnyDispatchStore>, Option<Arc<dyn WakeSignal>>), String> {
     match deployment.dispatch_backend {
         DispatchBackend::Sqlite => {
@@ -322,10 +330,8 @@ async fn open_dispatch(
                     .to_owned()
             })?;
             std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
-            let store = AnyDispatchStore::open_sqlite(
-                &root.join("dispatch.db").to_string_lossy(),
-                awaken_lease_contract::system_clock(),
-            )?;
+            let store =
+                AnyDispatchStore::open_sqlite(&root.join("dispatch.db").to_string_lossy(), clock)?;
             Ok((Arc::new(store), None))
         }
         DispatchBackend::Postgres => {
@@ -425,6 +431,7 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
                     .commit_path(thread)
                     .map_err(RuntimeAuthorityError::misconfigured)?;
                 let store = self.commit.store;
+                let clock = self.clock.clone();
                 self.local_commits
                     .open(thread.to_owned(), move || async move {
                         if let Some(parent) = path.parent() {
@@ -433,7 +440,7 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
                             })?;
                         }
                         match store {
-                            StoreKind::Fs => FsCommitCoordinator::open(&path)
+                            StoreKind::Fs => FsCommitCoordinator::open(&path, clock)
                                 .await
                                 .map(|commit| {
                                     Arc::new(LocalCommitAdapter::projected(commit))
@@ -712,19 +719,28 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runtime_authority_startup_decision_table() {
         let missing = DeploymentConfig::ephemeral();
-        let missing_error =
-            match DurableRuntimeAuthority::open(&missing, SchemaAccess::Migrate).await {
-                Ok(_) => panic!("A1 must reject a volatile production authority"),
-                Err(error) => error,
-            };
+        let missing_error = match DurableRuntimeAuthority::open(
+            &missing,
+            SchemaAccess::Migrate,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        {
+            Ok(_) => panic!("A1 must reject a volatile production authority"),
+            Err(error) => error,
+        };
         assert!(missing_error.contains("runtime.storage_dir"), "A1/E1");
 
         let root = tempfile::tempdir().expect("A2 storage root");
         let mut durable = DeploymentConfig::ephemeral();
         durable.storage_dir = Some(root.path().to_path_buf());
-        let authority = DurableRuntimeAuthority::open(&durable, SchemaAccess::Migrate)
-            .await
-            .expect("A2/E2");
+        let authority = DurableRuntimeAuthority::open(
+            &durable,
+            SchemaAccess::Migrate,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .expect("A2/E2");
         authority.open_commit("a/b").await.expect("A2 commit");
         authority.stream_checkpoint("a/b").expect("A2 checkpoint");
         assert!(root.path().join("dispatch.db").exists(), "A2 dispatch");
@@ -767,9 +783,13 @@ mod tests {
             let mut deployment = DeploymentConfig::ephemeral();
             deployment.storage_dir = Some(root.path().join("space 空间/nested"));
             deployment.store = backend;
-            let authority = DurableRuntimeAuthority::open(&deployment, SchemaAccess::Migrate)
-                .await
-                .expect(rule);
+            let authority = DurableRuntimeAuthority::open(
+                &deployment,
+                SchemaAccess::Migrate,
+                awaken_lease_contract::system_clock(),
+            )
+            .await
+            .expect(rule);
 
             let (left, right) = tokio::join!(
                 authority.open_commit("parent"),
@@ -806,7 +826,7 @@ mod tests {
 
     fn test_local_commit() -> Arc<dyn LocalCommit> {
         Arc::new(LocalCommitAdapter::projected(
-            awaken_store_inmem::MemoryCommitCoordinator::new(),
+            awaken_store_inmem::MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
         ))
     }
 

@@ -201,7 +201,9 @@ async fn suspend(commit: &Arc<MemoryCommitCoordinator>, runtime: &Runtime) {
 async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     suspend(&commit, &runtime).await;
 
@@ -293,7 +295,9 @@ async fn suspend_commits_ticket_then_allow_resume_executes_and_completes() {
 async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     suspend(&commit, &runtime).await;
 
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -329,7 +333,9 @@ async fn deny_resume_feeds_a_blocked_result_without_running_the_tool() {
 async fn resume_with_wrong_fingerprint_fails_closed() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran);
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     suspend(&commit, &runtime).await;
 
     let mut command = resume_command(ResumeResult::allow());
@@ -358,7 +364,9 @@ async fn resume_rejects_a_ticket_batch_payload_conflict_before_tool_execution() 
     // (covered by the allow test), RB2=C1+C2+!C3=>E2.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     suspend(&commit, &runtime).await;
 
     let run_id = RunId("run-1".into());
@@ -424,7 +432,9 @@ async fn resume_rejects_a_ticket_batch_payload_conflict_before_tool_execution() 
 async fn second_resume_after_completion_is_not_awaiting() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran);
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     suspend(&commit, &runtime).await;
 
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -457,7 +467,9 @@ async fn permission_wait_rejects_a_client_result_bypass() {
     // real tool execution path.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     suspend(&commit, &runtime).await;
 
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -497,7 +509,9 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
     // System context and its correlated Tool result commit adjacently and once.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let mut activation = activation();
     activation.snapshot.resolved_spec.tool_descriptors[0] =
         activation.snapshot.resolved_spec.tool_descriptors[0]
@@ -586,7 +600,9 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
 async fn permission_wait_rejects_free_form_input() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran);
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     suspend(&commit, &runtime).await;
 
     let context = RuntimeRunContext::new().with_commit(commit.clone());
@@ -639,7 +655,9 @@ async fn resumed_requested_client_calls_keep_their_frozen_execution_owner() {
                 runtime
             };
             let mut runtime = make_runtime();
-            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let commit = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             assert_eq!(
                 runtime
                     .execute(act, RuntimeRunContext::new().with_commit(commit.clone()))

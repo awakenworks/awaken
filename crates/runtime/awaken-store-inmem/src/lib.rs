@@ -127,14 +127,31 @@ impl CommitState {
 
 /// In-memory atomic commit boundary. Each `commit` appends messages, facts, and
 /// committed event records under one lock, then bumps the sequence.
-#[derive(Debug, Default, Clone)]
+#[derive(Clone)]
 pub struct MemoryCommitCoordinator {
     state: Arc<Mutex<CommitState>>,
+    /// Stamps every commit's `committed_at_unix_ms`. Required: the composition
+    /// that owns this store chooses the clock, so a test names commit times and
+    /// production never falls back to the host clock silently.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+}
+
+impl std::fmt::Debug for MemoryCommitCoordinator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MemoryCommitCoordinator")
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MemoryCommitCoordinator {
-    pub fn new() -> Self {
-        Self::default()
+    #[must_use]
+    pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+        Self {
+            state: Arc::default(),
+            clock,
+        }
     }
 
     /// Snapshot of committed truth, for replay/projection assertions. A flattened
@@ -236,21 +253,16 @@ impl MemoryCommitCoordinator {
 #[async_trait]
 impl CommitCoordinator for MemoryCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
-        self.commit_at(
-            commit,
-            Some(awaken_lease_contract::system_clock().now().as_epoch_ms()),
-        )
-        .await
+        let committed_at = awaken_lease_contract::WallClockExt::now_ms(&*self.clock);
+        self.commit_at(commit, Some(committed_at)).await
     }
 }
 #[async_trait]
 impl OperationCoordinator for MemoryCommitCoordinator {
     async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
-        self.commit_operation_at(
-            operation,
-            Some(awaken_lease_contract::system_clock().now().as_epoch_ms()),
-        )
-        .await
+        let committed_at = awaken_lease_contract::WallClockExt::now_ms(&*self.clock);
+        self.commit_operation_at(operation, Some(committed_at))
+            .await
     }
 }
 

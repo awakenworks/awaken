@@ -17,6 +17,7 @@ fn release_claim_transaction(
     p: &str,
     claim: RunClaim,
     retry_not_before: Option<i64>,
+    now_ms: u64,
 ) -> Result<SettleOutcome, DispatchError> {
     let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
     let tx = conn
@@ -129,6 +130,7 @@ fn release_claim_transaction(
             claim,
             reason: LeaseLossReason::Relinquished,
         },
+        now_ms,
     )?;
     tx.commit().map_err(store_error)?;
     Ok(SettleOutcome::Applied)

@@ -216,7 +216,9 @@ fn activation_on(run_id: &str, thread_id: &str) -> RunActivation {
 async fn pre_cancelled_run_commits_a_terminal_cancelled_outcome() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let token = CancellationToken::new();
     token.cancel();
     let context = RuntimeRunContext::new()
@@ -241,7 +243,9 @@ async fn claimed_cancellation_commits_unpublished_activation_input_with_terminal
     // execution lease. The real-process ACP matrix owns old-owner fencing and
     // no-late-output; this unit isolates the replacement claim's commit payload.
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());
@@ -761,7 +765,9 @@ async fn committed_client_tool_wait() -> (
 ) {
     let llm = Arc::new(MultiClientToolLlm(AtomicUsize::new(0)));
     let runtime = Runtime::new().with_llm(llm.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let mut run = activation();
     run.snapshot.resolved_spec.tool_descriptors = vec![
         ToolDescriptor::client_executed(
@@ -803,7 +809,9 @@ async fn awaiting_tool_interrupt_resolves_the_whole_batch_without_inference() {
     const INTERRUPTED: &str = "Tool execution was interrupted before completion. Please retry.";
     let llm = Arc::new(MultiClientToolLlm(AtomicUsize::new(0)));
     let runtime = Runtime::new().with_llm(llm.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let mut run = activation();
     run.snapshot.resolved_spec.tool_descriptors = vec![
         ToolDescriptor::client_executed(

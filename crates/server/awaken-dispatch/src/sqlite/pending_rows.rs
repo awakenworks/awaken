@@ -69,12 +69,15 @@ fn pending_for_run(
     Ok(pending)
 }
 
+/// Record `operation` at `recorded_at_ms`: the store clock's reading for the
+/// transition it records, the same reading that transition was judged on.
 fn insert_operation(
     tx: &rusqlite::Transaction<'_>,
     prefix: &str,
     operation: &DispatchOperation,
+    recorded_at_ms: u64,
 ) -> Result<(), DispatchError> {
-    let recorded_at_ms = i64::try_from(crate::clock::system_now_ms()).unwrap_or(i64::MAX);
+    let recorded_at_ms = crate::clock::db_millis(recorded_at_ms);
     tx.execute(
         &format!(
             "INSERT INTO {prefix}_dispatch_operation \
