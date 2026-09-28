@@ -821,8 +821,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .await?
         {
             pc::SandboxObservation::Ready => {
-                self.adopt_observed_container_with_spec(adoption.handle, adoption.spec, &|| Ok(()))
-                    .await
+                self.adopt_observed_container_with_spec(
+                    adoption.handle,
+                    adoption.spec,
+                    ContainerObservationPurpose::Recovery,
+                    &|| Ok(()),
+                )
+                .await
             }
             pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
                 "container realization is still provisioning",
@@ -846,6 +851,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         handle: &pc::SandboxHandle,
         spec: &pc::SandboxSpec,
+        purpose: ContainerObservationPurpose,
         admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         admit()?;
@@ -881,7 +887,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             !self.runtime.uses_host_bind_materialization() || recovered_staging.is_some(),
             recovered_staging,
         )?;
-        self.adopt_observed_container_with_lifecycle(handle, Some(spec), lifecycle, admit)
+        self.adopt_observed_container_with_lifecycle(handle, Some(spec), lifecycle, purpose, admit)
             .await
     }
 
@@ -896,6 +902,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             handle,
             None,
             ContainerCleanupState::physical_cleanup_only(),
+            ContainerObservationPurpose::Recovery,
             &|| Ok(()),
         )
         .await
@@ -906,6 +913,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         handle: &pc::SandboxHandle,
         spec: Option<&pc::SandboxSpec>,
         lifecycle: ContainerCleanupState,
+        purpose: ContainerObservationPurpose,
         admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         admit()?;
@@ -924,6 +932,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let container_id = payload.container_id;
         let sandbox_control_incarnation = if control_services.is_empty() {
             None
+        } else if purpose == ContainerObservationPurpose::TerminalCleanup {
+            // The caller already observed the exact Terminal/Disposing physical
+            // owner under its aggregate fence. Preserve its immutable topology
+            // without reopening a control listener or transferring live owner.
+            // This identity is evidence for cleanup, never a live-I/O grant.
+            payload.sandbox_control_incarnation.clone()
         } else {
             Some(
                 self.runtime
@@ -1057,8 +1071,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .await?
         {
             pc::SandboxObservation::Ready => {
-                self.adopt_observed_container_with_spec(adoption.handle, adoption.spec, &admit)
-                    .await
+                self.adopt_observed_container_with_spec(
+                    adoption.handle,
+                    adoption.spec,
+                    ContainerObservationPurpose::Recovery,
+                    &admit,
+                )
+                .await
             }
             pc::SandboxObservation::Provisioning => Err(pc::SandboxError::not_ready(
                 "container realization is still provisioning",
@@ -1134,8 +1153,22 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // Observation is not a grant for staging/control reconstruction.
         admit()?;
         match observed {
-            pc::SandboxObservation::Terminal { .. } | pc::SandboxObservation::Ready => self
-                .adopt_observed_container_with_spec(adoption.handle, adoption.spec, &admit)
+            pc::SandboxObservation::Ready => self
+                .adopt_observed_container_with_spec(
+                    adoption.handle,
+                    adoption.spec,
+                    ContainerObservationPurpose::Recovery,
+                    &admit,
+                )
+                .await
+                .map(Some),
+            pc::SandboxObservation::Terminal { .. } => self
+                .adopt_observed_container_with_spec(
+                    adoption.handle,
+                    adoption.spec,
+                    ContainerObservationPurpose::TerminalCleanup,
+                    &admit,
+                )
                 .await
                 .map(Some),
             pc::SandboxObservation::Disposing { .. } => self
@@ -1143,6 +1176,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     adoption.handle,
                     None,
                     ContainerCleanupState::physical_cleanup_only(),
+                    ContainerObservationPurpose::TerminalCleanup,
                     &admit,
                 )
                 .await

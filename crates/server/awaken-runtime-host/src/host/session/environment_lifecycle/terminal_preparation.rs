@@ -519,7 +519,10 @@ impl SharedHost {
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 (
                     resident,
-                    TerminalEffectMode::LiveUnprepared,
+                    TerminalEffectMode::for_terminal_source(matches!(
+                        provider,
+                        crate::session_environment::SessionEnvironmentProvider::Container { .. }
+                    )),
                     committed_candidate,
                 )
             }

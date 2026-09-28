@@ -257,3 +257,34 @@ foreign-source tables; a real Namespace source-loss injection preserving its
 identity marker and independent bare remote; Session/SQLite cleanup and replay;
 and signed Worker HTTP cause/lease transport. The original FPS same-data
 deployment and UI root acceptance remain required live qualification.
+
+## Amendment 2026-09-28: terminal Container cleanup does not rebind live control
+
+The real source-loss rollout recorded the negative publication outcome but then
+blocked ordinary preparation: Container adoption tried to obtain a Ready-only
+Sandbox control binding from the same Terminal Pod. A recorded control
+incarnation is still part of its immutable handle, but cannot reopen a live
+listener after the owning process terminated.
+
+The existing adoption helper now receives the existing observation purpose.
+Only the fenced terminal-preparation caller, after exact Terminal/Disposing
+observation, preserves the recorded control identity without live rebinding.
+Ready and ordinary recovery retain the real binding requirement. Spec topology,
+physical incarnation, current authority, Secret and Memory participant recovery,
+and the later authorized disposal remain unchanged; the observation purpose
+does not itself grant mutation authority.
+
+Host reuses `RecoverOnlyUnprepared` for a Terminal Container because its file
+scanner requires attached exec. It recovers existing artifact receipts and
+still requires provider preparation. Writable Memory without readable source or
+prior durable preparation remains refused; durable Secret write-back cannot be
+softened into stale bytes. Filesystem terminal owners retain their direct file
+read path, and Disposing alone continues to prove prior source preparation.
+
+There is no new lifecycle mode, capability store, receipt, queue, RPC endpoint or
+Ready fallback. The existing fake-runtime authority-wait table covers no live
+control on closed owners and real control on Ready owners; Host mode tests
+retain the preparation/Memory boundary. The live k3d control-Pod test terminates
+only its own agent, retains original identity, runs fenced preparation/disposal,
+and independently observes Pod absence. Original FPS/UI delivery remains a
+separate same-data acceptance requirement.
