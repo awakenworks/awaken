@@ -177,6 +177,9 @@ const MAX_BACKOFF: Duration = Duration::from_secs(8);
 /// long-running requests to release account concurrency. Derive the larger
 /// base from the configured generic base so zero-delay tests remain hermetic.
 const RATE_LIMIT_BACKOFF_MULTIPLIER: u64 = 30;
+/// The default count bound of a rate-limited request (see
+/// [`RetryPolicy::throttled_max_retries`]).
+const DEFAULT_THROTTLED_MAX_RETRIES: usize = 12;
 const RATE_LIMIT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 /// A server `Retry-After` longer than the computed backoff is adopted verbatim,
@@ -194,7 +197,7 @@ pub enum RetryStop {
     /// The attempt could not prove the provider stopped (or never started), so
     /// another physical call could duplicate its effect.
     ExecutionUncertain,
-    /// The class is retryable but the attempt budget is spent.
+    /// The class is retryable but its retry count is spent.
     AttemptsExhausted,
     /// The pause plus the shortest useful attempt no longer fits before the
     /// request's logical deadline.
@@ -214,11 +217,16 @@ pub enum RetryVerdict {
 /// [`decide`](Self::decide); tests inject a fast policy to keep suites quick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {
-    /// Extra attempts after the first failure (2 means up to 3 calls). A rate
-    /// limit is bounded by the budget's total time instead of this count,
-    /// because a throttle clears with time, not with attempts; zero remains an
-    /// absolute disable for every class.
+    /// Extra attempts after the first failure (2 means up to 3 calls). Zero is
+    /// an absolute disable for every class, a rate limit included.
     pub max_retries: usize,
+    /// The retry count of a rate-limited request when retries are enabled:
+    /// it gets `max(max_retries, throttled_max_retries)`, because a throttle
+    /// clears with time and deserves more patience than a generic failure,
+    /// yet an instant 429 with no pause must still stop after a bounded
+    /// number of calls. The logical deadline bounds it too; whichever comes
+    /// first stops the loop.
+    pub throttled_max_retries: usize,
     /// Exponential backoff base for a generic retryable error.
     pub backoff_base_ms: u64,
     /// Backoff base when the provider reports overload — deliberately longer,
@@ -234,6 +242,7 @@ impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
             max_retries: 2,
+            throttled_max_retries: DEFAULT_THROTTLED_MAX_RETRIES,
             backoff_base_ms: 500,
             overloaded_backoff_base_ms: 2_000,
             budget: ModelInferenceBudget::DEFAULT,
@@ -289,13 +298,16 @@ impl RetryPolicy {
     }
 
     /// Keep the caller's explicit zero as an absolute retry disable. A rate
-    /// limit is otherwise bounded only by the logical deadline; every other
-    /// class keeps the configured count.
+    /// limit otherwise gets the larger throttled count; every other class
+    /// keeps the configured count. The logical deadline applies to all.
     fn retry_limit(&self, class: FailureClass) -> u32 {
-        match class {
-            FailureClass::RateLimited { .. } if self.max_retries > 0 => u32::MAX,
-            _ => u32::try_from(self.max_retries).unwrap_or(u32::MAX),
-        }
+        let limit = match class {
+            FailureClass::RateLimited { .. } if self.max_retries > 0 => {
+                self.max_retries.max(self.throttled_max_retries)
+            }
+            _ => self.max_retries,
+        };
+        u32::try_from(limit).unwrap_or(u32::MAX)
     }
 
     /// The jittered exponential backoff for the class, or the provider's
@@ -533,9 +545,10 @@ mod tests {
         // R0 a cancelled run => Cancelled, whatever else holds; R1 no reentry
         // evidence => ExecutionUncertain; R2 a class that cannot clear in
         // place => NotRetryable; R3 count spent => AttemptsExhausted (a
-        // throttle has no count, only the deadline, unless the caller disabled
-        // retries); R5 pause + one silence window (default 300s) beyond the
-        // time left => DeadlineExhausted; R4 otherwise retry after the
+        // throttle gets max(max_retries, throttled_max_retries = 12) unless
+        // the caller disabled retries); R5 pause + one silence window
+        // (default 300s) beyond the time left => DeadlineExhausted; a
+        // throttle stops at whichever of R3/R5 comes first; R4 otherwise retry after the
         // equal-jitter exponential backoff (8s cap; throttle 30x base, 60s
         // cap) or the provider's longer pause (60s cap).
         let policy = RetryPolicy::default();
@@ -545,6 +558,11 @@ mod tests {
         };
         let disabled = RetryPolicy {
             max_retries: 0,
+            ..RetryPolicy::default()
+        };
+        let instant = RetryPolicy {
+            backoff_base_ms: 0,
+            overloaded_backoff_base_ms: 0,
             ..RetryPolicy::default()
         };
         let not_dispatched =
@@ -587,7 +605,13 @@ mod tests {
             Row { name: "R4 shorter pause loses", policy: &policy, class: overload(Some(ms(1))), evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: retry(ms(1_000)) },
             Row { name: "R4 throttle base", policy: &policy, class: throttle(None), evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: retry(ms(7_500)) },
             Row { name: "R4 throttle cap", policy: &policy, class: throttle(None), evidence: terminated(), attempt: 8, remaining: hour, jitter: 30_000, verdict: retry(ms(60_000)) },
-            Row { name: "R3 throttle has no count", policy: &policy, class: throttle(None), evidence: terminated(), attempt: 1_000, remaining: hour, jitter: 0, verdict: retry(ms(30_000)) },
+            Row { name: "R3 throttle count admits the 12th retry", policy: &policy, class: throttle(None), evidence: terminated(), attempt: 11, remaining: hour, jitter: 0, verdict: retry(ms(30_000)) },
+            Row { name: "R3 throttle count spent", policy: &policy, class: throttle(None), evidence: terminated(), attempt: 12, remaining: hour, jitter: 0, verdict: stop(RetryStop::AttemptsExhausted) },
+            Row { name: "R3 larger generic count wins for a throttle", policy: &fast, class: throttle(None), evidence: terminated(), attempt: 49, remaining: hour, jitter: 0, verdict: retry(ms(30_000)) },
+            Row { name: "R3 overload keeps the generic count", policy: &policy, class: overload(None), evidence: terminated(), attempt: 2, remaining: hour, jitter: 0, verdict: stop(RetryStop::AttemptsExhausted) },
+            Row { name: "R3 instant 429, zero backoff: retried at once", policy: &instant, class: throttle(None), evidence: terminated(), attempt: 11, remaining: hour, jitter: 0, verdict: retry(Duration::ZERO) },
+            Row { name: "R3 instant 429, zero backoff: count stops it first", policy: &instant, class: throttle(None), evidence: terminated(), attempt: 12, remaining: hour, jitter: 0, verdict: stop(RetryStop::AttemptsExhausted) },
+            Row { name: "R5 long backoff: deadline stops it before the count", policy: &policy, class: throttle(Some(60 * SECOND)), evidence: terminated(), attempt: 3, remaining: 5 * 60 * SECOND, jitter: 0, verdict: stop(RetryStop::DeadlineExhausted) },
             Row { name: "R3 explicit zero disables", policy: &disabled, class: throttle(None), evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: stop(RetryStop::AttemptsExhausted) },
             Row { name: "R5 pause + silence fits exactly", policy: &policy, class: throttle(Some(60 * SECOND)), evidence: terminated(), attempt: 0, remaining: 60 * SECOND + idle, jitter: 0, verdict: retry(60 * SECOND) },
             Row { name: "R5 pause + silence overruns", policy: &policy, class: throttle(Some(60 * SECOND)), evidence: terminated(), attempt: 0, remaining: 60 * SECOND + idle - ms(1), jitter: 0, verdict: stop(RetryStop::DeadlineExhausted) },

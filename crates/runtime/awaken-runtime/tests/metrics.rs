@@ -142,6 +142,7 @@ fn activation() -> RunActivation {
 fn no_retries() -> RetryPolicy {
     RetryPolicy {
         max_retries: 0,
+        throttled_max_retries: 0,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,
         budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(

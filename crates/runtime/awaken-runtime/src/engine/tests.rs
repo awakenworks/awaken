@@ -1265,6 +1265,7 @@ fn one_step_request() -> ChatRequest {
 fn policy(max_retries: usize) -> awaken_runtime_contract::resilience::RetryPolicy {
     awaken_runtime_contract::resilience::RetryPolicy {
         max_retries,
+        throttled_max_retries: 12,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,
         budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(
@@ -1937,7 +1938,9 @@ async fn one_logical_deadline_bounds_every_attempt_and_retry() {
     // E3 the final error class. Rules: R1 transient + count 2 => 3 calls (the
     // count stops it); R2 transient + count 10 => 5 calls (the deadline stops
     // it: at t0+5s only 0.5s remains, less than one silence window); R3 a
-    // throttle has no count, so count 2 still reaches the deadline's 5 calls.
+    // throttle with count 2 and throttled count 12 reaches the deadline's 5
+    // calls first; R4 a throttle with throttled count 1 stops at its count
+    // (2 calls) long before the deadline.
     let ms = std::time::Duration::from_millis;
     let budget = awaken_runtime_contract::llm::ModelInferenceBudget::new(
         ms(5_500),
@@ -1951,10 +1954,11 @@ async fn one_logical_deadline_bounds_every_attempt_and_retry() {
         message: "HTTP 429".into(),
         retry_after: None,
     };
-    for (rule, error, max_retries, calls, code) in [
-        ("R1", transient, 2, 3, "provider_error"),
-        ("R2", transient, 10, 5, "provider_error"),
-        ("R3", throttle, 2, 5, "rate_limited"),
+    for (rule, error, max_retries, throttled_max_retries, calls, code) in [
+        ("R1", transient, 2, 12, 3, "provider_error"),
+        ("R2", transient, 10, 12, 5, "provider_error"),
+        ("R3", throttle, 2, 12, 5, "rate_limited"),
+        ("R4", throttle, 1, 1, 2, "rate_limited"),
     ] {
         let provider = Arc::new(SlowFailingLlm {
             delay: ms(1_000),
@@ -1964,6 +1968,7 @@ async fn one_logical_deadline_bounds_every_attempt_and_retry() {
         let llm: Arc<dyn LlmExecutor> = provider.clone();
         let policy = awaken_runtime_contract::resilience::RetryPolicy {
             max_retries,
+            throttled_max_retries,
             backoff_base_ms: 0,
             overloaded_backoff_base_ms: 0,
             budget,
@@ -1997,8 +2002,8 @@ async fn one_logical_deadline_bounds_every_attempt_and_retry() {
 async fn confirmed_rate_limit_uses_the_extended_budget_without_widening_generic_retries() {
     // Causes: C1 three complete 429 responses with terminal receipts; C2 the
     // configured generic retry budget is one; C3 the fourth call succeeds.
-    // Effects: E1 Runtime reaches the fourth call because a throttle is
-    // bounded by the time budget, not the retry count; E2 retry_count is three; E3 the final response is returned once.
+    // Effects: E1 Runtime reaches the fourth call through the throttle's own
+    // larger retry count (12), not the generic count of one; E2 retry_count is three; E3 the final response is returned once.
     // Rule R1=C1+C2+C3=>E1+E2+E3. Unknown execution remains blocked by the
     // adjacent negative recovery tests; a zero policy remains absolute in the
     // retry decision-table unit test.

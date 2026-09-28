@@ -142,6 +142,7 @@ fn runtime_with(llm: Arc<dyn LlmExecutor>) -> Runtime {
         .with_llm(llm)
         .with_retry_policy(awaken_runtime::RetryPolicy {
             max_retries: 1,
+            throttled_max_retries: 12,
             backoff_base_ms: 0,
             overloaded_backoff_base_ms: 0,
             budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(

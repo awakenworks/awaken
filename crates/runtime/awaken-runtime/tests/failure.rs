@@ -33,6 +33,7 @@ use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 fn fast_retries(max_retries: usize) -> RetryPolicy {
     RetryPolicy {
         max_retries,
+        throttled_max_retries: 12,
         backoff_base_ms: 1,
         overloaded_backoff_base_ms: 1,
         budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(
