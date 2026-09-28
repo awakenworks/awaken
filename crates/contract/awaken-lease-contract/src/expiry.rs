@@ -96,7 +96,17 @@ impl Expiry {
     /// never mint a live child.
     #[must_use]
     pub fn child_within(parent: Self, now: UtcTime, ttl: Duration) -> Option<Self> {
-        let child = Self::after(now, ttl).min(parent);
+        Self::after(now, ttl).within(parent, now)
+    }
+
+    /// This deadline narrowed so it never outlives `parent`: `min(self,
+    /// parent)`. `None` when the narrowed deadline is already expired at
+    /// `now`, so a dead parent (or a dead proposal) never yields a live grant.
+    /// The absolute-deadline form of [`Expiry::child_within`], for a child
+    /// whose requested deadline arrives as a persisted instant.
+    #[must_use]
+    pub fn within(self, parent: Self, now: UtcTime) -> Option<Self> {
+        let child = self.min(parent);
         child.is_live_at(now).then_some(child)
     }
 }
@@ -223,6 +233,24 @@ mod tests {
             if let Some(minted) = minted {
                 assert!(minted <= parent && minted.is_live_at(ms(now)));
             }
+        }
+        // The absolute form narrows a requested deadline the same way.
+        // | requested | now  | within(parent 1000) |
+        // | 800       | 100  | Some(800)           |
+        // | 1500      | 100  | Some(1000)          |
+        // | 1500      | 1000 | None (parent dead)  |
+        // | 50        | 100  | None (request dead) |
+        for (requested, now, narrowed) in [
+            (800, 100, Some(800)),
+            (1_500, 100, Some(1_000)),
+            (1_500, 1_000, None),
+            (50, 100, None),
+        ] {
+            assert_eq!(
+                Expiry::at(ms(requested)).within(parent, ms(now)),
+                narrowed.map(|at| Expiry::at(ms(at))),
+                "requested {requested} now {now}"
+            );
         }
     }
 }

@@ -26,10 +26,13 @@ impl SessionRealizationLeaseReceipt {
         lease: SessionRealizationLease,
         authority_now_unix_ms: u64,
     ) -> Result<Self, SessionRealizationControlFailure> {
-        let remaining_ms = lease
-            .expires_at_unix_ms
-            .checked_sub(authority_now_unix_ms)
-            .and_then(NonZeroU64::new)
+        // The one expiry law: live strictly before the deadline, so a live
+        // lease always has a nonzero remainder at millisecond resolution.
+        let remaining_ms = awaken_lease_contract::Expiry::from_unix_ms(lease.expires_at_unix_ms)
+            .remaining_at(awaken_lease_contract::UtcTime::from_epoch_ms(
+                authority_now_unix_ms,
+            ))
+            .and_then(|remaining| NonZeroU64::new(u64::try_from(remaining.as_millis()).ok()?))
             .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
         Ok(Self {
             lease,
