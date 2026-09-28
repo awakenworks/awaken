@@ -1925,6 +1925,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "genai",
+ "httpdate",
  "reqwest 0.13.4",
  "schemars 1.2.1",
  "serde",

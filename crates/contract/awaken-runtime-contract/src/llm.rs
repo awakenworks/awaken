@@ -24,42 +24,6 @@ pub use inference_budget::{
     TokioModelInferenceClock,
 };
 
-/// Default deadline for a provider adapter to open and consume one complete
-/// model response. Reasoning-capable models may spend minutes before their first
-/// public token or typed tool call, so this is deliberately independent from a
-/// transport-idle detector.
-pub const DEFAULT_MODEL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(1_200);
-
-/// Runtime watchdog around the complete [`LlmExecutor`] attempt. It is a last
-/// resort for an executor that fails to enforce its own response deadline, and
-/// therefore must outlive [`DEFAULT_MODEL_RESPONSE_TIMEOUT`] so the provider's
-/// typed observation reaches Runtime first. Neither deadline proves remote termination.
-pub const DEFAULT_MODEL_ATTEMPT_WATCHDOG: Duration = Duration::from_secs(1_230);
-
-const _: () =
-    assert!(DEFAULT_MODEL_ATTEMPT_WATCHDOG.as_secs() > DEFAULT_MODEL_RESPONSE_TIMEOUT.as_secs());
-
-#[cfg(test)]
-mod inference_deadline_contract_tests {
-    use super::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, DEFAULT_MODEL_RESPONSE_TIMEOUT};
-
-    #[test]
-    fn provider_deadline_precedes_the_runtime_watchdog() {
-        // D1 the default composition retains response=20min and a positive
-        // 30s return allowance. This checks configuration only; real HTTP
-        // progress/timeout and Runtime watchdog tests own execution behavior.
-        assert_eq!(
-            DEFAULT_MODEL_RESPONSE_TIMEOUT,
-            std::time::Duration::from_secs(20 * 60)
-        );
-        assert_eq!(
-            DEFAULT_MODEL_ATTEMPT_WATCHDOG - DEFAULT_MODEL_RESPONSE_TIMEOUT,
-            std::time::Duration::from_secs(30)
-        );
-        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
-    }
-}
-
 /// One model invocation request. Pure data so it can be logged, replayed, and
 /// snapshotted without holding a live provider handle (G3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -469,8 +433,8 @@ mod thread_usage_key_tests {
 /// decides both the retry policy (`is_retryable`) and the stable code
 /// (`code`) a run that cannot recover reports in its terminal failure.
 /// Retryable: `Provider`, `InvalidResponse`, `RateLimited`, `Overloaded`,
-/// `Timeout`. Permanent: everything else — retrying an identical request cannot
-/// succeed.
+/// `Timeout`. Never retried: every permanent rejection (retrying an identical
+/// request cannot succeed), a hard `UsageLimit`, and `Cancelled`.
 #[derive(Debug, Error)]
 pub enum Error {
     /// The adapter's independent execution evidence. Unannotated failures are
@@ -547,6 +511,11 @@ pub enum Error {
     /// A content-safety filter rejected the request or response. Permanent.
     #[error("content filtered: {0}")]
     ContentFiltered(String),
+    /// The run was cancelled while this model call was being prepared,
+    /// admitted or observed. Not a provider failure: never retried, never
+    /// counted against provider health and never a reason to fail over.
+    #[error("model call cancelled: {0}")]
+    Cancelled(String),
 }
 
 impl Error {
@@ -581,17 +550,13 @@ impl Error {
         }
     }
 
-    /// Whether policy considers retry worthwhile. This is not proof that a new
-    /// invocation is safe: Runtime must also require execution evidence.
+    /// Whether retrying the identical call can succeed at all — the
+    /// projection [`FailureClass::is_retryable`](crate::resilience::FailureClass::is_retryable)
+    /// of [`class`](Self::class). This is not permission to retry: only
+    /// [`RetryPolicy::decide`](crate::resilience::RetryPolicy::decide), which
+    /// also requires execution evidence and budget, grants that.
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self.classification(),
-            Error::Provider(_)
-                | Error::InvalidResponse(_)
-                | Error::RateLimited { .. }
-                | Error::Overloaded { .. }
-                | Error::Timeout(_)
-        )
+        self.class().is_retryable()
     }
 
     /// Whether a retry may continue from text/tool fragments streamed by the
@@ -604,24 +569,14 @@ impl Error {
 
     /// The server's `Retry-After` hint, when the provider sent one.
     pub fn retry_after(&self) -> Option<Duration> {
-        match self {
-            Error::Observed { source, .. } => source.retry_after(),
-            Error::RateLimited { retry_after, .. } | Error::Overloaded { retry_after, .. } => {
-                *retry_after
-            }
-            _ => None,
-        }
+        self.class().retry_after()
     }
 
     /// The provider's reset window for a [`UsageLimit`](Self::UsageLimit), when one
     /// was sent. Purely informational — recognised and surfaced, never scheduled
     /// on. `None` for every other classification.
     pub fn reset_hint(&self) -> Option<Duration> {
-        match self {
-            Error::Observed { source, .. } => source.reset_hint(),
-            Error::UsageLimit { reset_after, .. } => *reset_after,
-            _ => None,
-        }
+        self.class().reset_after()
     }
 
     /// The stable snake_case code classifying this error. A run that cannot
@@ -642,6 +597,7 @@ impl Error {
             Error::LoginRequired(_) => "login_required",
             Error::ModelNotFound(_) => "model_not_found",
             Error::ContentFiltered(_) => "content_filtered",
+            Error::Cancelled(_) => "cancelled",
         }
     }
 }
@@ -818,7 +774,7 @@ mod error_classification_tests {
             assert_eq!(e.code(), code, "code for {e:?}");
         }
 
-        let permanent: [(Error, &str); 7] = [
+        let permanent: [(Error, &str); 8] = [
             (Error::Binding("bad".into()), "binding_rejected"),
             (
                 Error::ContextOverflow("too long".into()),
@@ -829,6 +785,7 @@ mod error_classification_tests {
             (Error::ModelNotFound("404".into()), "model_not_found"),
             (Error::ContentFiltered("blocked".into()), "content_filtered"),
             (Error::LoginRequired("expired".into()), "login_required"),
+            (Error::Cancelled("run cancelled".into()), "cancelled"),
         ];
         for (e, code) in permanent {
             assert!(!e.is_retryable(), "{e:?} must be permanent");

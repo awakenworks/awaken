@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{
     ContentBlock, DocumentSource, ImageSource, SearchResultContent,
@@ -8,9 +6,7 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, TokenUsage,
 };
-use awaken_runtime_contract::model_operation::{
-    ModelExecutionEvidence, NoDispatchProof, ResponseEnvelope, TerminalReceipt,
-};
+use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, NoDispatchProof};
 use awaken_runtime_contract::resolved::ProviderServerTool;
 #[cfg(test)]
 use awaken_runtime_contract::resolved::{
@@ -20,7 +16,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::classify_error;
+use crate::error_classification::{WireFailure, classify_wire_failure};
 use crate::stop_reason::{
     ProviderStopClass, map_responses_terminal_stop_reason, project_stop_class,
 };
@@ -32,7 +28,6 @@ pub struct OpenAiResponsesExecutor {
     url: Url,
     authentication: String,
     provider_kind: String,
-    timeout: Duration,
 }
 
 impl OpenAiResponsesExecutor {
@@ -55,25 +50,18 @@ impl OpenAiResponsesExecutor {
             url,
             authentication: authentication.into(),
             provider_kind: provider_kind.into(),
-            timeout: awaken_runtime_contract::llm::DEFAULT_MODEL_RESPONSE_TIMEOUT,
         })
     }
 
-    #[must_use]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
-    }
-
     async fn execute(&self, request: &ChatRequest) -> Result<ResponsesResponse, Error> {
-        let deadline = crate::inference_budget::current_model_response_deadline(self.timeout)?;
+        let deadline = crate::inference_budget::current_attempt_timing()?.response_deadline();
         let body = request_body_for_provider(request, &self.provider_kind).map_err(|error| {
             // Nothing was encoded, so nothing reached the transport.
             error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
                 NoDispatchProof::request_projection(),
             ))
         })?;
-        let (status, text) = tokio::time::timeout_at(deadline, async {
+        let (status, headers, text) = tokio::time::timeout_at(deadline, async {
             let response = self
                 .client
                 .post(self.url.clone())
@@ -81,28 +69,32 @@ impl OpenAiResponsesExecutor {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|error| classify_error(&error.without_url().to_string()))?;
+                .map_err(|error| {
+                    classify_wire_failure(WireFailure::transport(&error.without_url()))
+                })?;
             let status = response.status();
-            let text = response
-                .text()
-                .await
-                .map_err(|error| Error::Provider(error.without_url().to_string()))?;
-            Ok::<_, Error>((status, text))
+            let headers = response.headers().clone();
+            let text = response.text().await.map_err(reqwest::Error::without_url);
+            Ok::<_, Error>((status, headers, text))
         })
         .await
         .map_err(|_| {
             Error::Timeout("Responses call exceeded its complete-response budget".into())
         })??;
         if !status.is_success() {
-            let classified = classify_error(&format!("HTTP {status}: {text}"));
-            return Err(if status.is_client_error() || status.is_server_error() {
-                classified.with_execution_evidence(ModelExecutionEvidence::Terminated(
-                    TerminalReceipt::from_response_envelope(ResponseEnvelope::CompleteErrorBody),
-                ))
-            } else {
-                classified
-            });
+            let (body, complete) = match &text {
+                Ok(text) => (text.as_str().into(), true),
+                Err(error) => (format!("failed to read error body: {error}").into(), false),
+            };
+            return Err(classify_wire_failure(WireFailure {
+                status: Some(status),
+                headers: Some(&headers),
+                body,
+                complete,
+                unsent: false,
+            }));
         }
+        let text = text.map_err(|error| Error::Provider(error.to_string()))?;
         serde_json::from_str(&text)
             .map_err(|error| Error::Provider(format!("invalid Responses JSON: {error}")))
     }

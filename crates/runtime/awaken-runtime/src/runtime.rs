@@ -245,7 +245,7 @@ pub struct Runtime {
     /// never become an alternate execution-authority store.
     thread_execution: ThreadExecutionGates,
     /// How retryable inference failures are retried (attempts and backoff).
-    retry_policy: crate::retry::LlmRetryPolicy,
+    retry_policy: awaken_runtime_contract::resilience::RetryPolicy,
     /// How many continuation rounds a `MaxTokens`-truncated text step may use
     /// per step before the last partial is committed with an explicit terminal
     /// incomplete-output failure.
@@ -340,7 +340,10 @@ impl Runtime {
 
     /// Replace the whole inference retry policy (attempts and backoff pacing).
     #[must_use]
-    pub fn with_retry_policy(mut self, policy: crate::retry::LlmRetryPolicy) -> Self {
+    pub fn with_retry_policy(
+        mut self,
+        policy: awaken_runtime_contract::resilience::RetryPolicy,
+    ) -> Self {
         self.retry_policy = policy;
         self
     }
@@ -375,7 +378,7 @@ impl Runtime {
         self
     }
 
-    pub(crate) fn retry_policy(&self) -> &crate::retry::LlmRetryPolicy {
+    pub(crate) fn retry_policy(&self) -> &awaken_runtime_contract::resilience::RetryPolicy {
         &self.retry_policy
     }
 

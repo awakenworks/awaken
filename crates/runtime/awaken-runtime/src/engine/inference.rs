@@ -6,9 +6,7 @@
 //! `use super::*` (same-crate privates included).
 
 use super::*;
-use awaken_runtime_contract::resilience::{
-    Classify, RETRY_ACTIVE_STATE, RetryDecision, bounded_retry_decision,
-};
+use awaken_runtime_contract::resilience::RetryVerdict;
 
 /// Sole admission gate for retiring a spent interrupted-stream checkpoint.
 /// The async store effect remains with the caller; this kernel only decides
@@ -104,7 +102,7 @@ fn stitch_prefix(response: ChatResponse, prefix: &str) -> ChatResponse {
 pub(super) async fn infer_with_retry(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
-    policy: &crate::retry::LlmRetryPolicy,
+    policy: &awaken_runtime_contract::resilience::RetryPolicy,
     breaker: &crate::circuit_breaker::CircuitBreaker,
     sink: &dyn DeltaSink,
     checkpoint: Option<&CheckpointCtx<'_>>,
@@ -159,7 +157,7 @@ pub(super) struct ObservedModelRequest {
 pub(super) async fn infer_with_retry_observed(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
-    policy: &crate::retry::LlmRetryPolicy,
+    policy: &awaken_runtime_contract::resilience::RetryPolicy,
     breaker: &crate::circuit_breaker::CircuitBreaker,
     sink: &dyn DeltaSink,
     checkpoint: Option<&CheckpointCtx<'_>>,
@@ -316,7 +314,7 @@ pub(super) async fn infer_with_retry_observed(
 async fn infer_with_retry_inner(
     llm: &std::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>,
     request: ChatRequest,
-    policy: &crate::retry::LlmRetryPolicy,
+    policy: &awaken_runtime_contract::resilience::RetryPolicy,
     breaker: &crate::circuit_breaker::CircuitBreaker,
     sink: &dyn DeltaSink,
     checkpoint: Option<&CheckpointCtx<'_>>,
@@ -354,10 +352,19 @@ async fn infer_with_retry_inner(
         prefix = cp.partial_text;
     }
 
+    // One logical deadline for this model request, fixed before the first
+    // attempt: every attempt's response window, every backoff pause and every
+    // journal wait spends the same caller-declared total.
+    let logical_deadline = policy
+        .budget
+        .logical_deadline(awaken_runtime_contract::llm::ModelInferenceClock::now(
+            &awaken_runtime_contract::llm::TokioModelInferenceClock,
+        ))
+        .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?;
     let mut attempt = 0;
     loop {
         if cancellation.is_some_and(|token| token.is_cancelled()) {
-            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+            return Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled".into(),
             ));
         }
@@ -381,15 +388,17 @@ async fn infer_with_retry_inner(
                     "model request attempt no longer owns execution: {error}"
                 ))
             })?;
-        // Validate before committing Entered: zero or an unrepresentable budget
+        // Validate before committing Entered: an unrepresentable deadline
         // must not leave an unknown invocation that never entered an executor.
         // Durable entry writes remain uncancellable; their elapsed cost still
-        // consumes this invocation's one absolute provider response horizon.
+        // consumes this invocation's one absolute provider response horizon,
+        // which never extends past the request's logical deadline.
         let timing = awaken_runtime_contract::llm::ModelAttemptTiming::start_at(
             awaken_runtime_contract::llm::ModelInferenceClock::now(
                 &awaken_runtime_contract::llm::TokioModelInferenceClock,
             ),
-            policy.attempt_timeout,
+            policy.budget,
+            logical_deadline,
         )
         .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?;
         let operation = if let Some(journal) = journal.as_deref_mut() {
@@ -429,7 +438,7 @@ async fn infer_with_retry_inner(
                     )
                     .await?;
             }
-            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+            return Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled before executor admission".into(),
             ));
         }
@@ -457,7 +466,7 @@ async fn infer_with_retry_inner(
             model_read(cancellation, read).await
         };
         let Some(outcome) = outcome else {
-            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+            return Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled".into(),
             ));
         };
@@ -486,14 +495,18 @@ async fn infer_with_retry_inner(
             // Cancellation may have arrived while the return write was held.
             // Do not consume/update a stream checkpoint for a retry that will
             // never be entered.
-            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+            return Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled".into(),
             ));
         }
         let attempt_result = outcome.unwrap_or_else(|_| {
             Err(awaken_runtime_contract::llm::Error::Timeout(format!(
-                "inference attempt exceeded {}ms",
-                policy.attempt_timeout.as_millis()
+                "inference attempt exceeded its {}ms watchdog",
+                policy
+                    .budget
+                    .attempt_response()
+                    .saturating_add(policy.budget.return_allowance())
+                    .as_millis()
             )))
         });
         if !quiescence.permits_execution() {
@@ -510,22 +523,24 @@ async fn infer_with_retry_inner(
                 return Ok(stitch_prefix(response, &prefix));
             }
             Err(err) => {
-                // Only retryable errors speak to provider health; the counted
-                // set must stay exactly `is_retryable`, or permanent faults
-                // (bad key, overlong prompt) would trip the breaker.
-                let retryable = err.is_retryable();
+                // One classification, one decision. Only retryable classes
+                // speak to provider health, or permanent faults (bad key,
+                // overlong prompt) would trip the breaker.
+                let class = err.class();
+                let retryable = class.is_retryable();
                 permit.failure(retryable);
-                // Classify the same failure through the unified Disposition (E3-1)
-                // for failure-span observability. This never alters the retry/breaker
-                // gate above (that stays exactly `is_retryable`); the tuple forces the
-                // classification to run regardless of the trace level.
-                let disposition = err.disposition();
-                let classified = (
-                    disposition.is_retryable(),
-                    disposition.prefers_failover(),
-                    disposition.retry_after(),
+                let verdict = policy.decide(
+                    class,
+                    execution,
+                    u32::try_from(attempt).unwrap_or(u32::MAX),
+                    logical_deadline.saturating_duration_since(
+                        awaken_runtime_contract::llm::ModelInferenceClock::now(
+                            &awaken_runtime_contract::llm::TokioModelInferenceClock,
+                        ),
+                    ),
+                    crate::retry::jitter_draw(),
                 );
-                tracing::debug!(?disposition, ?classified, "inference attempt failed");
+                tracing::debug!(?class, ?verdict, "inference attempt failed");
                 let snapshot = sink.snapshot();
                 // A transport interruption may leave a confirmed partial. A
                 // terminal but invalid response does not: retaining its text or
@@ -572,25 +587,16 @@ async fn infer_with_retry_inner(
                     }
                 }
 
-                let retry_decision = bounded_retry_decision(
-                    RETRY_ACTIVE_STATE,
-                    retryable,
-                    u32::try_from(attempt).unwrap_or(u32::MAX),
-                    u32::try_from(policy.retry_limit(&err)).unwrap_or(u32::MAX),
-                );
-                if retry_decision == RetryDecision::Retry {
-                    // R1/R3/R4 collapse: continue from the combined text (empty ⇒
-                    // clean restart); any still-open tool call is dropped.
-                    prefix = combined_text;
-                    *retry_count = retry_count.saturating_add(1);
-                    model_read(
-                        cancellation,
-                        tokio::time::sleep(policy.delay_before_retry(&err, attempt)),
-                    )
-                    .await;
-                    attempt += 1;
-                } else {
-                    return Err(err);
+                match verdict {
+                    RetryVerdict::Retry { after } => {
+                        // R1/R3/R4 collapse: continue from the combined text (empty ⇒
+                        // clean restart); any still-open tool call is dropped.
+                        prefix = combined_text;
+                        *retry_count = retry_count.saturating_add(1);
+                        model_read(cancellation, tokio::time::sleep(after)).await;
+                        attempt += 1;
+                    }
+                    RetryVerdict::Stop(_) => return Err(err),
                 }
             }
         }

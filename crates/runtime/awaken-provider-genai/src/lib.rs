@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, DocumentSource, ImageSource};
 use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, DEFAULT_MODEL_RESPONSE_TIMEOUT, Error, LlmExecutor,
-    Result, StopReason, TokenUsage, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, Result, StopReason, TokenUsage,
+    ToolCall,
 };
 use awaken_runtime_contract::model_operation::{
     ModelExecutionEvidence, NoDispatchProof, ResponseEnvelope, TerminalReceipt,
@@ -47,42 +47,8 @@ use transcript_projection::{
     project_thinking,
 };
 
-// One model response can contain a long reasoning prelude followed by a large typed
-// tool call. Keep that complete-response budget independent from the per-event
-// silence bound: concurrent large-context reasoning calls have remained healthy
-// while producing no transport event for more than two minutes.
-/// How long the stream may go silent between events before the response fails as
-/// an unconfirmed timeout. `timeout` independently bounds the complete streaming
-/// inference, including opening and consuming the response; without both bounds,
-/// either a silent stream or an endless stream of no-op events could hang a run.
-// Keep the default below the complete-response budget while allowing five
-// minutes for valid model-side prefill/reasoning. Tests and specialized hosts
-// can still choose a tighter bound with `with_idle_timeout`.
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-
 mod live_delta;
 use live_delta::{BufferedLiveDelta, LiveDelta};
-
-#[cfg(test)]
-mod default_timeout_tests {
-    use super::DEFAULT_IDLE_TIMEOUT;
-    use awaken_runtime_contract::llm::{
-        DEFAULT_MODEL_ATTEMPT_WATCHDOG, DEFAULT_MODEL_RESPONSE_TIMEOUT,
-    };
-
-    /// Cause/effect design: C1 the default complete-response and idle-silence
-    /// budgets are selected together. Effect E1: the complete response retains
-    /// at least four idle windows, so healthy reasoning progress is not bounded
-    /// by the transport-silence threshold. Coverage rule T1=C1=>E1; a smaller
-    /// ratio is the regression boundary asserted here.
-    /// Constraints/invariants: the complete-call budget must remain at least
-    /// four times the idle window; specialized overrides do not change defaults.
-    #[test]
-    fn complete_reasoning_response_has_a_larger_budget_than_transport_silence() {
-        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 4);
-        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
-    }
-}
 
 fn normalize_provider_base_url(adapter: AdapterKind, base_url: String) -> String {
     if adapter == AdapterKind::Anthropic {
@@ -100,8 +66,6 @@ pub struct GenaiExecutor {
     adapter: Option<AdapterKind>,
     provider_kind: Option<String>,
     unspecified_reasoning: awaken_runtime_contract::UnspecifiedReasoning,
-    timeout: Duration,
-    idle_timeout: Duration,
 }
 
 impl GenaiExecutor {
@@ -125,23 +89,7 @@ impl GenaiExecutor {
             adapter,
             provider_kind: None,
             unspecified_reasoning: Default::default(),
-            timeout: DEFAULT_MODEL_RESPONSE_TIMEOUT,
-            idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
-    }
-
-    #[must_use]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
-    }
-
-    /// Set the per-event stall bound for streaming: a stream that produces no
-    /// event within this window fails with unknown execution, not safe replay.
-    #[must_use]
-    pub fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
-        self.idle_timeout = idle_timeout;
-        self
     }
 
     /// The single materialized transport path: inject the caller-supplied
@@ -232,15 +180,12 @@ impl LlmExecutor for GenaiExecutor {
         use futures::StreamExt;
         use genai::chat::ChatStreamEvent;
 
-        let deadline = crate::inference_budget::current_model_response_deadline(self.timeout)?;
-        if self.idle_timeout.is_zero() {
-            return Err(Error::Binding(
-                "stream useful-progress silence budget must be positive".into(),
-            )
-            .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
-                NoDispatchProof::request_projection(),
-            )));
-        }
+        // The caller's budget owns both bounds: the complete-response
+        // deadline and the useful-progress silence window (validated positive
+        // and no longer than the response window where it was declared).
+        let timing = crate::inference_budget::current_attempt_timing()?;
+        let deadline = timing.response_deadline();
+        let idle = timing.idle();
         let model = request.model_binding.identity().1.to_owned();
         let genai_request =
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
@@ -288,7 +233,7 @@ impl LlmExecutor for GenaiExecutor {
         // deltas (`ToolCallDelta`); no downstream ever diffs again.
         let mut tool_sent: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
-        let mut progress_deadline = started + self.idle_timeout;
+        let mut progress_deadline = started + idle;
         let mut live = BufferedLiveDelta::default();
 
         let end: Result<_> = loop {
@@ -309,7 +254,7 @@ impl LlmExecutor for GenaiExecutor {
             if progress_remaining.is_zero() {
                 break Err(Error::Timeout(format!(
                     "model stream stalled: no useful event within {:?}",
-                    self.idle_timeout
+                    idle
                 )));
             }
             if live
@@ -342,7 +287,7 @@ impl LlmExecutor for GenaiExecutor {
                     if after_wait >= progress_deadline {
                         break Err(Error::Timeout(format!(
                             "model stream stalled: no useful event within {:?}",
-                            self.idle_timeout
+                            idle
                         )));
                     }
                     live.flush(sink).await;
@@ -414,7 +359,7 @@ impl LlmExecutor for GenaiExecutor {
                 _ => {}
             }
             if made_progress {
-                progress_deadline = event_at + self.idle_timeout;
+                progress_deadline = event_at + idle;
             }
         };
         // A provider failure still exposes the exact partial prefix to the
@@ -464,7 +409,7 @@ impl GenaiExecutor {
         request: ChatRequest,
         max_tokens_override: Option<u32>,
     ) -> Result<ChatResponse> {
-        let deadline = crate::inference_budget::current_model_response_deadline(self.timeout)?;
+        let deadline = crate::inference_budget::current_attempt_timing()?.response_deadline();
         let model = request.model_binding.identity().1.to_owned();
         let genai_request =
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
@@ -516,6 +461,13 @@ impl GenaiExecutor {
 /// redirects and HTTP-client retries must not hide another initiating request.
 fn model_http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
+        // Establishing a connection shows no response progress, so it gets
+        // the same silence window as a stalled stream. The client outlives any
+        // one request, so the default budget declares it; each request's own
+        // response deadline still bounds the whole exchange.
+        .connect_timeout(
+            awaken_runtime_contract::llm::ModelInferenceBudget::DEFAULT.connect_timeout(),
+        )
         .retry(reqwest::retry::never())
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -572,7 +524,24 @@ pub async fn probe_credential(
     else {
         return CredentialProbe::Unknown;
     };
-    let executor = executor.with_timeout(Duration::from_secs(30));
+    // The probe declares its own budget: one attempt, thirty seconds for the
+    // whole exchange. A direct call has no Runtime watchdog, so the return
+    // allowance only has to be positive.
+    const PROBE_WINDOW: Duration = Duration::from_secs(30);
+    let Ok(timing) = awaken_runtime_contract::llm::ModelInferenceBudget::new(
+        PROBE_WINDOW,
+        PROBE_WINDOW,
+        PROBE_WINDOW,
+        Duration::from_secs(1),
+    )
+    .and_then(|budget| {
+        awaken_runtime_contract::llm::ModelAttemptTiming::standalone(
+            TokioModelInferenceClock.now(),
+            budget,
+        )
+    }) else {
+        return CredentialProbe::Unknown;
+    };
     // A model reference the wire would refuse (blank or padded) is a bad-model
     // input, which this probe already classifies as `Unknown`, never `Invalid`.
     let Ok(model_binding) = ModelBinding::parse("probe", model, "genai") else {
@@ -587,24 +556,24 @@ pub async fn probe_credential(
         }],
         tools: Vec::new(),
     };
-    match executor.infer_non_streaming(request, Some(1)).await {
+    let outcome = awaken_runtime_contract::model_operation::with_model_invocation_context(
+        None,
+        timing,
+        executor.infer_non_streaming(request, Some(1)),
+    )
+    .await;
+    match outcome {
         Ok(_) => credential_probe_outcome(true, false),
-        Err(error) => {
-            let message = error.to_string().to_lowercase();
-            const AUTH: &[&str] = &[
-                "401",
-                "403",
-                "unauthorized",
-                "invalid api key",
-                "invalid_api_key",
-                "invalid x-api-key",
-                "authentication",
-                "authentication_error",
-                "permission",
-                "forbidden",
-            ];
-            credential_probe_outcome(false, AUTH.iter().any(|needle| message.contains(needle)))
-        }
+        // The one wire classifier already decided the status (401/403, or an
+        // expired grant); re-matching the message text would read "401" out
+        // of a 5xx body and retire a good key during an outage.
+        Err(error) => credential_probe_outcome(
+            false,
+            matches!(
+                error.classification(),
+                Error::Unauthorized(_) | Error::LoginRequired(_)
+            ),
+        ),
     }
 }
 
@@ -1728,8 +1697,7 @@ mod hermetic_tests {
         let base_url = spawn_sse_server(tool_stream_body()).await;
         let executor =
             GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
-                .expect("explicit client construction")
-                .with_idle_timeout(Duration::from_secs(5));
+                .expect("explicit client construction");
 
         let request = ChatRequest {
             model_binding: ModelBinding::new(
@@ -1828,6 +1796,19 @@ mod hermetic_tests {
             CredentialProbe::Unknown,
             "a transient 503 must probe Unknown, not Invalid"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probe_credential_reads_the_status_not_digits_in_a_server_error_body() {
+        // P3 regression: a 5xx whose body quotes "401" is a server fault, so
+        // the probe stays Unknown and never retires the key.
+        let base_url = spawn_status_server(
+            "HTTP/1.1 502 Bad Gateway",
+            r#"{"error":{"message":"upstream returned 401 to the gateway"}}"#,
+        )
+        .await;
+        let outcome = probe_credential(base_url, "good-key", "claude-test").await;
+        assert_eq!(outcome, CredentialProbe::Unknown, "P3");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

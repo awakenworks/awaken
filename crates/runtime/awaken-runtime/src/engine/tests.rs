@@ -1262,12 +1262,19 @@ fn one_step_request() -> ChatRequest {
         tools: Vec::new(),
     }
 }
-fn policy(max_retries: usize) -> crate::retry::LlmRetryPolicy {
-    crate::retry::LlmRetryPolicy {
+fn policy(max_retries: usize) -> awaken_runtime_contract::resilience::RetryPolicy {
+    awaken_runtime_contract::resilience::RetryPolicy {
         max_retries,
+        throttled_max_retries: 12,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,
-        attempt_timeout: std::time::Duration::from_secs(5),
+        budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(
+            std::time::Duration::from_millis(15000),
+            std::time::Duration::from_millis(5000),
+            std::time::Duration::from_millis(5000),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap(),
     }
 }
 fn assistant_prefixes(request: &ChatRequest) -> Vec<String> {
@@ -1319,7 +1326,14 @@ async fn a_provider_stream_has_a_total_attempt_deadline() {
     // its configured deadline. Decision rule D1: hanging+10ms=>typed 10ms timeout.
     let llm: Arc<dyn LlmExecutor> = Arc::new(HangingStreamLlm);
     let mut timeout_policy = policy(0);
-    timeout_policy.attempt_timeout = std::time::Duration::from_millis(10);
+    // Watchdog = 5ms response window + 5ms return allowance.
+    timeout_policy.budget = awaken_runtime_contract::llm::ModelInferenceBudget::new(
+        std::time::Duration::from_millis(30),
+        std::time::Duration::from_millis(5),
+        std::time::Duration::from_millis(5),
+        std::time::Duration::from_millis(5),
+    )
+    .unwrap();
     let error = infer_with_retry(
         &llm,
         one_step_request(),
@@ -1338,9 +1352,11 @@ async fn a_provider_stream_has_a_total_attempt_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_actual_runtime_attempt_accepts_fifteen_minute_success_and_rejects_zero_before_entry() {
-    // W1 the canonical success fixture returns after900s under default1230s
-    // watchdog => exact success, one actual invocation. W2 watchdog=0 =>
+async fn an_actual_runtime_attempt_accepts_fifteen_minute_success_and_rejects_an_unrepresentable_budget_before_entry()
+ {
+    // W1 the canonical success fixture returns after900s under the default
+    // budget (1200s response window) => exact success, one actual invocation.
+    // W2 a budget whose logical deadline is unrepresentable =>
     // Binding+NotDispatched, zero calls. The existing hanging case separately
     // owns timeout/Unknown; this positive witness prevents an all-reject fix.
     let provider = Arc::new(SucceedingLlm {
@@ -1353,7 +1369,7 @@ async fn an_actual_runtime_attempt_accepts_fifteen_minute_success_and_rejects_ze
     let response = infer_with_retry(
         &llm,
         one_step_request(),
-        &crate::retry::LlmRetryPolicy::default(),
+        &awaken_runtime_contract::resilience::RetryPolicy::default(),
         &crate::circuit_breaker::CircuitBreaker::default(),
         &recording(),
         None,
@@ -1386,7 +1402,13 @@ async fn an_actual_runtime_attempt_accepts_fifteen_minute_success_and_rejects_ze
     });
     let llm: Arc<dyn LlmExecutor> = zero.clone();
     let mut zero_policy = policy(0);
-    zero_policy.attempt_timeout = std::time::Duration::ZERO;
+    zero_policy.budget = awaken_runtime_contract::llm::ModelInferenceBudget::new(
+        std::time::Duration::MAX,
+        std::time::Duration::MAX / 2,
+        std::time::Duration::from_millis(1),
+        std::time::Duration::from_millis(1),
+    )
+    .unwrap();
     let error = infer_with_retry(
         &llm,
         one_step_request(),
@@ -1453,7 +1475,14 @@ async fn logical_model_request_observations_cover_success_without_usage_and_fail
 
     let failure: Arc<dyn LlmExecutor> = Arc::new(HangingStreamLlm);
     let mut timeout_policy = policy(0);
-    timeout_policy.attempt_timeout = std::time::Duration::from_millis(10);
+    // Watchdog = 5ms response window + 5ms return allowance.
+    timeout_policy.budget = awaken_runtime_contract::llm::ModelInferenceBudget::new(
+        std::time::Duration::from_millis(30),
+        std::time::Duration::from_millis(5),
+        std::time::Duration::from_millis(5),
+        std::time::Duration::from_millis(5),
+    )
+    .unwrap();
     let failure = infer_with_retry_observed(
         &failure,
         one_step_request(),
@@ -1862,12 +1891,119 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
     );
 }
 
+/// Fails every attempt after `delay` with a terminal error receipt, recording
+/// the response deadline each attempt inherited from Runtime.
+struct SlowFailingLlm {
+    delay: std::time::Duration,
+    error: fn() -> LlmError,
+    deadlines: std::sync::Mutex<Vec<tokio::time::Instant>>,
+}
+
+#[async_trait]
+impl LlmExecutor for SlowFailingLlm {
+    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+        unreachable!("the retry loop is streaming-only")
+    }
+
+    async fn infer_streaming(
+        &self,
+        _request: ChatRequest,
+        _sink: &dyn DeltaSink,
+    ) -> LlmResult<ChatResponse> {
+        let timing = awaken_runtime_contract::model_operation::current_model_attempt_timing()
+            .expect("Runtime scopes every attempt with its timing");
+        self.deadlines
+            .lock()
+            .unwrap()
+            .push(timing.response_deadline());
+        // awaken-wait: the provider's own response time is the cause under test.
+        tokio::time::sleep(self.delay).await;
+        Err((self.error)().with_execution_evidence(
+            awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+                awaken_runtime_contract::model_operation::TerminalReceipt::from_response_envelope(
+                    awaken_runtime_contract::model_operation::ResponseEnvelope::CompleteErrorBody,
+                ),
+            ),
+        ))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn one_logical_deadline_bounds_every_attempt_and_retry() {
+    // Causes: C1 failure class (transient 5xx / throttle 429), C2 retry count
+    // budget, C3 the caller's total budget 5.5s with a 2s response window and
+    // a 1s silence window; every attempt fails after 1s with a terminal
+    // receipt and backoff is zero. Effects: E1 number of provider calls; E2
+    // each attempt's inherited response deadline = min(start + 2s, t0 + 5.5s);
+    // E3 the final error class. Rules: R1 transient + count 2 => 3 calls (the
+    // count stops it); R2 transient + count 10 => 5 calls (the deadline stops
+    // it: at t0+5s only 0.5s remains, less than one silence window); R3 a
+    // throttle with count 2 and throttled count 12 reaches the deadline's 5
+    // calls first; R4 a throttle with throttled count 1 stops at its count
+    // (2 calls) long before the deadline.
+    let ms = std::time::Duration::from_millis;
+    let budget = awaken_runtime_contract::llm::ModelInferenceBudget::new(
+        ms(5_500),
+        ms(2_000),
+        ms(1_000),
+        ms(100),
+    )
+    .unwrap();
+    let transient: fn() -> LlmError = || LlmError::Provider("HTTP 500".into());
+    let throttle: fn() -> LlmError = || LlmError::RateLimited {
+        message: "HTTP 429".into(),
+        retry_after: None,
+    };
+    for (rule, error, max_retries, throttled_max_retries, calls, code) in [
+        ("R1", transient, 2, 12, 3, "provider_error"),
+        ("R2", transient, 10, 12, 5, "provider_error"),
+        ("R3", throttle, 2, 12, 5, "rate_limited"),
+        ("R4", throttle, 1, 1, 2, "rate_limited"),
+    ] {
+        let provider = Arc::new(SlowFailingLlm {
+            delay: ms(1_000),
+            error,
+            deadlines: Default::default(),
+        });
+        let llm: Arc<dyn LlmExecutor> = provider.clone();
+        let policy = awaken_runtime_contract::resilience::RetryPolicy {
+            max_retries,
+            throttled_max_retries,
+            backoff_base_ms: 0,
+            overloaded_backoff_base_ms: 0,
+            budget,
+        };
+        let started = tokio::time::Instant::now();
+        let failure = infer_with_retry(
+            &llm,
+            one_step_request(),
+            &policy,
+            &crate::circuit_breaker::CircuitBreaker::default(),
+            &recording(),
+            None,
+            None,
+            &awaken_runtime_contract::CaptureDecision::default(),
+            None,
+            &awaken_runtime_contract::metrics::NoopRecorder,
+        )
+        .await
+        .expect_err("every attempt fails");
+        assert_eq!(failure.code(), code, "{rule}/E3");
+        let deadlines = provider.deadlines.lock().unwrap().clone();
+        assert_eq!(deadlines.len(), calls, "{rule}/E1");
+        let expected: Vec<_> = (0..calls)
+            .map(|attempt| (started + ms(1_000 * attempt as u64 + 2_000)).min(started + ms(5_500)))
+            .collect();
+        assert_eq!(deadlines, expected, "{rule}/E2");
+    }
+}
+
 #[tokio::test]
 async fn confirmed_rate_limit_uses_the_extended_budget_without_widening_generic_retries() {
     // Causes: C1 three complete 429 responses with terminal receipts; C2 the
     // configured generic retry budget is one; C3 the fourth call succeeds.
-    // Effects: E1 Runtime reaches the fourth call through the rate-limit-only
-    // budget; E2 retry_count is three; E3 the final response is returned once.
+    // Effects: E1 Runtime reaches the fourth call through the throttle's own
+    // larger retry count (12), not the generic count of one; E2 retry_count is three; E3 the final response is returned once.
     // Rule R1=C1+C2+C3=>E1+E2+E3. Unknown execution remains blocked by the
     // adjacent negative recovery tests; a zero policy remains absolute in the
     // retry decision-table unit test.
