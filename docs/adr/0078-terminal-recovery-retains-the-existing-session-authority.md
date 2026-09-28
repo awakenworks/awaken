@@ -207,7 +207,8 @@ Repository publication from ordinary live/checkpoint adoption. Both require the
 same Ready observation and exact binding/handle validation. Only the aggregate's
 terminal Repository command may reuse an exact bound terminal-retiring Arc; it
 keeps that owner retired and does not reopen tool execution. Unpublished,
-revoked, foreign, closed and disposing sources remain rejected. Current lease,
+foreign, closed and disposing sources remain rejected; a revoked wrapper is never
+reused directly (the fresh-wrapper amendment below owns recovery). Current lease,
 Workspace, publication expectation and provider effect fencing are unchanged.
 There is no additional owner, receipt, cleanup queue or persistent state.
 
@@ -288,3 +289,29 @@ retain the preparation/Memory boundary. The live k3d control-Pod test terminates
 only its own agent, retains original identity, runs fenced preparation/disposal,
 and independently observes Pod absence. Original FPS/UI delivery remains a
 separate same-data acceptance requirement.
+
+
+## Amendment 2026-09-29: fresh terminal wrapper after realization revocation
+
+A real Coding completed with an unpublished local commit in a Ready retained Pod,
+but realization revocation left its published Environment behind a local retirement
+fence. Direct reuse remains forbidden. Terminal Repository preparation previously
+kept retrying that same closed wrapper instead of using the existing rebound path.
+
+Only an exact Durable Bound retirement for RealizationRevocation, the aggregate
+terminal Repository effect, current effect authority and validated Ready source
+admit this repair. The existing provider `rebind_retained` replaces the closed Hand
+wrapper over the same physical source. The one owner then uses its existing
+retiring-adoption Candidate and committed-Candidate retirement transitions atomically,
+retaining the original Store-read identity and binding. The wrapper remains Retiring;
+no ordinary Adopt receipt, Resident publication, model/tool admission, new owner,
+queue or persistent state is added. Admission is checked before and after provider
+IO. Unbound, LegacyDirect, foreign-target and other retirement causes keep their
+existing refusal or recovery path. Closed-source and disposal decisions are unchanged.
+
+The real Namespace/Git publication fixture first reproduces the same non-resident
+error, then requires a different wrapper with the same Store identity, binding and
+physical handle, continued ordinary-reader closure, exact remote commit and receipt
+replay. Its original source-closure and divergent-remote cases remain exercised.
+This source proof does not certify the pending original UI delivery or missing
+historical physical-attempt termination evidence.
