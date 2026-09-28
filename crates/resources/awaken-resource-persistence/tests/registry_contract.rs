@@ -373,7 +373,8 @@ async fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reope
     let request = replay_request("workspace-replay");
     let first;
     {
-        let application = open_embedded(root.path()).unwrap();
+        let application =
+            open_embedded(root.path(), awaken_lease_contract::system_clock()).unwrap();
         let registry = application.authorities().resource_registry();
         let start = std::sync::Arc::new(tokio::sync::Barrier::new(8));
         let handles = (0..8)
@@ -446,7 +447,7 @@ async fn embedded_memory_creation_receipt_is_atomic_and_survives_edits_and_reope
             .await
             .unwrap();
     }
-    let reopened = open_embedded(root.path()).unwrap();
+    let reopened = open_embedded(root.path(), awaken_lease_contract::system_clock()).unwrap();
     let registry = reopened.authorities().resource_registry();
     let mut retry = request.clone();
     retry.definition.timestamps = awaken_resource_contract::ResourceTimestamps::created(12345);
@@ -517,7 +518,8 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
         },
     };
     {
-        let application = open_embedded(root.path()).unwrap();
+        let application =
+            open_embedded(root.path(), awaken_lease_contract::system_clock()).unwrap();
         let registry = application.authorities().resource_registry();
         let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
         let workers: Vec<_> = (0..8)
@@ -565,7 +567,7 @@ async fn repository_creation_receipt_is_atomic_durable_and_does_not_adopt_legacy
             .await
             .unwrap();
     }
-    let reopened = open_embedded(root.path()).unwrap();
+    let reopened = open_embedded(root.path(), awaken_lease_contract::system_clock()).unwrap();
     let registry = reopened.authorities().resource_registry();
     let mut retry = request.clone();
     retry.definition.timestamps = awaken_resource_contract::ResourceTimestamps::created(1234);
@@ -617,14 +619,16 @@ async fn embedded_registry_satisfies_the_shared_contract_and_survives_reopen() {
     let root = tempfile::tempdir().expect("embedded Registry root");
     let fixture = fixture();
     {
-        let application = open_embedded(root.path()).expect("open embedded Resources");
+        let application = open_embedded(root.path(), awaken_lease_contract::system_clock())
+            .expect("open embedded Resources");
         exercise_registry(
             application.authorities().resource_registry().as_ref(),
             &fixture,
         )
         .await;
     }
-    let reopened = open_embedded(root.path()).expect("reopen embedded Resources");
+    let reopened = open_embedded(root.path(), awaken_lease_contract::system_clock())
+        .expect("reopen embedded Resources");
     verify_reopen(
         reopened.authorities().resource_registry().as_ref(),
         &fixture,
@@ -639,18 +643,26 @@ async fn postgres_registry_satisfies_the_same_contract_and_survives_reconnect() 
     };
     let fixture = fixture();
     {
-        let application = open_postgres(&url, SchemaMode::Migrate)
-            .await
-            .expect("open PostgreSQL Resources");
+        let application = open_postgres(
+            &url,
+            SchemaMode::Migrate,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .expect("open PostgreSQL Resources");
         exercise_registry(
             application.authorities().resource_registry().as_ref(),
             &fixture,
         )
         .await;
     }
-    let reopened = open_postgres(&url, SchemaMode::Verify)
-        .await
-        .expect("reconnect PostgreSQL Resources");
+    let reopened = open_postgres(
+        &url,
+        SchemaMode::Verify,
+        awaken_lease_contract::system_clock(),
+    )
+    .await
+    .expect("reconnect PostgreSQL Resources");
     verify_reopen(
         reopened.authorities().resource_registry().as_ref(),
         &fixture,

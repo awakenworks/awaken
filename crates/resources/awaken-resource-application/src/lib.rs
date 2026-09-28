@@ -34,7 +34,7 @@ pub use execution_sources::{
 };
 pub use files::{CreateFileCommand, FileApplication};
 pub use reclamation::{ResourceLifecycleGuard, ResourcePhysicalCleanup};
-pub use registry::{RegistryApplication, RegistryClock, SystemRegistryClock};
+pub use registry::RegistryApplication;
 pub use skill_ingest::{
     CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_BUNDLE_BYTES, MAX_SKILL_FILE_BYTES,
     MAX_SKILL_FILES, UploadedSkillBundleFile, canonicalize_skill_bundle, normalize_bundle_path,
@@ -60,10 +60,12 @@ impl ResourcesApplication {
                 authorities.file_store(),
                 authorities.file_catalog(),
                 reclamation.clone(),
+                authorities.clock(),
             )),
             memories: Arc::new(MemoryStoreApplication::new(
                 authorities.resource_registry(),
                 purge.clone(),
+                authorities.clock(),
             )),
             lifecycle_guard: Arc::new(ResourceLifecycleGuard::new(authorities.resource_registry())),
             physical_cleanup: Arc::new(ResourcePhysicalCleanup::new(
@@ -128,6 +130,7 @@ impl ResourcesApplication {
         Arc::new(RepositoryApplication::new(
             self.authorities.resource_registry(),
             credentials,
+            self.authorities.clock(),
         ))
     }
 
@@ -163,6 +166,10 @@ impl ResourcesApplication {
 pub struct MemoryStoreApplication {
     registry: Arc<dyn ResourceRegistry>,
     purge: Arc<dyn ResourcePurgeScheduler>,
+    /// Stamps a registration's creation instant. It is the clock the registry
+    /// application stamps every later profile and state change with, so a
+    /// store's `created` and `updated` come from one timeline.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl MemoryStoreApplication {
@@ -170,22 +177,20 @@ impl MemoryStoreApplication {
     pub fn new(
         registry: Arc<dyn ResourceRegistry>,
         purge: Arc<dyn ResourcePurgeScheduler>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
-        Self { registry, purge }
+        Self {
+            registry,
+            purge,
+            clock,
+        }
     }
 }
 
-fn now_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
-        .unwrap_or_default()
-}
-
-fn mint_memory_store_id() -> String {
+fn mint_memory_store_id(now: awaken_lease_contract::UtcTime) -> String {
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("memstore_{:016x}_{sequence:016x}", now_nanos())
+    format!("memstore_{:016x}_{sequence:016x}", now.as_unix_nanos_u64())
 }
 
 fn required_store(
@@ -197,8 +202,13 @@ fn required_store(
     })
 }
 
-fn memory_store_registration(command: CreateMemoryStoreCommand) -> RegisterMemoryStore {
-    let id = command.id.unwrap_or_else(|| mint_memory_store_id().into());
+fn memory_store_registration(
+    command: CreateMemoryStoreCommand,
+    now: awaken_lease_contract::UtcTime,
+) -> RegisterMemoryStore {
+    let id = command
+        .id
+        .unwrap_or_else(|| mint_memory_store_id(now).into());
     RegisterMemoryStore {
         definition: MemoryStoreDefinition {
             id: id.clone(),
@@ -208,7 +218,7 @@ fn memory_store_registration(command: CreateMemoryStoreCommand) -> RegisterMemor
             metadata: command.metadata,
             state: command.initial_state,
             current_config_version: ConfigVersion::INITIAL,
-            timestamps: ResourceTimestamps::created(now_nanos()),
+            timestamps: ResourceTimestamps::created(now.as_unix_nanos_u64()),
         },
         initial_config: MemoryStoreConfigVersion {
             memory_store_id: id,
@@ -255,7 +265,7 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
         );
         Ok(self
             .registry
-            .register_memory_store_idempotent(memory_store_registration(command))
+            .register_memory_store_idempotent(memory_store_registration(command, self.clock.now()))
             .await?)
     }
 
@@ -263,7 +273,7 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
         &self,
         command: CreateMemoryStoreCommand,
     ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
-        let registration = memory_store_registration(command);
+        let registration = memory_store_registration(command, self.clock.now());
         let definition = registration.definition.clone();
         self.registry.register_memory_store(registration).await?;
         Ok(definition)
@@ -428,7 +438,10 @@ mod tests {
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open resource authority"),
         );
-        let registry = Arc::new(RegistryApplication::new(resources.clone()));
+        let registry = Arc::new(RegistryApplication::new(
+            resources.clone(),
+            awaken_lease_contract::system_clock(),
+        ));
         ResourcesApplication::new(ResourceAuthorities::new(
             registry,
             files.clone(),
@@ -436,6 +449,7 @@ mod tests {
             Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
             Arc::new(awaken_skill_store::InMemorySkillStore::new()),
             resources,
+            awaken_lease_contract::system_clock(),
         ))
     }
 

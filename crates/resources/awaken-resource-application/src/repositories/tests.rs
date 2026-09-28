@@ -25,8 +25,12 @@ impl RepositoryCredentialValidator for Credentials {
 fn application() -> RepositoryApplication {
     let storage = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
     RepositoryApplication::new(
-        Arc::new(crate::RegistryApplication::new(storage)),
+        Arc::new(crate::RegistryApplication::new(
+            storage,
+            awaken_lease_contract::system_clock(),
+        )),
         Arc::new(Credentials),
+        awaken_lease_contract::system_clock(),
     )
 }
 

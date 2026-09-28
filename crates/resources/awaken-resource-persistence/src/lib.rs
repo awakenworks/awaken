@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub use awaken_file_store::object::{
     ObjectFileStoreConfig as ObjectBackingConfig, ObjectStoreProvider as ObjectBackingProvider,
 };
+use awaken_lease_contract::WallClock;
 use awaken_resource_application::{RegistryApplication, ResourceAuthorities, ResourcesApplication};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,7 +40,13 @@ pub enum ResourcePersistenceError {
 }
 
 /// Open one embedded Resources authority rooted beneath `root`.
-pub fn open_embedded(root: &Path) -> Result<ResourcesApplication, ResourcePersistenceError> {
+///
+/// `clock` is the Resources context's one clock: the registry and every
+/// Resources command stamp time with it (see [`ResourceAuthorities::clock`]).
+pub fn open_embedded(
+    root: &Path,
+    clock: Arc<dyn WallClock>,
+) -> Result<ResourcesApplication, ResourcePersistenceError> {
     std::fs::create_dir_all(root).map_err(|error| ResourcePersistenceError::CreateDirectory {
         path: root.to_path_buf(),
         error,
@@ -48,7 +55,7 @@ pub fn open_embedded(root: &Path) -> Result<ResourcesApplication, ResourcePersis
         awaken_resource_store::SqliteResourceStore::open(root.join("resources.db"))
             .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?,
     );
-    let registry = Arc::new(RegistryApplication::new(resources.clone()));
+    let registry = Arc::new(RegistryApplication::new(resources.clone(), clock.clone()));
     let memory_path = root.join("memory_fs.db");
     let memory_path = memory_path
         .to_str()
@@ -72,6 +79,7 @@ pub fn open_embedded(root: &Path) -> Result<ResourcesApplication, ResourcePersis
         Arc::new(memory),
         Arc::new(skills),
         resources,
+        clock,
     )))
 }
 
@@ -79,8 +87,9 @@ pub fn open_embedded(root: &Path) -> Result<ResourcesApplication, ResourcePersis
 pub async fn open_postgres(
     url: &str,
     schema: SchemaMode,
+    clock: Arc<dyn WallClock>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
-    open_postgres_with_file_store(url, schema, None).await
+    open_postgres_with_file_store(url, schema, None, clock).await
 }
 
 /// Open PostgreSQL metadata authorities with an optional injected blob-byte
@@ -89,6 +98,7 @@ pub async fn open_postgres_with_file_store(
     url: &str,
     schema: SchemaMode,
     blob_store: Option<Arc<dyn awaken_resource_contract::FileStore>>,
+    clock: Arc<dyn WallClock>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let resources = Arc::new(
         match schema {
@@ -99,7 +109,7 @@ pub async fn open_postgres_with_file_store(
         }
         .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?,
     );
-    let registry = Arc::new(RegistryApplication::new(resources.clone()));
+    let registry = Arc::new(RegistryApplication::new(resources.clone(), clock.clone()));
     let file_catalog = Arc::new(
         match schema {
             SchemaMode::Migrate => awaken_file_store::postgres::PgFileStore::connect(url).await,
@@ -129,6 +139,7 @@ pub async fn open_postgres_with_file_store(
         Arc::new(memory),
         Arc::new(skills),
         resources,
+        clock,
     )))
 }
 
@@ -136,21 +147,24 @@ pub async fn open_postgres_with_object_store(
     url: &str,
     schema: SchemaMode,
     object: ObjectBackingConfig,
+    clock: Arc<dyn WallClock>,
 ) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let files = awaken_file_store::object::ObjectFileStore::from_config(object)
         .map_err(|error| ResourcePersistenceError::File(error.to_string()))?;
-    open_postgres_with_file_store(url, schema, Some(Arc::new(files))).await
+    open_postgres_with_file_store(url, schema, Some(Arc::new(files)), clock).await
 }
 
 /// Hermetic Resources application for tests and scenario processes.
 #[cfg(feature = "test-support")]
-pub fn ephemeral() -> Result<ResourcesApplication, ResourcePersistenceError> {
+pub fn ephemeral(
+    clock: Arc<dyn WallClock>,
+) -> Result<ResourcesApplication, ResourcePersistenceError> {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let resources = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
             .map_err(|error| ResourcePersistenceError::Registry(error.to_string()))?,
     );
-    let registry = Arc::new(RegistryApplication::new(resources.clone()));
+    let registry = Arc::new(RegistryApplication::new(resources.clone(), clock.clone()));
     Ok(ResourcesApplication::new(ResourceAuthorities::new(
         registry,
         files.clone(),
@@ -158,6 +172,7 @@ pub fn ephemeral() -> Result<ResourcesApplication, ResourcePersistenceError> {
         Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
         Arc::new(awaken_skill_store::InMemorySkillStore::new()),
         resources,
+        clock,
     )))
 }
 
@@ -319,7 +334,8 @@ mod tests {
         // covered by each adapter's integration suite; this test owns atomic
         // embedded selection and the no-parallel-application invariant.
         let root = tempfile::tempdir().expect("R1 root");
-        let app = open_embedded(root.path()).expect("R1 complete Resources application");
+        let app = open_embedded(root.path(), awaken_lease_contract::system_clock())
+            .expect("R1 complete Resources application");
         let authorities = app.authorities();
         let _ = authorities.resource_registry();
         let _ = authorities.file_store();
@@ -332,7 +348,7 @@ mod tests {
 
         let invalid = tempfile::NamedTempFile::new().expect("R2 file");
         assert!(matches!(
-            open_embedded(invalid.path()),
+            open_embedded(invalid.path(), awaken_lease_contract::system_clock()),
             Err(ResourcePersistenceError::CreateDirectory { .. })
         ));
     }
@@ -348,10 +364,11 @@ mod tests {
         // from making only part of the Resources aggregate appear recovered.
         let directory = tempfile::tempdir()?;
         let fixture = {
-            let application = open_embedded(directory.path())?;
+            let application =
+                open_embedded(directory.path(), awaken_lease_contract::system_clock())?;
             seed_all_resource_authorities(&application, "embedded-restart").await?
         };
-        let reopened = open_embedded(directory.path())?;
+        let reopened = open_embedded(directory.path(), awaken_lease_contract::system_clock())?;
         assert_all_resource_authorities(&reopened, &fixture).await
     }
 
@@ -368,10 +385,20 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
         let fixture = {
-            let application = open_postgres(&url, SchemaMode::Migrate).await?;
+            let application = open_postgres(
+                &url,
+                SchemaMode::Migrate,
+                awaken_lease_contract::system_clock(),
+            )
+            .await?;
             seed_all_resource_authorities(&application, &format!("postgres-{suffix}")).await?
         };
-        let reopened = open_postgres(&url, SchemaMode::Verify).await?;
+        let reopened = open_postgres(
+            &url,
+            SchemaMode::Verify,
+            awaken_lease_contract::system_clock(),
+        )
+        .await?;
         assert_all_resource_authorities(&reopened, &fixture).await
     }
 
@@ -390,10 +417,14 @@ mod tests {
                 Arc::new(object_store::memory::InMemory::new()),
                 "deployment/files",
             ));
-        let application =
-            open_postgres_with_file_store(&url, SchemaMode::Migrate, Some(object.clone()))
-                .await
-                .expect("open one hybrid Resources application");
+        let application = open_postgres_with_file_store(
+            &url,
+            SchemaMode::Migrate,
+            Some(object.clone()),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .expect("open one hybrid Resources application");
         assert!(Arc::ptr_eq(
             &application.authorities().file_store(),
             &object

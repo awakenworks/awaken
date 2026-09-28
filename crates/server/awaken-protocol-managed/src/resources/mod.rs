@@ -63,12 +63,14 @@ pub struct ResourcesRouterInput {
     pub memory_stores: Arc<dyn MemoryStoreApplicationService>,
     pub skills: Option<Arc<dyn SkillStore>>,
     pub purge: Arc<dyn ResourcePurgeScheduler>,
+    /// The Resources context's clock, the one its File application stamps with.
+    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 /// Mount all public resource families once. File, Memory, and Skill retain their
 /// independent aggregates and routes; this function only joins their HTTP routes.
 pub fn resources_router(input: ResourcesRouterInput) -> Router {
-    files_router(input.files.clone())
+    files_router(input.files.clone(), input.clock)
         .merge(memory_stores_router(input.memories, input.memory_stores))
         .merge(repositories_router(input.repositories))
         .merge(skills_router(input.skills, input.purge))
@@ -113,6 +115,7 @@ mod tests {
         );
         let registry = Arc::new(awaken_resource_application::RegistryApplication::new(
             storage.clone(),
+            awaken_lease_contract::system_clock(),
         ));
         let application =
             awaken_resource_application::ResourcesApplication::new(ResourceAuthorities::new(
@@ -122,6 +125,7 @@ mod tests {
                 Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
                 Arc::new(awaken_skill_store::InMemorySkillStore::new()),
                 storage,
+                awaken_lease_contract::system_clock(),
             ));
         let authorities = application.authorities();
         let router = resources_router(ResourcesRouterInput {
@@ -133,6 +137,7 @@ mod tests {
             memory_stores: application.memory_stores(),
             skills: Some(authorities.skill_store()),
             purge: application.purge_scheduler(),
+            clock: authorities.clock(),
         });
         for (path, rule) in [
             ("/v1/files", "R1"),

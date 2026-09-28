@@ -39,6 +39,9 @@ pub struct FileApplication {
     store: Arc<dyn FileStore>,
     catalog: Arc<dyn FileCatalog>,
     reclamation: Arc<dyn ResourceReclamationRepository>,
+    /// Stamps `created_at`; the Files API computes `expires_at` from the same
+    /// Resources clock, so one File record never mixes two timelines.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl FileApplication {
@@ -47,11 +50,13 @@ impl FileApplication {
         store: Arc<dyn FileStore>,
         catalog: Arc<dyn FileCatalog>,
         reclamation: Arc<dyn ResourceReclamationRepository>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             store,
             catalog,
             reclamation,
+            clock,
         }
     }
 
@@ -157,7 +162,7 @@ impl FileApplication {
             filename: command.filename,
             mime_type: command.mime_type,
             size_bytes: command.bytes.len() as u64,
-            created_at: now_rfc3339(),
+            created_at: self.clock.now().to_rfc3339_secs(),
             expires_at: command.expires_at,
             downloadable: command.downloadable,
             scope_id: command.scope_id,
@@ -469,10 +474,6 @@ fn file_catalog_error(error: FileCatalogError) -> ResourcePurgeError {
     }
 }
 
-fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
 fn validate_file_capacity(file_size: u64, active_size: u64) -> Result<(), ResourcePurgeError> {
     if file_size > MAX_MANAGED_FILE_SIZE_BYTES {
         return Err(ResourcePurgeError::LimitExceeded {
@@ -501,6 +502,7 @@ mod tests {
                 awaken_resource_store::SqliteResourceStore::in_memory()
                     .expect("resource reclamation"),
             ),
+            awaken_lease_contract::system_clock(),
         )
     }
 
@@ -693,6 +695,7 @@ mod tests {
                 awaken_resource_store::SqliteResourceStore::in_memory()
                     .expect("resource reclamation"),
             ),
+            awaken_lease_contract::system_clock(),
         );
         let ordinary_publication = artifact_publication("report.txt", b"report", None);
         let ordinary = app

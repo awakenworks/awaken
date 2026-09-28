@@ -546,7 +546,7 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
 
 #[cfg(feature = "test-support")]
 fn ephemeral_resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
-    awaken_resource_persistence::ephemeral()
+    awaken_resource_persistence::ephemeral(awaken_lease_contract::system_clock())
         .expect("open ephemeral Resources application")
         .authorities()
         .resource_registry()
@@ -1658,19 +1658,26 @@ fn resource_management_router_from_host(
     Router,
     Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
 ) {
+    // The Scenario composition's Resources clock: registration commands, the
+    // Files API and the registry read one timeline.
+    let clock = awaken_lease_contract::system_clock();
     let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> =
         Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
             host.resource_reclamation()
                 .expect("resource management requires lifecycle persistence"),
         ));
-    let memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService> = Arc::new(
-        awaken_resource_application::MemoryStoreApplication::new(catalog.clone(), purge.clone()),
-    );
+    let memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService> =
+        Arc::new(awaken_resource_application::MemoryStoreApplication::new(
+            catalog.clone(),
+            purge.clone(),
+            clock.clone(),
+        ));
     (
         resources_router(ResourcesRouterInput {
             repositories: Arc::new(awaken_resource_application::RepositoryApplication::new(
                 catalog,
                 Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
+                clock.clone(),
             )),
             files: host
                 .file_application()
@@ -1679,6 +1686,7 @@ fn resource_management_router_from_host(
             memory_stores: memory_stores.clone(),
             skills: host.skill_store(),
             purge,
+            clock,
         }),
         memory_stores,
     )

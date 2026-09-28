@@ -787,8 +787,7 @@ async fn root_rejection_compensates_only_applied_repository_participants() {
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .expect("participant repository"),
         );
-        let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
-        let catalog = resources.authorities().resource_registry();
+        let catalog = ephemeral_resource_registry();
         let mut application = application_with_runtime(
             Arc::new(RecordingCreateRuntime::default()),
             repository.clone(),
@@ -2271,8 +2270,7 @@ async fn assert_profiled_direct_resource_rules() {
             .expect("Repository path Session store"),
     );
     let repository_runtime = Arc::new(RecordingCreateRuntime::default());
-    let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
-    let registry = resources.authorities().resource_registry();
+    let registry = ephemeral_resource_registry();
     let mut repository_application = application_with_runtime(
         repository_runtime.clone(),
         repository_repo.clone(),
@@ -2513,3 +2511,12 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
 }
 
 mod time_assurance;
+
+/// The Registry of an ephemeral Resources application, on the host clock: the
+/// one these Session tests register Repositories and Memory stores against.
+pub(super) fn ephemeral_resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
+    awaken_resource_persistence::ephemeral(awaken_lease_contract::system_clock())
+        .expect("Resource authorities")
+        .authorities()
+        .resource_registry()
+}

@@ -3,18 +3,23 @@
 use super::{PostgresSchemaMode, config};
 
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn ephemeral_resources_application() -> awaken_resource_application::ResourcesApplication
-{
-    awaken_resource_persistence::ephemeral().expect("open ephemeral Resources application")
+pub(super) fn ephemeral_resources_application(
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+) -> awaken_resource_application::ResourcesApplication {
+    awaken_resource_persistence::ephemeral(clock).expect("open ephemeral Resources application")
 }
 
+/// `clock` is the process's one wall clock; the Resources application stamps
+/// every Resource record and judges every File expiry with it.
 pub(super) async fn open_resources_application(
     backend: config::ResourceStoreBackend,
     postgres_schema: PostgresSchemaMode,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<awaken_resource_application::ResourcesApplication, String> {
     let application = match backend {
         config::ResourceStoreBackend::Embedded(root) => {
-            awaken_resource_persistence::open_embedded(&root).map_err(|error| error.to_string())
+            awaken_resource_persistence::open_embedded(&root, clock)
+                .map_err(|error| error.to_string())
         }
         config::ResourceStoreBackend::Postgres(url) => awaken_resource_persistence::open_postgres(
             &url,
@@ -22,6 +27,7 @@ pub(super) async fn open_resources_application(
                 PostgresSchemaMode::Migrate => awaken_resource_persistence::SchemaMode::Migrate,
                 PostgresSchemaMode::Verify => awaken_resource_persistence::SchemaMode::Verify,
             },
+            clock,
         )
         .await
         .map_err(|error| error.to_string()),
@@ -33,6 +39,7 @@ pub(super) async fn open_resources_application(
                     PostgresSchemaMode::Verify => awaken_resource_persistence::SchemaMode::Verify,
                 },
                 object,
+                clock,
             )
             .await
             .map_err(|error| error.to_string())
@@ -78,12 +85,15 @@ mod tests {
                 &application.purge_scheduler()
             ));
         };
-        assert_complete(&ephemeral_resources_application());
+        assert_complete(&ephemeral_resources_application(
+            awaken_lease_contract::system_clock(),
+        ));
 
         let root = tempfile::tempdir().expect("resource application root");
         let embedded = open_resources_application(
             config::ResourceStoreBackend::Embedded(root.path().to_path_buf()),
             PostgresSchemaMode::Migrate,
+            awaken_lease_contract::system_clock(),
         )
         .await
         .expect("embedded Resources application");

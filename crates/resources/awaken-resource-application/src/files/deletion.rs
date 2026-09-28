@@ -154,12 +154,16 @@ mod tests {
                 let lifecycle =
                     Arc::new(awaken_resource_store::SqliteResourceStore::open(&path).unwrap());
                 let resources = crate::ResourcesApplication::new(crate::ResourceAuthorities::new(
-                    Arc::new(crate::RegistryApplication::new(lifecycle.clone())),
+                    Arc::new(crate::RegistryApplication::new(
+                        lifecycle.clone(),
+                        awaken_lease_contract::system_clock(),
+                    )),
                     files.clone(),
                     files.clone(),
                     Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
                     Arc::new(awaken_skill_store::InMemorySkillStore::new()),
                     lifecycle.clone(),
+                    awaken_lease_contract::system_clock(),
                 ));
                 let reclaimer = awaken_resource_reclaimer::ResourceReclaimer::new(
                     "file-recovery",

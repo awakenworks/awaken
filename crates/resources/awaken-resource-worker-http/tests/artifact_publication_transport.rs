@@ -369,6 +369,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         files.clone(),
         files,
         lifecycle.clone(),
+        awaken_lease_contract::system_clock(),
     ));
     let (directory, identity) = support::ready_worker("worker-artifacts").await;
     let dispatch = Arc::new(MemoryDispatchStore::new(
@@ -620,6 +621,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         Arc::new(FailingFileStore),
         Arc::new(awaken_file_store::InMemoryFileStore::new()),
         lifecycle,
+        awaken_lease_contract::system_clock(),
     ));
     let unavailable = Arc::new(WorkerArtifactPublicationService::new(
         unavailable_application,
@@ -668,6 +670,7 @@ async fn embedded_and_raw_http_artifact_admission_have_the_same_resource_effects
         files.clone(),
         files.clone(),
         Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+        awaken_lease_contract::system_clock(),
     ));
     let (directory, identity) = support::ready_worker("worker-admission").await;
     let dispatch = Arc::new(MemoryDispatchStore::new(
@@ -832,6 +835,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
         files.clone(),
         files,
         lifecycle,
+        awaken_lease_contract::system_clock(),
     ));
     let (directory, identity) = support::ready_worker("worker-terminal-artifact").await;
     let now_unix_ms = support::unix_now_ms();
@@ -1050,6 +1054,7 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
         files.clone(),
         files,
         lifecycle,
+        awaken_lease_contract::system_clock(),
     ));
     let counting = Arc::new(CountingFileApplication::new(application.clone()));
     let (directory, identity) = support::ready_worker("worker-checkpoint-artifact").await;
@@ -1258,6 +1263,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
         files.clone(),
         files,
         lifecycle,
+        awaken_lease_contract::system_clock(),
     ));
     let counting = Arc::new(CountingFileApplication::new(application.clone()));
     let (directory, identity) = support::ready_worker("worker-terminal-recovery").await;
@@ -1466,6 +1472,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
         files.clone(),
         files,
         Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+        awaken_lease_contract::system_clock(),
     ));
     let counting = Arc::new(CountingFileApplication::new(app.clone()));
     let (directory, identity) = support::ready_worker("capture-worker").await;
