@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use awaken_resource_contract::{MemErr, Memory, MemoryGeneration, MemoryRepository};
 use fuser::{
@@ -189,8 +189,8 @@ impl MemoryMountHandle {
     /// hangs) if fds remain.
     pub fn unmount(&mut self) {
         drop(self.listener.take());
-        let deadline = Instant::now() + self.drain_timeout;
-        while self.state.open_fds.load(Ordering::SeqCst) != 0 && Instant::now() < deadline {
+        let deadline = awaken_lease_contract::mono::MonoDeadline::after(self.drain_timeout);
+        while self.state.open_fds.load(Ordering::SeqCst) != 0 && !deadline.has_passed() {
             std::thread::sleep(Duration::from_millis(10));
         }
         let remaining = self.state.open_fds.load(Ordering::SeqCst);
@@ -333,7 +333,7 @@ struct ContentLruCache {
 
 struct CachedMemory {
     memory: Memory,
-    inserted_at: Instant,
+    inserted_at: awaken_lease_contract::mono::Instant,
 }
 
 impl ContentLruCache {
@@ -365,7 +365,7 @@ impl ContentLruCache {
             path.clone(),
             CachedMemory {
                 memory,
-                inserted_at: Instant::now(),
+                inserted_at: awaken_lease_contract::mono::now(),
             },
         );
         self.touch(&path);

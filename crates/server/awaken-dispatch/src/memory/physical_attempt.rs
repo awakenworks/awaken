@@ -34,10 +34,10 @@ impl MemoryDispatchStore {
             row.retired_attempt_epoch,
         ) && row.state == DispatchState::Leased
             && row.lease_epoch == claim.epoch
-            && row
-                .lease
-                .as_ref()
-                .is_some_and(|lease| lease.owner == claim.owner && lease.expires_ms >= now_ms);
+            && row.lease.as_ref().is_some_and(|lease| {
+                lease.owner == claim.owner
+                    && !crate::clock::deadline_has_passed(Some(lease.expires_ms), now_ms)
+            });
         let slot = match row.active_attempt.as_ref() {
             None => PhysicalAttemptSlot::Empty,
             Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,

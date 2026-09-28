@@ -18,10 +18,10 @@ pub(super) fn current(
     let row = state.rows.get(&claim.run_id)?;
     if row.state != DispatchState::Leased
         || row.lease_epoch != claim.epoch
-        || row
-            .lease
-            .as_ref()
-            .is_none_or(|lease| lease.owner != claim.owner || lease.expires_ms <= now_ms)
+        || row.lease.as_ref().is_none_or(|lease| {
+            lease.owner != claim.owner
+                || crate::clock::deadline_has_passed(Some(lease.expires_ms), now_ms)
+        })
     {
         return None;
     }

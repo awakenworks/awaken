@@ -4,7 +4,7 @@
 //! calls. Production tool mechanics remain covered by `awaken-ext-memory` tests.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use awaken_ext_memory::{
     DEFAULT_MEMORY_INSTRUCTIONS, DEFAULT_SELECTOR_INSTRUCTIONS, parse_indices, select_input,
@@ -345,7 +345,7 @@ async fn run_one(
     input: String,
     case_id: &str,
 ) -> MemoryObservation {
-    let started = Instant::now();
+    let started = awaken_lease_contract::mono::Stopwatch::start();
     let result = tokio::time::timeout(
         TIMEOUT,
         runner.run(namespace, sequence, instructions, input, 2),

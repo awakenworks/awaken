@@ -1001,7 +1001,7 @@ async fn profile_commands_are_org_fenced_and_patch_one_aggregate() {
 
 #[tokio::test]
 async fn enrollment_hmac_and_expiry_decision_table() {
-    // Causes: C1 signature={exact,tampered}; C2 time={before,after expiry};
+    // Causes: C1 signature={exact,tampered}; C2 time={before, at, after expiry};
     // C3 subject={present,missing}; C4 action={inspect,accept,replay}.
     // Effects: E1 exact+live token exposes both purposes; E2 tampered/expired
     // fails closed; E3 missing cannot mint; E4 accept grants both purposes;
@@ -1058,11 +1058,21 @@ async fn enrollment_hmac_and_expiry_decision_table() {
         revision,
         "R1 replay"
     );
-    clock.set(u64::try_from(ticket.expires_at + 1).expect("expiry is after the epoch"));
-    assert!(matches!(
-        application.inspect_enrollment(token),
-        Err(DataSubjectApplicationError::InvalidEnrollment)
-    ));
+    // R3 at the boundary (the Expiry law): live one instant before the
+    // token's expiry, rejected from its exact expiry instant on.
+    let expires_at = u64::try_from(ticket.expires_at).expect("expiry is after the epoch");
+    clock.set(expires_at - 1);
+    assert!(application.inspect_enrollment(token).is_ok(), "R3 before");
+    for now in [expires_at, expires_at + 1] {
+        clock.set(now);
+        assert!(
+            matches!(
+                application.inspect_enrollment(token),
+                Err(DataSubjectApplicationError::InvalidEnrollment)
+            ),
+            "R3 at/after {now}"
+        );
+    }
 }
 
 #[tokio::test]

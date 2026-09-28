@@ -29,6 +29,13 @@ impl Expiry {
         Self(now.saturating_add(ttl))
     }
 
+    /// The deadline at an unsigned epoch millisecond, the unit the dispatch
+    /// stores and lease records carry.
+    #[must_use]
+    pub const fn from_epoch_ms(epoch_ms: u64) -> Self {
+        Self(UtcTime::from_epoch_ms(epoch_ms))
+    }
+
     /// Decode a persisted epoch millisecond. A negative value decodes to the
     /// epoch and is therefore already expired (the crate's pre-epoch rule).
     #[must_use]
@@ -48,13 +55,15 @@ impl Expiry {
         self.0
     }
 
+    /// `now < expiry`. Const so that fixed-width kernels (and their proofs)
+    /// judge through this one rule rather than restating it.
     #[must_use]
-    pub fn is_live_at(self, now: UtcTime) -> bool {
-        now < self.0
+    pub const fn is_live_at(self, now: UtcTime) -> bool {
+        now.as_unix_nanos() < self.0.as_unix_nanos()
     }
 
     #[must_use]
-    pub fn is_expired_at(self, now: UtcTime) -> bool {
+    pub const fn is_expired_at(self, now: UtcTime) -> bool {
         !self.is_live_at(now)
     }
 

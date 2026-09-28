@@ -36,7 +36,7 @@ pub(super) async fn current_worker_claim(
     let epoch = sqlx::query_scalar::<_, i64>(&format!(
         "SELECT lease_epoch FROM {prefix}_dispatch WHERE run_id = $1 AND status = 'running' \
          AND lease_owner = $2 AND lease_until IS NOT NULL \
-         AND lease_until >= FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint \
+         AND lease_until > FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint \
          AND cancel_requested = 0"
     ))
     .bind(&run_id.0)
@@ -64,7 +64,7 @@ pub(super) async fn retry_exhausted_candidate(
     sqlx::query_scalar::<_, String>(&format!(
         "SELECT run_id FROM {prefix}_dispatch \
          WHERE status = 'running' AND lease_until IS NOT NULL \
-         AND lease_until < $1 AND attempt_count >= $2 \
+         AND lease_until <= $1 AND attempt_count >= $2 \
          AND active_attempt_epoch IS NULL \
          ORDER BY created_at LIMIT 1"
     ))

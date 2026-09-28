@@ -153,11 +153,11 @@ pub enum LeaseRenewalOutcome {
 /// correctly at every site is a rule that eventually is not, and only the Rust
 /// spellings were ever reachable by a proof.
 ///
-/// The comparison is exclusive: a deadline equal to `now` has **not** passed, so
-/// a lease minted for a non-zero duration is never already expired at the
-/// instant it is written. An absent deadline never passes, because "this row
-/// holds no lease" and "this row's lease ran out" are different facts and only
-/// the second may be reclaimed by another owner.
+/// This is the one [`awaken_lease_contract::Expiry`] law: a deadline has passed
+/// once reached (`now >= deadline`; SQL `lease_until <= now`), so a lease minted
+/// for a non-zero duration is never already expired when written. An absent
+/// deadline never passes, because "this row holds no lease" and "this row's
+/// lease ran out" are different facts and only the second may be reclaimed.
 ///
 /// Clamping a millisecond into the range a SQL backend can hold is a storage
 /// concern and stays with the stores; this function judges whatever values they
@@ -167,28 +167,28 @@ pub enum LeaseRenewalOutcome {
 pub const fn deadline_has_passed(deadline_ms: Option<u64>, now_ms: u64) -> bool {
     match deadline_ms {
         None => false,
-        Some(deadline_ms) => deadline_ms < now_ms,
+        Some(ms) => Expiry::from_epoch_ms(ms).is_expired_at(UtcTime::from_epoch_ms(now_ms)),
     }
 }
 
 #[cfg(kani)]
-/// @obligation run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
+/// @obligation run_ingress.a_deadline_passes_once_it_is_reached
 #[kani::proof]
-fn a_deadline_passes_only_strictly_after_it_is_reached() {
+fn a_deadline_passes_once_it_is_reached() {
     // Cause/effect decision table: C1 the row carries a deadline or none;
     // C2 the deadline is before / exactly at / after now.
-    // E1 absent never passes; E2 exactly at now has not passed; E3 strictly
-    // before now has passed; E4 strictly after now has not.
+    // E1 absent never passes; E2 exactly at now has passed (the Expiry law);
+    // E3 strictly before now has passed; E4 strictly after now has not.
     // R1 = !C1 -> E1. R2 = C1 + at -> E2. R3 = C1 + before -> E3.
     // R4 = C1 + after -> E4. Arbitrary u64 inputs exhaust every partition,
     // including both u64 boundaries.
     let now_ms: u64 = kani::any();
     let deadline_ms: u64 = kani::any();
     assert!(!deadline_has_passed(None, now_ms), "R1/E1");
-    assert!(!deadline_has_passed(Some(now_ms), now_ms), "R2/E2");
+    assert!(deadline_has_passed(Some(now_ms), now_ms), "R2/E2");
     assert_eq!(
         deadline_has_passed(Some(deadline_ms), now_ms),
-        deadline_ms < now_ms,
+        deadline_ms <= now_ms,
         "R3/E3 and R4/E4",
     );
 }

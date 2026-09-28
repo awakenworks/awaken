@@ -1002,11 +1002,11 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         "SR4/E4"
     );
 
-    // The exact expiry boundary remains owned by the first repairer. Its next
-    // millisecond is reclaimed through claim_new_run even though this request is
+    // The first repairer owns the lease until its expiry instant; from that
+    // instant it is reclaimed through claim_new_run even though this request is
     // deliberately impossible for ordinary local execution.
     if clock.exact_boundary_is_controllable() {
-        clock.set(first_repair.lease.expires_ms);
+        clock.set(first_repair.lease.expires_ms - 1);
         assert!(
             store
                 .claim_new_run(
@@ -1018,11 +1018,13 @@ async fn session_run_reservation_is_atomic_and_recoverable(
                 .await
                 .expect("SR8 exact lease boundary")
                 .is_none(),
-            "SR8/E11 exact expiry remains live"
+            "SR8/E11 the repair lease is live one instant before its expiry"
         );
+        // The Expiry law: from the exact expiry instant the lease has passed.
+        clock.set(first_repair.lease.expires_ms);
+    } else {
+        clock.advance_past(first_repair.lease.expires_ms).await;
     }
-    clock.advance_past(first_repair.lease.expires_ms).await;
-    clock.set(first_repair.lease.expires_ms.saturating_add(1));
     let mut repair = store
         .claim_new_run(
             repair_request.clone(),
@@ -1344,15 +1346,14 @@ async fn current_claim_guard_is_exact(
             .expect("stale current-claim query"),
         "a stale epoch is never current"
     );
-    clock.set(claimed.lease.expires_ms);
+    clock.set(claimed.lease.expires_ms - 1);
     assert!(
         store
             .claim_is_current(&current)
             .await
-            .expect("exact-boundary current-claim query"),
-        "the exact lease expiry boundary remains current"
+            .expect("pre-boundary current-claim query"),
+        "the lease is current one instant before its expiry"
     );
-    clock.set(claimed.lease.expires_ms);
     assert_eq!(
         store
             .worker_owns_run(&identity, &run)
@@ -1363,13 +1364,14 @@ async fn current_claim_guard_is_exact(
         "the exact Worker incarnation receives the live claim"
     );
     clock.advance_past(claimed.lease.expires_ms).await;
-    clock.set(claimed.lease.expires_ms.saturating_add(1));
+    // At its exact expiry instant (a controllable clock) the claim has expired.
+    clock.set(claimed.lease.expires_ms);
     assert!(
         !store
             .claim_is_current(&current)
             .await
             .expect("expired current-claim query"),
-        "an expired claim is not current before it is reclaimed"
+        "an expired claim is not current from its expiry instant, before it is reclaimed"
     );
     let stale_identity = WorkerIdentity::new(identity.worker_id.clone(), "replacement", 2);
     clock.set(20_000);

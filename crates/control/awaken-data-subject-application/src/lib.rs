@@ -1187,7 +1187,11 @@ impl DataSubjectApplication {
             .map_err(|_| DataSubjectApplicationError::InvalidEnrollment)?;
         let payload: EnrollmentTokenPayload = serde_json::from_slice(&bytes)
             .map_err(|_| DataSubjectApplicationError::InvalidEnrollment)?;
-        if payload.expires_at < self.clock.now().as_epoch_ms_i64() || payload.purposes.is_empty() {
+        // The enrollment token expires at `expires_at` (the one Expiry law).
+        if awaken_lease_contract::Expiry::from_persisted_ms(payload.expires_at)
+            .is_expired_at(self.clock.now())
+            || payload.purposes.is_empty()
+        {
             return Err(DataSubjectApplicationError::InvalidEnrollment);
         }
         Ok(payload)

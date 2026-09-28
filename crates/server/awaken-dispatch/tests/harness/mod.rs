@@ -1906,14 +1906,14 @@ pub async fn assert_millis_boundaries<S: awaken_dispatch::ControlDispatch>(
         awaken_dispatch::LeaseRenewalOutcome::Current,
         "TM12: huge renewal succeeds without overflow"
     );
-    clock.set(max_signed);
+    clock.set(max_signed - 1);
     assert!(
         store
             .claim("thief", 100, &Default::default())
             .await
             .unwrap()
             .is_none(),
-        "lease expiry remains exclusive at the exact deadline"
+        "a saturated lease is live one instant before its deadline"
     );
 }
 

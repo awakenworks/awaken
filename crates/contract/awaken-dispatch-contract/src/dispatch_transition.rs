@@ -14,7 +14,7 @@
 // @formal entrypoint worker.retry_preserves_pinned_binding
 // @formal entrypoint worker_credential.exact_revision_and_current_epoch_required
 // @formal entrypoint worker_credential.expired_observation_never_executes
-// @formal evidence run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
+// @formal evidence run_ingress.a_deadline_passes_once_it_is_reached
 //! Backend-neutral state transitions for one durable dispatch row.
 //!
 //! Storage adapters remain responsible for atomic compare-and-set and durable
@@ -989,11 +989,11 @@ mod tests {
     }
 
     /// Retry-exhaustion cause/effect graph:
-    /// C1=phase is Leased; C2=lease expiry is present and strictly before now;
-    /// C3=attempt_count reaches max_attempts. E1=eligible for the one terminal
-    /// claim. Constraints: an exact expiry boundary is still live, and retrying
-    /// terminalization may increase attempts beyond the threshold without
-    /// becoming ineligible.
+    /// C1=phase is Leased; C2=lease expiry is present and reached (`now >=`
+    /// expiry, the one Expiry law); C3=attempt_count reaches max_attempts.
+    /// E1=eligible for the one terminal claim. Constraints: the exact expiry
+    /// boundary is already expired, and retrying terminalization may increase
+    /// attempts beyond the threshold without becoming ineligible.
     ///
     /// | Rule | C1 | C2 | C3 | Effect |
     /// |---|---|---|---|---|
@@ -1031,9 +1031,18 @@ mod tests {
             3,
             10
         ));
-        assert!(!retry_exhaustion_eligible(
+        // R1 at the boundary: now == expiry has expired.
+        assert!(retry_exhaustion_eligible(
             crate::DispatchState::Leased,
             Some(10),
+            3,
+            3,
+            10
+        ));
+        // R3 one instant before the boundary: still live.
+        assert!(!retry_exhaustion_eligible(
+            crate::DispatchState::Leased,
+            Some(11),
             3,
             3,
             10

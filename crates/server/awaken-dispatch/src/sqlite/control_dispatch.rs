@@ -310,8 +310,8 @@ impl ControlDispatchQueue for SqliteDispatchStore {
             let sql = format!(
                 "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
                  ((d.status IN ('reserved', 'reservation_running') AND \
-                   d.lease_until IS NOT NULL AND d.lease_until < ?1 AND {}) OR \
-                 (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
+                   d.lease_until IS NOT NULL AND d.lease_until <= ?1 AND {}) OR \
+                 (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until <= ?1) OR \
                  (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
                    ) AND {thread_available}) OR \

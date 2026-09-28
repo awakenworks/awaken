@@ -713,19 +713,24 @@ async fn exact_claim_recovery_and_fencing(
         SettleOutcome::Applied
     );
 
+    // Expiry-law boundary table (controllable clocks): B1 one instant before
+    // its expiry the lease is live and cannot be reclaimed; B2 at its exact
+    // expiry instant it is expired and the next owner recovers it. A moving
+    // authority clock is advanced past the deadline instead.
     if clock.exact_boundary_is_controllable() {
-        clock.set(first.lease.expires_ms);
+        clock.set(first.lease.expires_ms - 1);
         assert!(
             store
                 .claim_run(&target, "conformance-b", LEASE_MS, &capabilities,)
                 .await
                 .expect("live-boundary claim")
                 .is_none(),
-            "a lease remains live at its exact expiry boundary"
+            "B1 a lease is live one instant before its expiry"
         );
+        clock.set(first.lease.expires_ms);
+    } else {
+        clock.advance_past(first.lease.expires_ms).await;
     }
-    clock.advance_past(first.lease.expires_ms).await;
-    clock.set(first.lease.expires_ms.saturating_add(1));
     let recovered = store
         .claim_run(&target, "conformance-b", LEASE_MS, &capabilities)
         .await
