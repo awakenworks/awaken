@@ -108,6 +108,8 @@ const fn mcp_client_credential_admitted(
 }
 
 #[cfg(kani)]
+/// @obligation credential.mcp_client_admission_requires_exact_delivery_adapter_and_http_transport
+/// @obligation credential.mcp_delivery_mode_is_frozen_and_never_falls_back
 #[kani::proof]
 fn mcp_client_credential_admission_has_no_gateway_or_adapter_fallback() {
     // Causes: C1 delivery is ClientInjection rather than None/Gateway;

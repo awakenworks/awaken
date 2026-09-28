@@ -4,12 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
-evidence = [
-  "crates/contract/awaken-provisioning-contract/src/lease.rs",
-]
-proof_harnesses = [
-  "lease_loss_obeys_fixed_fail_closed_fence_priority",
-]
+evidence = []
 production_entrypoints = [
   "crates/contract/awaken-provisioning-contract/src/lease.rs",
 ]

@@ -4,11 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/Delegation.tla",
-  "crates/contract/awaken-runtime-contract/src/delegation.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "child_result_is_recorded_once_and_duplicate_record_stutters",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/delegation.rs",

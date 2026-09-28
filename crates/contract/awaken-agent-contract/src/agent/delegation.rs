@@ -1530,6 +1530,7 @@ mod verification {
         }
     }
 
+    /// @obligation delegation.depth_cycle_parallel_total
     #[kani::proof]
     fn only_unsettled_relationships_occupy_a_parallel_slot() {
         let status = symbolic_status(kani::any());
@@ -1542,6 +1543,7 @@ mod verification {
         );
     }
 
+    /// @obligation delegation.relationship_transition
     #[kani::proof]
     fn every_relationship_effect_has_one_documented_precondition() {
         // Cause/effect decision table over the production transition kernel.
@@ -1587,6 +1589,7 @@ mod verification {
         );
     }
 
+    /// @obligation delegation.depth_cycle_parallel_total
     #[kani::proof]
     fn delegation_admission_requires_every_budget_and_lineage_guard() {
         let parent_ended: bool = kani::any();
@@ -1616,6 +1619,7 @@ mod verification {
         }
     }
 
+    /// @obligation delegation.depth_cycle_parallel_total
     #[kani::proof]
     fn recovered_registry_requires_every_scalar_invariant() {
         // Cause/effect decision table over the production recovery kernel. Each
@@ -1687,6 +1691,7 @@ mod verification {
         }
     }
 
+    /// @obligation delegation.relationship_identity
     #[kani::proof]
     fn child_invocation_requires_one_exact_open_relationship() {
         // Cause/effect decision table over the production executor gate:
@@ -1719,6 +1724,7 @@ mod verification {
         }
     }
 
+    /// @obligation delegation.cancel_intent
     #[kani::proof]
     fn cancellation_delivery_is_enabled_only_by_durable_intent() {
         // Cause/effect decision table over the production relationship kernel:

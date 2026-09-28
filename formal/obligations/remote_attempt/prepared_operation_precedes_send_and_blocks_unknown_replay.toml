@@ -10,15 +10,10 @@ evidence = [
   "formal/tla/RemoteAttempt.tla",
   "formal/tla/RemoteAttempt.cfg",
   "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
   "crates/server/awaken-run-executor-a2a/src/lib.rs",
   "crates/server/awaken-run-executor-a2a/src/tests/send_windows.rs",
   "scripts/ci/formal_execution_replacement_mutations.py",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "remote_operation_sequence_admits_only_prepared_before_send_and_accept_commit",
-  "remote_operation_route_is_total_and_fail_closed",
 ]
 production_entrypoints = [
   "crates/server/awaken-run-executor-a2a/src/executor.rs",

@@ -678,6 +678,7 @@ mod kani_proofs {
     }
 
     /// Covers the complete 3×3 wire lifecycle/ticket product symbolically.
+    /// @obligation run.ticket_coherence
     #[kani::proof]
     fn wire_accepts_exactly_the_legal_dispositions() {
         let state = symbolic_state(kani::any());

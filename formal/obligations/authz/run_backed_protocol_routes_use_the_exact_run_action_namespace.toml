@@ -3,12 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/control/awaken-control/src/authz/roles.rs",
   "crates/control/awaken-control/src/authz.rs",
   "crates/control/awaken-control/src/authz_tests.rs",
-]
-proof_harnesses = [
-  "run_backed_route_policy_uses_exact_run_actions",
 ]
 production_entrypoints = [
   "crates/control/awaken-control/src/authz/roles.rs",

@@ -4,12 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.database_engine_correctness",
 ]
-evidence = [
-  "crates/stores/awaken-store-schema/src/lib.rs",
-]
-proof_harnesses = [
-  "dense_migration_versions_are_strictly_increasing",
-]
+evidence = []
 production_entrypoints = [
   "crates/stores/awaken-store-schema/src/lib.rs",
 ]

@@ -163,6 +163,10 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation credential.material_is_always_published_or_intent_tracked
+/// @obligation credential_inventory.committed_material_is_preserved
+/// @obligation credential_inventory.orphans_are_reported_and_retained_without_an_atomic_claim
+/// @obligation credential_inventory.pending_intent_material_is_preserved
 #[kani::proof]
 fn credential_inventory_never_orphans_committed_pending_or_foreign_material() {
     let credential_namespace = kani::any::<bool>();

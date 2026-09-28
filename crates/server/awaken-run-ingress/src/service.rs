@@ -145,6 +145,7 @@ pub(crate) async fn wait_for_terminal_reconciliation(deadline: Option<tokio::tim
 }
 
 #[cfg(kani)]
+/// @obligation remote_worker.maintenance_scheduler_respects_adapter_ownership
 #[kani::proof]
 fn maintenance_schedule_exists_only_for_the_owning_adapter() {
     // Causes: C1 adapter owns local maintenance; C2 dead-letter GC configured;

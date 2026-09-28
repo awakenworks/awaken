@@ -838,6 +838,8 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
+/// @obligation resource_reclamation.reference_and_lease_races_fail_closed
 #[kani::proof]
 fn physical_purge_requires_zero_references_leases_and_fence() {
     // Symbolic form of the final production admission table. Kani covers every

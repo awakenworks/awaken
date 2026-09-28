@@ -3,12 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-session-work-contract/src/lib.rs",
   "crates/server/awaken-session-application/src/application.rs",
   "crates/server/awaken-session-application/src/tests/authority.rs",
-]
-proof_harnesses = [
-  "stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-work-contract/src/lib.rs",

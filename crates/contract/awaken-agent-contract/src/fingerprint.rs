@@ -172,6 +172,7 @@ mod hex_verification {
 
 #[cfg(kani)]
 mod hex_proofs {
+    /// @obligation session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
     #[kani::proof]
     #[kani::unwind(18)]
     fn fnv_hex_output_preserves_every_u64() {
@@ -182,6 +183,7 @@ mod hex_proofs {
         super::hex_verification::assert_wire_bytes("fnv1a64:", &hash.to_be_bytes());
     }
 
+    /// @obligation remote_worker.operation_identity_maps_to_one_hash_and_append
     #[kani::proof]
     #[kani::unwind(66)]
     fn sha256_hex_output_preserves_every_digest_byte() {

@@ -6,13 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/SessionRootProof.tla",
-  "crates/server/awaken-session-application/src/creation.rs",
   "crates/stores/awaken-session-store/src/lib.rs",
   "crates/server/awaken-session-application/src/tests/creation.rs",
-]
-proof_harnesses = [
-  "create_replay_conflict_and_terminal_occupation_are_exact_and_closed",
-  "only_an_applied_awaited_create_may_enter_post_create_effects",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/creation.rs",

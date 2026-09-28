@@ -6,11 +6,7 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/AgentInputRevision.tla",
-  "crates/control/awaken-config-resolver/src/stores.rs",
   "formal/tla/AgentInputRevision.cfg",
-]
-proof_harnesses = [
-  "agent_input_revision_decision_is_exact_non_wrapping_and_replay_first",
 ]
 production_entrypoints = [
   "crates/control/awaken-config-resolver/src/stores.rs",

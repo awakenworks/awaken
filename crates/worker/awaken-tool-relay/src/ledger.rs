@@ -492,6 +492,7 @@ impl FsOperationLedger {
 mod verification {
     use super::*;
 
+    /// @obligation remote_tool.result_matches_operation
     #[kani::proof]
     fn ledger_completion_requires_the_exact_executing_operation_entry() {
         // Cause C1: the same operation id has the live Executing entry.
@@ -513,6 +514,7 @@ mod verification {
         assert_eq!(ledger_completion_admitted(phase), tag == 1);
     }
 
+    /// @obligation remote_tool.invoke_at_most_once
     #[kani::proof]
     fn ledger_begin_allows_claim_only_from_absent_and_never_from_replay() {
         // Cause C1: operation entry absent; C2: executing; C3: completed.

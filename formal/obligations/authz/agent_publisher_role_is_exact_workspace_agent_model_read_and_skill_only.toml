@@ -3,12 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/control/awaken-control/src/authz/roles.rs",
   "crates/control/awaken-control/src/authz/profiles.rs",
   "crates/control/awaken-control/src/authz/model_supply_tests.rs",
-]
-proof_harnesses = [
-  "agent_publisher_role_contains_only_workspace_model_read_and_skill_authority",
 ]
 production_entrypoints = [
   "crates/control/awaken-control/src/authz/roles.rs",

@@ -6,12 +6,7 @@ tcb_assumptions = [
   "external.orchestrator_correctness",
   "external.worker_host_executor_equivalence",
 ]
-evidence = [
-  "crates/contract/awaken-worker-contract/src/lib.rs",
-]
-proof_harnesses = [
-  "non_ready_worker_never_accepts_work",
-]
+evidence = []
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/lib.rs",
 ]

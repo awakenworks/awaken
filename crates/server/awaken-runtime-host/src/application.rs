@@ -80,6 +80,9 @@ fn terminal_cleanup_drive_error(
 }
 
 #[cfg(kani)]
+/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+/// @obligation session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
+/// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
 #[kani::proof]
 fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed() {
     use awaken_session_realization_contract::SessionRealizationControlFailure;

@@ -266,6 +266,9 @@ mod kani_proofs {
 
     /// Covers every lifecycle class, end cause, failure kind, and next-state
     /// class against the production transition relation.
+    /// @obligation run.lifecycle_absorption
+    /// @obligation store_history.terminal_run_is_final_for_every_backend_history
+    /// @obligation tool_result.terminal_run_rejects_late_result
     #[kani::proof]
     fn ended_is_absorbing_for_every_next_state() {
         let current = symbolic_state(kani::any(), kani::any(), kani::any());

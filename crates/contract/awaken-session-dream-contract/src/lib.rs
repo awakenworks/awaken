@@ -395,6 +395,7 @@ mod dream_status_proofs {
         }
     }
 
+    /// @obligation dream.lifecycle_is_closed_exact_and_terminal_absorbing
     #[kani::proof]
     fn terminal_dream_statuses_are_absorbing() {
         let status_code: u8 = kani::any();
@@ -407,6 +408,7 @@ mod dream_status_proofs {
         }
     }
 
+    /// @obligation dream.lifecycle_is_closed_exact_and_terminal_absorbing
     #[kani::proof]
     fn dream_success_and_failure_require_a_running_process() {
         let status_code: u8 = kani::any();
@@ -420,6 +422,7 @@ mod dream_status_proofs {
         }
     }
 
+    /// @obligation dream.lifecycle_is_closed_exact_and_terminal_absorbing
     #[kani::proof]
     fn dream_recovery_and_cancel_never_widen_terminal_authority() {
         let status_code: u8 = kani::any();
@@ -433,6 +436,7 @@ mod dream_status_proofs {
         }
     }
 
+    /// @obligation dream.lifecycle_is_closed_exact_and_terminal_absorbing
     #[kani::proof]
     fn dream_transition_table_is_total_exact_and_closed() {
         let status_code: u8 = kani::any();
@@ -483,6 +487,7 @@ mod dream_status_proofs {
         }
     }
 
+    /// @obligation dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
     #[kani::proof]
     fn dream_public_terminal_requires_committed_cleanup() {
         let status_code: u8 = kani::any();
@@ -502,6 +507,7 @@ mod dream_status_proofs {
         }
     }
 
+    /// @obligation dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
     #[kani::proof]
     fn dream_cleanup_admission_is_total_and_retries_every_pending_terminal() {
         // Causes: C1 every closed Dream status; C2 cleanup is pending/settled.

@@ -2,12 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
-]
-proof_harnesses = [
-  "canonical_event_order_never_depends_on_wall_time",
-]
+evidence = []
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
 ]

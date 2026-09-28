@@ -10,12 +10,8 @@ evidence = [
   "formal/tla/WebhookOutbox.tla",
   "crates/contract/awaken-session-state-contract/src/lifecycle.rs",
   "crates/server/awaken-protocol-managed/src/state/sessions.rs",
-  "crates/server/awaken-webhook-managed/src/lib.rs",
   "crates/server/awaken-webhook-managed/tests/crud.rs",
   "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
-]
-proof_harnesses = [
-  "pending_lifecycle_fact_completes_iff_delivery_succeeds_with_the_exact_identity",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/lifecycle.rs",

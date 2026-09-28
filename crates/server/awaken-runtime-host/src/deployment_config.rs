@@ -905,6 +905,7 @@ mod verification {
         }
     }
 
+    /// @obligation worker.sandbox_tool_recovery_is_a_hard_claim_axis
     #[kani::proof]
     fn container_hand_residency_recovery_mapping_is_total_exact_and_non_widening() {
         let residency = if kani::any::<bool>() {
@@ -926,6 +927,7 @@ mod verification {
         }
     }
 
+    /// @obligation run_ingress.durable_dispatch_deployment_admission_is_exact_store_independent_and_evidence_monotonic
     #[kani::proof]
     fn durable_dispatch_admission_is_exact_and_commit_store_independent() {
         let durable: bool = kani::any();
@@ -947,6 +949,7 @@ mod verification {
         }
     }
 
+    /// @obligation run_ingress.durable_dispatch_deployment_admission_is_exact_store_independent_and_evidence_monotonic
     #[kani::proof]
     fn durable_dispatch_admission_is_monotonic_in_persistence_evidence() {
         let durable: bool = kani::any();
@@ -982,6 +985,7 @@ mod verification {
         }
     }
 
+    /// @obligation sandbox.deployment_support_projection_is_total_exact_and_evidence_bound
     #[kani::proof]
     fn sandbox_support_projection_is_total_exact_and_evidence_bound() {
         let tier = symbolic_sandbox_tier(kani::any());

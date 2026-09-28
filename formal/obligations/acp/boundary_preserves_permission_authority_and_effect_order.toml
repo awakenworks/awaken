@@ -5,15 +5,11 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
   "crates/server/awaken-protocol-acp/src/jsonrpc/response.rs",
   "crates/server/awaken-protocol-acp/src/lib.rs",
   "docs/design/acp-harness-capability-and-tool-bridge.md",
   "formal/verification-boundaries/acp-permission-and-process-cleanup.md",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "acp_permission_effect_plan_preserves_authority_order",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",

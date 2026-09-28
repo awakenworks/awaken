@@ -418,6 +418,7 @@ const fn advisor_candidate_is_admitted(
 }
 
 #[cfg(kani)]
+/// @obligation model_advisor.never_substitutes_for_primary_admission_or_duplicates_a_binding
 #[kani::proof]
 #[kani::unwind(8)]
 fn advisor_never_substitutes_for_primary_model_admission() {

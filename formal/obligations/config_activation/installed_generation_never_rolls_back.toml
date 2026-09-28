@@ -11,11 +11,7 @@ evidence = [
   "scripts/ci/formal_config_mutations.py",
   "docs/adr/0071-distributed-service-boundaries-and-executable-agent-registration.md",
   "docs/design/config-publication-lifecycle.md",
-  "crates/server/awaken-executable-agent-catalog/src/lib.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "installed_lifecycle_revision_never_rolls_back",
 ]
 production_entrypoints = [
   "crates/server/awaken-executable-agent-catalog/src/lib.rs",

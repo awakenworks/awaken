@@ -51,6 +51,7 @@ import formal_ledger
 # files are production entrypoints, and the exception registry itself.
 INPUT_GLOBS: tuple[str, ...] = (
     "crates/**/*.rs",
+    "crates/**/Cargo.toml",
     "formal/coverage.toml",
     "formal/obligations/**/*",
     "formal/proof-input-exceptions.json",

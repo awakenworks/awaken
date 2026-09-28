@@ -9,11 +9,7 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/RemoteAttempt.tla",
   "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
   "crates/server/awaken-run-executor-a2a/src/lib.rs",
-]
-proof_harnesses = [
-  "task_reference_admission_requires_complete_fields_and_required_identity_matches",
 ]
 production_entrypoints = [
   "crates/server/awaken-run-executor-a2a/src/executor.rs",

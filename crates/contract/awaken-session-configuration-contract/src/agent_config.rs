@@ -769,6 +769,7 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
 }
 
 #[cfg(kani)]
+/// @obligation tool_policy.managed_agent_and_mcp_defaults_are_source_exact_and_configurable
 #[kani::proof]
 fn managed_toolset_default_resolution_is_source_exact_and_configurable() {
     use awaken_agent_contract::{ToolPermissionRequirement, ToolsetSource};
@@ -817,6 +818,7 @@ fn managed_toolset_default_resolution_is_source_exact_and_configurable() {
 }
 
 #[cfg(kani)]
+/// @obligation runtime_capability.bounded_iterator_uses_the_exact_eight_member_projection
 #[kani::proof]
 #[kani::unwind(9)]
 fn bounded_runtime_capability_iterator_uses_exact_member_projection() {
@@ -840,6 +842,7 @@ fn bounded_runtime_capability_iterator_uses_exact_member_projection() {
 }
 
 #[cfg(kani)]
+/// @obligation runtime_capability.bounded_iterator_uses_the_exact_eight_member_projection
 #[kani::proof]
 fn runtime_capability_member_projection_is_total_exact_and_bounded() {
     let index: u8 = kani::any();

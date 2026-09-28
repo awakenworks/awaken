@@ -6,12 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/LiveInbox.tla",
-  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
   "crates/runtime/awaken-runtime/tests/live_inbox.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "live_inbox_closed_lifecycle_is_absorbing_for_every_mutation",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/live_inbox.rs",

@@ -7,6 +7,7 @@ use super::{
 /// The production source enum is the durable credential channel. This proof
 /// keeps its complete current domain reference-only; material remains behind
 /// the non-serializable resolver result.
+/// @obligation worker.durable_dispatch_contains_no_plaintext_secret
 #[kani::proof]
 fn durable_credential_material_source_has_no_inline_plaintext_class() {
     // Cause/effect graph: C1 selects the Control-plane source; C2 selects the
@@ -23,6 +24,7 @@ fn durable_credential_material_source_has_no_inline_plaintext_class() {
     assert!(durable_material_source_is_reference_only(source));
 }
 
+/// @obligation environment.cloud_native_credential_custody_selection_is_exact
 #[kani::proof]
 fn environment_credential_custody_selects_exactly_one_authorized_profile() {
     let acp_runtime: bool = kani::any();
@@ -45,6 +47,7 @@ fn environment_credential_custody_selects_exactly_one_authorized_profile() {
     );
 }
 
+/// @obligation credential_envelope.issuance_requires_exact_claim
 #[kani::proof]
 fn credential_envelope_issuance_accepts_exactly_the_complete_claim() {
     let reference_nonempty: bool = kani::any();
@@ -67,6 +70,7 @@ fn credential_envelope_issuance_accepts_exactly_the_complete_claim() {
 
 /// The file-backed Worker resolver preserves the exact opaque trust-domain
 /// identity and can project it to no plaintext boundary except Worker.
+/// @obligation credential.worker_plaintext_holder_projection_is_exact_and_non_widening
 #[kani::proof]
 fn worker_plaintext_holder_projection_is_exact_and_non_widening() {
     let trust_domain_identity = kani::any::<u64>();

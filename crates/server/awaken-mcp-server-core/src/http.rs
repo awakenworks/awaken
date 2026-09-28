@@ -178,6 +178,7 @@ where
 mod verification {
     use super::*;
 
+    /// @obligation mcp.sessionless_stream_lifecycle
     #[kani::proof]
     fn sessionless_http_lifecycle_routes_each_method_to_its_exact_action() {
         // Cause graph: C1=GET, C2=POST, C3=DELETE, C4=unsupported method.

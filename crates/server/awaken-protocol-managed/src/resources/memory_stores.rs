@@ -1099,6 +1099,7 @@ fn projected_time(nanos: u128) -> i128 {
 }
 
 #[cfg(kani)]
+/// @obligation session_time.utc_projection_domain_is_total_exact_and_idempotent
 #[kani::proof]
 fn memory_time_filter_compares_visible_milliseconds_without_merging_them() {
     // Direct production-kernel proof over every u128 stored timestamp. The

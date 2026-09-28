@@ -412,6 +412,7 @@ mod hosted_runtime_tests {
 mod verification {
     use super::*;
 
+    /// @obligation authz.hosted_workspace_and_runtime_member_grants_are_exact
     #[kani::proof]
     fn runtime_member_role_contains_exactly_run_read() {
         let authority = if kani::any() {

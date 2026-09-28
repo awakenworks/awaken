@@ -127,6 +127,7 @@ pub trait SessionModelPublicationResolver: Send + Sync {
 mod verification {
     use super::*;
 
+    /// @obligation model_route.session_override_reuses_only_exact_identity_and_resolves_every_mismatch
     #[kani::proof]
     fn session_model_override_reuses_only_the_same_identity_and_resolves_every_mismatch() {
         let requested_model = kani::any::<u8>();

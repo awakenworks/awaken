@@ -341,6 +341,7 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation work.persisted_epoch_is_exact_nonnegative_and_nonwrapping
 #[kani::proof]
 fn work_lease_epoch_is_exact_nonnegative_and_nonwrapping() {
     // Full i64 x bool domain, no artificial collection bound or SQL stubs.
@@ -364,6 +365,7 @@ fn work_lease_epoch_is_exact_nonnegative_and_nonwrapping() {
 }
 
 #[cfg(kani)]
+/// @obligation work.lease_authority_snapshot_and_owner_mutations_are_atomic
 #[kani::proof]
 fn work_lease_authority_transition_is_complete_and_fenced() {
     // Cause/effect table over the full finite tuple/command domain:

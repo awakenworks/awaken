@@ -6,13 +6,9 @@ evidence = [
   "formal/tla/AcpLocalBindingBatch.tla",
   "formal/tla/AcpLocalBindingBatch.cfg",
   "crates/server/awaken-acp-application/src/lib.rs",
-  "crates/server/awaken-run-executor-acp/src/host/mod.rs",
   "scripts/ci/formal_credential_mutations.py",
   "crates/server/awaken-run-executor-acp/src/host/binding_batch_tests.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "local_binding_batch_publication_is_complete_or_stutters",
 ]
 production_entrypoints = [
   "crates/server/awaken-acp-application/src/lib.rs",

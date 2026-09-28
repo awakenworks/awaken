@@ -8,13 +8,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerCredentialLiveness.tla",
-  "crates/contract/awaken-worker-contract/src/lib.rs",
   "crates/contract/awaken-worker-contract/src/registry.rs",
   "crates/bin/awaken-worker/src/credential_liveness.rs",
   "crates/bin/awaken-worker/src/lib.rs",
-]
-proof_harnesses = [
-  "process_readiness_after_startup_is_probe_independent",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/registry.rs",

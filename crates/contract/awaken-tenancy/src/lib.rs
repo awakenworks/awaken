@@ -644,6 +644,7 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// @obligation tenancy.authority_never_widens
     #[kani::proof]
     fn successful_scope_resolution_never_widens_authority() {
         let authority = [kani::any::<u8>(), kani::any::<u8>()];
@@ -656,6 +657,7 @@ mod verification {
         }
     }
 
+    /// @obligation tenancy.all_selectors_checked
     #[kani::proof]
     fn any_uncovered_selector_fails_closed() {
         let authorized = kani::any::<u8>();
@@ -669,6 +671,7 @@ mod verification {
         ));
     }
 
+    /// @obligation tenancy.selector_agreement
     #[kani::proof]
     fn selector_order_cannot_change_an_authorized_result() {
         let a = kani::any::<u8>();

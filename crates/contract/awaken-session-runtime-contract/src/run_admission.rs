@@ -210,6 +210,10 @@ pub const fn session_run_activity_receipt_plan(
 }
 
 #[cfg(kani)]
+/// @obligation session_event_batch.run_reservation_precedes_distinct_activity_receipt
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+/// @obligation session_run.recovery_claim_is_admission_only
+/// @obligation session_run.reservation_precedes_activity
 #[kani::proof]
 fn session_run_reservation_binds_exactly_one_nonzero_activity_receipt() {
     // Cause/effect table exhausts five reservation classes, optional prior

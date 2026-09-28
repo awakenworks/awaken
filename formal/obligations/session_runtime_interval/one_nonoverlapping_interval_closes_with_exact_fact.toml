@@ -4,12 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "crates/contract/awaken-session-state-contract/src/session_repo.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/runtime_intervals.rs",
   "crates/server/awaken-session-application/src/activity.rs",
   "crates/server/awaken-session-application/src/terminal.rs",
-]
-proof_harnesses = [
-  "runtime_intervals_open_once_and_never_close_before_start",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/session_repo.rs",

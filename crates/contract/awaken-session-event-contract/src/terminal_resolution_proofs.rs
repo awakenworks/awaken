@@ -137,6 +137,7 @@ fn check_resolution(
 }
 
 #[cfg(kani)]
+/// @obligation session_time.processed_event_retains_first_time_and_rejects_atomically
 #[kani::proof]
 #[kani::unwind(4)]
 fn terminal_batch_resolution_empty() {

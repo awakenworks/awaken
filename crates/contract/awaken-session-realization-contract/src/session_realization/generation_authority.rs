@@ -40,6 +40,8 @@ pub fn realization_generation_authorizes(
 }
 
 #[cfg(kani)]
+/// @obligation session_realization.generation_authority_requires_every_immutable_axis
+/// @obligation session_realization.publication_excludes_staged_retired_generation
 #[kani::proof]
 #[kani::unwind(3)]
 fn realization_generation_authority_requires_every_axis() {

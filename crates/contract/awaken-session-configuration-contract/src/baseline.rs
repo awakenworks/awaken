@@ -25,6 +25,7 @@ pub const fn resolved_environment_snapshot_is_exact(
 mod kani_proofs {
     use super::resolved_environment_snapshot_is_exact;
 
+    /// @obligation session_creation.selected_environment_is_frozen_in_baseline
     #[kani::proof]
     fn resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision() {
         let identity_matches: bool = kani::any();

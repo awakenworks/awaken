@@ -4,12 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "crates/contract/awaken-agent-contract/src/agent/content.rs",
-  "crates/runtime/awaken-provider-genai/src/transcript_projection.rs",
   "crates/runtime/awaken-provider-genai/src/lib.rs",
-]
-proof_harnesses = [
-  "reasoning_replay_projection_preserves_reasoning_and_complete_responses",
-  "reasoning_fold_prepends_exactly_once_and_is_transport_independent",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/agent/content.rs",

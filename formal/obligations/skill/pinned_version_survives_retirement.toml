@@ -11,14 +11,10 @@ evidence = [
   "docs/adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md",
   "docs/design/resources-memory-files-skills.md",
   "crates/contract/awaken-resource-contract/src/lib.rs",
-  "crates/resources/awaken-skill-store/src/lib.rs",
   "crates/resources/awaken-skill-store/src/sqlite.rs",
   "crates/resources/awaken-skill-store/src/postgres.rs",
   "crates/resources/awaken-skill-store/tests/conformance.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "skill_version_retirement_is_visibility_only_and_total",
 ]
 production_entrypoints = [
   "crates/resources/awaken-skill-store/src/lib.rs",

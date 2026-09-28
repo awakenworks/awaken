@@ -121,6 +121,8 @@ fn agent_message_operation_matches<T: Eq + ?Sized>(
 }
 
 #[cfg(kani)]
+/// @obligation session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
+/// @obligation session.agent_message_requires_exact_committed_tool_source_and_payload
 #[kani::proof]
 fn session_agent_message_admission_requires_every_committed_field() {
     // Causes: C1 the production extractor has reconstructed one complete typed

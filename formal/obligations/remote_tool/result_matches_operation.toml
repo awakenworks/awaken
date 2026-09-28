@@ -8,12 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteTool.tla",
-  "crates/worker/awaken-tool-relay/src/ledger.rs",
   "crates/worker/awaken-tool-relay/src/serve.rs",
   "crates/worker/awaken-tool-relay/tests/relay.rs",
-]
-proof_harnesses = [
-  "ledger_completion_requires_the_exact_executing_operation_entry",
 ]
 production_entrypoints = [
   "crates/worker/awaken-tool-relay/src/ledger.rs",

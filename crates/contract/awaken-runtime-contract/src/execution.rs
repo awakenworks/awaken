@@ -108,6 +108,8 @@ pub async fn verify_attempt_ownership(
 }
 
 #[cfg(kani)]
+/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
+/// @obligation worker.secret_materialization_is_claim_fenced
 #[kani::proof]
 fn claim_bound_external_effect_admits_only_current_ownership() {
     // Test design — Causes: C1 an attempt authority is bound; C2 its latest

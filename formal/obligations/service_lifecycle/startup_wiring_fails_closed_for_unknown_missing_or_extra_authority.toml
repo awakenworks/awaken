@@ -5,12 +5,8 @@ tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
 evidence = [
-  "crates/server/awaken-service-lifecycle/src/lib.rs",
   "crates/bin/awaken-cli/src/process_stores.rs",
   "crates/bin/awaken-cli/src/service.rs",
-]
-proof_harnesses = [
-  "startup_wiring_fails_closed_for_unknown_missing_or_extra_authority",
 ]
 production_entrypoints = [
   "crates/server/awaken-service-lifecycle/src/lib.rs",

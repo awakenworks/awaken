@@ -4,15 +4,9 @@ status = "model_linked"
 tcb_assumptions = []
 evidence = [
   "formal/tla/WorkQueue.tla",
-  "crates/contract/awaken-session-work-contract/src/lib.rs",
   "crates/stores/awaken-work-store/src/lib.rs",
   "crates/stores/awaken-work-store/src/inmem.rs",
   "crates/stores/awaken-work-store/src/session_access.rs",
-]
-proof_harnesses = [
-  "only_active_work_accepts_lease_extension",
-  "matching_heartbeat_rejects_every_other_receipt",
-  "work_lease_mutation_requires_present_exact_authority_and_matching_condition",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-work-contract/src/lib.rs",

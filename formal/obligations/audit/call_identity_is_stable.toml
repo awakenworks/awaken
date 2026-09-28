@@ -7,7 +7,6 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/AuditCommit.tla",
-  "crates/control/awaken-agent-config/src/store.rs",
   "crates/control/awaken-admin-assistant/src/lib.rs",
   "crates/control/awaken-control/src/lib.rs",
   "formal/tla/AuditCommit.cfg",
@@ -18,9 +17,6 @@ evidence = [
   "crates/control/awaken-config-store/tests/integration.rs",
   "crates/control/awaken-config-store/tests/postgres.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "management_audit_call_identity_is_stable_and_tuple_exact",
 ]
 production_entrypoints = [
   "crates/control/awaken-agent-config/src/store.rs",

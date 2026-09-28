@@ -621,6 +621,7 @@ mod tests {
 /// refusal payloads; that derivation is covered by the executable table and
 /// property tests in this module, which run the real string code.
 #[cfg(kani)]
+/// @obligation model_binding.constructor_and_wire_share_one_admission
 #[kani::proof]
 fn model_binding_admission_is_exactly_the_documented_rule_table() {
     let padded: bool = kani::any();

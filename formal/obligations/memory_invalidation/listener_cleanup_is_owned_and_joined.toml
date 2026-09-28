@@ -8,11 +8,7 @@ evidence = [
   "formal/tla/MemoryInvalidationLifecycle.tla",
   "formal/tla/MemoryInvalidationLifecycle.cfg",
   "scripts/ci/check_formal_mutations.py",
-  "crates/worker/awaken-sandbox-memoryd/src/fuse.rs",
   "crates/worker/awaken-sandbox-memoryd/src/fuse/tests.rs",
-]
-proof_harnesses = [
-  "listener_cleanup_requests_stop_then_joins_the_owned_handle_exactly_once",
 ]
 production_entrypoints = [
   "crates/worker/awaken-sandbox-memoryd/src/fuse.rs",

@@ -8,14 +8,10 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ToolResultProtocol.tla",
-  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
   "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
   "crates/runtime/awaken-runtime/src/engine/resume.rs",
   "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "a_tool_call_completion_is_applied_at_most_once",
 ]
 production_entrypoints = [
   "crates/contract/awaken-tool-contract/src/tool_batch.rs",

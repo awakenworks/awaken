@@ -125,6 +125,10 @@ pub fn validate_skill_bundle(
 }
 
 #[cfg(kani)]
+/// @obligation session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+/// @obligation skill.execution_pin_binds_exact_workspace_revision_and_hash
+/// @obligation skill.invalid_workspace_or_hash_fails_closed
+/// @obligation skill.loaded_version_equals_session_pin
 #[kani::proof]
 fn skill_execution_pin_requires_exact_workspace_revision_and_hash() {
     let custom_kind = kani::any();
@@ -146,6 +150,7 @@ fn skill_execution_pin_requires_exact_workspace_revision_and_hash() {
 }
 
 #[cfg(kani)]
+/// @obligation skill.execution_pin_binds_exact_workspace_revision_and_hash
 #[kani::proof]
 fn every_skill_execution_pin_axis_is_binding() {
     let changed_axis: u8 = kani::any();

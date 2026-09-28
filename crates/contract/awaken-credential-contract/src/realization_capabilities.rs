@@ -370,6 +370,8 @@ mod verification {
         }
     }
 
+    /// @obligation credential.mcp_delivery_mode_is_frozen_and_never_falls_back
+    /// @obligation credential.mcp_delivery_selection_is_exact_and_fail_closed
     #[kani::proof]
     fn mcp_delivery_selection_has_only_the_explicit_pair_classes() {
         let boundary = boundary(kani::any());
@@ -389,6 +391,8 @@ mod verification {
         );
     }
 
+    /// @obligation credential.mcp_delivery_mode_is_frozen_and_never_falls_back
+    /// @obligation credential.mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism
     #[kani::proof]
     fn mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism() {
         let expected_delivery = delivery(kani::any());

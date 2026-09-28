@@ -667,6 +667,7 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation credential.mcp_adopted_revocation_removes_accepting_generation_before_new_calls
 #[kani::proof]
 fn mcp_call_admission_requires_both_accepting_observations() {
     let accepting_before_increment = kani::any::<bool>();

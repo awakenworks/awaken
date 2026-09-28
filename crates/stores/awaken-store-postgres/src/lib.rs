@@ -76,6 +76,7 @@ fn dense_commit_sequence_successor(last: i64) -> Result<u64, Error> {
 }
 
 #[cfg(kani)]
+/// @obligation store_history.commits_form_one_dense_stable_global_order
 #[kani::proof]
 fn dense_commit_sequence_is_exact_nonnegative_and_nonwrapping() {
     // Cause/effect table over every stored i64 tail: C1 negative -> reject;

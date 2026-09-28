@@ -850,6 +850,7 @@ mod kani_proofs {
     use super::*;
     use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
 
+    /// @obligation session_outcome.awaiting_constructor_is_nonterminal_and_nonfailed
     #[kani::proof]
     fn awaiting_constructor_cannot_create_a_terminal_or_failed_outcome() {
         // Test design — Causes: the Awaiting constructor receives no pending tool.
@@ -862,6 +863,7 @@ mod kani_proofs {
         std::mem::forget(outcome);
     }
 
+    /// @obligation session_outcome.ended_constructor_owns_failure_and_clears_pending_tool
     #[kani::proof]
     fn ended_constructor_carries_the_only_failure_authority_and_no_pending_tool() {
         // Test design — Causes: an Ended constructor receives either a classified
@@ -882,6 +884,7 @@ mod kani_proofs {
         std::mem::forget(outcome);
     }
 
+    /// @obligation session_execution.settled_step_has_no_parallel_observation_authority
     #[kani::proof]
     fn settled_step_has_no_parallel_observation_authority() {
         // Cause/effect decision rule: a terminal committed Run cause creates an

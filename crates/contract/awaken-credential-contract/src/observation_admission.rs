@@ -73,6 +73,8 @@ pub fn require_exact_available_worker_reference(
 }
 
 #[cfg(kani)]
+/// @obligation worker_credential.exact_revision_and_current_epoch_required
+/// @obligation worker_credential.expired_observation_never_executes
 #[kani::proof]
 fn worker_reference_revalidation_accepts_only_exact_available_state() {
     let reference_matches = kani::any::<bool>();

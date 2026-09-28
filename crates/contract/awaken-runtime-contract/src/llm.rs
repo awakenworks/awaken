@@ -153,6 +153,7 @@ impl StopReason {
 mod stop_reason_verification {
     use super::*;
 
+    /// @obligation runtime.max_token_continuation_requires_every_guard_and_exhaustion_never_succeeds
     #[kani::proof]
     fn max_token_continuation_requires_every_exact_guard() {
         let has_tool_calls: bool = kani::any();

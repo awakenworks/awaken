@@ -460,6 +460,7 @@ mod delivery_verification {
         }
     }
 
+    /// @obligation delegation.result_record_once
     #[kani::proof]
     fn child_result_is_recorded_once_and_duplicate_record_stutters() {
         // Cause/effect table over every production delivery phase: Absent
@@ -480,6 +481,7 @@ mod delivery_verification {
         }
     }
 
+    /// @obligation delegation.result_consume_once
     #[kani::proof]
     fn child_result_is_consumed_only_from_ready() {
         let phase = symbolic_phase(kani::any());
@@ -491,6 +493,7 @@ mod delivery_verification {
         }
     }
 
+    /// @obligation delegation.late_result_closed
     #[kani::proof]
     fn terminal_delivery_phases_never_reopen() {
         let phase = if kani::any() {

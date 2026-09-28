@@ -959,6 +959,7 @@ mod proofs {
         }
     }
 
+    /// @obligation session_execution.one_physical_attempt_per_thread
     #[kani::proof]
     fn quarantine_admission_never_widens_settlement_or_execution() {
         // R1 quantifies every slot and cancellation intent. The new rule may
@@ -996,6 +997,7 @@ mod proofs {
         }
     }
 
+    /// @obligation session_execution.one_physical_attempt_per_thread
     #[kani::proof]
     fn quarantined_cancelled_row_can_never_re_enter_execution() {
         // The root-cause theorem. Admitting quarantine on an occupied slot is
@@ -1037,6 +1039,7 @@ mod proofs {
         assert!(matches!(dead.claim(), Ok(None)));
     }
 
+    /// @obligation session_execution.one_physical_attempt_per_thread
     #[kani::proof]
     fn retired_epoch_cannot_admit_another_execution() {
         // R2 quantifies the full u64 range and both admission routes; no bounded
@@ -1060,6 +1063,11 @@ mod proofs {
         assert_eq!(current, live && epoch > retired);
     }
 
+    /// @obligation remote_worker.execution_requires_claimed_snapshot
+    /// @obligation remote_worker.single_live_claim_owner
+    /// @obligation session_execution.one_physical_attempt_per_thread
+    /// @obligation worker_credential.exact_revision_and_current_epoch_required
+    /// @obligation worker_credential.expired_observation_never_executes
     #[kani::proof]
     fn physical_attempt_slot_installs_and_clears_only_exact_authority() {
         let current = kani::any::<bool>();
@@ -1108,6 +1116,7 @@ mod proofs {
         }
     }
 
+    /// @obligation session_execution.one_physical_attempt_per_thread
     #[kani::proof]
     fn thread_physical_peer_vetoes_begin_and_handoff() {
         // P1 current/stale, P2 all four slot shapes, P3 begin/handoff,
@@ -1147,6 +1156,8 @@ mod proofs {
         );
     }
 
+    /// @obligation remote_worker.single_live_claim_owner
+    /// @obligation session_execution.one_physical_attempt_per_thread
     #[kani::proof]
     fn physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair() {
         let owner_present = kani::any::<bool>();
@@ -1170,6 +1181,8 @@ mod proofs {
         );
     }
 
+    /// @obligation ingress.settle_fence
+    /// @obligation run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
     #[kani::proof]
     fn stale_dispatch_claim_cannot_modify_authoritative_state() {
         let state = arbitrary_transition();
@@ -1198,6 +1211,7 @@ mod proofs {
         }
     }
 
+    /// @obligation run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
     #[kani::proof]
     fn relinquish_requires_exact_current_claim_and_preserves_retry_budget() {
         let state = arbitrary_transition();
@@ -1242,6 +1256,10 @@ mod proofs {
         }
     }
 
+    /// @obligation ingress.settle_fence
+    /// @obligation run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+    /// @obligation session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+    /// @obligation session_execution.initial_event_path_reaches_idle_only_after_full_settlement
     #[kani::proof]
     fn exact_dispatch_settlement_is_terminal_or_awaiting_only() {
         let state = arbitrary_transition();
@@ -1266,6 +1284,7 @@ mod proofs {
         }
     }
 
+    /// @obligation run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
     #[kani::proof]
     fn dispatch_cancel_revokes_old_epoch_and_is_idempotent() {
         // Causes: C1 the row is superseded, dead-lettered, live-leased, or another cancellable
@@ -1341,6 +1360,12 @@ mod proofs {
         }
     }
 
+    /// @obligation delegation.independent_child_scheduling_lease
+    /// @obligation ingress.epoch_reclaim
+    /// @obligation ingress.single_owner
+    /// @obligation remote_worker.single_live_claim_owner
+    /// @obligation run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+    /// @obligation session_run.recovery_claim_is_admission_only
     #[kani::proof]
     fn dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows() {
         // Causes: C1 the phase is ordinary runnable, excluded
@@ -1376,6 +1401,7 @@ mod proofs {
         }
     }
 
+    /// @obligation run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
     #[kani::proof]
     fn dispatch_maintenance_transitions_are_closed_and_exact() {
         // Cause/effect table: Reserved alone may be rejected; non-cancelled

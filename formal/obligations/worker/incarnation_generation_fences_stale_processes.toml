@@ -9,7 +9,6 @@ tcb_assumptions = [
 evidence = [
   "crates/server/awaken-worker-registry/tests/conformance.rs",
   "formal/tla/WorkerReplacement.tla",
-  "crates/contract/awaken-worker-contract/src/registry.rs",
   "crates/server/awaken-worker-registry/src/transition.rs",
   "crates/server/awaken-worker-registry/src/memory.rs",
   "crates/server/awaken-worker-registry/src/sqlite.rs",
@@ -21,10 +20,6 @@ evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
   "formal/tla/RemoteWorkerProtocolRegistration.cfg",
   "scripts/ci/formal_worker_registration_mutations.py",
-]
-proof_harnesses = [
-  "worker_replacement_and_heartbeat_share_one_non_resurrection_boundary",
-  "worker_registration_never_grants_authority_to_seen_or_unknown_history",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/registry.rs",

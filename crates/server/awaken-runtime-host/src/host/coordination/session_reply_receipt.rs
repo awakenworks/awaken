@@ -90,6 +90,8 @@ const fn advance_session_reply_receipt(
 }
 
 #[cfg(kani)]
+/// @obligation tool_result.conflicting_delivery_operation_never_reuses_a_receipt
+/// @obligation tool_result.exact_delivery_retry_replays_one_receipt
 #[kani::proof]
 fn resume_receipt_classification_is_exact_and_conflict_absorbing() {
     // Cause/effect graph: C1 an Event has the expected correlation; C2 it has

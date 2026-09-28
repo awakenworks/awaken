@@ -6,15 +6,11 @@ tcb_assumptions = [
   "external.orchestrator_correctness",
 ]
 evidence = [
-  "crates/bin/awaken-worker/src/credential_liveness/observation_budget.rs",
   "crates/bin/awaken-worker/src/credential_liveness.rs",
   "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs",
   "crates/bin/awaken-worker/src/bootstrap.rs",
   "crates/bin/awaken-worker/src/lib.rs",
   "crates/bin/awaken-worker/src/lifecycle.rs",
-]
-proof_harnesses = [
-  "observation_publication_budget_is_strict_and_overflow_safe",
 ]
 production_entrypoints = [
   "crates/bin/awaken-worker/src/credential_liveness/observation_budget.rs",

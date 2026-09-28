@@ -3,14 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-runtime-contract/src/permission.rs",
   "crates/runtime/awaken-runtime/src/permission.rs",
   "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
-]
-proof_harnesses = [
-  "tool_capability_intersection_never_widens_configured_authority",
-  "permission_verdict_projects_to_exact_non_widening_gate_outcome",
-  "every_gate_outcome_has_one_exact_audit_label",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/permission.rs",

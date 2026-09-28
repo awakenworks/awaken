@@ -1646,6 +1646,7 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// @obligation session.cleanup_completion_requires_exact_identity_and_canonical_artifact_evidence
     #[kani::proof]
     fn session_cleanup_completion_requires_every_identity_axis() {
         let artifact_effects_unique = kani::any::<bool>();
@@ -1670,6 +1671,8 @@ mod verification {
         );
     }
 
+    /// @obligation session.cleanup_operation_advances_exactly_and_completed_is_absorbing
+    /// @obligation session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
     #[kani::proof]
     fn session_cleanup_phase_advances_only_not_requested_fenced_requested_completed() {
         let current_code = kani::any::<u8>();

@@ -5,12 +5,7 @@ tcb_assumptions = [
   "external.mcp_busy_acp_revocation_propagation_and_process_termination",
   "external.provider_revocation_propagation",
 ]
-evidence = [
-  "crates/control/awaken-credential-vault/src/lib.rs",
-]
-proof_harnesses = [
-  "disabled_credential_pool_members_are_never_eligible",
-]
+evidence = []
 production_entrypoints = [
   "crates/control/awaken-credential-vault/src/lib.rs",
 ]

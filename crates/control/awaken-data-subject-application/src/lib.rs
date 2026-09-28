@@ -296,6 +296,7 @@ mod verification {
         }
     }
 
+    /// @obligation consent.any_withdrawal_vetoes_full_capture
     #[kani::proof]
     fn any_withdrawal_vetoes_full_content_capture() {
         let statuses = [
@@ -312,6 +313,7 @@ mod verification {
         }
     }
 
+    /// @obligation consent.upsert_retains_one_purpose_row
     #[kani::proof]
     fn consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose() {
         let existing_match = [kani::any::<bool>(), kani::any(), kani::any()];
@@ -322,6 +324,7 @@ mod verification {
         assert_eq!(retained_matches + 1, 1);
     }
 
+    /// @obligation consent.erasure_withdrawal_is_absorbing
     #[kani::proof]
     fn erasure_withdrawal_is_absorbing_and_idempotent() {
         let first = erased_consent_status(status(kani::any()));
@@ -330,6 +333,8 @@ mod verification {
         assert_eq!(second, ConsentStatus::Withdrawn);
     }
 
+    /// @obligation data_subject.revision_is_monotonic
+    /// @obligation data_subject.revision_is_strict_or_exhausted
     #[kani::proof]
     fn revision_advance_is_strict_or_explicitly_exhausted() {
         // Cause/effect decision table: C1 current={0..u64::MAX-1,u64::MAX};
@@ -344,6 +349,7 @@ mod verification {
         }
     }
 
+    /// @obligation data_subject.stale_writer_never_applies
     #[kani::proof]
     fn stale_data_subject_writer_is_never_admitted() {
         // Cause/effect decision table: C1 stored revision equals/differs from

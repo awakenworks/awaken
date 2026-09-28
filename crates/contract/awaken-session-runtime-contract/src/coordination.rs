@@ -303,6 +303,9 @@ pub fn session_agent_report_text(messages: &[Message], run_id: &RunId) -> String
 }
 
 #[cfg(kani)]
+/// @obligation session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
+/// @obligation session.agent_message_missing_lifecycle_projection_relinquishes_without_settlement
+/// @obligation session.agent_message_target_boundary_not_source_receipt_settles_activity
 #[kani::proof]
 fn session_agent_boundary_requires_a_visible_committed_target() {
     use awaken_agent_contract::agent::run::EndCause;

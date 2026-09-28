@@ -28,6 +28,7 @@ mod verification {
     // when every dimension appears somewhere in the union of profiles. R3 an
     // envelope-required profile never admits an unsealed request. This proves
     // the production kernel; actual profile composition/codec is tested in Rust.
+    /// @obligation credential.material_profile_admission_preserves_complete_tuples
     #[kani::proof]
     fn credential_profile_admission_requires_one_complete_material_tuple() {
         let present: bool = kani::any();

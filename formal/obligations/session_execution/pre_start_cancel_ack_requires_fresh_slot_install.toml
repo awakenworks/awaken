@@ -9,10 +9,6 @@ evidence = [
   "crates/contract/awaken-run-ingress-contract/src/dispatch.rs",
   "crates/server/awaken-run-ingress/src/worker/physical_attempt.rs",
   "crates/server/awaken-run-ingress/tests/lease_semantics.rs",
-  "crates/contract/awaken-run-ingress-contract/src/dispatch/model.rs",
-]
-proof_harnesses = [
-  "pre_start_no_effect_ack_requires_fresh_install_admission",
 ]
 production_entrypoints = [
   "crates/contract/awaken-run-ingress-contract/src/dispatch.rs",

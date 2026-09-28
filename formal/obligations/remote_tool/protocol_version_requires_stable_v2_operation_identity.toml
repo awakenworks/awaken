@@ -7,11 +7,7 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/worker/awaken-tool-relay/src/wire.rs",
   "crates/worker/awaken-tool-relay/src/serve.rs",
-]
-proof_harnesses = [
-  "hand_protocol_requires_supported_version_and_v2_operation_identity",
 ]
 production_entrypoints = [
   "crates/worker/awaken-tool-relay/src/wire.rs",

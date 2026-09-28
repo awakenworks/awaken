@@ -6,13 +6,9 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "crates/worker/awaken-sandbox-container/src/docker.rs",
   "crates/worker/awaken-sandbox-container/src/docker/removal.rs",
   "crates/worker/awaken-sandbox-container/src/docker/removal/tests.rs",
   "crates/worker/awaken-sandbox-container/tests/pairwise_docker.rs",
-]
-proof_harnesses = [
-  "docker_absence_requires_an_explicit_not_found_response",
 ]
 production_entrypoints = [
   "crates/worker/awaken-sandbox-container/src/docker.rs",

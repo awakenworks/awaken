@@ -11,12 +11,8 @@ evidence = [
   "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
   "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
   "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation/ordinary_reconciliation_gate.rs",
   "crates/server/awaken-session-application/src/tests/resource_resume.rs",
   "crates/server/awaken-session-application/src/tests/realization.rs",
-]
-proof_harnesses = [
-  "terminal_session_never_enters_ordinary_resource_reconciliation",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",

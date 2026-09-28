@@ -107,6 +107,7 @@ mod proofs {
     use super::*;
     use awaken_agent_contract::agent::run::Failure;
 
+    /// @obligation protocol_adapter.a2a_task_state_projection_is_total_exact_and_non_strengthening
     #[kani::proof]
     fn a2a_task_state_projection_is_total_exact_and_non_strengthening() {
         let tag: u8 = kani::any();

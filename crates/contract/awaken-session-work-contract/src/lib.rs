@@ -476,6 +476,7 @@ fn proof_representative_lease(
 }
 
 #[cfg(kani)]
+/// @obligation session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 #[kani::proof]
 fn exact_session_work_receipt_rejects_every_changed_coordinate() {
     // The receipt is minted through the one production door from a bounded
@@ -616,6 +617,7 @@ pub const fn session_work_revival_is_authorized(
 }
 
 #[cfg(kani)]
+/// @obligation session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
 #[kani::proof]
 fn stopped_session_work_is_revived_only_by_a_claimed_nonterminal_run() {
     let session_is_terminal: bool = kani::any();
@@ -1318,6 +1320,7 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
     #[kani::proof]
     fn session_work_effect_requires_not_required_scope_or_exact_owner() {
         // Complete policy domain, entered through the production wrapper so the
@@ -1359,18 +1362,21 @@ mod verification {
         }
     }
 
+    /// @obligation work.single_active_claim
     #[kani::proof]
     fn only_queued_work_is_claimable() {
         let state = symbolic_state(kani::any());
         assert_eq!(state.is_claimable(), state == WorkState::Queued);
     }
 
+    /// @obligation work.heartbeat_compare_and_set
     #[kani::proof]
     fn only_active_work_accepts_lease_extension() {
         let state = symbolic_state(kani::any());
         assert_eq!(state.can_extend_lease(), state == WorkState::Active);
     }
 
+    /// @obligation work.heartbeat_compare_and_set
     #[kani::proof]
     fn work_lease_mutation_requires_present_exact_authority_and_matching_condition() {
         let present = kani::any::<bool>();
@@ -1384,6 +1390,7 @@ mod verification {
         assert_eq!(decision == WorkLeaseMutationAdmission::NotFound, !present);
     }
 
+    /// @obligation session_work.release_requires_exact_owner_and_epoch
     #[kani::proof]
     fn session_work_release_requires_exact_owner_and_epoch() {
         // Same complete C1-C5/E1-E3 table as the native test. The asserted
@@ -1407,6 +1414,7 @@ mod verification {
         );
     }
 
+    /// @obligation work.terminal_lease_clear
     #[kani::proof]
     fn stop_is_absorbing_for_every_work_state() {
         let state = symbolic_state(kani::any());
@@ -1414,6 +1422,7 @@ mod verification {
         assert_eq!(state.after_stop().after_stop(), WorkState::Stopped);
     }
 
+    /// @obligation work.pre_heartbeat_worker_identity
     #[kani::proof]
     fn first_heartbeat_is_authorized_exactly_once() {
         let first = HeartbeatCondition::First;
@@ -1421,6 +1430,7 @@ mod verification {
         assert!(!first.permits(Some("already-recorded")));
     }
 
+    /// @obligation work.heartbeat_compare_and_set
     #[kani::proof]
     fn matching_heartbeat_rejects_every_other_receipt() {
         let matching = HeartbeatCondition::Matching("expected".into());
@@ -1431,6 +1441,7 @@ mod verification {
 }
 
 #[cfg(kani)]
+/// @obligation session_time.utc_projection_domain_is_total_exact_and_idempotent
 #[kani::proof]
 fn session_utc_projection_domain_is_total_exact_and_idempotent() {
     // D1 negative -> epoch; D2 legal -> exact; D3 overflow -> last UTC instant.

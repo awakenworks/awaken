@@ -180,6 +180,7 @@ pub(crate) fn parse_progress(params: &Value) -> Option<(i64, McpProgressUpdate)>
 mod proofs {
     use super::*;
 
+    /// @obligation mcp.notification_admission_is_exact_and_unknown_fails_closed
     #[kani::proof]
     fn notification_admission_is_exact_and_unknown_fails_closed() {
         let bytes: [u8; MAX_NOTIFICATION_METHOD_LEN] = kani::any();

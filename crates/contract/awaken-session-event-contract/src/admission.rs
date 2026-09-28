@@ -83,6 +83,9 @@ pub const fn resolve_session_event_batch_admission(
 }
 
 #[cfg(kani)]
+/// @obligation session_event_batch.exact_retry_replays_and_changed_retry_conflicts
+/// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+/// @obligation session_event_batch.idempotency_key_appends_at_most_once
 #[kani::proof]
 fn session_event_batch_admission_resolution_is_total_closed_and_append_once() {
     // Decision table causes: C1 retry identity exists; C2 fingerprint matches;

@@ -7,13 +7,8 @@ tcb_assumptions = [
 evidence = [
   "crates/contract/awaken-session-event-contract/src/lib.rs",
   "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/server/awaken-protocol-managed/src/state/events.rs",
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
   "crates/server/awaken-protocol-managed/tests/adapter.rs",
-]
-proof_harnesses = [
-  "inbound_admission_receipt_is_stable_across_processing_races",
-  "inbound_order_is_fixed_before_effect_observation",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-event-contract/src/lib.rs",

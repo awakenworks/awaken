@@ -231,6 +231,7 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation worker.placement_extension_cannot_widen_eligibility
 #[kani::proof]
 fn placement_extension_admits_only_allowed_unique_identity() {
     // Symbolic form of the unit decision table: all four C1/C2 combinations

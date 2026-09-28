@@ -5,10 +5,6 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/LiveInbox.tla",
   "formal/tla/LiveInboxProof.tla",
-  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
-]
-proof_harnesses = [
-  "rejected_live_inbox_reorder_is_an_atomic_stutter",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/live_inbox.rs",

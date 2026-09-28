@@ -26,6 +26,8 @@ def formal_gate_initialization(root: Path) -> str:
 
 
 SCRIPT_REFERENCE = re.compile(r"scripts/ci/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)*")
+# `import name` / `from name import ...` of a module beside the importer.
+PYTHON_IMPORT = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 
 # Entry points the fixture executes, plus the data files they read that no
 # script names in its own text.
@@ -46,8 +48,10 @@ def fixture_sources() -> list[str]:
     """Every repository file the fixture's entry scripts can reach.
 
     Each copied script is scanned for `scripts/ci/...` paths and those are
-    copied too, transitively. A script that grows a dependency therefore
-    brings it into the fixture by itself; nothing has to be remembered here.
+    copied too, transitively; a Python script's imports of a sibling module
+    are dependencies of the same kind. A script that grows a dependency
+    therefore brings it into the fixture by itself; nothing has to be
+    remembered here.
     """
 
     pending = list(FIXTURE_ROOTS)
@@ -60,8 +64,15 @@ def fixture_sources() -> list[str]:
         if (ROOT / relative).suffix in {".patch", ".c", ".rs", ".toml"}:
             continue
         text = (ROOT / relative).read_text(encoding="utf-8", errors="ignore")
-        pending.extend(reference for reference in SCRIPT_REFERENCE.findall(text)
-                       if reference not in seen)
+        references = SCRIPT_REFERENCE.findall(text)
+        if relative.endswith(".py"):
+            parent = Path(relative).parent
+            references += [
+                (parent / f"{module}.py").as_posix()
+                for module in PYTHON_IMPORT.findall(text)
+                if (ROOT / parent / f"{module}.py").is_file()
+            ]
+        pending.extend(reference for reference in references if reference not in seen)
     return sorted(seen)
 
 

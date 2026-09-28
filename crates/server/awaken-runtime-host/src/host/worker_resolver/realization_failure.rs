@@ -29,6 +29,7 @@ pub(super) const fn session_realization_worker_effect(
 }
 
 #[cfg(kani)]
+/// @obligation session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 #[kani::proof]
 fn session_realization_control_disposition_projects_exact_worker_effect() {
     let selector = kani::any::<u8>() % 3;

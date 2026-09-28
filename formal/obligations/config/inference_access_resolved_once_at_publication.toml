@@ -11,18 +11,11 @@ evidence = [
   "formal/tla/InferenceAccessPublication.tla",
   "formal/tla/InferenceAccessPublication.cfg",
   "docs/adr/0062-published-inference-access-and-runtime-credential-injection.md",
-  "crates/control/awaken-config-service/src/publication.rs",
   "crates/control/awaken-config-service/src/config_service/publication_tests.rs",
   "crates/control/awaken-control/src/model_publication.rs",
-  "crates/contract/awaken-runtime-contract/src/model_routing.rs",
   "crates/contract/awaken-runtime-contract/src/resolved.rs",
   "crates/server/awaken-credential-materializer/src/inference.rs",
   "scripts/ci/_service_data_ownership_fitness.py",
-]
-proof_harnesses = [
-  "publication_resolution_invokes_exactly_one_owner",
-  "fallback_selection_preserves_the_complete_publication_pin",
-  "every_route_pin_axis_participates_in_exact_identity",
 ]
 production_entrypoints = [
   "crates/control/awaken-config-service/src/publication.rs",

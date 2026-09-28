@@ -74,6 +74,7 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation tool.discovery_limit
 #[kani::proof]
 fn every_u8_is_admitted_exactly_when_it_is_within_the_search_limit() {
     let value: u8 = kani::any();

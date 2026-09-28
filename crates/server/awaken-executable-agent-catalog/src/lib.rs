@@ -133,6 +133,7 @@ fn check_current_lifecycle_disposition(
 }
 
 #[cfg(kani)]
+/// @obligation config_activation.installed_generation_never_rolls_back
 #[kani::proof]
 fn installed_lifecycle_revision_never_rolls_back() {
     // No assumptions or stubs: exhaust the complete Option<u64> current domain,

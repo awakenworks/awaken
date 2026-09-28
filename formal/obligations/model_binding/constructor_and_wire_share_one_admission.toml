@@ -3,16 +3,12 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs",
   "crates/contract/awaken-runtime-contract/src/resolved.rs",
   "scripts/ci/check_crate_boundaries.py",
   "crates/contract/awaken-runtime-contract/src/llm.rs",
   "crates/contract/awaken-runtime-contract/tests/model_binding_projection.rs",
   "crates/server/awaken-credential-materializer/src/inference.rs",
   "crates/server/awaken-credential-materializer/src/brokered_inference.rs",
-]
-proof_harnesses = [
-  "model_binding_admission_is_exactly_the_documented_rule_table",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs",

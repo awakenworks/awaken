@@ -38,6 +38,7 @@ pub(super) fn stable_message_id(
 mod verification {
     use super::*;
 
+    /// @obligation remote_attempt.replay_uses_stable_message_identity
     #[kani::proof]
     fn a2a_message_identity_rejects_only_resume_without_committed_correlation() {
         // Causes: C1 initial versus resume message; C2 a non-empty committed

@@ -11,12 +11,8 @@ evidence = [
   "crates/runtime/awaken-store-inmem/src/lib.rs",
   "crates/stores/awaken-store-fs/src/lib.rs",
   "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
   "crates/stores/awaken-store-postgres/src/migrations/V0002__transactional_dense_commit_order.sql",
   "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
-]
-proof_harnesses = [
-  "dense_commit_sequence_is_exact_nonnegative_and_nonwrapping",
 ]
 production_entrypoints = [
   "crates/stores/awaken-store-conformance/src/lib.rs",

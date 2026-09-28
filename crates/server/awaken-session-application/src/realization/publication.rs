@@ -78,6 +78,7 @@ pub(super) fn publication_action(
 }
 
 #[cfg(kani)]
+/// @obligation session_realization.publication_excludes_staged_retired_generation
 #[kani::proof]
 fn realization_publication_selects_only_unacknowledged_active_generation() {
     // Cause/effect decision table: C1 state is Requested, Realizing, Active,

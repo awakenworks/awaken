@@ -254,6 +254,9 @@ impl PendingManagedCredentialMutation {
 }
 
 #[cfg(kani)]
+/// @obligation credential.failed_create_compensates_material
+/// @obligation credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+/// @obligation credential.restart_recovery_compensates_unpublished_material
 #[kani::proof]
 fn credential_reclamation_never_deletes_shared_or_live_predecessor_material() {
     // C1 all phases, C2 distinct replacement, C3 independent membership in
@@ -282,6 +285,10 @@ fn credential_reclamation_never_deletes_shared_or_live_predecessor_material() {
 }
 
 #[cfg(kani)]
+/// @obligation credential.failed_create_compensates_material
+/// @obligation credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+/// @obligation credential.material_is_always_published_or_intent_tracked
+/// @obligation credential.restart_recovery_compensates_unpublished_material
 #[kani::proof]
 fn credential_cleanup_requires_exact_authority_and_phase_truth() {
     // Causes: all four phases, exact intent identity, published/unpublished

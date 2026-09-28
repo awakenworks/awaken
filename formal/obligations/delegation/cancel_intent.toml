@@ -8,14 +8,8 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/RuntimeSystemProof.tla",
   "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
-  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
-  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
   "crates/runtime/awaken-runtime/tests/delegation.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "cancellation_delivery_is_enabled_only_by_durable_intent",
-  "child_cancellation_effect_requires_committed_intent",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/agent/delegation.rs",

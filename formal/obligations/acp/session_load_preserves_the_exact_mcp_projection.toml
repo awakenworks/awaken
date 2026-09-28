@@ -6,10 +6,6 @@ tcb_assumptions = [
 ]
 evidence = [
   "crates/server/awaken-protocol-acp/src/jsonrpc.rs",
-  "crates/server/awaken-protocol-acp/src/jsonrpc/mcp.rs",
-]
-proof_harnesses = [
-  "acp_session_load_preserves_the_exact_mcp_projection",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-acp/src/jsonrpc.rs",

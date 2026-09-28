@@ -3,12 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-resource-contract/src/registry.rs",
   "crates/stores/awaken-resource-store/src/sqlite_registry.rs",
   "crates/stores/awaken-resource-store/src/postgres_registry.rs",
-]
-proof_harnesses = [
-  "portable_aggregate_revision_is_strictly_monotonic_and_never_wraps",
 ]
 production_entrypoints = [
   "crates/contract/awaken-resource-contract/src/registry.rs",

@@ -2,12 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/server/awaken-protocol-a2a/src/encoder.rs",
-]
-proof_harnesses = [
-  "a2a_task_state_projection_is_total_exact_and_non_strengthening",
-]
+evidence = []
 production_entrypoints = [
   "crates/server/awaken-protocol-a2a/src/encoder.rs",
 ]

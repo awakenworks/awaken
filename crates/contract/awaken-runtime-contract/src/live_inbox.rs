@@ -784,6 +784,7 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// @obligation live_inbox.close_is_absorbing
     #[kani::proof]
     fn live_inbox_closed_lifecycle_is_absorbing_for_every_mutation() {
         let lifecycle = if kani::any::<bool>() {
@@ -805,6 +806,7 @@ mod verification {
         assert_eq!(next.close(), InboxLifecycle::Closed);
     }
 
+    /// @obligation live_inbox.reorder_is_exact_and_rejection_stutters
     #[kani::proof]
     #[kani::unwind(8)]
     fn rejected_live_inbox_reorder_is_an_atomic_stutter() {
@@ -820,6 +822,7 @@ mod verification {
         }
     }
 
+    /// @obligation live_inbox.identity_is_monotonic
     #[kani::proof]
     fn live_inbox_identity_advances_strictly_or_exhausts() {
         let current = kani::any::<u64>();
@@ -832,6 +835,7 @@ mod verification {
         }
     }
 
+    /// @obligation live_inbox.retired_message_never_reappears
     #[kani::proof]
     fn retired_live_inbox_identity_is_never_reissued() {
         // Causes: R1 retired <= current frontier and current < MAX; R2 retired
@@ -856,6 +860,7 @@ mod verification {
         }
     }
 
+    /// @obligation live_inbox.replace_preserves_identity_and_order
     #[kani::proof]
     fn live_inbox_replace_preserves_identity_and_order() {
         // Causes: P1 target is key 1/2/3; P2 target is every other u8. Effects:
@@ -896,6 +901,7 @@ mod verification {
         }
     }
 
+    /// @obligation live_inbox.boundary_drain_retires_exactly_the_returned_best_effort_fold
     #[kani::proof]
     fn live_inbox_boundary_drain_retires_exactly_the_queue() {
         // Cause: D1 the bounded non-empty queue contains three arbitrary

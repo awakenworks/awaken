@@ -419,6 +419,7 @@ const fn artifact_receipt_admitted(evidence: ArtifactReceiptEvidence) -> bool {
 }
 
 #[cfg(kani)]
+/// @obligation resource_catalog.artifact_publication_receipt_requires_exact_publication_identity
 #[kani::proof]
 fn artifact_publication_receipt_requires_every_identity_axis() {
     let evidence = ArtifactReceiptEvidence {

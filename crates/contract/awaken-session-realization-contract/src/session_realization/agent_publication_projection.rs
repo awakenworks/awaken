@@ -13,6 +13,7 @@ fn replace_if_changed<T: PartialEq>(current: &mut T, next: T) -> bool {
 }
 
 #[cfg(kani)]
+/// @obligation agent_profile.effective_publication_field_replacement_is_exact_and_noop_preserving
 #[kani::proof]
 fn effective_publication_field_replacement_is_exact_and_noop_preserving() {
     // The actual generic field updater, instantiated over all u64 payloads.
@@ -227,6 +228,7 @@ pub fn legacy_agent_publication_decision(
 }
 
 #[cfg(kani)]
+/// @obligation agent_profile.worker_projection_requires_exact_frozen_publication
 #[kani::proof]
 fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
     let has_frozen_revision: bool = kani::any();

@@ -3,11 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-provisioning-contract/src/claimed_effect.rs",
   "crates/worker/awaken-sandbox-local/src/abandoned_realization.rs",
-]
-proof_harnesses = [
-  "claim_retention_runs_once_only_for_an_unsettled_drop",
 ]
 production_entrypoints = [
   "crates/contract/awaken-provisioning-contract/src/claimed_effect.rs",

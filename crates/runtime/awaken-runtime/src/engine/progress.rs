@@ -268,6 +268,7 @@ impl StepLedger {
 mod verification {
     use super::{WatermarkRegression, advance_durable_watermark, resume_commit_is_coherent};
 
+    /// @obligation checkpoint.durable_watermark_never_rolls_back
     #[kani::proof]
     fn durable_watermark_successor_is_exact_or_rejected_without_rollback() {
         let current = kani::any::<usize>();
@@ -286,6 +287,7 @@ mod verification {
         }
     }
 
+    /// @obligation tool_result.resume_receipt_is_atomic_with_ticket_consumption
     #[kani::proof]
     fn a_resume_receipt_requires_consumption_of_the_exact_ticket() {
         // Causes: exact/foreign Thread, exact/foreign Run and retention/removal

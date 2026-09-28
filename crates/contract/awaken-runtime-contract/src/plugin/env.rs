@@ -337,6 +337,7 @@ fn topological_order(
 mod kani_proofs {
     use super::{PluginActivationDecision, plugin_activation_decision};
 
+    /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
     #[kani::proof]
     fn plugin_activation_is_exactly_the_requested_identity() {
         let selected: bool = kani::any();
@@ -345,6 +346,7 @@ mod kani_proofs {
         assert_eq!(decision == PluginActivationDecision::Inactive, !selected);
     }
 
+    /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
     #[kani::proof]
     fn plugin_activation_requires_every_declared_dependency() {
         let dependency_present: bool = kani::any();
@@ -359,6 +361,7 @@ mod kani_proofs {
         );
     }
 
+    /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
     #[kani::proof]
     fn plugin_activation_never_widens_the_capability_bound() {
         let capability_within_bound: bool = kani::any();
@@ -373,6 +376,7 @@ mod kani_proofs {
         );
     }
 
+    /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
     #[kani::proof]
     fn plugin_activation_never_admits_a_duplicate_identity() {
         let unique: bool = kani::any();

@@ -378,6 +378,7 @@ mod tests {
 mod verification {
     use super::service_token_retry_enabled;
 
+    /// @obligation service_auth.token_rotation_fails_closed_and_retries_only_a_changed_token
     #[kani::proof]
     fn service_token_retry_is_enabled_only_for_an_exact_changed_token() {
         let attempted: [u8; 32] = kani::any();

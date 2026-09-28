@@ -4,13 +4,9 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/McpServer.tla",
-  "crates/server/awaken-mcp-server-core/src/http.rs",
   "crates/server/awaken-mcp-server-core/tests/protocol_state_machine.rs",
   "crates/server/awaken-mcp-server-testkit/src/lib.rs",
   "crates/server/awaken-protocol-mcp/tests/http_transport_conformance.rs",
-]
-proof_harnesses = [
-  "sessionless_http_lifecycle_routes_each_method_to_its_exact_action",
 ]
 production_entrypoints = [
   "crates/server/awaken-mcp-server-core/src/http.rs",

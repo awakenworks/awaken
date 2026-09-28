@@ -4,12 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
-evidence = [
-  "crates/control/awaken-data-subject-application/src/lib.rs",
-]
-proof_harnesses = [
-  "erasure_withdrawal_is_absorbing_and_idempotent",
-]
+evidence = []
 production_entrypoints = [
   "crates/control/awaken-data-subject-application/src/lib.rs",
 ]

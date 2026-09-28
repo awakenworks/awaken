@@ -1254,6 +1254,7 @@ pub fn map_usage(usage: &Usage) -> TokenUsage {
 mod verification {
     use super::*;
 
+    /// @obligation credential_probe.tri_state_is_total_and_fail_safe
     #[kani::proof]
     fn credential_probe_tri_state_is_total_and_fail_safe() {
         let succeeded = kani::any::<bool>();

@@ -35,16 +35,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
-# Input set: the profile and every obligation file. Each gate that loads the
-# ledger spells the same two globs in its own INPUT_GLOBS.
-INPUT_GLOBS: tuple[str, ...] = ("formal/coverage.toml", "formal/obligations/**/*")
+import formal_anchors
+from formal_sources import SourceError, detached_git_environment, source_text
+
+# Input set: the profile, every obligation file, and the Rust sources and Cargo
+# manifests whose anchors name the harness of each obligation. Each gate that
+# loads the ledger spells the same globs in its own INPUT_GLOBS.
+INPUT_GLOBS: tuple[str, ...] = (
+    "formal/coverage.toml",
+    "formal/obligations/**/*",
+    "crates/**/*.rs",
+    "crates/**/Cargo.toml",
+)
 
 # Consumers of these names: ``load``/``files``/``write`` below.
 PROFILE_FILE = "formal/coverage.toml"
@@ -54,105 +62,16 @@ OBLIGATION_PATH = re.compile(
     r"formal/obligations/(?P<prefix>[a-z0-9_]+)/(?P<name>[a-z0-9_]+)\.toml"
 )
 SCALAR_FIELDS = ("claim_scope", "proof_grade", "status")
-ARRAY_FIELDS = ("tcb_assumptions", "evidence", "proof_harnesses", "production_entrypoints")
+# Stored in the obligation file. ``proof_harnesses`` is not: it is derived from
+# the `/// @obligation` anchors, and so is the evidence entry for each harness
+# file. Every array is a set; the assembled ledger lists it sorted.
+ARRAY_FIELDS = ("tcb_assumptions", "evidence", "production_entrypoints")
+SET_FIELDS = (*ARRAY_FIELDS, "proof_harnesses")
 PROFILE_KEYS = ("metric", "minimum_ratio", "verified_profile")
 
 
 class LedgerError(ValueError):
     """The stored ledger cannot be assembled into the v1 shape."""
-
-
-# --------------------------------------------------------------------------
-# Reading: staged truth in a repository, the files on disk otherwise.
-
-
-# Git exports these to a hook. They name the repository being committed, not
-# whichever directory a checker happens to read -- a fixture tree under /tmp
-# would otherwise be judged against the hook's repository and index.
-_REPOSITORY_ENVIRONMENT = (
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
-    "GIT_CEILING_DIRECTORIES",
-)
-
-
-def detached_git_environment() -> dict[str, str]:
-    """The environment with every repository-selecting Git variable removed.
-
-    Consumers: repository discovery below, and fixtures that run Git in a
-    temporary tree while a hook's variables are exported.
-    """
-
-    return {key: value for key, value in os.environ.items() if key not in _REPOSITORY_ENVIRONMENT}
-
-
-def _repository_environment(root: Path) -> dict[str, str] | None:
-    """How to read ``root``'s index, or None when ``root`` is not a work-tree top.
-
-    The repository is discovered from ``root`` alone. When a hook exported
-    GIT_DIR for that same repository, its GIT_INDEX_FILE is the index being
-    committed and is honoured; a hook's variables for any other repository are
-    dropped.
-    """
-
-    clean = detached_git_environment()
-    try:
-        found = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel", "--absolute-git-dir"], cwd=root, text=True,
-            capture_output=True, check=False, env=clean,
-        )
-    except OSError:
-        return None
-    lines = found.stdout.splitlines()
-    if found.returncode != 0 or len(lines) != 2 or Path(lines[0]).resolve() != root.resolve():
-        return None
-    exported = os.environ.get("GIT_DIR")
-    if exported is not None and Path(exported).resolve() == Path(lines[1]).resolve():
-        return dict(os.environ)
-    return clean
-
-
-def _staged_text(root: Path, pattern: str, environment: dict[str, str]) -> dict[str, str]:
-    """Every staged text file under ``pattern`` (a pathlib-style glob)."""
-
-    # Every line of every matching staged blob, as `path NUL line NUL text`.
-    # The flags are explicit so a user's grep.* configuration cannot change
-    # the record shape or the pattern language.
-    result = subprocess.run(
-        ["git", "grep", "--cached", "--no-color", "--basic-regexp", "-I", "-z", "-n",
-         "--full-name", "-e", "^", "--", f":(glob){pattern}"],
-        cwd=root, capture_output=True, check=False, env=environment,
-    )
-    if result.returncode not in (0, 1):
-        raise LedgerError(
-            f"git grep --cached {pattern} failed: {result.stderr.decode(errors='replace').strip()}"
-        )
-    lines: dict[str, list[str]] = {}
-    for record in result.stdout.decode("utf-8").split("\n")[:-1]:
-        path, _, rest = record.partition("\0")
-        _, _, text = rest.partition("\0")
-        lines.setdefault(path, []).append(text + "\n")
-    return {path: "".join(body) for path, body in lines.items()}
-
-
-def _worktree_text(root: Path, pattern: str) -> dict[str, str]:
-    return {
-        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
-        for path in sorted(root.glob(pattern))
-        if path.is_file()
-    }
-
-
-def source_text(root: Path, pattern: str) -> dict[str, str]:
-    """The text of every file under ``pattern``: staged in a repository, on disk otherwise.
-
-    Consumers: ``load`` and the source-anchor scans that assemble the ledger.
-    """
-
-    environment = _repository_environment(root)
-    if environment is None:
-        return _worktree_text(root, pattern)
-    return _staged_text(root, pattern, environment)
 
 
 # --------------------------------------------------------------------------
@@ -225,15 +144,84 @@ def present(root: Path) -> bool:
     )
 
 
+def _anchored(root: Path, rows: dict[str, dict]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Obligation id -> harness names, and -> harness files, from the anchors.
+
+    Refuses every orphan by source location: an anchor outside a harness
+    block, an anchor naming no obligation file, a harness serving no
+    obligation, a repeated anchor, and two harnesses with one name.
+    """
+
+    scan = formal_anchors.scan(root)
+    errors = list(scan.errors)
+    errors += [
+        f"{anchor.where}: @{anchor.tag} is not in the attribute block of a #[kani::proof] fn "
+        "(dangling anchor)"
+        for anchor in scan.dangling
+    ]
+    harnesses: dict[str, set[str]] = {}
+    paths: dict[str, set[str]] = {}
+    defined: dict[str, formal_anchors.Harness] = {}
+    for harness in scan.harnesses:
+        if harness.name in defined:
+            errors.append(
+                f"{harness.where}: Kani harness {harness.name} is also defined at "
+                f"{defined[harness.name].where}; a harness name is its identity"
+            )
+        defined.setdefault(harness.name, harness)
+        served = harness.values("obligation")
+        if not served:
+            errors.append(
+                f"{harness.where}: Kani harness {harness.name} serves no obligation; "
+                "add `/// @obligation <prefix>.<name>` beside its #[kani::proof]"
+            )
+        seen: set[str] = set()
+        for anchor in served:
+            if anchor.value in seen:
+                errors.append(f"{anchor.where}: duplicate @obligation {anchor.value} on {harness.name}")
+            seen.add(anchor.value)
+            if anchor.value not in rows:
+                prefix, _, name = anchor.value.partition(".")
+                errors.append(
+                    f"{anchor.where}: @obligation {anchor.value!r} names no obligation file "
+                    f"{OBLIGATION_DIRECTORY}/{prefix}/{name}.toml"
+                )
+                continue
+            harnesses.setdefault(anchor.value, set()).add(harness.name)
+            paths.setdefault(anchor.value, set()).add(harness.path)
+    if errors:
+        raise LedgerError("\n".join(sorted(set(errors))))
+    return harnesses, paths
+
+
 def load(root: Path) -> dict:
     """Assemble the coverage ledger of ``root`` in its v1 shape."""
 
-    profile = source_text(root, PROFILE_FILE)
-    obligations = source_text(root, f"{OBLIGATION_DIRECTORY}/**/*")
-    ledger = _profile(profile.get(PROFILE_FILE))
-    ledger["obligations"] = [
-        _obligation(relative, text) for relative, text in sorted(obligations.items())
-    ]
+    try:
+        profile = source_text(root, PROFILE_FILE)
+        stored = source_text(root, f"{OBLIGATION_DIRECTORY}/**/*")
+        ledger = _profile(profile.get(PROFILE_FILE))
+        rows = {
+            row["id"]: row
+            for row in (_obligation(relative, text) for relative, text in sorted(stored.items()))
+        }
+        harnesses, paths = _anchored(root, rows)
+    except SourceError as error:
+        raise LedgerError(str(error)) from error
+    for identifier, row in rows.items():
+        if identifier in harnesses:
+            row["proof_harnesses"] = sorted(harnesses[identifier])
+            row["evidence"] = sorted(set(row.get("evidence", [])) | paths[identifier])
+        elif row.get("proof_grade") == "production_kernel_proved":
+            raise LedgerError(
+                f"{OBLIGATION_DIRECTORY}/{identifier.replace('.', '/', 1)}.toml: {identifier} "
+                "production-kernel grade has no Kani harness; anchor one with "
+                f"`/// @obligation {identifier}`"
+            )
+        for key in ARRAY_FIELDS:
+            if key in row:
+                row[key] = sorted(row[key])
+    ledger["obligations"] = list(rows.values())
     return ledger
 
 
@@ -295,9 +283,22 @@ def render_profile(ledger: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def files(ledger: dict) -> dict[str, str]:
-    """The stored form of an assembled ledger: repository path -> text."""
+def files(ledger: dict, root: Path | None = None) -> dict[str, str]:
+    """The stored form of an assembled ledger: repository path -> text.
 
+    What the anchors under ``root`` already state -- each obligation's harness
+    names and harness files -- is left out, since ``load`` derives it. A row
+    whose ``proof_harnesses`` differ from those anchors cannot be stored: the
+    anchor is where that fact is written.
+    """
+
+    harnesses: dict[str, set[str]] = {}
+    paths: dict[str, set[str]] = {}
+    if root is not None:
+        for harness in formal_anchors.scan(root).harnesses:
+            for anchor in harness.values("obligation"):
+                harnesses.setdefault(anchor.value, set()).add(harness.name)
+                paths.setdefault(anchor.value, set()).add(harness.path)
     stored = {PROFILE_FILE: render_profile(ledger)}
     for row in ledger["obligations"]:
         prefix, dot, name = str(row["id"]).partition(".")
@@ -306,7 +307,17 @@ def files(ledger: dict) -> dict[str, str]:
             raise LedgerError(f"obligation id {row['id']!r} is not <prefix>.<name> in lower_snake_case")
         if relative in stored:
             raise LedgerError(f"duplicate obligation id {row['id']}")
-        stored[relative] = render_obligation(row)
+        declared = set(row.get("proof_harnesses", []))
+        if declared != harnesses.get(row["id"], set()):
+            raise LedgerError(
+                f"{row['id']}: proof_harnesses {sorted(declared)} differ from the "
+                f"`/// @obligation` anchors {sorted(harnesses.get(row['id'], set()))}; edit the anchors"
+            )
+        kept = dict(row)
+        kept.pop("proof_harnesses", None)
+        if "evidence" in kept:
+            kept["evidence"] = [path for path in kept["evidence"] if path not in paths.get(row["id"], set())]
+        stored[relative] = render_obligation(kept)
     return stored
 
 
@@ -317,11 +328,12 @@ def write(root: Path, ledger: dict) -> None:
     so a fixture follows the storage instead of hard-coding it.
     """
 
+    stored = files(ledger, root)
     directory = root / OBLIGATION_DIRECTORY
     if directory.is_dir():
         for path in sorted(directory.glob("**/*.toml")):
             path.unlink()
-    for relative, text in files(ledger).items():
+    for relative, text in stored.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -330,12 +342,18 @@ def write(root: Path, ledger: dict) -> None:
 def canonical_bytes(ledger: dict) -> bytes:
     """Order-independent bytes of an assembled ledger.
 
-    Obligations are ordered by id; every other list keeps its order, because a
-    list's order is part of what was declared.
+    Obligations are ordered by id and every set-valued array is sorted; the
+    bounds keep their order, because the order of a bound's text is declared.
     """
 
     ordered = dict(ledger)
-    ordered["obligations"] = sorted(ledger["obligations"], key=lambda row: row["id"])
+    ordered["obligations"] = sorted(
+        (
+            {key: sorted(value) if key in SET_FIELDS else value for key, value in row.items()}
+            for row in ledger["obligations"]
+        ),
+        key=lambda row: row["id"],
+    )
     return (json.dumps(ordered, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
 
 
@@ -344,25 +362,35 @@ def digest(ledger: dict) -> str:
 
 
 def self_test() -> None:
-    """Decision table for the storage and the reader.
+    """Decision table for the storage, the anchors and the reader.
 
-    Causes: C1 a ledger is written and read back; C2 an obligation file sits
-    at another depth or spelling; C3 it names an unknown field; C4 an array
-    repeats a value; C5 two rows claim one id; C6 claim_scope decides
-    formalizable; C7 in a repository the staged and the on-disk bytes differ;
-    C8 the same tree is not a repository; C9 a hook exported this repository
-    with the index being committed; C10 a hook exported another repository.
-    Effects: E1 load returns exactly what was written (canonically); E2 the
-    reader refuses by path; E3 load reads the staged bytes; E4 load reads disk;
-    E5 load reads the hook's index.
-    Rules: C1 => E1; C2|C3|C4|C5 => E2; C6 => formalizable == (scope ==
-    repository_safety); C7 => E3; C8 => E4; C9 => E5; C10 => E3.
+    Storage causes: C1 a ledger is written and read back; C2 an obligation
+    file sits at another depth or spelling; C3 it names an unknown field
+    (``proof_harnesses`` included: anchors own it); C4 an array repeats a
+    value; C5 two rows claim one id; C6 claim_scope decides formalizable.
+    Anchor causes: A1 an anchor outside a harness block (dangling); A2 an
+    anchor naming no obligation file; A3 a harness with no anchor; A4 one
+    harness name defined twice, or one anchor repeated; A5 a
+    production-kernel obligation no harness serves; A6 a row whose
+    proof_harnesses disagree with the anchors is stored.
+    Reader causes: C7 in a repository the staged and the on-disk bytes
+    differ; C8 the same tree is not a repository; C9 a hook exported this
+    repository with the index being committed; C10 a hook exported another.
+    Effects: E1 load returns what was written, harness names and harness
+    files derived from the anchors; E2 refusal naming the file (and line);
+    E3 load reads the staged bytes; E4 load reads disk; E5 the hook's index.
+    Rules: C1 => E1; C2|C3|C4|C5|A1..A6 => E2; C6 => formalizable ==
+    (scope == repository_safety); C7 => E3; C8 => E4; C9 => E5; C10 => E3.
     """
 
-    import shutil  # noqa: PLC0415 - only the self-test builds fixtures
+    import os  # noqa: PLC0415 - only the self-test builds fixtures
+    import shutil  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
     from unittest import mock  # noqa: PLC0415
 
+    harness_source = (
+        "#[cfg(kani)]\n/// @obligation run.safe\n#[kani::proof]\n#[kani::unwind(2)]\nfn safe() {}\n"
+    )
     rows = [
         {"id": "run.safe", "claim_scope": "repository_safety", "proof_grade": "production_kernel_proved",
          "status": "kernel_proved", "tcb_assumptions": [], "evidence": ["crates/a/src/lib.rs"],
@@ -388,7 +416,15 @@ def self_test() -> None:
 
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
+        source = root / "crates/a/src/lib.rs"
+        source.parent.mkdir(parents=True)
+        (root / "crates/a/Cargo.toml").write_text('[package]\nname = "a"\nversion = "0.0.0"\n')
+        source.write_text(harness_source)
         write(root, ledger)
+        safe = root / OBLIGATION_DIRECTORY / "run" / "safe.toml"
+        original = safe.read_text()
+        assert "proof_harnesses" not in original and "crates/a/src/lib.rs\",\n]" not in original.split(
+            "production_entrypoints")[0], "C1 derived facts are not stored"
         assert canonical_bytes(load(root)) == canonical_bytes(expected), "C1/E1 and C6"
         assert present(root) and not present(root / "formal"), "presence"
         stray = root / OBLIGATION_DIRECTORY / "run" / "deep" / "x.toml"
@@ -400,20 +436,45 @@ def self_test() -> None:
         upper.write_text('status = "external"\n')
         refused(root, "run/Upper.toml")
         upper.unlink()
-        safe = root / OBLIGATION_DIRECTORY / "run" / "safe.toml"
-        original = safe.read_text()
-        safe.write_text("formalizable = true\n" + original)
-        refused(root, "unknown field(s) formalizable")
+        for field in ("formalizable = true\n", 'proof_harnesses = ["safe"]\n'):
+            safe.write_text(field + original)
+            refused(root, f"unknown field(s) {field.split(' ')[0]}")
         repeated = '"crates/a/src/lib.rs",\n  "crates/a/src/lib.rs",\n]'
         safe.write_text(original.replace('"crates/a/src/lib.rs",\n]', repeated, 1))
-        refused(root, "evidence repeats a value")
+        refused(root, "production_entrypoints repeats a value")
         safe.write_text(original)
-        try:
-            files({"obligations": [rows[0], dict(rows[0])]})
-        except LedgerError as error:
-            assert "duplicate obligation id run.safe" in str(error), "C5/E2"
-        else:
-            raise AssertionError("C5/E2 two rows with one id were stored")
+        for broken, fragment in (
+            ({"obligations": [rows[0], dict(rows[0])]}, "duplicate obligation id run.safe"),
+            ({"obligations": [dict(rows[0], proof_harnesses=["safe", "other"])]}, "differ from the"),
+        ):
+            try:
+                files(broken, root)
+            except LedgerError as error:
+                assert fragment in str(error), ("C5/A6", str(error))
+            else:
+                raise AssertionError(f"C5/A6 stored an inexpressible ledger: {fragment}")
+
+        for text, fragment in (
+            (harness_source + "/// @obligation run.safe\nfn helper() {}\n",
+             "crates/a/src/lib.rs:6: @obligation is not in the attribute block"),
+            (harness_source.replace("run.safe", "run.missing"),
+             "crates/a/src/lib.rs:2: @obligation 'run.missing' names no obligation file "
+             "formal/obligations/run/missing.toml"),
+            (harness_source.replace("/// @obligation run.safe\n", "/// A proof.\n"),
+             "crates/a/src/lib.rs:5: Kani harness safe serves no obligation"),
+            (harness_source.replace("/// @obligation run.safe\n", "/// @obligation run.safe\n" * 2),
+             "crates/a/src/lib.rs:3: duplicate @obligation run.safe on safe"),
+        ):
+            source.write_text(text)
+            refused(root, fragment)
+        source.write_text(harness_source)
+        twin = root / "crates/a/src/twin.rs"
+        twin.write_text(harness_source)
+        refused(root, "crates/a/src/twin.rs:5: Kani harness safe is also defined at crates/a/src/lib.rs:5")
+        twin.unlink()
+        source.write_text("")
+        refused(root, "run.safe production-kernel grade has no Kani harness")
+        source.write_text(harness_source)
 
         git = ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                "-c", "core.hooksPath=/dev/null"]
@@ -422,8 +483,11 @@ def self_test() -> None:
         for arguments in (["init", "--quiet"], ["add", "."], ["commit", "--quiet", "-m", "fixture"]):
             subprocess.run([*git, *arguments], cwd=root, check=True, capture_output=True, env=detached)
         safe.write_text(original.replace('status = "kernel_proved"', 'status = "modeled_only"'))
+        source.write_text("")
         staged = {row["id"]: row for row in load(root)["obligations"]}
         assert staged["run.safe"]["status"] == "kernel_proved", "C7/E3 unstaged bytes are not the ledger"
+        assert staged["run.safe"]["proof_harnesses"] == ["safe"], "C7/E3 unstaged anchors are not the ledger"
+        source.write_text(harness_source)
         subprocess.run([*git, "add", "."], cwd=root, check=True, capture_output=True, env=detached)
         staged = {row["id"]: row for row in load(root)["obligations"]}
         assert staged["run.safe"]["status"] == "modeled_only", "C7/E3 staged bytes are the ledger"

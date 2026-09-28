@@ -43,6 +43,8 @@ pub const fn conjunctive_managed_credential_adoption_progress(
 }
 
 #[cfg(kani)]
+/// @obligation credential.managed_rollout_abstract_ack_requires_every_target_adoption
+/// @obligation credential.managed_rollout_ack_requires_converged_progress
 #[kani::proof]
 fn managed_rollout_ack_requires_converged_progress() {
     use ManagedCredentialAdoptionProgress::{Converged, Pending};
@@ -102,6 +104,7 @@ fn managed_credential_rollout_delivery_decision(
 }
 
 #[cfg(kani)]
+/// @obligation credential.managed_rollout_failure_or_busy_session_remains_pending
 #[kani::proof]
 #[kani::unwind(4)]
 fn managed_rollout_delivery_acknowledges_only_exact_convergence() {
@@ -454,6 +457,7 @@ const fn managed_retirement_parent_fence(
 }
 
 #[cfg(kani)]
+/// @obligation credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
 #[kani::proof]
 fn managed_vault_delete_fence_allows_only_absorbing_child_delete() {
     let exact_parent = kani::any::<bool>();
@@ -602,6 +606,7 @@ mod publication_proofs {
     }
 
     #[cfg(kani)]
+    /// @obligation credential.managed_creation_begin_rejects_every_published_source_or_child_identity
     #[kani::proof]
     #[kani::unwind(4)]
     fn managed_creation_begin_rejects_every_published_identity() {
@@ -623,6 +628,8 @@ mod publication_proofs {
     }
 
     #[cfg(kani)]
+    /// @obligation credential.managed_creation_publishes_source_and_child_atomically
+    /// @obligation credential.managed_rollout_outbox_is_atomic_with_exact_pair_publication
     #[kani::proof]
     #[kani::unwind(4)]
     fn managed_rollout_projection_preserves_committed_identity() {
@@ -683,6 +690,7 @@ mod publication_proofs {
     }
 
     #[cfg(kani)]
+    /// @obligation credential.rotation_revision_cas
     #[kani::proof]
     #[kani::unwind(12)]
     fn source_mutation_publication_is_exact_revision_cas() {
@@ -1089,6 +1097,7 @@ fn invalid_pending_mutation(error: ManagedCredentialMutationError) -> Credential
 }
 
 #[cfg(kani)]
+/// @obligation credential.managed_creation_pair_requires_exact_workspace_source_and_initial_lifecycle
 #[kani::proof]
 fn managed_creation_pair_requires_every_binding_axis() {
     let axes = [
@@ -1110,6 +1119,7 @@ fn managed_creation_pair_requires_every_binding_axis() {
 }
 
 #[cfg(kani)]
+/// @obligation credential.managed_mutation_requires_exact_source_and_child_successor_fences
 #[kani::proof]
 fn managed_mutation_operation_shape_is_closed_and_delete_is_absorbing() {
     let operation = kani::any::<u8>();

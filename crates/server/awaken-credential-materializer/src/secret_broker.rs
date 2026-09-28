@@ -171,6 +171,7 @@ fn credential_writeback_request(
 mod kani_proofs {
     use super::exact_vault_revision_is_admitted;
 
+    /// @obligation credential_reference.exact_revision_never_resolves_another_revision
     #[kani::proof]
     fn exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source() {
         let actual: i64 = kani::any();

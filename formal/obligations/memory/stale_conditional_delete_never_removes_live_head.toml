@@ -11,13 +11,9 @@ evidence = [
   "crates/worker/awaken-sandbox-memoryd/src/mounter.rs",
   "crates/worker/awaken-sandbox-memoryd/tests/copy_lifecycle.rs",
   "crates/contract/awaken-resource-contract/src/lib.rs",
-  "crates/resources/awaken-memory-store/src/repository.rs",
   "crates/resources/awaken-memory-store/src/sqlite.rs",
   "crates/resources/awaken-memory-store/src/postgres.rs",
   "crates/resources/awaken-memory-store/tests/conformance.rs",
-]
-proof_harnesses = [
-  "memory_conditional_delete_admission_is_exact",
 ]
 production_entrypoints = [
   "crates/contract/awaken-resource-contract/src/lib.rs",

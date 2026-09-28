@@ -164,6 +164,8 @@ fn reply_anchor_selection_covers_every_admission_cause_and_competing_order() {
 }
 
 #[cfg(kani)]
+/// @obligation session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
+/// @obligation tool_result.pending_commit_coordinate_is_exact
 #[kani::proof]
 fn managed_reply_anchor_selects_exact_fenced_commit() {
     // Same R1..R4 table as the native selector test. One symbolic fold step
@@ -408,6 +410,7 @@ fn ticket_admission_covers_all_states_cardinalities_and_identity_classes() {
 }
 
 #[cfg(kani)]
+/// @obligation tool_result.terminal_run_rejects_late_result
 #[kani::proof]
 #[kani::unwind(16)]
 fn managed_ticket_admission_preserves_terminal_and_identity_priority() {

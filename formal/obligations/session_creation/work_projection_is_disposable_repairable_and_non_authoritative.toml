@@ -8,13 +8,9 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/SessionRootProof.tla",
   "formal/tla/SessionStartProtocol.tla",
-  "crates/server/awaken-session-application/src/application.rs",
   "crates/server/awaken-session-application/src/tests/creation.rs",
   "formal/tla/SessionStartRootProof.tla",
   "formal/tla/SessionStartProtocolReachability.cfg",
-]
-proof_harnesses = [
-  "work_projection_is_derived_only_from_durable_session_truth",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/application.rs",

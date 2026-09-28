@@ -833,6 +833,7 @@ impl SessionEnvironmentOwner {
 }
 
 #[cfg(kani)]
+/// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
 #[kani::proof]
 fn durable_projection_identity_is_exact_or_a_same_physical_owner_stutter() {
     // Cause/effect decision table:
@@ -859,6 +860,7 @@ fn durable_projection_identity_is_exact_or_a_same_physical_owner_stutter() {
 }
 
 #[cfg(kani)]
+/// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
 #[kani::proof]
 fn committed_candidate_retains_effect_kind_and_rejects_identity_relabeling() {
     // Cause/effect decision table: C1 is the closed Candidate origin class; C2

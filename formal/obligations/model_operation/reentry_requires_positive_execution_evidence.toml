@@ -3,17 +3,12 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-runtime-contract/src/model_operation.rs",
   "crates/runtime/awaken-runtime/src/engine/inference.rs",
   "crates/runtime/awaken-runtime/src/engine/model_operation.rs",
   "crates/runtime/awaken-runtime/tests/execution.rs",
   "crates/runtime/awaken-runtime/tests/checkpoint.rs",
   "crates/runtime/awaken-provider-genai/tests/stall.rs",
   "e2e/managed_upstream_faults_e2e.mjs",
-]
-proof_harnesses = [
-  "model_execution_reentry_requires_positive_evidence",
-  "no_dispatch_mints_only_reviewed_pre_call_stages",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/model_operation.rs",

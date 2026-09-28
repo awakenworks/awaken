@@ -12,10 +12,6 @@ evidence = [
   "crates/control/awaken-environment-application/src/lib.rs",
   "crates/control/awaken-control/src/registration_supervisor.rs",
   "crates/server/awaken-executable-environment-catalog/src/lib.rs",
-  "crates/contract/awaken-environment-contract/src/lib.rs",
-]
-proof_harnesses = [
-  "environment_registration_intent_is_exact_idempotent_and_recoverable",
 ]
 production_entrypoints = [
   "crates/stores/awaken-env-store/src/lib.rs",

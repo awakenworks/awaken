@@ -4,13 +4,9 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "crates/server/awaken-runtime-host/src/application.rs",
-  "crates/server/awaken-runtime-host/src/application/resource_transition.rs",
   "crates/server/awaken-runtime-host/src/managed_host_composition.rs",
   "crates/server/awaken-runtime-host/src/host/worker_resolver/session_realization.rs",
   "crates/server/awaken-runtime-host/src/dispatch_session_runtime.rs",
-]
-proof_harnesses = [
-  "session_resource_replacement_requires_newer_or_authority_amended_generation",
 ]
 production_entrypoints = [
   "crates/server/awaken-runtime-host/src/application.rs",

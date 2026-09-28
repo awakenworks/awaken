@@ -1716,6 +1716,7 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// @obligation tool.transition_preconditions
     #[kani::proof]
     fn terminal_calls_are_never_reentered() {
         let budget = NonZeroU16::new(kani::any()).unwrap_or(NonZeroU16::MIN);
@@ -1729,6 +1730,7 @@ mod verification {
         );
     }
 
+    /// @obligation tool.transition_preconditions
     #[kani::proof]
     fn only_the_matching_approval_ticket_enters_execution() {
         let correct_kind: bool = kani::any();
@@ -1769,6 +1771,7 @@ mod verification {
         }
     }
 
+    /// @obligation tool.executor_entry_order
     #[kani::proof]
     fn executor_entry_admission_requires_exactly_executing_phase() {
         // Causes: every durable phase tag and every u16 attempt. Effect: the
@@ -1804,6 +1807,7 @@ mod verification {
         }
     }
 
+    /// @obligation tool.recovery_policy
     #[kani::proof]
     fn recovery_reentry_requires_policy_capability_and_remaining_budget() {
         // Causes: all four policy modes, all four capability modes, both
@@ -1857,6 +1861,7 @@ mod verification {
         }
     }
 
+    /// @obligation tool.transition_preconditions
     #[kani::proof]
     fn every_tool_call_transition_has_the_unique_documented_precondition() {
         let phase = symbolic_phase(kani::any());
@@ -1878,6 +1883,7 @@ mod verification {
         assert_eq!(permits_call_transition(phase, transition), expected);
     }
 
+    /// @obligation tool_result.call_is_consumed_at_most_once
     #[kani::proof]
     fn a_tool_call_completion_is_applied_at_most_once() {
         // Complete cause/effect partition: every durable call phase, both
@@ -1910,6 +1916,7 @@ mod verification {
         }
     }
 
+    /// @obligation tool.transition_preconditions
     #[kani::proof]
     fn terminal_tool_calls_only_accept_result_staging() {
         let phase = if kani::any() {
@@ -1929,6 +1936,7 @@ mod verification {
         }
     }
 
+    /// @obligation tool.transition_preconditions
     #[kani::proof]
     fn run_end_sealing_targets_exactly_nonterminal_calls() {
         let phase = symbolic_phase(kani::any());
@@ -1941,6 +1949,7 @@ mod verification {
         );
     }
 
+    /// @obligation tool.transition_preconditions
     #[kani::proof]
     fn a_second_wait_is_never_admitted() {
         // Cause/effect decision table: K1 awaitable+no peer => admitted;
@@ -1962,6 +1971,7 @@ mod verification {
         }
     }
 
+    /// @obligation tool.publication_barrier
     #[kani::proof]
     fn only_finalized_batches_expose_staged_publication() {
         // Causes: the complete ToolBatchPhase domain, selected symbolically.

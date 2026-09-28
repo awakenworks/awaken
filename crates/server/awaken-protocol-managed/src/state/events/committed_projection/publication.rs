@@ -198,6 +198,8 @@ impl ManagedState {
 }
 
 #[cfg(kani)]
+/// @obligation session.runtime_projection_failed_refresh_stutters_warm_state
+/// @obligation session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 #[kani::proof]
 fn projection_refresh_failure_stutters_and_success_preserves_one_pair() {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,6 +275,7 @@ fn projection_refresh_failure_stutters_and_success_preserves_one_pair() {
 }
 
 #[cfg(kani)]
+/// @obligation session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 #[kani::proof]
 fn projection_source_stamp_is_exact_for_the_complete_observed_thread_prefix() {
     // Causes: C1 the prior Session/root/two-child coordinates are arbitrary;

@@ -303,6 +303,7 @@ mod verification {
     /// exhausting the transitions exhausts the reachable behaviour. Sequencing
     /// two arbitrary transitions is what shows retention cannot run twice, and
     /// covers the `into_future` handoff where two `Drop` owners see one claim.
+    /// @obligation claimed_effect.retention_runs_once_for_an_unsettled_drop
     #[kani::proof]
     fn claim_retention_runs_once_only_for_an_unsettled_drop() {
         let start = disposition(kani::any());

@@ -3,12 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/server/awaken-service-lifecycle/src/lib.rs",
   "crates/bin/awaken-cli/src/config/role.rs",
   "crates/bin/awaken-cli/src/process_stores.rs",
-]
-proof_harnesses = [
-  "worker_never_acquires_service_startup_or_local_mount_authority",
 ]
 production_entrypoints = [
   "crates/server/awaken-service-lifecycle/src/lib.rs",

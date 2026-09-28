@@ -243,6 +243,7 @@ mod context_window_tests {
 mod context_window_verification {
     use super::*;
 
+    /// @obligation context.window_anchor_preserves_complete_prefix_coverage
     #[kani::proof]
     fn anchored_context_window_never_moves_past_the_covered_prefix() {
         let keep_last: usize = kani::any();
@@ -256,6 +257,7 @@ mod context_window_verification {
         }
     }
 
+    /// @obligation context.legacy_unanchored_window_never_drops_transcript
     #[kani::proof]
     fn unanchored_legacy_context_never_hides_transcript_messages() {
         let legacy = ContextWindowPlan::Legacy(kani::any());

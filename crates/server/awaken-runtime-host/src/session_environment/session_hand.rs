@@ -1227,6 +1227,7 @@ mod scoped_tests;
 mod verification {
     use super::*;
 
+    /// @obligation remote_tool.hand_availability_recovery_and_terminal_transitions_are_closed
     #[kani::proof]
     fn hand_availability_has_only_explicit_recovery_and_terminal_transitions() {
         let current = match kani::any::<u8>() % 4 {
@@ -1248,6 +1249,7 @@ mod verification {
         }
     }
 
+    /// @obligation remote_tool.hand_launch_must_cross_a_tracked_starting_phase_before_ready
     #[kani::proof]
     fn hand_binding_can_only_become_ready_through_tracked_starting() {
         let current = match kani::any::<u8>() % 4 {
@@ -1265,6 +1267,7 @@ mod verification {
         }
     }
 
+    /// @obligation remote_tool.hand_generation_exhaustion_is_terminal_and_never_wraps
     #[kani::proof]
     fn hand_generation_advance_never_wraps_and_exhaustion_is_terminal() {
         let current = kani::any::<u64>();

@@ -3,15 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/runtime/awaken-ext-state-machine/src/machine.rs",
   "crates/runtime/awaken-ext-state-machine/src/engine.rs",
-]
-proof_harnesses = [
-  "tool_and_event_transitions_never_cross_trigger_kinds",
-  "state_transition_requires_every_exact_precondition",
-  "result_transition_and_authored_fallback_are_exact",
-  "terminal_state_classification_is_exact",
-  "unknown_transition_trigger_and_result_fail_closed",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-ext-state-machine/src/machine.rs",

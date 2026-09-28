@@ -4,10 +4,6 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "crates/contract/awaken-session-realization-contract/src/session_realization.rs",
-  "crates/server/awaken-protocol-managed/src/state/sessions.rs",
-]
-proof_harnesses = [
-  "missing_agent_publication_is_available_only_to_noninteractive_projection",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-realization-contract/src/session_realization.rs",

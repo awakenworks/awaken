@@ -133,6 +133,10 @@ const fn session_activity_settlement_plan(
 }
 
 #[cfg(kani)]
+/// @obligation session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+/// @obligation session_event_batch.run_reservation_precedes_distinct_activity_receipt
+/// @obligation session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+/// @obligation session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 #[kani::proof]
 fn session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed() {
     // Admission causes: all seven execution states, arbitrary current/exact

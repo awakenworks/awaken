@@ -5,12 +5,7 @@ tcb_assumptions = [
   "external.mcp_busy_acp_revocation_propagation_and_process_termination",
   "external.provider_revocation_propagation",
 ]
-evidence = [
-  "crates/runtime/awaken-provider-genai/src/lib.rs",
-]
-proof_harnesses = [
-  "credential_probe_tri_state_is_total_and_fail_safe",
-]
+evidence = []
 production_entrypoints = [
   "crates/runtime/awaken-provider-genai/src/lib.rs",
 ]

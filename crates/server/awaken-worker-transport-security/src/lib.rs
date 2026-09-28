@@ -1039,6 +1039,7 @@ fn remote_identity_from_index(index: u8) -> RemoteIdentityPosture {
 /// Exhaustively covers the finite 6 x 7 x 6 posture algebra. Only HTTPS + one
 /// supported credential-verification mode + exact identity is admitted.
 #[cfg(kani)]
+/// @obligation worker.remote_transport_is_secure_exact_and_identity_bound
 #[kani::proof]
 fn worker_transport_selector_admits_only_supported_exact_postures() {
     let endpoint_index: u8 = kani::any();
@@ -1064,6 +1065,7 @@ fn worker_transport_selector_admits_only_supported_exact_postures() {
 /// Any admitted remote selection retains every required security property; no
 /// state can downgrade TLS, omit verification or broaden identity binding.
 #[cfg(kani)]
+/// @obligation worker.remote_transport_is_secure_exact_and_identity_bound
 #[kani::proof]
 fn remote_transport_never_downgrades_or_widens_identity() {
     let endpoint_index: u8 = kani::any();

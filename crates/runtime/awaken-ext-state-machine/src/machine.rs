@@ -320,6 +320,7 @@ mod kani_proofs {
         transition_advance_decision, transition_preconditions_met, transition_trigger_matches,
     };
 
+    /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
     #[kani::proof]
     fn tool_and_event_transitions_never_cross_trigger_kinds() {
         let pattern_matches: bool = kani::any();
@@ -343,6 +344,7 @@ mod kani_proofs {
         ));
     }
 
+    /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
     #[kani::proof]
     fn state_transition_requires_every_exact_precondition() {
         let trigger_matches: bool = kani::any();
@@ -354,6 +356,7 @@ mod kani_proofs {
         );
     }
 
+    /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
     #[kani::proof]
     fn result_transition_and_authored_fallback_are_exact() {
         let preconditions_met: bool = kani::any();
@@ -375,6 +378,7 @@ mod kani_proofs {
         );
     }
 
+    /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
     #[kani::proof]
     fn terminal_state_classification_is_exact() {
         let state_is_known: bool = kani::any();
@@ -385,6 +389,7 @@ mod kani_proofs {
         );
     }
 
+    /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
     #[kani::proof]
     fn unknown_transition_trigger_and_result_fail_closed() {
         let actual_kind: u8 = kani::any();

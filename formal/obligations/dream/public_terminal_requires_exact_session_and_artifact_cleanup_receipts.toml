@@ -7,13 +7,8 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/DreamCleanupBoundary.tla",
   "formal/tla/DreamCleanupBoundary.cfg",
-  "crates/contract/awaken-session-dream-contract/src/lib.rs",
   "crates/server/awaken-dream-application/src/lib.rs",
   "crates/server/awaken-session-application/src/terminal.rs",
-]
-proof_harnesses = [
-  "dream_public_terminal_requires_committed_cleanup",
-  "dream_cleanup_admission_is_total_and_retries_every_pending_terminal",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-dream-contract/src/lib.rs",

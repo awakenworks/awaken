@@ -178,6 +178,7 @@ impl<A: Clone, R> HostCommitBoundary<A, R> {
 }
 
 #[cfg(kani)]
+/// @obligation background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
 #[kani::proof]
 fn recovery_projection_cannot_mint_committed_authority() {
     // Cause/effect decision table: R1 Local with any authority payload -> mint

@@ -21,6 +21,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import formal_anchors
 import formal_ledger
 from formal_model_mutation_runner import check_tlc_model_mutations
 from formal_config_mutations import check_config_cas_model_mutant, check_config_activation_model_mutants
@@ -105,6 +106,51 @@ def require_green_baseline(case_root: Path) -> None:
             raise SystemExit(f"formal mutation baseline failed: {checker}: {result.stderr}")
 
 
+# Repository files a mutation made private to its case, with their bytes, so
+# the loop can restore them with the formal/ tree.
+PRIVATE_ORIGINALS: dict[Path, bytes] = {}
+
+
+def private_source(case_root: Path, relative: str) -> Path:
+    """Make one symlinked repository file writable inside the case only.
+
+    A symlinked directory on the way is replaced by a mirror of its subtree --
+    real directories, symlinked files -- because a recursive glob does not
+    descend through a directory link; the file itself becomes a copy, so a
+    mutation can never write through a link into the repository it was
+    copied from.
+    """
+
+    current = case_root
+    for part in Path(relative).parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            target = current.resolve()
+            current.unlink()
+            for directory, _, names in os.walk(target):
+                mirror = current / Path(directory).relative_to(target)
+                mirror.mkdir(parents=True, exist_ok=True)
+                for name in names:
+                    os.symlink(Path(directory) / name, mirror / name)
+    path = case_root / relative
+    if path.is_symlink():
+        content = path.read_bytes()
+        path.unlink()
+        path.write_bytes(content)
+        PRIVATE_ORIGINALS[path] = content
+    if case_root.resolve() not in path.resolve().parents:
+        raise SystemExit(f"mutation fixture could not privatize {relative}")
+    return path
+
+
+def remove_lines(case_root: Path, anchors: list[formal_anchors.Anchor]) -> None:
+    for relative in sorted({anchor.path for anchor in anchors}):
+        path = private_source(case_root, relative)
+        drop = {anchor.line for anchor in anchors if anchor.path == relative}
+        lines = path.read_text().split("\n")
+        path.write_text("\n".join(line for number, line in enumerate(lines, 1) if number not in drop))
+
+
 def mutation_targets(case_root: Path) -> dict[Path, bytes]:
     paths = [path for path in (case_root / "formal").rglob("*") if path.is_file()]
     return {path: path.read_bytes() for path in [*paths, case_root / "scripts/ci/check_formal.sh"]}
@@ -128,13 +174,48 @@ def mutate_removed_harness(case_root: Path) -> None:
 
 
 def mutate_downgraded_claim(case_root: Path) -> None:
+    # D1: a proved row loses every `/// @obligation` anchor (each harness still
+    # serves another row, so only this claim changes) and is relabeled
+    # executable-only while keeping its production-kernel grade.
+    harnesses = formal_anchors.scan(case_root).harnesses
     ledger = formal_ledger.load(case_root)
-    row = next(item for item in ledger["obligations"] if item["status"] == "kernel_proved")
+    row = next(
+        item for item in ledger["obligations"]
+        if item["status"] == "kernel_proved" and item.get("proof_harnesses") and all(
+            len(harness.values("obligation")) > 1
+            for harness in harnesses if harness.name in item["proof_harnesses"]
+        )
+    )
+    remove_lines(case_root, [
+        anchor for harness in harnesses for anchor in harness.values("obligation")
+        if anchor.value == row["id"]
+    ])
     row["status"] = "executable_only"
-    row.pop("proof_harnesses", None)
+    row.pop("proof_harnesses")
     formal_ledger.write(case_root, ledger)
     must_fail(case_root, "check_formal_coverage.py", "downgraded proved obligation",
               expected=f"{row['id']} production-kernel grade has no Kani harness")
+
+
+def mutate_unanchored_harness(case_root: Path) -> None:
+    # D2: a harness loses its only anchor. A proof that serves no obligation is
+    # refused at its own source line, not silently dropped from the ledger.
+    harness = next(item for item in formal_anchors.scan(case_root).harnesses
+                   if len(item.values("obligation")) == 1)
+    remove_lines(case_root, harness.values("obligation"))
+    must_fail(case_root, "check_formal_coverage.py", "harness without an obligation anchor",
+              expected=f"Kani harness {harness.name} serves no obligation")
+
+
+def mutate_orphaned_anchor(case_root: Path) -> None:
+    # D3: an obligation file is deleted while a harness still names it. The
+    # commit that deletes it fails, at the anchor's file and line.
+    harness = next(item for item in formal_anchors.scan(case_root).harnesses if item.values("obligation"))
+    anchor = harness.values("obligation")[0]
+    prefix, _, name = anchor.value.partition(".")
+    (case_root / formal_ledger.OBLIGATION_DIRECTORY / prefix / f"{name}.toml").unlink()
+    must_fail(case_root, "check_formal_coverage.py", "obligation file deleted under a live anchor",
+              expected=f"{anchor.where}: @obligation {anchor.value!r} names no obligation file")
 
 
 def mutate_commented_harness(case_root: Path) -> None:
@@ -168,14 +249,17 @@ def mutate_wrong_harness_package(case_root: Path) -> None:
 def mutate_harness_name_prefix(case_root: Path) -> None:
     # H3: adding a short name that is merely a prefix of a real proof, plus a
     # comment mentioning that name, cannot manufacture a proof definition.
-    ledger = formal_ledger.load(case_root)
-    row = next(item for item in ledger["obligations"] if item["id"] == "work.persisted_epoch_is_exact_nonnegative_and_nonwrapping")
-    row["proof_harnesses"].append("work_lease_epoch")
-    formal_ledger.write(case_root, ledger)
+    # The anchor sits on an ordinary fn whose only proof attribute is inside a
+    # comment: it is dangling, so it cannot name a harness into the ledger.
+    identifier = "work.persisted_epoch_is_exact_nonnegative_and_nonwrapping"
+    harness = next(item for item in formal_anchors.scan(case_root).harnesses
+                   if any(anchor.value == identifier for anchor in item.values("obligation")))
+    path = private_source(case_root, harness.path)
+    path.write_text(path.read_text() + f"\n// #[kani::proof]\n/// @obligation {identifier}\nfn work_lease_epoch() {{}}\n")
     gate = case_root / "scripts/ci/check_formal.sh"
     gate.write_text(gate.read_text() + "\n# --harness work_lease_epoch\n")
     must_fail(case_root, "check_formal_coverage.py", "prefix is not a proof definition",
-              expected="Kani harness work_lease_epoch is not a unique proof definition in its evidence")
+              expected="@obligation is not in the attribute block of a #[kani::proof] fn (dangling anchor)")
 
 
 def mutate_duplicate_harness_selection(case_root: Path) -> None:
@@ -674,6 +758,8 @@ def main() -> None:
         mutate_harness_name_prefix,
         mutate_duplicate_harness_selection,
         mutate_downgraded_claim,
+        mutate_unanchored_harness,
+        mutate_orphaned_anchor,
         mutate_unchecked_model,
         mutate_missing_proof_grade,
         mutate_false_production_grade,
@@ -699,8 +785,9 @@ def main() -> None:
             mutation(case_root)
             for path in set(mutation_targets(case_root)) - set(original):
                 path.unlink()
-            for path, content in original.items():
+            for path, content in [*original.items(), *PRIVATE_ORIGINALS.items()]:
                 path.write_bytes(content)
+            PRIVATE_ORIGINALS.clear()
             require_green_baseline(case_root)
     print(f"formal gate mutation score: {len(mutations)}/{len(mutations)} killed")
 

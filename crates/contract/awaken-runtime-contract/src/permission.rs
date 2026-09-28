@@ -427,6 +427,7 @@ mod kani_proofs {
         GateAuditDecision, GateOutcomeKind, ToolCapabilityNarrowing, ToolPermissionVerdictKind,
     };
 
+    /// @obligation permission.runtime_capability_and_verdict_projection_never_widens_authority
     #[kani::proof]
     fn tool_capability_intersection_never_widens_configured_authority() {
         let left = if kani::any() {
@@ -449,6 +450,7 @@ mod kani_proofs {
         assert_eq!(effective, right.intersect(left));
     }
 
+    /// @obligation permission.runtime_capability_and_verdict_projection_never_widens_authority
     #[kani::proof]
     fn permission_verdict_projects_to_exact_non_widening_gate_outcome() {
         let verdict = match kani::any::<u8>() % 3 {
@@ -470,6 +472,7 @@ mod kani_proofs {
         );
     }
 
+    /// @obligation permission.runtime_capability_and_verdict_projection_never_widens_authority
     #[kani::proof]
     fn every_gate_outcome_has_one_exact_audit_label() {
         let kind = match kani::any::<u8>() % 5 {

@@ -4,14 +4,10 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/SessionRootProof.tla",
-  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
   "crates/contract/awaken-session-state-contract/src/session_repo/execution_state.rs",
   "crates/server/awaken-session-application/src/realization.rs",
   "crates/server/awaken-session-application/src/activity.rs",
   "crates/server/awaken-session-application/src/terminal.rs",
-]
-proof_harnesses = [
-  "terminal_execution_never_reopens",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/session_repo.rs",

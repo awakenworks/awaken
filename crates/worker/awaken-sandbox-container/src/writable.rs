@@ -41,6 +41,7 @@ pub(crate) const fn writable_root_topology(
 }
 
 #[cfg(kani)]
+/// @obligation sandbox_continuation.distinct_mutable_roots_share_one_retained_claim_without_aliasing
 #[kani::proof]
 fn continuation_writable_roots_share_one_claim_without_aliasing() {
     let first: usize = kani::any();

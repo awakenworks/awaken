@@ -241,6 +241,7 @@ mod verification {
         }
     }
 
+    /// @obligation tool_policy.managed_agent_and_mcp_defaults_are_source_exact_and_configurable
     #[kani::proof]
     fn toolset_policy_exact_override_replaces_only_the_matching_default() {
         // Cause/effect decision table: C1 lookup is the exact "search" name or
@@ -261,6 +262,7 @@ mod verification {
         assert_eq!(policy.policy_for("fetch"), default);
     }
 
+    /// @obligation tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
     #[kani::proof]
     fn tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls() {
         // Cause/effect graph over the COMPLETE requirement vocabulary.
@@ -305,6 +307,7 @@ mod verification {
         }
     }
 
+    /// @obligation tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
     #[kani::proof]
     fn autonomy_is_a_total_order_whose_ceiling_test_is_exactly_rank_comparison() {
         // The admission decision rests entirely on this order, so the order
@@ -326,6 +329,7 @@ mod verification {
         assert!(a.within(b) || b.within(a), "total");
     }
 
+    /// @obligation tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
     #[kani::proof]
     fn every_requirement_sits_at_exactly_one_autonomy_level() {
         // The projection from a policy value to the axis must be total and

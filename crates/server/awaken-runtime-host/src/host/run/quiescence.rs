@@ -271,6 +271,7 @@ impl SharedHost {
 }
 
 #[cfg(kani)]
+/// @obligation session_terminal.unstarted_reservation_is_rejected_after_cancel
 #[kani::proof]
 fn terminal_quiescence_rejects_only_unstarted_reservations() {
     // Cause/effect decision table: C1 is the closed durable Dispatch phase.

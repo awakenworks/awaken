@@ -9,13 +9,9 @@ evidence = [
   "formal/tla/Delegation.tla",
   "formal/tla/Delegation.cfg",
   "scripts/ci/formal_delegation_mutations.py",
-  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
   "crates/runtime/awaken-runtime/src/engine/delegation.rs",
   "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "child_invocation_requires_one_exact_open_relationship",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/agent/delegation.rs",

@@ -5,12 +5,7 @@ tcb_assumptions = [
   "external.container_and_kernel_isolation",
 ]
 evidence = [
-  "crates/contract/awaken-session-configuration-contract/src/agent_config.rs",
   "crates/contract/awaken-session-configuration-contract/src/tool_configuration.rs",
-]
-proof_harnesses = [
-  "bounded_runtime_capability_iterator_uses_exact_member_projection",
-  "runtime_capability_member_projection_is_total_exact_and_bounded",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-configuration-contract/src/agent_config.rs",

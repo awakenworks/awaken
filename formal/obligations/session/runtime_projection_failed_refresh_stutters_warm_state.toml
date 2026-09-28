@@ -10,15 +10,11 @@ evidence = [
   "formal/tla/SessionRuntimeProjection.cfg",
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
   "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
   "formal/tla/ManagedProjectionPublish.tla",
   "formal/tla/ManagedProjectionPublish.cfg",
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",
   "crates/server/awaken-protocol-managed/src/state/events/tests/refresh_failure.rs",
   "scripts/ci/formal_dispatch_mutations.py",
-]
-proof_harnesses = [
-  "projection_refresh_failure_stutters_and_success_preserves_one_pair",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",

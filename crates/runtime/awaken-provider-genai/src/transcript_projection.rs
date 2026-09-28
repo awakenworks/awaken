@@ -306,6 +306,7 @@ mod proofs {
         }
     }
 
+    /// @obligation protocol_adapter.genai_signed_reasoning_transcript_projection_is_dialect_exact_nonduplicating_and_transport_independent
     #[kani::proof]
     fn reasoning_replay_projection_preserves_reasoning_and_complete_responses() {
         // Test design — Causes: every neutral part/dialect/prior-state combination
@@ -430,6 +431,7 @@ mod proofs {
         }
     }
 
+    /// @obligation protocol_adapter.genai_signed_reasoning_transcript_projection_is_dialect_exact_nonduplicating_and_transport_independent
     #[kani::proof]
     fn reasoning_fold_prepends_exactly_once_and_is_transport_independent() {
         let has_reasoning: bool = kani::any();

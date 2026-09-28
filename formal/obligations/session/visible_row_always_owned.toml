@@ -4,16 +4,12 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/SessionOwnership.tla",
-  "crates/stores/awaken-session-store/src/lib.rs",
   "crates/stores/awaken-session-store/src/postgres.rs",
   "crates/stores/awaken-session-store/src/sqlite.rs",
   "formal/tla/SessionOwnership.cfg",
   "formal/tla/SessionOwnershipProof.tla",
   "formal/tla/SessionRootProof.tla",
   "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
-]
-proof_harnesses = [
-  "session_identity_and_create_shapes_require_one_owned_live_row",
 ]
 production_entrypoints = [
   "crates/stores/awaken-session-store/src/lib.rs",

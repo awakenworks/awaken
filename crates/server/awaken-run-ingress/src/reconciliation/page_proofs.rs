@@ -62,6 +62,7 @@ fn terminal_scan_page_decision_table() {
 }
 
 #[cfg(kani)]
+/// @obligation remote_worker.terminal_scan_is_bounded_and_preserves_authority
 #[kani::proof]
 #[kani::unwind(5)]
 fn terminal_scan_page_preserves_budget_cursor_and_cancellation() {

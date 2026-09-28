@@ -8,16 +8,12 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/ThreadCommitProjectionProof.tla",
   "formal/runtime-refinement-manifest.json",
-  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
   "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
   "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
   "crates/runtime/awaken-runtime/src/engine/resume.rs",
   "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
   "crates/runtime/awaken-runtime/tests/per_step_commit.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "executor_entry_admission_requires_exactly_executing_phase",
 ]
 production_entrypoints = [
   "crates/contract/awaken-tool-contract/src/tool_batch.rs",

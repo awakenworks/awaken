@@ -736,6 +736,7 @@ pub(crate) fn committed_transcript_evidence(
 }
 
 #[cfg(kani)]
+/// @obligation session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
 #[kani::proof]
 fn runtime_tool_projection_phase_is_total_distinct_and_fail_closed() {
     // Causes: C1 a current ticket is client/builtin; C2 an exact retained reply

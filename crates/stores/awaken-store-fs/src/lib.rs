@@ -84,6 +84,7 @@ fn recovery_replay_plan<E, T>(entry: E, committed_at: T) -> RecoveryReplayPlan<E
 }
 
 #[cfg(kani)]
+/// @obligation store_history.recovery_preserves_committed_time_and_receipt_identity
 #[kani::proof]
 fn recovery_replay_preserves_complete_entry_and_time() {
     // Full scalar cause/effect table: every decoded entry identity byte and

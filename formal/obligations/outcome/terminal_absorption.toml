@@ -4,10 +4,6 @@ status = "model_linked"
 tcb_assumptions = []
 evidence = [
   "formal/tla/OutcomeLifecycle.tla",
-  "crates/runtime/awaken-ext-goal/src/outcome.rs",
-]
-proof_harnesses = [
-  "terminal_outcomes_are_absorbing",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-ext-goal/src/outcome.rs",

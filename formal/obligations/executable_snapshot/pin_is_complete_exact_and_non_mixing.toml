@@ -3,12 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-executable-agent-contract/src/snapshot_pin.rs",
   "crates/contract/awaken-executable-agent-contract/src/lib.rs",
-]
-proof_harnesses = [
-  "executable_snapshot_pin_is_complete_exact_and_non_mixing",
-  "every_duplicated_snapshot_pin_axis_is_binding",
 ]
 production_entrypoints = [
   "crates/contract/awaken-executable-agent-contract/src/snapshot_pin.rs",

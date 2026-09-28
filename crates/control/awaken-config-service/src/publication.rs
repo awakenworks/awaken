@@ -84,6 +84,7 @@ fn check_publication_resolution_invocation(succeeds: bool) {
 }
 
 #[cfg(kani)]
+/// @obligation config.inference_access_resolved_once_at_publication
 #[kani::proof]
 fn publication_resolution_invokes_exactly_one_owner() {
     // Cause/effect decision table: R1 resolver succeeds -> invoke once and

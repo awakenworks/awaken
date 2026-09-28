@@ -7,10 +7,6 @@ evidence = [
   "crates/contract/awaken-session-state-contract/src/environment/continuation.rs",
   "crates/contract/awaken-session-state-contract/src/environment/generation.rs",
   "crates/server/awaken-session-application/src/continuation.rs",
-  "crates/contract/awaken-session-state-contract/src/environment/verification.rs",
-]
-proof_harnesses = [
-  "quiescence_receipt_requires_exact_operation_epoch_mcp_set_and_zero_live_effects",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/environment.rs",

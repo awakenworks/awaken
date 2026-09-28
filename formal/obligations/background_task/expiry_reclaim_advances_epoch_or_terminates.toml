@@ -5,12 +5,8 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/BackgroundTask.tla",
   "formal/tla/BackgroundTask.cfg",
-  "crates/runtime/awaken-ext-background-task/src/model.rs",
   "crates/runtime/awaken-ext-background-task/tests/state_machine.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "expired_reclaim_plan_advances_epoch_or_terminates",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-ext-background-task/src/model.rs",

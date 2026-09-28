@@ -9,12 +9,6 @@ evidence = [
   "formal/runtime-refinement-manifest.json",
   "scripts/ci/render_runtime_refinement_traces.py",
   "scripts/ci/check_formal_mutations.py",
-  "crates/contract/awaken-session-event-contract/src/terminal_resolution_proofs.rs",
-  "crates/contract/awaken-session-event-contract/src/observation_proofs.rs",
-]
-proof_harnesses = [
-  "processed_event_time_is_first_observation_or_atomic_rejection",
-  "terminal_batch_resolution_empty",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-event-contract/src/lib.rs",

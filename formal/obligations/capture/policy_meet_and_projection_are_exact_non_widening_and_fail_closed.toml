@@ -5,13 +5,7 @@ tcb_assumptions = [
   "external.telemetry_delivery_and_retention",
 ]
 evidence = [
-  "crates/contract/awaken-runtime-contract/src/capture.rs",
   "crates/runtime/awaken-runtime/src/permission.rs",
-]
-proof_harnesses = [
-  "capture_meet_is_exact_commutative_and_non_widening",
-  "capture_projection_admits_content_only_at_full",
-  "non_full_capture_fails_closed_before_redaction",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/capture.rs",

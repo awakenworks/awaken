@@ -3,13 +3,8 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-resource-contract/src/registry.rs",
   "crates/stores/awaken-resource-store/src/sqlite_registry.rs",
   "crates/stores/awaken-resource-store/src/postgres_registry.rs",
-]
-proof_harnesses = [
-  "resource_config_publication_is_exact_and_never_wraps",
-  "exhausted_resource_config_versions_fail_closed",
 ]
 production_entrypoints = [
   "crates/contract/awaken-resource-contract/src/registry.rs",

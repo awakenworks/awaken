@@ -557,6 +557,7 @@ impl Error {
 mod proofs {
     use super::*;
 
+    /// @obligation outcome.grade_transition_obeys_budget
     #[kani::proof]
     fn applying_a_grade_obeys_decision_and_budget() {
         let max_iterations: u32 = kani::any();
@@ -594,6 +595,7 @@ mod proofs {
         }
     }
 
+    /// @obligation outcome.terminal_absorption
     #[kani::proof]
     fn terminal_outcomes_are_absorbing() {
         let result_code: u8 = kani::any();

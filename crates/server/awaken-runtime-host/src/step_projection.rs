@@ -124,6 +124,7 @@ mod verification {
         }
     }
 
+    /// @obligation runtime.settled_step_projection_is_closed_exact_and_non_widening
     #[kani::proof]
     fn unsettled_running_is_always_rejected_and_settled_kinds_never_interchange() {
         // Causes: C1 the committed Run state is symbolically Running, Awaiting,
@@ -150,6 +151,7 @@ mod verification {
         );
     }
 
+    /// @obligation runtime.settled_step_projection_is_closed_exact_and_non_widening
     #[kani::proof]
     fn settled_step_projection_cannot_invent_pending_or_observations() {
         // Causes: C1 the committed Run state spans Running/Awaiting/Ended; C2 a

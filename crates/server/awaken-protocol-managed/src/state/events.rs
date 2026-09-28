@@ -80,6 +80,7 @@ const fn inbound_processed_at_visible(view: InboundProjectionView, processed: bo
 }
 
 #[cfg(kani)]
+/// @obligation session_event_batch.idempotent_receipt_is_admission_stable
 #[kani::proof]
 fn inbound_admission_receipt_is_stable_across_processing_races() {
     let processed: bool = kani::any();
@@ -103,6 +104,7 @@ fn inbound_admission_receipt_is_stable_across_processing_races() {
 }
 
 #[cfg(kani)]
+/// @obligation session_event_batch.idempotent_receipt_is_admission_stable
 #[kani::proof]
 fn inbound_order_is_fixed_before_effect_observation() {
     let admission_cursor: u64 = kani::any();

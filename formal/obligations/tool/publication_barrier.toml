@@ -8,14 +8,10 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/RuntimeSystemProof.tla",
   "formal/runtime-refinement-manifest.json",
-  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
   "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
   "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
   "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
   "crates/runtime/awaken-runtime/tests/permission.rs",
-]
-proof_harnesses = [
-  "only_finalized_batches_expose_staged_publication",
 ]
 production_entrypoints = [
   "crates/contract/awaken-tool-contract/src/tool_batch.rs",

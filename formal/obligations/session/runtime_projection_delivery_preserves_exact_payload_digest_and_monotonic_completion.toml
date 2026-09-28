@@ -3,15 +3,11 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/server/awaken-protocol-managed/src/state/events/delivery.rs",
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
   "crates/server/awaken-protocol-managed/src/state/events/stream.rs",
   "crates/server/awaken-protocol-managed/src/routes/sessions.rs",
   "crates/server/awaken-protocol-managed/tests/streaming.rs",
   "crates/server/awaken-protocol-managed/src/routes/sessions/stream.rs",
-]
-proof_harnesses = [
-  "committed_delivery_all_equalities_preserve_only_monotonic_completion",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/state/events/delivery.rs",

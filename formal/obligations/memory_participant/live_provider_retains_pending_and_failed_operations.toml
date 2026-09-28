@@ -10,13 +10,9 @@ evidence = [
   "scripts/ci/formal_memory_mutations.py",
   "docs/adr/0053-memory-store-fuse-mount.md",
   "crates/worker/awaken-sandbox-local/src/namespace/memory_mount.rs",
-  "crates/worker/awaken-sandbox-local/src/memory_mount_owner.rs",
   "crates/worker/awaken-sandbox-local/src/memory_mount_owner/tests.rs",
   "crates/worker/awaken-sandbox-local/src/memory_mount_owner/tests/provider_tests.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "live_provider_prunes_only_observed_empty_unreferenced_memory_owners",
 ]
 production_entrypoints = [
   "crates/worker/awaken-sandbox-local/src/memory_mount_owner.rs",

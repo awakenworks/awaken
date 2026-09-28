@@ -8,12 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteAttempt.tla",
-  "crates/server/awaken-run-executor-a2a/src/message_identity.rs",
   "crates/server/awaken-run-executor-a2a/src/executor.rs",
   "crates/server/awaken-run-executor-a2a/src/lib.rs",
-]
-proof_harnesses = [
-  "a2a_message_identity_rejects_only_resume_without_committed_correlation",
 ]
 production_entrypoints = [
   "crates/server/awaken-run-executor-a2a/src/message_identity.rs",

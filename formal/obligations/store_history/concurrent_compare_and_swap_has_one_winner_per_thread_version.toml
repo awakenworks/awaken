@@ -11,10 +11,6 @@ evidence = [
   "crates/runtime/awaken-store-inmem/src/lib.rs",
   "crates/stores/awaken-store-sqlite/src/lib.rs",
   "crates/stores/awaken-store-postgres/src/lib.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-]
-proof_harnesses = [
-  "operation_append_requires_exact_prefix_and_nonwrapping_version",
 ]
 production_entrypoints = [
   "crates/stores/awaken-store-conformance/src/lib.rs",

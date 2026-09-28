@@ -107,6 +107,8 @@ fn check_paired_refresh_admission(agent: Result<(), ()>, environment: Result<(),
 }
 
 #[cfg(kani)]
+/// @obligation executable_projection.failed_refresh_never_enters_handler
+/// @obligation executable_projection.runtime_admission_requires_both_refreshes
 #[kani::proof]
 fn executable_projection_admission_requires_both_ordered_refreshes() {
     // No assumptions or stubs: both actual Result shapes cross the production

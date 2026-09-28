@@ -416,12 +416,14 @@ mod clock_proofs {
     }
 
     #[cfg(kani)]
+    /// @obligation work.exact_boundary_reclaim
     #[kani::proof]
     fn work_lease_deadlines_clamp_without_wrapping() {
         check_deadline(kani::any(), kani::any(), kani::any());
     }
 
     #[cfg(kani)]
+    /// @obligation work.exact_boundary_reclaim
     #[kani::proof]
     fn work_reclaim_cutoff_is_exact_and_underflow_free() {
         check_cutoff(kani::any(), kani::any());

@@ -904,16 +904,16 @@ implementation coverage. Mutation reports are retained as release artifacts.
 Recorded tool identities and per-check timings are release evidence, not proof
 that a check which did not execute passed.
 
-`formal/obligations/` (one TOML file per obligation) is the versioned,
-claim-oriented obligation ledger. The CI gate verifies that every evidence path
-exists and that at least 70% of formalizable safety obligations have checked
-formal evidence. The gate prints the current obligation total, coverage ratio,
-external-assumption total, and the independent model-checked, model-proved,
-Kani-kernel-proved, and executable trace-refinement dimensions directly from
-that ledger. Those dimensions overlap and must not be summed. The generated gate
-output, rather than a second checkpoint count in this document, is the authority
-for the current totals. Environmental properties are listed separately and never
-silently omitted or mislabeled as model-linked merely to raise the percentage.
+`formal/obligations/` (one TOML file per obligation; Kani harnesses name theirs
+with `/// @obligation <id>`) is the claim-oriented ledger. The CI gate verifies
+that every evidence path exists and that at least 70% of formalizable safety
+obligations have checked formal evidence. The gate prints the obligation total,
+coverage ratio, external-assumption total and the independent model-checked,
+model-proved, Kani-kernel-proved and trace-refinement dimensions from that
+ledger. Those dimensions overlap and must not be summed. The generated gate
+output, not a count in this document, is the authority for the current totals.
+Environmental properties are listed separately and never silently omitted or
+mislabeled as model-linked merely to raise the percentage.
 
 `model_linked` deliberately means that a checked formal model and concrete Rust
 evidence are traceably associated; it is not a claim that every execution of

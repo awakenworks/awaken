@@ -6,14 +6,10 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "crates/contract/awaken-runtime-contract/src/attempt_termination.rs",
   "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
   "crates/runtime/awaken-runtime/tests/execution.rs",
   "crates/bin/awaken-cli/src/worker_transport_security/kubernetes/tests.rs",
   "crates/bin/awaken-cli/src/worker_transport_security/kubernetes/tests/live.rs",
-]
-proof_harnesses = [
-  "native_coverage_must_be_committed_strictly_before_model_entry",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/attempt_termination.rs",

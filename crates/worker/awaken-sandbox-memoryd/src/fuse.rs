@@ -93,6 +93,7 @@ impl Drop for InvalidationListener {
 }
 
 #[cfg(kani)]
+/// @obligation memory_invalidation.listener_cleanup_is_owned_and_joined
 #[kani::proof]
 fn listener_cleanup_requests_stop_then_joins_the_owned_handle_exactly_once() {
     use std::cell::Cell;

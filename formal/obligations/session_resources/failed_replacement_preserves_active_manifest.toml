@@ -7,14 +7,10 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/SessionResourceActivation.tla",
   "formal/tla/SessionResourceActivation.cfg",
-  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
   "crates/server/awaken-session-application/src/resource_reconciliation.rs",
   "crates/server/awaken-session-application/src/resource_reconciliation/manifest_command.rs",
   "crates/server/awaken-session-application/src/tests/realization.rs",
   "crates/server/awaken-session-application/src/tests/resource_resume.rs",
-]
-proof_harnesses = [
-  "failed_resource_replacement_never_promotes_the_pending_manifest",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/resource_activation.rs",

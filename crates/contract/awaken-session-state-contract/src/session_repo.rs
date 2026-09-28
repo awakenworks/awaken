@@ -1887,6 +1887,7 @@ mod verification {
         session_tombstone_is_admitted,
     };
 
+    /// @obligation session_execution.terminal_state_never_reopens
     #[kani::proof]
     fn terminal_execution_never_reopens() {
         // Test design — Causes: the durable execution state is either terminal
@@ -1915,6 +1916,7 @@ mod verification {
         }
     }
 
+    /// @obligation session.delete_tombstone_requires_hidden_terminal_verified_cleanup
     #[kani::proof]
     fn session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup() {
         let disposition_hidden = kani::any::<bool>();
@@ -1941,6 +1943,8 @@ mod verification {
         );
     }
 
+    /// @obligation session.delete_intent_is_hidden_terminal_and_idempotent
+    /// @obligation session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
     #[kani::proof]
     fn session_delete_request_plan_is_exact_hidden_terminal_and_idempotent() {
         // Cause/effect table: C1 disposition is Active, Archived, Deleting, or

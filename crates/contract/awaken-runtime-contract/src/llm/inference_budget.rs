@@ -205,6 +205,7 @@ impl ModelInferenceBudgetError {
 }
 
 #[cfg(kani)]
+/// @obligation llm.inference_budget_requires_positive_response_before_actual_watchdog
 #[kani::proof]
 fn model_budget_requires_positive_response_before_watchdog() {
     // Actual constructor predicate over the full u128 domain (a superset of

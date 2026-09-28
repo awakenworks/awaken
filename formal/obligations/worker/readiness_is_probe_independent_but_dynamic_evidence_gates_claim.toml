@@ -7,12 +7,7 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/contract/awaken-worker-contract/src/lib.rs",
   "crates/bin/awaken-worker/src/lib.rs",
-]
-proof_harnesses = [
-  "dynamic_evidence_can_only_restrict_ready_worker_admission",
-  "process_readiness_after_startup_is_probe_independent",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/lib.rs",

@@ -8,12 +8,7 @@ evidence = [
   "formal/tla/WorkQueue.tla",
   "crates/stores/awaken-work-store/tests/work_queue_conformance.rs",
   "crates/stores/awaken-work-store/src/lib.rs",
-  "crates/stores/awaken-work-store/src/schema.rs",
   "crates/stores/awaken-work-store/src/session_access.rs",
-]
-proof_harnesses = [
-  "work_reclaim_cutoff_is_exact_and_underflow_free",
-  "work_lease_deadlines_clamp_without_wrapping",
 ]
 production_entrypoints = [
   "crates/stores/awaken-work-store/src/lib.rs",

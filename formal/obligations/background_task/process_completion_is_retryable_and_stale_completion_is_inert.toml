@@ -9,12 +9,8 @@ evidence = [
   "formal/tla/BackgroundTask.tla",
   "formal/tla/BackgroundTask.cfg",
   "crates/runtime/awaken-ext-background-task/src/plugin.rs",
-  "crates/runtime/awaken-ext-background-task/src/supervisor.rs",
   "crates/runtime/awaken-ext-background-task/tests/plugin_state.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "process_completion_fold_retries_exact_candidate_and_stale_is_inert",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-ext-background-task/src/plugin.rs",

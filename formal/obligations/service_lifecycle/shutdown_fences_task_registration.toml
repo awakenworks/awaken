@@ -8,11 +8,7 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/ServiceLifecycle.tla",
   "formal/tla/ServiceLifecycleProof.tla",
-  "crates/server/awaken-service-lifecycle/src/lib.rs",
   "crates/server/awaken-service-lifecycle/tests/service_lifecycle.rs",
-]
-proof_harnesses = [
-  "shutdown_registry_fences_registration_and_transfers_exactly_once",
 ]
 production_entrypoints = [
   "crates/server/awaken-service-lifecycle/src/lib.rs",

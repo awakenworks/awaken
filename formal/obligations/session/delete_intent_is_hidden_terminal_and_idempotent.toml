@@ -3,11 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
   "crates/server/awaken-session-application/src/terminal.rs",
-]
-proof_harnesses = [
-  "session_delete_request_plan_is_exact_hidden_terminal_and_idempotent",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/session_repo.rs",

@@ -6,11 +6,7 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/LiveInbox.tla",
-  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "live_inbox_replace_preserves_identity_and_order",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/live_inbox.rs",

@@ -6,13 +6,9 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
   "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
   "crates/server/awaken-protocol-managed/tests/session_resources.rs",
   "crates/bin/awaken-cli/tests/management_surface.rs",
-]
-proof_harnesses = [
-  "repository_rotation_requires_original_live_resource_generation",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/resource_reconciliation.rs",

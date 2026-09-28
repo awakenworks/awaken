@@ -211,6 +211,10 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation webhook.delivery_requires_an_enqueued_fact
+/// @obligation webhook.failed_delivery_remains_pending
+/// @obligation webhook.outbox_fact_identity_is_stable
+/// @obligation webhook.periodic_retry_never_retires_a_failed_fact
 #[kani::proof]
 fn pending_lifecycle_fact_completes_iff_delivery_succeeds_with_the_exact_identity() {
     // The production admission/settlement owner is exhausted over both delivery

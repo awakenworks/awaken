@@ -3,11 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-provisioning-contract/src/sandbox/fence.rs",
   "crates/worker/awaken-sandbox-container/src/runtime/realization.rs",
-]
-proof_harnesses = [
-  "fence_succession_is_exactly_renewal_or_epoch_advance",
 ]
 production_entrypoints = [
   "crates/contract/awaken-provisioning-contract/src/sandbox/fence.rs",

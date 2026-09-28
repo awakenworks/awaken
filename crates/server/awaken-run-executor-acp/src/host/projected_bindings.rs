@@ -26,6 +26,7 @@ const fn projection_recheck_decision(exact_projection: bool) -> ProjectionRechec
 }
 
 #[cfg(kani)]
+/// @obligation worker_credential.projected_binding_use_rechecks_after_probe
 #[kani::proof]
 fn projected_binding_use_rechecks_the_exact_projection_after_probe() {
     // Cause C1: the post-probe projection exactly matches the pre-probe

@@ -4,11 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/AuthzKernel.tla",
-  "crates/control/awaken-authz-enforce/src/lib.rs",
   "crates/control/awaken-authz-enforce/tests/session_action_properties.rs",
-]
-proof_harnesses = [
-  "session_method_mapping_is_total_and_read_only_for_exact_safe_methods",
 ]
 production_entrypoints = [
   "crates/control/awaken-authz-enforce/src/lib.rs",

@@ -66,6 +66,7 @@ mod kani_proofs {
         }
     }
 
+    /// @obligation capture.persistence_redaction_selection_is_total_exact_and_non_widening
     #[kani::proof]
     fn trace_capture_clamp_is_exact_and_never_widens_persisted_content() {
         let configured = arbitrary_capture();
@@ -84,6 +85,7 @@ mod kani_proofs {
         }
     }
 
+    /// @obligation capture.persistence_redaction_selection_is_total_exact_and_non_widening
     #[kani::proof]
     fn configured_capture_redactor_selection_is_total_and_exact() {
         let configured = if kani::any() {

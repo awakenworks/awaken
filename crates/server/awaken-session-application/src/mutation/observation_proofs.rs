@@ -50,6 +50,7 @@ fn check_receipt(kind: u8, revision: u64) {
 }
 
 #[cfg(kani)]
+/// @obligation session_time.root_observations_are_revision_bound_and_replay_stable
 #[kani::proof]
 fn session_root_observation_is_total_monotonic_and_idempotent() {
     // Causes C1 previous unknown/known; C2 clock lower/equal/higher; C3 retry or
@@ -61,6 +62,7 @@ fn session_root_observation_is_total_monotonic_and_idempotent() {
 }
 
 #[cfg(kani)]
+/// @obligation session_time.root_observations_are_revision_bound_and_replay_stable
 #[kani::proof]
 fn session_root_receipt_selects_candidate_only_for_applied_revision() {
     // C1 actual repository receipt variant; C2 arbitrary revision. Effects:

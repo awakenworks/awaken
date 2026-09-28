@@ -160,6 +160,7 @@ const fn worker_realization_scope_source(
 }
 
 #[cfg(kani)]
+/// @obligation worker.realization_scope_uses_only_the_kubernetes_namespace_or_persisted_local_workspace
 #[kani::proof]
 fn worker_realization_scope_source_is_total_and_exact() {
     // Cause/effect decision table. C1 is one of the five closed SandboxTier

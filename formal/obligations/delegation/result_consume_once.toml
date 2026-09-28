@@ -7,13 +7,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/Delegation.tla",
-  "crates/contract/awaken-runtime-contract/src/delegation.rs",
   "crates/runtime/awaken-runtime/src/engine/delegation.rs",
   "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "child_result_is_consumed_only_from_ready",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/delegation.rs",

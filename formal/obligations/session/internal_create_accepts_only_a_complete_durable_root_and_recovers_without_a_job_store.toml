@@ -8,7 +8,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/SessionStartProtocol.tla",
   "formal/tla/SessionStartProtocol.cfg",
-  "crates/server/awaken-session-application/src/creation.rs",
   "crates/server/awaken-session-application/src/realization.rs",
   "crates/server/awaken-protocol-awaken/src/profiled_sessions.rs",
   "crates/server/awaken-protocol-managed/src/types/session.rs",
@@ -16,16 +15,10 @@ evidence = [
   "formal/tla/SessionStartProtocolReachability.cfg",
   "crates/server/awaken-session-application/src/tests/creation.rs",
   "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/execution_state.rs",
   "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
   "crates/server/awaken-session-application/src/mutation.rs",
   "crates/stores/awaken-session-store/src/sqlite.rs",
   "crates/stores/awaken-session-store/src/postgres.rs",
-]
-proof_harnesses = [
-  "only_an_applied_awaited_create_may_enter_post_create_effects",
-  "nonterminal_control_failures_only_replay_the_durable_create_root",
-  "initial_realization_recovery_is_exact_for_every_execution_state",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/creation.rs",

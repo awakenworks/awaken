@@ -367,6 +367,7 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation session_files.read_only_tree_publication_requires_complete_restricted_safe_staging
 #[kani::proof]
 fn read_only_tree_publication_requires_a_complete_restricted_safe_stage() {
     let path_safe = kani::any();

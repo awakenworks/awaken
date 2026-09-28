@@ -5,11 +5,7 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/ToolSchedule.tla",
   "formal/tla/ToolSchedule.cfg",
-  "crates/contract/awaken-tool-contract/src/tool.rs",
   "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
-]
-proof_harnesses = [
-  "tool_wave_extension_requires_every_exact_guard",
 ]
 production_entrypoints = [
   "crates/contract/awaken-tool-contract/src/tool.rs",

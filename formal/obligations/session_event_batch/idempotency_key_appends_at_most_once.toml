@@ -16,10 +16,6 @@ evidence = [
   "scripts/ci/formal_event_batch_mutations.py",
   "scripts/ci/check_formal_mutations.py",
   "scripts/ci/check_formal.sh",
-  "crates/contract/awaken-session-event-contract/src/admission.rs",
-]
-proof_harnesses = [
-  "session_event_batch_admission_resolution_is_total_closed_and_append_once",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/event_batches.rs",

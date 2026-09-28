@@ -12,19 +12,12 @@ evidence = [
   "scripts/ci/check_formal_mutations.py",
   "crates/server/awaken-session-application/src/application.rs",
   "crates/server/awaken-session-application/src/tests/authority.rs",
-  "crates/server/awaken-session-application/src/mutation/observation_proofs.rs",
   "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
   "crates/stores/awaken-session-store/src/lib.rs",
   "crates/stores/awaken-session-store/src/sqlite.rs",
   "crates/stores/awaken-session-store/src/postgres.rs",
   "crates/stores/awaken-session-store/src/tests.rs",
   "crates/server/awaken-session-application/src/tests/observed_commit.rs",
-]
-proof_harnesses = [
-  "session_root_observation_is_total_monotonic_and_idempotent",
-  "session_root_receipt_selects_candidate_only_for_applied_revision",
-  "session_root_replacement_preserves_creation_and_monotonic_update_observations",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/mutation.rs",

@@ -45,6 +45,7 @@ const fn coverage_precedes_model(coverage_commit: u64, model_commit: u64) -> boo
 }
 
 #[cfg(kani)]
+/// @obligation model_operation.coverage_commit_strictly_precedes_model_entry
 #[kani::proof]
 fn native_coverage_must_be_committed_strictly_before_model_entry() {
     // Actual production chronology predicate, full u64 domain. Same commit,
@@ -177,6 +178,7 @@ pub fn classify_native_attempt_termination(
 }
 
 #[cfg(kani)]
+/// @obligation sandbox.k8s_process_observation_requires_complete_exit
 #[kani::proof]
 fn native_attempt_termination_requires_every_closed_surface_fact() {
     // Exhaust the production decision for all 16 combinations. A complete

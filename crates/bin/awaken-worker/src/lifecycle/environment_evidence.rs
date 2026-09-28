@@ -143,6 +143,7 @@ pub(super) async fn monitor<Probe, ProbeFuture, Error>(
 }
 
 #[cfg(kani)]
+/// @obligation worker_authority.independent_evidence_never_extends_expired_proof
 #[kani::proof]
 fn environment_evidence_decision_never_refreshes_expired_proof() {
     // Causes: C1 proof age is before/at/after its window; C2 observation is

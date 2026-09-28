@@ -313,6 +313,7 @@ fn arbitrary_permission_consensus(first: bool, second: bool) -> PermissionConsen
 }
 
 #[cfg(kani)]
+/// @obligation acp.mcp_alias_permission_consensus_never_widens_authority
 #[kani::proof]
 fn permission_consensus_is_a_conservative_order_independent_semilattice() {
     let a = arbitrary_permission_consensus(kani::any(), kani::any());

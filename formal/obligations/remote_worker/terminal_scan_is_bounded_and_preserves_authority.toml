@@ -7,12 +7,8 @@ evidence = [
   "formal/tla/TerminalReconciliationScan.cfg",
   "scripts/ci/formal_dispatch_mutations.py",
   "crates/server/awaken-run-ingress/src/reconciliation.rs",
-  "crates/server/awaken-run-ingress/src/reconciliation/page_proofs.rs",
   "crates/server/awaken-run-ingress/tests/reconciliation_scan.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "terminal_scan_page_preserves_budget_cursor_and_cancellation",
 ]
 production_entrypoints = [
   "crates/server/awaken-run-ingress/src/reconciliation.rs",

@@ -7,11 +7,7 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/worker/awaken-tool-relay/src/executor.rs",
   "crates/worker/awaken-tool-relay/tests/relay.rs",
-]
-proof_harnesses = [
-  "hand_channel_only_exact_decoded_reply_restores_readiness",
 ]
 production_entrypoints = [
   "crates/worker/awaken-tool-relay/src/executor.rs",

@@ -252,6 +252,9 @@ fn check_conditional_delete_admission(current_matches: Option<(bool, bool, bool)
 }
 
 #[cfg(kani)]
+/// @obligation memory.cas_has_one_winner_per_generation
+/// @obligation memory.idempotent_write_does_not_advance_generation
+/// @obligation memory.stale_cas_never_clobbers_live_content
 #[kani::proof]
 fn memory_head_update_admission_preserves_stale_and_idempotent_heads() {
     // No assumptions: all 32 path/identity/version/hash/current classes pass
@@ -267,6 +270,9 @@ fn memory_head_update_admission_preserves_stale_and_idempotent_heads() {
 }
 
 #[cfg(kani)]
+/// @obligation memory.absent_conditional_delete_is_idempotent
+/// @obligation memory.matched_conditional_delete_removes_exact_head
+/// @obligation memory.stale_conditional_delete_never_removes_live_head
 #[kani::proof]
 fn memory_conditional_delete_admission_is_exact() {
     // No assumptions: None and every present id/hash comparison class pass
@@ -276,6 +282,7 @@ fn memory_conditional_delete_admission_is_exact() {
 }
 
 #[cfg(kani)]
+/// @obligation memory.rename_replace_preserves_source_identity
 #[kani::proof]
 fn memory_rename_replace_preserves_source_identity() {
     // Causes: C1 arbitrary source identity; C2 destination absent/present; C3

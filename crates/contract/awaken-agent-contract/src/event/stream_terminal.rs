@@ -88,6 +88,7 @@ mod tests {
 mod proofs {
     use super::*;
 
+    /// @obligation ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
     #[kani::proof]
     fn stream_terminal_projection_is_exact_fail_closed_and_absorbing() {
         let started: bool = kani::any();
