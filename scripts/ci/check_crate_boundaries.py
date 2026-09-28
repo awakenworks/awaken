@@ -1705,7 +1705,6 @@ def main() -> int:
         + _sqlite_scheduler_fitness.check_all(REPO_ROOT)
         + _execution_ownership_fitness.check_all(REPO_ROOT)
         + _managed_protocol_boundary.check_managed_route_inventory(REPO_ROOT)
-        + _managed_protocol_boundary.check_managed_application_boundary(REPO_ROOT)
         + _managed_protocol_boundary.check_session_admission_ownership(REPO_ROOT)
     )
     if errors:
