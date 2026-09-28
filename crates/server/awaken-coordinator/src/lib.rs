@@ -440,6 +440,9 @@ fn local_managed_state_over(
         Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
     >,
 ) -> Arc<ManagedState> {
+    // The Session application runs on the Host's clock, so Session facts and
+    // the dispatch they drive share one timeline.
+    let clock = host.clock();
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = Arc::new(awaken_protocol_managed::VaultState::new(
@@ -500,6 +503,7 @@ fn local_managed_state_over(
             local_realization_owner,
             ..Default::default()
         },
+        clock,
     );
     application.set_credential_source(vaults.clone());
     application.set_credential_material_ingress(vaults);

@@ -39,9 +39,7 @@ use awaken_session_application_contract::StepOutcome;
 use awaken_session_configuration_contract::SessionInit;
 use awaken_session_error_contract::RunError;
 use awaken_session_repository_contract::SessionRepository;
-use awaken_session_execution_contract::{
-    OutcomeDrive, SessionEnvironmentBindingSink, SessionRuntime, ToolPermissionDecision,
-};
+use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
 use awaken_session_state_contract::{SessionDisposition, SessionExecutionState};
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
@@ -6083,7 +6081,7 @@ async fn persist_profiled_publication_source(
         Some(realization),
     )
     .for_environment(environment_fingerprint);
-    let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(sessions.clone());
+    let sink = state.session_application().environment_binding_sink();
     assert_eq!(
         sink.authorize(&intent).await.unwrap(),
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,

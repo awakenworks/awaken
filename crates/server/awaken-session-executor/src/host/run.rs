@@ -746,8 +746,7 @@ impl SharedHost {
     /// any dispatch left runnable by a crash. Returns the recovered run ids.
     pub async fn reconcile(&self, thread: &str) -> Result<Vec<String>, HostError> {
         let worker = self.durable_worker(thread).await?;
-        let clock: Arc<dyn awaken_lease_contract::WallClock> =
-            awaken_lease_contract::system_clock();
+        let clock = self.clock.clone();
         let mut processed = worker
             .reconcile_committed_terminals(256)
             .await

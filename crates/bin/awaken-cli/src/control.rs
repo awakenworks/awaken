@@ -304,6 +304,8 @@ async fn prepare_control_process_with_model_supply_and_installations(
     let _ = managed_services
         .install_credential_envelope(deployment.worker.credential_envelope_keys_file.as_deref())?;
     let background_services = std::mem::take(&mut managed_services.background_services);
+    // The Control process chooses its one wall clock here.
+    let clock = awaken_lease_contract::system_clock();
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
         coordinator: deployment.coordinator.clone(),
@@ -316,8 +318,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
         seal_key: Some(key),
         role: config::Role::Control,
         postgres_schema: PostgresSchemaMode::Verify,
-        // The Control process chooses its one wall clock here.
-        clock: awaken_lease_contract::system_clock(),
+        clock: clock.clone(),
     })
     .await?;
     let identity = identity_wiring(
@@ -407,6 +408,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
         event_batch_cutover_validation: prepared.event_batch_cutover_validation,
         coordinator_authorities: None,
         admin_tools: prepared.admin_tools,
+        clock,
     })
 }
 

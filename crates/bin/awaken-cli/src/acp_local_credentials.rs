@@ -139,19 +139,23 @@ async fn prepare_local_acp_with_workspace(
 fn configured_worker_upstream(
     upstream: impl Into<String>,
     deployment: &crate::config::ResolvedDeployment,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
-    deployment
-        .worker
-        .upstream(upstream, awaken_worker::WorkerUpstreamSecurity::Local)
+    deployment.worker.upstream(
+        upstream,
+        awaken_worker::WorkerUpstreamSecurity::Local,
+        clock,
+    )
 }
 
 fn configured_worker_builder(
     upstream: impl Into<String>,
     deployment: &crate::config::ResolvedDeployment,
     credentials: awaken_credential_materializer::PinnedCredentialMaterializer,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<awaken_worker::WorkerNodeBuilder, String> {
     let worker = &deployment.worker;
-    let upstream = configured_worker_upstream(upstream, deployment)?;
+    let upstream = configured_worker_upstream(upstream, deployment, clock.clone())?;
     let mut manifest = worker
         .build_digest
         .clone()
@@ -165,7 +169,7 @@ fn configured_worker_builder(
         manifest = manifest.with_max_concurrent(max_concurrent);
     }
 
-    let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream)
+    let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream, clock)
         .with_deployment_config(deployment.runtime.clone())
         .with_standard_manifest_config(manifest)
         .with_inference_materializer(Arc::new(
@@ -244,17 +248,19 @@ impl PreparedLocalAcp {
     /// Build the canonical registered Worker against this process's control
     /// URL. The Runtime Host selects trusted Workdir only for BackendOwned
     /// Sessions and retains this deployment's isolation tier for Provider runs.
+    /// `clock` is the embedding process's one wall clock.
     pub async fn build_worker(
         self,
         upstream: impl Into<String>,
         deployment: &crate::config::ResolvedDeployment,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let resolver = self.resolver;
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
             self.stores.credentials,
             self.stores.secrets,
         );
-        configured_worker_builder(upstream, deployment, credentials)?
+        configured_worker_builder(upstream, deployment, credentials, clock)?
             .with_worker_local_credential_resolver(resolver.clone())
             .with_acp_capability_observation_source(resolver)
             .without_admin_surface()
@@ -275,16 +281,18 @@ impl PreparedLocalWorker {
         self
     }
 
+    /// `clock` is the embedding process's one wall clock.
     pub async fn build_worker(
         &self,
         upstream: impl Into<String>,
         deployment: &crate::config::ResolvedDeployment,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<awaken_worker::WorkerNode, String> {
         let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
             self.stores.credentials.clone(),
             self.stores.secrets.clone(),
         );
-        let mut builder = configured_worker_builder(upstream, deployment, credentials)?
+        let mut builder = configured_worker_builder(upstream, deployment, credentials, clock)?
             .with_admin_tools(self.admin_tools.clone())
             .without_admin_surface();
         if let Some(resolver) = &self.resolver {
@@ -390,7 +398,12 @@ mod tests {
         // cover each posture at the single WorkerUpstream construction boundary.
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
-        let unsigned = configured_worker_upstream("http://coordinator", &deployment).unwrap();
+        let unsigned = configured_worker_upstream(
+            "http://coordinator",
+            &deployment,
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap();
         let unsigned_request = unsigned
             .authorize_request(
                 "POST",
@@ -417,7 +430,12 @@ mod tests {
         )
         .unwrap();
         deployment.worker.request_credential_file = Some(credential.clone());
-        let signed = configured_worker_upstream("http://coordinator", &deployment).unwrap();
+        let signed = configured_worker_upstream(
+            "http://coordinator",
+            &deployment,
+            awaken_lease_contract::system_clock(),
+        )
+        .unwrap();
         let signed_request = signed
             .authorize_request(
                 "POST",
@@ -444,7 +462,12 @@ mod tests {
         )
         .unwrap();
         assert!(
-            configured_worker_upstream("http://coordinator", &deployment).is_err(),
+            configured_worker_upstream(
+                "http://coordinator",
+                &deployment,
+                awaken_lease_contract::system_clock()
+            )
+            .is_err(),
             "W3"
         );
     }
@@ -806,6 +829,7 @@ mod tests {
         );
         let worker = awaken_worker::WorkerNodeBuilder::new(
             awaken_worker_transport_security::WorkerUpstream::new("http://control"),
+            awaken_lease_contract::system_clock(),
         )
         .with_credential_materializer(
             awaken_credential_materializer::PinnedCredentialMaterializer::new(
@@ -859,7 +883,11 @@ mod tests {
             admin_tools: Vec::new(),
         };
         let worker = prepared
-            .build_worker("http://127.0.0.1:1", &deployment)
+            .build_worker(
+                "http://127.0.0.1:1",
+                &deployment,
+                awaken_lease_contract::system_clock(),
+            )
             .await
             .expect("W1 WorkerNode");
         assert!(
@@ -962,7 +990,11 @@ mod tests {
             "P1"
         );
         let worker = prepared
-            .build_worker("http://127.0.0.1:1", &deployment)
+            .build_worker(
+                "http://127.0.0.1:1",
+                &deployment,
+                awaken_lease_contract::system_clock(),
+            )
             .await
             .unwrap();
         assert!(worker.manifest().capabilities.contains("acp:codex"), "P1");

@@ -335,7 +335,10 @@ async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
         sample_persisted("binding-now"),
     )
     .await;
-    let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(repo.clone());
+    let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(
+        repo.clone(),
+        awaken_lease_contract::system_clock(),
+    );
 
     let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
         "binding-now",
@@ -642,7 +645,10 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
             conflicts,
             ReadControl::default(),
         ));
-        let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(repo);
+        let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(
+            repo,
+            awaken_lease_contract::system_clock(),
+        );
         let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
             format!("binding-{conflicts}"),
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create,

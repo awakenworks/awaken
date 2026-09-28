@@ -59,10 +59,13 @@ pub enum WorkerUpstreamSecurity<'a> {
 impl WorkerBootstrap {
     /// One credential-loading boundary for standalone and embedded startup.
     /// Credential parsing and secure remote admission remain transport-owned.
+    /// `clock` is the Worker process's one clock; its signed request
+    /// assertions are stamped with it.
     pub fn upstream(
         &self,
         server: impl Into<String>,
         security: WorkerUpstreamSecurity<'_>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
         let server = server.into();
         if let Some(directory) = &self.kubernetes_identity_directory {
@@ -94,9 +97,6 @@ impl WorkerBootstrap {
         use awaken_worker_transport_security::{
             WorkerUpstream, parse_projected_signing_credentials, projected_request_authorizer,
         };
-        // The Worker process's wall clock for signed request assertions. This
-        // bootstrap is the Worker's composition boundary, so it chooses it here.
-        let clock = awaken_lease_contract::system_clock();
         let source = self
             .request_credential_file
             .as_ref()
@@ -435,11 +435,15 @@ impl WorkerDaemonConfig {
                 })
             })
             .transpose()?;
+        // The Worker daemon's one wall clock: its request assertions and the
+        // Host it builds (dispatch pool, recovery, children) share it.
+        let clock = awaken_lease_contract::system_clock();
         let upstream = self.worker.upstream(
             &self.server,
             WorkerUpstreamSecurity::Remote {
                 server_ca_certificate: certificate.as_deref(),
             },
+            clock.clone(),
         )?;
 
         let mut manifest = self
@@ -460,7 +464,7 @@ impl WorkerDaemonConfig {
                 credentials.clone(),
             );
         let mut runtime = self.runtime.clone();
-        let mut builder = crate::WorkerNodeBuilder::new(upstream);
+        let mut builder = crate::WorkerNodeBuilder::new(upstream, clock);
         if matches!(
             runtime.sandbox_tier,
             awaken_session_executor::SandboxTier::Local | awaken_session_executor::SandboxTier::Namespace
@@ -711,7 +715,11 @@ mod tests {
             let mut worker = resolved.unwrap();
             assert_eq!(worker.worker_id, "k8s:workers:worker-a:uid-a");
             let upstream = worker
-                .upstream("https://coordinator", WorkerUpstreamSecurity::Local)
+                .upstream(
+                    "https://coordinator",
+                    WorkerUpstreamSecurity::Local,
+                    awaken_lease_contract::system_clock(),
+                )
                 .unwrap();
             let request = upstream
                 .authorize_request(
@@ -731,7 +739,11 @@ mod tests {
             );
             assert!(
                 worker
-                    .upstream("http://coordinator", WorkerUpstreamSecurity::Local)
+                    .upstream(
+                        "http://coordinator",
+                        WorkerUpstreamSecurity::Local,
+                        awaken_lease_contract::system_clock()
+                    )
                     .is_err(),
                 "P1 still HTTPS"
             );
@@ -744,7 +756,11 @@ mod tests {
             worker.request_credential_file = Some(directory.path().join("signer"));
             assert!(
                 worker
-                    .upstream("https://coordinator", WorkerUpstreamSecurity::Local)
+                    .upstream(
+                        "https://coordinator",
+                        WorkerUpstreamSecurity::Local,
+                        awaken_lease_contract::system_clock()
+                    )
                     .is_err(),
                 "P3 mutation"
             );
@@ -752,7 +768,11 @@ mod tests {
             std::fs::write(directory.path().join("uid"), "replacement").unwrap();
             assert!(
                 worker
-                    .upstream("https://coordinator", WorkerUpstreamSecurity::Local)
+                    .upstream(
+                        "https://coordinator",
+                        WorkerUpstreamSecurity::Local,
+                        awaken_lease_contract::system_clock()
+                    )
                     .is_err(),
                 "P4"
             );
@@ -786,12 +806,22 @@ mod tests {
         };
         assert!(
             worker
-                .upstream("http://coordinator", WorkerUpstreamSecurity::Local)
+                .upstream(
+                    "http://coordinator",
+                    WorkerUpstreamSecurity::Local,
+                    awaken_lease_contract::system_clock()
+                )
                 .is_ok(),
             "B1"
         );
         assert!(
-            worker.upstream("https://coordinator", remote()).is_err(),
+            worker
+                .upstream(
+                    "https://coordinator",
+                    remote(),
+                    awaken_lease_contract::system_clock()
+                )
+                .is_err(),
             "B2"
         );
         let file = directory.path().join("credential.json");
@@ -808,7 +838,13 @@ mod tests {
                     WorkerUpstreamSecurity::Local
                 };
                 assert_eq!(
-                    worker.upstream("https://coordinator", security).is_ok(),
+                    worker
+                        .upstream(
+                            "https://coordinator",
+                            security,
+                            awaken_lease_contract::system_clock()
+                        )
+                        .is_ok(),
                     source == Some(valid),
                     "B3/B4 {is_remote}"
                 );
@@ -816,12 +852,22 @@ mod tests {
         }
         assert!(
             worker
-                .upstream("http://coordinator", WorkerUpstreamSecurity::Local)
+                .upstream(
+                    "http://coordinator",
+                    WorkerUpstreamSecurity::Local,
+                    awaken_lease_contract::system_clock()
+                )
                 .is_ok(),
             "B3 local"
         );
         assert!(
-            worker.upstream("http://coordinator", remote()).is_err(),
+            worker
+                .upstream(
+                    "http://coordinator",
+                    remote(),
+                    awaken_lease_contract::system_clock()
+                )
+                .is_err(),
             "B3 remote"
         );
         assert!(
@@ -830,7 +876,8 @@ mod tests {
                     "https://coordinator",
                     WorkerUpstreamSecurity::Remote {
                         server_ca_certificate: Some(b"invalid")
-                    }
+                    },
+                    awaken_lease_contract::system_clock()
                 )
                 .is_err(),
             "B5"
@@ -838,7 +885,13 @@ mod tests {
         worker.worker_id = "other".into();
         for security in [WorkerUpstreamSecurity::Local, remote()] {
             assert!(
-                worker.upstream("https://coordinator", security).is_err(),
+                worker
+                    .upstream(
+                        "https://coordinator",
+                        security,
+                        awaken_lease_contract::system_clock()
+                    )
+                    .is_err(),
                 "B4 mismatch"
             );
         }
