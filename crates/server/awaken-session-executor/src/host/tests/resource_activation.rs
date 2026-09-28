@@ -744,11 +744,22 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
 #[tokio::test]
 async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays() {
     for retained_terminal in [false, true] {
-        terminal_repository_publication_fixture(retained_terminal).await;
+        terminal_repository_publication_fixture(retained_terminal, false).await;
     }
 }
 
-async fn terminal_repository_publication_fixture(retained_terminal: bool) {
+#[tokio::test]
+async fn terminal_repository_publication_closed_source_converges_without_git() {
+    // S1 the exact aggregate binding and current lease remain valid, but the
+    // provider observes the test-owned filesystem has disappeared before Git.
+    // E1 return a durable negative publication outcome, never a success or an
+    // invented remote-ref conflict; E2 leave the independent remote unchanged.
+    // Ready/replay/foreign-retirement rows reuse this same production fixture.
+    // This is source-closure evidence, not proof of an earlier remote effect.
+    terminal_repository_publication_fixture(false, true).await;
+}
+
+async fn terminal_repository_publication_fixture(retained_terminal: bool, source_closed: bool) {
     let temp = tempfile::tempdir().expect("publication fixture");
     let sandbox_root = temp.path().join("sandboxes");
     let namespace_probe = awaken_sandbox_local::NamespaceProvider::new(&sandbox_root);
@@ -1051,6 +1062,52 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool) {
     )
     .await
     .expect("P1 install the aggregate-fenced publication assignment");
+    if source_closed {
+        // Inject actual loss of only this test's sole owned source after all
+        // authoring commands joined. Preserve sibling provider markers: deleting
+        // identity evidence is Incompatible, not an absence proof. Observe the
+        // sole physical directory instead of copying the provider name codec.
+        let sources = std::fs::read_dir(&sandbox_root)
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_type().unwrap().is_dir())
+            .filter(|entry| {
+                std::fs::read_to_string(
+                    entry
+                        .path()
+                        .join(
+                            awaken_provisioning_contract::WorkspaceLayout::ROOT
+                                .trim_start_matches('/'),
+                        )
+                        .join(".terminal-publication-proof/commit.txt"),
+                )
+                .is_ok_and(|observed| observed.trim() == commit)
+            })
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        assert_eq!(sources.len(), 1, "S1 one fixture-owned realization");
+        std::fs::remove_dir_all(&sources[0]).expect("S1 remove owned fixture source");
+        let outcome = managed
+            .terminal_cleanup()
+            .unwrap()
+            .execute_terminal_repository_publication_for_lease(command, &lease)
+            .await
+            .expect("S1 exact closed source must return a negative outcome");
+        assert!(
+            matches!(
+                outcome,
+                awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(_)
+            ),
+            "S1 source loss cannot publish a commit"
+        );
+        let published = std::process::Command::new("git")
+            .current_dir(&remote)
+            .args(["show-ref", "--verify", "--quiet", "refs/heads/awf/work"])
+            .status()
+            .expect("S1 independent remote observation");
+        assert!(!published.success(), "S1 remote remains unchanged");
+        return;
+    }
     if retained_terminal {
         // P5: a previous terminal preparation returned no aggregate receipt but
         // retained this exact bound Arc behind retirement. Provider remains Ready;

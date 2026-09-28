@@ -93,6 +93,7 @@ pub(crate) struct PreparedBoundEnvironment {
     durable_handle: Option<awaken_provisioning_contract::SandboxHandle>,
     effect_mode: TerminalEffectMode,
     definitive_absence: bool,
+    closed_publication_source: Option<awaken_provisioning_contract::SandboxObservation>,
 }
 
 impl PreparedBoundEnvironment {
@@ -106,7 +107,30 @@ impl PreparedBoundEnvironment {
             durable_handle,
             effect_mode,
             definitive_absence: false,
+            closed_publication_source: None,
         }
+    }
+
+    /// Non-executable publication observation. It retains the original handle
+    /// and validated fact, but neither installs a replacement Environment nor
+    /// claims complete physical cleanup of auxiliary participants.
+    fn closed_publication_source(
+        handle: awaken_provisioning_contract::SandboxHandle,
+        observation: awaken_provisioning_contract::SandboxObservation,
+    ) -> Self {
+        let mut prepared = Self::new(
+            None,
+            Some(handle),
+            TerminalEffectMode::RecoverOnlyUnprepared,
+        );
+        prepared.closed_publication_source = Some(observation);
+        prepared
+    }
+
+    pub(crate) fn publication_source_closure(
+        &self,
+    ) -> Option<&awaken_provisioning_contract::SandboxObservation> {
+        self.closed_publication_source.as_ref()
     }
 
     fn with_definitive_absence(mut self) -> Self {

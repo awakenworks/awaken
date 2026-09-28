@@ -167,7 +167,7 @@ REQUIRED = {
         "receipt.verify(&command)?",
         "pub fn repository_publication_rejection(",
         "rejection.verify(&command)?",
-        "pub fn record_repository_publication_rejection(",
+        "pub(crate) fn record_repository_publication_rejection(",
         "RepositoryPublicationOutcomeMismatch",
     ),
     SESSION_REPOSITORY_RECOVERY: (
@@ -187,6 +187,8 @@ REQUIRED = {
     SESSION_REPOSITORY_PUBLICATION_AGGREGATE: (
         "pub fn verified_terminal_cleanup(",
         "self.terminal_cleanup.verify_for(&self.session_id)?",
+        "pub fn record_repository_publication_rejection(",
+        "matches_source_binding(self.environment.terminal_repository_publication_binding())",
     ),
     SESSION_DELETE_DISPOSITION: (
         'event_type: "session.deleted"',
@@ -252,7 +254,7 @@ REQUIRED = {
         '"terminal-cleanup-disposal"',
         ".verified_terminal_cleanup()",
         "record_terminal_repository_publication_effect_from_root",
-        ".record_repository_publication_rejection(session_id, rejection)",
+        "session.record_repository_publication_rejection(rejection)",
         '"terminal-repository-publication-worker-outcome"',
     ),
     APPLICATION_TERMINAL: (
@@ -418,6 +420,18 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     errors.extend(
         _require_ordered_function(
             sources,
+            SESSION_REPOSITORY_PUBLICATION_AGGREGATE,
+            "record_repository_publication_rejection",
+            (
+                "matches_source_binding(self.environment.terminal_repository_publication_binding())",
+                ".record_repository_publication_rejection(&self.session_id, rejection)",
+            ),
+            "source-bound aggregate rejection before sidecar mutation",
+        )
+    )
+    errors.extend(
+        _require_ordered_function(
+            sources,
             SESSION_CLEANUP_DRIVER,
             "drive_session_terminal_cleanup",
             (
@@ -573,7 +587,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             APPLICATION_RESOURCE_RECONCILIATION,
             "record_terminal_repository_publication_effect_from_root",
             (
-                ".record_repository_publication_rejection(session_id, rejection)",
+                "session.record_repository_publication_rejection(rejection)",
                 '"terminal-repository-publication-worker-outcome"',
             ),
             "one root-CAS Repository publication outcome",
@@ -1012,6 +1026,15 @@ def selftest() -> None:
     canonical = {
         relative: "\n".join(markers) for relative, markers in REQUIRED.items()
     }
+    canonical[SESSION_REPOSITORY_PUBLICATION_AGGREGATE] = """
+pub fn verified_terminal_cleanup() {
+    self.terminal_cleanup.verify_for(&self.session_id)?;
+}
+pub fn record_repository_publication_rejection() {
+    rejection.effect_rejection.matches_source_binding(self.environment.terminal_repository_publication_binding());
+    self.terminal_cleanup.record_repository_publication_rejection(&self.session_id, rejection);
+}
+"""
     canonical[SESSION_CLEANUP_DRIVER] = """
 pub async fn drive_session_terminal_cleanup() {
     match action {
@@ -1119,7 +1142,7 @@ fn record_terminal_repository_publication_effect_from_root() {
     session.verified_terminal_cleanup();
     match effect {
         Published(receipt) => session.record_repository_publication_receipt(session_id, receipt),
-        Rejected(rejection) => session.record_repository_publication_rejection(session_id, rejection),
+        Rejected(rejection) => session.record_repository_publication_rejection(rejection),
     }
     "terminal-repository-publication-worker-outcome";
 }
@@ -1335,7 +1358,7 @@ fn recover_terminal_receipts() {
         (
             "durable rejection outcome",
             SESSION_REPOSITORY_PUBLICATION,
-            "pub fn record_repository_publication_rejection(",
+            "pub(crate) fn record_repository_publication_rejection(",
         ),
         (
             "shared root outcome CAS",
@@ -1503,7 +1526,7 @@ fn recover_terminal_receipts() {
         (
             "root rejection before outcome CAS",
             APPLICATION_RESOURCE_RECONCILIATION,
-            ".record_repository_publication_rejection(session_id, rejection)",
+            "session.record_repository_publication_rejection(rejection)",
             '"terminal-repository-publication-worker-outcome"',
         ),
         (
@@ -1533,6 +1556,31 @@ fn recover_terminal_receipts() {
             .replace("__AWAKEN_EFFECT_ORDER__", later, 1)
         )
         assert session_effect_violations(mutant), f"reordered {rule} rejected"
+
+    # Source-admission cause/effect table: SG1 the application calls the one
+    # aggregate gate before its CAS -> accept; SG2 bypass to the private sidecar
+    # or remove/move source comparison after mutation -> refuse. This extends
+    # the existing owner/order oracle instead of tolerating both paths.
+    for owner, before, after in (
+        (APPLICATION_RESOURCE_RECONCILIATION,
+         "session.record_repository_publication_rejection(rejection)",
+         "session.terminal_cleanup.record_repository_publication_rejection(rejection)"),
+        (SESSION_REPOSITORY_PUBLICATION_AGGREGATE,
+         "matches_source_binding(self.environment.terminal_repository_publication_binding())",
+         "unchecked_source_binding()"),
+    ):
+        mutant = dict(canonical)
+        mutant[owner] = mutant[owner].replace(before, after)
+        assert session_effect_violations(mutant), "SG2 source admission bypass rejected"
+    mutant = dict(canonical)
+    earlier = "matches_source_binding(self.environment.terminal_repository_publication_binding())"
+    later = ".record_repository_publication_rejection(&self.session_id, rejection)"
+    mutant[SESSION_REPOSITORY_PUBLICATION_AGGREGATE] = (
+        mutant[SESSION_REPOSITORY_PUBLICATION_AGGREGATE]
+        .replace(earlier, "__SOURCE_ORDER__", 1).replace(later, earlier, 1)
+        .replace("__SOURCE_ORDER__", later, 1)
+    )
+    assert session_effect_violations(mutant), "SG2 late source comparison rejected"
 
     duplicate_writer = dict(canonical)
     duplicate_writer["crates/example/src/duplicate_repository_writer.rs"] = (

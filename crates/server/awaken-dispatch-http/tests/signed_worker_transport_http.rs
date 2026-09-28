@@ -2013,6 +2013,36 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         std::slice::from_ref(&publication_rejection),
         "P3"
     );
+    // P3-source: the existing signed rejection endpoint transports the exact
+    // closed-source cause without a second route. This fixture owns HTTP bytes
+    // and lease/auth refusal only; aggregate/provider tests own source proof.
+    let source_closed =
+        awaken_session_state_contract::SessionRepositoryPublicationRejection::source_closed(
+            &publication_command,
+            "signed-source-binding",
+            awaken_provisioning_contract::SandboxObservation::Terminal {
+                physical_incarnation: "signed-source-pod".into(),
+            },
+        )
+        .unwrap();
+    client
+        .record_terminal_repository_publication_rejection(
+            &registered.snapshot.identity,
+            "signed-thread",
+            &realization_lease,
+            source_closed.clone(),
+        )
+        .await
+        .expect("P3-source rejection record");
+    assert_eq!(
+        session_control
+            .repository_publication_rejections
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[publication_rejection.clone(), source_closed.clone()],
+        "P3-source byte-identical cause"
+    );
     let calls_before_foreign_publication = session_control
         .terminal_control_calls
         .load(Ordering::SeqCst);
@@ -2050,6 +2080,18 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .await
             .is_err(),
         "P4 foreign publication rejection"
+    );
+    assert!(
+        client
+            .record_terminal_repository_publication_rejection(
+                &registered.snapshot.identity,
+                "signed-thread",
+                &foreign_cleanup_lease,
+                source_closed,
+            )
+            .await
+            .is_err(),
+        "P4 foreign source-closure outcome"
     );
     assert_eq!(
         session_control
