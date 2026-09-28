@@ -5,6 +5,7 @@
 //! owned lifecycle fact with the Session and wakes the outbox notifier; the
 //! dispatcher signs and delivers over real HTTP.
 
+use awaken_protocol_managed_testkit::ManagedStateFixture as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 

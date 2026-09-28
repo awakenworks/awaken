@@ -1,0 +1,30 @@
+[package]
+name = "awaken-protocol-managed-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.awaken]
+context = "devtools"
+layer = "tooling"
+authority = "protocol-managed"
+description = "Volatile Session, Work, Environment and sandbox-policy store fixtures handed to the Managed adapter behind their ports"
+
+[dependencies]
+awaken-protocol-managed = { workspace = true, features = ["test-support"] }
+awaken-environment-application.workspace = true
+awaken-environment-execution-application.workspace = true
+awaken-executable-environment-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-session-repository-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-session-work-contract.workspace = true
+awaken-executable-environment-catalog.workspace = true
+awaken-env-store = { workspace = true, features = ["test-support"] }
+awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
+awaken-session-store = { workspace = true, features = ["test-support"] }
+awaken-work-store = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

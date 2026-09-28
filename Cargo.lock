@@ -708,10 +708,12 @@ dependencies = [
  "awaken-dispatch-http",
  "awaken-dispatch-testkit",
  "awaken-dream-application",
+ "awaken-environment-application",
  "awaken-environment-contract",
  "awaken-environment-execution-application",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
+ "awaken-executable-environment-catalog",
  "awaken-ext-background-task",
  "awaken-ext-mcp",
  "awaken-ext-memory",
@@ -730,6 +732,7 @@ dependencies = [
  "awaken-protocol-ai-sdk",
  "awaken-protocol-awaken",
  "awaken-protocol-managed",
+ "awaken-protocol-managed-testkit",
  "awaken-protocol-mcp",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
@@ -773,6 +776,7 @@ dependencies = [
  "awaken-tenancy",
  "awaken-webhook",
  "awaken-webhook-managed",
+ "awaken-work-store",
  "awaken-worker-contract",
  "awaken-worker-registry",
  "awaken-worker-transport-security",
@@ -1858,6 +1862,7 @@ dependencies = [
  "awaken-observability",
  "awaken-outbound-http",
  "awaken-protocol-awaken",
+ "awaken-protocol-managed-testkit",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
  "awaken-resource-application",
@@ -1906,6 +1911,25 @@ dependencies = [
  "tracing",
  "uuid",
  "zip",
+]
+
+[[package]]
+name = "awaken-protocol-managed-testkit"
+version = "1.0.0"
+dependencies = [
+ "awaken-env-store",
+ "awaken-environment-application",
+ "awaken-environment-execution-application",
+ "awaken-executable-environment-catalog",
+ "awaken-executable-environment-contract",
+ "awaken-protocol-managed",
+ "awaken-provisioning-contract",
+ "awaken-sandbox-policy-store",
+ "awaken-session-execution-contract",
+ "awaken-session-repository-contract",
+ "awaken-session-store",
+ "awaken-session-work-contract",
+ "awaken-work-store",
 ]
 
 [[package]]
@@ -2418,6 +2442,7 @@ dependencies = [
  "awaken-protocol-ai-sdk",
  "awaken-protocol-awaken",
  "awaken-protocol-managed",
+ "awaken-protocol-managed-testkit",
  "awaken-protocol-mcp",
  "awaken-provider-genai",
  "awaken-resource-application",

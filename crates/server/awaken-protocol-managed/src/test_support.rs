@@ -13,12 +13,7 @@ pub use managed_event_observer::{
 };
 
 use awaken_session_execution_contract::SessionRuntime;
-use std::sync::Arc;
 
-use awaken_environment_execution_application::{
-    CoordinatorEnvironmentRegistrar, EnvironmentExecutionApplication,
-};
-use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
 use awaken_runtime_contract::tool_batch::ToolBatch;
 
 use crate::types::tunnel::{Tunnel, TunnelCertificate, TunnelToken};
@@ -58,10 +53,7 @@ pub fn lifecycle_audit_records<'a>(
     records.sort_by_key(|record| record.sequence);
     records
 }
-use crate::{
-    EnvironmentAuthoringState, ManagedTunnelApplication, ManagedTunnelApplicationError,
-    ManagedTunnelScope,
-};
+use crate::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
 
 /// Protocol fixtures exercise application ordering, not OS suspend behavior.
 /// Keep one explicit advancing test clock; unsupported production Runtimes
@@ -236,37 +228,20 @@ pub fn complete_terminal_cleanup_disposal(
     awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command)
 }
 
-#[must_use]
-pub fn environment_components() -> (
-    Arc<EnvironmentAuthoringState>,
-    Arc<EnvironmentExecutionApplication>,
+/// This crate's own tests: the Managed Environment surfaces over the testkit's
+/// volatile stores (integration tests use the testkit's function directly).
+#[cfg(test)]
+pub(crate) fn environment_components() -> (
+    std::sync::Arc<crate::EnvironmentAuthoringState>,
+    std::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
 ) {
-    let work: Arc<dyn awaken_session_work_contract::WorkQueue> =
-        Arc::new(awaken_work_store::InMemoryWorkQueue::new());
-    let catalog =
-        Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
-    catalog
-        .install_seed(awaken_environment_application::default_environment_registration())
-        .expect("install built-in local Environment");
-    let registrar: Arc<dyn ExecutableEnvironmentRegistrar> =
-        Arc::new(CoordinatorEnvironmentRegistrar::new(
-            Arc::new(
-                awaken_executable_environment_catalog::LocalExecutableEnvironmentRegistrar::new(
-                    catalog.clone(),
-                ),
-            ),
-            work.clone(),
-        ));
-    let policies =
-        Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default());
-    let application = Arc::new(awaken_environment_application::EnvironmentApplication::new(
-        Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
-        registrar,
-        Some(policies.clone()),
-    ));
+    let fixture = awaken_protocol_managed_testkit::environment_fixture();
     (
-        Arc::new(EnvironmentAuthoringState::new(application, policies)),
-        Arc::new(EnvironmentExecutionApplication::new(work, catalog)),
+        std::sync::Arc::new(crate::EnvironmentAuthoringState::new(
+            fixture.application,
+            fixture.sandbox_policies,
+        )),
+        fixture.execution,
     )
 }
 

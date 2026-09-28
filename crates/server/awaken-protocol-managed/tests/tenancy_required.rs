@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::test_support::EmptyManagedTunnelApplication;
-use awaken_protocol_managed::{ManagedState, router, tunnels_router};
+use awaken_protocol_managed::{router, tunnels_router};
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_error_contract::RunError;
 use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
@@ -402,7 +402,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for AcceptingFake {
 }
 
 fn managed() -> Router {
-    router(Arc::new(ManagedState::new(AcceptingFake)))
+    router(Arc::new(support::state(AcceptingFake)))
 }
 
 async fn status_of(app: &Router, method: &str, uri: &str, body: Option<&str>) -> StatusCode {
