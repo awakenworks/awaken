@@ -5,6 +5,7 @@
 // @formal reason: and each ordinal one operation, preserving replay identity without a clock or second
 // @formal reason: registry. Adjacent tests qualify the codec and identity partitions; this is not a proof
 // @formal reason: of persistence or protocol delivery.
+use awaken_agent_contract::RunLifecycleEventKind;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_session_types::{SessionId, SessionRevision};
 
@@ -24,6 +25,34 @@ pub enum SessionAgentRunBoundary {
     Completed,
     Failed,
     Cancelled,
+}
+
+impl SessionAgentRunBoundary {
+    /// The one Run-boundary classification of a committed lifecycle kind.
+    ///
+    /// Settlement, the Managed status/idle projections, interval aggregation
+    /// and the canonical event order all key on this same set; they call this
+    /// instead of re-spelling `Awaiting | Completed | Failed | Cancelled`, so a
+    /// new lifecycle kind cannot join one consumer's boundary set and not the
+    /// others'.
+    #[must_use]
+    pub const fn of_lifecycle_kind(kind: RunLifecycleEventKind) -> Option<Self> {
+        match kind {
+            RunLifecycleEventKind::Awaiting => Some(Self::Awaiting),
+            RunLifecycleEventKind::Completed => Some(Self::Completed),
+            RunLifecycleEventKind::Failed => Some(Self::Failed),
+            RunLifecycleEventKind::Cancelled => Some(Self::Cancelled),
+            RunLifecycleEventKind::Running
+            | RunLifecycleEventKind::Resumed
+            | RunLifecycleEventKind::Rescheduled => None,
+        }
+    }
+
+    /// Whether a committed lifecycle kind closes one Run activity interval.
+    #[must_use]
+    pub const fn is_boundary(kind: RunLifecycleEventKind) -> bool {
+        Self::of_lifecycle_kind(kind).is_some()
+    }
 }
 
 /// Derive the only ordinary Event-batch identity from its prospective committed

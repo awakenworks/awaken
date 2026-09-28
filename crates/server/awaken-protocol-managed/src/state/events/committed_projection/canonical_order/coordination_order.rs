@@ -213,7 +213,10 @@ pub(super) fn index_coordination_orders(
                 .copied(),
         };
         if let Some(source_order) = source_order {
-            for (role, phase) in [("link-thread-created", 51), ("link-status-running", 52)] {
+            for (role, phase) in [
+                (event_role::LINK_THREAD_CREATED, 51),
+                (event_role::LINK_STATUS_RUNNING, 52),
+            ] {
                 retain_earliest_order(
                     orders,
                     managed_multiagent_event_id(
@@ -245,8 +248,8 @@ pub(super) fn index_coordination_orders(
                 continue;
             };
             for (role, phase) in [
-                ("coordination-status-running", 54),
-                ("coordination-message-sent", 55),
+                (event_role::COORDINATION_STATUS_RUNNING, 54),
+                (event_role::COORDINATION_MESSAGE_SENT, 55),
             ] {
                 retain_earliest_order(
                     orders,
@@ -280,7 +283,10 @@ pub(super) fn index_coordination_orders(
             let Some(source_commit_cursor) = report_source else {
                 continue;
             };
-            for role in ["child-message-received", "advisor-message-received"] {
+            for role in [
+                event_role::CHILD_MESSAGE_RECEIVED,
+                event_role::ADVISOR_MESSAGE_RECEIVED,
+            ] {
                 retain_earliest_order(
                     orders,
                     managed_multiagent_event_id(

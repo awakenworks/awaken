@@ -42,8 +42,8 @@ impl DreamSessionSource for FixedSessionFacts {
         _workspace_id: &str,
         _updated_after_ms: u64,
         _limit: usize,
-    ) -> Vec<SessionId> {
-        Vec::new()
+    ) -> Result<Vec<SessionId>, String> {
+        Ok(Vec::new())
     }
 
     async fn session_usage(
@@ -68,8 +68,8 @@ impl DreamSessionSource for AlternateSessionFacts {
         _workspace_id: &str,
         _updated_after_ms: u64,
         _limit: usize,
-    ) -> Vec<SessionId> {
-        Vec::new()
+    ) -> Result<Vec<SessionId>, String> {
+        Ok(Vec::new())
     }
 
     async fn session_usage(
@@ -95,8 +95,8 @@ async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() 
             _workspace_id: &str,
             updated_after_ms: u64,
             limit: usize,
-        ) -> Vec<SessionId> {
-            if updated_after_ms > 0 {
+        ) -> Result<Vec<SessionId>, String> {
+            Ok(if updated_after_ms > 0 {
                 Vec::new()
             } else if self.0.load(std::sync::atomic::Ordering::SeqCst) {
                 vec!["s1".into()]
@@ -106,7 +106,7 @@ async fn automatic_policy_is_opt_in_thresholded_and_reuses_the_dream_job_path() 
                     .take(limit)
                     .map(SessionId::from)
                     .collect()
-            }
+            })
         }
     }
 
@@ -274,8 +274,8 @@ async fn concurrent_policy_ticks_claim_one_dream_across_replicas() {
             _workspace_id: &str,
             _updated_after_ms: u64,
             _limit: usize,
-        ) -> Vec<SessionId> {
-            vec!["s1".into()]
+        ) -> Result<Vec<SessionId>, String> {
+            Ok(vec!["s1".into()])
         }
     }
     let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
@@ -1100,8 +1100,8 @@ async fn canceled_dream_keeps_projecting_trailing_session_usage() {
             _workspace_id: &str,
             _updated_after_ms: u64,
             _limit: usize,
-        ) -> Vec<SessionId> {
-            Vec::new()
+        ) -> Result<Vec<SessionId>, String> {
+            Ok(Vec::new())
         }
         async fn session_usage(
             &self,

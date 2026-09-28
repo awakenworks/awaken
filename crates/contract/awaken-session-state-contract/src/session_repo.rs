@@ -28,6 +28,7 @@ mod activity_state;
 mod disposition;
 mod mutation;
 mod persisted_session;
+mod placement;
 mod recovery;
 mod repository_publication;
 mod runtime_intervals;
@@ -43,6 +44,7 @@ pub use mutation::{
 pub use persisted_session::{
     PersistedSession, SessionEventDispatchSettlementEffect, session_is_terminal,
 };
+pub use placement::{SessionPlacementClass, SessionPublicStatus};
 pub use recovery::{
     SessionRecoveryQuarantine, SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor,
     SessionScanQuery,

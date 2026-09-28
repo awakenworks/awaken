@@ -12,7 +12,7 @@ use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::{RunLifecycleEventKind, classify_run_lifecycle_event};
+use awaken_agent_contract::classify_run_lifecycle_event;
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize};
 
@@ -114,27 +114,50 @@ pub use awaken_session_event_contract::SessionAgentRunBoundary;
 /// Classify only committed states that form an Agent-message activity boundary.
 #[must_use]
 pub fn session_agent_run_boundary(state: &RunState) -> Option<SessionAgentRunBoundary> {
-    match classify_run_lifecycle_event(state, None) {
-        RunLifecycleEventKind::Awaiting => Some(SessionAgentRunBoundary::Awaiting),
-        RunLifecycleEventKind::Completed => Some(SessionAgentRunBoundary::Completed),
-        RunLifecycleEventKind::Failed => Some(SessionAgentRunBoundary::Failed),
-        RunLifecycleEventKind::Cancelled => Some(SessionAgentRunBoundary::Cancelled),
-        RunLifecycleEventKind::Running
-        | RunLifecycleEventKind::Resumed
-        | RunLifecycleEventKind::Rescheduled => None,
+    SessionAgentRunBoundary::of_lifecycle_kind(classify_run_lifecycle_event(state, None))
+}
+
+/// Close-rule class of one coordinated Thread.
+///
+/// Consumers: the Managed lifecycle projection (which only sees the wire
+/// `is_advisor` bit), Managed interruption recovery, and the Session/Host
+/// follow-up admission fences. They previously split the rule: only the
+/// projection knew that Advisor consultations close at every terminal Run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoordinatedThreadKind {
+    /// Ordinary Agent Thread reused by follow-up messages.
+    Agent,
+    /// One-shot Advisor consultation.
+    Advisor,
+}
+
+impl CoordinatedThreadKind {
+    #[must_use]
+    pub const fn from_is_advisor(is_advisor: bool) -> Self {
+        if is_advisor {
+            Self::Advisor
+        } else {
+            Self::Agent
+        }
     }
 }
 
-/// Whether the latest committed Run permanently closes an ordinary coordinated
-/// Thread to follow-up input.
+/// Whether the latest committed Run permanently closes a coordinated Thread to
+/// further input.
 ///
 /// This is a projection of the existing Run lifecycle authority, not another
-/// Thread disposition cell. Completed and externally cancelled Runs leave the
-/// logical Thread reusable; a `Failed` lifecycle classification is absorbing
-/// because no later Run may be admitted after it.
+/// Thread disposition cell. For an ordinary Agent Thread, Completed and
+/// externally cancelled Runs leave the logical Thread reusable; a `Failed`
+/// lifecycle classification is absorbing because no later Run may be admitted
+/// after it. An Advisor consultation is one-shot, so every ended Run closes it.
 #[must_use]
-pub fn coordinated_thread_failed(state: &RunState) -> bool {
-    session_agent_run_boundary(state) == Some(SessionAgentRunBoundary::Failed)
+pub fn coordinated_thread_closed(kind: CoordinatedThreadKind, state: &RunState) -> bool {
+    match kind {
+        CoordinatedThreadKind::Agent => {
+            session_agent_run_boundary(state) == Some(SessionAgentRunBoundary::Failed)
+        }
+        CoordinatedThreadKind::Advisor => state.is_terminal(),
+    }
 }
 
 /// Logical position of the claimed Run inside Agent-message settlement.
@@ -452,42 +475,73 @@ mod tests {
     }
 
     #[test]
-    fn failed_run_alone_absorbingly_terminates_coordinated_follow_up() {
+    fn coordinated_thread_close_rule_covers_agent_and_advisor_kinds() {
         use awaken_agent_contract::agent::run::{EndCause, Failure};
 
-        // Cause/effect graph: C1 latest committed state is active/Awaiting or
-        // one of the closed EndCause variants. Effects: E1 Failed lifecycle
-        // classes permanently reject follow-up; E2 Completed and Cancelled
-        // leave the logical Thread reusable; E3 nonterminal states remain
-        // admissible for queued input. The lifecycle classifier is the sole
-        // authority; this test stores no parallel terminal flag.
+        // Cause/effect graph: C1 Thread kind is an ordinary Agent or a one-shot
+        // Advisor; C2 latest committed state is active/Awaiting or one of the
+        // closed EndCause variants. Effects: E1 closed (follow-up rejected,
+        // Thread projected Terminated); E2 open (Thread reusable). The
+        // lifecycle classifier is the sole authority; no parallel flag.
         //
         // Decision table:
-        // | Rule | Latest state | Lifecycle class | Effect |
-        // |---|---|---|---|
-        // | F1 | Running/Awaiting | active | E3 accepts |
-        // | F2 | NaturalEnd | Completed | E2 accepts |
-        // | F3 | Cancelled | Cancelled | E2 accepts |
-        // | F4 | MaxSteps/Stopped/Error/Indeterminate | Failed | E1 rejects |
-        // Constraint/invariant: the canonical lifecycle classifier is the
-        // only terminal authority; coordination stores no parallel failed bit.
-        for state in [RunState::Running, RunState::Awaiting] {
-            assert!(!coordinated_thread_failed(&state), "F1/E3: {state:?}");
-        }
-        for state in [
+        // | Rule | Kind | Latest state | Lifecycle class | Effect |
+        // |---|---|---|---|---|
+        // | F1 | Agent | Running/Awaiting | active | E2 |
+        // | F2 | Agent | NaturalEnd | Completed | E2 |
+        // | F3 | Agent | Cancelled | Cancelled | E2 |
+        // | F4 | Agent | MaxSteps/Stopped/Error/Indeterminate | Failed | E1 |
+        // | A1 | Advisor | Running/Awaiting | active | E2 |
+        // | A2 | Advisor | any Ended | Completed/Cancelled/Failed | E1 |
+        let active = [RunState::Running, RunState::Awaiting];
+        let reusable = [
             RunState::Ended(EndCause::NaturalEnd),
             RunState::Ended(EndCause::Cancelled),
-        ] {
-            assert!(!coordinated_thread_failed(&state), "F2-F3/E2: {state:?}");
-        }
-        for state in [
+        ];
+        let failed = [
             RunState::Ended(EndCause::MaxSteps),
             RunState::Ended(EndCause::Stopped("budget".into())),
             RunState::Ended(EndCause::Error(Failure::StateConflict)),
             RunState::Ended(EndCause::Indeterminate),
-        ] {
-            assert!(coordinated_thread_failed(&state), "F4/E1: {state:?}");
+        ];
+        for state in &active {
+            assert!(
+                !coordinated_thread_closed(CoordinatedThreadKind::Agent, state),
+                "F1/E2: {state:?}"
+            );
+            assert!(
+                !coordinated_thread_closed(CoordinatedThreadKind::Advisor, state),
+                "A1/E2: {state:?}"
+            );
         }
+        for state in &reusable {
+            assert!(
+                !coordinated_thread_closed(CoordinatedThreadKind::Agent, state),
+                "F2-F3/E2: {state:?}"
+            );
+            assert!(
+                coordinated_thread_closed(CoordinatedThreadKind::Advisor, state),
+                "A2/E1: {state:?}"
+            );
+        }
+        for state in &failed {
+            assert!(
+                coordinated_thread_closed(CoordinatedThreadKind::Agent, state),
+                "F4/E1: {state:?}"
+            );
+            assert!(
+                coordinated_thread_closed(CoordinatedThreadKind::Advisor, state),
+                "A2/E1: {state:?}"
+            );
+        }
+        assert_eq!(
+            CoordinatedThreadKind::from_is_advisor(true),
+            CoordinatedThreadKind::Advisor
+        );
+        assert_eq!(
+            CoordinatedThreadKind::from_is_advisor(false),
+            CoordinatedThreadKind::Agent
+        );
     }
 
     #[test]
@@ -818,6 +872,15 @@ impl CoordinatedThreadTarget {
         match self {
             Self::Agent { agent_id } => Some(agent_id),
             Self::Advisor { .. } => None,
+        }
+    }
+
+    /// Close-rule class consumed by [`coordinated_thread_closed`].
+    #[must_use]
+    pub const fn kind(&self) -> CoordinatedThreadKind {
+        match self {
+            Self::Agent { .. } => CoordinatedThreadKind::Agent,
+            Self::Advisor { .. } => CoordinatedThreadKind::Advisor,
         }
     }
 

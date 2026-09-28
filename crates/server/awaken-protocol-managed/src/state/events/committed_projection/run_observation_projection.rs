@@ -26,7 +26,7 @@ impl ManagedState {
                 let id = managed_multiagent_event_id(
                     &record.session.id,
                     thread_id,
-                    "run-context-compacted",
+                    event_role::RUN_CONTEXT_COMPACTED,
                     ManagedMultiagentEventProvenance::RunState { run_id: &run.id.0 },
                 );
                 if !record.has_event_id(&id) {
@@ -64,13 +64,13 @@ impl ManagedState {
                 let start_id = managed_multiagent_event_id(
                     &record.session.id,
                     thread_id,
-                    "model-request-start",
+                    event_role::MODEL_REQUEST_START,
                     provenance(),
                 );
                 let end_id = managed_multiagent_event_id(
                     &record.session.id,
                     thread_id,
-                    "model-request-end",
+                    event_role::MODEL_REQUEST_END,
                     provenance(),
                 );
                 if record.has_event_id(&end_id) {

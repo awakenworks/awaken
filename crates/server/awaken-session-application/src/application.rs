@@ -29,34 +29,15 @@ pub const fn runtime_placement_for_topology(
     }
 }
 
-/// Select the one physical Environment-realization owner from the frozen fact.
-#[must_use]
-pub const fn environment_requires_external_owner(frozen: SessionRuntimePlacement) -> bool {
-    match frozen {
-        SessionRuntimePlacement::Local => false,
-        SessionRuntimePlacement::Worker => true,
-    }
-}
-
-/// Decide whether the disposable WorkQueue projection must be present from the
-/// authoritative Session root. Absence, local execution, and terminal cleanup
-/// all stutter; only a frozen nonterminal self-hosted Session is projected.
-const fn session_work_projection_required(
-    frozen_self_hosted: Option<bool>,
-    terminal: bool,
-) -> bool {
-    matches!(frozen_self_hosted, Some(true)) && !terminal
-}
-
 /// Reject a frozen topology whose idle policy would require Coordinator-local
 /// continuation effects against a Worker-owned Environment. External Workers
 /// have one realization/terminal-cleanup claim path, but no claim-fenced
 /// nonterminal quiesce, checkpoint, disposal, or restore transport.
 fn validate_environment_continuation_topology(
-    runtime_placement: SessionRuntimePlacement,
+    placement: awaken_session_state_contract::SessionPlacementClass,
     idle_retention: &awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,
 ) -> Result<(), RunError> {
-    if environment_requires_external_owner(runtime_placement)
+    if placement.requires_external_environment_owner()
         && idle_retention.mode
             == awaken_session_configuration_contract::EnvironmentIdleRetentionMode::CheckpointAndRelease
     {
@@ -69,57 +50,35 @@ fn validate_environment_continuation_topology(
 
 #[cfg(kani)]
 mod environment_owner_kani_proof {
-    use super::{
-        SessionExecutionPlacement, SessionRuntimePlacement, environment_requires_external_owner,
-        runtime_placement_for_topology,
-    };
+    use super::{SessionExecutionPlacement, SessionRuntimePlacement, runtime_placement_for_topology};
+    use awaken_session_state_contract::SessionPlacementClass;
 
     /// @obligation runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
     /// @obligation session_environment.owner_topology_is_exact_and_frozen
     /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
     #[kani::proof]
     fn environment_owner_topology_is_exact_and_frozen() {
+        // Process topology freezes exactly one runtime placement, and the one
+        // contract placement class selects the Environment owner from that
+        // placement alone: the self-hosted Environment bit never moves it.
         let registered: bool = kani::any();
         let topology = if registered {
             SessionExecutionPlacement::RegisteredWorker
         } else {
             SessionExecutionPlacement::LocalWorker
         };
-
+        let frozen = runtime_placement_for_topology(topology);
         assert_eq!(
-            runtime_placement_for_topology(topology),
+            frozen,
             if registered {
                 SessionRuntimePlacement::Worker
             } else {
                 SessionRuntimePlacement::Local
             }
         );
-        assert!(!environment_requires_external_owner(
-            SessionRuntimePlacement::Local
-        ));
-        assert!(environment_requires_external_owner(
-            SessionRuntimePlacement::Worker
-        ));
-    }
-
-    /// @obligation session_creation.work_projection_is_disposable_repairable_and_non_authoritative
-    /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
-    /// @proof-input-debt free_symbol session_work_projection_required terminal
-    #[kani::proof]
-    fn work_projection_is_derived_only_from_durable_session_truth() {
-        // Cause/effect table: C1 root has no frozen baseline / local / external;
-        // C2 root is nonterminal/terminal. E1 enqueue iff external+nonterminal;
-        // E2 every other row stutters. Both the create fast path and recovery
-        // scan call the same production function that consumes this decision.
-        let frozen_self_hosted = match kani::any::<u8>() % 3 {
-            0 => None,
-            1 => Some(false),
-            _ => Some(true),
-        };
-        let terminal = kani::any::<bool>();
         assert_eq!(
-            super::session_work_projection_required(frozen_self_hosted, terminal),
-            frozen_self_hosted == Some(true) && !terminal
+            SessionPlacementClass::new(frozen, kani::any()).requires_external_environment_owner(),
+            registered
         );
     }
 }
@@ -315,9 +274,7 @@ impl SessionApplication {
     /// Resolve the sole physical-realization owner from the immutable baseline.
     #[must_use]
     pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
-        session
-            .frozen_baseline()
-            .is_some_and(|baseline| environment_requires_external_owner(baseline.runtime_placement))
+        session.requires_external_environment_owner()
     }
 
     /// Claim the one lifecycle supervisor for this application instance.
@@ -351,7 +308,10 @@ impl SessionApplication {
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), RunError> {
         validate_environment_continuation_topology(
-            layout.runtime_placement,
+            awaken_session_state_contract::SessionPlacementClass::new(
+                layout.runtime_placement,
+                layout.environment.self_hosted,
+            ),
             &layout.environment.idle_retention,
         )?;
         self.runtime
@@ -925,14 +885,10 @@ async fn dispatch_session_work(
         // create-time callers cannot acquire a second projection policy.
         return Ok(false);
     }
-    let baseline = session.frozen_baseline();
-    if !session_work_projection_required(
-        baseline.map(|baseline| baseline.environment.self_hosted),
-        session.is_terminal(),
-    ) {
+    if !session.requires_work_projection() {
         return Ok(false);
     }
-    let Some(baseline) = baseline else {
+    let Some(baseline) = session.frozen_baseline() else {
         // The closed production decision above cannot admit this state. Keep
         // the adapter fail-closed if the representation is ever extended.
         return Ok(false);

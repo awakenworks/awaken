@@ -202,7 +202,10 @@ impl SessionApplication {
             .ok_or_else(|| SessionContinuationError::Repository("baseline is not frozen".into()))?
             .clone();
         validate_environment_continuation_topology(
-            baseline.runtime_placement,
+            awaken_session_state_contract::SessionPlacementClass::new(
+                baseline.runtime_placement,
+                baseline.environment.self_hosted,
+            ),
             &baseline.environment.idle_retention,
         )?;
 
@@ -412,7 +415,10 @@ impl SessionApplication {
             }
             if let Some(baseline) = session.frozen_baseline() {
                 validate_environment_continuation_topology(
-                    baseline.runtime_placement,
+                    awaken_session_state_contract::SessionPlacementClass::new(
+                        baseline.runtime_placement,
+                        baseline.environment.self_hosted,
+                    ),
                     &baseline.environment.idle_retention,
                 )?;
             }

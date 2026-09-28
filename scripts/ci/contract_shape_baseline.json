@@ -10,10 +10,10 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4926,
+      "production_lines": 4997,
       "catch_all_errors": 5,
       "growth_reasons": {
-        "production_lines": "The existing RunRecoverySnapshot borrow-only lifecycle projection remains the canonical fold. CheckpointReader now returns asynchronous error-bearing pages while its portable lifecycle adapter retains the execution view, avoiding a duplicate durable Run lookup."
+        "production_lines": "RunRecoverySnapshot::current_run and answerable_ticket replace seven current-Run resolutions and four ticket selectors with disagreeing multiplicity rules across protocol-managed, session-application and runtime-host"
       }
     },
     "awaken-credential-contract": {

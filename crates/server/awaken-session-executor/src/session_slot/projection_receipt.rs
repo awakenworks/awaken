@@ -35,13 +35,14 @@ impl FrozenProjectionReceipt {
 }
 
 // This production kernel is also the bounded proof boundary. Neither a lease
-// renewal nor a Resource revision is an aggregate ordering coordinate.
+// renewal nor a Resource revision is an aggregate ordering coordinate. The
+// fingerprint is aggregate identity, so divergence at one revision conflicts.
 fn projection_revision_admission(current: Option<u64>, incoming: u64, exact: bool) -> Option<bool> {
-    match current {
-        None => Some(true),
-        Some(current) if incoming > current => Some(true),
-        Some(current) if incoming == current && exact => Some(false),
-        _ => None,
+    use awaken_session_types::{MonotoneAdmission, SourceOrder, monotone_admission};
+    match monotone_admission(SourceOrder::of_revision(current, incoming), exact) {
+        MonotoneAdmission::Advance => Some(true),
+        MonotoneAdmission::Replay => Some(false),
+        MonotoneAdmission::Divergent | MonotoneAdmission::Reject => None,
     }
 }
 
