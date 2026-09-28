@@ -248,8 +248,9 @@ mod resource_reconciliation;
 mod roles;
 mod run_admission;
 mod runtime_commands;
-mod session_realization_driver;
-mod terminal_cleanup_driver;
+pub use awaken_session_realization_driver::{
+    SessionTerminalCleanupDriveOutcome, drive_session_realization, drive_session_terminal_cleanup,
+};
 pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{
     SessionRealizationError, SessionReconciliation, SessionReconciliationFailure,
@@ -271,10 +272,6 @@ pub use runtime_commands::{
     ConfiguredSessionRepository, SessionExecutionObservation, SessionModelRequestObservation,
     SessionRepositoryOwner, SessionRepositoryResourceInput, SessionRunExecutionObservation,
     SessionToolUseObservation,
-};
-pub use session_realization_driver::drive_session_realization;
-pub use terminal_cleanup_driver::{
-    SessionTerminalCleanupDriveOutcome, drive_session_terminal_cleanup,
 };
 mod update;
 pub use update::{

@@ -33,9 +33,9 @@ awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-session-work-contract.workspace = true
 awaken-environment-contract.workspace = true
-# The one topology-neutral terminal cleanup driver is Session application
-# orchestration over contract ports; local and remote Workers both call it.
-awaken-session-application.workspace = true
+# The topology-neutral Session realization and terminal-cleanup drivers over
+# contract ports; the Session application and this Host's Workers both call them.
+awaken-session-realization-driver.workspace = true
 awaken-resource-contract.workspace = true
 awaken-runtime = { workspace = true }
 # Volatile commit/checkpoint reference adapters are available only to explicit

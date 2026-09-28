@@ -2324,7 +2324,6 @@ dependencies = [
  "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",
- "awaken-session-application",
  "awaken-session-application-contract",
  "awaken-session-budget-contract",
  "awaken-session-configuration-contract",
@@ -2333,6 +2332,7 @@ dependencies = [
  "awaken-session-event-contract",
  "awaken-session-mcp-contract",
  "awaken-session-realization-contract",
+ "awaken-session-realization-driver",
  "awaken-session-resource-contract",
  "awaken-session-runtime-contract",
  "awaken-session-state-contract",
@@ -2690,6 +2690,7 @@ dependencies = [
  "awaken-session-mcp-contract",
  "awaken-session-projection",
  "awaken-session-realization-contract",
+ "awaken-session-realization-driver",
  "awaken-session-repository-contract",
  "awaken-session-resource-contract",
  "awaken-session-runtime-contract",
@@ -2848,6 +2849,29 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-session-realization-driver"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-environment-contract",
+ "awaken-provisioning-contract",
+ "awaken-runtime-contract",
+ "awaken-session-application-contract",
+ "awaken-session-configuration-contract",
+ "awaken-session-error-contract",
+ "awaken-session-mcp-contract",
+ "awaken-session-realization-contract",
+ "awaken-session-resource-contract",
+ "awaken-session-runtime-contract",
+ "awaken-session-state-contract",
+ "awaken-session-types",
+ "serde_json",
  "tokio",
 ]
 
