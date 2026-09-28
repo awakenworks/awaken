@@ -84,8 +84,8 @@ fn project(
         source_revision: snapshot.metadata.source.revision,
         model: managed_model,
         inference: spec.plugin_config.inference.clone(),
-        execution_model_ref: Some(spec.model_binding.binding().model_ref.clone()),
-        backend_ref: spec.model_binding.backend_ref.clone(),
+        execution_model_ref: Some(spec.model_binding.binding().identity().1.to_owned()),
+        backend_ref: spec.model_binding.identity().2.to_owned(),
         system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
         tool_ids: spec
             .tool_descriptors

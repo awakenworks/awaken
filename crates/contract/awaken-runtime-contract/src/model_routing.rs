@@ -44,9 +44,9 @@ pub fn exact_candidate_identity(
     right: &ResolvedModelCandidate,
 ) -> bool {
     route_pin_axes_are_exact(
-        left.binding().provider_identity_ref == right.binding().provider_identity_ref,
-        left.binding().model_ref == right.binding().model_ref,
-        left.binding().backend_ref == right.binding().backend_ref,
+        left.binding().identity().0 == right.binding().identity().0,
+        left.binding().identity().1 == right.binding().identity().1,
+        left.binding().identity().2 == right.binding().identity().2,
         left.provisioning() == right.provisioning(),
     )
 }

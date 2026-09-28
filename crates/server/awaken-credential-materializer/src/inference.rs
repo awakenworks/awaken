@@ -193,7 +193,7 @@ impl CredentialInferenceMaterializer {
                 return crate::brokered_inference::BrokeredCandidateExecutor::new(
                     client,
                     provider_ref,
-                    &candidate.binding().model_ref,
+                    candidate.binding().identity().1,
                     endpoint,
                     *unspecified_reasoning,
                     local_run_correlation,
@@ -257,10 +257,7 @@ struct PinnedModelExecutor {
 #[async_trait]
 impl LlmExecutor for PinnedModelExecutor {
     async fn infer(&self, mut request: ChatRequest) -> Result<ChatResponse, LlmError> {
-        request
-            .model_binding
-            .model_ref
-            .clone_from(&self.upstream_model);
+        request.model_binding = request.project_upstream_model(&self.upstream_model)?;
         self.inner.infer(request).await
     }
 
@@ -269,10 +266,7 @@ impl LlmExecutor for PinnedModelExecutor {
         mut request: ChatRequest,
         sink: &dyn DeltaSink,
     ) -> Result<ChatResponse, LlmError> {
-        request
-            .model_binding
-            .model_ref
-            .clone_from(&self.upstream_model);
+        request.model_binding = request.project_upstream_model(&self.upstream_model)?;
         self.inner.infer_streaming(request, sink).await
     }
 }
@@ -297,7 +291,7 @@ impl PinnedCandidateExecutor {
             .ok_or_else(|| {
                 LlmError::Binding(format!(
                     "model {} is outside the publication-pinned candidate set",
-                    requested.model_ref
+                    requested.identity().1
                 ))
             })?;
         self.materializer
@@ -315,7 +309,7 @@ impl PinnedCandidateExecutor {
             .ok_or_else(|| {
                 LlmError::Binding(format!(
                     "publication-pinned model candidate is unavailable for {}",
-                    requested.model_ref
+                    requested.identity().1
                 ))
             })
     }
@@ -391,7 +385,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
                 "effective model is outside the publication candidate set".to_string()
             })?;
         if !matches!(
-            Backend::from_ref(&exact.binding().backend_ref),
+            Backend::from_ref(exact.binding().identity().2),
             Backend::Native
         ) {
             return Ok(None);
@@ -473,22 +467,27 @@ mod tests {
     #[tokio::test]
     async fn pinned_executor_preserves_inner_execution_evidence_for_both_modes() {
         use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
-        struct Reject(ModelExecutionEvidence);
+        struct Reject {
+            evidence: ModelExecutionEvidence,
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
         #[async_trait]
         impl LlmExecutor for Reject {
             async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
-                assert_eq!(request.model_binding.model_ref, "upstream");
-                Err(LlmError::Provider("inner failure".into()).with_execution_evidence(self.0))
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(request.model_binding.identity(), ("p", "upstream", "b"));
+                Err(LlmError::Provider("inner failure".into())
+                    .with_execution_evidence(self.evidence))
             }
-        }
-        struct Sink;
-        #[async_trait]
-        impl DeltaSink for Sink {
-            async fn on_text(&self, _: &str) {}
         }
         // C1 all three evidence values * C2 streaming/nonstreaming => exact
         // evidence and classification survive model-name pinning. A decorator
         // must never promote Unknown to Terminated merely because it returned.
+        // C3 the pinned wire model is canonical / empty / padded. P1 canonical
+        // => same provider/backend, exactly one inner call per mode, C1 retained.
+        // P2 empty/padded => Binding + NotDispatched(RequestProjection), zero
+        // inner calls in BOTH modes. The same Reject owns every positive/negative
+        // row; projection cannot turn a caller's original binding into bad data.
         for evidence in [
             ModelExecutionEvidence::Unknown,
             ModelExecutionEvidence::NotDispatched(
@@ -501,25 +500,46 @@ mod tests {
                 .unwrap(),
             ),
         ] {
-            let executor = PinnedModelExecutor {
-                inner: Arc::new(Reject(evidence)),
-                upstream_model: "upstream".into(),
-            };
-            let request = ChatRequest {
-                model_binding: ModelBinding::new("p", "alias", "b"),
-                inference: Default::default(),
-                messages: Vec::new(),
-                tools: Vec::new(),
-            };
-            for streaming in [false, true] {
-                let error = if streaming {
-                    executor.infer_streaming(request.clone(), &Sink).await
-                } else {
-                    executor.infer(request.clone()).await
+            for alias in ["upstream", "", " upstream", "upstream "] {
+                let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let executor = PinnedModelExecutor {
+                    inner: Arc::new(Reject {
+                        evidence,
+                        calls: calls.clone(),
+                    }),
+                    upstream_model: alias.into(),
+                };
+                let request = ChatRequest {
+                    model_binding: ModelBinding::parse("p", "alias", "b").unwrap(),
+                    inference: Default::default(),
+                    messages: Vec::new(),
+                    tools: Vec::new(),
+                };
+                for streaming in [false, true] {
+                    let error = if streaming {
+                        executor
+                            .infer_streaming(request.clone(), &crate::NoopDeltaSink)
+                            .await
+                    } else {
+                        executor.infer(request.clone()).await
+                    }
+                    .unwrap_err();
+                    if alias == "upstream" {
+                        assert_eq!(error.code(), "provider_error", "P1");
+                        assert_eq!(error.execution_evidence(), evidence, "P1");
+                    } else {
+                        assert!(matches!(error.classification(), LlmError::Binding(_)), "P2");
+                        assert_eq!(error.execution_evidence(), ModelExecutionEvidence::NotDispatched(
+                            awaken_runtime_contract::model_operation::NoDispatchProof::request_projection(),
+                        ), "P2");
+                    }
+                    assert_eq!(request.model_binding.identity(), ("p", "alias", "b"));
                 }
-                .unwrap_err();
-                assert_eq!(error.code(), "provider_error");
-                assert_eq!(error.execution_evidence(), evidence);
+                assert_eq!(
+                    calls.load(std::sync::atomic::Ordering::SeqCst),
+                    if alias == "upstream" { 2 } else { 0 },
+                    "P1/P2 exact effects"
+                );
             }
         }
     }
@@ -901,11 +921,6 @@ mod tests {
                 panic!("no grant receipt exists")
             }
         }
-        struct Sink;
-        #[async_trait]
-        impl DeltaSink for Sink {
-            async fn on_text(&self, _: &str) {}
-        }
         let client = Arc::new(LostGrant::default());
         let materializer = neutral_materializer().with_brokered_client(client.clone());
         let candidate = brokered_candidate("model-a");
@@ -933,7 +948,9 @@ mod tests {
             for streaming in [false, true] {
                 let error = with_model_operation_context(Some(operation.clone()), async {
                     if streaming {
-                        router.infer_streaming(request.clone(), &Sink).await
+                        router
+                            .infer_streaming(request.clone(), &crate::NoopDeltaSink)
+                            .await
                     } else {
                         router.infer(request.clone()).await
                     }
@@ -1042,11 +1059,6 @@ mod tests {
         );
         // B4 at the actual model port is known pre-dispatch in both modes;
         // NeverGrantClient would panic if candidate validation leaked I/O.
-        struct Sink;
-        #[async_trait]
-        impl DeltaSink for Sink {
-            async fn on_text(&self, _: &str) {}
-        }
         let request = ChatRequest {
             model_binding: ModelBinding::new("openai", "outside", "genai"),
             inference: Default::default(),
@@ -1055,7 +1067,9 @@ mod tests {
         };
         for streaming in [false, true] {
             let error = if streaming {
-                router.infer_streaming(request.clone(), &Sink).await
+                router
+                    .infer_streaming(request.clone(), &crate::NoopDeltaSink)
+                    .await
             } else {
                 router.infer(request.clone()).await
             }

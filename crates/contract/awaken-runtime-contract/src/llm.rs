@@ -79,6 +79,22 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDescriptor>,
 }
 
+impl ChatRequest {
+    /// Project the already selected endpoint's wire model name without changing
+    /// the original binding, provider identity, or backend. Adapters use this
+    /// before acquiring a transport/grant; this selects no new publication.
+    pub fn project_upstream_model(&self, model: impl Into<String>) -> Result<ModelBinding> {
+        let (provider, _, backend) = self.model_binding.identity();
+        ModelBinding::parse(provider, model, backend).map_err(|error| {
+            Error::Binding(error.to_string()).with_execution_evidence(
+                crate::model_operation::ModelExecutionEvidence::NotDispatched(
+                    crate::model_operation::NoDispatchProof::request_projection(),
+                ),
+            )
+        })
+    }
+}
+
 /// Attempt-bound transformation of logical model content before provider I/O.
 ///
 /// The runtime owns when this port runs (after request construction and model

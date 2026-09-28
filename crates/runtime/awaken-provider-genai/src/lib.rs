@@ -241,7 +241,7 @@ impl LlmExecutor for GenaiExecutor {
                 NoDispatchProof::request_projection(),
             )));
         }
-        let model = request.model_binding.model_ref.clone();
+        let model = request.model_binding.identity().1.to_owned();
         let genai_request =
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
                 .map_err(|error| {
@@ -465,7 +465,7 @@ impl GenaiExecutor {
         max_tokens_override: Option<u32>,
     ) -> Result<ChatResponse> {
         let deadline = crate::inference_budget::current_model_response_deadline(self.timeout)?;
-        let model = request.model_binding.model_ref.clone();
+        let model = request.model_binding.identity().1.to_owned();
         let genai_request =
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
                 .map_err(|error| {

@@ -65,7 +65,7 @@ impl InferenceExecutorMaterializer for RouteProvider {
         if !matches!(candidate.provisioning(), ModelProvisioning::HostExecutor) {
             return None;
         }
-        let model_ref = candidate.binding().model_ref.as_str();
+        let model_ref = candidate.binding().identity().1;
         let labeled: Arc<dyn LlmExecutor> = match model_ref {
             "fast" => Arc::new(LabelModel("fast")),
             "slow" => Arc::new(LabelModel("slow")),

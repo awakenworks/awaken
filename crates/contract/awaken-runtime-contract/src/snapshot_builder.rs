@@ -364,11 +364,11 @@ mod tests {
             ])
             .build();
         let spec = &pooled.resolved_spec;
-        assert_eq!(spec.model_binding.model_ref, "primary");
+        assert_eq!(spec.model_binding.identity().1, "primary");
         assert_eq!(spec.model_candidates.len(), 2);
         // The engine tries the primary first, then these in order.
         assert_eq!(spec.candidate_bindings().len(), 3);
-        assert_eq!(spec.candidate_bindings()[1].model_ref, "fallback-1");
+        assert_eq!(spec.candidate_bindings()[1].identity().1, "fallback-1");
     }
 
     #[test]

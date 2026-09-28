@@ -488,14 +488,7 @@ pub(super) fn restored_remote_operation_route(
 }
 
 pub(super) fn remote_candidate_of(activation: &RunActivation) -> Result<&ResolvedModelCandidate> {
-    let backend = Backend::from_ref(
-        &activation
-            .snapshot
-            .resolved_spec
-            .model_binding
-            .binding()
-            .backend_ref,
-    );
+    let backend = activation.snapshot.resolved_spec.model_binding.backend();
     if !matches!(backend, Backend::Remote(_)) {
         return Err(Error::Execution(
             "A2A executor received a non-remote backend".to_string(),
@@ -505,7 +498,9 @@ pub(super) fn remote_candidate_of(activation: &RunActivation) -> Result<&Resolve
 }
 
 pub(super) fn endpoint_of(candidate: &ResolvedModelCandidate) -> Result<String> {
-    Backend::from_ref(&candidate.binding().backend_ref)
+    candidate
+        .binding()
+        .backend()
         .remote_endpoint()
         .map(str::to_string)
         .ok_or_else(|| Error::Execution("A2A executor received a non-remote backend".to_string()))

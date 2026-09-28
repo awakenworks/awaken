@@ -429,10 +429,10 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
             "profile_id": profile_id,
         }),
         ModelSelection::Pinned(_) => json!({
-            "id": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),
-            "model_ref": binding.map(|binding| binding.model_ref.clone()).unwrap_or_default(),
-            "provider_identity_ref": binding.map(|binding| binding.provider_identity_ref.clone()).unwrap_or_default(),
-            "backend_ref": binding.map(|binding| binding.backend_ref.clone()).unwrap_or_default(),
+            "id": binding.map(|binding| binding.identity().1.to_owned()).unwrap_or_default(),
+            "model_ref": binding.map(|binding| binding.identity().1.to_owned()).unwrap_or_default(),
+            "provider_identity_ref": binding.map(|binding| binding.identity().0.to_owned()).unwrap_or_default(),
+            "backend_ref": binding.map(|binding| binding.identity().2.to_owned()).unwrap_or_default(),
         }),
     };
     let mut tools = config
@@ -699,10 +699,7 @@ mod tests {
         )
         .expect("D4");
         assert_eq!(
-            pinned
-                .model_binding
-                .resolved()
-                .map(|b| b.model_ref.as_str()),
+            pinned.model_binding.resolved().map(|b| b.identity().1),
             Some("remote-model"),
             "D4"
         );
@@ -857,9 +854,9 @@ mod tests {
         )
         .unwrap();
         let binding = config.model_binding.resolved().unwrap();
-        assert_eq!(binding.provider_identity_ref, "peer-a");
-        assert_eq!(binding.model_ref, "remote-model");
-        assert_eq!(binding.backend_ref, "a2a:https://peer.example/v1/a2a");
+        assert_eq!(binding.identity().0, "peer-a");
+        assert_eq!(binding.identity().1, "remote-model");
+        assert_eq!(binding.identity().2, "a2a:https://peer.example/v1/a2a");
 
         let projected = managed_from_agent_config(&config, false);
         assert_eq!(projected["model"]["id"], "remote-model");

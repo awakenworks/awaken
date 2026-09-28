@@ -94,13 +94,10 @@ impl ExecutableAgentSnapshot {
                     .map(|advisor| &advisor.candidate),
             )
         {
-            if !matches!(
-                Backend::from_ref(&candidate.binding().backend_ref),
-                Backend::Native
-            ) {
+            if !matches!(candidate.binding().backend(), Backend::Native) {
                 return Err(format!(
                     "embedded Awaken Runtime does not support backend `{}`",
-                    candidate.binding().backend_ref
+                    candidate.binding().identity().2
                 ));
             }
         }
@@ -183,8 +180,8 @@ mod metadata_tests {
             .build();
         snapshot.validate_embedded_native().unwrap();
         let before = snapshot.fingerprint.clone();
-        let mut binding = snapshot.resolved_spec.model_binding.binding().clone();
-        binding.model_ref = "model-b".into();
+        let (provider, _, backend) = snapshot.resolved_spec.model_binding.identity();
+        let binding = crate::resolved::ModelBinding::parse(provider, "model-b", backend).unwrap();
         snapshot.resolved_spec.model_binding = ResolvedModelCandidate::host(binding);
         snapshot.recompute_fingerprint().unwrap();
         assert_ne!(snapshot.fingerprint, before);
@@ -193,8 +190,8 @@ mod metadata_tests {
             snapshot.resolved_spec.catalog_fingerprint
         );
 
-        let mut binding = snapshot.resolved_spec.model_binding.binding().clone();
-        binding.backend_ref = "acp:claude".into();
+        let (provider, model, _) = snapshot.resolved_spec.model_binding.identity();
+        let binding = crate::resolved::ModelBinding::parse(provider, model, "acp:claude").unwrap();
         snapshot.resolved_spec.model_binding = ResolvedModelCandidate::host(binding);
         assert!(
             snapshot

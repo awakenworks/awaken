@@ -429,7 +429,7 @@ async fn infer_step(
                             store,
                             &mut ledger.staged_state,
                             "thread usage state drifted; skipping continuation record",
-                            |usage| usage.record(&candidates[cand_idx].model_ref, step_usage),
+                            |usage| usage.record(candidates[cand_idx].identity().1, step_usage),
                         );
                     }
                     let partial = truncated_assistant_message(
@@ -457,7 +457,7 @@ async fn infer_step(
                 }
                 break Ok(InferStepOutcome::Response {
                     response,
-                    model_ref: candidates[cand_idx].model_ref.clone(),
+                    model_ref: candidates[cand_idx].identity().1.to_owned(),
                 });
             }
             Err(err) => {
@@ -556,7 +556,7 @@ pub(super) async fn drive(
             store: store.as_ref(),
             run_id: run_id.0.clone(),
             thread_id: thread_id.0.clone(),
-            model: resolved.spec.model_binding.model_ref.clone(),
+            model: resolved.spec.model_binding.identity().1.to_owned(),
         });
 
     // How many times a run-end guard has steered this run. It is both the

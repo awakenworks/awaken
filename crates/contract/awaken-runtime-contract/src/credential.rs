@@ -101,7 +101,7 @@ pub fn compile_candidate_credential_bindings(
             _ => continue,
         };
         let holder = holder.ok_or(AttemptCredentialBindingError::MissingPlaintextHolder)?;
-        let backend = Backend::from_ref(&candidate.binding().backend_ref);
+        let backend = candidate.binding().backend();
         match &backend {
             Backend::Native if access.usage != CredentialUsage::ProviderAdapter => {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
@@ -123,11 +123,11 @@ pub fn compile_candidate_credential_bindings(
             // hand plaintext to a Workload whose capability evidence never
             // claimed it could receive one.
             (Backend::Acp(_), PlaintextBoundary::Workload) => installed
-                .acp_backend_realization_kind(&candidate.binding().backend_ref)
+                .acp_backend_realization_kind(candidate.binding().identity().2)
                 .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)?
                 .ok_or_else(|| AttemptCredentialBindingError::UnsupportedRealization {
                     boundary: PlaintextBoundary::Workload,
-                    backend: candidate.binding().backend_ref.clone(),
+                    backend: candidate.binding().identity().2.to_owned(),
                 })?,
             (Backend::Acp(_), PlaintextBoundary::Worker) => CredentialRealizationKind::WorkerRelay,
             (Backend::Remote(_), PlaintextBoundary::Worker) => {
@@ -139,13 +139,13 @@ pub fn compile_candidate_credential_bindings(
             (Backend::Native | Backend::Acp(_) | Backend::Remote(_), boundary) => {
                 return Err(AttemptCredentialBindingError::UnsupportedRealization {
                     boundary,
-                    backend: candidate.binding().backend_ref.clone(),
+                    backend: candidate.binding().identity().2.to_owned(),
                 });
             }
             (Backend::Invalid(_), _) => {
                 return Err(AttemptCredentialBindingError::UnsupportedRealization {
                     boundary: holder.boundary,
-                    backend: candidate.binding().backend_ref.clone(),
+                    backend: candidate.binding().identity().2.to_owned(),
                 });
             }
         };
@@ -548,7 +548,7 @@ pub fn candidate_credential_material_binding(
             access,
             CredentialMaterialBinding::for_target(
                 scope_id.as_str(),
-                &(&candidate.binding().backend_ref, security_fingerprint),
+                &(&candidate.binding().identity().2, security_fingerprint),
                 &access.usage,
             ),
         )),

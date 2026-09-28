@@ -2097,10 +2097,7 @@ async fn assert_profiled_override_projection(
             .resolved_spec
             .execution_candidates(None)
             .into_iter()
-            .all(|candidate| candidate
-                .binding()
-                .provider_identity_ref
-                .starts_with("override-")),
+            .all(|candidate| candidate.binding().identity().0.starts_with("override-")),
         "O1 original Agent route must be absent"
     );
 }

@@ -201,7 +201,8 @@ impl awaken_run_executor_a2a::TransportResolver for PinnedA2aTransportResolver {
 
         let endpoint = candidate
             .binding()
-            .backend_ref
+            .identity()
+            .2
             .strip_prefix("a2a:")
             .filter(|endpoint| !endpoint.trim().is_empty())
             .ok_or_else(|| "A2A transport resolver received a non-remote candidate".to_string())?;
@@ -1564,7 +1565,7 @@ fn dream_model_can_consume_local_inputs(model_id: &str) -> Result<bool, String> 
         selection,
         awaken_agent_config::ModelSelection::Pinned(ref binding)
             if matches!(
-                awaken_runtime_contract::resolved::Backend::from_ref(&binding.backend_ref),
+                binding.backend(),
                 awaken_runtime_contract::resolved::Backend::Remote(_)
             )
     ))

@@ -683,7 +683,7 @@ mod tests {
                 })
                 .ok_or_else(|| "test requires a pinned model".to_string())?;
             let resolved = |binding: ModelBinding| {
-                let model = binding.model_ref.clone();
+                let model = binding.identity().1.to_owned();
                 ResolvedModelCandidate::try_provider(
                     binding,
                     "test-provider",

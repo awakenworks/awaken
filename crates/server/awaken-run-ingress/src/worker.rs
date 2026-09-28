@@ -991,12 +991,13 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         // only sound committed truth until ACP exposes an idempotent Run receipt.
         if claimed.recovered
             && awaken_runtime_contract::resolved::Backend::from_ref(
-                &activation
+                activation
                     .snapshot
                     .resolved_spec
                     .model_binding
                     .binding()
-                    .backend_ref,
+                    .identity()
+                    .2,
             )
             .is_acp()
         {

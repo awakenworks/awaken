@@ -642,21 +642,17 @@ fn any_evidence(selector: u8) -> ModelExecutionEvidence {
 
 /// The one door through which this module's fixtures build a model binding.
 ///
-/// `ModelBinding::new` asserts coordinates instead of admitting them, and a
-/// file that calls it once per fixture has that many places where a coordinate
-/// can be written without the admission in view. Collapsing them to one named
-/// door is the migration the producer ratchet counts; what is left here is one
-/// call site for the tests and the Kani proofs' own literals, not thirteen.
-/// The proofs keep theirs: under `cfg(kani)` the constructor builds the literal
-/// directly and admits nothing, and a door shared with them would read as
-/// production vocabulary to the contract-shape projection.
+/// Test variants are admitted by the production parser, including every
+/// independent identity-axis change. Kani's separately checked representative
+/// avoids heap-string admission only in proofs; no production constructor forks.
 #[cfg(test)]
 fn fixture_binding(
-    provider_identity_ref: &str,
-    model_ref: &str,
-    backend_ref: &str,
+    provider_identity_ref: impl Into<String>,
+    model_ref: impl Into<String>,
+    backend_ref: impl Into<String>,
 ) -> ModelBinding {
-    ModelBinding::new(provider_identity_ref, model_ref, backend_ref)
+    ModelBinding::parse(provider_identity_ref, model_ref, backend_ref)
+        .expect("fixture coordinates must satisfy the production admission")
 }
 
 #[cfg(kani)]
@@ -853,13 +849,14 @@ mod tests {
         );
         for field in 0..6 {
             let mut changed = context.clone();
+            let (provider, model, backend) = changed.binding.identity();
             match field {
                 0 => changed.thread_id.0.push('x'),
                 1 => changed.run_id.0.push('x'),
                 2 => changed.ordinal = NonZeroU64::new(2).unwrap(),
-                3 => changed.binding.provider_identity_ref.push('x'),
-                4 => changed.binding.model_ref.push('x'),
-                _ => changed.binding.backend_ref.push('x'),
+                3 => changed.binding = fixture_binding(format!("{provider}x"), model, backend),
+                4 => changed.binding = fixture_binding(provider, format!("{model}x"), backend),
+                _ => changed.binding = fixture_binding(provider, model, format!("{backend}x")),
             }
             assert_ne!(
                 context.operation_id(),
@@ -1040,11 +1037,12 @@ mod tests {
             match mode {
                 0..=2 => {
                     let mut other = operation.clone();
-                    match mode {
-                        0 => other.binding.provider_identity_ref.push('x'),
-                        1 => other.binding.model_ref.push('x'),
-                        _ => other.binding.backend_ref.push('x'),
-                    }
+                    let (provider, model, backend) = other.binding.identity();
+                    other.binding = match mode {
+                        0 => fixture_binding(format!("{provider}x"), model, backend),
+                        1 => fixture_binding(provider, format!("{model}x"), backend),
+                        _ => fixture_binding(provider, model, format!("{backend}x")),
+                    };
                     broken = ActiveModelOperation::write(&Some(other));
                     broken.bind_run(&run);
                 }
@@ -1120,7 +1118,8 @@ mod tests {
             assert!(fold_recorded_operation(&mut recorded, update.clone()));
             let before = recorded.clone();
             assert_eq!(recorded[index], update);
-            update.binding.backend_ref.push('x');
+            let (provider, model, backend) = update.binding.identity();
+            update.binding = fixture_binding(provider, model, format!("{backend}x"));
             assert!(!fold_recorded_operation(&mut recorded, update));
             assert_eq!(recorded, before);
         }

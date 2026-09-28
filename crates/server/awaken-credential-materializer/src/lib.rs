@@ -19,6 +19,15 @@ pub mod recipient_envelope;
 mod refresh;
 mod secret_broker;
 
+#[cfg(test)]
+pub(crate) struct NoopDeltaSink;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl awaken_runtime_contract::llm::DeltaSink for NoopDeltaSink {
+    async fn on_text(&self, _: &str) {}
+}
+
 pub use http_credential::materialized_http_credential;
 pub use inference::{
     CredentialInferenceMaterializer, ResolvedExecutorError, executor_from_materialized_endpoint,

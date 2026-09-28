@@ -157,7 +157,7 @@ fn publication_decision_for_coordinates(
         .map(|publication| &publication.primary)
         .or_else(|| publication.map(|publication| &publication.resolved_spec.model_binding));
     let frozen_runtime_is_resolved = runtime.is_none_or(|runtime| {
-        model_candidate.is_some_and(|candidate| candidate.binding().backend_ref == runtime)
+        model_candidate.is_some_and(|candidate| candidate.binding().identity().2 == runtime)
     });
     frozen_agent_publication_facts(
         agent_revision.is_some(),

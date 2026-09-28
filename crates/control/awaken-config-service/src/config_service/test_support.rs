@@ -213,7 +213,7 @@ impl ModelPublicationResolver for FakeProviderResolver {
                     adapter_kind: "openai".into(),
                     api_dialect: "open_ai_chat".into(),
                     base_url: "https://example.invalid/v1".into(),
-                    upstream_model: binding.model_ref,
+                    upstream_model: binding.identity().1.to_owned(),
                     processing_placement: None,
                 },
             )

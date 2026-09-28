@@ -105,8 +105,8 @@ impl awaken_config_service::ModelPublicationResolver for ScenarioHostModelResolv
                 offerings.map(binding).collect::<Result<Vec<_>, _>>()?,
             )
         };
-        let context_window = catalog.context_window(&primary.model_ref);
-        let max_output_tokens = catalog.max_output_tokens(&primary.model_ref);
+        let context_window = catalog.context_window(primary.identity().1);
+        let max_output_tokens = catalog.max_output_tokens(primary.identity().1);
         Ok(awaken_config_service::ResolvedPublicationModels::host(
             primary,
             fallbacks,
@@ -147,7 +147,7 @@ impl awaken_config_service::ModelPublicationResolver for DistributedProviderPubl
             .resolve_models(workspace, selection, fallbacks)
             .await?;
         let candidate = |binding: ModelBinding| {
-            let upstream_model = binding.model_ref.clone();
+            let upstream_model = binding.identity().1.to_owned();
             awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
                 binding,
                 DISTRIBUTED_PROVIDER_REF,
@@ -228,7 +228,7 @@ mod tests {
             .resolve_models(&workspace, &awaken_agent_config::ModelSelection::Auto, &[])
             .await
             .expect("M2 Auto model");
-        assert_eq!(resolved.primary.binding().model_ref, "echo", "M2");
+        assert_eq!(resolved.primary.binding().identity().1, "echo", "M2");
 
         let empty = ScenarioHostModelResolver::new(Arc::new(
             awaken_model_catalog::repo::InMemoryCatalogRepo::new(),

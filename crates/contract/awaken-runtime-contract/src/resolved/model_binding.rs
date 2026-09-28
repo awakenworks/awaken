@@ -69,6 +69,29 @@ struct BindingCoherence;
 ///     backend_ref: String::new(),
 /// };
 /// ```
+///
+/// The admitted coordinates cannot be changed outside this owner. Read them
+/// through [`Self::identity`]; re-admit a different tuple with [`Self::parse`].
+/// M1-M3 are independent causes: clearing any one coordinate after admission
+/// would create a value the parser rejects. Each write must be a compile error.
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::resolved::ModelBinding;
+/// let mut binding = ModelBinding::parse("p", "m", "native").unwrap();
+/// binding.provider_identity_ref.clear(); // M1 provider identity is immutable.
+/// ```
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::resolved::ModelBinding;
+/// let mut binding = ModelBinding::parse("p", "m", "native").unwrap();
+/// binding.model_ref.clear(); // M2 exact model is immutable.
+/// ```
+///
+/// ```compile_fail
+/// use awaken_runtime_contract::resolved::ModelBinding;
+/// let mut binding = ModelBinding::parse("p", "m", "native").unwrap();
+/// binding.backend_ref.clear(); // M3 executable backend is immutable.
+/// ```
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(try_from = "ModelBindingWire")]
 pub struct ModelBinding {
@@ -77,9 +100,9 @@ pub struct ModelBinding {
     /// same model but different identities differ here, so each tracks its own
     /// circuit and quota. (Formerly `provider_instance_ref`; renamed to name the
     /// principal, aligning with awaken-next's `ProviderIdentity`.)
-    pub provider_identity_ref: String,
-    pub model_ref: String,
-    pub backend_ref: String,
+    provider_identity_ref: String,
+    model_ref: String,
+    backend_ref: String,
     #[serde(skip)]
     #[allow(
         dead_code,

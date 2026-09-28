@@ -187,7 +187,7 @@ pub fn compile_attempt_credential_bindings(
                                 || execution_candidates.iter().any(|candidate| {
                                     !matches!(
                                         awaken_runtime_contract::resolved::Backend::from_ref(
-                                            &candidate.binding().backend_ref
+                                            candidate.binding().identity().2
                                         ),
                                         awaken_runtime_contract::resolved::Backend::Acp(_)
                                     )
@@ -209,7 +209,7 @@ pub fn compile_attempt_credential_bindings(
                                 !acp_mcp_client_injection_profile_admits(
                                     access,
                                     holder,
-                                    &candidate.binding().backend_ref,
+                                    candidate.binding().identity().2,
                                     installed,
                                     now_unix_ms,
                                 )
@@ -263,7 +263,7 @@ pub fn compile_claim_credential_bindings(
             let candidate = &request.activation.snapshot.resolved_spec.model_binding;
             if !matches!(
                 awaken_runtime_contract::resolved::Backend::from_ref(
-                    &candidate.binding().backend_ref
+                    candidate.binding().identity().2
                 ),
                 awaken_runtime_contract::resolved::Backend::Remote(_)
             ) {

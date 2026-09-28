@@ -73,14 +73,15 @@ impl awaken_config_service::ModelPublicationResolver for ExactHostModelPublicati
             // A pinned binding always names an executable backend (the binding
             // admission refuses an empty one), so only the provider identity
             // may be left to the host: an external executor owns its account.
-            let matches_host = authored.model_ref == self.binding.model_ref
-                && (authored.provider_identity_ref.is_empty()
-                    || authored.provider_identity_ref == self.binding.provider_identity_ref)
-                && authored.backend_ref == self.binding.backend_ref;
+            let matches_host = authored.identity().1 == self.binding.identity().1
+                && (authored.identity().0.is_empty()
+                    || authored.identity().0 == self.binding.identity().0)
+                && authored.identity().2 == self.binding.identity().2;
             if !matches_host {
                 return Err(format!(
                     "scenario host executor `{}` cannot publish model `{}`",
-                    self.binding.model_ref, authored.model_ref
+                    self.binding.identity().1,
+                    authored.identity().1
                 )
                 .into());
             }

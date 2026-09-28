@@ -963,7 +963,7 @@ mod tests {
 
         let inference = resolve_inference(
             &catalog(),
-            &snapshot.resolved_spec.model_binding.model_ref,
+            snapshot.resolved_spec.model_binding.identity().1,
             &CredentialBinding::Exact {
                 credential_source_id: CredentialSourceId(source.id.0.clone()),
             },

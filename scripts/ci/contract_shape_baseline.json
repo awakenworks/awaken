@@ -66,10 +66,10 @@
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7738,
+      "production_lines": 7746,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "The neutral Runtime contract already owns validated inference budget and coverage-before-model chronology. This revision seals no-dispatch authority to reviewed pre-call constructors and binds physical-attempt cancellation observation in the existing RuntimeRunContext port; no new execution owner, journal, resolver, or store is introduced."
+        "production_lines": "Retain the existing validated inference-budget and Native coverage/cancellation vocabulary. This revision seals ModelBinding coordinates and reuses the sole parse/identity owners; one pure ChatRequest projection replaces three adapter field mutations and rejects invalid wire copies before grant acquisition (+8 production lines). No new execution owner, port, store, or compatibility path."
       }
     },
     "awaken-sandbox-control": {

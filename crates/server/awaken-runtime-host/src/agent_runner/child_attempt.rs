@@ -125,7 +125,7 @@ pub(crate) fn child_attempt_executor(
         .resolved_spec
         .attempt_candidates(None)
         .into_iter()
-        .map(|candidate| Backend::from_ref(&candidate.binding().backend_ref))
+        .map(|candidate| Backend::from_ref(candidate.binding().identity().2))
         .collect::<Vec<_>>();
     let acp = backends
         .iter()
@@ -307,8 +307,10 @@ mod tests {
         // parent silently broaden or narrow its referenced Agent, unlike the
         // Managed Agents version-pinned thread model.
         let mut acp_snapshot = agent("acp-child", "child");
-        let mut binding = acp_snapshot.resolved_spec.model_binding.binding().clone();
-        binding.backend_ref = "acp:claude".to_string();
+        let (provider, model, _) = acp_snapshot.resolved_spec.model_binding.identity();
+        let binding =
+            awaken_runtime_contract::resolved::ModelBinding::parse(provider, model, "acp:claude")
+                .unwrap();
         acp_snapshot.resolved_spec.model_binding =
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
         acp_snapshot.resolved_spec.plugin_config.agent.toolsets = vec![

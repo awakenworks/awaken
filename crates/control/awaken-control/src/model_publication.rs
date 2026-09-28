@@ -101,8 +101,8 @@ impl CatalogModelPublicationResolver {
         session_configuration: Option<&awaken_runtime_contract::resolved::AcpSessionConfiguration>,
         exact_target: Option<&ModelTarget>,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
-        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Native)
-            || !binding.provider_identity_ref.is_empty()
+        if matches!(Backend::from_ref(binding.identity().2), Backend::Native)
+            || !binding.identity().0.is_empty()
         {
             let offering = match exact_target {
                 Some(target) => offering_for_target(catalog, target, &[])?,
@@ -110,7 +110,7 @@ impl CatalogModelPublicationResolver {
             };
             validate_executor_offering(
                 &self.executor_capabilities,
-                &binding.backend_ref,
+                binding.identity().2,
                 offering.dialect.as_str(),
             )
             .map_err(
@@ -118,7 +118,7 @@ impl CatalogModelPublicationResolver {
                     binding: binding.clone(),
                     reason: format!(
                         "backend {} cannot consume model API dialect {}: {readiness:?}",
-                        binding.backend_ref,
+                        binding.identity().2,
                         offering.dialect.as_str()
                     ),
                 },
@@ -127,7 +127,7 @@ impl CatalogModelPublicationResolver {
                 workspace.as_str(),
                 offering.provider_id.as_str(),
                 Some(offering.protocol_endpoint_id.as_str()),
-                &binding.backend_ref,
+                binding.identity().2,
                 sources,
             );
             let derived_binding = CredentialBinding::OneOfCredentialPool {
@@ -143,18 +143,18 @@ impl CatalogModelPublicationResolver {
                     binding: binding.clone(),
                     reason: format!(
                         "no active persisted credential can consume model {} in Workspace {workspace}: {reason}",
-                        binding.model_ref
+                        binding.identity().1
                     ),
                 })?;
-            let acp = if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp(_)) {
+            let acp = if matches!(Backend::from_ref(binding.identity().2), Backend::Acp(_)) {
                 let configuration = session_configuration.cloned().unwrap_or_default();
                 let (capability_adapter_version, capability_fingerprint, negotiated) = self
-                    .verified_acp_capability(&binding.backend_ref, None, wall_clock_ms())
+                    .verified_acp_capability(binding.identity().2, None, wall_clock_ms())
                     .await?;
                 validate_acp_session_configuration(&binding, &configuration, &negotiated)?;
                 Some(awaken_runtime_contract::resolved::AcpExecutionProfile {
                     supports_tool_aliases: self.acp_capabilities.iter().any(|row| {
-                        row.backend_ref == binding.backend_ref && row.supports_tool_aliases
+                        row.backend_ref == binding.identity().2 && row.supports_tool_aliases
                     }),
                     capability_adapter_version,
                     capability_fingerprint,
@@ -173,7 +173,7 @@ impl CatalogModelPublicationResolver {
                 .provider_candidate(catalog, workspace, binding, offering, access, acp)
                 .await;
         }
-        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp(_)) {
+        if matches!(Backend::from_ref(binding.identity().2), Backend::Acp(_)) {
             let configuration = Default::default();
             return self
                 .backend_candidate(
@@ -184,11 +184,11 @@ impl CatalogModelPublicationResolver {
                 )
                 .await;
         }
-        if matches!(Backend::from_ref(&binding.backend_ref), Backend::Remote(_)) {
+        if matches!(Backend::from_ref(binding.identity().2), Backend::Remote(_)) {
             return self.remote_candidate(workspace, binding, sources).await;
         }
         Err(PublicationResolutionError::CandidateUnavailable {
-            reason: format!("model offering {} is not published", binding.model_ref),
+            reason: format!("model offering {} is not published", binding.identity().1),
             binding,
         })
     }
@@ -258,7 +258,7 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
             || all_bindings.iter().any(|binding| {
                 offering_for(&catalog, binding).is_ok()
                     || matches!(
-                        Backend::from_ref(&binding.backend_ref),
+                        Backend::from_ref(binding.identity().2),
                         Backend::Acp(_) | Backend::Remote(_)
                     )
             });
@@ -292,7 +292,7 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
                     .expect("backend exact has ACP configuration"),
             )
             .await?
-        } else if matches!(selection, ModelSelection::Pinned(binding) if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp(_)))
+        } else if matches!(selection, ModelSelection::Pinned(binding) if matches!(Backend::from_ref(binding.identity().2), Backend::Acp(_)))
         {
             self.backend_candidate(
                 primary_binding.clone(),
@@ -322,8 +322,8 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
         Ok(ResolvedPublicationModels {
             primary,
             candidates,
-            context_window: catalog.context_window(&primary_binding.model_ref),
-            max_output_tokens: catalog.max_output_tokens(&primary_binding.model_ref),
+            context_window: catalog.context_window(primary_binding.identity().1),
+            max_output_tokens: catalog.max_output_tokens(primary_binding.identity().1),
         })
     }
 }
@@ -589,7 +589,7 @@ mod tests {
             matches!(
                 error,
                 PublicationResolutionError::CandidateUnavailable { binding, reason }
-                    if binding.backend_ref == "acp:claude"
+                    if binding.identity().2 == "acp:claude"
                         && reason.contains("open_ai_responses")
                         && reason.contains("DialectUnavailable")
             ),
@@ -767,7 +767,7 @@ mod tests {
                     credential: Some(credential),
                     ..
                 } => (
-                    candidate.binding().model_ref.as_str(),
+                    candidate.binding().identity().1,
                     route_ref.as_str(),
                     credential.credential.id.as_str(),
                 ),
@@ -1034,7 +1034,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resolved.primary.binding().model_ref, "primary");
+        assert_eq!(resolved.primary.binding().identity().1, "primary");
     }
 
     #[tokio::test]
@@ -1185,7 +1185,7 @@ mod tests {
             resolved
                 .candidates
                 .iter()
-                .map(|candidate| candidate.binding().model_ref.as_str())
+                .map(|candidate| candidate.binding().identity().1)
                 .collect::<Vec<_>>(),
             vec!["m-second", "m-third"]
         );
@@ -1274,7 +1274,7 @@ mod tests {
             )
             .await
             .expect("P1");
-        assert_eq!(managed.primary.binding().backend_ref, "acp:codex", "P1");
+        assert_eq!(managed.primary.binding().identity().2, "acp:codex", "P1");
         assert!(
             matches!(
                 managed.primary.provisioning(),
@@ -1324,7 +1324,7 @@ mod tests {
             )
             .await
             .expect("P3");
-        assert_eq!(native.primary.binding().backend_ref, "genai", "P3");
+        assert_eq!(native.primary.binding().identity().2, "genai", "P3");
     }
 
     #[tokio::test]
@@ -1778,12 +1778,8 @@ mod tests {
             )
             .await
             .expect("B1");
-        assert_eq!(default.primary.binding().model_ref, "", "B1");
-        assert_eq!(
-            default.primary.binding().provider_identity_ref,
-            codex.id.0,
-            "B1"
-        );
+        assert_eq!(default.primary.binding().identity().1, "", "B1");
+        assert_eq!(default.primary.binding().identity().0, codex.id.0, "B1");
         assert!(
             matches!(
                 default.primary.provisioning(),
@@ -1812,7 +1808,7 @@ mod tests {
             )
             .await
             .expect("B2");
-        assert_eq!(exact.primary.binding().model_ref, "gpt-exact", "B2");
+        assert_eq!(exact.primary.binding().identity().1, "gpt-exact", "B2");
         assert!(
             matches!(
                 exact.primary.provisioning(),
@@ -1880,7 +1876,7 @@ mod tests {
             .await
             .expect("B5");
         assert_eq!(
-            selected.primary.binding().provider_identity_ref,
+            selected.primary.binding().identity().0,
             secondary.id.0,
             "B5"
         );

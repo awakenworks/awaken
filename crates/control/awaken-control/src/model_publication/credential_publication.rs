@@ -101,7 +101,7 @@ impl CatalogModelPublicationResolver {
             CredentialSelectionContext {
                 offering_provider: Some(offering.provider_id.as_str()),
                 offering_endpoint: Some(offering.protocol_endpoint_id.as_str()),
-                backend_ref: Some(&binding.backend_ref),
+                backend_ref: Some(binding.identity().2),
                 availability: None,
                 expected_workspace: Some(workspace.as_str()),
                 selection_sequence: sequence,
@@ -128,7 +128,7 @@ impl CatalogModelPublicationResolver {
                     credential_is_executable_supply(
                         offering.provider_id.as_str(),
                         Some(offering.protocol_endpoint_id.as_str()),
-                        &binding.backend_ref,
+                        binding.identity().2,
                         source,
                     ) && self.credential_usage(binding, source).is_ok()
                 })
@@ -156,7 +156,7 @@ impl CatalogModelPublicationResolver {
         binding: &ModelBinding,
         source: &CredentialSource,
     ) -> Result<CredentialUsage, String> {
-        let Backend::Acp(backend) = Backend::from_ref(&binding.backend_ref) else {
+        let Backend::Acp(backend) = Backend::from_ref(binding.identity().2) else {
             if source.is_claude_code_setup_token() {
                 return Err("Claude Code setup tokens require backend acp:claude".into());
             }
@@ -166,7 +166,7 @@ impl CatalogModelPublicationResolver {
         let capability = self
             .acp_capabilities
             .iter()
-            .find(|capability| capability.backend_ref == binding.backend_ref)
+            .find(|capability| capability.backend_ref == binding.identity().2)
             .ok_or_else(|| format!("ACP backend {cli} is not in the executable catalog"))?;
         capability
             .credential_usage(source.process_secret_environment_hint())
@@ -227,7 +227,7 @@ impl CatalogModelPublicationResolver {
                     &(&provider_ref, &endpoint),
                     &usage,
                 );
-                let selected_holder = self.direct_holders.as_ref().map(|holders| holders.for_backend(&binding.backend_ref)).ok_or_else(|| {
+                let selected_holder = self.direct_holders.as_ref().map(|holders| holders.for_backend(binding.identity().2)).ok_or_else(|| {
                         unavailable(
                             "direct provider credential publication requires an exact deployment-selected plaintext holder"
                                 .into(),

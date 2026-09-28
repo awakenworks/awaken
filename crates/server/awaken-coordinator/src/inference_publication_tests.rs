@@ -876,7 +876,7 @@ mod tests {
         assert_eq!(
             std::iter::once(&pinned.primary)
                 .chain(pinned.candidates.iter())
-                .map(|candidate| candidate.binding().model_ref.as_str())
+                .map(|candidate| candidate.binding().identity().1)
                 .collect::<Vec<_>>(),
             vec!["claude-x", "gpt-x"]
         );

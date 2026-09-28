@@ -148,7 +148,7 @@ pub(crate) fn model_candidates_require_opaque_process<'a>(
 ) -> bool {
     candidates.into_iter().any(|candidate| {
         matches!(
-            awaken_runtime_contract::resolved::Backend::from_ref(&candidate.binding().backend_ref),
+            awaken_runtime_contract::resolved::Backend::from_ref(candidate.binding().identity().2),
             awaken_runtime_contract::resolved::Backend::Acp(_)
         ) && !matches!(
             candidate.provisioning(),
@@ -317,7 +317,7 @@ pub(crate) fn environment_free_inference(
             .all(|candidate| {
                 matches!(
                     awaken_runtime_contract::resolved::Backend::from_ref(
-                        &candidate.binding().backend_ref,
+                        candidate.binding().identity().2,
                     ),
                     awaken_runtime_contract::resolved::Backend::Native
                         | awaken_runtime_contract::resolved::Backend::Remote(_)

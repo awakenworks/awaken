@@ -939,8 +939,10 @@ mod tests {
         projection.baseline.runtime = Some("acp:claude".into());
         let mut snapshot = test_activation(thread, "dynamic-publication").snapshot;
         snapshot.metadata.source.revision = 7;
-        let mut binding = snapshot.resolved_spec.model_binding.binding().clone();
-        binding.backend_ref = "acp:claude".into();
+        let (provider, model, _) = snapshot.resolved_spec.model_binding.identity();
+        let binding =
+            awaken_runtime_contract::resolved::ModelBinding::parse(provider, model, "acp:claude")
+                .unwrap();
         snapshot.resolved_spec.model_binding =
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
         snapshot
@@ -1086,8 +1088,13 @@ mod tests {
                 0 => delivered.root_agent_id.0 = "another-agent".into(),
                 1 => delivered.metadata.source.revision = 8,
                 _ => {
-                    let mut binding = delivered.resolved_spec.model_binding.binding().clone();
-                    binding.backend_ref = "native:other".into();
+                    let (provider, model, _) = delivered.resolved_spec.model_binding.identity();
+                    let binding = awaken_runtime_contract::resolved::ModelBinding::parse(
+                        provider,
+                        model,
+                        "native:other",
+                    )
+                    .unwrap();
                     delivered.resolved_spec.model_binding =
                         awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
                 }

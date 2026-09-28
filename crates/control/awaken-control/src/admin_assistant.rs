@@ -1376,7 +1376,7 @@ mod tests {
             .current(execution_workspace, ADMIN_ASSISTANT_AGENT_ID)
             .expect("installed");
         let spec = &installed.snapshot.resolved_spec;
-        assert_eq!(spec.model_binding.model_ref, "m-1");
+        assert_eq!(spec.model_binding.identity().1, "m-1");
         // It carries the admin tool descriptors (nameable because it published in
         // the reserved scope): capabilities/draft/patch/validate/explain + draft-environment.
         assert_eq!(spec.tool_descriptors.len(), 6);
@@ -1574,7 +1574,8 @@ mod tests {
                 .snapshot
                 .resolved_spec
                 .model_binding
-                .model_ref,
+                .identity()
+                .1,
             "m-1",
         );
     }
@@ -1855,8 +1856,9 @@ mod tests {
             .snapshot
             .resolved_spec
             .model_binding
-            .model_ref
-            .clone();
+            .identity()
+            .1
+            .to_owned();
         let first_tools = executable
             .current(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
             .unwrap()
@@ -1872,7 +1874,7 @@ mod tests {
             .current(DEFAULT_SCOPE, ADMIN_ASSISTANT_AGENT_ID)
             .unwrap();
         let second = handle.snapshot;
-        assert_eq!(second.resolved_spec.model_binding.model_ref, first_model);
+        assert_eq!(second.resolved_spec.model_binding.identity().1, first_model);
         assert_eq!(second.resolved_spec.tool_descriptors.len(), first_tools);
     }
 

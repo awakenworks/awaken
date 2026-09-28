@@ -160,7 +160,7 @@ mod tests {
                 candidate.provisioning(),
                 awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
             )
-            .then(|| self.0.get(&candidate.binding().model_ref).cloned())
+            .then(|| self.0.get(candidate.binding().identity().1).cloned())
             .flatten()
         }
     }
@@ -318,7 +318,7 @@ mod tests {
                 candidate: &ResolvedModelCandidate,
                 _context: &RuntimeRunContext,
             ) -> Option<Arc<dyn LlmExecutor>> {
-                assert_eq!(candidate.binding().model_ref, "gateway-model");
+                assert_eq!(candidate.binding().identity().1, "gateway-model");
                 *self.seen.lock().expect("candidate capture mutex") = Some(candidate.clone());
                 Some(self.executor.clone())
             }

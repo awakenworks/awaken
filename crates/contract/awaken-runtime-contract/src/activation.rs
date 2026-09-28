@@ -156,7 +156,7 @@ impl RunActivation {
     pub fn effective_model_ref(&self) -> &str {
         match self.model_ref_override.as_deref() {
             Some(m) if !m.is_empty() => m,
-            _ => &self.snapshot.resolved_spec.model_binding.model_ref,
+            _ => self.snapshot.resolved_spec.model_binding.identity().1,
         }
     }
 }

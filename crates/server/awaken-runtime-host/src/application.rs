@@ -381,7 +381,8 @@ impl AcpContextAttemptExecutor {
             .snapshot
             .resolved_spec
             .model_binding
-            .backend_ref
+            .identity()
+            .2
             .starts_with("acp:")
         {
             return;

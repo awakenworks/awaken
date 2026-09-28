@@ -91,7 +91,7 @@ impl SharedHost {
                         "agent={}, revision={}, backend={}",
                         publication.root_agent_id.0,
                         publication.metadata.source.revision,
-                        publication.resolved_spec.model_binding.backend_ref,
+                        publication.resolved_spec.model_binding.identity().2,
                     )
                 });
                 return Err(HostError::internal(format!(
@@ -203,7 +203,7 @@ impl SharedHost {
         )?;
         let published_backend_ref = model_candidate
             .as_ref()
-            .map(|candidate| candidate.binding().backend_ref.clone());
+            .map(|candidate| candidate.binding().identity().2.to_owned());
         let projected_backend_ref = self
             .session_slots
             .read(thread, |slot| slot.backend_ref.clone())
