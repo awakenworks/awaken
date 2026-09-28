@@ -8,4 +8,4 @@ evidence = [
 production_entrypoints = []
 
 [[bounds]]
-text = '''Kani checks the actual lease_epoch transition over the full i64 x bool input domain, using shared StoredU64 checked arithmetic and an independent i128 specification. This is a numeric transition proof, not SQL locking, bearer entropy, queue linearizability, or universal implementation refinement.'''
+text = '''Kani checks the actual persisted-epoch decode (stored_epoch: negative refused, 0 is never granted), the claim successor (claimed_epoch over the kernel Epoch::next, first grant 1) and the signed re-encode (stored_lease_epoch) over the full i64 input domain, using shared StoredU64 checked arithmetic and an independent i128 specification. This is a numeric transition proof, not SQL locking, bearer entropy, queue linearizability, or universal implementation refinement.'''

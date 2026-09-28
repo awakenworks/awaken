@@ -19,6 +19,8 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
+use awaken_lease_contract::Expiry;
+use awaken_lease_contract::fence::{Epoch, Lease, Tenure, TenureScope, ZeroEpoch};
 use awaken_session_types::{SessionContractErrorDetail, SessionId};
 // The UTC calendar codec is owned by the wall-clock port, so a Work receipt and
 // an Environment record spell the same reading identically.
@@ -278,8 +280,27 @@ pub struct WorkSessionAccess {
     pub environment_id: String,
     pub session_id: SessionId,
     pub lease_owner: String,
-    pub lease_epoch: u64,
+    /// The exact generation the bearer was bound to at claim time.
+    pub lease_epoch: Epoch,
     pub expires_at_unix_ms: u64,
+}
+
+/// The lease family of Session Work: which Work item binds which Session in
+/// which Environment (the subject), held by one execution owner.
+///
+/// A receipt or lease compared without the Work item or Environment could be
+/// satisfied by another Work item of the same Session; the subject carries all
+/// three so that can never happen. Consumers: [`SessionWorkLease`] and
+/// [`SessionWorkAuthorityReceipt`].
+#[derive(Debug)]
+pub struct SessionWork;
+
+impl TenureScope for SessionWork {
+    /// `(work_id, environment_id, session_id)`.
+    type Subject = (String, String, SessionId);
+    /// The exact authenticated execution owner. For a registered Worker this is
+    /// its incarnation-qualified lease owner, not the reusable display id.
+    type Holder = String;
 }
 
 /// Durable authority currently binding one Session work item to one Worker.
@@ -287,33 +308,132 @@ pub struct WorkSessionAccess {
 /// workers use the standard header/heartbeat protocol, while Awaken's private
 /// Run ingress consumes it only as a subordinate ownership fence.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionWorkLease {
-    pub work_id: String,
-    pub environment_id: String,
-    pub session_id: SessionId,
-    /// Exact authenticated execution owner. For a registered Worker this is
-    /// its incarnation-qualified lease owner, not the reusable display id.
-    pub owner: String,
-    pub epoch: u64,
-    pub expires_at_unix_ms: u64,
+pub struct SessionWorkLease(Lease<SessionWork>);
+
+impl SessionWorkLease {
+    /// The lease a WorkQueue transaction just granted or observed: `owner`
+    /// holds `session_id`'s Work item `work_id` in `environment_id` at
+    /// `epoch` until `expires`.
+    #[must_use]
+    pub fn granted(
+        work_id: impl Into<String>,
+        environment_id: impl Into<String>,
+        session_id: SessionId,
+        owner: impl Into<String>,
+        epoch: Epoch,
+        expires: Expiry,
+    ) -> Self {
+        Self(Lease::new(
+            Tenure::granted(
+                (work_id.into(), environment_id.into(), session_id),
+                owner.into(),
+                epoch,
+            ),
+            expires,
+        ))
+    }
+
+    /// Decode a lease from the WorkQueue's persisted coordinates. `None` for a
+    /// zero epoch: the queue's claim advances an unleased item to epoch 1, so a
+    /// row carrying 0 was never granted.
+    #[must_use]
+    pub fn from_persisted(
+        work_id: impl Into<String>,
+        environment_id: impl Into<String>,
+        session_id: SessionId,
+        owner: impl Into<String>,
+        epoch: u64,
+        expires_at_unix_ms: u64,
+    ) -> Option<Self> {
+        Some(Self::granted(
+            work_id,
+            environment_id,
+            session_id,
+            owner,
+            Epoch::from_persisted(epoch)?,
+            Expiry::from_unix_ms(expires_at_unix_ms),
+        ))
+    }
+
+    #[must_use]
+    pub const fn lease(&self) -> &Lease<SessionWork> {
+        &self.0
+    }
+
+    /// The complete identity of this grant, ignoring its renewable expiry.
+    #[must_use]
+    pub const fn tenure(&self) -> &Tenure<SessionWork> {
+        self.0.tenure()
+    }
+
+    #[must_use]
+    pub fn work_id(&self) -> &str {
+        &self.0.tenure().subject().0
+    }
+
+    #[must_use]
+    pub fn environment_id(&self) -> &str {
+        &self.0.tenure().subject().1
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> &SessionId {
+        &self.0.tenure().subject().2
+    }
+
+    #[must_use]
+    pub fn owner(&self) -> &str {
+        self.0.tenure().holder()
+    }
+
+    /// The persisted lease epoch (never zero).
+    #[must_use]
+    pub const fn epoch(&self) -> u64 {
+        self.0.tenure().epoch().get()
+    }
+
+    #[must_use]
+    pub fn expires_at_unix_ms(&self) -> u64 {
+        self.0.expires().to_unix_ms()
+    }
 }
 
 /// Exact, secret-free proof of the Work authority observed when a registered
 /// Worker entered one Session attempt.
 ///
-/// The fields are private so production callers cannot assemble authority from
-/// unrelated strings or silently replace a stale epoch with a later one. Wire
-/// input is still untrusted: the Coordinator always compares this receipt with
-/// a fresh observation from the canonical WorkQueue before exposing committed
-/// Thread truth or admitting a Session effect.
+/// The authority is private so production callers cannot assemble it from
+/// unrelated strings or silently replace a stale epoch with a later one. A
+/// leased receipt is exactly the lease's [`Tenure`] (Work, Environment,
+/// Session, owner, epoch). Wire input is still untrusted: the Coordinator
+/// always compares this receipt with a fresh observation from the canonical
+/// WorkQueue before exposing committed Thread truth or admitting a Session
+/// effect.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SessionWorkAuthorityReceipt {
+#[serde(
+    try_from = "SessionWorkAuthorityReceiptWire",
+    into = "SessionWorkAuthorityReceiptWire"
+)]
+pub struct SessionWorkAuthorityReceipt(ReceiptAuthority);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ReceiptAuthority {
+    NotRequired {
+        session_id: SessionId,
+        worker_owner: String,
+    },
+    Leased(Tenure<SessionWork>),
+}
+
+/// The persisted spelling of [`SessionWorkAuthorityReceipt`], unchanged from
+/// the shape the receipt had before it embedded a tenure.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionWorkAuthorityReceiptWire {
     session_id: SessionId,
     worker_owner: String,
     authority: SessionWorkAuthorityCoordinate,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum SessionWorkAuthorityCoordinate {
     NotRequired,
@@ -324,20 +444,64 @@ enum SessionWorkAuthorityCoordinate {
     },
 }
 
+impl TryFrom<SessionWorkAuthorityReceiptWire> for SessionWorkAuthorityReceipt {
+    type Error = ZeroEpoch;
+
+    fn try_from(wire: SessionWorkAuthorityReceiptWire) -> Result<Self, Self::Error> {
+        Ok(Self(match wire.authority {
+            SessionWorkAuthorityCoordinate::NotRequired => ReceiptAuthority::NotRequired {
+                session_id: wire.session_id,
+                worker_owner: wire.worker_owner,
+            },
+            SessionWorkAuthorityCoordinate::Leased {
+                work_id,
+                environment_id,
+                epoch,
+            } => ReceiptAuthority::Leased(Tenure::granted(
+                (work_id, environment_id, wire.session_id),
+                wire.worker_owner,
+                Epoch::try_from(epoch)?,
+            )),
+        }))
+    }
+}
+
+impl From<SessionWorkAuthorityReceipt> for SessionWorkAuthorityReceiptWire {
+    fn from(receipt: SessionWorkAuthorityReceipt) -> Self {
+        match receipt.0 {
+            ReceiptAuthority::NotRequired {
+                session_id,
+                worker_owner,
+            } => Self {
+                session_id,
+                worker_owner,
+                authority: SessionWorkAuthorityCoordinate::NotRequired,
+            },
+            ReceiptAuthority::Leased(tenure) => {
+                let epoch = tenure.epoch().get();
+                let worker_owner = tenure.holder().clone();
+                let (work_id, environment_id, session_id) = tenure.subject().clone();
+                Self {
+                    session_id,
+                    worker_owner,
+                    authority: SessionWorkAuthorityCoordinate::Leased {
+                        work_id,
+                        environment_id,
+                        epoch,
+                    },
+                }
+            }
+        }
+    }
+}
+
 const fn exact_session_work_coordinate(
     session_matches: bool,
     owner_matches: bool,
     scope_matches: bool,
-    work_matches: bool,
     environment_matches: bool,
-    epoch_matches: bool,
 ) -> bool {
-    session_matches
-        && owner_matches
-        && scope_matches
-        && work_matches
-        && environment_matches
-        && epoch_matches
+    session_matches && owner_matches && scope_matches && environment_matches
 }
 
 impl SessionWorkAuthorityReceipt {
@@ -349,61 +513,48 @@ impl SessionWorkAuthorityReceipt {
         worker_owner: &str,
         ownership: &SessionWorkOwnership,
     ) -> Option<Self> {
-        let authority = match ownership {
-            SessionWorkOwnership::NotRequired => SessionWorkAuthorityCoordinate::NotRequired,
+        Some(Self(match ownership {
+            SessionWorkOwnership::NotRequired => ReceiptAuthority::NotRequired {
+                session_id: SessionId::from(session_id),
+                worker_owner: worker_owner.to_string(),
+            },
             SessionWorkOwnership::Unowned => return None,
             SessionWorkOwnership::Leased(lease)
-                if lease.session_id == session_id && lease.owner == worker_owner =>
+                if lease.session_id() == session_id && lease.owner() == worker_owner =>
             {
-                SessionWorkAuthorityCoordinate::Leased {
-                    work_id: lease.work_id.clone(),
-                    environment_id: lease.environment_id.clone(),
-                    epoch: lease.epoch,
-                }
+                ReceiptAuthority::Leased(lease.tenure().clone())
             }
             SessionWorkOwnership::Leased(_) => return None,
-        };
-        Some(Self {
-            session_id: SessionId::from(session_id),
-            worker_owner: worker_owner.to_string(),
-            authority,
-        })
+        }))
     }
 
     #[must_use]
     pub fn session_id(&self) -> &SessionId {
-        &self.session_id
+        match &self.0 {
+            ReceiptAuthority::NotRequired { session_id, .. } => session_id,
+            ReceiptAuthority::Leased(tenure) => &tenure.subject().2,
+        }
     }
 
     #[must_use]
     pub fn worker_owner(&self) -> &str {
-        &self.worker_owner
+        match &self.0 {
+            ReceiptAuthority::NotRequired { worker_owner, .. } => worker_owner,
+            ReceiptAuthority::Leased(tenure) => tenure.holder(),
+        }
     }
 
     /// Compare every stable coordinate with a new canonical observation. Lease
     /// expiry is deliberately omitted: renewal may extend time, while Work id,
-    /// Environment, Session, owner, and epoch must remain identical.
+    /// Environment, Session, owner, and epoch — the complete tenure — must
+    /// remain identical.
     #[must_use]
     pub fn matches_observation(&self, ownership: &SessionWorkOwnership) -> bool {
-        match (&self.authority, ownership) {
-            (SessionWorkAuthorityCoordinate::NotRequired, SessionWorkOwnership::NotRequired) => {
-                exact_session_work_coordinate(true, true, true, true, true, true)
+        match (&self.0, ownership) {
+            (ReceiptAuthority::NotRequired { .. }, SessionWorkOwnership::NotRequired) => true,
+            (ReceiptAuthority::Leased(tenure), SessionWorkOwnership::Leased(lease)) => {
+                tenure == lease.tenure()
             }
-            (
-                SessionWorkAuthorityCoordinate::Leased {
-                    work_id,
-                    environment_id,
-                    epoch,
-                },
-                SessionWorkOwnership::Leased(lease),
-            ) => exact_session_work_coordinate(
-                self.session_id == lease.session_id,
-                self.worker_owner == lease.owner,
-                true,
-                work_id == &lease.work_id,
-                environment_id == &lease.environment_id,
-                *epoch == lease.epoch,
-            ),
             _ => false,
         }
     }
@@ -418,23 +569,18 @@ impl SessionWorkAuthorityReceipt {
         environment_self_hosted: bool,
         environment_id: &str,
     ) -> bool {
-        let (scope_matches, environment_matches) = match &self.authority {
-            SessionWorkAuthorityCoordinate::NotRequired => (!environment_self_hosted, true),
-            SessionWorkAuthorityCoordinate::Leased {
-                environment_id: leased_environment,
-                ..
-            } => (
+        let (scope_matches, environment_matches) = match &self.0 {
+            ReceiptAuthority::NotRequired { .. } => (!environment_self_hosted, true),
+            ReceiptAuthority::Leased(tenure) => (
                 environment_self_hosted,
-                leased_environment == environment_id,
+                tenure.subject().1 == environment_id,
             ),
         };
         exact_session_work_coordinate(
-            self.session_id == session_id,
-            self.worker_owner == runtime_incarnation,
+            self.session_id() == session_id,
+            self.worker_owner() == runtime_incarnation,
             scope_matches,
-            true,
             environment_matches,
-            true,
         )
     }
 }
@@ -474,14 +620,15 @@ fn proof_representative_lease(
     epoch: bool,
     expiry: bool,
 ) -> SessionWorkLease {
-    SessionWorkLease {
-        work_id: if work { "k" } else { "K" }.to_string(),
-        environment_id: if environment { "e" } else { "E" }.to_string(),
-        session_id: SessionId::from(if session { "s" } else { "S" }),
-        owner: if owner { "w" } else { "W" }.to_string(),
-        epoch: u64::from(epoch),
-        expires_at_unix_ms: if expiry { 10 } else { 20 },
-    }
+    SessionWorkLease::from_persisted(
+        if work { "k" } else { "K" },
+        if environment { "e" } else { "E" },
+        SessionId::from(if session { "s" } else { "S" }),
+        if owner { "w" } else { "W" },
+        if epoch { 1 } else { 2 },
+        if expiry { 10 } else { 20 },
+    )
+    .expect("representative epochs are nonzero")
 }
 
 #[cfg(kani)]
@@ -593,7 +740,7 @@ impl SessionWorkOwnership {
             Self::Unowned => (SessionWorkEffectAuthority::Unowned, false),
             Self::Leased(lease) => (
                 SessionWorkEffectAuthority::Leased,
-                lease.owner == worker_owner,
+                lease.owner() == worker_owner,
             ),
         };
         session_work_effect_policy(authority, owner_matches)
@@ -1023,6 +1170,71 @@ mod tests {
         work_lease_mutation_admission,
     };
 
+    /// A leased receipt is exactly the lease's tenure, on an unchanged wire.
+    ///
+    /// Held: Work `k`, Environment `e`, Session `s`, owner `w`, epoch 3.
+    /// | Rule | observation / wire                      | effect            |
+    /// | T1   | same tenure, renewed expiry             | matches           |
+    /// | T2   | other Work item of the same Session     | no match          |
+    /// | T3   | other Environment                       | no match          |
+    /// | T4   | other owner                             | no match          |
+    /// | T5   | successor epoch                         | no match          |
+    /// | W1   | receipt encodes                         | the flat wire     |
+    /// | W2   | that wire decodes                       | the same receipt  |
+    /// | W3   | a leased wire with epoch 0              | refused on decode |
+    #[test]
+    fn a_leased_receipt_is_the_exact_tenure_on_an_unchanged_wire() {
+        let lease = |work: &str, environment: &str, owner: &str, epoch: u64, expiry: u64| {
+            SessionWorkOwnership::Leased(
+                SessionWorkLease::from_persisted(
+                    work,
+                    environment,
+                    "s".into(),
+                    owner,
+                    epoch,
+                    expiry,
+                )
+                .unwrap(),
+            )
+        };
+        let receipt = super::SessionWorkAuthorityReceipt::from_acquired(
+            "s",
+            "w",
+            &lease("k", "e", "w", 3, 10),
+        )
+        .expect("an owned acquisition mints a receipt");
+        for (rule, observation, matches) in [
+            ("T1", lease("k", "e", "w", 3, 99), true),
+            ("T2", lease("k2", "e", "w", 3, 10), false),
+            ("T3", lease("k", "e2", "w", 3, 10), false),
+            ("T4", lease("k", "e", "w2", 3, 10), false),
+            ("T5", lease("k", "e", "w", 4, 10), false),
+        ] {
+            assert_eq!(receipt.matches_observation(&observation), matches, "{rule}");
+        }
+        let wire = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "session_id": "s",
+                "worker_owner": "w",
+                "authority": {"kind": "leased", "work_id": "k", "environment_id": "e", "epoch": 3},
+            }),
+            "W1"
+        );
+        assert_eq!(
+            serde_json::from_value::<super::SessionWorkAuthorityReceipt>(wire.clone()).unwrap(),
+            receipt,
+            "W2"
+        );
+        let mut zero = wire;
+        zero["authority"]["epoch"] = 0.into();
+        assert!(
+            serde_json::from_value::<super::SessionWorkAuthorityReceipt>(zero).is_err(),
+            "W3"
+        );
+    }
+
     /// A backend that does not bind the digest refuses the claim.
     ///
     /// Decision table for the `claim_with_session_access` default. Causes:
@@ -1207,13 +1419,9 @@ mod tests {
         // | A2 | Unowned | any | no |
         // | A3 | Leased | exact | yes |
         // | A4 | Leased | foreign | no |
-        let lease = |owner: &str| SessionWorkLease {
-            work_id: "work".into(),
-            environment_id: "environment".into(),
-            session_id: "session".into(),
-            owner: owner.into(),
-            epoch: 7,
-            expires_at_unix_ms: 11,
+        let lease = |owner: &str| {
+            SessionWorkLease::from_persisted("work", "environment", "session".into(), owner, 7, 11)
+                .unwrap()
         };
         for (rule, ownership, expected) in [
             ("A1", SessionWorkOwnership::NotRequired, true),

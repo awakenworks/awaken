@@ -378,20 +378,16 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &
         .await
         .expect("L1")
         .expect("L1 lease");
-    assert_eq!(
-        (first.work_id.as_str(), first.epoch),
-        (id.as_str(), 1),
-        "L1/E1"
-    );
+    assert_eq!((first.work_id(), first.epoch()), (id.as_str(), 1), "L1/E1");
 
     let renewed = q
         .acquire_session("env", &SessionId::from("session"), "owner-a", 10)
         .await
         .expect("L2")
         .expect("L2 lease");
-    assert_eq!(renewed.epoch, first.epoch, "L2/E1");
+    assert_eq!(renewed.epoch(), first.epoch(), "L2/E1");
     assert!(
-        renewed.expires_at_unix_ms > first.expires_at_unix_ms,
+        renewed.expires_at_unix_ms() > first.expires_at_unix_ms(),
         "L2/E1"
     );
     let fenced = q
@@ -399,7 +395,7 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &
         .await
         .expect("L3")
         .expect("L3 returns the current lease for typed fencing");
-    assert_eq!(fenced.owner, "owner-a", "L3/E2");
+    assert_eq!(fenced.owner(), "owner-a", "L3/E2");
     assert!(matches!(
         q.ack("env", &id, "owner-b").await.expect("L3 ack"),
         WorkMutationResult::PreconditionFailed
@@ -450,7 +446,7 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &
         .await
         .expect("L5")
         .expect("L5 lease");
-    assert_eq!(replacement.epoch, 2, "L5/E4");
+    assert_eq!(replacement.epoch(), 2, "L5/E4");
     assert!(
         !q.release_session(&first).await.expect("L6 stale release"),
         "L6/E2"
@@ -475,16 +471,28 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &
         )
     };
     let active = q.get("env", &id).await.unwrap().unwrap();
-    let mut wrong_owner = replacement.clone();
-    wrong_owner.owner = "owner-b".into();
-    let mut wrong_epoch = replacement.clone();
-    wrong_epoch.epoch = first.epoch;
-    let mut wrong_work = replacement.clone();
-    wrong_work.work_id = "absent-work".into();
-    let mut wrong_environment = replacement.clone();
-    wrong_environment.environment_id = "other-env".into();
-    let mut wrong_session = replacement.clone();
-    wrong_session.session_id = "other-session".into();
+    let with = |work: &str, environment: &str, session: &str, owner: &str, epoch: u64| {
+        awaken_session_work_contract::SessionWorkLease::from_persisted(
+            work,
+            environment,
+            SessionId::from(session),
+            owner,
+            epoch,
+            replacement.expires_at_unix_ms(),
+        )
+        .expect("nonzero epoch")
+    };
+    let (work, environment, session) = (
+        replacement.work_id(),
+        replacement.environment_id(),
+        replacement.session_id().as_str(),
+    );
+    let (owner, epoch) = (replacement.owner(), replacement.epoch());
+    let wrong_owner = with(work, environment, session, "owner-b", epoch);
+    let wrong_epoch = with(work, environment, session, owner, first.epoch());
+    let wrong_work = with("absent-work", environment, session, owner, epoch);
+    let wrong_environment = with(work, "other-env", session, owner, epoch);
+    let wrong_session = with(work, environment, "other-session", owner, epoch);
     for (field, receipt) in [
         ("owner", wrong_owner.clone()),
         ("epoch", wrong_epoch),

@@ -204,32 +204,24 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
             return Ok(awaken_session_work_contract::SessionWorkOwnership::Unowned);
         }
         let mut owner = self.owner.lock().unwrap();
-        if owner
-            .as_deref()
-            .is_some_and(|current| current != worker_owner)
-        {
-            return Ok(awaken_session_work_contract::SessionWorkOwnership::Leased(
-                awaken_session_work_contract::SessionWorkLease {
-                    work_id: "work-session".into(),
-                    environment_id: "env".into(),
-                    session_id: session_id.clone(),
-                    owner: owner.clone().expect("checked existing owner"),
-                    epoch: 1,
-                    expires_at_unix_ms: now_ms + 60_000,
-                },
-            ));
+        let leased = |owner: &str| {
+            awaken_session_work_contract::SessionWorkOwnership::Leased(
+                awaken_session_work_contract::SessionWorkLease::from_persisted(
+                    "work-session",
+                    "env",
+                    session_id.clone(),
+                    owner,
+                    1,
+                    now_ms + 60_000,
+                )
+                .expect("nonzero epoch"),
+            )
+        };
+        if let Some(current) = owner.as_deref().filter(|current| *current != worker_owner) {
+            return Ok(leased(current));
         }
         *owner = Some(worker_owner.to_string());
-        Ok(awaken_session_work_contract::SessionWorkOwnership::Leased(
-            awaken_session_work_contract::SessionWorkLease {
-                work_id: "work-session".into(),
-                environment_id: "env".into(),
-                session_id: session_id.clone(),
-                owner: worker_owner.into(),
-                epoch: 1,
-                expires_at_unix_ms: now_ms + 60_000,
-            },
-        ))
+        Ok(leased(worker_owner))
     }
 
     async fn release_session_work(
@@ -239,9 +231,9 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
         self.released_sessions
             .lock()
             .unwrap()
-            .push(lease.session_id.to_string());
+            .push(lease.session_id().to_string());
         let mut owner = self.owner.lock().unwrap();
-        if owner.as_deref() != Some(lease.owner.as_str()) {
+        if owner.as_deref() != Some(lease.owner()) {
             return Ok(false);
         }
         *owner = None;
@@ -339,7 +331,7 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
                     awaken_session_resource_contract::SessionRealizationLease {
                         owner: command.target.owner,
                         runtime_incarnation: command.target.runtime_incarnation,
-                        epoch: 1,
+                        epoch: 2,
                         expires_at_unix_ms: command.target.lease_expires_at_unix_ms,
                     },
                 )?,
@@ -2999,7 +2991,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
     let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
-        epoch: 1,
+        epoch: 2,
         expires_at_unix_ms: u64::MAX,
     };
     let command = awaken_session_state_contract::SessionCleanupCommand::new(
@@ -3020,7 +3012,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
             "any-provider-preparation",
             identity.worker_id.clone(),
             identity.lease_owner(),
-            0,
+            1,
             u64::MAX - 1,
         )
         .unwrap(),

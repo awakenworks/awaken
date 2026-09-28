@@ -1035,11 +1035,11 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for SessionApplicat
         lease: &awaken_session_work_contract::SessionWorkLease,
     ) -> Result<bool, awaken_session_work_contract::WorkQueueError> {
         let Some((environment_id, _terminal)) =
-            self_hosted_work_environment(self, &lease.session_id).await?
+            self_hosted_work_environment(self, lease.session_id()).await?
         else {
             return Ok(true);
         };
-        if lease.environment_id != environment_id {
+        if lease.environment_id() != environment_id {
             return Ok(false);
         }
         self.environments.release_session_work(lease).await
