@@ -337,10 +337,11 @@ impl crate::SharedHost {
         if self.deployment.sandbox.container_mcp_relay.is_none() {
             return Ok(());
         }
-        self.mcp_relay
+        self.mcp
+            .mcp_relay
             .get_or_try_init(|| McpRelay::for_host(Arc::downgrade(self)))
             .await?;
-        if !self.mcp_relay.get().is_some_and(McpRelay::is_live) {
+        if !self.mcp.mcp_relay.get().is_some_and(McpRelay::is_live) {
             return Err(std::io::Error::other(
                 "container MCP relay transport exited during startup",
             ));

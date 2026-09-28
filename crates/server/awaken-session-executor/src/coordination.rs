@@ -41,13 +41,15 @@ impl crate::SharedHost {
     /// remote control instead of becoming a dead local endpoint.
     pub(crate) fn coordination_endpoint(&self) -> Option<CoordinationEndpoint> {
         let local = self
+            .dispatch
             .agent_coordination
             .read()
             .expect("Agent coordination application lock poisoned")
             .clone()
             .filter(|application| application.strong_count() > 0);
         local.map(CoordinationEndpoint::Local).or_else(|| {
-            self.session_coordination_control
+            self.worker
+                .session_coordination_control
                 .as_ref()
                 .map(|control| CoordinationEndpoint::Remote {
                     control: control.clone(),
@@ -859,6 +861,7 @@ mod tests {
         let host = crate::SharedHost::new(Arc::new(EndpointModel), "stub")
             .with_session_control(Arc::new(RemoteControl));
         *host
+            .dispatch
             .agent_coordination
             .write()
             .expect("test coordination lock") = Some(dead);

@@ -28,6 +28,7 @@ impl ManagedHost {
     ) -> Result<(), AgentCoordinationInstallError> {
         let mut installed = self
             .host
+            .dispatch
             .agent_coordination
             .write()
             .expect("Agent coordination application lock poisoned");
@@ -51,6 +52,7 @@ impl ManagedHost {
     ) -> Result<(), SessionRunBackgroundInstallError> {
         let mut installed = self
             .host
+            .dispatch
             .session_background_runs
             .write()
             .expect("Session background Run application lock poisoned");
@@ -71,6 +73,7 @@ impl ManagedHost {
     pub fn install_dispatch_session_runtime(self) -> Self {
         *self
             .host
+            .dispatch
             .dispatch_session_runtime
             .write()
             .expect("dispatch Session Runtime lock poisoned") = Some(DispatchSessionRuntime {

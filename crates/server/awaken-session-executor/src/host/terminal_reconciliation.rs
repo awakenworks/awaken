@@ -12,6 +12,16 @@
 use super::*;
 use awaken_dispatch_contract::ControlDispatchQueue;
 
+/// The coordinator-only maintenance loop and the terminal scan it drives.
+/// Consumer: this module alone; the Host's dispatch capability owns the value.
+#[derive(Default)]
+pub(crate) struct TerminalReconciliationState {
+    /// The run-ingress-owned maintenance loop used by a coordinator-only Host.
+    /// Local pools already own the same canonical maintenance mechanism.
+    dispatch_reconciler: std::sync::OnceLock<awaken_dispatch::DispatchReconciler>,
+    terminal_scan: awaken_dispatch::TerminalReconciliationScan,
+}
+
 /// Deliver one direct cold-recovery fact from the Runtime contract's sole
 /// committed-terminal predicate. The observer factory is deliberately lazy:
 /// nonterminal or conflicting identity cannot bind resources, probe an outbox,
@@ -91,17 +101,21 @@ impl SharedHost {
             || async {
                 let (workspace, _, installed, _) =
                     self.resolve_session_publication(thread, agent, None)?;
-                let frozen_model_ref = installed.as_ref().map_or(self.model_ref.as_str(), |root| {
-                    root.resolved_spec.model_binding.identity().1
-                });
-                let effective_model_ref =
-                    self.inference_routing.model_ref(thread, frozen_model_ref);
+                let frozen_model_ref = installed
+                    .as_ref()
+                    .map_or(self.agent.model_ref.as_str(), |root| {
+                        root.resolved_spec.model_binding.identity().1
+                    });
+                let effective_model_ref = self
+                    .agent
+                    .inference_routing
+                    .model_ref(thread, frozen_model_ref);
                 let frozen = installed
                     .as_ref()
                     .map(|root| {
                         crate::agent_catalog::freeze_run_publications(
                             root,
-                            self.agent_publications.as_deref(),
+                            self.agent.agent_publications.as_deref(),
                             &workspace,
                         )
                     })
@@ -138,7 +152,12 @@ impl SharedHost {
         if !self.deployment.durable
             || self.runs_local_dispatch_pool()
             || self.upstream.is_some()
-            || self.dispatch_reconciler.get().is_some()
+            || self
+                .dispatch
+                .terminal_reconciliation
+                .dispatch_reconciler
+                .get()
+                .is_some()
         {
             return false;
         }
@@ -162,7 +181,11 @@ impl SharedHost {
             resolver,
             Some(self.completion.clone()),
         );
-        self.dispatch_reconciler.set(reconciler).is_ok()
+        self.dispatch
+            .terminal_reconciliation
+            .dispatch_reconciler
+            .set(reconciler)
+            .is_ok()
     }
 }
 
@@ -231,7 +254,7 @@ impl HostWorkerResolver {
                 awaken_runtime_contract::resolved::Backend::Remote(_)
             )
         {
-            let executor = host.remote_attempt_executor.clone().ok_or_else(|| {
+            let executor = host.agent.remote_attempt_executor.clone().ok_or_else(|| {
                 Self::execution_error(
                     "remote cancellation requires a configured remote attempt executor",
                 )
@@ -265,7 +288,9 @@ pub(super) async fn reconcile_committed_terminals(
     let store = host
         .dispatch_store()
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
-    host.terminal_scan
+    host.dispatch
+        .terminal_reconciliation
+        .terminal_scan
         .reconcile(store.as_ref(), limit, |row| {
             let host = &host;
             let store = &store;

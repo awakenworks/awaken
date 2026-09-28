@@ -637,7 +637,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
     ] {
         let mut host = host();
         let warmup = Arc::new(Boundary::default());
-        host.cache_volume_prewarmer =
+        host.env.cache_volume_prewarmer =
             crate::cache_volume::CacheVolumePrewarmer::new(warmup.clone());
         install(&host, lease());
         if rule == "provider_unfenced" {

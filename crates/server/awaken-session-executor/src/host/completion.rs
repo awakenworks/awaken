@@ -102,7 +102,7 @@ impl SharedHost {
         let workspace = self.thread_workspace(&thread);
         let agent_publications = crate::agent_catalog::freeze_run_publications(
             &activation.snapshot,
-            self.agent_publications.as_deref(),
+            self.agent.agent_publications.as_deref(),
             &workspace,
         )
         .map_err(|error| {
@@ -222,7 +222,7 @@ impl SharedHost {
     pub(crate) fn dispatch_pool_or_err(
         &self,
     ) -> Result<&Arc<DispatchPool<AnyDispatchStore>>, HostError> {
-        self.dispatch_pool.get().ok_or_else(|| {
+        self.dispatch.dispatch_pool.get().ok_or_else(|| {
             HostError::bad_request(
                 "durable dispatch not enabled (set typed durable ingress to run the pool)",
             )
@@ -283,7 +283,7 @@ impl SharedHost {
             awaken_session_execution_contract::SessionRunActivation::Activated
                 | awaken_session_execution_contract::SessionRunActivation::AlreadyActivated { .. }
         ) {
-            if let Some(pool) = self.dispatch_pool.get() {
+            if let Some(pool) = self.dispatch.dispatch_pool.get() {
                 pool.notify().await;
             } else {
                 store
@@ -415,10 +415,10 @@ impl SharedHost {
                 )
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
-            if let Some(pool) = self.dispatch_pool.get() {
+            if let Some(pool) = self.dispatch.dispatch_pool.get() {
                 pool.notify().await;
             }
-        } else if let Some(pool) = self.dispatch_pool.get() {
+        } else if let Some(pool) = self.dispatch.dispatch_pool.get() {
             pool.submit_dispatch(request)
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
@@ -457,7 +457,7 @@ impl SharedHost {
             ));
         }
         let worker = &ctx.claimed_worker;
-        if let Some(pool) = self.dispatch_pool.get() {
+        if let Some(pool) = self.dispatch.dispatch_pool.get() {
             pool.deliver(input)
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;

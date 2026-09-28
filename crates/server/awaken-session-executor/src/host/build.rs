@@ -1,5 +1,6 @@
-// @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
-// @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: Host construction selects every injected startup authority exactly once and composes the
+// @formal reason: capability groups; it opens no Store. This link is not a formal-proof claim.
 //! Builder / configuration wiring for [`SharedHost`]: `new`, the chainable
 //! `with_*` methods, per-thread registration, and the process dispatch pool.
 
@@ -7,96 +8,7 @@ use super::*;
 
 #[path = "environment_capacity.rs"]
 mod environment_capacity;
-#[path = "session_control.rs"]
-mod session_control;
 
-/// Worker-side Resource content ports that must be installed as one unit.
-/// Keeping the pair named prevents a partially remote Host startup from
-/// silently opening a local content authority for the missing half.
-struct WorkerContentAdapters {
-    file_content_source:
-        Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>,
-    memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
-}
-
-/// How the one process-level [`DispatchPool`] got its slot count.
-///
-/// The two paths are deliberately distinct variants instead of one integer with
-/// a default baked into the constructor. A registered Worker publishes
-/// `WorkerCapacity::max_concurrent` to the registry and the scheduler places
-/// against it; installing a locally guessed number instead is exactly the
-/// "registered value nobody consumed" divergence, and it used to be invisible
-/// because both numbers had the same type. Now the CPU guess is a named branch
-/// that only [`SharedHost::new`] can produce, and [`Registered`] is reachable
-/// only by moving a [`RegisteredCapacity`] into
-/// [`SharedHost::with_worker_dispatch`].
-///
-/// [`Registered`]: DispatchPoolSizing::Registered
-/// [`RegisteredCapacity`]: awaken_dispatch_contract::RegisteredCapacity
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DispatchPoolSizing {
-    /// No Worker registration in this topology (a direct or coordinator-embedded
-    /// Host). No registry ever published a capacity for this process, so local
-    /// parallelism is the whole truth and cannot contradict anything.
-    LocalParallelism(std::num::NonZeroUsize),
-    /// A registered Worker installed its validated manifest capacity. This is
-    /// the number the registry handed the scheduler, so it is also the exact
-    /// number of execution slots the pool installs.
-    Registered(std::num::NonZeroUsize),
-}
-
-impl DispatchPoolSizing {
-    /// Slots to install. Both branches are resolved here so no caller can read
-    /// one variant and forget the other.
-    #[must_use]
-    pub const fn slots(self) -> std::num::NonZeroUsize {
-        match self {
-            Self::LocalParallelism(value) | Self::Registered(value) => value,
-        }
-    }
-
-    /// The registered capacity when this process is a registered Worker.
-    #[must_use]
-    pub const fn registered(self) -> Option<std::num::NonZeroUsize> {
-        match self {
-            Self::Registered(value) => Some(value),
-            Self::LocalParallelism(_) => None,
-        }
-    }
-
-    /// The CPU-derived sizing used by a Host that registered no capacity.
-    fn local_parallelism() -> Self {
-        Self::LocalParallelism(
-            std::thread::available_parallelism()
-                .unwrap_or(std::num::NonZeroUsize::new(4).expect("nonzero local fallback")),
-        )
-    }
-}
-
-struct LocalResourceAdapters {
-    memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
-    #[cfg(any(test, feature = "test-support"))]
-    file_store: Arc<dyn awaken_resource_contract::FileStore>,
-    #[cfg(any(test, feature = "test-support"))]
-    file_catalog: Arc<dyn awaken_resource_contract::FileCatalog>,
-    #[cfg(any(test, feature = "test-support"))]
-    skill_store: Arc<dyn awaken_resource_contract::SkillStore>,
-    #[cfg(any(test, feature = "test-support"))]
-    reclamation: Arc<dyn awaken_resource_contract::ResourceReclamationRepository>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl From<awaken_resource_application::ResourceAuthorities> for LocalResourceAdapters {
-    fn from(authorities: awaken_resource_application::ResourceAuthorities) -> Self {
-        Self {
-            memory_repository: authorities.memory_repository(),
-            file_store: authorities.file_store(),
-            file_catalog: authorities.file_catalog(),
-            skill_store: authorities.skill_store(),
-            reclamation: authorities.reclamation(),
-        }
-    }
-}
 use awaken_runtime_contract::delegation::RunDelegationService;
 
 impl SharedHost {
@@ -115,16 +27,6 @@ impl SharedHost {
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
         format!("workspace_local_{:x}_{nonce:x}", std::process::id())
-    }
-
-    /// Test-support selection of the same local extraction repository used by
-    /// volatile/local host fixtures. Product startup injects its role-owned
-    /// repository directly into the production constructor.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn test_memory_extraction_repository(
-        storage_dir: Option<&std::path::Path>,
-    ) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
-        local_memory_extraction_repository(storage_dir)
     }
 
     /// Volatile test/scenario host over `llm`.
@@ -152,9 +54,11 @@ impl SharedHost {
         Self::build(
             llm,
             model_ref.into(),
-            None,
-            None,
-            None,
+            capability::ResourceInputs {
+                local: None,
+                worker_content: None,
+                extraction_repository: None,
+            },
             Self::mint_local_workspace(),
             deployment,
             awaken_lease_contract::system_clock(),
@@ -178,38 +82,6 @@ impl SharedHost {
         self.deployment.sandbox_tier
     }
 
-    /// Install the exact durable dispatch transport owned by this host startup.
-    ///
-    /// An explicitly assembled queue is already the authority for ingress, so it
-    /// also enables this host's dispatch pool. Embedders do not need to mutate the
-    /// another process-global configuration source to activate a transport they
-    /// supplied directly.
-    #[must_use]
-    pub fn with_dispatch_store(mut self, store: Arc<awaken_dispatch::AnyDispatchStore>) -> Self {
-        self.dispatch_store_override = Some(store);
-        self.deployment.durable = true;
-        self.deployment.disable_local_pool = false;
-        self
-    }
-
-    /// Install the exact durable dispatch transport for a Coordinator-only Host.
-    ///
-    /// Unlike [`Self::with_dispatch_store`], this topology owns admission and
-    /// completion observation but never drains the queue or realizes a Session
-    /// Environment. A separately registered Worker is the sole physical effect
-    /// owner. Keeping this as one constructor prevents call ordering from silently
-    /// re-enabling the local pool after a startup selected remote placement.
-    #[must_use]
-    pub fn with_coordinator_dispatch_store(
-        mut self,
-        store: Arc<awaken_dispatch::AnyDispatchStore>,
-    ) -> Self {
-        self.dispatch_store_override = Some(store);
-        self.deployment.durable = true;
-        self.deployment.disable_local_pool = true;
-        self
-    }
-
     /// The process wall clock this Host drives its Workers on.
     #[must_use]
     pub fn clock(&self) -> Arc<dyn awaken_lease_contract::WallClock> {
@@ -221,48 +93,6 @@ impl SharedHost {
     pub fn with_runtime_authority(mut self, authority: Arc<dyn crate::RuntimeAuthority>) -> Self {
         self.authority = Some(authority);
         self
-    }
-
-    /// Install the dispatch service together with the capacity its Worker
-    /// registered. CPU quota governs CPU time, not the number of concurrent
-    /// I/O-bound Session preparations, so the registered manifest — never a
-    /// local guess — is the Worker capacity authority.
-    ///
-    /// The capacity is taken by value: a Worker that reads
-    /// [`RegisteredCapacity::of`] and does not reach this installer gets an
-    /// `unused_must_use` diagnostic instead of a pool that quietly disagrees
-    /// with the registry.
-    ///
-    /// [`RegisteredCapacity::of`]: awaken_dispatch_contract::RegisteredCapacity::of
-    #[must_use]
-    pub fn with_worker_dispatch(
-        mut self,
-        dispatch: Arc<dyn awaken_dispatch_contract::Dispatch>,
-        capacity: awaken_dispatch_contract::RegisteredCapacity,
-    ) -> Self {
-        self.dispatch_pool_sizing = crate::DispatchPoolSizing::Registered(capacity.into_slots());
-        self.with_dispatch_store(Arc::new(
-            awaken_dispatch::AnyDispatchStore::from_dispatch(dispatch),
-        ))
-    }
-
-    pub fn dispatch_store(&self) -> Result<Arc<awaken_dispatch::AnyDispatchStore>, HostError> {
-        self.optional_dispatch_store().ok_or_else(|| {
-            HostError::internal("database-less Worker requires an injected dispatch transport")
-        })
-    }
-
-    /// Existing durable dispatch authority when this topology has one. Direct
-    /// foreground Sessions can still recover their root pause from committed
-    /// Thread truth without manufacturing a queue merely for discovery.
-    pub(crate) fn optional_dispatch_store(
-        &self,
-    ) -> Option<Arc<awaken_dispatch::AnyDispatchStore>> {
-        self.dispatch_store_override.clone().or_else(|| {
-            self.authority
-                .as_ref()
-                .map(|authority| authority.dispatch_store())
-        })
     }
 
     /// Test/scenario construction with resources but no explicit deployment or
@@ -277,9 +107,11 @@ impl SharedHost {
         Self::build(
             llm,
             model_ref.into(),
-            Some(resources.into()),
-            None,
-            None,
+            capability::ResourceInputs {
+                local: Some(resources.into()),
+                worker_content: None,
+                extraction_repository: None,
+            },
             Self::mint_local_workspace(),
             crate::deployment_config::DeploymentConfig::ephemeral(),
             clock,
@@ -302,9 +134,11 @@ impl SharedHost {
         Self::build(
             llm,
             model_ref.into(),
-            Some(resources.into()),
-            None,
-            Some(extraction_repository),
+            capability::ResourceInputs {
+                local: Some(resources.into()),
+                worker_content: None,
+                extraction_repository: Some(extraction_repository),
+            },
             local_workspace.into(),
             deployment,
             clock,
@@ -330,12 +164,14 @@ impl SharedHost {
         Self::build(
             llm,
             model_ref.into(),
-            None,
-            Some(WorkerContentAdapters {
-                file_content_source,
-                memory_repository,
-            }),
-            None,
+            capability::ResourceInputs {
+                local: None,
+                worker_content: Some(capability::WorkerContentAdapters {
+                    file_content_source,
+                    memory_repository,
+                }),
+                extraction_repository: None,
+            },
             local_workspace.into(),
             deployment,
             clock,
@@ -346,8 +182,8 @@ impl SharedHost {
     /// capability. Resources catalog, File commands, Skill authoring, and
     /// reclamation remain outside and are injected through narrow applications.
     /// `local_workspace` is the installation's resolved platform Workspace.
-    // Assembly binds independent content/extraction ports and the shared clock
-    // in one call. Keep this explicit boundary rather than another config bag.
+    // Each argument is a separately injected startup authority of the
+    // Coordinator composition; bundling them would only rename this list.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_runtime_resources_and_deployment(
         llm: Arc<dyn LlmExecutor>,
@@ -364,27 +200,24 @@ impl SharedHost {
         Self::build(
             llm,
             model_ref.into(),
-            None,
-            Some(WorkerContentAdapters {
-                file_content_source,
-                memory_repository,
-            }),
-            Some(extraction_repository),
+            capability::ResourceInputs {
+                local: None,
+                worker_content: Some(capability::WorkerContentAdapters {
+                    file_content_source,
+                    memory_repository,
+                }),
+                extraction_repository: Some(extraction_repository),
+            },
             local_workspace.into(),
             deployment,
             clock,
         )
     }
 
-    // This is the single composition constructor shared by all named startup
-    // profiles; its independent capabilities are not a domain request object.
-    #[allow(clippy::too_many_arguments)]
     fn build(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
-        resources: Option<LocalResourceAdapters>,
-        worker_content: Option<WorkerContentAdapters>,
-        extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
+        resources: capability::ResourceInputs,
         local_workspace: String,
         deployment: crate::DeploymentConfig,
         clock: Arc<dyn awaken_lease_contract::WallClock>,
@@ -398,210 +231,35 @@ impl SharedHost {
         // and resource adapters (all survive a restart); unset → ephemeral adapters.
         let store_dir = deployment.storage_dir.clone();
         let sandbox_root = crate::acp_backend::session_sandbox_base(&deployment);
-        // Product Resource content is injected atomically through ResourceAuthorities;
-        // a Worker receives its remote adapter. Only test-support construction may
-        // still use the local opener below.
-        let memory_stores = if let Some(content) = &worker_content {
-            crate::memory_stores::MemoryStores::with_repository(content.memory_repository.clone())
-        } else if let Some(plane) = &resources {
-            crate::memory_stores::MemoryStores::with_repository(plane.memory_repository.clone())
-        } else {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                crate::memory_stores::MemoryStores::open(store_dir.as_deref())
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            unreachable!("product Host construction requires explicit Resource authorities")
-        };
-        let extraction_repository = match extraction_repository {
-            Some(repository) => repository,
-            None if worker_content.is_some() => {
-                Arc::new(crate::unavailable_worker::UnavailableWorkerExtractions)
-                    as Arc<dyn awaken_ext_memory::MemoryExtractionRepository>
-            }
-            None => {
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    local_memory_extraction_repository(store_dir.as_deref())
-                }
-                #[cfg(not(any(test, feature = "test-support")))]
-                unreachable!(
-                    "product Host construction requires an explicit Memory extraction repository"
-                )
-            }
-        };
-        let memory = Arc::new(crate::memory::MemoryRuntime::new(
-            llm.clone(),
-            Arc::new(LocalProvider::new(sub_base("mem"))),
-            Arc::new(BackgroundRuns::new()),
-            extraction_repository,
-        ));
         let skills = crate::skill_catalog::SkillCatalog::new();
         #[cfg(any(test, feature = "test-support"))]
         let mut skills = skills;
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(plane) = &resources {
+        if let Some(plane) = &resources.local {
             skills.set_store(plane.skill_store.clone());
         }
-        #[cfg(any(test, feature = "test-support"))]
-        let (file_store, file_catalog) = if worker_content.is_some() {
-            let files = Arc::new(crate::unavailable_worker::UnavailableWorkerFiles);
-            (
-                files.clone() as Arc<dyn awaken_resource_contract::FileStore>,
-                files as Arc<dyn awaken_resource_contract::FileCatalog>,
-            )
-        } else {
-            resources.as_ref().map_or_else(
-                || match store_dir.as_ref() {
-                    Some(_) => unreachable!(
-                        "product Host construction requires an injected Resource component"
-                    ),
-                    None => {
-                        #[cfg(any(test, feature = "test-support"))]
-                        {
-                            let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-                            (
-                                files.clone() as Arc<dyn awaken_resource_contract::FileStore>,
-                                files as Arc<dyn awaken_resource_contract::FileCatalog>,
-                            )
-                        }
-                        #[cfg(not(any(test, feature = "test-support")))]
-                        unreachable!(
-                            "product Host construction requires an explicit Resource component"
-                        )
-                    }
-                },
-                |plane| (plane.file_store.clone(), plane.file_catalog.clone()),
-            )
-        };
-        #[cfg(any(test, feature = "test-support"))]
-        let resource_reclamation = resources.as_ref().map(|plane| plane.reclamation.clone());
-        #[cfg(test)]
-        let resource_reclamation =
-            resource_reclamation.or_else(|| Some(super::tests::test_resource_reclamation()));
-        #[cfg(all(not(test), feature = "test-support"))]
-        let file_application: Option<
-            Arc<dyn awaken_resource_contract::FileApplicationService>,
-        > = None;
-        #[cfg(test)]
-        let file_application = resource_reclamation.as_ref().map(|reclamation| {
-            Arc::new(awaken_resource_application::FileApplication::new(
-                file_store.clone(),
-                file_catalog.clone(),
-                reclamation.clone(),
-                clock.clone(),
-            )) as Arc<dyn awaken_resource_contract::FileApplicationService>
-        });
+        let resource_ports =
+            capability::ResourcePorts::assemble(&llm, resources, store_dir.as_deref(), &clock);
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
-        let file_content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
-        > = worker_content
-            .as_ref()
-            .map(|content| content.file_content_source.clone())
-            .unwrap_or_else(|| {
-                #[cfg(test)]
-                if let Some(application) = &file_application {
-                    return Arc::new(
-                        awaken_resource_application::ApplicationFileContentSource::new(
-                            application.clone(),
-                        ),
-                    );
-                }
-                Arc::new(awaken_resource_contract::UnavailableFileContentSource)
-                    as Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>
-            });
-        let artifact_publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch::ArtifactPublicationFence,
-                >,
-        > = {
-            #[cfg(test)]
-            if let Some(application) = &file_application {
-                Arc::new(
-                    awaken_resource_application::ApplicationArtifactPublisher::new(
-                        application.clone(),
-                    ),
-                )
-            } else {
-                Arc::new(awaken_resource_contract::UnavailableArtifactPublisher)
-            }
-            #[cfg(not(test))]
-            Arc::new(awaken_resource_contract::UnavailableArtifactPublisher)
-        };
-        let capture_decision = crate::redact::capture_decision(deployment.content_capture, false);
         let hub = Arc::new(ThreadEventHub::new());
         Self {
-            llm,
-            model_ref,
-            inference_routing: crate::inference_routing::InferenceRouting::new(
-                session_slots.clone(),
-            ),
-            acp: None,
-            acp_tool_exporter: None,
-            remote_attempt_executor: None,
-            remote_credential_realization: Default::default(),
-            attempt_decorator: None,
-            session_control: None,
-            session_coordination_control: None,
-            terminal_cleanup_control: None,
-            provider: LocalProvider::new(sandbox_root.clone()),
-            session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
-                sandbox_root.clone(),
-            ),
-            environment_checkpoint_store: None,
-            cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer::default(),
-            backend_owned_session_provider: None,
-            session_provider_explicit: false,
-            judge_snapshot: None,
-            client_tools: HashSet::new(),
+            agent: capability::AgentExecution::new(llm, model_ref, session_slots.clone()),
+            exec: capability::AttemptBackends::new(&deployment),
+            worker: capability::WorkerTransports::default(),
+            env: capability::EnvironmentProviders::new(sandbox_root),
+            tools: capability::ToolOffering::new(skills),
+            resources: resource_ports,
+            mcp: capability::McpRelayCapability::default(),
+            dispatch: capability::DispatchCapability::new(),
+            capture: capability::ContentCaptureCapability::new(&deployment),
             local_workspace,
-            session_slots: session_slots.clone(),
+            session_slots,
             execution_authority: None,
-            skills,
-            // Subagents share the parent's sandbox by default (`默认共用`).
-            skill_fork_placement: crate::skills::SkillForkPlacement::SharedSession,
-            plugin_ids: Vec::new(),
-            plugin_config: std::collections::BTreeMap::new(),
-            web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
-            credential_materializer: None,
             hub: hub.clone(),
             // `with_store_dir` still overrides this environment-derived default.
-            store_dir: store_dir.clone(),
-            // A shared root (e.g. a networked mount) enables cross-machine ACP
-            // session recovery; unset means single-machine (stable config home).
-            session_blob_store: deployment
-                .acp_session_blob_root
-                .clone()
-                .map(|root| Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root))),
+            store_dir,
             upstream: None,
-            claimed_commit: None,
-            memory_reference_encoder: None,
-            worker_credential_resolver: None,
             deployment,
-            memory,
-            agent_publications: None,
-            mcp_relay: tokio::sync::OnceCell::new(),
-            dispatch_session_runtime: std::sync::RwLock::new(None),
-            agent_coordination: std::sync::RwLock::new(None),
-            session_background_runs: std::sync::RwLock::new(None),
-            #[cfg(any(test, feature = "test-support"))]
-            file_store,
-            file_content_source,
-            #[cfg(any(test, feature = "test-support"))]
-            file_catalog,
-            #[cfg(any(test, feature = "test-support"))]
-            file_application,
-            artifact_publisher,
-            #[cfg(any(test, feature = "test-support"))]
-            resource_reclamation,
-            memory_stores,
-            memory_mounter: std::sync::RwLock::new(None),
-            gate_override: None,
-            dispatch_pool: std::sync::OnceLock::new(),
-            dispatch_pool_sizing: crate::DispatchPoolSizing::local_parallelism(),
-            dispatch_reconciler: std::sync::OnceLock::new(),
-            terminal_scan: Default::default(),
-            dispatch_store_override: None,
             authority: {
                 #[cfg(any(test, feature = "test-support"))]
                 {
@@ -616,110 +274,8 @@ impl SharedHost {
             },
             clock,
             completion: Arc::new(CompletionRegistry::new(hub)),
-            worker_stream_publisher: None,
             environment_binding_sink: std::sync::RwLock::new(None),
-            capture_sink: std::sync::RwLock::new(None),
-            capture_decision,
-            data_subject_consent: Arc::new(awaken_runtime_contract::NullResolver),
-            admin_tools: Vec::new(),
         }
-    }
-
-    /// Install the Worker process's one opaque local-credential adapter.
-    #[must_use]
-    pub fn with_worker_credential_resolver(
-        mut self,
-        resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
-    ) -> Self {
-        self.worker_credential_resolver = Some(resolver);
-        self
-    }
-
-    /// Install the sole checkpoint-byte adapter. This does not install lifecycle
-    /// state; Session root CAS remains authoritative.
-    #[must_use]
-    pub fn with_environment_checkpoint_store(
-        mut self,
-        store: Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>,
-    ) -> Self {
-        self.environment_checkpoint_store = Some(store);
-        self
-    }
-
-    #[must_use]
-    pub fn with_acp_tool_exporter(
-        mut self,
-        exporter: Arc<dyn awaken_runtime_contract::tool_export::AcpToolExporter>,
-    ) -> Self {
-        self.acp_tool_exporter = Some(exporter);
-        self
-    }
-
-    /// Install the canonical exact credential materializer used by runtime
-    /// extensions such as paid WebSearch. The value is cloned from the same
-    /// process-startup instance used by Managed MCP/Resource realization.
-    #[must_use]
-    pub fn with_credential_materializer(
-        mut self,
-        materializer: crate::PinnedCredentialMaterializer,
-    ) -> Self {
-        self.credential_materializer = Some(materializer);
-        self
-    }
-
-    /// Add one externally owned WebSearch provider to the authoritative
-    /// registry. Duplicate ids fail at startup time instead of shadowing a
-    /// built-in or changing dispatch order at runtime.
-    pub fn with_web_search_provider(
-        mut self,
-        provider: Arc<dyn awaken_ext_builtin_tools::WebSearchProvider>,
-    ) -> Result<Self, awaken_ext_builtin_tools::WebSearchRegistryError> {
-        self.web_search_providers.register(provider)?;
-        Ok(self)
-    }
-
-    /// Replace the built-in registry with one process-owned registry. Use
-    /// the same clone for capability projection and semantic publication
-    /// validation to keep discovery, validation, and dispatch identical.
-    #[must_use]
-    pub fn with_web_search_provider_registry(
-        mut self,
-        providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
-    ) -> Self {
-        self.web_search_providers = providers;
-        self
-    }
-
-    /// Read-only provider discovery for an embedding capability endpoint. The
-    /// returned registry is the same value Session dispatch uses.
-    #[must_use]
-    pub fn web_search_provider_registry(
-        &self,
-    ) -> &awaken_ext_builtin_tools::WebSearchProviderRegistry {
-        &self.web_search_providers
-    }
-
-    /// Install the adapter that drives snapshot-selected remote attempts. The
-    /// host depends only on the neutral attempt port; A2A construction remains a
-    /// process-startup responsibility.
-    pub fn with_remote_attempt_executor(
-        mut self,
-        installation: super::RemoteAttemptInstallation,
-    ) -> Self {
-        self.remote_attempt_executor = Some(installation.executor);
-        self.remote_credential_realization = installation.credential_realization;
-        self
-    }
-
-    /// Wrap the complete per-Session Native/ACP/A2A attempt boundary.
-    ///
-    /// The Host always constructs the authoritative backend router first. The
-    /// application can adapt envelopes, capabilities, and business results
-    /// around it, but cannot replace backend selection.
-    #[must_use]
-    pub fn with_attempt_decorator(mut self, decorator: super::AttemptExecutorDecorator) -> Self {
-        self.attempt_decorator = Some(decorator);
-        self
     }
 
     /// Install the same authenticated Control client as the pre-effect Session
@@ -760,85 +316,6 @@ impl SharedHost {
         self.store_dir.as_deref()
     }
 
-    /// Test-support replacement of a volatile fixture's Resource lifecycle port.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_resource_reclamation(
-        mut self,
-        repository: Arc<dyn awaken_resource_contract::ResourceReclamationRepository>,
-    ) -> Self {
-        #[cfg(test)]
-        {
-            let application = Arc::new(awaken_resource_application::FileApplication::new(
-                self.file_store.clone(),
-                self.file_catalog.clone(),
-                repository.clone(),
-                self.clock.clone(),
-            ))
-                as Arc<dyn awaken_resource_contract::FileApplicationService>;
-            self.file_content_source = Arc::new(
-                awaken_resource_application::ApplicationFileContentSource::new(application.clone()),
-            );
-            self.artifact_publisher = Arc::new(
-                awaken_resource_application::ApplicationArtifactPublisher::new(application.clone()),
-            );
-            self.file_application = Some(application);
-        }
-        self.resource_reclamation = Some(repository);
-        self
-    }
-
-    /// Install the one Resources-owned File command application. Runtime stores
-    /// only this inward port and cannot construct a parallel implementation.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_file_application(
-        mut self,
-        application: Arc<dyn awaken_resource_contract::FileApplicationService>,
-        content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
-        >,
-        artifact_publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch::ArtifactPublicationFence,
-                >,
-        >,
-    ) -> Self {
-        self.file_content_source = content_source;
-        self.artifact_publisher = artifact_publisher;
-        self.file_application = Some(application);
-        self
-    }
-
-    /// Install the narrow artifact publisher used by a database-less Worker.
-    /// This does not grant File management or catalog access.
-    #[must_use]
-    pub fn with_artifact_publisher(
-        mut self,
-        publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch::ArtifactPublicationFence,
-                >,
-        >,
-    ) -> Self {
-        // This is the database-less Worker startup edge. Retaining the
-        // test-only/local File application here would create a second command
-        // path and incorrectly classify the remote publisher as locally fenced.
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.file_application = None;
-        }
-        self.artifact_publisher = publisher;
-        self
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn resource_reclamation(
-        &self,
-    ) -> Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>> {
-        self.resource_reclamation.clone()
-    }
-
     pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {
         self.session_slots
             .update(thread, |slot| slot.workspace = Some(workspace.to_string()));
@@ -874,30 +351,6 @@ impl SharedHost {
             .flatten()
     }
 
-    /// Whether this process owns a co-located dispatch pool. Process startup uses
-    /// the same parsed deployment value that admission uses, so the process cannot
-    /// accidentally both advertise coordinator-only behavior and drain locally.
-    #[must_use]
-    pub fn runs_local_dispatch_pool(&self) -> bool {
-        !self.deployment.disable_local_pool
-    }
-
-    /// How this process's dispatch pool is sized, and therefore whether the
-    /// number came from a Worker registration or from local parallelism. Reading
-    /// this observes the installed execution side; it is not a second copy of
-    /// the registry.
-    #[must_use]
-    pub fn dispatch_pool_sizing(&self) -> crate::DispatchPoolSizing {
-        self.dispatch_pool_sizing
-    }
-
-    /// Stable logical identity used by both local dispatch claims and local
-    /// Session realization. The process incarnation is deliberately separate.
-    #[must_use]
-    pub fn dispatch_owner(&self) -> &str {
-        &self.deployment.dispatch_owner
-    }
-
     /// Clone the completion projection consumed by the authenticated Worker
     /// settle boundary.
     ///
@@ -920,87 +373,6 @@ impl SharedHost {
         self.completion.install_committed_progress_wakeup(wakeup)
     }
 
-    /// Register the management assistant's tool executables globally (ADR-0052). They
-    /// run on every thread's runtime, but only the reserved-scope assistant's config
-    /// names them, so only its runs can invoke them; their ids are auto-allowed on the
-    /// gate (the tools are read-only).
-    #[must_use]
-    pub fn with_admin_tools(
-        mut self,
-        tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
-    ) -> Self {
-        self.admin_tools = tools;
-        self
-    }
-
-    /// Wire the subject-tagged captured-content sink before sharing the Host.
-    #[must_use]
-    pub fn with_capture_sink(self, sink: Arc<dyn awaken_runtime_contract::CaptureSink>) -> Self {
-        *self
-            .capture_sink
-            .write()
-            .expect("capture sink lock poisoned") = Some(sink);
-        self
-    }
-
-    /// Install the canonical Host-owned capture sink at a late startup edge.
-    ///
-    /// This is intentionally the same storage used by [`with_capture_sink`], not
-    /// a process-global fallback. Existing sessions retain their immutable
-    /// per-session dependencies; subsequently created sessions receive this sink.
-    pub fn install_capture_sink(&self, sink: Arc<dyn awaken_runtime_contract::CaptureSink>) {
-        *self
-            .capture_sink
-            .write()
-            .expect("capture sink lock poisoned") = Some(sink);
-    }
-
-    /// Install the Control-owned consent read port used once per attributed Run.
-    #[must_use]
-    pub fn with_data_subject_consent_source(
-        mut self,
-        source: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
-    ) -> Self {
-        self.data_subject_consent = source;
-        self
-    }
-
-    /// Deployment-resolved capture ceiling used by protocol decision projections.
-    #[must_use]
-    pub fn content_capture_ceiling(&self) -> awaken_runtime_contract::ContentCapture {
-        self.capture_decision.level
-    }
-
-    /// Install the already-derived effective compaction window used by embedded
-    /// test/development Hosts. Production obtains the same value from Config
-    /// publication; this seam must not derive a ratio or message-count fallback.
-    pub fn with_compaction_tokens(self, max_tokens: u32, keep_last: usize) -> Self {
-        self.enable_compaction(CompactConfig {
-            max_tokens: Some(max_tokens),
-            keep_last,
-            ..CompactConfig::default()
-        })
-    }
-
-    /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
-    /// The generic plugin id/config pair is the single configuration authority:
-    /// it both activates local execution and crosses a durable dispatch snapshot.
-    fn enable_compaction(mut self, config: CompactConfig) -> Self {
-        if !self
-            .plugin_ids
-            .iter()
-            .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID)
-        {
-            self.plugin_ids
-                .push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
-        }
-        self.plugin_config.insert(
-            awaken_ext_compact::COMPACT_PLUGIN_ID.to_string(),
-            serde_json::to_value(config).expect("CompactConfig is serializable"),
-        );
-        self
-    }
-
     /// Configure an authenticated worker upstream shared by dispatch and commit
     /// clients (for example a client carrying an mTLS identity).
     #[must_use]
@@ -1009,198 +381,6 @@ impl SharedHost {
         upstream: awaken_worker_transport_security::WorkerUpstream,
     ) -> Self {
         self.upstream = Some(upstream);
-        self
-    }
-
-    /// Install the claim-fenced commit transport of a database-less Worker.
-    /// It is consulted only once [`Self::with_worker_upstream`] made this Host a
-    /// Worker; a Worker without it fails closed when it executes a claim.
-    #[must_use]
-    pub fn with_worker_claimed_commit(
-        mut self,
-        claimed_commit: Arc<dyn awaken_dispatch::ClaimedRunCommit>,
-    ) -> Self {
-        self.claimed_commit = Some(claimed_commit);
-        self
-    }
-
-    /// Install the Resource transport's opaque Memory capability encoder.
-    /// The execution host does not own or inspect the wire representation.
-    #[must_use]
-    pub fn with_memory_reference_encoder<E>(mut self, encoder: Arc<E>) -> Self
-    where
-        E: awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_dispatch::RunClaim,
-            > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_session_realization_contract::SessionResourceMaterializationIntent,
-            > + awaken_resource_contract::MemoryMaterializationReferenceEncoder<
-                awaken_session_state_contract::SessionTerminalMemoryIntent,
-            > + 'static,
-    {
-        self.memory_reference_encoder = Some(encoder);
-        self
-    }
-
-    /// Install the registered Worker's claim-fenced live-progress publisher.
-    #[must_use]
-    pub fn with_worker_stream_publisher(
-        mut self,
-        publisher: Arc<dyn awaken_dispatch::ClaimedStreamPublisher>,
-    ) -> Self {
-        self.worker_stream_publisher = Some(publisher);
-        self
-    }
-
-    /// Stop local durable admission, await every already-claimed Run, then join
-    /// auxiliary work created by those Runs.  The ordering is significant: a
-    /// terminal Run may enqueue Memory extraction immediately before releasing
-    /// its pool capacity, so draining auxiliary work first can miss that task.
-    pub async fn drain_runtime(&self, timeout: std::time::Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
-        let Some(_local_fence) =
-            await_runtime_drain_fence_before(deadline, self.begin_pool_drain()).await
-        else {
-            return false;
-        };
-        while self.pool_in_flight() != 0 {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return false;
-            }
-            tokio::time::sleep(remaining.min(std::time::Duration::from_millis(5))).await;
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        !remaining.is_zero() && self.memory.drain(remaining).await
-    }
-
-    /// Replace the default authorization gate on every thread with `gate` (slice
-    /// E): the scheduled-action server uses a gate that defers tool calls so the
-    /// durable worker performs them (ADR-0020).
-    pub fn with_gate_override(
-        mut self,
-        gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
-    ) -> Self {
-        self.gate_override = Some(gate);
-        self
-    }
-
-    /// Supply immutable executable publications without mounting the authoring
-    /// plane. Intended for embedded process startups and scenario fixtures.
-    pub fn with_agent_publications(
-        mut self,
-        source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
-    ) -> Self {
-        self.agent_publications = Some(source);
-        self
-    }
-
-    /// Add client-executed tools: those ids are model-visible but unregistered, so
-    /// a call awaits and the client supplies the result.
-    pub fn with_client_tools(mut self, client_tools: HashSet<String>) -> Self {
-        self.client_tools.extend(client_tools);
-        self
-    }
-
-    /// Whether `context: fork` Skills reuse the Session environment. Ordinary
-    /// delegated child Runs are unaffected and always share it.
-    pub fn with_skill_fork_placement(
-        mut self,
-        placement: crate::skills::SkillForkPlacement,
-    ) -> Self {
-        self.skill_fork_placement = placement;
-        self
-    }
-
-    /// Activate the tool state machine on every thread with `config` (its
-    /// `{"machines":[…]}` section). The plugin gates and advances tool calls per
-    /// the declared transitions (ADR tool-state-machine).
-    pub fn with_state_machine(mut self, config: serde_json::Value) -> Self {
-        self.plugin_ids
-            .push(awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID.to_string());
-        self.plugin_config.insert(
-            awaken_ext_state_machine::STATE_MACHINE_PLUGIN_ID.to_string(),
-            config,
-        );
-        self
-    }
-
-    /// Offer host-static Skills to direct/non-Managed threads (ADR-0036). The
-    /// compatibility adapter lists and activates them through the one registry.
-    /// Managed Sessions require durable versioned bindings instead.
-    pub fn with_skills(mut self, skills: Vec<SkillSpec>) -> Self {
-        self.skills.add_specs(skills);
-        self
-    }
-
-    /// Test/scenario shorthand for a filesystem Skill store.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_skill_store(mut self, dir: impl Into<PathBuf>) -> Self {
-        let store = Arc::new(
-            awaken_skill_store::FsSkillStore::open(dir.into())
-                .expect("open durable skill store root"),
-        );
-        self.skills.set_bundle_source(Arc::new(
-            awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
-        ));
-        self.skills.set_store(store);
-        self
-    }
-
-    /// Test-support replacement of a volatile fixture's Skill store.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_skill_store_backend(
-        mut self,
-        store: Arc<dyn awaken_resource_contract::SkillStore>,
-    ) -> Self {
-        self.skills.set_bundle_source(Arc::new(
-            awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
-        ));
-        self.skills.set_store(store);
-        self
-    }
-
-    /// Install only the exact immutable custom-Skill read port used by an
-    /// execution Worker. This does not grant authoring or catalog access.
-    pub fn with_skill_bundle_source(
-        mut self,
-        source: Arc<
-            dyn awaken_session_configuration_contract::SkillBundleSource<
-                    awaken_dispatch::ResourceOperationFence,
-                >,
-        >,
-    ) -> Self {
-        self.skills.set_bundle_source(source);
-        self
-    }
-
-    /// Install the Resources application capability used to freeze custom Skill
-    /// selections and publish authored bundles. This grants no Store/purge API.
-    pub fn with_skill_catalog_application(
-        mut self,
-        application: Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>,
-    ) -> Self {
-        self.skills.set_application(application);
-        self
-    }
-
-    /// Override the default tool-free Outcome Judge with the named Agent. The
-    /// Judge runs through the same Run boundary in its own fresh context.
-    /// Refused when the host's configured `model_ref` is not an executable
-    /// binding, since the Judge snapshot pins it.
-    pub fn with_judge(
-        mut self,
-        judge_agent_id: impl Into<String>,
-    ) -> Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding> {
-        let id = judge_agent_id.into();
-        let snapshot = default_judge_agent(&self.model_ref, &id, DEFAULT_JUDGE_INSTRUCTIONS)?;
-        self.judge_snapshot = Some(snapshot);
-        Ok(self)
-    }
-
-    /// Pin an arbitrary executable Agent snapshot as the Outcome Grader. Its
-    /// backend may be Native or ACP; both execute through the same Run boundary.
-    pub fn with_judge_snapshot(mut self, snapshot: ExecutableAgentSnapshot) -> Self {
-        self.judge_snapshot = Some(snapshot);
         self
     }
 
@@ -1213,6 +393,7 @@ impl SharedHost {
         // points into the previous process's random temp directory.
         let provider = LocalProvider::new(dir.join("sandboxes"));
         if let Some(mounter) = self
+            .env
             .memory_mounter
             .read()
             .expect("memory mounter lock poisoned")
@@ -1220,194 +401,31 @@ impl SharedHost {
         {
             provider.install_memory_mounter(mounter);
         }
-        self.provider = provider;
+        self.env.provider = provider;
         std::fs::create_dir_all(&dir)
             .expect("create durable Memory extraction repository directory");
-        self.memory.set_extraction_repository(Arc::new(
+        self.resources.memory.set_extraction_repository(Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(
                 &dir.join("sessions.db").to_string_lossy(),
             )
             .expect("open durable Memory extraction repository"),
         ));
-        self.session_provider = self.session_provider.at_root(dir.join("sandboxes"));
-        self.backend_owned_session_provider = self
+        self.env.session_provider = self.env.session_provider.at_root(dir.join("sandboxes"));
+        self.env.backend_owned_session_provider = self
+            .env
             .backend_owned_session_provider
             .as_ref()
             .map(|provider| provider.at_root(dir.join("trusted-local-sandboxes")));
         if let Some(mounter) = self.memory_mounter() {
-            self.session_provider
+            self.env
+                .session_provider
                 .install_memory_mounter(mounter.clone());
-            if let Some(provider) = &self.backend_owned_session_provider {
+            if let Some(provider) = &self.env.backend_owned_session_provider {
                 provider.install_memory_mounter(mounter);
             }
         }
         self.store_dir = Some(dir);
         self
-    }
-
-    /// Harvest/restore each ACP CLI's session under `dir` (keyed by thread+adapter)
-    /// so it recovers across directories and — when `dir` is a shared location —
-    /// across workers/machines. Consumed by [`Self::with_projected_acp`]. Leave unset
-    /// on a single machine, where the per-thread config home is already stable.
-    #[must_use]
-    pub fn with_session_blob_root(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.session_blob_store = Some(Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(
-            dir.into(),
-        )));
-        self
-    }
-
-    /// The ACP session-content eraser, when portable session persistence is on.
-    #[must_use]
-    pub fn session_blob_eraser(&self) -> Option<Arc<dyn awaken_runtime_contract::ContentEraser>> {
-        self.session_blob_store
-            .as_ref()
-            .map(|store| store.clone() as Arc<dyn awaken_runtime_contract::ContentEraser>)
-    }
-
-    /// Install runtime-only inference materialization. Remote workers use this
-    /// without a configuration resolver because admission already pinned access.
-    pub fn with_inference_materializer(
-        mut self,
-        materializer: Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>,
-    ) -> Self {
-        self.memory.set_inference_materializer(materializer.clone());
-        self.inference_routing.set_materializer(materializer);
-        self
-    }
-
-    /// Install the credential-file broker shared by every Session sandbox tier.
-    /// Application plans retain opaque `MountSource::Secret` references; only
-    /// the selected provider asks this port for bytes at realization time.
-    #[must_use]
-    pub fn with_session_secret_broker(
-        self,
-        broker: Arc<dyn awaken_provisioning_contract::SecretBroker>,
-    ) -> Self {
-        self.session_provider.install_secret_broker(broker.clone());
-        if let Some(provider) = &self.backend_owned_session_provider {
-            provider.install_secret_broker(broker);
-        }
-        self
-    }
-
-    /// Test-support replacement of a volatile fixture's File content port.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_file_content_source(
-        mut self,
-        source: Arc<dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>>,
-    ) -> Self {
-        self.file_content_source = source;
-        self
-    }
-
-    /// Test-support replacement of a volatile fixture's Memory content port.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_memory_repository(
-        mut self,
-        repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
-    ) -> Self {
-        self.memory_stores = crate::memory_stores::MemoryStores::with_repository(repository);
-        self
-    }
-
-    /// Install the already-configured provider that owns every Session container
-    /// environment on this Host.
-    ///
-    /// This is the public startup seam for downstream providers. The Host
-    /// continues to own Session routing and lifecycle; the provider supplies only
-    /// its enforceable Sandbox capabilities and create/adopt implementation. A
-    /// caller that also installs a [`awaken_provisioning_contract::SecretBroker`]
-    /// must do so after selecting the provider so there is one broker installation
-    /// on the authoritative environment path.
-    #[must_use]
-    pub fn with_session_container_provider(
-        self,
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
-    ) -> Self {
-        self.with_session_container_provider_and_capacity(provider, None, hand_factory)
-    }
-
-    /// Install one container provider and its optional never-used-capacity owner.
-    /// Keeping both handles from the same startup prevents provider erasure
-    /// from orphaning startup warmup and shutdown drain.
-    #[must_use]
-    pub fn with_session_container_provider_and_capacity(
-        mut self,
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
-    ) -> Self {
-        let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
-        self.session_provider = crate::session_environment::SessionEnvironmentProvider::
-            container_with_capacity_hand_idle_and_residency(
-                provider,
-                capacity,
-                Vec::new(),
-                hand_factory,
-                hand_bin,
-                std::time::Duration::from_secs(self.deployment.sandbox.container_hand_idle_secs),
-                self.deployment.sandbox.container_hand_residency,
-            );
-        self.session_provider_explicit = true;
-        if let Some(mounter) = self.memory_mounter() {
-            self.session_provider.install_memory_mounter(mounter);
-        }
-        self
-    }
-
-    /// Install the complete result of the canonical deployment builder after a
-    /// downstream composition has decorated its provider. Capacity, creation
-    /// mounts, and cache initialization remain paired with that same provider
-    /// construction instead of being rebuilt on a parallel path.
-    #[must_use]
-    pub fn with_session_container_environment_components(
-        mut self,
-        components: crate::ContainerEnvironmentComponents,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
-    ) -> Self {
-        let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
-        self.session_provider = crate::session_environment::SessionEnvironmentProvider::
-            container_with_capacity_hand_idle_and_residency(
-                components.provider,
-                components.capacity,
-                components.extra_mounts,
-                hand_factory,
-                hand_bin,
-                std::time::Duration::from_secs(
-                    self.deployment.sandbox.container_hand_idle_secs,
-                ),
-                self.deployment.sandbox.container_hand_residency,
-            );
-        if let Some(initializer) = components.cache_volume_initializer {
-            self.cache_volume_prewarmer =
-                crate::cache_volume::CacheVolumePrewarmer::new(initializer);
-        }
-        self.session_provider_explicit = true;
-        if let Some(mounter) = self.memory_mounter() {
-            self.session_provider.install_memory_mounter(mounter);
-        }
-        self
-    }
-
-    /// Replace the default directory-only CacheVolume preparation with one
-    /// product-specific initializer. Explicit warmup and Session creation keep
-    /// sharing the same single-flight owner.
-    #[must_use]
-    pub fn with_cache_volume_initializer(
-        mut self,
-        initializer: Arc<dyn crate::CacheVolumeInitializer>,
-    ) -> Self {
-        self.cache_volume_prewarmer = crate::cache_volume::CacheVolumePrewarmer::new(initializer);
-        self
-    }
-
-    /// Bind `model_ref` to `thread` (R2/R5), staged before its first Run.
-    pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
-        self.inference_routing.register(thread, model_ref);
     }
 
     /// Bind the exact published delegation targets to a prepared Session.
@@ -1419,23 +437,6 @@ impl SharedHost {
     pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
         self.session_slots
             .read(thread, |slot| slot.delegates.clone())
-    }
-
-    /// The model id echoed by adapters in their session/agent objects.
-    pub fn model(&self) -> String {
-        self.model_ref.clone()
-    }
-
-    /// The primary model currently selected for `thread`, including a Managed
-    /// per-Session/per-Run override. This is a read-only projection of the same
-    /// inference-routing source that execution consumes.
-    pub fn model_for_thread(&self, thread: &str) -> String {
-        self.inference_routing.model_ref(thread, &self.model_ref)
-    }
-
-    /// The set of client-executed tool ids (model-visible, host-unregistered).
-    pub fn client_tools(&self) -> &HashSet<String> {
-        &self.client_tools
     }
 
     /// The shared per-thread live observation hub.
@@ -1486,7 +487,7 @@ impl SharedHost {
         };
         let adapters = self.child_execution_adapters(thread, sandbox.clone());
         let service = HostRunDelegationService::new(
-            self.llm.clone(),
+            self.agent.llm.clone(),
             sandbox,
             parent_snapshot,
             adapters,
@@ -1496,140 +497,6 @@ impl SharedHost {
         .map_err(|error| HostError::bad_request(error.to_string()))?
         .with_scheduler(scheduler);
         Ok(Some(Arc::new(service)))
-    }
-
-    /// Spawn the one process-level [`DispatchPool`] (O2), once, whenever this Host
-    /// owns local execution. Called by `mount` — the single seam that owns an
-    /// `Arc<SharedHost>` — because the pool's resolver needs a back-reference to
-    /// open sessions. Durable and ephemeral Runtime authorities expose the same
-    /// dispatch owner; asynchronous Session children use it in either deployment.
-    /// A coordinator-only Host remains admission-only through the existing
-    /// `disable_local_pool` topology fence. Idempotent.
-    pub fn ensure_dispatch_pool(self: &Arc<Self>) {
-        if !self.runs_local_dispatch_pool() || self.dispatch_pool.get().is_some() {
-            return;
-        }
-        let Ok(store) = self.dispatch_store() else {
-            // Postgres backend not yet initialised — a later `mount` after
-            // Coordinator startup supplies the shared dispatch authority and
-            // this Host owns only its process-local claimer.
-            return;
-        };
-        let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(HostWorkerResolver {
-            host: Arc::downgrade(self),
-        });
-        let config = self.deployment.dispatch_service_config();
-        let concurrency = self.dispatch_pool_sizing.slots().get();
-        // On the Postgres backend with `AWAKEN_DISPATCH_WAKE=pg-notify` or `=nats`,
-        // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
-        // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
-        let completion = self.completion.clone() as Arc<dyn CompletionSink>;
-        let shared_wake = self
-            .authority
-            .as_ref()
-            .and_then(|authority| authority.dispatch_wake());
-        let pool = match shared_wake {
-            Some(wake) => DispatchPool::spawn_with_wake_and_completion(
-                store,
-                self.clock.clone(),
-                self.deployment.dispatch_owner.clone(),
-                DEFAULT_LEASE_MS,
-                config,
-                resolver,
-                concurrency,
-                wake,
-                completion,
-            ),
-            None => DispatchPool::spawn_with_completion(
-                store,
-                self.clock.clone(),
-                self.deployment.dispatch_owner.clone(),
-                DEFAULT_LEASE_MS,
-                config,
-                resolver,
-                concurrency,
-                completion,
-            ),
-        };
-        let _ = self.dispatch_pool.set(Arc::new(pool));
-    }
-
-    /// Begin a graceful drain of the dispatch pool (scale-in / SIGTERM): stop
-    /// claiming new runs while the in-flight ones finish. A no-op when no pool is
-    /// running (a direct/non-durable host, or a worker whose pool never started).
-    /// Idempotent. The admin surface calls this on `POST /admin/drain`.
-    pub async fn begin_pool_drain(&self) -> Option<crate::PoolDrainFence> {
-        match self.dispatch_pool.get() {
-            Some(pool) => Some(crate::PoolDrainFence {
-                _ingress: pool.begin_drain().await,
-            }),
-            None => None,
-        }
-    }
-
-    /// Pause only new claim admission while retaining all in-flight Run work.
-    pub async fn suspend_pool_admission(&self) {
-        if let Some(pool) = self.dispatch_pool.get() {
-            pool.suspend_admission().await;
-        }
-    }
-
-    /// Resume a temporary authority suspension. Returns false when the pool was
-    /// never started or has entered the absorbing graceful-drain state.
-    #[must_use]
-    pub async fn resume_pool_admission(&self) -> bool {
-        match self.dispatch_pool.get() {
-            Some(pool) => pool.resume_admission().await,
-            None => false,
-        }
-    }
-
-    /// Whether the dispatch pool is up and still claiming work — the worker's
-    /// readiness signal. `false` before the pool starts or once it is draining, so a
-    /// readiness probe reports 503 in exactly the states where the worker should not
-    /// receive (or keep being routed) new work.
-    #[must_use]
-    pub async fn pool_accepting_work(&self) -> bool {
-        match self.dispatch_pool.get() {
-            Some(pool) => pool.is_accepting().await,
-            None => false,
-        }
-    }
-
-    /// Whether a successful registry heartbeat may make this Worker ready.
-    #[must_use]
-    pub async fn pool_can_resume_work(&self) -> bool {
-        match self.dispatch_pool.get() {
-            Some(pool) => pool.can_resume().await,
-            None => false,
-        }
-    }
-
-    #[must_use]
-    pub fn pool_in_flight(&self) -> u32 {
-        self.dispatch_pool.get().map_or(0, |pool| pool.in_flight())
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn local_memory_extraction_repository(
-    storage_dir: Option<&std::path::Path>,
-) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {
-    match storage_dir {
-        Some(dir) => {
-            std::fs::create_dir_all(dir)
-                .expect("create durable Memory extraction repository directory");
-            Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open(
-                    &dir.join("sessions.db").to_string_lossy(),
-                )
-                .expect("open durable Memory extraction repository"),
-            )
-        }
-        None => Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                .expect("open ephemeral Memory extraction repository"),
-        ),
     }
 }
 
@@ -1658,16 +525,18 @@ mod startup_tests {
         let host = SharedHost::build(
             Arc::new(crate::NoModelConfiguredExecutor),
             crate::UNCONFIGURED_MODEL_REF.into(),
-            None,
-            None,
-            Some(expected.clone()),
+            capability::ResourceInputs {
+                local: None,
+                worker_content: None,
+                extraction_repository: Some(expected.clone()),
+            },
             SharedHost::mint_local_workspace(),
             crate::DeploymentConfig::ephemeral(),
             awaken_lease_contract::system_clock(),
         );
 
         assert!(
-            Arc::ptr_eq(&expected, &host.memory.extraction_repository()),
+            Arc::ptr_eq(&expected, &host.resources.memory.extraction_repository()),
             "T1/E1"
         );
     }

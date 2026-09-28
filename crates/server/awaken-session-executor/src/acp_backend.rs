@@ -248,7 +248,7 @@ impl crate::host::SharedHost {
     /// To publish bring-up progress to a UI, build the executor with
     /// `.with_launch_observer(host.acp_launch_observer())` before passing it here.
     pub fn with_acp(mut self, executor: Arc<AcpRunExecutor>) -> Self {
-        self.acp = Some(Arc::new(AcpBackend::new(executor)));
+        self.exec.acp = Some(Arc::new(AcpBackend::new(executor)));
         self
     }
 
@@ -257,7 +257,7 @@ impl crate::host::SharedHost {
         launch: crate::LaunchSource,
         session_home: Option<Arc<dyn SessionHomeProvider>>,
     ) -> Self {
-        if self.backend_owned_session_provider.is_none() {
+        if self.env.backend_owned_session_provider.is_none() {
             let provider = crate::session_environment::SessionEnvironmentProvider::
                 trusted_host_workdir_with_agent_stderr(
                     session_sandbox_base(&self.deployment).join("backend-owned"),
@@ -266,10 +266,10 @@ impl crate::host::SharedHost {
             if let Some(mounter) = self.memory_mounter() {
                 provider.install_memory_mounter(mounter);
             }
-            self.backend_owned_session_provider = Some(provider);
+            self.env.backend_owned_session_provider = Some(provider);
         }
         let observer = self.acp_launch_observer();
-        self.acp = Some(Arc::new(AcpBackend::bound(
+        self.exec.acp = Some(Arc::new(AcpBackend::bound(
             launch,
             Some(observer),
             session_home,
@@ -373,12 +373,12 @@ impl crate::host::SharedHost {
         namespace_hand_path: std::path::PathBuf,
     ) -> Result<Self, String> {
         self.deployment.validate_local_execution()?;
-        if self.session_provider_explicit && !self.deployment.trusted_host_enabled() {
+        if self.env.session_provider_explicit && !self.deployment.trusted_host_enabled() {
             return Ok(self);
         }
         let deployment = self.deployment.clone();
         let base = session_sandbox_base(&deployment);
-        let tier = if self.session_provider_explicit {
+        let tier = if self.env.session_provider_explicit {
             deployment.sandbox_tier
         } else {
             crate::resolve_sandbox_tier(
@@ -400,14 +400,14 @@ impl crate::host::SharedHost {
         } else {
             None
         };
-        if (!host.session_provider_explicit && tier == crate::SandboxTier::Namespace)
+        if (!host.env.session_provider_explicit && tier == crate::SandboxTier::Namespace)
             || trusted_hand_factory.is_some()
         {
             validate_namespace_hand_bin(&namespace_hand_path).await?;
         }
         let namespace_hand_bin = namespace_hand_path.to_string_lossy().into_owned();
-        if deployment.trusted_host_enabled() && host.backend_owned_session_provider.is_none() {
-            host.backend_owned_session_provider = Some(
+        if deployment.trusted_host_enabled() && host.env.backend_owned_session_provider.is_none() {
+            host.env.backend_owned_session_provider = Some(
                 crate::session_environment::SessionEnvironmentProvider::
                     trusted_host_workdir_with_agent_stderr(
                         base.join("trusted-host"),
@@ -416,7 +416,8 @@ impl crate::host::SharedHost {
             );
         }
         if let Some(factory) = trusted_hand_factory {
-            host.backend_owned_session_provider
+            host.env
+                .backend_owned_session_provider
                 .as_mut()
                 .expect("TrustedHost provider installed")
                 .install_workdir_hand(
@@ -430,7 +431,8 @@ impl crate::host::SharedHost {
             let execution =
                 awaken_sandbox_local::LocalExecutionDeployment::discover(namespace_hand_path)
                     .map_err(|error| format!("configure TrustedHost execution: {error}"))?;
-            host.backend_owned_session_provider
+            host.env
+                .backend_owned_session_provider
                 .as_mut()
                 .expect("TrustedHost provider installed")
                 .install_scoped_execution(execution)
@@ -440,8 +442,8 @@ impl crate::host::SharedHost {
         // An explicit primary provider does not configure the independent,
         // operator-enabled TrustedHost backend. Preserve the primary while
         // completing that secondary backend through the same startup path.
-        if !host.session_provider_explicit {
-            host.session_provider = if let Some(provider) =
+        if !host.env.session_provider_explicit {
+            host.env.session_provider = if let Some(provider) =
                 crate::session_environment::SessionEnvironmentProvider::for_host_tier(
                     tier,
                     base,
@@ -470,7 +472,7 @@ impl crate::host::SharedHost {
                     .await
                     .map_err(|error| format!("configure the Session sandbox tier: {error}"))?;
                 if let Some(initializer) = components.cache_volume_initializer {
-                    host.cache_volume_prewarmer =
+                    host.env.cache_volume_prewarmer =
                         crate::cache_volume::CacheVolumePrewarmer::new(initializer);
                 }
                 crate::session_environment::SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
@@ -483,12 +485,13 @@ impl crate::host::SharedHost {
                 deployment.sandbox.container_hand_residency,
             )
             };
-            host.session_provider_explicit = true;
+            host.env.session_provider_explicit = true;
         }
         if let Some(mounter) = host.memory_mounter() {
-            host.session_provider
+            host.env
+                .session_provider
                 .install_memory_mounter(mounter.clone());
-            if let Some(provider) = &host.backend_owned_session_provider {
+            if let Some(provider) = &host.env.backend_owned_session_provider {
                 provider.install_memory_mounter(mounter);
             }
         }
@@ -557,7 +560,7 @@ impl crate::host::SharedHost {
         // restore it before the next, keyed by thread+adapter — under the same
         // config home the resolver opens. A `Gateway`/stateless CLI is skipped by the
         // executor's own dispatch; a single-machine host leaves this unset.
-        let session_home = self.session_blob_store.clone().map(|blobs| {
+        let session_home = self.exec.session_blob_store.clone().map(|blobs| {
             Arc::new(awaken_run_executor_acp::DirSessionHome::new(
                 store_dir, blobs,
             )) as Arc<dyn SessionHomeProvider>
@@ -750,9 +753,9 @@ mod tests {
             .with_acp_from_deployment(None, None)
             .await;
 
-        assert!(host.session_provider_explicit);
-        assert_eq!(host.session_provider.capabilities(), expected);
-        assert!(host.acp.is_none());
+        assert!(host.env.session_provider_explicit);
+        assert_eq!(host.env.session_provider.capabilities(), expected);
+        assert!(host.exec.acp.is_none());
     }
 
     #[tokio::test]
@@ -789,8 +792,8 @@ mod tests {
                             None,
                         );
                     }
-                    host.session_provider_explicit = explicit_primary;
-                    let capabilities = host.session_provider.capabilities();
+                    host.env.session_provider_explicit = explicit_primary;
+                    let capabilities = host.env.session_provider.capabilities();
                     let host = host
                         .with_session_environment_from_deployment_at(
                             Some(Arc::new(NoHandFactory)),
@@ -807,7 +810,7 @@ mod tests {
                         .unwrap();
                     #[cfg(target_os = "linux")]
                     {
-                        let provider = host.backend_owned_session_provider.as_ref().unwrap();
+                        let provider = host.env.backend_owned_session_provider.as_ref().unwrap();
                         for provider in [provider, &provider.at_root(base.path().join("relocated"))]
                         {
                             let crate::session_environment::SessionEnvironmentProvider::Workdir {
@@ -820,9 +823,9 @@ mod tests {
                             assert_eq!(provider.execution_deployment().is_some(), scoped);
                         }
                     }
-                    assert_eq!(host.session_provider.capabilities(), capabilities);
+                    assert_eq!(host.env.session_provider.capabilities(), capabilities);
                     assert!(matches!(
-                        host.backend_owned_session_provider,
+                        host.env.backend_owned_session_provider,
                         Some(
                             crate::session_environment::SessionEnvironmentProvider::Workdir {
                                 hand: Some(_),
@@ -830,8 +833,8 @@ mod tests {
                             }
                         )
                     ));
-                    assert!(host.session_provider_explicit);
-                    assert_eq!(host.acp.is_some(), prior_acp);
+                    assert!(host.env.session_provider_explicit);
+                    assert_eq!(host.exec.acp.is_some(), prior_acp);
                 }
             }
         }
@@ -892,7 +895,7 @@ mod tests {
             None,
         );
         host.register_thread_backend_projection("t", "acp:claude");
-        assert!(host.acp.is_some(), "A1 executor");
+        assert!(host.exec.acp.is_some(), "A1 executor");
         assert_eq!(
             host.session_slots
                 .read("t", |slot| slot.backend_ref.clone())
@@ -926,7 +929,7 @@ mod tests {
             Arc::new(FixedModel),
             None,
         );
-        host.session_provider =
+        host.env.session_provider =
             crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
                 std::env::temp_dir().join("awaken-managed-environment"),
                 false,
@@ -997,7 +1000,7 @@ mod tests {
             .with_session_blob_root(blobs)
             .with_projected_acp(cli, Arc::new(FixedModel), None);
         host.register_thread_backend_projection("t", "acp:claude");
-        assert!(host.acp.is_some());
+        assert!(host.exec.acp.is_some());
         assert_eq!(
             host.session_slots
                 .read("t", |slot| slot.backend_ref.clone())

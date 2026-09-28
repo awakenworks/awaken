@@ -222,6 +222,7 @@ impl ManagedHost {
         self.continuation_effect_fence(thread, operation)?;
         if !self
             .host
+            .resources
             .memory
             .background()
             .quiesce_shared_environment(thread, &generation.id, Duration::from_secs(30))
@@ -297,6 +298,7 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let store = self
             .host
+            .env
             .environment_checkpoint_store
             .as_ref()
             .ok_or_else(|| {
@@ -548,6 +550,7 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let store = self
             .host
+            .env
             .environment_checkpoint_store
             .as_ref()
             .ok_or_else(|| {
@@ -594,6 +597,7 @@ impl ManagedHost {
     ) -> Result<(), RunError> {
         let store = self
             .host
+            .env
             .environment_checkpoint_store
             .as_ref()
             .ok_or_else(|| {

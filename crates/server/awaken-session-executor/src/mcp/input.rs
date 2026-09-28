@@ -174,6 +174,7 @@ impl SharedHost {
                     continue;
                 }
                 let application = self
+                    .dispatch
                     .session_background_runs
                     .read()
                     .unwrap()

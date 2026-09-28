@@ -597,7 +597,7 @@ impl SharedHost {
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        if let Some(pool) = self.dispatch_pool.get() {
+        if let Some(pool) = self.dispatch.dispatch_pool.get() {
             pool.notify().await;
         } else {
             store
@@ -767,7 +767,7 @@ impl SharedHost {
             activation,
             ThreadId(session_id.to_string()),
             Some(resources),
-            self.agent_publications.as_deref(),
+            self.agent.agent_publications.as_deref(),
         )
         .map_err(|error| HostError::bad_request(error.to_string()))?
         .with_session_activity_epoch(session_activity_epoch);
@@ -815,7 +815,7 @@ impl SharedHost {
                 "Agent Thread terminated after a failed Run"
             }));
         }
-        if let Some(pool) = self.dispatch_pool.get() {
+        if let Some(pool) = self.dispatch.dispatch_pool.get() {
             pool.notify().await;
         }
         Ok(SessionAgentMessageReceipt { thread_id })
@@ -858,7 +858,8 @@ impl SharedHost {
             vec![command.message],
         )
         .with_model_ref_override(
-            self.inference_routing
+            self.agent
+                .inference_routing
                 .override_for(command.session_id.as_str()),
         );
         // The report command itself is durable Session provenance. Do not rely
@@ -873,7 +874,7 @@ impl SharedHost {
             .enqueue(request)
             .await
             .map_err(dispatch_admission_error)?;
-        if let Some(pool) = self.dispatch_pool.get() {
+        if let Some(pool) = self.dispatch.dispatch_pool.get() {
             pool.notify().await;
         }
         Ok(())

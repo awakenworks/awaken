@@ -93,10 +93,11 @@ impl SharedHost {
     ) -> crate::agent_runner::ChildExecutionAdapters {
         crate::agent_runner::ChildExecutionAdapters {
             acp: self
+                .exec
                 .acp
                 .as_ref()
                 .map(|acp| acp.child_executor_factory(environment)),
-            remote: self.remote_attempt_executor.clone(),
+            remote: self.agent.remote_attempt_executor.clone(),
             credential_capabilities: self.local_credential_realization_capabilities(),
             web_search: Some(self.web_search_plugin(thread, None)),
             web_fetch: Some(self.web_fetch_plugin(thread, None)),
@@ -109,12 +110,16 @@ impl SharedHost {
     pub(crate) fn local_credential_realization_capabilities(
         &self,
     ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        let mut profiles = vec![self.inference_routing.credential_realization_capabilities()];
+        let mut profiles = vec![
+            self.agent
+                .inference_routing
+                .credential_realization_capabilities(),
+        ];
         // Remote attempts are an independent adapter just like Native and ACP.
         // Preserve their profile as an alternative so claim admission can use
         // the installed A2A relay without synthesizing cross-adapter evidence.
-        profiles.push(self.remote_credential_realization.clone());
-        if let Some(materializer) = &self.credential_materializer {
+        profiles.push(self.agent.remote_credential_realization.clone());
+        if let Some(materializer) = &self.exec.credential_materializer {
             // Managed MCP executes through the same exact materializer installed
             // on the Host. Claim admission must therefore see its WorkerRelay
             // profile; inference/ACP profiles alone reject an otherwise
@@ -130,7 +135,7 @@ impl SharedHost {
                     awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
                 ),
             );
-            if self.acp.is_some() {
+            if self.exec.acp.is_some() {
                 let configured = self
                     .deployment
                     .acp
@@ -147,7 +152,7 @@ impl SharedHost {
                 }));
             }
         }
-        if let (Some(acp), Some(profile)) = (&self.acp, &self.deployment.acp) {
+        if let (Some(acp), Some(profile)) = (&self.exec.acp, &self.deployment.acp) {
             profiles.extend(profile.cli_ids().filter_map(|cli| {
                 let backend =
                     awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli}"));
@@ -369,7 +374,7 @@ mod tests {
         let remote_profile = materializer.worker_relay_capabilities();
         let mut with_remote =
             SharedHost::new(Arc::new(crate::host::tests::MemoryHostModel), "test-model");
-        with_remote.remote_credential_realization = remote_profile;
+        with_remote.agent.remote_credential_realization = remote_profile;
         assert!(
             has_worker_relay(&with_remote.local_credential_realization_capabilities()),
             "R3: the installed Remote adapter must be visible to claim admission"

@@ -27,6 +27,9 @@ RESOURCE_AUTHORITIES = "crates/resources/awaken-resource-application/src/authori
 RESOURCE_CONTRACT = "crates/contract/awaken-resource-contract/src/lib.rs"
 RESOURCE_PERSISTENCE = "crates/resources/awaken-resource-persistence/src/lib.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-session-executor/src/host/build.rs"
+# The Host's capability groups keep their `with_*` installers beside each group
+# definition, so the construction surface is build.rs plus this directory.
+RUNTIME_HOST_CAPABILITIES = "crates/server/awaken-session-executor/src/host/capability"
 PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
 RUNTIME_HOST_MANIFEST = "crates/server/awaken-session-executor/Cargo.toml"
 COORDINATOR_MANIFEST = "crates/server/awaken-coordinator/Cargo.toml"
@@ -586,6 +589,13 @@ def _declaration_is_gated(
         is not None
         for declaration in declarations
     )
+
+
+def runtime_host_construction_source(repo_root: Path) -> str:
+    """build.rs and every capability-group module: the Host's whole construction surface."""
+
+    paths = [repo_root / RUNTIME_HOST_BUILD, *sorted((repo_root / RUNTIME_HOST_CAPABILITIES).rglob("*.rs"))]
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
 
 def volatile_runtime_host_surface_violations(source: str) -> list[str]:
@@ -1791,7 +1801,7 @@ def check_all(repo_root: Path) -> list[str]:
             (repo_root / COORDINATOR_COMPONENT).read_text(encoding="utf-8"),
             (repo_root / RESOURCE_AUTHORITIES).read_text(encoding="utf-8"),
             (repo_root / RESOURCE_CONTRACT).read_text(encoding="utf-8"),
-            (repo_root / RUNTIME_HOST_BUILD).read_text(encoding="utf-8"),
+            runtime_host_construction_source(repo_root),
             "\n".join(
                 path.read_text(encoding="utf-8")
                 for path in sorted((repo_root / WORKER_SOURCE).rglob("*.rs"))
@@ -1826,7 +1836,7 @@ def check_all(repo_root: Path) -> list[str]:
         )
     )
     for error in volatile_runtime_host_surface_violations(
-        (repo_root / RUNTIME_HOST_BUILD).read_text(encoding="utf-8")
+        runtime_host_construction_source(repo_root)
     ):
         errors.append(f"{RUNTIME_HOST_BUILD}: {error}")
     non_product_sources = {

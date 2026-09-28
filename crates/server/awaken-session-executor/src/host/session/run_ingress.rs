@@ -103,12 +103,12 @@ impl SharedHost {
         if let Some(observer) = session_admission_observer {
             worker = worker.with_session_run_admission_observer(observer);
         }
-        worker = match &self.worker_stream_publisher {
+        worker = match &self.worker.worker_stream_publisher {
             Some(publisher) => worker.with_claimed_stream_publisher(publisher.clone()),
             None => worker.with_stream_sink(self.completion.clone()),
         };
         worker = worker.with_local_credential_capabilities(local_credential_capabilities);
-        if let Some(resolver) = &self.worker_credential_resolver {
+        if let Some(resolver) = &self.worker.worker_credential_resolver {
             worker = worker.with_worker_credential_resolver(resolver.clone());
         }
         if let Some(claimed_commit) = self.worker_claimed_commit()? {
@@ -142,10 +142,15 @@ impl SharedHost {
     pub(crate) fn worker_inference_materializer(
         &self,
     ) -> Option<awaken_dispatch::InferenceMaterializerFn> {
-        self.inference_routing.materializer().map(|materializer| {
-            let resolve: awaken_dispatch::InferenceMaterializerFn =
-                Arc::new(move |activation, context| materializer.materialize(activation, context));
-            resolve
-        })
+        self.agent
+            .inference_routing
+            .materializer()
+            .map(|materializer| {
+                let resolve: awaken_dispatch::InferenceMaterializerFn =
+                    Arc::new(move |activation, context| {
+                        materializer.materialize(activation, context)
+                    });
+                resolve
+            })
     }
 }

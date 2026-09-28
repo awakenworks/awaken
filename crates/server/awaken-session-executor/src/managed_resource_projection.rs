@@ -194,7 +194,7 @@ impl crate::ManagedHost {
         };
         Ok(Some((
             input.binding_id.to_string(),
-            Arc::new(self.host.memory.bind(
+            Arc::new(self.host.resources.memory.bind(
                 session_thread,
                 workspace,
                 handle,
@@ -410,6 +410,7 @@ impl crate::ManagedHost {
     ) -> Result<Vec<awaken_resource_contract::SkillVersion>, RunError> {
         let skill_realization = self.host.upstream.as_ref().and(realization);
         self.host
+            .tools
             .skills
             .load_pinned(
                 desired.workspace_id.as_str(),
@@ -1668,6 +1669,7 @@ impl crate::ManagedHost {
                 };
                 let content = self
                     .host
+                    .resources
                     .file_content_source
                     .read(
                         workspace,
@@ -1717,7 +1719,7 @@ impl crate::ManagedHost {
                                 awaken_session_realization_contract::SessionResourceMaterializationIntent,
                             >::encode(
                                 self.host
-                                    .memory_reference_encoder
+                                    .worker.memory_reference_encoder
                                     .as_ref()
                                     .ok_or_else(|| {
                                         RunError::internal(
@@ -1739,6 +1741,7 @@ impl crate::ManagedHost {
                             awaken_dispatch::RunClaim,
                         >::encode(
                             self.host
+                                .worker
                                 .memory_reference_encoder
                                 .as_ref()
                                 .ok_or_else(|| {

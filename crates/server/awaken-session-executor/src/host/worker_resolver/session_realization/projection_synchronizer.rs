@@ -659,7 +659,7 @@ mod tests {
         let thread = "claimed-ready-durable-hand-rebuild";
         let storage = tempfile::tempdir().expect("durable Hand storage");
         let mut raw_host = SharedHost::new(Arc::new(AdoptionModel), "stub");
-        raw_host.session_provider =
+        raw_host.env.session_provider =
             crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
                 storage.path(),
                 false,
@@ -669,8 +669,8 @@ mod tests {
             );
         #[cfg(target_os = "linux")]
         if scoped {
-            raw_host.session_provider = crate::session_environment::SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(storage.path(), false);
-            raw_host.session_provider.install_workdir_hand(
+            raw_host.env.session_provider = crate::session_environment::SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(storage.path(), false);
+            raw_host.env.session_provider.install_workdir_hand(
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),
                 crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER")
                     .to_string_lossy()
@@ -678,6 +678,7 @@ mod tests {
                 std::time::Duration::ZERO,
             );
             raw_host
+                .env
                 .session_provider
                 .install_scoped_execution(
                     awaken_sandbox_local::LocalExecutionDeployment::new(
@@ -845,7 +846,8 @@ mod tests {
                 .provider_effect_authority(thread, fence, host.execution_authority.as_ref())
                 .unwrap();
             let environment = Arc::new(
-                host.session_provider
+                host.env
+                    .session_provider
                     .create_effective_for_effect(
                         &host.sandbox_spec(thread),
                         crate::session_environment::ProviderEffect::Fenced {

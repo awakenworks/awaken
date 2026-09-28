@@ -465,6 +465,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
                 .intersect(command.execution_requirements.tool_capability_narrowing);
             activation.model_ref_override = self
                 .host
+                .agent
                 .inference_routing
                 .override_for(command.session_id.as_str());
             activation.data_subject_id = command
@@ -968,6 +969,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
             return Ok(Vec::new());
         }
         self.host
+            .tools
             .skills
             .resolve(workspace_id, skills)
             .await
