@@ -32,14 +32,58 @@ pub(super) struct PermissionContext {
     observed_tools: std::collections::BTreeMap<String, ObservedToolCall>,
     settling_for: Option<String>,
     session_id: Option<String>,
+    tool_aliases: std::collections::BTreeMap<String, String>,
 }
 
 impl PermissionContext {
-    pub(super) fn for_session(session_id: &SessionId) -> Self {
+    pub(super) fn for_session(
+        session_id: &SessionId,
+        tool_aliases: &std::collections::BTreeMap<String, String>,
+    ) -> Self {
         Self {
             session_id: Some(session_id.0.to_string()),
+            tool_aliases: tool_aliases.clone(),
             ..Self::default()
         }
+    }
+
+    /// Reuse only the alias declaration already sent to this exact Session.
+    /// The pinned Claude adapter's toolName is programmatic; title is display.
+    /// An explicit MCP title remains authoritative, and unknown metadata lends
+    /// no identity or permission from another declared tool.
+    fn tool_name(
+        &self,
+        title: &str,
+        meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> String {
+        if awaken_agent_contract::McpToolId::claims_namespace(title)
+            || title.starts_with(awaken_agent_contract::MCP_DOTTED_TOOL_PREFIX)
+        {
+            return title.to_owned();
+        }
+        meta.and_then(|meta| meta.get("claudeCode"))
+            .and_then(|value| value.get("toolName"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|name| self.tool_aliases.get(name))
+            .cloned()
+            .unwrap_or_else(|| title.to_owned())
+    }
+
+    pub(super) fn project_update(
+        &self,
+        update: &agent_client_protocol::SessionUpdate,
+    ) -> Option<AcpProjectedEvent> {
+        let mut event = crate::real_acp::project_update(update)?;
+        if let agent_client_protocol::SessionUpdate::ToolCall(call) = update
+            && let AcpProjectedEvent::ToolCall { name, input, .. } = &mut event
+        {
+            *name = self.tool_name(&call.title, call.meta.as_ref());
+            *input = crate::exact_mcp_tool_arguments(
+                name,
+                call.raw_input.as_ref().unwrap_or(&serde_json::Value::Null),
+            );
+        }
+        Some(event)
     }
 
     pub(super) fn accepts_session(&self, session_id: &SessionId) -> bool {
@@ -80,7 +124,7 @@ impl PermissionContext {
         &mut self,
         update: &agent_client_protocol::SessionUpdate,
     ) -> Option<AcpProjectedEvent> {
-        if let Some(AcpProjectedEvent::ToolCall { id, .. }) = project_update(update) {
+        if let Some(AcpProjectedEvent::ToolCall { id, .. }) = self.project_update(update) {
             if let Some(observed) = self.observed_tools.get_mut(&id) {
                 observed.result_open = false;
             }
@@ -99,7 +143,8 @@ impl PermissionContext {
             self.observed_tools.get_mut(id)?.result_open = false;
             return None;
         }
-        project_update(update).filter(|event| matches!(event, AcpProjectedEvent::ToolResult { .. }))
+        self.project_update(update)
+            .filter(|event| matches!(event, AcpProjectedEvent::ToolResult { .. }))
     }
 
     /// Streaming progress refines only a previously observed exact call. Titles
@@ -334,7 +379,12 @@ fn permission_ask(raw: &serde_json::Value, context: &PermissionContext) -> Permi
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     let mut ask = PermissionAsk {
-        tool,
+        tool: context.tool_name(
+            &tool,
+            tool_call
+                .and_then(|value| value.get("_meta"))
+                .and_then(serde_json::Value::as_object),
+        ),
         call_id,
         arguments,
     };
@@ -684,7 +734,8 @@ mod tests {
                 log: log.clone(),
                 fail: send_fails,
             };
-            let mut context = PermissionContext::for_session(&SessionId::new("s"));
+            let mut context =
+                PermissionContext::for_session(&SessionId::new("s"), &Default::default());
             if settling {
                 context.begin_settlement("prior");
             }
@@ -767,6 +818,47 @@ mod tests {
         let empty = permission_ask(&raw(""), &context);
         assert_eq!(empty.tool, "execute", "empty ids fail closed");
         assert!(empty.arguments.is_null(), "empty ids fail closed");
+    }
+
+    #[test]
+    fn declared_alias_projection_never_borrows_an_undeclared_or_explicit_mcp_identity() {
+        // A4 an explicit (including malformed) MCP title owns its identity even
+        // beside known alias metadata; A5 absent, malformed, foreign-vendor or
+        // undeclared metadata retains the raw title. No tool category or title
+        // substring synthesizes an alias, and the complete request input stays
+        // unchanged. New/load/response integration is owned by A1-A3 above.
+        let context = PermissionContext::for_session(
+            &SessionId::new("s"),
+            &[("Bash".into(), "mcp__awaken_session__bash".into())].into(),
+        );
+        for title in ["mcp__actual__read", "mcp.actual.read", "mcp__malformed"] {
+            let ask = permission_ask(
+                &serde_json::json!({"toolCall":{
+                    "toolCallId":"exact","title":title,"rawInput":{"path":"file"},
+                    "_meta":{"claudeCode":{"toolName":"Bash"}}
+                }}),
+                &context,
+            );
+            assert_eq!(ask.tool, title, "A4");
+            assert_eq!(ask.arguments, serde_json::json!({"path":"file"}));
+        }
+        for meta in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"other":{"toolName":"Bash"}}),
+            serde_json::json!({"claudeCode":{"toolName":1}}),
+            serde_json::json!({"claudeCode":{"toolName":"Unknown"}}),
+        ] {
+            let ask = permission_ask(
+                &serde_json::json!({"toolCall":{
+                    "toolCallId":"exact","title":"Terminal","kind":"execute",
+                    "rawInput":{"command":"pwd"},"_meta":meta
+                }}),
+                &context,
+            );
+            assert_eq!(ask.tool, "Terminal", "A5");
+            assert_eq!(ask.arguments, serde_json::json!({"command":"pwd"}));
+        }
     }
 
     #[test]
