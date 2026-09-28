@@ -91,14 +91,8 @@ KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
     **{
         ("awaken-runtime-host", target): "runtime-host reaches another context's application/store; depend on its contract and let the bin inject the implementation"
         for target in (
-            "awaken-credential-vault",
-            "awaken-file-store",
-            "awaken-memory-store",
-            "awaken-resource-application",
             "awaken-run-ingress",
             "awaken-session-application",
-            "awaken-session-store",
-            "awaken-skill-store",
         )
     },
     **{

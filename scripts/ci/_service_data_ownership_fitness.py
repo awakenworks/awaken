@@ -160,10 +160,13 @@ VOLATILE_RUNTIME_HOST_APIS = (
     "new_with_deployment",
     "with_deployment_config",
     "new_with_resources",
+    "new_with_resources_and_deployment",
     "with_resource_reclamation",
     "with_skill_store",
     "with_skill_store_backend",
+    "with_skill_store_ports",
     "with_store_dir",
+    "with_durable_store_dir",
     "with_file_content_source",
     "with_memory_repository",
 )
@@ -171,6 +174,10 @@ VOLATILE_RUNTIME_HOST_APIS = (
 TEST_SUPPORT_GATE = (
     r'#\s*\[\s*cfg\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*"test-support"\s*\)\s*\)\s*\]'
 )
+# The crate's own unit tests only: stricter than test-support, equally
+# unreachable from a product build.
+TEST_ONLY_GATE = r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]"
+NON_PRODUCT_GATE = rf"(?:{TEST_SUPPORT_GATE}|{TEST_ONLY_GATE})"
 FEATURE_TEST_SUPPORT_GATE = (
     r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"test-support"\s*\)\s*\]'
 )
@@ -244,7 +251,7 @@ NON_PRODUCT_APIS = (
         "MemoryStores::open",
         RUNTIME_MEMORY_STORES,
         r"\bpub\s*\(\s*crate\s*\)\s+fn\s+open\b",
-        TEST_SUPPORT_GATE,
+        NON_PRODUCT_GATE,
     ),
     (
         "awaken_resource_persistence::ephemeral",
@@ -604,7 +611,7 @@ def volatile_runtime_host_surface_violations(source: str) -> list[str]:
     errors: list[str] = []
     for name in VOLATILE_RUNTIME_HOST_APIS:
         gated = _declaration_is_gated(
-            source, rf"\bpub\s+fn\s+{re.escape(name)}\b", TEST_SUPPORT_GATE
+            source, rf"\bpub\s+fn\s+{re.escape(name)}\b", NON_PRODUCT_GATE
         )
         if gated is None:
             errors.append(f"missing volatile Host API `{name}`")
@@ -1201,7 +1208,8 @@ def selftest() -> None:
     Control constructs Resources -> rejected; O13 grouped role-owned stores and
     Resources catalog -> accepted; O14 a cross-domain store field or unconditional
     migration acquisition -> rejected; O15 every volatile Host API is test-support
-    gated -> accepted; O16 one missing Host gate -> rejected; O17 all canonical
+    gated -> accepted; O16 one missing Host gate -> rejected; O16b a
+    crate-test-only gate -> accepted; O17 all canonical
     CLI scenario/restart helpers, File/Memory/Skill/Resource/Environment volatile
     entrypoints, the ephemeral Resources fixture, and permissive webhook
     loopback transport are test-support gated ->
@@ -1405,6 +1413,12 @@ def selftest() -> None:
             "pub fn with_store_dir",
         )
     ) == ["volatile Host API `with_store_dir` is not test-support gated"]  # O16
+    assert volatile_runtime_host_surface_violations(
+        volatile_surface.replace(
+            '#[cfg(any(test, feature = "test-support"))]\npub fn with_store_dir',
+            "#[cfg(test)]\npub fn with_store_dir",
+        )
+    ) == []  # O16b: the crate's own unit-test gate is equally non-product
     any_gate = '#[cfg(any(test, feature = "test-support"))]\n'
     feature_gate = '#[cfg(feature = "test-support")]\n'
     volatile_surfaces = {

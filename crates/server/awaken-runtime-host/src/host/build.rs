@@ -28,8 +28,10 @@ impl SharedHost {
         format!("workspace_local_{:x}_{nonce}", std::process::id())
     }
 
-    /// Volatile test/scenario host over `llm`.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Volatile host over `llm` for this crate's own unit tests. Other
+    /// compositions use `awaken-runtime-host-testkit`, which owns the
+    /// concrete volatile Resource adapters this crate does not link.
+    #[cfg(test)]
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
         Self::new_with_deployment(
             llm,
@@ -42,7 +44,7 @@ impl SharedHost {
     /// The platform Workspace is freshly minted even when `deployment` names a
     /// storage root; a fixture that needs a durable coordinate installs it with
     /// [`Self::with_local_workspace`].
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn new_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -54,6 +56,7 @@ impl SharedHost {
             llm,
             model_ref.into(),
             capability::ResourceInputs {
+                #[cfg(any(test, feature = "test-support"))]
                 local: None,
                 worker_content: None,
                 extraction_repository: None,
@@ -108,16 +111,17 @@ impl SharedHost {
     pub fn new_with_resources(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: awaken_resource_application::ResourceAuthorities,
+        resources: capability::LocalResourcePorts,
+        extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
     ) -> Self {
-        let clock = resources.clock();
+        let clock = resources.clock.clone();
         Self::build(
             llm,
             model_ref.into(),
             capability::ResourceInputs {
-                local: Some(resources.into()),
+                local: Some(resources),
                 worker_content: None,
-                extraction_repository: None,
+                extraction_repository: Some(extraction_repository),
             },
             Self::mint_local_workspace(),
             crate::deployment_config::DeploymentConfig::ephemeral(),
@@ -132,17 +136,17 @@ impl SharedHost {
     pub fn new_with_resources_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: awaken_resource_application::ResourceAuthorities,
+        resources: capability::LocalResourcePorts,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         local_workspace: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
-        let clock = resources.clock();
+        let clock = resources.clock.clone();
         Self::build(
             llm,
             model_ref.into(),
             capability::ResourceInputs {
-                local: Some(resources.into()),
+                local: Some(resources),
                 worker_content: None,
                 extraction_repository: Some(extraction_repository),
             },
@@ -172,6 +176,7 @@ impl SharedHost {
             llm,
             model_ref.into(),
             capability::ResourceInputs {
+                #[cfg(any(test, feature = "test-support"))]
                 local: None,
                 worker_content: Some(capability::WorkerContentAdapters {
                     file_content_source,
@@ -208,6 +213,7 @@ impl SharedHost {
             llm,
             model_ref.into(),
             capability::ResourceInputs {
+                #[cfg(any(test, feature = "test-support"))]
                 local: None,
                 worker_content: Some(capability::WorkerContentAdapters {
                     file_content_source,
@@ -242,8 +248,16 @@ impl SharedHost {
         #[cfg(any(test, feature = "test-support"))]
         let mut skills = skills;
         #[cfg(any(test, feature = "test-support"))]
-        if let Some(plane) = &resources.local {
-            skills.set_store(plane.skill_store.clone());
+        if let Some(skill_ports) = resources
+            .local
+            .as_ref()
+            .and_then(|plane| plane.skills.clone())
+        {
+            skills.set_store(
+                skill_ports.store,
+                skill_ports.bundle_source,
+                skill_ports.application,
+            );
         }
         let auxiliary_sandboxes = crate::auxiliary_sandbox::default_auxiliary_sandboxes();
         let resource_ports = capability::ResourcePorts::assemble(
@@ -397,18 +411,19 @@ impl SharedHost {
         self
     }
 
-    /// Test-support upgrade of a volatile fixture to local durable storage.
+    /// Test-support upgrade of a volatile fixture to local durable storage
+    /// under `dir`, with the durable Memory extraction repository the caller
+    /// opened there (`awaken-runtime-host-testkit` opens the canonical one).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn with_store_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+    pub fn with_durable_store_dir(
+        mut self,
+        dir: impl Into<PathBuf>,
+        extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
+    ) -> Self {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir)
-            .expect("create durable Memory extraction repository directory");
-        self.resources.memory.set_extraction_repository(Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open(
-                &dir.join("sessions.db").to_string_lossy(),
-            )
-            .expect("open durable Memory extraction repository"),
-        ));
+        self.resources
+            .memory
+            .set_extraction_repository(extraction_repository);
         // A durable host must place its Workdir sandboxes under a stable root too;
         // otherwise the dispatch row survives restart but its persisted handle
         // points into the previous process's random temp directory.
@@ -428,6 +443,22 @@ impl SharedHost {
         }
         self.store_dir = Some(dir);
         self
+    }
+
+    /// [`Self::with_durable_store_dir`] with the local SQLite extraction
+    /// repository at `dir/sessions.db`, for this crate's own unit tests.
+    #[cfg(test)]
+    pub fn with_store_dir(self, dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        std::fs::create_dir_all(&dir)
+            .expect("create durable Memory extraction repository directory");
+        let repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(
+                &dir.join("sessions.db").to_string_lossy(),
+            )
+            .expect("open durable Memory extraction repository"),
+        );
+        self.with_durable_store_dir(dir, repository)
     }
 
     /// Bind the exact published delegation targets to a prepared Session.
@@ -528,6 +559,7 @@ mod startup_tests {
             Arc::new(crate::NoModelConfiguredExecutor),
             crate::UNCONFIGURED_MODEL_REF.into(),
             capability::ResourceInputs {
+                #[cfg(any(test, feature = "test-support"))]
                 local: None,
                 worker_content: None,
                 extraction_repository: Some(expected.clone()),

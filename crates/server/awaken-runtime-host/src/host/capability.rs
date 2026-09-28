@@ -24,6 +24,8 @@ pub(crate) use environment::EnvironmentProviders;
 pub(crate) use execution::AttemptBackends;
 pub(crate) use mcp::McpRelayCapability;
 pub(crate) use resources::ResourcePorts;
+#[cfg(any(test, feature = "test-support"))]
+pub use resources::{LocalResourcePorts, LocalSkillPorts};
 pub(super) use resources::{ResourceInputs, WorkerContentAdapters};
 pub(crate) use tools::ToolOffering;
 pub(crate) use worker::WorkerTransports;

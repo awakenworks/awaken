@@ -42,6 +42,7 @@ awaken-observability = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 awaken-protocol-managed-testkit.workspace = true
+awaken-runtime-host-testkit.workspace = true
 awaken-protocol-awaken = { workspace = true }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }

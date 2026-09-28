@@ -487,8 +487,9 @@ impl crate::ManagedHost {
     }
 
     /// Wire runtime credential injection for the already-frozen Session bindings
-    /// and Repository realization.
-    #[cfg(any(test, feature = "test-support"))]
+    /// and Repository realization, in this crate's own unit tests. Other
+    /// compositions install the materializer they built from their Vault.
+    #[cfg(test)]
     #[must_use]
     pub fn with_credentials(
         self,
