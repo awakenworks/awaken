@@ -30,6 +30,8 @@ path = "src/bin/awaken-coordinator.rs"
 # and thin Control/Coordinator executables. Every target calls the same role
 # service lifecycle; the authority-free Worker remains its own package and binary.
 [dependencies]
+# Assembles the container-tier Session environment the deployment names.
+awaken-execution-composition.workspace = true
 # Deployment-file PVC policy is owned by the existing container substrate.
 awaken-sandbox-container.workspace = true
 kube = { version = "1", default-features = false, features = ["client", "rustls-tls", "http-proxy"], optional = true }
@@ -166,9 +168,9 @@ test-support = [
 ]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.
-container-docker = ["awaken-session-executor/container-docker"]
-container-podman = ["awaken-session-executor/container-podman"]
-container-k8s = ["awaken-session-executor/container-k8s", "awaken-worker/container-k8s", "awaken-worker-transport-security/kubernetes", "dep:kube"]
+container-docker = ["awaken-execution-composition/docker"]
+container-podman = ["awaken-execution-composition/podman"]
+container-k8s = ["awaken-execution-composition/k8s", "awaken-worker/container-k8s", "awaken-worker-transport-security/kubernetes", "dep:kube"]
 
 [build-dependencies]
 serde_json.workspace = true

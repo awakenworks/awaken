@@ -30,11 +30,13 @@ path = "src/main.rs"
 # Container sandbox tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s), passed directly
 # to the shared host so a remote execution worker can realize its ACP
 # sessions inside containers/Pods. Off by default (bwrap namespace tier).
-container-docker = ["awaken-session-executor/container-docker"]
-container-podman = ["awaken-session-executor/container-podman"]
-container-k8s = ["awaken-session-executor/container-k8s", "awaken-worker-transport-security/kubernetes"]
+container-docker = ["awaken-execution-composition/docker"]
+container-podman = ["awaken-execution-composition/podman"]
+container-k8s = ["awaken-execution-composition/k8s", "awaken-worker-transport-security/kubernetes"]
 
 [dependencies]
+# Assembles the container-tier Session environment the deployment names.
+awaken-execution-composition.workspace = true
 awaken-container-contract.workspace = true
 awaken-protocol-mcp.workspace = true
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch

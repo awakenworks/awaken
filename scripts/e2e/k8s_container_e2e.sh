@@ -266,7 +266,7 @@ AWAKEN_K8S_E2E=1 AWAKEN_K8S_CONTROL_E2E=1 \
   --test k8s_e2e -- --nocapture --test-threads=1
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
   --test k8s_policy_drift -- --nocapture --test-threads=1
-AWAKEN_K8S_E2E=1 cargo test -p awaken-session-executor --features container-k8s --lib \
+AWAKEN_K8S_E2E=1 cargo test -p awaken-session-executor --features k8s-tests --lib \
   k8s_live_pvc_initialization_is_readable_and_reused -- --nocapture
 AWAKEN_K8S_E2E=1 cargo test -p awaken-cli --features container-k8s --lib \
   real_pod_identity_survives_reopen_and_independent_stop_without_false_retirement -- --nocapture

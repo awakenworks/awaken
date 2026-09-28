@@ -55,9 +55,6 @@ awaken-ext-background-task.workspace = true
 awaken-memory-store = { workspace = true, optional = true }
 awaken-skill-store = { workspace = true, optional = true }
 awaken-sandbox-local = { workspace = true }
-# The container tier (podman/docker/k8s), for realizing the session-scoped execution
-# environment selected by worker configuration.
-awaken-sandbox-container = { workspace = true }
 awaken-sandbox-control.workspace = true
 # The content-addressed store the host serves files/artifacts from + adapts behind
 # the sandbox providers' BlobSource port (was re-exported via awaken-sandbox-local,
@@ -125,15 +122,17 @@ test-support = [
     "awaken-dispatch/test-support",
     "awaken-session-store/test-support",
 ]
-# Container ACP tiers: enable the backend a worker is configured for
-# (AWAKEN_SANDBOX_TIER). Each forwards to the matching awaken-sandbox-container
-# runtime; off by default so the namespace-only host stays light.
-container-docker = ["awaken-sandbox-container/docker"]
-container-podman = ["awaken-sandbox-container/podman"]
-container-k8s = ["awaken-sandbox-container/k8s"]
+# Live-backend tests only. The container tiers themselves are assembled by
+# `awaken-execution-composition`; these features enable a real backend in the
+# test-only container dependency for the Host tests that drive one.
+docker-tests = ["awaken-sandbox-container/docker"]
+k8s-tests = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
 awaken-reliability-testkit.workspace = true
+# Test doubles decode real container handles through the container provider's
+# codec; the live-backend tests build a real provider.
+awaken-sandbox-container.workspace = true
 # `AcpCapabilityHandshake::negotiate` takes `&mut dyn AgentChannel`, which the
 # ACP contract re-uses but does not re-export, so a test handshake has to name
 # the trait itself. Dev-only: production code only ever consumes the port.

@@ -90,34 +90,19 @@ impl CacheVolumeInitializer for FilesystemCacheVolumeInitializer {
 /// content-key marker atomically, waits for success, and disposes the Pod. The
 /// container adapter still owns only mount/process mechanics; this owner decides
 /// when a CacheVolume becomes publishable as prepared.
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-pub(crate) struct SandboxCacheVolumeInitializer {
+pub struct SandboxCacheVolumeInitializer {
     provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
 }
 
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
 impl SandboxCacheVolumeInitializer {
+    /// Consumer: the container-tier composition, which installs this
+    /// initializer beside the Kubernetes provider it built.
     #[must_use]
-    pub(crate) fn new(
-        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-    ) -> Self {
+    pub fn new(provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>) -> Self {
         Self { provider }
     }
 }
 
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
 #[async_trait]
 impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
     async fn initialize(&self, volume: &CacheVolumeWarmup) -> Result<(), String> {
@@ -288,11 +273,6 @@ impl CacheVolumePrewarmer {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -371,18 +351,8 @@ mod tests {
         assert_eq!(initializer.calls.load(Ordering::SeqCst), 2);
     }
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     struct FinishedProcess(i32);
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     #[async_trait]
     impl pc::ProcessHandle for FinishedProcess {
         fn id(&self) -> &str {
@@ -405,22 +375,12 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     struct RecordingEnvironment {
         commands: Arc<Mutex<Vec<pc::Command>>>,
         disposals: Arc<AtomicUsize>,
         exit_code: i32,
     }
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     #[async_trait]
     impl pc::Sandbox for RecordingEnvironment {
         async fn prepare_disposal_for_effect(
@@ -497,11 +457,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     impl RecordingEnvironment {
         // Relocated off the Sandbox port: unfenced teardown is no longer a
         // trait obligation, only this type's own detail behind its named
@@ -512,11 +467,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     #[async_trait]
     impl awaken_container_contract::ContainerEnvironment for RecordingEnvironment {
         async fn checkpoint_upload(
@@ -576,11 +526,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     #[async_trait]
     impl awaken_sandbox_control::SandboxControlServicePublisher for RecordingEnvironment {
         async fn publish_sandbox_control_service(
@@ -595,11 +540,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     struct RecordingProvider {
         specs: Arc<Mutex<Vec<pc::SandboxSpec>>>,
         commands: Arc<Mutex<Vec<pc::Command>>>,
@@ -607,11 +547,6 @@ mod tests {
         exit_code: i32,
     }
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     #[async_trait]
     impl awaken_container_contract::ContainerEnvironmentProvider for RecordingProvider {
         fn adoption_layout(
@@ -712,11 +647,6 @@ mod tests {
         }
     }
 
-    #[cfg(any(
-        feature = "container-docker",
-        feature = "container-podman",
-        feature = "container-k8s"
-    ))]
     #[tokio::test]
     async fn pvc_initializer_publishes_only_after_exact_mounted_process_success() {
         // FMECA: F1 success is published before the PVC process exits
@@ -777,7 +707,7 @@ mod tests {
         assert_eq!(failing_disposals.load(Ordering::SeqCst), 1, "K3 E4");
     }
 
-    #[cfg(feature = "container-k8s")]
+    #[cfg(feature = "k8s-tests")]
     #[tokio::test]
     async fn k8s_live_pvc_initialization_is_readable_and_reused() {
         // Live FMECA/decision rule K4 extends the unit table above:

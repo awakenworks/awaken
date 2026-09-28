@@ -156,7 +156,7 @@ async fn open_image_builds(
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> Result<Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>, String> {
     let Some(provisioner) =
-        awaken_session_executor::package_image_provisioner(&deployment.runtime).await?
+        awaken_execution_composition::package_image_provisioner(&deployment.runtime).await?
     else {
         return Ok(None);
     };

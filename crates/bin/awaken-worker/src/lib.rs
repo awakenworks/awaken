@@ -569,11 +569,13 @@ impl WorkerNodeBuilder {
         }
         let backend = self.deployment.sandbox_support().1;
         let realization_namespace = worker_realization_namespace(&self.deployment)?;
-        let components = awaken_session_executor::build_container_environment_for_realization(
+        let components = awaken_execution_composition::build_container_environment_for_realization(
             realization_namespace,
             self.deployment.sandbox_tier,
             self.deployment.container_image.as_deref(),
             &self.deployment.sandbox,
+            &awaken_execution_composition::ContainerTierPolicy::default(),
+            self.clock.clone(),
         )
         .await
         .map_err(WorkerNodeBuildError)?;
@@ -1353,11 +1355,14 @@ impl WorkerNode {
         }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
-        host = host
-            .with_session_environment_from_deployment(self.hand_executor_factory)
-            .await
-            .map_err(std::io::Error::other)?
-            .with_acp_from_deployment(self.credential_materializer, self.brokered_acp_model_access)
+        host = awaken_execution_composition::with_session_environment_from_deployment(
+            host,
+            self.hand_executor_factory,
+            &awaken_execution_composition::ContainerTierPolicy::default(),
+        )
+        .await
+        .map_err(std::io::Error::other)?
+        .with_acp_from_deployment(self.credential_materializer, self.brokered_acp_model_access)
             .await;
 
         let authority = Arc::new(lifecycle::WorkerAuthorityProof::default());

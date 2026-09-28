@@ -138,7 +138,6 @@
         "crates/server/awaken-protocol-managed/src/state/session_service.rs": 1,
         "crates/server/awaken-dispatch/src/durable.rs": 3,
         "crates/server/awaken-dispatch/src/live_control.rs": 1,
-        "crates/server/awaken-session-executor/src/container_environment.rs": 1,
         "crates/server/awaken-session-executor/src/host/build.rs": 1,
         "crates/stores/awaken-env-store/src/inmem.rs": 1,
         "crates/stores/awaken-store-conformance/src/env_registry.rs": 1,

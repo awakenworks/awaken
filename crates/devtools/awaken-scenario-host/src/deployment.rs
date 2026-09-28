@@ -267,9 +267,11 @@ pub(crate) async fn runtime_resource_host_with_deployment(
 ) -> ScenarioPlatform {
     resource_host_with_deployment(llm, model_ref, deployment)
         .map_host_async(|host| async move {
-            host.with_session_environment_from_deployment(Some(
-                awaken_worker::relay_hand_executor_factory(),
-            ))
+            awaken_execution_composition::with_session_environment_from_deployment(
+                host,
+                Some(awaken_worker::relay_hand_executor_factory()),
+                &awaken_execution_composition::ContainerTierPolicy::default(),
+            )
             .await
             .expect("scenario Session environment must be available")
         })
