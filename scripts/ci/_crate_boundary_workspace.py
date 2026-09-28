@@ -95,12 +95,25 @@ def _character_literal_end(source: str, start: int) -> int | None:
     return None
 
 
+# Every lexer decision below starts at one of these characters; any other run
+# of characters is copied unchanged, so the loops jump over it in one step.
+_COMMENT_LEXEME_START = re.compile(r"[bcr\"'/]")
+_LITERAL_LEXEME_START = re.compile(r"[bcr\"']")
+
+
 @lru_cache(maxsize=_RUST_PROJECTION_CACHE_SIZE)
 def rust_without_comments(source: str) -> str:
     """Blank Rust comments without changing offsets, lines, or string literals."""
     output: list[str] = []
     cursor = 0
     while cursor < len(source):
+        start = _COMMENT_LEXEME_START.search(source, cursor)
+        if start is None:
+            output.append(source[cursor:])
+            break
+        if start.start() > cursor:
+            output.append(source[cursor:start.start()])
+            cursor = start.start()
         raw_end = _raw_string_end(source, cursor)
         if raw_end is not None:
             output.append(source[cursor:raw_end])
@@ -150,6 +163,13 @@ def rust_syntax(source: str) -> str:
     output: list[str] = []
     cursor = 0
     while cursor < len(source):
+        start = _LITERAL_LEXEME_START.search(source, cursor)
+        if start is None:
+            output.append(source[cursor:])
+            break
+        if start.start() > cursor:
+            output.append(source[cursor:start.start()])
+            cursor = start.start()
         raw_end = _raw_string_end(source, cursor)
         if raw_end is not None:
             output.append(_blank_preserving_lines(source[cursor:raw_end]))

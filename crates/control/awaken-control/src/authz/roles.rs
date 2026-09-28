@@ -601,6 +601,7 @@ mod verification {
         }
     }
 
+    // Hosted Runtime and Workspace role vocabulary is owned by its only consumer.
     /// @obligation authz.run_backed_protocol_routes_use_the_exact_run_action_namespace
     #[kani::proof]
     fn run_backed_route_policy_uses_exact_run_actions() {

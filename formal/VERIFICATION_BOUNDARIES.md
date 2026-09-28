@@ -444,12 +444,12 @@ type checking are valuable executable evidence, but are not formal proofs.
   both terminal targets, complete clearing, the scalar frame, terminal replay
   and rejection of Running. No uniqueness or tree-height conclusion is assumed.
   All seven harnesses keep global unwind four and every default safety/unwinding
-  assertion. `scripts/ci/formal_kani_options.py` is the single runtime/checker
-  owner of the pinned std height-loop profiles: eight bound-one loops for
-  admission and seven for terminal clearing. Other loops retain the global
-  bound; any reachable extra height iteration is a proof failure, not an
-  assumption. Unqualified raw overrides, wrong package/harness bindings, duplicate
-  selections and appended check-disabling options are rejected.
+  assertion. `scripts/ci/formal_kani_options.py` is the single owner of the
+  pinned std height-loop profiles: eight bound-one loops for admission and
+  seven for terminal clearing. Other loops retain the global bound; any
+  reachable extra height iteration is a proof failure, not an assumption. A
+  harness names its profile in its own `/// @kani` tag; a tag cannot carry raw
+  options, and a profile used from another package is rejected.
   Two actual production mutations fail the named Kani assertions: omitting
   terminal clear fails T2; skipping Exact insertion only when the set is
   nonempty fails M1 while preserving the empty-set base behavior. Matching

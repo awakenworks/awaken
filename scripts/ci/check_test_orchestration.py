@@ -676,9 +676,9 @@ def shared_conformance_errors(
 
 # The two commands `--push` exists to run: workspace clippy under
 # `-D warnings` (dead code has turned main red after a green pre-commit) and
-# the formal coverage ledger (a Kani harness registered in the formal/obligations ledger
-# but not selected by check_formal.sh fails the formal group hours later; the
-# ledger check proves selection in seconds).
+# the formal coverage ledger (a Kani harness the derived plan cannot select
+# fails the formal group hours later; the ledger check derives the plan in
+# seconds).
 # Static scans the Rust gate owns: each must run exactly once, from the gate
 # rather than from a hook of its own, and must not become a successful skip when
 # Cargo is absent. The hook that delegates to the gate must also trigger on the

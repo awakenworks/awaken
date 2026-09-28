@@ -222,13 +222,14 @@ class EvidenceTests(unittest.TestCase):
         # Z4 proof failure => propagate. Execute the real runner selection and its
         # final strict check with a solver process stub; this is not proof evidence.
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
-        # End at this conditional's own indentation, not the next package
-        # batch: another solver selection can legally follow the closing fi.
         # The real runner decides the solver for every batch, so execute it
-        # (and its pinned-version helper) around the one explicit Z3 batch.
-        runner = source[source.index("  run_kani() {"):source.index("  run_kani awaken-agent-contract")]
-        invocation = "  run_kani awaken-protocol-managed --solver z3" + source.split(
-            "  run_kani awaken-protocol-managed --solver z3", 1)[1].split("\n\n", 1)[0].split("\n  #", 1)[0] + "\n"
+        # (and its pinned-version helper) on the planned batch of the one
+        # harness whose own tag selects Z3 alone.
+        import formal_plan
+        runner = source[source.index("  run_kani() {"):source.index("  # The batches are derived, not listed")]
+        [batch] = [batch for batch in formal_plan.batches(ROOT, "full")
+                   if batch.selection.profile == "solver-z3-v1"]
+        invocation = "  run_kani " + " ".join(batch.argv()) + "\n"
         selection = runner + invocation
         strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
         version = begin_record(self.root, True, 100)["proof_toolchain"]["z3"]
@@ -258,7 +259,8 @@ class EvidenceTests(unittest.TestCase):
                 invoked = installed and reported == version and version_exit == 0
                 self.assertEqual(calls.exists(), invoked)
                 if invoked:
-                    self.assertEqual(calls.read_text().strip(), "cargo kani -p awaken-protocol-managed --output-format terse -j 1 --solver z3 --harness memory_time_filter_compares_visible_milliseconds_without_merging_them")
+                    self.assertEqual(calls.read_text().strip(), "cargo kani -p awaken-protocol-managed --output-format terse -j 1 --solver z3 --exact --harness "
+                                     "resources::memory_stores::memory_time_filter_compares_visible_milliseconds_without_merging_them")
                 if not installed:
                     self.assertIn("skipped Z3", result.stdout)
         passed = finish_record(begin_record(self.root, True, 100), self.root, False, 110)
@@ -272,7 +274,7 @@ class EvidenceTests(unittest.TestCase):
         # mode completes; S3 a solver compiled into CBMC (cadical) needs no
         # binary. Absent kissat used to read as "0 of N failed ... FAILED".
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
-        runner = source[source.index("  run_kani() {"):source.index("  run_kani awaken-agent-contract")]
+        runner = source[source.index("  run_kani() {"):source.index("  # The batches are derived, not listed")]
         strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
         for solver, installed, strict, expected, invoked in (
             ("kissat", True, 1, 0, True),

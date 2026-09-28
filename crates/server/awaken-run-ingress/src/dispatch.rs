@@ -343,6 +343,7 @@ mod completed_identity_proofs {
 
     /// @obligation session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
     /// @obligation session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
+    /// @kani default-features=false
     #[kani::proof]
     fn agent_message_completed_tombstone_replays_only_exact_dispatch_identity() {
         // Kani exhausts two-byte exact identity values, tombstone presence, the
@@ -1007,6 +1008,7 @@ mod claim_binding_proofs {
     /// @obligation remote_worker.execution_requires_claimed_snapshot
     /// @obligation session_run.recovery_claim_is_admission_only
     /// @obligation worker.retry_preserves_pinned_binding
+    /// @kani default-features=false
     #[kani::proof]
     fn dispatch_claim_preserves_every_frozen_binding() {
         // Cause/effect graph: C1 selects ordinary, terminal, exhausted, or

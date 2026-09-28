@@ -454,6 +454,7 @@ impl ToolTaskHandle {
 
 #[cfg(kani)]
 /// @obligation session_execution.one_physical_attempt_per_thread
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 #[kani::unwind(4)]
 fn created_tool_handle_validation_never_invents_termination() {

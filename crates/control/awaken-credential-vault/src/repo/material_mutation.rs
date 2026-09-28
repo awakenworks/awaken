@@ -668,6 +668,7 @@ mod material_input_proofs {
     #[cfg(kani)]
     /// @obligation credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
     /// @obligation credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+    /// @kani profile=minisat-unwind-memcmp-16-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn credential_material_input_facts_without_predecessor() {

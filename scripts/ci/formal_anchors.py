@@ -8,6 +8,10 @@ per obligation, directly beside ``#[kani::proof]``::
     #[kani::proof]
     fn work_lease_epoch_is_exact_nonnegative_and_nonwrapping() { ... }
 
+A harness whose Kani selection is not the default states it the same way, in
+one line: ``/// @kani profile=<name> features=<f,...> tier=pr|nightly`` (see
+``formal_plan``).
+
 The harness block is the run of outer attributes and line comments directly
 above the ``fn`` (through ``#[kani::proof]`` and any attribute after it). An
 anchor anywhere else is dangling. This module only reads and parses; the rules
@@ -15,7 +19,7 @@ that make an anchor an error live with the ledger that consumes them
 (``formal_ledger.load``).
 
 Consumers: ``formal_ledger`` (assembly of ``proof_harnesses`` and harness-file
-evidence) and ``check_formal_coverage`` (the Kani package of each harness).
+evidence) and ``formal_plan`` (the Kani batches of every harness).
 """
 
 from __future__ import annotations
@@ -34,7 +38,9 @@ from formal_sources import source_text
 RUST_SOURCES = "crates/**/*.rs"
 CARGO_MANIFESTS = "crates/**/Cargo.toml"
 PROOF_ATTRIBUTE = "#[kani::proof]"
-TAGS = ("obligation",)
+# `@obligation <id>` names an obligation the harness serves (formal_ledger);
+# `@kani key=value ...` states its non-default Kani selection (formal_plan).
+TAGS = ("obligation", "kani")
 # A doc-comment line carrying one tag: `/// @<tag> <value...>`.
 ANCHOR = re.compile(r"^\s*///\s*@(?P<tag>[a-z][a-z-]*)(?:\s+(?P<value>.*?))?\s*$")
 BLOCK_LINE = re.compile(r"^\s*(?:#\[.*\]|///.*|//(?!!).*)\s*$")

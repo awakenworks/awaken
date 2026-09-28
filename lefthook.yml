@@ -52,11 +52,11 @@ pre-commit:
     # still exists, and an obligation may cite any repository path, so this
     # command has no trigger set to narrow and runs on every commit.
     formal-ledger:
-      # >>> generated glob from check_formal_coverage.py, formal_ledger.py INPUT_GLOBS — do not edit
-      # no glob: check_formal_coverage.py, formal_ledger.py reads every staged file, so this command
+      # >>> generated glob from check_formal_coverage.py, formal_ledger.py, formal_plan.py INPUT_GLOBS — do not edit
+      # no glob: check_formal_coverage.py, formal_ledger.py, formal_plan.py reads every staged file, so this command
       # must keep the whole staged set as its trigger.
       # <<< generated glob
-      run: python3 scripts/ci/formal_ledger.py --self-test && python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
+      run: python3 scripts/ci/formal_ledger.py --self-test && python3 scripts/ci/formal_plan.py --self-test && python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
 
     # The ledger above proves each obligation carries evidence; this one proves
     # the product still consumes it. An obligation whose prefix no requirement

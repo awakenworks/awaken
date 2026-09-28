@@ -190,6 +190,7 @@ fn arbitrary_idempotency_key_scan(bits: u8) -> IdempotencyKeyScan {
 /// exactly when all bytes are visible and one byte is not an ASCII space.
 #[cfg(kani)]
 /// @obligation management_http.idempotency_key_admission_is_exact_and_fail_closed
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 fn idempotency_key_scan_transition_is_exact_and_invalid_absorbing() {
     let state = arbitrary_idempotency_key_scan(kani::any());
@@ -216,6 +217,7 @@ fn idempotency_key_scan_transition_is_exact_and_invalid_absorbing() {
 /// lengths 1..=255 proceed to scanning, and only the `Graphic` summary admits.
 #[cfg(kani)]
 /// @obligation management_http.idempotency_key_admission_is_exact_and_fail_closed
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 fn idempotency_key_length_and_summary_policy_is_exact() {
     let length: usize = kani::any();
@@ -242,6 +244,7 @@ fn idempotency_key_length_and_summary_policy_is_exact() {
 /// language for keys of any length without imposing a smaller proof-only bound.
 #[cfg(kani)]
 /// @obligation management_http.idempotency_key_admission_is_exact_and_fail_closed
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 fn idempotency_key_admission_rejects_empty_overlong_and_every_invalid_byte() {
     let byte: u8 = kani::any();
