@@ -242,6 +242,7 @@ async fn active_active_control_child() {
         Arc::new(ClaimedCommitService::new(dispatch, coordinator)),
         directory,
         authenticator,
+        awaken_lease_contract::system_clock(),
     ));
     let router = registered_worker_transport_router_with_services(
         dispatch_transport_router_with_service(dispatch_service),

@@ -121,7 +121,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
             .with_dispatch_store(any),
     );
     let _managed = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
-    let router = durable_ops_router(host);
+    let router = durable_ops_router(host, awaken_lease_contract::system_clock());
     let thread = "t-dur";
     let base = format!("/v1/durable/threads/{thread}");
 
@@ -301,7 +301,7 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
         .await
         .unwrap();
 
-    let router = durable_ops_router(host);
+    let router = durable_ops_router(host, awaken_lease_contract::system_clock());
     let base = format!("/v1/durable/threads/{thread}");
     let (status, body) = call(&router, "GET", &format!("{base}/dispatches")).await;
     assert_eq!(status, StatusCode::OK, "R1: {body}");
@@ -331,10 +331,13 @@ async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability
      * is covered by the lifecycle test above. D2 C1=F,C2=read=>E2; D3
      * C1=F,C2=repair=>E2. This prevents monitoring from becoming a parallel
      * authority/capability path. */
-    let router = durable_ops_router(Arc::new(awaken_runtime_host_testkit::volatile_host(
-        Arc::new(OkModel),
-        "stub",
-    )));
+    let router = durable_ops_router(
+        Arc::new(awaken_runtime_host_testkit::volatile_host(
+            Arc::new(OkModel),
+            "stub",
+        )),
+        awaken_lease_contract::system_clock(),
+    );
     for (method, path) in [
         ("GET", "/v1/durable/threads/direct/dispatches"),
         ("GET", "/v1/durable/threads/direct/superseded"),

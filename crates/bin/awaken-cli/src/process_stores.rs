@@ -233,6 +233,7 @@ pub(super) async fn open_environment_work(
 pub(super) async fn open_application_access(
     backend: &awaken_control::StoreBackend,
     postgres_schema: PostgresSchemaMode,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, String> {
     use awaken_control::StoreBackend;
 
@@ -240,6 +241,7 @@ pub(super) async fn open_application_access(
         StoreBackend::Sqlite(path) => {
             awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite(
                 &path.to_string_lossy(),
+                clock,
             )
             .await
             .map_err(|error| format!("open application access SQLite: {error}"))?
@@ -247,13 +249,13 @@ pub(super) async fn open_application_access(
         StoreBackend::Postgres(url) => match postgres_schema {
             PostgresSchemaMode::Migrate => {
                 awaken_coordinator::application_access_store::ApplicationAccessStore::connect_postgres(
-                    url,
+                    url, clock,
                 )
                 .await
             }
             PostgresSchemaMode::Verify => {
                 awaken_coordinator::application_access_store::ApplicationAccessStore::connect_existing_postgres(
-                    url,
+                    url, clock,
                 )
                 .await
             }

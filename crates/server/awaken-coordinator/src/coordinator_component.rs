@@ -199,8 +199,10 @@ pub fn register_application_access_retention(
                     () = cancel.cancelled() => break,
                     _ = interval.tick() => {}
                 }
-                let terminal_before = crate::application_access_store::now_unix_millis()
-                    .saturating_sub(APPLICATION_ACCESS_RETENTION_MS);
+                let terminal_before = awaken_lease_contract::WallClockExt::now_ms(
+                    application_access.clock().as_ref(),
+                )
+                .saturating_sub(APPLICATION_ACCESS_RETENTION_MS);
                 if let Err(error) =
                     drain_application_access_retention(&application_access, terminal_before).await
                 {

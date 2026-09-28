@@ -508,14 +508,16 @@ impl DreamExecutor for BuiltInDreamAgent {
         preparation: Option<&DreamPreparation>,
     ) -> Result<(), DreamFailure> {
         if let Some(preparation) = preparation {
-            let archived_at =
-                awaken_session_application_contract::epoch_millis_to_rfc3339(now_ms());
+            // The Dream's facts are stamped on the Session application's clock.
+            let now_ms =
+                awaken_lease_contract::WallClockExt::now_ms(self.sessions.clock().as_ref());
+            let archived_at = awaken_session_application_contract::epoch_millis_to_rfc3339(now_ms);
             let fact = ManagedLifecycleFact {
                 id: format!("session:{}:terminated", preparation.session_id),
                 object_id: preparation.session_id.clone(),
                 workspace_id: Some(request.workspace_id.clone()),
                 event_type: "session.status_terminated".into(),
-                timestamp: i64::try_from(now_ms() / 1_000).unwrap_or(i64::MAX),
+                timestamp: i64::try_from(now_ms / 1_000).unwrap_or(i64::MAX),
                 runtime_interval: None,
             };
             self.sessions
@@ -526,7 +528,7 @@ impl DreamExecutor for BuiltInDreamAgent {
             // Files. New preparations mount the encoded bytes directly.
             for file_id in &preparation.transcript_file_ids {
                 self.files
-                    .delete(&request.workspace_id, file_id, now_ms())
+                    .delete(&request.workspace_id, file_id, now_ms)
                     .await
                     .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             }
@@ -593,15 +595,6 @@ impl awaken_agent_contract::stream::sink::Sink for DiscardDreamProgress {
     ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
         Ok(())
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

@@ -21,6 +21,9 @@ pub struct ClaimedCommitHttpService {
     application: Arc<ClaimedCommitService>,
     directory: Arc<dyn WorkerDirectory>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    /// The Coordinator's wall clock: a Worker registration's currency is
+    /// judged on it.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl ClaimedCommitHttpService {
@@ -29,11 +32,13 @@ impl ClaimedCommitHttpService {
         application: Arc<ClaimedCommitService>,
         directory: Arc<dyn WorkerDirectory>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             application,
             directory,
             authenticator,
+            clock,
         }
     }
 }
@@ -61,7 +66,7 @@ async fn commit_claimed(
         service.directory.as_ref(),
         &worker,
         identity,
-        unix_now_ms(),
+        awaken_lease_contract::WallClockExt::now_ms(service.clock.as_ref()),
         false,
     )
     .await
@@ -88,11 +93,4 @@ async fn commit_claimed(
             (status, Json(json!({ "error": error.message })))
         }
     }
-}
-
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
 }

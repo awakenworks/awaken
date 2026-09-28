@@ -30,14 +30,22 @@ struct ReadinessQuery {
 }
 
 /// `GET /v1/workers/readiness` over the live Worker directory.
-pub fn router(directory: Arc<dyn WorkerDirectory>) -> Router {
+/// `clock` is the Coordinator's wall clock; registration liveness is judged
+/// on it.
+pub fn router(
+    directory: Arc<dyn WorkerDirectory>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> Router {
     Router::new()
         .route("/v1/workers/readiness", get(readiness))
-        .with_state(directory)
+        .with_state((directory, clock))
 }
 
 async fn readiness(
-    State(directory): State<Arc<dyn WorkerDirectory>>,
+    State((directory, clock)): State<(
+        Arc<dyn WorkerDirectory>,
+        Arc<dyn awaken_lease_contract::WallClock>,
+    )>,
     Query(query): Query<ReadinessQuery>,
 ) -> Response {
     let required = parse_capabilities(query.capabilities.as_deref());
@@ -53,7 +61,7 @@ async fn readiness(
             );
         }
     };
-    let now_ms = crate::application_access_store::now_unix_millis();
+    let now_ms = awaken_lease_contract::WallClockExt::now_ms(clock.as_ref());
     Json(fleet_readiness(&workers, &required, now_ms)).into_response()
 }
 
