@@ -21,22 +21,15 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use awaken_lease_contract::WallClock;
 use base64::Engine as _;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 pub use awaken_runtime_contract::{ContentCapture, DataSubjectId, ErasureReceipt, Purpose};
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
 
 const CAS_RETRY_LIMIT: usize = 16;
 
@@ -539,20 +532,6 @@ pub trait ErasureJobRepo: Send + Sync {
     ) -> Result<(), DataSubjectError>;
 }
 
-/// Clock port used to make expiry and aggregate timestamps deterministic in tests.
-pub trait DataSubjectClock: Send + Sync {
-    fn now_millis(&self) -> i64;
-}
-
-#[derive(Debug, Default)]
-pub struct SystemDataSubjectClock;
-
-impl DataSubjectClock for SystemDataSubjectClock {
-    fn now_millis(&self) -> i64 {
-        now_millis()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateUserProfileCommand {
     pub org: String,
@@ -775,7 +754,10 @@ struct EnrollmentTokenPayload {
 
 pub struct DataSubjectApplication {
     repo: Arc<dyn DataSubjectRepo>,
-    clock: Arc<dyn DataSubjectClock>,
+    /// The one clock every subject timestamp and enrollment expiry is judged
+    /// by. The erasure resolver over the same repository must hold the same
+    /// handle, or `erased_at` and the `updated_at` beside it disagree.
+    clock: Arc<dyn WallClock>,
     enrollment_key: Vec<u8>,
 }
 
@@ -783,14 +765,7 @@ impl DataSubjectApplication {
     pub fn new(
         repo: Arc<dyn DataSubjectRepo>,
         enrollment_key: Vec<u8>,
-    ) -> Result<Self, DataSubjectApplicationError> {
-        Self::with_clock(repo, enrollment_key, Arc::new(SystemDataSubjectClock))
-    }
-
-    pub fn with_clock(
-        repo: Arc<dyn DataSubjectRepo>,
-        enrollment_key: Vec<u8>,
-        clock: Arc<dyn DataSubjectClock>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Self, DataSubjectApplicationError> {
         if enrollment_key.len() < 32 {
             return Err(DataSubjectApplicationError::WeakEnrollmentKey);
@@ -806,7 +781,7 @@ impl DataSubjectApplication {
         &self,
         command: CreateUserProfileCommand,
     ) -> Result<UserProfileRecord, DataSubjectApplicationError> {
-        let now = self.clock.now_millis();
+        let now = self.clock.now().as_epoch_ms_i64();
         for _ in 0..CAS_RETRY_LIMIT {
             let id = DataSubjectId(format!("uprof_{}", uuid::Uuid::new_v4().simple()));
             let mut subject = DataSubject::new(id, command.org.clone(), now);
@@ -951,7 +926,7 @@ impl DataSubjectApplication {
                 purpose,
                 status: ConsentStatus::Granted,
                 basis: LawfulBasis::Consent,
-                granted_at: self.clock.now_millis(),
+                granted_at: self.clock.now().as_epoch_ms_i64(),
                 version,
             },
         )
@@ -1034,7 +1009,8 @@ impl DataSubjectApplication {
         self.load_scoped(org, id).await?;
         let expires_at = self
             .clock
-            .now_millis()
+            .now()
+            .as_epoch_ms_i64()
             .checked_add(15 * 60 * 1000)
             .ok_or(DataSubjectApplicationError::InvalidEnrollment)?;
         let payload = EnrollmentTokenPayload {
@@ -1074,7 +1050,7 @@ impl DataSubjectApplication {
         token: &str,
     ) -> Result<ConsentRecord, DataSubjectApplicationError> {
         let payload = self.verify_enrollment(token)?;
-        let now = self.clock.now_millis();
+        let now = self.clock.now().as_epoch_ms_i64();
         let purposes = payload.purposes;
         let subject = self
             .mutate_scoped(&payload.org, &payload.subject_id, move |subject| {
@@ -1132,7 +1108,7 @@ impl DataSubjectApplication {
             if !apply(&mut subject) {
                 return Ok(subject);
             }
-            subject.updated_at = subject.updated_at.max(self.clock.now_millis());
+            subject.updated_at = subject.updated_at.max(self.clock.now().as_epoch_ms_i64());
             let expected = advance_revision(&mut subject)?;
             match self.repo.compare_and_swap(expected, subject.clone()).await {
                 Ok(()) => return Ok(subject),
@@ -1158,7 +1134,7 @@ impl DataSubjectApplication {
                     if !apply(&mut subject) {
                         return Ok(subject);
                     }
-                    subject.updated_at = subject.updated_at.max(self.clock.now_millis());
+                    subject.updated_at = subject.updated_at.max(self.clock.now().as_epoch_ms_i64());
                     let expected = advance_revision(&mut subject)?;
                     match self.repo.compare_and_swap(expected, subject.clone()).await {
                         Ok(()) => return Ok(subject),
@@ -1168,7 +1144,7 @@ impl DataSubjectApplication {
                 }
                 Ok(_) => return Err(DataSubjectApplicationError::NotFound),
                 Err(DataSubjectError::NotFound(_)) => {
-                    let now = self.clock.now_millis();
+                    let now = self.clock.now().as_epoch_ms_i64();
                     let mut subject =
                         DataSubject::new(DataSubjectId(id.to_string()), org.to_string(), now);
                     apply(&mut subject);
@@ -1211,7 +1187,7 @@ impl DataSubjectApplication {
             .map_err(|_| DataSubjectApplicationError::InvalidEnrollment)?;
         let payload: EnrollmentTokenPayload = serde_json::from_slice(&bytes)
             .map_err(|_| DataSubjectApplicationError::InvalidEnrollment)?;
-        if payload.expires_at < self.clock.now_millis() || payload.purposes.is_empty() {
+        if payload.expires_at < self.clock.now().as_epoch_ms_i64() || payload.purposes.is_empty() {
             return Err(DataSubjectApplicationError::InvalidEnrollment);
         }
         Ok(payload)
@@ -1320,16 +1296,25 @@ impl awaken_runtime_contract::OrganizationPrivacyResolver for RepoOrganizationPr
 pub struct RepoDataSubjectResolver {
     repo: Arc<dyn DataSubjectRepo>,
     jobs: Arc<dyn ErasureJobRepo>,
+    /// Stamps `erased_at`. It must be the clock the [`DataSubjectApplication`]
+    /// over the same repository holds: the erasure stamp also moves the
+    /// aggregate's `updated_at`, which that application stamped before.
+    clock: Arc<dyn WallClock>,
     coordinator: Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
     resources: Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
 }
 
 impl RepoDataSubjectResolver {
     #[must_use]
-    pub fn new(repo: Arc<dyn DataSubjectRepo>, jobs: Arc<dyn ErasureJobRepo>) -> Self {
+    pub fn new(
+        repo: Arc<dyn DataSubjectRepo>,
+        jobs: Arc<dyn ErasureJobRepo>,
+        clock: Arc<dyn WallClock>,
+    ) -> Self {
         Self {
             repo,
             jobs,
+            clock,
             coordinator: None,
             resources: None,
         }
@@ -1373,7 +1358,7 @@ impl RepoDataSubjectResolver {
             {
                 return Ok(());
             }
-            aggregate.mark_erased(now_millis());
+            aggregate.mark_erased(self.clock.now().as_epoch_ms_i64());
             let expected = advance_revision(&mut aggregate).map_err(|error| {
                 awaken_runtime_contract::ErasureError(format!(
                     "accountability write failed: {error}"
