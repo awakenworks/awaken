@@ -875,3 +875,39 @@ intent it is responsible for completing.
 - ADR-0011 — edge Clock injection and autonomous draining.
 - ADR-0019 — exact `renew_lease` and distributed claim fencing.
 - ADR-0065 — database-independent remote Worker topology.
+
+
+### 2026-09-29 amendment: exact Run operational replay
+
+Flow observed a completed Verification whose Run had already ended naturally
+and whose exact Dispatch had recorded `Settled(Done)`, while its new execution
+link still paged through unrelated global Dispatch history. Filtering after the
+page limit makes each new link repay the complete partition history; unrelated
+recovery operations can dominate observation without changing Run truth.
+
+The existing `DispatchOperationalFeed::events_after` now selects an optional
+exact Run before pagination. `None` retains the global operational view. Both
+views use the same append-only rows, original global sequence identities, store
+times, exclusive cursor, and decoder; empty pages retain the caller cursor.
+Memory, SQLite, PostgreSQL and `AnyDispatchStore` share this contract. The sole
+converged schema append point adds the `(run_id, sequence)` read index, leaving
+both published migration histories immutable. No additional receipt store,
+queue, cursor domain, outcome writer or public protocol event is introduced.
+
+Flow supplies the link Run at this existing query boundary. It continues to
+combine `Settled(Done)` delivery authority with committed Run outcome truth
+before producing success through the existing inbox and WriteBack owner. A
+Run ending naturally alone still cannot trigger successful acceptance. Claim,
+physical-attempt exclusion, unknown-execution recovery and cleanup admission
+are unchanged. Paging all foreign operations inside Flow or reading Awaken SQL
+from Flow were rejected because filtering belongs to the existing feed owner.
+
+The shared operational conformance comments own rules Q1-Q5: foreign history
+exceeds the page limit; scoped pagination retains exact identities and times;
+unknown/empty reads retain cursors; the global view keeps its original ordering.
+The migration test upgrades both published histories through converged V6 to V7,
+checks retained fact bytes, the actual SQLite query plan and idempotent reopen.
+Flow extends its existing two-stream settlement test with a foreign prefix
+larger than its page, retaining pre-settlement refusal and exactly-once replay.
+These tests certify query and projection behavior, not predecessor termination
+or completion of the original product roots.

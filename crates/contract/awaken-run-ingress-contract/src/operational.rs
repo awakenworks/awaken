@@ -98,10 +98,14 @@ pub struct DispatchPage {
 /// Durable, replayable delivery-authority feed.
 #[async_trait]
 pub trait DispatchOperationalFeed: Send + Sync {
+    /// Select the optional exact Run before applying the page limit. Cursors
+    /// remain the store's original global operation identities in either view;
+    /// an empty page retains the requested cursor. `None` reads the whole feed.
     async fn events_after(
         &self,
         cursor: DispatchCursor,
         limit: usize,
+        run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError>;
 }
 

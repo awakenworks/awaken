@@ -1864,12 +1864,15 @@ impl DispatchOperationalFeed for MemoryDispatchStore {
         &self,
         cursor: DispatchCursor,
         limit: usize,
+        run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError> {
         let state = lock(&self.state)?;
         let events = state
             .operations
             .iter()
-            .filter(|event| event.cursor > cursor)
+            .filter(|event| {
+                event.cursor > cursor && run.is_none_or(|run| event.operation.run_id() == run)
+            })
             .take(limit)
             .cloned()
             .collect::<Vec<_>>();

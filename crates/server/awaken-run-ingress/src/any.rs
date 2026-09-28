@@ -712,13 +712,14 @@ impl DispatchOperationalFeed for AnyDispatchStore {
         &self,
         cursor: DispatchCursor,
         limit: usize,
+        run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError> {
         let Some(feed) = &self.operational else {
             return Err(DispatchError::Rejected(
                 "configured dispatch adapter does not expose an operational feed".to_string(),
             ));
         };
-        feed.events_after(cursor, limit).await
+        feed.events_after(cursor, limit, run).await
     }
 }
 

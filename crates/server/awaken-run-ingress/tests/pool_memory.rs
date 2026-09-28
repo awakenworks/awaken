@@ -3962,7 +3962,10 @@ async fn assert_successive_resolution_failures_retry(concurrency: usize) {
     assert!(yield_until(|| calls.load(Ordering::SeqCst) == 2).await);
     let mut second_release = false;
     for _ in 0..100 {
-        let operations = store.events_after(DispatchCursor(0), 100).await.unwrap();
+        let operations = store
+            .events_after(DispatchCursor(0), 100, None)
+            .await
+            .unwrap();
         if operations
             .events
             .iter()

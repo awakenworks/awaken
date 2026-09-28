@@ -10,6 +10,7 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
         &self,
         cursor: DispatchCursor,
         limit: usize,
+        run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError> {
         if limit == 0 {
             return Ok(DispatchPage {
@@ -22,15 +23,18 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
         })?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let prefix = NS;
-        let rows = sqlx::query(&format!(
+        let selection = if run.is_some() { "AND run_id = $3" } else { "" };
+        let sql = format!(
             "SELECT sequence, recorded_at_ms, operation FROM {prefix}_dispatch_operation \
-             WHERE sequence > $1 ORDER BY sequence LIMIT $2"
-        ))
-        .bind(after)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_error)?;
+             WHERE sequence > $1 {selection} ORDER BY sequence LIMIT $2"
+        );
+        let query = sqlx::query(&sql).bind(after).bind(limit);
+        let query = if let Some(run) = run {
+            query.bind(&run.0)
+        } else {
+            query
+        };
+        let rows = query.fetch_all(&self.pool).await.map_err(store_error)?;
         let events = rows
             .into_iter()
             .map(|row| {

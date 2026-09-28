@@ -233,7 +233,7 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
     S: ControlDispatchQueue + DispatchOperationalFeed + ?Sized,
 {
     let baseline = store
-        .events_after(DispatchCursor(0), usize::MAX)
+        .events_after(DispatchCursor(0), usize::MAX, None)
         .await
         .expect("read operational baseline");
     let cursor = baseline.next_cursor;
@@ -340,7 +340,7 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
     );
 
     let page = store
-        .events_after(cursor, 100)
+        .events_after(cursor, 100, None)
         .await
         .expect("read operational transitions");
     // Cause-effect graph / decision table:
@@ -456,22 +456,53 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
     ));
 
     let first_page = store
-        .events_after(cursor, 2)
+        .events_after(cursor, 2, None)
         .await
         .expect("first operational page");
     let second_page = store
-        .events_after(first_page.next_cursor, 2)
+        .events_after(first_page.next_cursor, 2, None)
         .await
         .expect("second operational page");
     assert_eq!(first_page.events.len(), 2);
     assert_eq!(second_page.events.len(), 2);
     assert_eq!(second_page.events[0], page.events[2]);
     let empty = store
-        .events_after(page.next_cursor, 0)
+        .events_after(page.next_cursor, 0, None)
         .await
         .expect("zero-sized operational page");
     assert!(empty.events.is_empty());
     assert_eq!(empty.next_cursor, page.next_cursor);
+
+    // Cause/effect table Q1-Q5: C1 exact Run vs global/unknown selection;
+    // C2 unrelated operations precede its two facts (nine > page limit one);
+    // C3 exclusive cursor before/after those facts; C4 zero/nonzero limit.
+    // Q1=exact+C2+before+one => first matching fact on the first page, with
+    // original identity/time (filter before LIMIT). Q2=exact+after-first+one
+    // => its second fact only. Q3=exact+after-last => empty, cursor unchanged.
+    // Q4=unknown|zero => empty, cursor unchanged. Q5=global => the original
+    // eleven-fact ordering above. No query changes claims or completion truth.
+    let scoped_first = store
+        .events_after(cursor, 1, Some(&cancelled_run))
+        .await
+        .expect("Q1 scoped first page");
+    assert_eq!(scoped_first.events, vec![page.events[9].clone()], "Q1");
+    let scoped_second = store
+        .events_after(scoped_first.next_cursor, 1, Some(&cancelled_run))
+        .await
+        .expect("Q2 scoped second page");
+    assert_eq!(scoped_second.events, vec![page.events[10].clone()], "Q2");
+    for (after, limit, selected) in [
+        (scoped_second.next_cursor, 1, &cancelled_run),
+        (cursor, 0, &cancelled_run),
+        (cursor, 1, &run_id(namespace, "operations-unknown")),
+    ] {
+        let empty = store
+            .events_after(after, limit, Some(selected))
+            .await
+            .expect("Q3-Q4 scoped empty page");
+        assert!(empty.events.is_empty(), "Q3-Q4");
+        assert_eq!(empty.next_cursor, after, "Q3-Q4");
+    }
 }
 
 async fn local_claims_skip_remote_only_work(

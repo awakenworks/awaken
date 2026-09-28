@@ -233,6 +233,7 @@ impl DispatchOperationalFeed for SqliteDispatchStore {
         &self,
         cursor: DispatchCursor,
         limit: usize,
+        run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError> {
         if limit == 0 {
             return Ok(DispatchPage {
@@ -244,15 +245,26 @@ impl DispatchOperationalFeed for SqliteDispatchStore {
             DispatchError::Rejected("dispatch cursor exceeds INTEGER range".to_string())
         })?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let run = run.map(|run| run.0.clone());
         self.with_conn(move |conn, prefix| {
+            let mut parameters = vec![
+                rusqlite::types::Value::Integer(after),
+                rusqlite::types::Value::Integer(limit),
+            ];
+            let selection = if let Some(run) = run {
+                parameters.push(rusqlite::types::Value::Text(run));
+                "AND run_id = ?3"
+            } else {
+                ""
+            };
             let mut statement = conn
                 .prepare(&format!(
                     "SELECT sequence, recorded_at_ms, operation FROM {prefix}_dispatch_operation \
-                     WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
+                     WHERE sequence > ?1 {selection} ORDER BY sequence LIMIT ?2"
                 ))
                 .map_err(store_error)?;
             let rows = statement
-                .query_map(params![after, limit], |row| {
+                .query_map(rusqlite::params_from_iter(parameters), |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, Option<i64>>(1)?,
