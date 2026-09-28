@@ -1,3 +1,12 @@
+// @formal surface requirement=session.multiagent.thread_authority
+// @formal reason: Static owner: read-only Thread coordination queries split out of host/coordination.rs.
+// @formal reason: Dynamic path: every query reads the parent Session's committed snapshot through the same
+// @formal reason: authority's narrower read port, with no cache and no write path, so a child recovery or
+// @formal reason: usage read cannot rebuild history or observe a boundary the parent has not committed.
+// @formal reason: Evidence: session.multiagent.thread_authority plus this module's own tests
+// @formal reason: (thread_usage_reads_authoritative_state_without_rebuilding_history,
+// @formal reason: child_recovery_snapshot_reuses_the_parent_commit_consistency_boundary); this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! Read-only coordination queries through the parent Session commit boundary.
 //!
 //! Full recovery still owns cross-region prefixes. State-only queries reuse the

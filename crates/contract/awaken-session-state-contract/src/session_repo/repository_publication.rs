@@ -1,3 +1,11 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the canonical Session aggregate admission for one frozen terminal
+// @formal reason: Repository publication intent. Dynamic path: an active Session atomically validates the
+// @formal reason: exact active input, freezes the publication intent, and enters the existing archive
+// @formal reason: transition, while exact replay is inert and every mismatch leaves the aggregate
+// @formal reason: unchanged. Evidence: session.lifecycle.session_state and the adjacent aggregate
+// @formal reason: decision-table test; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Atomic archive transition with one frozen Repository publication intent.
 
 use super::{PersistedSession, SessionDisposition, SessionDispositionTransitionError};

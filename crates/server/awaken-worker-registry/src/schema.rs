@@ -1,3 +1,6 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: This source implements the repository-controlled remote worker product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
 pub const BUNDLE_ID: &str = "awaken.worker_registry";

@@ -1,3 +1,6 @@
+// @formal surface obligation=session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+// @formal surface obligation=session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal reason: Managed realization driver.
 //! Managed wire-cache coordination around the Session application realization owner.
 
 use super::*;

@@ -1,3 +1,6 @@
+// @formal surface obligation=remote_worker.operation_identity_maps_to_one_hash_and_append
+// @formal surface obligation=run.commit_shape_atomicity
+// @formal reason: Host durable operation identities and commit commands.
 //! Adapter exposing Host run/session orchestration through the neutral Run Ingress port.
 
 use awaken_agent_contract::agent::message::Message;

@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.federated_tools.perception_not_authority
+// @formal reason: Tool aliases and exposure overrides shape model perception for catalog and discovered
+// @formal reason: tools; the Runtime registry remains execution authority.
 import { Plus, X } from "@awaken/ui/icons";
 import { Button, Switch } from "@awaken/ui";
 // Per-tool presentation overrides (ADR-0053): a row per override — the target tool id,

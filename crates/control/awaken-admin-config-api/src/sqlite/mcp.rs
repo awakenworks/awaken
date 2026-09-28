@@ -1,3 +1,10 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Static owner: the SQLite binding of the same Workspace MCP configuration repository.
+// @formal reason: Dynamic path: identical validated whole-configuration writes and reads as the PostgreSQL
+// @formal reason: binding, exercised by the same conformance so one backend cannot admit a configuration
+// @formal reason: the other refuses. Evidence: product.admin_console.console_workflows plus the shared MCP
+// @formal reason: configuration repository conformance; this is a product-requirement classification, not
+// @formal reason: a direct proof claim.
 use super::*;
 use awaken_agent_config::mcp_config::{
     McpConfigError, McpConfiguration, McpConfigurationRepository, validate_mcp_configuration_write,

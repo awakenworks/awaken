@@ -1,3 +1,6 @@
+// @formal surface obligation=outcome.stable_run_identity_and_exactly_once_ack
+// @formal reason: PostgreSQL evidence adapter for serialized, replay-safe Run identity admission and
+// @formal reason: completion projection.
 //! PostgreSQL evidence loading for the shared Run-dispatch identity decision.
 //!
 //! This module owns no identity policy: it translates the two existing rows

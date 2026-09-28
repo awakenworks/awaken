@@ -1,3 +1,11 @@
+// @formal surface obligation=acp.process_cleanup_requires_observed_exit_and_retained_owner
+// @formal reason: Static owner: what cleanup takes back out of an environment and what it does when it
+// @formal reason: cannot. Dynamic path: the seal is a parameter of every in-container read, so the order
+// @formal reason: seal-reap-read is stated by the signatures rather than by line order; a container that
+// @formal reason: cannot be quiesced has its in-container reads skipped and the skip reported, while
+// @formal reason: removal proceeds, because a lost Memory round and a permanently leaked container are not
+// @formal reason: the same price. A rotated durable credential is excluded from that trade and still fails
+// @formal reason: closed, since the copy in the container may be newer than any the host holds.
 //! Taking what an environment owes back out of it, and what happens when it
 //! cannot be taken.
 //!

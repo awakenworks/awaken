@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.plugin_activation.capability_bound
+// @formal reason: Integration authoring selects plugins, skills, and MCP capabilities; runtime admission
+// @formal reason: is proved elsewhere.
 import McpCredentialSelect from "../mcp/McpCredentialSelect";
 import { ExternalLink, Info, Plus, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, Switch } from "@awaken/ui";

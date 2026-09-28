@@ -1,3 +1,7 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This generated schema projection belongs to the existing configuration-store adapter
+// @formal reason: boundary; the canonical store contract remains authoritative and this classification is
+// @formal reason: not a direct formal-proof claim.
 //! Exact V1..V10 Config history published before the compact baseline.
 //! Runtime repositories never branch on this module; only migration admission
 //! selects it from the immutable V1 receipt.

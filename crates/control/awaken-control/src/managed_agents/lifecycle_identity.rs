@@ -1,3 +1,6 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: This source implements the repository-controlled agent profile product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Managed Agent lifecycle identities and timestamps.
 
 use std::sync::atomic::{AtomicU64, Ordering};

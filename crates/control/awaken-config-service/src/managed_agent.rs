@@ -1,3 +1,9 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: The existing ConfigService Managed Agent projection is the sole wire-to-AgentConfig
+// @formal reason: translation used by authoring and read routes. It rejects unmodelled full-replacement
+// @formal reason: fields and maps model, tool and policy references without owning publication, Workspace
+// @formal reason: authorization or credential material. Adjacent projection and route tests provide
+// @formal reason: executable evidence; this product-requirement link is not a direct formal proof.
 //! Managed Agent wire projection for the config authoring aggregate.
 //!
 //! This is the sole translation seam between the SDK-shaped Agent object and

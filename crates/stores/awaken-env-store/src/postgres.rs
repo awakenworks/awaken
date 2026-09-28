@@ -1,3 +1,6 @@
+// @formal surface obligation=environment.registration_intent_is_atomic_recoverable_and_idempotent
+// @formal reason: The Postgres half of the Environment registry, split out of the crate root; it appends
+// @formal reason: the same registration intent inside the transaction that advances the authored revision.
 //! The Postgres sibling of the Environment registry (distributed deployments).
 //!
 //! Split out so each adapter is read on its own; the schema bundle, the row

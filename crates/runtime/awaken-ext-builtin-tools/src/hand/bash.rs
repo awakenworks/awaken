@@ -1,3 +1,7 @@
+// @formal surface requirement=runtime.builtin_tools.tool_registration
+// @formal reason: Persistent shell execution and its adjacent cancellation tests remain one private Hand
+// @formal reason: implementation, re-exported through the unchanged public catalog. Product-boundary
+// @formal reason: classification, not a formal proof of process termination.
 //! Persistent shell execution owned by the Hand toolset, with its lifecycle tests.
 use super::*;
 use std::process::Stdio;

@@ -1,3 +1,5 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: MemoryStore CRUD and routing are browser adapters over the consistency boundary.
 import { Plus } from "@awaken/ui/icons";
 import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 // Workspace · Memory stores: persistent memory that survives

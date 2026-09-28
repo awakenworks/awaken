@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.skills.version_pinning
+// @formal reason: This source implements the repository-controlled skills product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! The two skill-specific tools: `list_skills` (discover) and `Skill` (activate).
 //!
 //! These are the whole skill-specific tool surface (ADR-0036 D1). The model never

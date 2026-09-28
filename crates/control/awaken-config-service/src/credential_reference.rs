@@ -1,3 +1,5 @@
+// @formal surface obligation=credential_reference.exact_revision_never_resolves_another_revision
+// @formal reason: Exact credential-reference validation at publication.
 //! Publication policy for exact credential references in typed Agent bindings.
 //!
 //! This module owns only the orchestration rule: every authored reference is

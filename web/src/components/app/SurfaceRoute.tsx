@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Surface routing selects the visible workspace page; React routing remains outside Rust
+// @formal reason: proofs.
 import { Skeleton, Button, Card } from "@awaken/ui";
 
 import type { ReactNode } from "react";

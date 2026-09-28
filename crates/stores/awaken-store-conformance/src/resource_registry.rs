@@ -1,3 +1,8 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/stores/awaken-resource-store/tests/registry_conformance.rs
+// @formal reason: Trait-generic ResourceRegistryRepository conformance suite (ADR-0081 §7). It is a
+// @formal reason: tooling-only test library every backend's test target calls; no product crate links or
+// @formal reason: invokes it, and it admits nothing at runtime.
 //! Trait-generic conformance suite for the `ResourceRegistryRepository` port
 //! (ADR-0081 §7).
 //!

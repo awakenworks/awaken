@@ -1,3 +1,8 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: The shared clock port supplies durable owners with wall-time observations; ManualClock
+// @formal reason: provides deterministic atomic tests. Time neither owns state transitions nor orders
+// @formal reason: replay. This is a product-boundary classification, not a direct proof of wall-clock
+// @formal reason: behavior.
 //! Shared wall-clock port. Owners sample once at their durable boundary;
 //! pure reducers receive values and replay never consults this clock.
 

@@ -1,3 +1,10 @@
+// @formal surface exclude=test_only
+// @formal owner crates/worker/awaken-sandbox-container/src/runtime.rs
+// @formal reason: Child of the existing cfg(test) realization_tests module. It owns the source/result
+// @formal reason: decision-table regression cases and reuses the parent test fixtures; production Rebuild
+// @formal reason: admission remains in runtime/realization.rs and the shared
+// @formal reason: existing_realization_decision. This test module is not a production safety
+// @formal reason: implementation.
 use super::*;
 
 #[test]

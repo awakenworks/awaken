@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: Credential parsing is a fail-closed management PEP boundary: an explicitly presented
+// @formal reason: malformed stronger credential never falls back to a weaker credential.
 //! HTTP credential extraction rules shared by the management PEPs.
 
 use axum::http::HeaderMap;

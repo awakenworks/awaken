@@ -1,3 +1,6 @@
+// @formal surface requirement=analytics.observability.projection_only
+// @formal reason: This source implements the repository-controlled observability product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Coordinator captured-content store (ADR-0050 D7): the erasable, TTL'd sink that captured
 //! prompt/completion/tool content is written to, tagged by data subject so GDPR
 //! Art. 17 erasure removes exactly that subject's content and a TTL sweep

@@ -1,3 +1,6 @@
+// @formal surface requirement=control.admin_publication.audited_publication
+// @formal reason: Draft review coordinates publication requests and cache state; commit atomicity is not
+// @formal reason: proved here.
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, ws } from "../../lib/api/client";

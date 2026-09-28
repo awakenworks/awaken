@@ -1,3 +1,6 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: The Workspace MCP server list and its create/remove entry points, projected from the
+// @formal reason: config plane. Classification only, not formal evidence.
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@awaken/ui";

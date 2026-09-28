@@ -1,3 +1,6 @@
+// @formal surface obligation=session_resources.install_replacement_requires_newer_or_unattempted_authority_amendment
+// @formal surface obligation=worker.secret_materialization_is_claim_fenced
+// @formal reason: Installs claim-scoped live Session inputs.
 //! Provider-neutral admission and resolution for the one live Managed File tree.
 
 use super::*;

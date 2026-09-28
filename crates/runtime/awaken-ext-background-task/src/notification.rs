@@ -1,3 +1,13 @@
+// @formal surface requirement=runtime.background_tool_execution.durable_session_scope
+// @formal reason: Static owner: the configurable model-facing projection over accepted background task
+// @formal reason: truth. Dynamic path: only a reconciled, accepted terminal task becomes one
+// @formal reason: source-labelled message under the authored presentation rule, bounded in fields and
+// @formal reason: body, with a revision receipt that makes redelivery idempotent; the rule cannot alter
+// @formal reason: source identity, destination, execution permission or task status, and an oversized body
+// @formal reason: is truncated with an explicit marker rather than silently cut. Evidence:
+// @formal reason: runtime.background_tool_execution plus this module's notification rule tests and the
+// @formal reason: coordinator attention chain; this is a product-requirement classification, not a direct
+// @formal reason: proof claim.
 //! Configurable model-facing projection over accepted task truth. No delivery
 //! queue or lifecycle is owned here; normal Thread messages own deduplication.
 

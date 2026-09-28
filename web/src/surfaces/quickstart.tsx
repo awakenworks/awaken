@@ -1,3 +1,7 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Workspace Quickstart: it owns only the choice of starting point and then hands over to
+// @formal reason: the existing Agent editor, which keeps authoring and publication where they already
+// @formal reason: live. Classification only, not formal evidence.
 // Workspace · Quickstart: the landing step of the four-step arc. It owns only
 // the choice of starting point — describe the Agent in plain English, pick a
 // Starter, or start blank — and then hands over to the existing Agent editor,

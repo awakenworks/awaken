@@ -1,3 +1,6 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: Cloud model capability display is perception of provider facts, not execution binding
+// @formal reason: proof.
 import { Info } from "@awaken/ui/icons";
 import { InlineNotice, Button } from "@awaken/ui";
 import { Pill } from "../components/ui";

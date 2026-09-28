@@ -1,3 +1,10 @@
+// @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
+// @formal reason: Static owner: the existing WakeSignal adapters carry non-authoritative latency hints;
+// @formal reason: DispatchQueue remains the durable claim and settlement owner. Dynamic path: publication
+// @formal reason: is bounded by cancellation and a 100 ms timeout, one PostgreSQL listener reconnects and
+// @formal reason: stops with its owner, and durable polling recovers lost hints. This product-requirement
+// @formal reason: classification covers notification concurrency and shutdown; it does not claim a proof
+// @formal reason: of Tokio scheduling, transport delivery or database behavior.
 //! The wake-signal seam for a distributed deployment.
 //!
 //! A `WakeSignal` is a *non-authoritative* push channel: it nudges an idle daemon

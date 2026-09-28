@@ -1,3 +1,8 @@
+// @formal surface exclude=test_only
+// @formal reason: Declared `#[cfg(test)] mod official_request_witnesses;`. It owns no production behavior:
+// @formal reason: it loads the generated official request corpus and asserts every witness decodes into
+// @formal reason: the route parameter type the server already uses, so the risk signals it matches are the
+// @formal reason: shapes under test, not a surface this crate ships.
 //! Every official Managed request shape must decode into the exact route
 //! parameter type this server uses for that operation.
 //!

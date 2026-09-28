@@ -1,3 +1,7 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: ACP delegates only uniformly Runtime-owned committed ToolBatches to the existing
+// @formal reason: continuation port. Missing persistence or mixed owners fail closed; recovered Runtime
+// @formal reason: receipts become request context, never another SDK history or acknowledgement store.
 //! ACP handoff to the existing Runtime-owned tool phase and request-only
 //! projection of its committed receipts. No transport or persistence owner lives here.
 use super::*;

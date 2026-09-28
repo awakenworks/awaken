@@ -1,3 +1,10 @@
+// @formal surface obligation=model_operation.reentry_requires_positive_execution_evidence
+// @formal reason: Static owner: the sole genai error taxonomy and terminal-response projection. Dynamic
+// @formal reason: path: only a fully consumed 4xx/5xx error body maps to the sealed CompleteErrorBody
+// @formal reason: receipt; redirects, truncated bodies, timeouts, transport failures and opaque SDK errors
+// @formal reason: remain Unknown. The adjacent complete/truncated production-transport decision tables
+// @formal reason: exercise this adapter boundary; provider and SDK honesty remain within the obligation's
+// @formal reason: stated TCB bounds, so this link is not a new formal-proof claim.
 //! The one place a failed model exchange becomes a contract [`Error`].
 //!
 //! Both shipped dialects (the genai-routed chat adapters and the dedicated

@@ -1,3 +1,9 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: Static owner: protocol-safe request context projected at the IAM edge. Dynamic path: the
+// @formal reason: canonical PrincipalRef becomes the Resources MemoryActor and the authenticated Workspace
+// @formal reason: becomes a response header without this adapter authenticating, authorizing, or storing
+// @formal reason: another identity. Evidence: runtime.permission.authority_never_widens; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! Anthropic Managed response/request context derived at the IAM policy edge.
 //! Identity and workspace authority remain in IAM; this module only projects
 //! their typed, non-secret protocol representation.

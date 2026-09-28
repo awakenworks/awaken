@@ -1,3 +1,10 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: Static owner: the shared Managed Resource HTTP composition and official error
+// @formal reason: discriminator projection. Dynamic path: File, Memory, and Skill application failures are
+// @formal reason: mapped to the Anthropic wire error vocabulary without authenticating, authorizing, or
+// @formal reason: introducing another Resource lifecycle authority. Evidence:
+// @formal reason: product.public_dto.anti_corruption and the adjacent exhaustive status-discriminator
+// @formal reason: test; this is a product-requirement classification, not a direct proof claim.
 //! Resources HTTP routes over the canonical application services.
 
 use std::sync::Arc;

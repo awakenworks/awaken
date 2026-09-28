@@ -1,3 +1,12 @@
+// @formal surface requirement=session.managed_worker.work_authority
+// @formal reason: Static owner: the Session run-ingress seam moved out of host/session.rs unchanged - the
+// @formal reason: durable stream-checkpoint store, the foreground delivery choice (durable dispatch versus
+// @formal reason: a direct attempt driver), and the per-attempt inference materializer a database-less
+// @formal reason: Worker carries. Dynamic path: each selection follows the same commit authority the
+// @formal reason: Session already holds, so a database-less Worker cannot open a local checkpoint
+// @formal reason: authority or deliver a run outside its claim. Evidence:
+// @formal reason: session.managed_worker.work_authority and the runtime-host ingress tests; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! How a Session's runs reach an executor: the durable checkpoint store, the
 //! foreground delivery choice (durable dispatch or a direct driver), and the
 //! per-attempt inference materializer a database-less Worker carries.

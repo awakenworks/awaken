@@ -1,3 +1,9 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/stores/awaken-store-conformance/src/session_store.rs
+// @formal owner crates/stores/awaken-session-store/tests/session_repo_conformance.rs
+// @formal reason: SessionStore root-CAS, tombstone, idempotency and create-replay rows split from the
+// @formal reason: existing trait-generic conformance owner. It remains tooling-only and every durable
+// @formal reason: backend invokes it through the same run_suite entrypoint.
 use super::*;
 
 #[derive(Clone, Copy)]

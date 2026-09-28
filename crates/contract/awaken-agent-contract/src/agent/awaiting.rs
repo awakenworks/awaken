@@ -1,3 +1,10 @@
+// @formal surface requirement=runtime.run_tool_lifecycle.lifecycle
+// @formal reason: Static owner: canonical closed AwaitTarget, ResumeTicket, and PermissionDecision
+// @formal reason: Agent-domain vocabulary. Dynamic path: a Run commits one typed awaiting target and later
+// @formal reason: resume validation consumes that same ticket without a parallel pending or permission
+// @formal reason: authority. Evidence: runtime.run_tool_lifecycle.lifecycle and the adjacent exhaustive
+// @formal reason: closed-target tests; this is a product-requirement classification, not a direct proof
+// @formal reason: claim.
 //! Same-run awaiting state and the durable resume ticket.
 //!
 //! When a run awaits (a tool needs a decision, external input, a timer, …) it

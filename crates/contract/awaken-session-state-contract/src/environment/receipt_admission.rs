@@ -1,3 +1,9 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the closed error and recovery disposition for exact Session Environment
+// @formal reason: receipts plus the provider-neutral monotonic reservation check. Dynamic path: the parent
+// @formal reason: aggregate remains the only lifecycle authority, while retryable concurrent movement and
+// @formal reason: malformed evidence are classified without a second receipt store or transition path;
+// @formal reason: this is a product-requirement classification, not a direct formal-proof claim.
 //! Closed receipt rejection and recovery policy for Session Environments.
 //!
 //! The parent aggregate owns lifecycle transitions. This module owns only the

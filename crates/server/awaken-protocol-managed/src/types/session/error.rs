@@ -1,3 +1,12 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: Static owner: the two error shapes the Managed wire returns and commits, split out of
+// @formal reason: types/session.rs. Dynamic path: a neutral runtime fault is classified into one SDK error
+// @formal reason: variant carrying the retry status a client keys recovery on, and the HTTP envelope is
+// @formal reason: built for a refused request; neither reads or writes execution state, and an
+// @formal reason: unrecognized fault code falls back to unknown_error rather than claiming a retryable
+// @formal reason: classification. Evidence: protocol.adapters.adapter_projection plus this module's
+// @formal reason: classification tests; this is a product-requirement classification, not a direct proof
+// @formal reason: claim.
 //! The error shapes the Managed wire returns and commits.
 //!
 //! Two distinct things share the word "error" and are kept apart here. The

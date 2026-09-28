@@ -1,3 +1,8 @@
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal surface obligation=model_readiness.brokered_and_direct_routes_require_exact_access_evidence
+// @formal surface obligation=worker.acp_capability_is_detected_only_after_a_verified_handshake
+// @formal reason: Reserved Assistant selection consumes only exact publication-ready provider access or
+// @formal reason: one verified ACP backend observation.
 //! Reserved Assistant model selection at the startup boundary.
 //!
 //! This policy consumes existing catalog, credential, and local ACP observations.

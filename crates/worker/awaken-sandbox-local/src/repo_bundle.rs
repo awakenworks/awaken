@@ -1,3 +1,11 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Static owner: secret-free Git bundle transfer between the host credential boundary and a
+// @formal reason: remote Sandbox. Dynamic path: clone and publication keep credentials host-held, validate
+// @formal reason: the frozen branch and commit, create an absent exact remote ref, return an idempotent
+// @formal reason: secret-free receipt on replay, and reject any different existing ref without overwrite.
+// @formal reason: Evidence: credential.plaintext_boundary.exact_holder and the adjacent bundle publication
+// @formal reason: decision-table test; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Secret-free repository transfer between a host git transport and a remote sandbox.
 
 use std::io::Write;

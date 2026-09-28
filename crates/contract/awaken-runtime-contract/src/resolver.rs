@@ -1,3 +1,7 @@
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal surface obligation=model_route.fallback_preserves_the_complete_publication_pin
+// @formal surface obligation=agent_profile.requested_revision_never_follows_mutable_current
+// @formal reason: Resolves only publication-pinned snapshots and model candidates.
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 

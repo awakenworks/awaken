@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: The Quickstart integrate step's notice pointing at the SDK example; it renders guidance
+// @formal reason: and owns no configuration. Classification only, not formal evidence.
 // Step 4 of the Quickstart arc, rendered on the durable Session route. The
 // editor owns steps 1–3; this completes the rail where the work actually landed
 // and hands over the one integration the operator needs next. It is guidance

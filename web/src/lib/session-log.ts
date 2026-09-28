@@ -1,4 +1,6 @@
 // @formal evidence session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
+// @formal surface requirement=protocol.ui_adapters.stream_projection
+// @formal reason: Session log normalization supplies UI stream state and does not prove upstream delivery.
 // Pure projections over a session's committed event log. These are the reducers
 // the transcript reads — extracted from session-detail so the same engine backs
 // the Sandbox, the Admin Assistant, the model Test modal, and the trace view.

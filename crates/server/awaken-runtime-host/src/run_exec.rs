@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.agent_loop.runtime_execution
+// @formal reason: This source implements the repository-controlled agent loop product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Run-execution routing (R3/R4): drive a thread's activation on the Native,
 //! ACP, or A2A executor selected by its immutable snapshot.
 //!

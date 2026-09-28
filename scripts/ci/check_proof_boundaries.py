@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+import formal_anchors
+
 ROOT = Path(__file__).resolve().parents[2]
 KINDS = {"external", "unbounded_input", "effect_adapter", "semantic", "ui_or_human"}
 FIELDS = {
@@ -28,10 +30,13 @@ def declared_residual_requirements() -> set[str]:
 
 
 def main() -> None:
-    surfaces = read("formal/surface-classifications.json")["classifications"]
-    web_surfaces = read("formal/web-surface-classifications.json")["classifications"]
-    expected = {row["requirement_id"] for row in surfaces if "requirement_id" in row}
-    expected.update(row["requirement_id"] for row in web_surfaces)
+    # Requirement-only surfaces (Rust and Web) are classified in their own
+    # opening lines, `// @formal surface requirement=<id>`.
+    headers, errors = formal_anchors.headers(ROOT)
+    classified, surface_errors = formal_anchors.surfaces(headers)
+    if errors or surface_errors:
+        raise SystemExit("proof boundaries: " + "; ".join(sorted(errors + surface_errors)))
+    expected = {surface.requirement for surface in classified.values() if surface.requirement is not None}
     # A production source may consume a proved kernel while its transport or
     # environmental tail remains outside the repository theorem. Such a
     # boundary no longer has a requirement-only source row, so it is declared

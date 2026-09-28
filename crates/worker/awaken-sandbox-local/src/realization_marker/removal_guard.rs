@@ -1,3 +1,11 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: the terminal mutations of the held filesystem removal participant, split
+// @formal reason: from the realization marker module without changing its authority. Dynamic path: every
+// @formal reason: authority-advancing or destructive edge takes the admitted SandboxEffectGuard, rejects
+// @formal reason: an effect other than the one admitted or older than the marker's recorded authority, and
+// @formal reason: then performs the existing marker compare-and-swap under the held lifecycle lock; the
+// @formal reason: guard-admission and terminal takeover decision tables qualify the behaviour, and this is
+// @formal reason: not a direct formal-proof claim.
 //! Terminal mutations of the one held filesystem removal participant. Each
 //! destructive or authority-advancing edge takes the admitted effect guard and
 //! then performs the marker compare-and-swap under the held lifecycle lock.

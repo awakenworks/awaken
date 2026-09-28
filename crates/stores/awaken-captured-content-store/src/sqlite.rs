@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This source implements the repository-controlled store product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Coordinator SQLite captured-content store (ADR-0050): the durable counterpart of
 //! the test-only in-memory captured-content fixture. Rows
 //! are subject-tagged so GDPR erasure is a keyed `DELETE`, and a TTL sweep

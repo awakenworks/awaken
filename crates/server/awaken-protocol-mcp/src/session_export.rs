@@ -1,3 +1,7 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: The MCP adapter assembles the Host-selected descriptor/tool set into the existing tool
+// @formal reason: service. A scoped export lease revokes channel peers on shutdown; no permissions or tool
+// @formal reason: state are reconstructed in the transport.
 //! MCP assembly for the existing Session tool export port.
 
 use awaken_runtime_contract::resolved::ToolDescriptor;

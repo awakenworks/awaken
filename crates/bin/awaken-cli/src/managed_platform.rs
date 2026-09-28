@@ -1,4 +1,11 @@
 // @formal entrypoint credential.managed_rollout_abstract_ack_requires_every_target_adoption
+// @formal surface exclude=composition_adapter
+// @formal owner crates/control/awaken-credential-vault/src/repo.rs
+// @formal reason: Static owner: hosted composition seam carrying already-selected provider ports. Dynamic
+// @formal reason: path: startup injects those ports into canonical IAM, Vault, Session, and protocol
+// @formal reason: owners; this file neither evaluates entitlement nor adopts credential material.
+// @formal reason: Evidence: crates/control/awaken-credential-vault/src/repo.rs and the canonical
+// @formal reason: downstream owners.
 //! Optional managed-platform adapters supplied by a hosted composition.
 
 use std::sync::Arc;

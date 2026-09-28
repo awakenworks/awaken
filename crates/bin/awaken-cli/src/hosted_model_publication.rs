@@ -1,3 +1,9 @@
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal surface obligation=model_readiness.brokered_and_direct_routes_require_exact_access_evidence
+// @formal surface obligation=model_route.fallback_preserves_the_complete_publication_pin
+// @formal reason: Hosted/direct composition consumes only publication-pinned candidates, preserves the
+// @formal reason: complete authored fallback order, rejects duplicate bindings, and fails closed on
+// @formal reason: authority errors without owning another catalog.
 //! Hosted model-supply composition over the canonical publication port.
 //!
 //! Cloud remains authoritative for brokered offerings and the open catalog /

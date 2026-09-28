@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: The product PEP delegates each feature decision to the single injected IAM entitlement
+// @formal reason: provider and cannot widen a denial.
 //! Product enforcement adapter for the entitlement provider injected into IAM.
 //!
 //! Awaken owns only the feature check. Policy resolution is supplied through

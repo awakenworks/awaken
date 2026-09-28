@@ -1,3 +1,11 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: the provider-neutral durable Sandbox handle envelope. Dynamic path: the
+// @formal reason: historical wire decodes into an open provider schema, an order-preserving opaque
+// @formal reason: provider payload and typed neutral realization evidence; Resource path growth, Memory
+// @formal reason: evidence and substrate identity are decided only from that evidence and the exact opaque
+// @formal reason: locator. It adds no provider selection, credential custody or lifecycle authority, and
+// @formal reason: historical-wire decision tables qualify the behavior; this is not a direct formal-proof
+// @formal reason: claim.
 //! The durable Sandbox handle: neutral identity and realization evidence around
 //! a provider-owned payload the contract never interprets.
 //!

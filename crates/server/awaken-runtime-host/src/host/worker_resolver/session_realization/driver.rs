@@ -1,3 +1,9 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Worker Runtime's existing realization entry moved from the adjacent parent module. It
+// @formal reason: obtains the Session's realization permit through the canonical slot accessor, then
+// @formal reason: delegates the directive and effects to the application-owned phase driver; it creates no
+// @formal reason: second phase authority. This classifies the production call path against Session
+// @formal reason: lifecycle, not as a direct proof of scheduler or persistence behavior.
 //! The single entry from Worker authority into the Session realization driver.
 
 use super::*;

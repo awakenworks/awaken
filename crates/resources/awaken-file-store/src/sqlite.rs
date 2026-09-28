@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This source implements the repository-controlled store product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! SQLite backend (`sqlite` feature): content-addressed blobs in a `BLOB`
 //! column, over the crate's own `file_store` migration scope
 //! ([`file_store_bundle`]) — the embedded sibling of [`PgFileStore`](crate::postgres::PgFileStore).

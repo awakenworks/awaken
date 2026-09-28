@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Readiness projection consumes external capability facts; it cannot attest runtime
+// @formal reason: enforcement.
 import { useQuery } from "@tanstack/react-query";
 import { api, workspaceQuery, ws } from "./api/client";
 import type {

@@ -1,3 +1,11 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the topology-neutral, stateless executor of the Stage, Activate,
+// @formal reason: Publish/Drain and Acknowledge actions projected by the Session aggregate; it owns no
+// @formal reason: cursor, retry record, receipt store, or phase authority. Dynamic path: every staged MCP
+// @formal reason: receipt, publication, drain, and effect failure is verified and recorded through
+// @formal reason: SessionRealizationControl, whose returned directive is the only input to the next step,
+// @formal reason: while external effect truth and eventual convergence remain executable or adapter
+// @formal reason: evidence rather than a direct formal-proof claim.
 //! One topology-neutral driver for the Session realization phase protocol.
 //!
 //! The Session aggregate (through `SessionRealizationControl`) owns every

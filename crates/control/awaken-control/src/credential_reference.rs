@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: This source implements the repository-controlled credential lifecycle product boundary
+// @formal reason: and is classified against its product requirement; this link is not a formal-proof
+// @formal reason: claim.
 //! Credential aggregate adapter for Agent publication.
 //!
 //! The config domain supplies the trusted execution Workspace and an exact

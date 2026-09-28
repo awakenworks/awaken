@@ -1,3 +1,18 @@
+// @formal surface obligation=lease.timing_has_three_renewal_windows
+// @formal surface obligation=lease.recovery_grace_covers_reconciliation
+// @formal surface obligation=lease.loss_only_fences
+// @formal surface obligation=claimed_effect.retention_runs_once_for_an_unsettled_drop
+// @formal reason: Static owner: the host lease record over warm container capacity - one file per warm
+// @formal reason: scope whose mtime is the deadline, minted (linked) before the warm create's
+// @formal reason: ClaimedEffect exists, renewed in place on the existing inode, consumed either by Session
+// @formal reason: checkout (unlink) or by a reclaimer claim (rename), never both. Dynamic path: timing is
+// @formal reason: validated by the shared LeaseTimingPolicy (three renewal windows, grace covers one
+// @formal reason: reclamation interval); a reclaimer removes a scope only after an exclusive claim on an
+// @formal reason: expired record whose post-rename deadline re-read still shows expiry, so a renewing
+// @formal reason: owner or a checked-out Session container is never reached; lease loss makes the owner
+// @formal reason: forget, never remove. The rename/unlink atomicity and the removal itself are real
+// @formal reason: filesystem and daemon effects covered by pool::lease_tests (manual clock, fake daemon
+// @formal reason: shared by several pools) and the docker/podman restart suites, not by a direct proof.
 //! Leases over warm container capacity, so a restarted Worker can reclaim what
 //! a dead incarnation left running.
 //!

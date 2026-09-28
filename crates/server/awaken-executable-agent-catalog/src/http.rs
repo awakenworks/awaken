@@ -1,3 +1,7 @@
+// @formal surface obligation=executable_projection.runtime_admission_requires_both_refreshes
+// @formal surface obligation=executable_projection.failed_refresh_never_enters_handler
+// @formal surface obligation=agent_profile.requested_revision_never_follows_mutable_current
+// @formal reason: Private HTTP executable-Agent projection boundary.
 //! Authenticated HTTP adapters for the executable Agent registrar port.
 
 use std::sync::Arc;

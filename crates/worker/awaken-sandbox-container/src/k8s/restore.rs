@@ -1,3 +1,8 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: The Kubernetes exact-restore adapter verifies the immutable Pod, PVC, restoration, and
+// @formal reason: realization identities before any API effect and delegates claim deletion to the
+// @formal reason: existing continuation owner; this is a product-boundary classification rather than a
+// @formal reason: second lifecycle authority or direct formal-proof claim.
 //! Read-first exact restore observation and terminal orphan disposal.
 
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod};

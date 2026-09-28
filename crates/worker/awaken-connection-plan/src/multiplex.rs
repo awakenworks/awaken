@@ -1,3 +1,7 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Connection-plan owns bounded byte streams and one yamux driver. Stream drop releases
+// @formal reason: only its capacity and owner drop revokes all streams; no application tool identity,
+// @formal reason: permission or durable replay is interpreted here.
 //! Independent byte streams over one owned attached channel. Application
 //! protocols, tool identities, authorization and replay stay with their owners.
 

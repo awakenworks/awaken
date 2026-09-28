@@ -1,3 +1,9 @@
+// @formal surface requirement=runtime.background_tool_execution.durable_session_scope
+// @formal reason: Static owner: the four closed BackgroundTask tools and safe Agent projection. Dynamic
+// @formal reason: path: configured targets stay in the canonical executable catalog but are reachable only
+// @formal reason: through the launcher schema; management calls read immutable Runtime State and return
+// @formal reason: typed commands without exposing invocation, remote-handle, worker, lease, recovery, or
+// @formal reason: poll coordinates.
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

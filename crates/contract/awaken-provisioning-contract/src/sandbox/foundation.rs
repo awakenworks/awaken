@@ -1,3 +1,9 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: provider-neutral Sandbox filesystem, mount, Memory-materialization,
+// @formal reason: secret-broker, and canonical path contracts. Dynamic path: admitted providers consume
+// @formal reason: these validated ports and value objects while durable repositories, credential custody,
+// @formal reason: and authorization remain in their injected owners; this is a product-requirement
+// @formal reason: classification, not a direct formal-proof claim.
 //! Repository, Memory-materialization, and sandbox-path contracts.
 
 use std::path::Path;

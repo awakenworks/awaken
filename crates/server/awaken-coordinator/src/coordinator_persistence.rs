@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This source implements the repository-controlled store product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Coordinator-owned PostgreSQL persistence selection.
 //!
 //! The migration command and both standalone/AllInOne startup reuse this one

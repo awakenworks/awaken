@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.shared_state.logical_addressing
+// @formal reason: The resource tab selects logical attachments and mutations; mount enforcement remains
+// @formal reason: outside the browser.
 import { ArrowRight, Plus, TriangleAlert, X } from "@awaken/ui/icons";
 import { InlineNotice, Button } from "@awaken/ui";
 // Agent default inputs (ADR-0063): typed File/Memory/Repository identities composed

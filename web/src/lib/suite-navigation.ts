@@ -1,3 +1,5 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Suite navigation combines route, query, and asynchronous state at the UI boundary.
 import { useQuery } from "@tanstack/react-query";
 import { api, workspaceFromPath } from "./api/client";
 import {

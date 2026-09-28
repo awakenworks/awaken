@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Assistant guidance derives prompts from route context; LLM interpretation is semantic
+// @formal reason: and unproved.
 import { NAV, titleForPath } from "./navigation/paths";
 
 export interface AssistantSurfaceContext {

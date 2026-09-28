@@ -1,3 +1,7 @@
+// @formal surface obligation=credential.managed_creation_publishes_source_and_child_atomically
+// @formal surface obligation=credential.managed_rollout_outbox_is_atomic_with_exact_pair_publication
+// @formal reason: Credential mutation journal and rollout outbox schema share the Credential
+// @formal reason: bounded-context transaction authority.
 //! The credential schema (ADR-0043). One portable [`MigrationBundle`] under the
 //! `credential` namespace with its own ledger. The `credential_source` rows are
 //! **secret-free**; sealed secret material lives in `credential_secret` (written

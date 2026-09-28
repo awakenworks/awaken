@@ -1,3 +1,7 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This generated schema projection belongs to the existing Memory-store adapter boundary;
+// @formal reason: the canonical store contract remains authoritative and this classification is not a
+// @formal reason: direct formal-proof claim.
 //! The memory-store schema. Fresh databases use the compact path-addressed
 //! history. Databases that already recorded the older blob-first history keep
 //! that immutable receipt stream and append the same active schema effects.

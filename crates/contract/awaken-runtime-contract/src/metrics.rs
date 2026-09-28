@@ -1,3 +1,7 @@
+// @formal surface exclude=observability_port
+// @formal owner crates/contract/awaken-runtime-contract/src/metrics.rs
+// @formal reason: Structure-only metrics DTO, sink trait, and null implementation; it has no product
+// @formal reason: admission, transition, or persistence authority.
 //! Cross-cutting metrics port for the runtime's GenAI chokepoints (#2).
 //!
 //! A neutral sink so the execution core stays free of any metrics library: the

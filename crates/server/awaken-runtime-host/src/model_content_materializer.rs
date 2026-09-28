@@ -1,3 +1,8 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Reads each logical File through the Workspace/thread/Run-claim resource boundary,
+// @formal reason: validates immutable id, digest, and media type before mutation, and replaces every
+// @formal reason: request-local reference from one resolved cut; this is product-requirement
+// @formal reason: classification, not a formal-proof claim.
 //! Attempt-bound projection from logical Files ids to immutable model content.
 
 use std::collections::{BTreeMap, BTreeSet};

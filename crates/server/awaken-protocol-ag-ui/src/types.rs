@@ -1,3 +1,7 @@
+// @formal surface exclude=wire_dto
+// @formal owner crates/server/awaken-protocol-ag-ui/tests/router_errors.rs
+// @formal reason: AG-UI protocol serde shapes and error constructors only; request admission and event
+// @formal reason: projection decisions live in request.rs and encoder.rs.
 //! The AG-UI protocol wire types (anti-corruption boundary).
 //!
 //! The only place AG-UI (Agent User Interaction Protocol) vocabulary lives.

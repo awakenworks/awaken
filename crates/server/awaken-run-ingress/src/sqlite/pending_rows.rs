@@ -1,3 +1,8 @@
+// @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
+// @formal reason: Static owner: SQLite pending-row transition helpers. Dynamic path: durable pending work
+// @formal reason: moves through eligibility, lease, consumption, and retry under the canonical ingress
+// @formal reason: transaction. Evidence: dispatch.durable_ingress.claim_and_delivery and SQLite recovery
+// @formal reason: tests; this is a product-requirement classification, not a direct proof claim.
 // SQLite pending-row serialization and optimistic-revision helpers. These are
 // the one helper set used by the parent adapter's Inbox/Outbox implementation.
 fn current_revision(

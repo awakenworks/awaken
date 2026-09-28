@@ -1,3 +1,6 @@
+// @formal surface obligation=observation_reconcile.evidence_aba_has_fresh_fence
+// @formal surface obligation=worker_credential.stale_heartbeat_never_rolls_back_revision
+// @formal reason: HTTP boundary for authoritative Worker observations.
 //! Authenticated, read-only Control-to-Coordinator Worker observation boundary.
 //!
 //! Worker registration and heartbeat authority remains the Coordinator-owned

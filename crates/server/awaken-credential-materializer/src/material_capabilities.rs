@@ -1,3 +1,8 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: One projection of installed exact holder/source/envelope tuples into Native, ACP, MCP
+// @formal reason: and platform profiles. Concrete resolver and codec tests cover projection; the separate
+// @formal reason: Boolean admission proof does not prove arbitrary resolver declarations, material
+// @formal reason: availability, or this complete adapter.
 //! One projection from installed material tuples to last-mile execution evidence.
 use std::collections::BTreeSet;
 

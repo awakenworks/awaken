@@ -1,3 +1,8 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: Projects the canonical Control Environment definition into the official SDK DTO and
+// @formal reason: rejects absent authored timestamps. It owns no durable state, registration, clock, or
+// @formal reason: recovery transition. The timestamp decision table and HTTP inventory tests validate this
+// @formal reason: protocol boundary; this requirement link does not claim a new formal proof.
 //! The self-hosted environment registry: the port + neutral `EnvItem` now live in
 //! `awaken-environment-contract`; this module consumes them and owns
 //! the two projections the neutral crate must not name — the `BetaEnvironment` wire

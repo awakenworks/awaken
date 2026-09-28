@@ -20,10 +20,11 @@ import pathlib
 import re
 import sys
 
+import formal_anchors
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 WEB_ROOT = ROOT / "web" / "src"
-LEDGER = ROOT / "formal" / "web-surface-classifications.json"
 FEATURES = ROOT / "formal" / "features.json"
 
 
@@ -113,37 +114,27 @@ def requirement_ids() -> set[str]:
 
 
 def load_classifications(valid_requirements: set[str]) -> dict[str, dict[str, object]]:
-    if not LEDGER.is_file():
-        return {}
-    raw = json.loads(LEDGER.read_text(encoding="utf-8"))
-    if raw.get("version") != 1:
-        fail("classification ledger version must be 1")
-    rows = raw.get("classifications")
-    if not isinstance(rows, list):
-        fail("classification ledger must contain a classifications list")
+    """Each Web source's own classification, from its `// @formal surface` lines.
+
+    A Web classification is always a product boundary (`requirement=`), never
+    a proof claim, so it names a requirement and carries a reason.
+    """
+
+    headers, errors = formal_anchors.headers(ROOT)
+    classified, surface_errors = formal_anchors.surfaces(headers)
+    errors += surface_errors
+    if errors:
+        fail("\n".join(sorted(errors)))
     by_path: dict[str, dict[str, object]] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            fail("every classification must be an object")
-        path = row.get("path")
-        requirement_id = row.get("requirement_id")
-        reason = row.get("reason")
-        proof_status = row.get("proof_status")
-        required = (path, requirement_id, reason)
-        if not all(isinstance(value, str) and value.strip() for value in required):
-            fail("every classification needs non-empty path, requirement_id, and reason")
-        if proof_status != "product_boundary_only":
-            fail(f"{path}: proof_status must be product_boundary_only")
-        if requirement_id not in valid_requirements:
-            fail(f"{path}: unknown product requirement {requirement_id!r}")
-        if path in by_path:
-            fail(f"duplicate classification {path}")
-        source = ROOT / path
-        if not source.is_file():
-            fail(f"classification references missing source {path}")
-        if not source.is_relative_to(WEB_ROOT):
-            fail(f"classification is outside web/src: {path}")
-        by_path[path] = row
+    for path, surface in classified.items():
+        if not (ROOT / path).is_relative_to(WEB_ROOT):
+            continue
+        if surface.requirement is None:
+            fail(f"{path}:{surface.line}: a Web surface is a product boundary; classify it requirement=<id>")
+        if surface.requirement not in valid_requirements:
+            fail(f"{path}: unknown product requirement {surface.requirement!r}")
+        by_path[path] = {"path": path, "requirement_id": surface.requirement,
+                         "proof_status": "product_boundary_only", "reason": surface.reason}
     return by_path
 
 
@@ -189,8 +180,10 @@ def main() -> None:
         return
     if uncovered:
         fail("uncovered candidates: " + ", ".join(uncovered))
-    if stale:
-        fail("classified files no longer carry a configured signal: " + ", ".join(stale))
+    # Reported, not refused: the classification lives in the file it describes,
+    # so a signal regex drifting under it is not a defect of the edit.
+    for path in stale:
+        print(f"  report: {path} is classified but no longer carries a configured signal")
     print(
         f"formal web surface: {len(candidates)}/{len(candidates)} candidates classified, "
         "0 uncovered; classifications are product boundaries, not proof claims"

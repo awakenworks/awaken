@@ -1,3 +1,7 @@
+// @formal surface obligation=background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
+// @formal surface obligation=remote_worker.committed_truth_is_coordinator_owned
+// @formal surface obligation=remote_worker.stale_epoch_never_mutates_truth
+// @formal reason: Coordinator-side runtime authority implementation.
 //! Coordinator-owned Runtime persistence adapters.
 //!
 //! This is the only Coordinator module that turns Runtime deployment configuration into

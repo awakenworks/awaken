@@ -1,3 +1,10 @@
+// @formal surface requirement=platform.resilience.failure_safety
+// @formal reason: Static owner: the credential materializer's single SecretStore failure classifier.
+// @formal reason: Dynamic path: a seal or open-integrity failure becomes typed Invalid while missing or
+// @formal reason: temporarily inaccessible material remains Unavailable, so retry policy cannot collapse
+// @formal reason: corruption into transient absence or invent success. Evidence:
+// @formal reason: platform.resilience.failure_safety and the adjacent seal-error decision-table test; this
+// @formal reason: is a product-requirement classification, not a direct formal-proof claim.
 use awaken_runtime_contract::CredentialMaterialError;
 
 /// Preserve the credential domain's integrity distinction while keeping

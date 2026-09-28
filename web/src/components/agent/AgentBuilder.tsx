@@ -1,3 +1,6 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: The Agent builder edits the authored profile projection; browser behavior remains a
+// @formal reason: product boundary.
 import { Info, TriangleAlert } from "@awaken/ui/icons";
 import { Tabs, TabList, Tab, TabPanel, InlineNotice, CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 

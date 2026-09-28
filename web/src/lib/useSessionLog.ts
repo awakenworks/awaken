@@ -1,3 +1,5 @@
+// @formal surface requirement=protocol.ui_adapters.stream_projection
+// @formal reason: Session stream query/cache updates are an unproved browser projection boundary.
 // The live Session-log application hook: one committed history projection,
 // generated-catalog SSE subscription, and official input mutation seam.
 

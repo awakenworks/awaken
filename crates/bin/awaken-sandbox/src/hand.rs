@@ -1,3 +1,6 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: This source implements the repository-controlled remote worker product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! The `hand` role (ADR-0044/0045): serve the neutral tool-execution channel — the
 //! brain runs its tool calls HERE, on the hand, in the sandbox. Two binds:
 //!

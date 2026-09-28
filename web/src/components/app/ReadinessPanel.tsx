@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Readiness is rendered from advertised facts; UI visibility does not establish an
+// @formal reason: attested capability.
 import { ArrowRight, Check, TriangleAlert } from "@awaken/ui/icons";
 import { Skeleton, Card } from "@awaken/ui";
 

@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: This source implements the repository-controlled protocol product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Pure request/message conversion helpers for the execution loop.
 //!
 //! Extracted from `engine` (which crossed the 2000-line file limit): these are

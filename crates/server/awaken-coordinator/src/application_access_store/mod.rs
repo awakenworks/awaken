@@ -1,3 +1,8 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: The sole durable application authenticator preserves only the hashed credential and
+// @formal reason: exact grant, then rejects missing, wrong, expired, revoked, unavailable, or corrupt
+// @formal reason: authority without fallback; this is product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Coordinator-owned short-lived application credential authority.
 //!
 //! One durable repository backs mint, authentication, and revocation across

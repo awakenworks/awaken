@@ -1,3 +1,9 @@
+// @formal surface obligation=mcp.at_most_one_final_response
+// @formal surface obligation=mcp.notification_has_no_response
+// @formal surface obligation=mcp.final_stops_progress
+// @formal surface obligation=mcp.rejected_request_skips_host
+// @formal surface obligation=mcp.cancellation_has_no_success_result
+// @formal reason: MCP server state-machine implementation.
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};

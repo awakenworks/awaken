@@ -1,3 +1,9 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: exact pending upload and completion evidence shared by the existing
+// @formal reason: Sandbox realization participants. Dynamic path: compare operation, request, digest and
+// @formal reason: size before recording one receipt; exact replay does not rewrite and conflict preserves
+// @formal reason: prior evidence. Adjacent decision-table and wire tests qualify executable behavior, not
+// @formal reason: persistence, execution authority or a direct formal proof.
 //! Exact upload evidence persisted by a Sandbox's existing realization owner.
 //! This value owns comparisons only: no storage, locking, liveness or deletion.
 

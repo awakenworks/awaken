@@ -1,3 +1,7 @@
+// @formal surface requirement=control.admin_publication.audited_publication
+// @formal reason: The publication dialogs over the existing Agent editor: they gather a publish or
+// @formal reason: rollback intent and show what the config plane answered, without owning versioning or
+// @formal reason: the audit the server writes. Classification only, not formal evidence.
 import { ArrowRight, Check, Info } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 import type { AgentConfig, AgentToolsetMemberCap, InputBinding, PluginCap, RuntimeCap } from "../../lib/api/types";

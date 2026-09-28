@@ -1,3 +1,6 @@
+// @formal surface requirement=control.admin_publication.audited_publication
+// @formal reason: Header actions initiate Agent publication mutations; the browser is an unproved effect
+// @formal reason: adapter.
 import { ArrowLeft, ArrowRight, Check, Sparkles } from "@awaken/ui/icons";
 import { Button } from "@awaken/ui";
 import { Pill, TechnicalId } from "../ui";

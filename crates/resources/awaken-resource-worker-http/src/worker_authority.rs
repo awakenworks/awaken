@@ -1,3 +1,10 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Static owner: the shared registered-Worker identity and temporal admission for
+// @formal reason: Session-scoped Resource effects. Dynamic path: credential transports may cap effects to
+// @formal reason: the asserted lease, while immutable Resource reads and terminal generations defer
+// @formal reason: same-generation renewal to the Session root. Every exact result still passes through the
+// @formal reason: Resource-specific authority without a second lease or authorization store; this is a
+// @formal reason: product-requirement classification, not a direct formal-proof claim.
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use awaken_session_resource_contract::SessionRealizationLease;

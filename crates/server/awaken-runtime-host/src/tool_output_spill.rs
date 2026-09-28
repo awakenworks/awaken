@@ -1,3 +1,13 @@
+// @formal surface requirement=runtime.run_tool_lifecycle.lifecycle
+// @formal reason: Static owner: the sole oversized tool-output spill adapter for one Session workspace.
+// @formal reason: Dynamic path: output at or below the inline limit is returned unchanged; oversized
+// @formal reason: output derives a bounded deterministic logical path by hashing the Run identity and
+// @formal reason: provider-authored call id, writes through the existing SessionEnvironment workspace-file
+// @formal reason: effect, and returns only a truncated preview plus that relative path. No provider string
+// @formal reason: becomes a path component, and this module adds no File catalog, durable receipt, or
+// @formal reason: second output store. Evidence: runtime.run_tool_lifecycle.lifecycle and the adjacent
+// @formal reason: spill decision-table tests; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Session-sandbox materialization for oversized model-visible tool output.
 //!
 //! The threshold and preview format live here once. Native Runtime results and

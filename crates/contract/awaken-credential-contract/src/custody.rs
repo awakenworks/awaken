@@ -1,3 +1,8 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Static owner: credential custody and plaintext-holder contract. Dynamic path:
+// @formal reason: materialization selects an authorized holder before plaintext crosses into an execution
+// @formal reason: boundary. Evidence: credential.plaintext_boundary.exact_holder; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! Exact publication into an external credential custody boundary.
 
 use std::sync::Arc;

@@ -1,3 +1,6 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Advanced Agent authoring projects profile policy fields; this ownership link is not a
+// @formal reason: formal-proof claim.
 import { ArrowRight, Check } from "@awaken/ui/icons";
 import { Tabs, TabList, Tab, TabPanel, InlineNotice, Button, Card } from "@awaken/ui";
 import type {

@@ -1,3 +1,7 @@
+// @formal surface obligation=service_lifecycle.concurrent_shutdown_waits_for_active_drain
+// @formal surface obligation=service_lifecycle.shutdown_fences_task_registration
+// @formal surface obligation=service_lifecycle.return_requires_all_tasks_stopped_or_aborted
+// @formal reason: Process admin wires and drives the shared lifecycle authority.
 //! Process administration for graceful, connection-scaled Coordinator operation (ADR-0022 D7).
 //!
 //! The Coordinator is light IO and scales on **connection load**, not queue depth, and it

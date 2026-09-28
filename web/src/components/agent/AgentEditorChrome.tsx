@@ -1,3 +1,6 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: The existing editor chrome owns pure draft-request and model-readiness derivation for
+// @formal reason: the Agent authoring surface; browser behavior remains a product boundary.
 import { ArrowRight, CornerDownRight, Play, Sparkles } from "@awaken/ui/icons";
 import { Tab, TabList, InlineNotice, Button } from "@awaken/ui";
 import type { AgentConfig, Capabilities, RuntimeCap, ValidationIssue } from "../../lib/api/types";

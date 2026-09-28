@@ -1,3 +1,10 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Static owner: last-mile HTTP projection of already-admitted CredentialMaterial. Dynamic
+// @formal reason: path: the canonical materializer validates the frozen usage, accepts only HttpHeader,
+// @formal reason: and emits one Bearer or exact Header shape; it performs no lookup, holder selection,
+// @formal reason: revision fallback, or persistence. The adjacent cause/effect test covers every
+// @formal reason: wire-shape class; provider HTTP serialization remains an adapter boundary, not a direct
+// @formal reason: proof claim.
 //! Last-mile HTTP projection for already-admitted credential material.
 
 use awaken_runtime_contract::{CredentialAccess, CredentialMaterial, CredentialMaterialError};

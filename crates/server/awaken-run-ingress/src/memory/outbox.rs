@@ -1,3 +1,7 @@
+// @formal surface obligation=ingress.pending_input_exactly_once
+// @formal surface obligation=run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal reason: In-memory Outbox projection mutates the parent MemoryDispatchStore under its single
+// @formal reason: transaction mutex and reuses canonical Run identity and pending-input idempotency.
 //! Atomic outbox relay operations for the in-memory Dispatch aggregate.
 //!
 //! The parent module still owns the one mutex-backed state and validation

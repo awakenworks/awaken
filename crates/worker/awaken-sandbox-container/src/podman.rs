@@ -1,3 +1,6 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: This source implements the repository-controlled remote worker product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Rootless **Podman** backend (`podman` feature), driven over the CLI.
 //!
 //! The Worker owns each CLI call; the Session owns the retained container.

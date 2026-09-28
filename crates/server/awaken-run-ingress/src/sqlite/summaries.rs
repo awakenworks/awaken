@@ -1,3 +1,10 @@
+// @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
+// @formal reason: Static owner: the SQLite dispatch operational reads, including the exact runnable-depth
+// @formal reason: query moved from the existing queue trait implementation. Dynamic path: the trait
+// @formal reason: delegates to the same store-clock and connection-scoped status, lease, pending-input,
+// @formal reason: Thread, and retry predicates; no count cache, lease authority, or second query owner is
+// @formal reason: introduced. Evidence: shared dispatch query conformance and process sampler tests; this
+// @formal reason: is a product-requirement classification, not a direct formal-proof claim.
 impl SqliteDispatchStore {
     async fn query_runnable_depth(&self) -> Result<Option<u64>, DispatchError> {
         let now_ms = self.clock.now_ms();

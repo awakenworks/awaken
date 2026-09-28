@@ -1,3 +1,5 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Agent inventory queries and route transitions project immutable published profiles.
 import { Plus, Sparkles } from "@awaken/ui/icons";
 import { Button, SegmentedControl as Segmented } from "@awaken/ui";
 // Workspace · Agents: the config-plane authoring list (GET /v1/config/agents).

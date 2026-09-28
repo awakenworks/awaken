@@ -1,3 +1,11 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: Managed protocol adapter for complete Session Resource commands and public
+// @formal reason: receipts. Dynamic path: it validates and lowers external Resource input, then delegates
+// @formal reason: replacement and reconciliation to the canonical Session application and persisted
+// @formal reason: SessionResourceState; it owns no parallel lifecycle state, compare-and-swap rule, or
+// @formal reason: Runtime authorization path. Evidence: resource.files.resource_lifecycle and adjacent
+// @formal reason: Managed Resource tests; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Live-session typed input CRUD and durable resource activation coordination.
 //! The persisted [`SessionResourceState`](awaken_session_state_contract::SessionResourceState)
 //! is authoritative. Wire DTOs project its desired manifest; Runtime owns

@@ -1,3 +1,8 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: provider-neutral secret-free completion receipt for Local and Namespace
+// @formal reason: realization. Dynamic path: exact mounts and Memory materializations are validated,
+// @formal reason: sorted, de-duplicated, canonically replayed, and then checked by the provider against
+// @formal reason: its effective spec; this is not a direct formal-proof claim.
 use super::*;
 
 /// Provider-neutral, secret-free completion receipt shared by Local and

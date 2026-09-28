@@ -1,3 +1,5 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: Page gating is a presentation projection and never counts as an authorization proof.
 import { Button, Card } from "@awaken/ui";
 // Route-level gated page: probes the endpoint via useGate. Absent → the gate
 // banner; live → a raw JSON view of the payload (a real, if minimal, surface)

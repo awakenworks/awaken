@@ -1,3 +1,9 @@
+// @formal surface requirement=platform.resilience.failure_safety
+// @formal reason: Neutral failure-disposition vocabulary only: the Transient/Quota/Permanent projection
+// @formal reason: and the Classify port that inference and sandbox failures implement. It holds no retry
+// @formal reason: state and performs no effect; the bounded retry kernel and its Kani proofs stay with
+// @formal reason: their owner in awaken-runtime-contract. This is a product-requirement classification,
+// @formal reason: not a proof claim.
 //! Failure disposition vocabulary: what a caller should DO with a failure.
 //!
 //! A neutral value object shared by every contract whose failures feed retry,

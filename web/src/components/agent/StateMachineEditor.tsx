@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.workflow_extension.workflow_state
+// @formal reason: The state-machine editor accepts user-authored workflow transitions; the UI does not
+// @formal reason: prove their execution.
 import { ArrowLeft, Plus, X } from "@awaken/ui/icons";
 import { Button, Card } from "@awaken/ui";
 // Visual editor for the generic runtime State Machine DSL. The UI follows the

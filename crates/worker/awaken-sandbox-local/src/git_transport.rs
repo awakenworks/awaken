@@ -1,3 +1,13 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: the sole local Repository realization and terminal-publication
+// @formal reason: orchestrator, including staged no-replace clone publication, exact remote observation,
+// @formal reason: and branch CAS classification. Dynamic path: clone and push validate the frozen source,
+// @formal reason: ref, and lease, delegate every Git process and credential to the private command
+// @formal reason: boundary, then re-observe the remote before returning the canonical receipt, rejection,
+// @formal reason: or unavailable outcome; this module adds no second writer, queue, or durable state.
+// @formal reason: Evidence: resource.files.resource_lifecycle, ADR-0063, ADR-0075, and the adjacent Git
+// @formal reason: transport decision-table tests; this is a product-requirement classification, not a
+// @formal reason: direct formal-proof claim.
 //! Exact host Git transport for Repository realization.
 
 mod command;

@@ -1,3 +1,13 @@
+// @formal surface requirement=protocol.acp.acp_normalization
+// @formal reason: Static owner: ACP permission resolution split out of the executor, including the
+// @formal reason: attempt's audit ledger. Dynamic path: every CLI permission request is projected onto the
+// @formal reason: one neutral ToolPermissionPolicy, a per-Run narrowing may refuse before the session
+// @formal reason: policy answers, a resumed one-shot decision is consumed at most once for its exact
+// @formal reason: semantic identity, and whichever authority decided records that decision into the commit
+// @formal reason: carrying the step it governed; nothing here can widen authority or execute a tool.
+// @formal reason: Evidence: protocol.acp.acp_normalization plus this module's resolver tests and
+// @formal reason: every_acp_permission_decision_is_recorded_with_the_policy_that_made_it; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! ACP permission resolution: the bridge from the driver's `PermissionResolver`
 //! port onto the one neutral `ToolPermissionPolicy`, the per-Run narrowing, MCP
 //! alias consensus, resumed one-shot decisions, and the attempt's audit ledger.

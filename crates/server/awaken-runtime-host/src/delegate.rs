@@ -1,3 +1,7 @@
+// @formal surface obligation=delegation.independent_child_scheduling_lease
+// @formal surface obligation=delegation.stable_child_crash_recovery
+// @formal surface obligation=delegation.remote_cancel_redelivery
+// @formal reason: Host child-Run scheduling and cancellation integration.
 //! The host Run-delegation service: run a child Agent behind the `agent_run` tool.
 //!
 //! This is the process-startup implementation of [`RunDelegationService`].

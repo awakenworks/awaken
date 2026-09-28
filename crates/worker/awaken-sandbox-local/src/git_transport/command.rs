@@ -1,3 +1,15 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Static owner: the one private Git process constructor and command-scoped HTTP Basic
+// @formal reason: credential holder beneath the local Repository transport. Dynamic path: network commands
+// @formal reason: admit the exact protocol and authority and remove ambient Git, SSH, proxy, TLS, trace,
+// @formal reason: and credential configuration; local commands remove explicit Repository-selection
+// @formal reason: variables plus Awaken and askpass credential variables, use the caller-provided working
+// @formal reason: directory when supplied, and otherwise execute the caller-selected argument-only local
+// @formal reason: operation. Credentials are released only through the exact protocol-plus-authority
+// @formal reason: helper, and this module selects no clone, push, ref, CAS outcome, or receipt. Evidence:
+// @formal reason: credential.plaintext_boundary.exact_holder and the parent Git transport decision-table
+// @formal reason: and redirect tests; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Command-scoped Git process and credential boundary for local Repository transport.
 //!
 //! This private module admits one exact network endpoint and invokes Git.

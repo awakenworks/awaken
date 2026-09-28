@@ -1,3 +1,10 @@
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal surface obligation=credential.provider_scope_widening_requires_exact_revision_provider_and_endpoint
+// @formal surface obligation=model_readiness.brokered_and_direct_routes_require_exact_access_evidence
+// @formal surface obligation=model_route.fallback_preserves_the_complete_publication_pin
+// @formal reason: Provider candidate constructors seal the exact direct or brokered scope, endpoint,
+// @formal reason: access posture, and credential boundary before the candidate enters a frozen route,
+// @formal reason: delegating every invariant to the canonical validated candidate boundary.
 use super::{
     AcpExecutionProfile, InvalidResolvedModelCandidate, ModelBinding, ModelProvisioning,
     ProviderAccessKind, ProviderExecutionProfile, ResolvedModelCandidate, UnspecifiedReasoning,

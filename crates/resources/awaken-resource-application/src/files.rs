@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: This source implements the repository-controlled files product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Logical File commands owned by the canonical Resources application.
 //!
 //! This is the sole command path which coordinates immutable bytes, public File

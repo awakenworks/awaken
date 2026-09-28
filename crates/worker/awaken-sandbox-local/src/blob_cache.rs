@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: This source implements the repository-controlled files product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! `WorkspaceBlobCache` — a workspace-scoped, content-addressed LRU in front of a
 //! [`BlobSource`] (awaken-next `WorkspaceBlobCache` parity). The cache key is
 //! `(workspace_id, content_id)`, so one tenant's cached bytes can **never** be served

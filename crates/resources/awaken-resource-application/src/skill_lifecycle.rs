@@ -1,3 +1,6 @@
+// @formal surface obligation=skill.pinned_version_survives_retirement
+// @formal surface obligation=resource_reclamation.reference_and_lease_races_fail_closed
+// @formal reason: Adds/removes logical lifecycle references around Skill visibility.
 //! Atomic logical-lifecycle projection for the Skill aggregate.
 
 use std::sync::Arc;

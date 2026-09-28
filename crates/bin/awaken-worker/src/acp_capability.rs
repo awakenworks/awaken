@@ -1,3 +1,5 @@
+// @formal surface obligation=worker.acp_capability_is_detected_only_after_a_verified_handshake
+// @formal reason: Worker-side ACP capability probe implementation.
 //! Worker-owned observation of configured image/Pod ACP adapters.
 
 use std::path::PathBuf;

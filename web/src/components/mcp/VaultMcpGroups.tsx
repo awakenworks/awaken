@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: Groups Vault credentials by the MCP servers that reference them, for the credential
+// @formal reason: page. Read-only projection over the Vault owner; no material is displayed or held.
+// @formal reason: Classification only, not formal evidence.
 import { useQuery } from "@tanstack/react-query";
 import { Button, Card } from "@awaken/ui";
 import { api, ws } from "../../lib/api/client";

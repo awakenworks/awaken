@@ -1,3 +1,12 @@
+// @formal surface obligation=session.cleanup_completion_requires_exact_identity_and_canonical_artifact_evidence
+// @formal surface obligation=session.cleanup_operation_advances_exactly_and_completed_is_absorbing
+// @formal reason: Static owner: private Preparing and Disposing evidence inside the one
+// @formal reason: SessionCleanupOperation; both refine its existing Requested phase and introduce no
+// @formal reason: parallel cleanup store or operation. Dynamic path: exact per-thread Artifact evidence
+// @formal reason: and the canonical Repository receipt must become durable before one root disposal can
+// @formal reason: enter the existing absorbing Completed phase, while mismatches and non-exact
+// @formal reason: response-loss replays fail closed. The existing obligations cover that outer phase and
+// @formal reason: receipt-admission relation; provider effects remain outside the proof boundary.
 //! Durable preparation and single physical-disposal subphases.
 //!
 //! Both subphases wrap the unchanged private legacy Requested wire. That keeps

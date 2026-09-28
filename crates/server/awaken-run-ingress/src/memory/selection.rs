@@ -1,3 +1,9 @@
+// @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
+// @formal reason: Static owner: read-only broad candidate selection of the reference Dispatch store.
+// @formal reason: Dynamic path: candidates observe the store clock, physical occupancy, exact-claim modes,
+// @formal reason: thread peers, compatibility and persisted retry deadlines; the exact claim transaction
+// @formal reason: remains mutation authority. Dispatch conformance and PostgreSQL discovery comparisons
+// @formal reason: own the behavior evidence; no whole-selection or liveness proof is claimed.
 //! The reference store's one broad claim selection policy.
 
 use super::*;

@@ -1,3 +1,5 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: The header projects route intent into presentation state; no formal claim is made.
 import { useLocation } from "react-router";
 import { useApp } from "../../lib/app-state";
 import { pageIntentForPath } from "../../lib/page-intents";

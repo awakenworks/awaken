@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.builtin_tools.tool_registration
+// @formal reason: This source implements the repository-controlled builtin product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! In-process hand tools (ADR-0007). `read`, `write`, `edit`,
 //! `glob`, `grep`, and `bash` run directly in the runtime process and render results as text.
 //! Their ids match the descriptors in [`crate::builtin_tools`], so a run that

@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: Selects an existing Vault credential reference for an MCP server. It shows names and
+// @formal reason: status only; credential material never enters this surface. Classification only, not
+// @formal reason: formal evidence.
 import { Button } from "@awaken/ui";
 import { useId } from "react";
 import { useQuery } from "@tanstack/react-query";

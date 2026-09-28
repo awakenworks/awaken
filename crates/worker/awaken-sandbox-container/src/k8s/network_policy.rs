@@ -1,3 +1,8 @@
+// @formal surface obligation=sandbox.admission_never_weakens_isolation
+// @formal surface obligation=sandbox.fail_closed_policy_never_downgrades
+// @formal surface obligation=external.container_and_kernel_isolation
+// @formal reason: Live Kubernetes NetworkPolicy attestation fails closed unless the exact deny/open policy
+// @formal reason: graph exists without additive restricted-egress widening.
 //! Live Kubernetes NetworkPolicy attestation for the canonical sandbox labels.
 //!
 //! NetworkPolicy resources remain the enforcement authority. This module only

@@ -1,3 +1,11 @@
+// @formal surface obligation=run.lifecycle_absorption
+// @formal reason: Static owner: the sole Session runtime-port projection of one settled Run step, reusing
+// @formal reason: canonical RunState, Pending, Failure, and Run identity instead of defining a second
+// @formal reason: terminal classification. Dynamic path: constructors admit only Awaiting or Ended,
+// @formal reason: terminal event projection is derived from that same state, and Running cannot escape a
+// @formal reason: settled step boundary. The linked absorption obligation covers the canonical Run state
+// @formal reason: machine; message delivery and protocol deduplication remain executable boundary
+// @formal reason: evidence.
 // Settled Run-step outcome projected through the Session runtime port.
 
 use awaken_agent_contract::agent::message::Message;

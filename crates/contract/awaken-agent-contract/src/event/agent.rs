@@ -1,3 +1,7 @@
+// @formal surface exclude=projection_dto
+// @formal owner docs/adr/0058-one-neutral-event-vocabulary-message-sourced-classify-routed-two-tier-projection.md
+// @formal reason: Defines neutral fact and delta projection shapes plus trivial constructors; production
+// @formal reason: event classification and fold decisions live in sibling modules.
 //! The one neutral event vocabulary (ADR-0058, Axis 2).
 //!
 //! `AgentEvent` is the single shape every producer emits and every protocol

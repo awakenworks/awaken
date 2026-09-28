@@ -1,3 +1,12 @@
+// @formal surface requirement=control.admin_publication.audited_publication
+// @formal reason: Static owner: Workspace-scoped profile publication orchestration within the existing
+// @formal reason: CatalogModelPublicationResolver. Dynamic path: it consumes the trusted Workspace from
+// @formal reason: the management PEP, rejects mismatched profile ownership, preserves primary and fallback
+// @formal reason: order, delegates credential selection to the canonical publication_access boundary, and
+// @formal reason: delegates brokered supply to the injected ModelPublicationResolver. It owns neither IAM
+// @formal reason: decisions nor SecretStore/plaintext material; adjacent component tests provide
+// @formal reason: executable evidence, and this product-requirement classification does not claim that
+// @formal reason: async catalog, credential, or hosted-provider behavior is kernel-proved.
 //! Compile authored Workspace profiles through the canonical credential and
 //! model-supply authorities, preserving authored order and Cloud account pools.
 //! Component regression tests remain in the parent publication test suite.

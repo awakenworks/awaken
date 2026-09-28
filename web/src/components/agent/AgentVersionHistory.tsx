@@ -1,3 +1,6 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Version history queries and renders published Agent revisions; the browser list cannot
+// @formal reason: prove persistence or profile immutability.
 import { useQuery } from "@tanstack/react-query";
 import { api, isAbsent, ws } from "../../lib/api/client";
 import type { Agent, CursorPage } from "../../lib/api/types";

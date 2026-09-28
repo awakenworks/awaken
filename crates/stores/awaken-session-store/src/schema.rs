@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This source implements the repository-controlled store product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Deterministic current schema authority shared by SQLite and PostgreSQL.
 
 mod expanded;

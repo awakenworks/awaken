@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.outcomes.outcome_lifecycle
+// @formal reason: This source implements the repository-controlled outcomes product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Managed Host adapter for the extension-owned Outcome controller.
 
 use awaken_ext_goal::controller::{CommittedOutcome, Controller, Error as ControllerError};

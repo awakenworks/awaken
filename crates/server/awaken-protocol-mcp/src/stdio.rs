@@ -1,3 +1,11 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: Static owner: the stdio transport adapter over the sole JsonRpcPeer write queue. Dynamic
+// @formal reason: path: one startup watch handoff publishes that peer's JsonRpcNotifier before an early
+// @formal reason: request notification may proceed, and each progress notification awaits enqueue on the
+// @formal reason: same queue before the handler returns and the final response is enqueued; inbound client
+// @formal reason: notifications continue through the peer receiver. This adds no second write queue or
+// @formal reason: protocol state owner and is a protocol.mcp.mcp_protocol product-requirement
+// @formal reason: classification, not a direct formal-proof claim.
 //! Stdio MCP server.
 //!
 //! Serves a [`McpToolService`] over a byte-stream pair through the shared

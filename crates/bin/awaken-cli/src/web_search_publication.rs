@@ -1,3 +1,7 @@
+// @formal surface exclude=composition_adapter
+// @formal owner crates/bin/awaken-cli/src/web_search_publication.rs
+// @formal reason: Delegates publication validation to the WebSearch plugin's canonical validator and
+// @formal reason: returns the unchanged validated configuration; it introduces no independent policy.
 //! Control-side adapter for WebSearch publication validation.
 
 use std::sync::Arc;

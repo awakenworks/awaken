@@ -1,3 +1,11 @@
+// @formal surface obligation=session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
+// @formal reason: Request-local indices reuse the existing committed coordination receipt selector and
+// @formal reason: canonical order constructors. They preserve first eligible receipt, exact child
+// @formal reason: identity, max(source,result) commit anchoring and terminal-report ordering inside the
+// @formal reason: sole private candidate. Adjacent decision tables and warm/cold late-result integration
+// @formal reason: tests cover behavior. This is reducer TCB linked to the existing paired-publication
+// @formal reason: obligation, not a proof of HashMap joins, full canonicalizer equivalence, SQL isolation
+// @formal reason: or performance.
 //! Coordinate accepted call and terminal-report ordering from indexed facts.
 use super::message_index::MessageEventIndex;
 use super::*;

@@ -1,3 +1,8 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: Static owner: deployment contract value objects exposed across the public boundary.
+// @formal reason: Dynamic path: management inputs are decoded into neutral deployment values before
+// @formal reason: application orchestration consumes them. Evidence: product.public_dto.anti_corruption;
+// @formal reason: this is a product-requirement classification, not a direct proof claim.
 use std::collections::BTreeMap;
 
 use awaken_agent_contract::agent::content::ContentBlock;

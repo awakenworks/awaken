@@ -1,3 +1,5 @@
+// @formal surface obligation=worker.acp_capability_is_detected_only_after_a_verified_handshake
+// @formal reason: ACP capability is projected from a completed live probe.
 //! Bounded Worker-side ACP capability negotiation and evidence fingerprinting.
 
 use std::path::{Path, PathBuf};

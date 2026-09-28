@@ -1,3 +1,5 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Agent editor navigation is a browser workflow projection and is not formal evidence.
 export type AuthorStage = "quickstart" | "build" | "advanced";
 export type BuilderSection = "instructions" | "tools" | "integrations" | "knowledge";
 export type AdvancedSection = "orchestration" | "extensions" | "source" | "release";

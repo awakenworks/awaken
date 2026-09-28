@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This source implements the repository-controlled store product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Coordinator Postgres captured-content store (feature `postgres`, ADR-0050 D7): the
 //! network-DB sibling of
 //! [`SqliteCapturedContentStore`](crate::SqliteCapturedContentStore). Rows are

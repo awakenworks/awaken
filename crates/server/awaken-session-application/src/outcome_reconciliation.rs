@@ -1,3 +1,9 @@
+// @formal surface requirement=runtime.outcomes.outcome_lifecycle
+// @formal reason: Static owner: reconciliation between committed Run terminal facts and managed outcomes.
+// @formal reason: Dynamic path: terminal execution evidence advances the existing outcome lifecycle
+// @formal reason: idempotently after commit or restart. Evidence: runtime.outcomes.outcome_lifecycle and
+// @formal reason: outcome reconciliation tests; this is a product-requirement classification, not a direct
+// @formal reason: proof claim.
 //! Recovery driving for Thread-owned Outcome aggregates.
 //!
 //! The Session root supplies only the durable candidate selector. Active state,

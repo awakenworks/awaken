@@ -1,3 +1,14 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: process-local mutual exclusion for the co-located Session realization
+// @formal reason: phase driver, mirroring the Runtime Host's Worker-side realization permit. Dynamic path:
+// @formal reason: a request driver and the recovery sweep share one process under the same lease owner and
+// @formal reason: incarnation, so each pass waits for the Session's registered entry and only the identity
+// @formal reason: still registered admits, while the last holder releases it so the registry cannot grow
+// @formal reason: per Session; it grants no lease, selects no phase, performs no effect, and survives no
+// @formal reason: restart. Evidence: session.lifecycle.session_state, the SessionRealizationMutex relation
+// @formal reason: refined by the production realization observation traces, and the adjacent admission and
+// @formal reason: two-Session waiting decision table. This is process-local scheduling evidence, not a
+// @formal reason: proof of cross-process exclusion, which remains the durable lease and root CAS.
 //! Co-located identity source for the canonical Session realization permit.
 //!
 //! The durable lease fences *other* processes, but one process legitimately

@@ -1,3 +1,7 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: Projects the publication-pinned reasoning policy and typed request controls into the
+// @formal reason: exact provider dialect before I/O; provider JSON remains confined to this transport
+// @formal reason: adapter and carries no credential material.
 //! Typed inference-control projection at the final provider adapter boundary.
 
 use awaken_runtime_contract::UnspecifiedReasoning;

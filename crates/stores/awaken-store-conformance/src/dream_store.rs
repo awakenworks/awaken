@@ -1,3 +1,10 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/stores/awaken-store-conformance/Cargo.toml
+// @formal owner crates/stores/awaken-session-store/src/dream.rs
+// @formal owner crates/server/awaken-dream-application/src/lib.rs
+// @formal reason: Shared Dream process and policy CAS assertions in the existing tooling crate, called by
+// @formal reason: the in-memory application fixture and both durable Session stores. This module verifies
+// @formal reason: adapters and owns no production state or effect.
 //! Shared Dream process and atomic policy claim conformance.
 
 use awaken_session_dream_contract::{DreamPolicyRecord, DreamProcessRecord, DreamProcessStore};

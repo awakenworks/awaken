@@ -1,3 +1,11 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: Static owner: the single admin credential CRUD wire representation and secret-free
+// @formal reason: source projection. Dynamic path: parent routes consume its create, rotate, archive,
+// @formal reason: idempotency, replacement, descriptor, material, and revision facts, convert write-only
+// @formal reason: material into the canonical redacted boundary, and return no internal material
+// @formal reason: reference. Evidence: credential.lifecycle.credential_lifecycle and adjacent admin
+// @formal reason: credential route tests; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Credential HTTP wire types and secret-free source projection.
 //!
 //! Route handlers remain in the parent adapter; this module owns the one wire

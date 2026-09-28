@@ -1,3 +1,7 @@
+// @formal surface exclude=read_port_contract
+// @formal owner docs/design/runtime-persistence.md
+// @formal reason: Read-only scope DTO and repository trait; consistency and commit authority are
+// @formal reason: implemented and tested by concrete stores.
 //! The single after-commit read repository for a thread's committed truth.
 //!
 //! `CheckpointReader` is the asynchronous event read side of the commit boundary

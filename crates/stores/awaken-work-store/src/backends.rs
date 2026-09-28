@@ -1,3 +1,8 @@
+// @formal surface obligation=work.single_active_claim
+// @formal surface obligation=work.exact_boundary_reclaim
+// @formal surface obligation=work.lease_authority_snapshot_and_owner_mutations_are_atomic
+// @formal reason: Owns construction, schema admission, idempotent row creation, and owned-row reads for
+// @formal reason: the two durable WorkQueue adapters.
 //! Backend construction and backend-neutral row ownership helpers.
 //!
 //! The [`WorkQueue`](awaken_session_work_contract::WorkQueue) command

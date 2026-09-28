@@ -1,4 +1,8 @@
 // @formal evidence mcp.sessionless_stream_lifecycle
+// @formal surface exclude=test_support_crate
+// @formal owner crates/server/awaken-mcp-server-testkit/tests/core_conformance.rs
+// @formal reason: Reusable MCP conformance test server and fixtures; it is not linked into a product
+// @formal reason: execution surface.
 //! Shared black-box conformance assertions for MCP server adapters.
 //!
 //! A second host (for example a flow/resource runtime) implements the tiny

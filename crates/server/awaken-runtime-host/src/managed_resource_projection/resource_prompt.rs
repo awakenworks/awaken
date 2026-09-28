@@ -1,3 +1,9 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Runtime Host owns the validated Agent-visible prompt projection of frozen ResolvedInput
+// @formal reason: values. Session Environment selects the path and delivery view; rendering preserves
+// @formal reason: binding and access without revealing provider-private roots or granting new authority.
+// @formal reason: Adjacent resource_prompt_tests own executable decision-table evidence; this
+// @formal reason: classification is not a direct formal-proof claim.
 //! Agent-visible projection of managed Resource instructions and logical paths.
 //!
 //! Durable authority remains the frozen `ResolvedInput`; this module owns only

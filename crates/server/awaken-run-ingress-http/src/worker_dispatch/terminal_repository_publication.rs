@@ -1,3 +1,11 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: registered-Worker HTTP anti-corruption projection for the existing
+// @formal reason: terminal Repository publication control. Dynamic path: the authenticated exact
+// @formal reason: realization lease gates command polling and mutually exclusive receipt/rejection
+// @formal reason: recording through the canonical SessionRealizationControl root CAS; this module owns no
+// @formal reason: Session state, queue, retry, or Git effect. Evidence: session.lifecycle.session_state,
+// @formal reason: ADR-0075, and signed Worker transport tests; this is a product-requirement
+// @formal reason: classification, not a direct formal-proof claim.
 //! Registered-Worker HTTP projection for one terminal Repository publication.
 //!
 //! The parent dispatch router owns authentication and the existing realization

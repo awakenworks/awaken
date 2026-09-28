@@ -1,3 +1,5 @@
+// @formal surface requirement=product.dream.dream_job
+// @formal reason: Dream detail routes and lifecycle actions are browser projections of the durable job.
 import { ArrowLeft, ArrowRight, Plus, Settings } from "@awaken/ui/icons";
 import { Button, Card } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

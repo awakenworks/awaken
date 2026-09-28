@@ -1,3 +1,10 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: Anthropic-compatible HTTP adapter over the single Resources
+// @formal reason: FileApplicationService. Dynamic path: RequiredWorkspaceScope and bounded request parsing
+// @formal reason: produce intents for the canonical application service; the adapter never writes a blob
+// @formal reason: or catalog directly. FileStore durability and physical deletion remain the existing
+// @formal reason: resource.files residual boundary, so this is product classification rather than a second
+// @formal reason: lifecycle or proof claim.
 //! Anthropic-compatible Files API over the Resources context's one FileCatalog and
 //! one content-addressed FileStore. A public `file_...` identity never exposes the
 //! private BLAKE3 blob id, and every GET is a pure catalog/blob read.

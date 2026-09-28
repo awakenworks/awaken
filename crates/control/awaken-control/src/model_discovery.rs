@@ -1,3 +1,6 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: This source implements the repository-controlled routing product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Control-owned provider model-directory discovery adapter.
 
 use std::sync::Arc;

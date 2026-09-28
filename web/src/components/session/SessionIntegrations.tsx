@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: Session integrations project MCP connections from the immutable Session snapshot;
+// @formal reason: display state cannot prove peer activation or protocol behavior.
 import { ArrowRight } from "@awaken/ui/icons";
 import { InlineNotice, Card } from "@awaken/ui";
 import { Link } from "react-router";

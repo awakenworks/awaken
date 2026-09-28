@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: This source implements the repository-controlled mcp product boundary and is classified
+// @formal reason: against its product requirement; this link is not a formal-proof claim.
 //! Stdio MCP transport.
 //!
 //! Spawns an MCP server subprocess and drives it through the [`JsonRpcPeer`]

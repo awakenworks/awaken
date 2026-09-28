@@ -1,3 +1,7 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: The Session Host owns one attached helper and MCP export lease. It revokes admission
+// @formal reason: before TERM/KILL/reap, retains handles across cancellation and leaves final physical
+// @formal reason: disposal to the Session Environment. Bytes do not grant tool authority.
 //! Attempt-local MCP bytes over the Session's existing attached process channel.
 //! Tool execution and approval remain in the original guarded export set.
 

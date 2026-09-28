@@ -1,3 +1,12 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: Repository method adapters over RepositoryApplicationService;
+// @formal reason: awaken-protocol-awaken owns the single extension route factory and request/response
+// @formal reason: DTOs. Dynamic path: the injected methods require the trusted Workspace extension and
+// @formal reason: idempotency key, delegate create/list/get to the existing Resource application, and
+// @formal reason: preserve pagination and error projection. The adjacent repository_api_http suite uses
+// @formal reason: the real composed router and SQLite registry with credential-decision fixtures. This
+// @formal reason: product classification does not prove upstream IAM, real Vault admission, remote Git
+// @formal reason: access or universal async/SQL behavior.
 //! Awaken-owned reusable Repository authoring, not an Anthropic SDK endpoint.
 //! Trusted Workspace and IAM admission come from the existing edge; no secrets
 //! enter this adapter, and authoring success does not assert remote Git access.

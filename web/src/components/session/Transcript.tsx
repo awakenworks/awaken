@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.ui_adapters.stream_projection
+// @formal reason: Transcript rendering consumes projected stream state; perception and rendering are not
+// @formal reason: formally proved.
 import { ClipboardCheck, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, ChatApproval, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard as SharedToolCallCard } from "@awaken/ui";
 // The session transcript: a pure view over one SessionLog owner, with inline

@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_tools.private_registry
+// @formal reason: The management assistant invokes private tools through browser state; tool privacy is
+// @formal reason: enforced server-side.
 import { ArrowRight, Check, Info, LoaderCircle } from "@awaken/ui/icons";
 import { InlineNotice, Skeleton, Button, Card, ChatComposer } from "@awaken/ui";
 

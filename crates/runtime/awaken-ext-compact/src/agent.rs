@@ -1,3 +1,6 @@
+// @formal surface obligation=compaction.fold_preserves_suffix
+// @formal surface obligation=compaction.trigger_is_total
+// @formal reason: Static compaction Agent used by the proved fold/trigger behavior.
 //! The compactor agent: id, summary instructions, its default config, and the
 //! per-run summarize prompt.
 

@@ -1,3 +1,6 @@
+// @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
+// @formal reason: This source implements the repository-controlled ingress product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Durable run dispatch: the dispatch/server host above the runtime core.
 //!
 //! Direct attempts and durable delivery are intentionally different shapes

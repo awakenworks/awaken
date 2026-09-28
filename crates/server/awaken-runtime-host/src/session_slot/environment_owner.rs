@@ -1,3 +1,6 @@
+// @formal surface obligation=session_environment.owner_topology_is_exact_and_frozen
+// @formal reason: Defines the single process-local Environment ownership value consumed by lifecycle
+// @formal reason: transitions; it adds no durable state, registry, cache, or parallel owner.
 //! Strong process-local ownership state for one Session Environment.
 
 use std::sync::Arc;

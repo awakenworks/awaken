@@ -1,3 +1,7 @@
+// @formal surface exclude=contract_documentation
+// @formal owner crates/control/awaken-admin-config-api/tests/openapi_contract.rs
+// @formal reason: Emits OpenAPI and JSON Schema documentation from already-defined wire types; real router
+// @formal reason: conformance is checked against the generated registry and no request is admitted here.
 //! OpenAPI 3.1 contract emission for the admin config plane (ADR-0043),
 //! mirroring oversight-next's hand-assembled registry: schemas come from the
 //! same schemars derives as `export_schemas` (one schema SSOT), and each route

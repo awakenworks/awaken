@@ -1,3 +1,8 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Static owner: claim-fenced Session execution port. Dynamic path: a Worker may read or
+// @formal reason: mutate Session execution state only through the exact claimed dispatch snapshot and
+// @formal reason: epoch. Evidence: worker.remote_execution.remote_protocol and claimed-worker conformance
+// @formal reason: tests; this is a product-requirement classification, not a direct proof claim.
 //! Claim-fenced bridge from Worker execution to the Session application.
 //!
 //! The bridge owns only the dispatch claim envelope. The Coordinator transport

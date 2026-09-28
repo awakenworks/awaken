@@ -1,3 +1,13 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the sole bounded request-local scheduler shared by existing Session Event
+// @formal reason: and Resource recovery phases. Dynamic path: it polls independent durable root candidates
+// @formal reason: up to the phase-owned bound, preserves stable report order, joins every future before
+// @formal reason: the next phase, and drops all in-flight work with its caller; each mapped reconciler
+// @formal reason: still reloads current root truth and owns FIFO, CAS, effect fencing, retry and
+// @formal reason: settlement. Evidence: session.lifecycle.session_state plus the adjacent Event/Resource
+// @formal reason: bound, slow-root, failure-order and cancellation decision table. This is executable
+// @formal reason: scheduling evidence, not a proof of Tokio fairness, database isolation, external-effect
+// @formal reason: liveness or latency.
 //! Bounded iteration for independent roots within one Session recovery phase.
 
 use std::future::Future;

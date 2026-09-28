@@ -1,3 +1,9 @@
+// @formal surface obligation=sandbox.admission_never_weakens_isolation
+// @formal surface obligation=sandbox.admission_requires_requested_capabilities
+// @formal surface obligation=external.container_and_kernel_isolation
+// @formal reason: The Kubernetes adapter accepts only the exact digest-pinned sidecar, private mount,
+// @formal reason: token-disabled namespace shape, ready Pod UID, and owner fence before control-channel
+// @formal reason: establishment.
 //! Exact Kubernetes projection and incarnation fence for Sandbox control.
 
 use super::*;

@@ -1,3 +1,7 @@
+// @formal surface obligation=remote_attempt.recovery_reattaches_without_resending
+// @formal surface obligation=remote_attempt.replay_uses_stable_message_identity
+// @formal surface obligation=remote_attempt.terminal_commit_retires_task_reference
+// @formal reason: A2A task/application state implementation.
 //! Router-scoped A2A task projections, live subscribers, and push subscriptions.
 //!
 //! Runtime truth remains behind `RunApplication`; this state only caches the A2A

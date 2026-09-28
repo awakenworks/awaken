@@ -1,3 +1,13 @@
+// @formal surface obligation=acp.process_cleanup_requires_observed_exit_and_retained_owner
+// @formal reason: Static owner: the one exec-attempt identity for the Container tier - the enumerable
+// @formal reason: in-container pid-file path every backend wrapper writes, the shell that lists and
+// @formal reason: signals those records, and the in-process set naming attempts whose spawn was dropped
+// @formal reason: unsettled. Dynamic path: an attempt is counted before its ClaimedEffect can be polled,
+// @formal reason: retention records it only on an unsettled drop, and disposal reaps by enumerating the
+// @formal reason: container own pid files before Secret write-back or Memory harvest reads the workspace;
+// @formal reason: a failed reap keeps the record and fails disposal. Signal delivery and container-side
+// @formal reason: shell behaviour are real process effects covered by the cancellation tests and the
+// @formal reason: feature-gated backend suites, not by a direct proof.
 //! Exec attempt identity: where a started process records itself, and who is
 //! on record when a caller is cancelled before it ever holds the process.
 //!

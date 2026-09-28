@@ -1,3 +1,6 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: Model discovery queries supply route choices but do not establish provider health or
+// @formal reason: exact execution.
 // Which models the workspace can actually run. The server owns the Catalog ×
 // Credential readiness join; pickers consume that projection without rebuilding
 // provider compatibility rules in the browser.

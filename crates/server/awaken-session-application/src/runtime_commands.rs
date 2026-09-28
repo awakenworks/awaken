@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.pending_input_delegation.delegation_delivery
+// @formal reason: This source implements the repository-controlled delegation product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Protocol-neutral Session command/query surface.
 //!
 //! The application owns access to Runtime and the aggregate repository. Public

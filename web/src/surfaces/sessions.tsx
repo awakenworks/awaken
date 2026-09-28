@@ -1,4 +1,7 @@
 // @formal evidence session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Session inventory and creation mutations are browser adapters over the Session
+// @formal reason: lifecycle.
 import { ArrowRight, ExternalLink, Info, Plus, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 

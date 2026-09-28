@@ -1,3 +1,6 @@
+// @formal surface obligation=remote_worker.operation_identity_maps_to_one_hash_and_append
+// @formal surface obligation=remote_worker.stale_epoch_never_mutates_truth
+// @formal reason: Worker client for claim-fenced commits.
 //! Database-less Worker's atomic claimed-commit HTTP client.
 
 use std::sync::Arc;

@@ -1,3 +1,8 @@
+// @formal surface obligation=remote_attempt.recovery_reattaches_without_resending
+// @formal surface obligation=remote_attempt.resume_preserves_context_and_task_reference
+// @formal surface obligation=remote_attempt.terminal_commit_retires_task_reference
+// @formal surface obligation=delegation.remote_cancel_redelivery
+// @formal reason: Remote A2A attempt task lifecycle and exact cancellation observation driver.
 //! The one owned A2A observation/cancellation path; never spawn cleanup on drop.
 
 use std::future::Future;

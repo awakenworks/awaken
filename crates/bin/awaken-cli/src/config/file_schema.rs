@@ -1,3 +1,10 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: Static owner: the closed external TOML shape consumed by the existing CLI configuration
+// @formal reason: assembly. Dynamic path: deployment input is deserialized with unknown fields denied and
+// @formal reason: then handed to the parent resolver; this schema owns no authorization, secret
+// @formal reason: materialization, storage, or parallel runtime state. Evidence:
+// @formal reason: assembly.binary_roles.role_assembly; this is a product-requirement classification, not a
+// @formal reason: direct formal-proof claim.
 //! Deserialized deployment-file schema.
 //!
 //! This module owns only the external TOML shape. Resolution, validation, and

@@ -1,3 +1,7 @@
+// @formal surface obligation=session.cleanup_completion_requires_exact_identity_and_canonical_artifact_evidence
+// @formal reason: This receipt canonicalizer calls the production cleanup-admission kernel covered by the
+// @formal reason: existing Kani harness, preserves exact restore-target binding, and collapses legacy
+// @formal reason: bundle evidence into the one current aggregate completion.
 //! Exact per-thread completion evidence for the terminal cleanup operation.
 //!
 //! This module owns receipt canonicalization only. Cleanup phase authority and

@@ -1,3 +1,7 @@
+// @formal surface exclude=application_adapter
+// @formal owner crates/server/awaken-session-application/src/creation.rs
+// @formal reason: Forwards Environment queries and resolution to the canonical SessionApplication, only
+// @formal reason: translating its error and return shape.
 //! Session Environment resolution through the Coordinator application port.
 
 use super::*;

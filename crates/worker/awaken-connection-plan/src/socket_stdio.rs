@@ -1,3 +1,7 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Connection-plan bridges attached stdio and an exact Unix rendezvous with half-close
+// @formal reason: semantics. Socket cleanup compares device/inode before unlink, admission is bounded, and
+// @formal reason: physical owner EOF revokes peers; application state remains above the byte channel.
 //! One attempt-local Unix rendezvous over an existing attached process channel.
 //! Carries opaque bytes; MCP/ACP, tools, permissions and credentials stay above it.
 

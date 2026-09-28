@@ -1,3 +1,5 @@
+// @formal surface obligation=compaction.trigger_is_total
+// @formal reason: Validated trigger configuration consumed by the total compaction predicate.
 //! The `compact` config section: when to compact and how much tail to keep.
 
 use serde::{Deserialize, Serialize};

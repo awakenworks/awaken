@@ -1,3 +1,6 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: This source implements the repository-controlled routing product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Model catalog — the management-plane config store answering "what models
 //! exist and through which provider/endpoint are they reachable" (ADR-0043,
 //! ADR-0088 style, agents bucket). Declarative, orthogonal to execution: this

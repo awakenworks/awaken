@@ -1,3 +1,7 @@
+// @formal surface obligation=ingress.settle_fence
+// @formal surface obligation=ingress.pending_input_exactly_once
+// @formal surface obligation=run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
+// @formal reason: HTTP adapter for durable dispatch operations.
 //! Coordinator-owned HTTP interface for durable Session operations.
 
 use awaken_agent_contract::agent::content::extract_text;

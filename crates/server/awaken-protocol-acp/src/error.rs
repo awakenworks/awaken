@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.acp.acp_normalization
+// @formal reason: This source implements the repository-controlled acp product boundary and is classified
+// @formal reason: against its product requirement; this link is not a formal-proof claim.
 //! ACP turn-failure classification (ported from oversight-next's
 //! `acp_event_source::failure_classification`, ADR-0056/0089 recognition).
 //!

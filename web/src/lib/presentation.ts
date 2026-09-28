@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Shared status, identifier, title, and time labels centralize human-facing projection
+// @formal reason: without selecting durable state or authority.
 import type { Locale } from "./app-state";
 
 const STATUS_LABELS: Record<string, [string, string]> = {

@@ -1,3 +1,5 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Sidebar route construction is part of the console workflow boundary.
 import { useLocation, useNavigate } from "react-router";
 import { navPath, visibleNavigation, type NavGroup, type NavItem } from "../../lib/navigation/paths";
 import { useApp } from "../../lib/app-state";

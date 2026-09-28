@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.executable_snapshots.immutable_snapshot
+// @formal reason: Environment authoring selects snapshot inputs; browser state does not prove immutable
+// @formal reason: execution.
 import { Info, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 // Workspace · Environments: the reusable execution templates sessions run in

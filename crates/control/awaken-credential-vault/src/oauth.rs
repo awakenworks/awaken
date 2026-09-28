@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: This source implements the repository-controlled credential lifecycle product boundary
+// @formal reason: and is classified against its product requirement; this link is not a formal-proof
+// @formal reason: claim.
 //! OAuth access-token acquisition (ADR-0043 Phase 3, feature `oauth-command`).
 //!
 //! An OAuth-backed provider credential's secret is a **short-lived Bearer token**

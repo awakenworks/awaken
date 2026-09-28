@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.builtin_tools.tool_registration
+// @formal reason: This source implements the repository-controlled builtin product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Official builtin tools.
 //!
 //! Concrete model-callable tool ids live here, not in `awaken-runtime`. The

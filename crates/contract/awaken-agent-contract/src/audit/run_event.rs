@@ -1,4 +1,8 @@
 // @formal evidence tool_result.resume_receipt_is_atomic_with_ticket_consumption
+// @formal surface exclude=projection_dto
+// @formal owner crates/contract/awaken-agent-contract/src/audit/run_event.rs
+// @formal reason: Typed audit-event product shape and lossless lowering into a draft payload; it observes
+// @formal reason: already-decided facts and cannot authorize or change Run state.
 //! The rich, typed domain event a run emits at its commit boundary.
 //!
 //! `RunEvent` is the authoritative producer-side vocabulary: each variant is a

@@ -1,3 +1,15 @@
+// @formal surface obligation=session_environment.owner_topology_is_exact_and_frozen
+// @formal surface obligation=session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal reason: Static owner: Runtime-host transition adapter over the single process-local Environment
+// @formal reason: owner retained in the Session slot. Dynamic path: preparation, durable adoption, and
+// @formal reason: publication all execute inside session_slots.update and delegate to that one owner; only
+// @formal reason: its hidden prepared candidate can be published after the aggregate binding sink returns
+// @formal reason: exact Store-read authority, while cleanup retry only consumes the owner's retirement
+// @formal reason: projection. This module adds no registry, lease authority, or parallel Environment
+// @formal reason: state. Evidence: session_environment.owner_topology_is_exact_and_frozen and adjacent
+// @formal reason: lifecycle tests. Optional scoped candidates bind the current Worker/Session authority
+// @formal reason: view at this same enrollment edge; selected-but-unbound terminal owners gain no
+// @formal reason: execution grant. The existing classification remains this file's sole surface mapping.
 //! Publication edge of the one Session Environment lifecycle owner.
 //!
 //! This is a private split of `environment_lifecycle`, not a second owner:

@@ -1,3 +1,7 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: The console's MCP debugging view: it drives the server-side inspection route and renders
+// @formal reason: what that route returned, without opening an MCP client of its own or persisting a probe
+// @formal reason: result. Classification only, not formal evidence.
 import { useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button, Card } from "@awaken/ui";

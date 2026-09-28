@@ -1,3 +1,7 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: The deployment authority carries and validates the exact expected platform Workspace
+// @formal reason: coordinate consumed by local and PostgreSQL continuity admission; this is an assembly
+// @formal reason: product-requirement classification, not a direct formal-proof claim.
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

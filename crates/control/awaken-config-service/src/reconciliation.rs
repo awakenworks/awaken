@@ -1,3 +1,7 @@
+// @formal surface obligation=config.publication_revision_is_scoped_by_execution_target_and_exact_replay
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal reason: The same ConfigService advances policy-bound authoring intent with CAS before publishing
+// @formal reason: a changed immutable executable fact, while exact replay reuses the existing revision.
 //! Policy-bound publication reconciliation.
 //!
 //! This remains an operation on [`ConfigService`]; the module split isolates

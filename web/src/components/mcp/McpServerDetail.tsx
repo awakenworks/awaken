@@ -1,3 +1,7 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Detail view of one authored MCP server — definition, default choices and binding preview
+// @formal reason: — all projected from the config plane it edits through. Classification only, not formal
+// @formal reason: evidence.
 import { useId, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Button, Card, InlineNotice } from "@awaken/ui";

@@ -1,3 +1,7 @@
+// @formal surface obligation=ingress.pending_input_exactly_once
+// @formal surface obligation=run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
+// @formal reason: PostgreSQL transactional pending-input idempotency and retry-exhaustion candidate
+// @formal reason: selection.
 //! Focused PostgreSQL transaction helpers shared by dispatch command paths.
 
 use awaken_agent_contract::agent::message::Message;

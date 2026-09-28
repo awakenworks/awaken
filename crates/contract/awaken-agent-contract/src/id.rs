@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: One process-scoped fallback identity generator serves protocol projections that lack
+// @formal reason: caller identity; it is explicitly not a durable idempotency authority.
 //! Process-scoped fallback identities shared by runtime and protocol adapters.
 //!
 //! These ids guarantee restart-unique values inside one deployment process.

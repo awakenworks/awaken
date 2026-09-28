@@ -1,3 +1,7 @@
+// @formal surface obligation=credential.visible_row_always_has_material
+// @formal surface obligation=credential.failed_create_compensates_material
+// @formal surface obligation=credential.rotation_revision_cas
+// @formal reason: MCP credential aggregate repository path.
 //! Hosted application MCP bearer commands over the credential aggregate.
 
 use std::collections::BTreeMap;

@@ -1,3 +1,5 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: File upload, listing, routing, and deletion cross the browser/file effect boundary.
 import { ArrowDown, ArrowRight, ChevronDown, Plus } from "@awaken/ui/icons";
 import { Button, SegmentedControl as Segmented } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

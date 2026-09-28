@@ -1,3 +1,11 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: Static owner: the sole anti-corruption boundary for Cloud-owned Workspace data manifest
+// @formal reason: and access-lease facts. Dynamic path: the stable manifest and time-bounded lease must
+// @formal reason: agree on Workspace, backing, shard, data epoch, runtime incarnation, placement epoch,
+// @formal reason: grant state, and validity before the existing storage port is constructed; failure
+// @formal reason: occurs before credential or network access. Evidence:
+// @formal reason: runtime.permission.authority_never_widens and adjacent cause-effect tests; this is a
+// @formal reason: product-requirement classification, not a direct formal-proof claim.
 //! Anti-corruption boundary for Cloud-owned Workspace data authority.
 //!
 //! The stable manifest identifies durable data independently from a Cell. The

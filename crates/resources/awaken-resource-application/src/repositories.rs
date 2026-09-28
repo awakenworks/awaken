@@ -1,3 +1,11 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: reusable Repository authoring over the single ResourceRegistry and
+// @formal reason: RepositoryCredentialValidator. Dynamic path: validate the request key, HTTPS URL and Git
+// @formal reason: inputs, admit any credential binding before registration, then delegate exact replay and
+// @formal reason: durable config ownership to the registry; scoped list/get exclude Session-owned
+// @formal reason: definitions. Adjacent decision-table tests cover rejection before writes, conflicting
+// @formal reason: replay, retirement and Workspace isolation. URL parsing, real credential admission and
+// @formal reason: database transaction refinement remain unproved by this product classification.
 //! One authoring path over the existing registry, independent of Session lifetime.
 
 use std::sync::Arc;

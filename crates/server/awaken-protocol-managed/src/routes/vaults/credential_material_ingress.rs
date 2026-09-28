@@ -1,3 +1,12 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: Static owner: generic write-only Credential material projection over the canonical
+// @formal reason: VaultState. Dynamic path: a consumer supplies provider, target, usage, and typed
+// @formal reason: material; the adapter delegates idempotent creation, exact-revision rotation, and
+// @formal reason: retirement to the existing Vault WAL and CAS, and accepts response-loss replay only for
+// @formal reason: one-ahead active byte-identical material. Evidence:
+// @formal reason: credential.lifecycle.credential_lifecycle and the adjacent consumer-neutral ingress
+// @formal reason: decision-table test; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Generic write-only Credential material ingress over the canonical Vault.
 //!
 //! This adapter owns no consumer configuration, material, or source state. It

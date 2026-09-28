@@ -1,3 +1,8 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: FileCatalog owns complete output capture. The canonical reducer validates
+// @formal reason: Workspace/Session identity, nonwrapping revision, unique File ids and exact replay
+// @formal reason: before CAS; transport adapters verify the same receipt. It creates no second artifact
+// @formal reason: store.
 //! Complete output observations in the existing FileCatalog. These are File
 //! references, not another artifact store, execution ledger, or success claim.
 

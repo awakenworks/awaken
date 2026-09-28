@@ -1,3 +1,10 @@
+// @formal surface exclude=test_only
+// @formal owner crates/contract/awaken-provisioning-contract/src/lib.rs
+// @formal owner crates/contract/awaken-provisioning-contract/Cargo.toml
+// @formal reason: Static owner: one explicit revocable effect-authority fixture shared by provider tests.
+// @formal reason: Dynamic path: tests install, renew or revoke its finite grant; the module is compiled
+// @formal reason: only by cfg(any(test, feature = test-support)), not the default production graph. It is
+// @formal reason: not a production clock or a second Session authority.
 //! Explicit, revocable authority fixture shared by provider contract tests.
 //! This is not a production clock or an authority inferred from fence expiry.
 

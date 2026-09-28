@@ -1,3 +1,7 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: The admin Cloud-login surface projects the canonical IAM OAuth application state without
+// @formal reason: owning credentials or a second login state machine; this is product-boundary
+// @formal reason: classification, not a direct formal-proof claim.
 //! Secret-free HTTP coordination around IAM's canonical desktop OAuth flow.
 
 use std::sync::Arc;

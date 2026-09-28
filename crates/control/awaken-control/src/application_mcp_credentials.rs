@@ -1,3 +1,7 @@
+// @formal surface obligation=credential.visible_row_always_has_material
+// @formal surface obligation=credential.material_is_always_published_or_intent_tracked
+// @formal surface obligation=credential.rotation_revision_cas
+// @formal reason: Control application path for MCP credential creation/rotation.
 //! Awaken-owned hosted application credential admission.
 
 use std::sync::Arc;

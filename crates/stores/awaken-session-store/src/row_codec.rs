@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This source implements the repository-controlled store product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Canonical aggregate decoding shared by SQLite and PostgreSQL.
 //!
 //! The aggregate is the sole durable Session model. Indexed SQL columns are

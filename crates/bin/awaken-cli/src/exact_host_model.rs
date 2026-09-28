@@ -1,3 +1,5 @@
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal reason: Exact scenario-host binding is publication-time inference access resolution.
 //! Exact host-executor publication resolution for deterministic deployments.
 //!
 //! Provider-backed and hosted deployments use their own injected resolvers.

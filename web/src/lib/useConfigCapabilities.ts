@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Configuration capability queries drive authoring availability only and cannot widen
+// @formal reason: runtime authority.
 import { useQuery } from "@tanstack/react-query";
 import type { ConfigCapabilitiesView } from "./api/types";
 import { api, ws } from "./api/client";

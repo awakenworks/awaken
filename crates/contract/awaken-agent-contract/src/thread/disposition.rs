@@ -1,3 +1,9 @@
+// @formal surface requirement=session.multiagent.thread_authority
+// @formal reason: Static owner: canonical durable Thread disposition vocabulary. Dynamic path:
+// @formal reason: child-thread terminal and archive commands project one durable disposition through
+// @formal reason: replay and recovery. Evidence: session.multiagent.thread_authority and its managed
+// @formal reason: projection and terminal-state tests; this is a product-requirement classification, not a
+// @formal reason: direct proof claim.
 //! Durable disposition of one logical Thread.
 //!
 //! A Thread remains the persistence aggregate.  Archiving is therefore one

@@ -1,3 +1,6 @@
+// @formal surface obligation=sandbox.k8s_process_observation_requires_complete_exit
+// @formal reason: The canonical Registry codec validates and persists the exact non-secret Worker
+// @formal reason: process-exit receipt consumed before provider evidence release.
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, WorkerIdentity, WorkerProcessExit, WorkerSnapshot,
 };

@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Cloud IAM configuration rejects inline server credentials, selects the exact projected
+// @formal reason: holder, and redacts credential values; this is product-boundary classification, not a
+// @formal reason: direct formal-proof claim.
 use std::path::PathBuf;
 
 use super::{FileConfig, OperatingMode};

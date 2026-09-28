@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.executable_snapshots.immutable_snapshot
+// @formal reason: This source implements the repository-controlled snapshot product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Config resolver (ADR-0043) — the management plane's *read/resolution face*.
 //! It owns **no aggregate**; it reads the config stores (`awaken-model-catalog`,
 //! `awaken-credential-vault`, and — in the assembly — agent config). Agent

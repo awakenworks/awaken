@@ -1,3 +1,7 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: Projects only already-materialized neutral content into the exact Anthropic dialect and
+// @formal reason: rejects logical File references or unsupported nested protocol blocks; this is
+// @formal reason: product-requirement classification, not a formal-proof claim.
 //! Anthropic-native content projection within the canonical genai adapter.
 //!
 //! `ContentBlock` remains the neutral source of truth. This module owns only

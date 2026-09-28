@@ -1,3 +1,7 @@
+// @formal surface requirement=runtime.executable_snapshots.immutable_snapshot
+// @formal reason: The one read-only structural verifier binds the exact immutable package ConfigMap, Job,
+// @formal reason: Pod, image digest, and Sandbox evidence without owning durable build state or secret
+// @formal reason: material; this is product-boundary classification, not a direct proof claim.
 //! Canonical Kubernetes package-image realization evidence.
 //!
 //! The Kubernetes package builder and every external observer share this one

@@ -1,3 +1,8 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: Extends the canonical durable MCP aggregate with the exact Active-generation quiescence
+// @formal reason: set and atomically invalidates only publication acknowledgement after Runtime proof; it
+// @formal reason: adds no second MCP owner or lifecycle, and this is product-boundary classification
+// @formal reason: rather than a direct formal-proof claim.
 //! Session Environment quiescence over the canonical durable MCP aggregate.
 
 use super::*;

@@ -1,3 +1,9 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: neutral ACP Session configuration and portable workspace-relative
+// @formal reason: working-directory validation. Dynamic path: publication and Host realization consume
+// @formal reason: this closed value while the selected ACP capability descriptor and Session workspace
+// @formal reason: remain authoritative; this introduces no second capability or filesystem authorization
+// @formal reason: owner and is not a direct formal-proof claim.
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

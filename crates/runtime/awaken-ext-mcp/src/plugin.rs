@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: This source implements the repository-controlled mcp product boundary and is classified
+// @formal reason: against its product requirement; this link is not a formal-proof claim.
 //! MCP as a runtime plugin.
 //!
 //! [`McpServer`] connects to a server, holds its live tool registry, and starts

@@ -1,3 +1,8 @@
+// @formal surface requirement=runtime.agent_loop.runtime_execution
+// @formal reason: Static owner: runtime-host Run recovery and input projection. Dynamic path: committed
+// @formal reason: Run and Thread facts select the exact resume state supplied to the Agent loop after
+// @formal reason: start or recovery. Evidence: runtime.agent_loop.runtime_execution and runtime-host
+// @formal reason: recovery tests; this is a product-requirement classification, not a direct proof claim.
 //! Pure projections used by Run recovery, delegation, and resume delivery.
 
 use super::*;

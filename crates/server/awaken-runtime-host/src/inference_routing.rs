@@ -1,3 +1,6 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: This source implements the repository-controlled routing product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Per-thread model binding and snapshot-access materialization (R1/R2).
 //!
 //! The host once held a single fixed `LlmExecutor`; this module lifts that to a

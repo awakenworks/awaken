@@ -1,3 +1,11 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Static owner: the container provider's own durable handle payload codec (container
+// @formal reason: locator, Kubernetes Pod/claim continuation, HostBind restore locator, control
+// @formal reason: incarnation) moved out of the neutral provisioning contract unchanged. Dynamic path:
+// @formal reason: accessors decode only the container schema, fail closed on another provider or malformed
+// @formal reason: payload, and keep the historical physical-incarnation and adoption-fingerprint
+// @formal reason: decisions; historical-wire decision tables qualify the bytes. It adds no adoption,
+// @formal reason: disposal or authorization decision and is not a direct formal-proof claim.
 //! Durable handle payloads owned by the container provider (Docker, Podman and
 //! Kubernetes runtimes).
 //!

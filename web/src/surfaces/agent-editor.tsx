@@ -1,3 +1,5 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: The Agent editor coordinates profile reads, drafts, routes, and publication mutations.
 import McpAgentPicker from "../components/mcp/McpAgentPicker";
 import { Tabs, TabPanel } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

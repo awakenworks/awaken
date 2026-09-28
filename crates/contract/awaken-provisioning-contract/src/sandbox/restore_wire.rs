@@ -1,3 +1,7 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Reader-first restoration evidence is a closed, secret-free compatibility envelope;
+// @formal reason: current constructors cannot write it, and provider activation remains behind the
+// @formal reason: existing Sandbox capability boundary.
 //! Reader-first wire evidence for a future exact physical restore target.
 
 use serde::{Deserialize, Serialize};

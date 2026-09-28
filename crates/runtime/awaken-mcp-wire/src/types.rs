@@ -1,3 +1,7 @@
+// @formal surface exclude=wire_dto
+// @formal owner crates/runtime/awaken-mcp-wire/src/types.rs
+// @formal reason: MCP protocol serde shapes, errors, and field-preserving constructors only; JSON-RPC
+// @formal reason: state and transport behavior live in separate modules.
 //! MCP wire DTOs shared by the client and server adapters.
 //!
 //! These are protocol values, not an SDK abstraction. Keeping them here prevents

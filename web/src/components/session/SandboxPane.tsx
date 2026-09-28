@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.shared_state.logical_addressing
+// @formal reason: Sandbox application scope and mutations are UI projections of externally enforced
+// @formal reason: resources.
 import { ArrowRight, RefreshCw, TriangleAlert, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard, type ToolCallTone } from "@awaken/ui";
 // In-editor Live Preview over the official Vercel AI SDK and AG-UI clients. The

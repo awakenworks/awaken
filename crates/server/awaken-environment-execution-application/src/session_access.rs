@@ -1,3 +1,10 @@
+// @formal surface requirement=session.managed_worker.work_authority
+// @formal reason: Static owner: the single issuer and verifier derivation of the per-Session Work bearer
+// @formal reason: returned by poll; it generates cleartext from the platform CSPRNG and derives the v1
+// @formal reason: digest, and persists nothing. Dynamic path: the WorkQueue binds only that digest to the
+// @formal reason: new lease epoch in the claim transaction and later resolves a presented digest to the
+// @formal reason: exact live lease, so reclaim, stop or retirement fences the bearer; a known-answer test
+// @formal reason: pins digest compatibility with already stored leases.
 //! Issuance of per-Session Work bearers.
 //!
 //! The Environment execution application is the one issuer and verifier of

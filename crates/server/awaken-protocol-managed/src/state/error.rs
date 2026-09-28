@@ -1,3 +1,6 @@
+// @formal surface requirement=platform.resilience.failure_safety
+// @formal reason: This source implements the repository-controlled resilience product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Managed Session command failures and their protocol-facing classification.
 
 use awaken_session_error_contract::{RunError, RunErrorKind};

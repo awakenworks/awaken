@@ -1,3 +1,8 @@
+// @formal surface obligation=session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal reason: The existing neutral timing policy now owns request-anchored elapsed arithmetic.
+// @formal reason: WorkerExecutionAuthority abstracts expiry and regressed response rejection; adjacent
+// @formal reason: Rust decision tables check exact submillisecond subtraction and scheduler independence.
+// @formal reason: No lease, clock I/O, cross-host clock correspondence, or Rust refinement is claimed.
 //! Process-local timing policy for proving a durable lease remains owned.
 //!
 //! The durable store remains the only lease authority. This value object only

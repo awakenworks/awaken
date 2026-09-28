@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Webhook subscription CRUD, one-time secret display, and delivery-health rendering are
+// @formal reason: console workflows; the browser neither emits nor proves committed delivery.
 import { ExternalLink, KeyRound, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

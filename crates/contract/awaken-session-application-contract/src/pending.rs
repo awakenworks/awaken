@@ -1,3 +1,8 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the one externally answerable Pending projection. Dynamic path: warm
+// @formal reason: resume tickets and cold committed Await targets pass through the same closed decoder, so
+// @formal reason: adapters cannot create a parallel pending classification or store; this is a
+// @formal reason: product-requirement classification, not a direct formal-proof claim.
 //! Projection of one externally answerable committed await target.
 
 /// The tool a run awaits: its id, model-visible name/input, and whether it is

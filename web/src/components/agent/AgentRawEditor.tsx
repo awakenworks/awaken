@@ -1,3 +1,5 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: The raw editor accepts open JSON profile input, an explicitly unbounded DTO boundary.
 import { Braces } from "@awaken/ui/icons";
 import { InlineNotice } from "@awaken/ui";
 // Lossless escape hatch modelled after Oversight's workflow JSON view: every field

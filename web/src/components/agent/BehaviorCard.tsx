@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.workflow_extension.workflow_state
+// @formal reason: Behavior controls author workflow policy fields; browser state is not a checked
+// @formal reason: transition proof.
 import { Sparkles, TriangleAlert } from "@awaken/ui/icons";
 import { InlineNotice, Card, Switch } from "@awaken/ui";
 // One runtime behavior as a named card (agent-editor Behavior section): a title +

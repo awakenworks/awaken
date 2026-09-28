@@ -1,3 +1,8 @@
+// @formal surface obligation=authz.decision_collapse_fail_closed
+// @formal surface obligation=work.lease_authority_snapshot_and_owner_mutations_are_atomic
+// @formal reason: Consumes only the complete proof stamped by the outer Work lease guard and prevents
+// @formal reason: reinterpretation as a management credential; it owns no token validation or route
+// @formal reason: policy.
 //! Consumption of the complete proof stamped by the outer Work capability edge.
 //!
 //! This module owns no token validation or route policy. It only prevents the

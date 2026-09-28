@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Capability queries expose observed deployment facts; the hook is not an enforcement
+// @formal reason: proof.
 // The capability snapshot hook: host-level tools + installable plugins (with
 // config schemas), addressed uniformly through ws() like every management call.
 // Runtime readiness is live Worker observation; poll while the UI is open so a

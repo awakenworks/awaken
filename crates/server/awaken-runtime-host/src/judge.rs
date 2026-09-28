@@ -1,3 +1,6 @@
+// @formal surface requirement=analytics.eval.evaluation
+// @formal reason: This source implements the repository-controlled eval product boundary and is classified
+// @formal reason: against its product requirement; this link is not a formal-proof claim.
 //! Host adapter for ordinary auxiliary Agent Runs used by compaction and Memory.
 
 use std::sync::Arc;

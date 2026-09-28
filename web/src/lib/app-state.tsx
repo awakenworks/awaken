@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Global Workspace, route, storage, and capability state is a central console workflow
+// @formal reason: boundary.
 // App-level presentation state. Workspace is a route/credential scope, not a
 // client-authored aggregate: without a server registry the local console exposes
 // exactly the configured scope and never invents a parallel roster.

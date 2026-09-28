@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This source implements the repository-controlled store product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Postgres backend (`postgres` feature): content-addressed blobs in a `bytea`
 //! column. `put` is an idempotent `INSERT ... ON CONFLICT (id) DO NOTHING`, matching
 //! the immutable/dedup contract. Compile-verified; running needs a database.

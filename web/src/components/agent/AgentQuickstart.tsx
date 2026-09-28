@@ -1,3 +1,6 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Quickstart creates an Agent profile through browser state and requests; this is not
+// @formal reason: proof evidence.
 import VaultPicker from "../session/VaultPicker";
 import { ArrowRight, Check, Circle, Info } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";

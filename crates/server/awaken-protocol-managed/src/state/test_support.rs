@@ -1,3 +1,7 @@
+// @formal surface exclude=test_only
+// @formal owner crates/server/awaken-protocol-managed/src/state/tests/mod.rs
+// @formal reason: Managed-state fixtures and fake runtime compiled only through the test-gated parent
+// @formal reason: module.
 //! Shared Managed-state test fixtures.
 //!
 //! These fixtures serve rehydration, deployment-session, and activity tests.

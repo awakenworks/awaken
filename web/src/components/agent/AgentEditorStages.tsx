@@ -1,3 +1,5 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Editor stages select profile authoring state; this is product classification only.
 import type {
   AgentConfig,
   AgentToolsetCap,

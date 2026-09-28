@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: This read-only wire DTO projects the canonical Session application and committed Run
+// @formal reason: facts; it owns no mutation or execution authority, and this product-requirement link is
+// @formal reason: not a formal-proof claim.
 //! Read-only Awaken extension for exact Session execution evidence.
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};

@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: The sole fetch/storage/Workspace routing seam is security-significant browser code and
+// @formal reason: not currently Rust/Kani-proved.
 import { EventSource as FetchEventSource } from "eventsource";
 // The ONLY module that touches fetch (enforced by web/scripts/lint.mjs).
 // Injects the IAM bearer, and maps both error dialects the host speaks:

@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.pending_input_delegation.delegation_delivery
+// @formal reason: The collaboration editor authors delegation relationships and routes; UI tests do not
+// @formal reason: prove delivery semantics.
 import { ExternalLink, Info, Plus, TriangleAlert, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, Switch } from "@awaken/ui";
 import { useEffect, useMemo, useState } from "react";

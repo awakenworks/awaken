@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.plugin_activation.capability_bound
+// @formal reason: This source implements the repository-controlled plugin product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Publication-side port for extension-owned configuration resolution.
 //!
 //! JSON Schema drives discovery and forms; the extension remains the semantic

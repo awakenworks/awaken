@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: This source implements the repository-controlled mcp product boundary and is classified
+// @formal reason: against its product requirement; this link is not a formal-proof claim.
 //! A minimal JSON-RPC 2.0 peer over an async byte stream.
 //!
 //! The MCP SDK's client transport only resolves numeric-id responses and drops

@@ -1,3 +1,11 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/stores/awaken-store-conformance/Cargo.toml
+// @formal owner crates/stores/awaken-resource-store/src/lib.rs
+// @formal owner crates/stores/awaken-resource-store/tests/postgres_registry.rs
+// @formal reason: The existing store-conformance tooling crate owns one backend-neutral Resource purge and
+// @formal reason: reverse-reference decision table, moved from the SQLite unit test and now executed by
+// @formal reason: SQLite and PostgreSQL. It performs assertions against the Resource contract but owns no
+// @formal reason: production authorization, persistence, or reclamation effect.
 //! Shared Resource purge and reverse-reference lifecycle laws for every durable backend.
 //! Adapter tests add restart and physical concurrency checks for their own medium.
 

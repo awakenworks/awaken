@@ -1,3 +1,12 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: Static owner: CLI-private admission reuses the sole local platform-workspace-id plus
+// @formal reason: canonical Session schema and binds each role-owned PostgreSQL target to the deployment's
+// @formal reason: exact platform Workspace without another identity store. Dynamic path: Serve and Doctor
+// @formal reason: verify read-only; ordinary migration is exact-only, while explicit referenced
+// @formal reason: initialization or legacy adoption preflights local and remote targets before store
+// @formal reason: opening or component DDL. Evidence: assembly.binary_roles.role_assembly and adjacent
+// @formal reason: cause-effect tests; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Deployment-owned local and PostgreSQL installation identity fencing.
 //!
 //! Component stores retain their existing scoped ledgers and domain ownership.

@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: The complete browser route table defines reachable console workflows and is not in the
+// @formal reason: Rust proof surface.
 import { lazy } from "react";
 import { createBrowserRouter, Navigate } from "react-router";
 import AppShell from "./components/app/AppShell";

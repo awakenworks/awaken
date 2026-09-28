@@ -1,3 +1,8 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/server/awaken-worker-registry/tests/conformance.rs
+// @formal reason: Trait-generic WorkerDirectory conformance suite (ADR-0081 §7). It is a tooling-only test
+// @formal reason: library every backend's test target calls; no product crate links or invokes it, and it
+// @formal reason: admits nothing at runtime.
 //! Trait-generic conformance suite for the `WorkerDirectory` port (ADR-0081 §7).
 //!
 //! Each `assert_*` law takes an `Arc<dyn WorkerDirectory>`; a backend passes a

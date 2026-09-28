@@ -1,3 +1,7 @@
+// @formal surface obligation=session_execution.terminal_state_never_reopens
+// @formal surface obligation=session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
+// @formal surface obligation=checkpoint.terminal_completion_clears_resume
+// @formal reason: Terminal reconciliation from committed Run truth.
 //! Environment-free terminal dispatch control and reconciliation.
 //!
 //! Cancellation and committed-terminal repair share one boundary worker because

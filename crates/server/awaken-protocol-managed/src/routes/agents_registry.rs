@@ -1,3 +1,7 @@
+// @formal surface obligation=agent_profile.requested_revision_never_follows_mutable_current
+// @formal surface obligation=model_geography.every_attempt_candidate_requires_exact_processing_evidence
+// @formal reason: The storage-neutral Agent route preserves explicit immutable versions and invokes the
+// @formal reason: current Workspace geography policy before mutation.
 //! Managed Agent HTTP adapter (`/v1/agents`).
 //!
 //! The router is deliberately storage-neutral. Every process startup injects

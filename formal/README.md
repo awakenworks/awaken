@@ -960,7 +960,7 @@ The formal gate prints both current denominators and every evidence dimension
 on each run. This deliberately over-approximating inventory is not a claim that
 every signal in every listed file is itself a distinct proof obligation. A
 module may leave the uncovered set only through a ledger link or a reviewed
-`formal/surface-exclusions.json` boundary with a concrete reason. The strict
+`// @formal surface exclude=` line in its own head, with a reason. The strict
 targets remain zero uncovered source surfaces and zero executable-only
 formalizable obligations. The gate also compares the unique Kani harnesses in
 the source tree with the ledger; repeated ledger references are allowed only
