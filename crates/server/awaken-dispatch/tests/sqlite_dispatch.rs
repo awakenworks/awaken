@@ -450,7 +450,7 @@ async fn sqlite_dispatch_opens_a_file_and_persists() {
 
     let feed = SqliteDispatchStore::open(&path, clock.clock()).expect("open feed reader");
     let page = feed
-        .events_after(DispatchCursor(0), 10)
+        .events_after(DispatchCursor(0), 10, None)
         .await
         .expect("backfill persisted operations");
     assert!(matches!(

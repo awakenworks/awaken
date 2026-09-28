@@ -60,10 +60,10 @@
     },
     "awaken-dispatch-contract": {
       "depth": 7,
-      "production_lines": 2408,
+      "production_lines": 2412,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "The rebased operator-quarantine contract adds one shared occupied-slot decision used by Memory, SQLite, and PostgreSQL; no duplicate dispatch authority is introduced. Exact closing phase and two mandatory existing-queue verbs add 30 neutral lines to fence ordinary ACK/handoff before independent stop; all storage and classification behavior remains in the existing Coordinator owner.",
+        "production_lines": "Preserve the existing governed attempt closure contract and the exact Run selector on DispatchOperationalFeed; both reuse the canonical Dispatch owner.",
         "depth": "Removing the compatibility facade exposes direct domain-owner dependencies; retaining explicit state, realization, runtime, and ingress boundaries avoids a replacement aggregator."
       }
     },

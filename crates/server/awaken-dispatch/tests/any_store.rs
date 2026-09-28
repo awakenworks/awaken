@@ -13,7 +13,7 @@ mod resolution_failure;
 use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::run::RunState;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_dispatch::{
     AnyDispatchStore, DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchOutcome,
@@ -617,6 +617,9 @@ async fn any_delegates_inbox_append_idempotency() {
 
 #[tokio::test]
 async fn any_exposes_the_builtin_backends_operational_feed() {
+    // A1 global selection retains its fact; A2 exact Run retains the same
+    // identity; A3 unknown Run returns empty with unchanged cursor. Dropping
+    // the selector fails A3. The adjacent erased-adapter case owns A4.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = any_in_memory_with_clock(&clock);
     store
@@ -631,7 +634,7 @@ async fn any_exposes_the_builtin_backends_operational_feed() {
         .expect("runnable");
 
     let page = store
-        .events_after(DispatchCursor(0), 10)
+        .events_after(DispatchCursor(0), 10, None)
         .await
         .expect("built-in feed");
 
@@ -644,18 +647,45 @@ async fn any_exposes_the_builtin_backends_operational_feed() {
                     if claim.owner == "operations-owner"
             )
     ));
+    let scoped = store
+        .events_after(DispatchCursor(0), 1, Some(&RunId("operations-run".into())))
+        .await
+        .expect("A2 exact Run");
+    assert_eq!(scoped.events, page.events, "A2 identity");
+    let empty = store
+        .events_after(
+            DispatchCursor(0),
+            1,
+            Some(&RunId("operations-unknown".into())),
+        )
+        .await
+        .expect("A3 unknown Run");
+    assert!(empty.events.is_empty(), "A3");
+    assert_eq!(empty.next_cursor, DispatchCursor(0), "A3");
 }
 
 #[tokio::test]
 async fn any_fails_feed_reads_closed_for_a_dispatch_only_adapter() {
+    // A4: no operational source is installed. Both selectors fail; unsupported
+    // observation cannot become an empty successful read.
     let dispatch_only: Arc<dyn awaken_dispatch::Dispatch> = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
     let store = AnyDispatchStore::from_dispatch(dispatch_only);
 
     assert!(
-        store.events_after(DispatchCursor(0), 1).await.is_err(),
+        store
+            .events_after(DispatchCursor(0), 1, None)
+            .await
+            .is_err(),
         "an erased legacy adapter cannot pretend to expose durable operations"
+    );
+    assert!(
+        store
+            .events_after(DispatchCursor(0), 1, Some(&RunId("run".into())))
+            .await
+            .is_err(),
+        "A4 scoped reads cannot manufacture an absent feed"
     );
 }
 

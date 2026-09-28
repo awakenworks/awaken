@@ -359,6 +359,11 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 "close physical entry before independent domain stop",
                 PHYSICAL_ATTEMPT_CLOSING.trim(),
             )?,
+            portable_migration(
+                8,
+                "V0008__dispatch_operation_run_sequence.sql",
+                include_str!("migrations/V0008__dispatch_operation_run_sequence.sql"),
+            )?,
         ],
     )
 }
@@ -393,14 +398,15 @@ mod tests {
         // either historical ledger for this same bounded context, not an
         // independent component bundle. The generic linter cannot express an
         // inherited table owner, so this lint-only projection declares the one
-        // existing Dispatch table and then validates the exact V2 bodies. Real
+        // inherited Dispatch tables and then validates the exact new bodies. Real
         // SQLite/Postgres migration tests below execute V2 after both histories.
         let converged = converged_dispatch_bundle().expect("converged bundle builds");
         let mut lineage = vec![
             Migration::new(
                 1,
                 "declare inherited dispatch table ownership for lint",
-                "CREATE TABLE {prefix}_dispatch (run_id TEXT)",
+                "CREATE TABLE {prefix}_dispatch (run_id TEXT); \
+                 CREATE TABLE {prefix}_dispatch_operation (run_id TEXT, sequence BIGINT)",
             )
             .expect("lint owner marker"),
         ];
@@ -408,6 +414,75 @@ mod tests {
         let lineage = MigrationBundle::new("awaken.run_dispatch.converged_lint", lineage)
             .expect("lint lineage builds");
         awaken_scoped_migration::lint(&[lineage]).expect("converged lineage lints");
+    }
+
+    #[test]
+    fn scoped_operation_index_upgrades_both_histories_without_rewriting_facts() {
+        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
+        use rusqlite::{Connection, params};
+
+        // Migration decision table I1-I3. Causes: C1 compact/expanded published
+        // history; C2 converged V6 already applied; C3 one original operation;
+        // C4 repeated upgrade. I1=C1+C2+C3 => only V7 applies, preserving exact
+        // sequence, payload and time. I2=I1+exact Run query => composite index
+        // supplies ordered replay. I3=C4 => no new migration or fact mutation.
+        // This asserts access to the one log, never another replay projection.
+        for historical in [
+            dispatch_bundle().unwrap(),
+            expanded_dispatch_bundle().unwrap(),
+        ] {
+            let connection = Connection::open_in_memory().unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+            runner.run_bundle(&connection, &historical).unwrap();
+            let full = converged_dispatch_bundle().unwrap();
+            let previous =
+                MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..6].to_vec()).unwrap();
+            runner.run_bundle(&connection, &previous).unwrap();
+            let operation =
+                r#"{"type":"claimed","claim":{"run_id":"history","owner":"old","epoch":1}}"#;
+            connection
+                .execute(
+                    "INSERT INTO runtime_dispatch_operation \
+                     (sequence,run_id,operation,recorded_at_ms) VALUES (42,'history',?1,123)",
+                    params![operation],
+                )
+                .unwrap();
+            let applied = runner.run_bundle(&connection, &full).unwrap();
+            assert_eq!(
+                applied.iter().map(|row| row.version).collect::<Vec<_>>(),
+                [7],
+                "I1"
+            );
+            let observed: (i64, String, i64) = connection
+                .query_row(
+                    "SELECT sequence,operation,recorded_at_ms FROM runtime_dispatch_operation",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(observed, (42, operation.to_string(), 123), "I1");
+            let mut statement = connection
+                .prepare(
+                    "EXPLAIN QUERY PLAN SELECT sequence,recorded_at_ms,operation \
+                     FROM runtime_dispatch_operation WHERE sequence > ?1 AND run_id = ?3 \
+                     ORDER BY sequence LIMIT ?2",
+                )
+                .unwrap();
+            let plan = statement
+                .query_map(params![0, 1, "history"], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(
+                plan.iter()
+                    .any(|row| row.contains("runtime_dispatch_operation_run_sequence")),
+                "I2: {plan:?}"
+            );
+            assert!(
+                runner.run_bundle(&connection, &full).unwrap().is_empty(),
+                "I3"
+            );
+        }
     }
 
     #[test]

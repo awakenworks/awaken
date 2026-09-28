@@ -2570,7 +2570,10 @@ pub async fn assert_defer_claim_is_request_local<
             .unwrap(),
         SettleOutcome::Applied
     );
-    let operations = store.events_after(DispatchCursor(0), 10).await.unwrap();
+    let operations = store
+        .events_after(DispatchCursor(0), 10, None)
+        .await
+        .unwrap();
     assert!(operations.events.iter().any(|event| {
         matches!(
             &event.operation,
