@@ -46,19 +46,17 @@ impl ManagedState {
                     "activation_failed Session has no durable realization failure cause",
                 ))
             })?;
-        let id = managed_multiagent_event_id(
-            &record.session.id,
-            &record.session.id,
-            event_role::ACTIVATION_FAILED_ERROR,
-            ManagedMultiagentEventProvenance::ParentTerminal,
+        let key = awaken_managed_session_events::FactKey::new(
+            record.session.id.clone(),
+            awaken_managed_session_events::FactRole::ActivationFailedError,
+            awaken_managed_session_events::FactProvenance::ParentTerminal,
         );
-        record.append_event_once(Event {
-            id,
-            kind: OutboundKind::SessionError {
+        record.append_fact_once(
+            key,
+            OutboundKind::SessionError {
                 error: SessionError::classify(persisted.execution.as_str(), message),
             },
-            processed_at: None,
-        });
+        );
         Ok(())
     }
 }

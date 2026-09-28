@@ -1,35 +1,30 @@
 // @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 //! Canonical aggregate projections for one persisted Session runtime interval.
 
-use super::canonical_order::{
-    budget_reach_projection_close_cursor, interval_close_cursor, interval_lifecycle_open_event,
-    running_interval_lifecycle_open_event,
-};
 use super::*;
+use awaken_managed_session_events::{
+    FactKey, FactProvenance, FactRole, budget_reach_projection_close_cursor, interval_close_cursor,
+    interval_lifecycle_open_event, running_interval_lifecycle_open_event,
+};
 
 impl ManagedState {
-    pub(super) fn append_aggregate_running_once(record: &mut SessionRecord, id: String) {
-        record.append_event_once(Event {
-            id,
-            kind: OutboundKind::SessionStatusRunning {},
-            processed_at: None,
-        });
+    pub(super) fn append_aggregate_running_once(record: &mut SessionRecord, key: FactKey) {
+        record.append_fact_once(key, OutboundKind::SessionStatusRunning {});
     }
 
     pub(super) fn append_terminal_thread_running_once(
         record: &mut SessionRecord,
         terminal: &RunLifecycleEvent,
     ) {
-        let id = managed_multiagent_event_id(
-            &record.session.id,
-            &record.session.id,
-            event_role::ROOT_TERMINAL_STATUS_RUNNING,
-            ManagedMultiagentEventProvenance::Lifecycle {
+        let key = FactKey::new(
+            record.session.id.clone(),
+            FactRole::RootTerminalStatusRunning,
+            FactProvenance::Lifecycle {
                 cursor: terminal.cursor.0,
             },
         );
-        let event = primary_thread_status_event(record, id, PrimaryThreadStatusProjection::Running);
-        record.append_event_once(event);
+        let kind = primary_thread_status_kind(record, PrimaryThreadStatusProjection::Running);
+        record.append_fact_once(key, kind);
     }
 
     pub(super) fn replace_interval_aggregate_projections(
@@ -42,6 +37,22 @@ impl ManagedState {
         >,
         price_snapshot: Option<&awaken_session_budget_contract::ManagedListPriceSnapshot>,
     ) -> Result<(), StateError> {
+        let session_id = record.session.id.clone();
+        let aggregate = |role, provenance| FactKey::new(session_id.as_str(), role, provenance);
+        let lifecycle_running = |cursor: awaken_agent_contract::RunLifecycleCursor| {
+            aggregate(
+                FactRole::AggregateStatusRunning,
+                FactProvenance::Lifecycle { cursor: cursor.0 },
+            )
+        };
+        let interval_fact = |role, interval_id: &str| {
+            aggregate(
+                role,
+                FactProvenance::RuntimeInterval {
+                    interval_id: interval_id.to_string(),
+                },
+            )
+        };
         // Session-level Usage/Idle belongs to the root-owned interval, while
         // Running belongs to the exact lifecycle opening already visible to a
         // client. Closing an interval must never replace that issued cursor.
@@ -54,12 +65,12 @@ impl ManagedState {
                 .as_ref()
                 .is_some_and(|interval| interval.opened_revision.0 != 0);
         if has_interval_lineage {
-            let mut replaced_ids = std::collections::HashSet::new();
+            let mut replaced = Vec::new();
             let mut prior_close = 0;
             for interval in &persisted.closed_runtime_intervals {
                 let close = interval_close_cursor(interval).unwrap_or(prior_close);
                 let opening = interval_lifecycle_open_event(
-                    &record.session.id,
+                    &session_id,
                     interval,
                     prior_close,
                     &persisted.event_batches,
@@ -78,14 +89,7 @@ impl ManagedState {
                     if opening.is_some_and(|opening| opening.cursor == lifecycle.cursor) {
                         continue;
                     }
-                    replaced_ids.insert(managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        event_role::AGGREGATE_STATUS_RUNNING,
-                        ManagedMultiagentEventProvenance::Lifecycle {
-                            cursor: lifecycle.cursor.0,
-                        },
-                    ));
+                    replaced.push(lifecycle_running(lifecycle.cursor));
                 }
                 if let Some(terminal_cursor) = interval_lifecycle
                     .iter()
@@ -97,46 +101,27 @@ impl ManagedState {
                     .map(|event| event.cursor)
                     .max()
                 {
-                    for role in [
-                        event_role::AGGREGATE_USAGE,
-                        event_role::AGGREGATE_STATUS_IDLE,
-                    ] {
-                        replaced_ids.insert(managed_multiagent_event_id(
-                            &record.session.id,
-                            &record.session.id,
+                    for role in [FactRole::AggregateUsage, FactRole::AggregateStatusIdle] {
+                        replaced.push(aggregate(
                             role,
-                            ManagedMultiagentEventProvenance::LifecyclePrefix {
+                            FactProvenance::LifecyclePrefix {
                                 cursor: terminal_cursor.0,
                             },
                         ));
                     }
                 }
-                for role in [
-                    event_role::AGGREGATE_USAGE,
-                    event_role::AGGREGATE_STATUS_IDLE,
-                ] {
-                    replaced_ids.insert(managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        role,
-                        ManagedMultiagentEventProvenance::RuntimeInterval {
-                            interval_id: &interval.interval_id,
-                        },
-                    ));
+                for role in [FactRole::AggregateUsage, FactRole::AggregateStatusIdle] {
+                    replaced.push(interval_fact(role, &interval.interval_id));
                 }
-                replaced_ids.insert(managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    event_role::AGGREGATE_STATUS_RUNNING,
-                    ManagedMultiagentEventProvenance::RuntimeInterval {
-                        interval_id: &interval.interval_id,
-                    },
+                replaced.push(interval_fact(
+                    FactRole::AggregateStatusRunning,
+                    &interval.interval_id,
                 ));
                 prior_close = close;
             }
             if let Some(interval) = persisted.running_interval.as_ref()
                 && let Some(opening) = running_interval_lifecycle_open_event(
-                    &record.session.id,
+                    &session_id,
                     interval,
                     prior_close,
                     &persisted.event_batches,
@@ -147,24 +132,17 @@ impl ManagedState {
                     event.source_commit_cursor >= opening.source_commit_cursor
                         && event.cursor != opening.cursor
                 }) {
-                    replaced_ids.insert(managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        event_role::AGGREGATE_STATUS_RUNNING,
-                        ManagedMultiagentEventProvenance::Lifecycle {
-                            cursor: lifecycle.cursor.0,
-                        },
-                    ));
+                    replaced.push(lifecycle_running(lifecycle.cursor));
                 }
-                replaced_ids.insert(managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    event_role::AGGREGATE_STATUS_RUNNING,
-                    ManagedMultiagentEventProvenance::RuntimeInterval {
-                        interval_id: &interval.interval_id,
-                    },
+                replaced.push(interval_fact(
+                    FactRole::AggregateStatusRunning,
+                    &interval.interval_id,
                 ));
             }
+            let replaced_ids = replaced
+                .iter()
+                .map(|key| record.fact_id(key))
+                .collect::<std::collections::HashSet<_>>();
             record
                 .events
                 .retain(|event| !replaced_ids.contains(&event.id));
@@ -178,67 +156,42 @@ impl ManagedState {
                 prior_close = close;
                 continue;
             }
-            let running_id = interval_lifecycle_open_event(
-                &record.session.id,
+            let running = interval_lifecycle_open_event(
+                &session_id,
                 interval,
                 prior_close,
                 &persisted.event_batches,
                 lifecycle_events,
             )
-            .map(|opening| {
-                managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    event_role::AGGREGATE_STATUS_RUNNING,
-                    ManagedMultiagentEventProvenance::Lifecycle {
-                        cursor: opening.cursor.0,
-                    },
-                )
-            });
+            .map(|opening| lifecycle_running(opening.cursor));
             // A fast interval may commit only Awaiting/Ended. Its terminal-prefix
             // bracket was public before any later interval existed and must be
             // rebuilt on a cold reader using that same exact terminal, never a
             // Running commit beyond this interval's retained close.
-            if running_id.is_none()
+            if running.is_none()
                 && let Some(terminal) = interval.observations.iter().find_map(|observation| {
                     lifecycle_events.iter().find(|event| {
                         event.cursor == observation.lifecycle_cursor
                             && event.thread_id == observation.thread_id
                             && event.run_id == observation.run_id
-                            && event.thread_id.0 == record.session.id
+                            && event.thread_id.0 == session_id
                             && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(
                                 event.kind,
                             )
                     })
                 })
             {
-                let id = managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    event_role::AGGREGATE_TERMINAL_STATUS_RUNNING,
-                    ManagedMultiagentEventProvenance::LifecyclePrefix {
-                        cursor: terminal.cursor.0,
-                    },
+                Self::append_aggregate_running_once(
+                    record,
+                    aggregate(
+                        FactRole::AggregateTerminalStatusRunning,
+                        FactProvenance::LifecyclePrefix {
+                            cursor: terminal.cursor.0,
+                        },
+                    ),
                 );
-                Self::append_aggregate_running_once(record, id);
                 Self::append_terminal_thread_running_once(record, terminal);
             }
-            let usage_id = managed_multiagent_event_id(
-                &record.session.id,
-                &record.session.id,
-                event_role::AGGREGATE_USAGE,
-                ManagedMultiagentEventProvenance::RuntimeInterval {
-                    interval_id: &interval.interval_id,
-                },
-            );
-            let idle_id = managed_multiagent_event_id(
-                &record.session.id,
-                &record.session.id,
-                event_role::AGGREGATE_STATUS_IDLE,
-                ManagedMultiagentEventProvenance::RuntimeInterval {
-                    interval_id: &interval.interval_id,
-                },
-            );
             let mut usage = session_usage_value(
                 interval
                     .usage
@@ -271,7 +224,7 @@ impl ManagedState {
                     })
                 })
                 .map(|terminal| {
-                    let owner = (terminal.thread_id.0 != record.session.id)
+                    let owner = (terminal.thread_id.0 != session_id)
                         .then_some(terminal.thread_id.0.as_str());
                     Self::public_run_stop_reason(
                         record,
@@ -283,8 +236,8 @@ impl ManagedState {
                 })
                 .transpose()?
                 .unwrap_or(StopReason::EndTurn);
-            if let Some(running_id) = running_id {
-                Self::append_aggregate_running_once(record, running_id);
+            if let Some(running) = running {
+                Self::append_aggregate_running_once(record, running);
             }
             let budget_transition_owns_pause = matches!(stop_reason, StopReason::BudgetReached)
                 && persisted
@@ -302,18 +255,14 @@ impl ManagedState {
                 prior_close = close;
                 continue;
             }
-            record.events.extend([
-                Event {
-                    id: usage_id,
-                    kind: OutboundKind::SessionUsage { usage, budget },
-                    processed_at: None,
-                },
-                Event {
-                    id: idle_id,
-                    kind: OutboundKind::SessionStatusIdle { stop_reason },
-                    processed_at: None,
-                },
-            ]);
+            record.push_fact(
+                interval_fact(FactRole::AggregateUsage, &interval.interval_id),
+                OutboundKind::SessionUsage { usage, budget },
+            );
+            record.push_fact(
+                interval_fact(FactRole::AggregateStatusIdle, &interval.interval_id),
+                OutboundKind::SessionStatusIdle { stop_reason },
+            );
         }
         if let Some(interval) = persisted.running_interval.as_ref() {
             let prior_close = persisted
@@ -323,21 +272,13 @@ impl ManagedState {
                 .max()
                 .unwrap_or_default();
             if let Some(opening) = running_interval_lifecycle_open_event(
-                &record.session.id,
+                &session_id,
                 interval,
                 prior_close,
                 &persisted.event_batches,
                 lifecycle_events,
             ) {
-                let running_id = managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    event_role::AGGREGATE_STATUS_RUNNING,
-                    ManagedMultiagentEventProvenance::Lifecycle {
-                        cursor: opening.cursor.0,
-                    },
-                );
-                Self::append_aggregate_running_once(record, running_id);
+                Self::append_aggregate_running_once(record, lifecycle_running(opening.cursor));
             }
         }
         Ok(())

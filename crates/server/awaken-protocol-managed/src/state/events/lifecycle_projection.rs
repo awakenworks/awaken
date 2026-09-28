@@ -2,6 +2,7 @@
 //! Child lifecycle, disposition, delegation, and aggregate terminal projection.
 
 use super::*;
+use awaken_managed_session_events::{FactKey, FactProvenance, FactRole};
 
 impl ManagedState {
     pub(super) fn run_stop_reason(
@@ -72,6 +73,15 @@ impl ManagedState {
             }
             let agent_name = record.child_threads[index].agent.display_name().to_string();
             let is_advisor = record.child_threads[index].agent.is_advisor();
+            let at = |role| {
+                FactKey::new(
+                    thread_id,
+                    role,
+                    FactProvenance::Lifecycle {
+                        cursor: event.cursor.0,
+                    },
+                )
+            };
             let run_terminates_thread = awaken_session_execution_contract::coordinated_thread_closed(
                 awaken_session_execution_contract::CoordinatedThreadKind::from_is_advisor(is_advisor),
                 &event.state,
@@ -85,21 +95,13 @@ impl ManagedState {
                     if record.child_threads[index].status != SessionThreadStatus::Running {
                         record.child_threads[index].status = SessionThreadStatus::Running;
                         record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
-                        record.events.push(Event {
-                            id: managed_multiagent_event_id(
-                                &record.session.id,
-                                thread_id,
-                                event_role::LIFECYCLE_STATUS_RUNNING,
-                                ManagedMultiagentEventProvenance::Lifecycle {
-                                    cursor: event.cursor.0,
-                                },
-                            ),
-                            kind: OutboundKind::SessionThreadStatusRunning {
+                        record.push_fact(
+                            at(FactRole::LifecycleStatusRunning),
+                            OutboundKind::SessionThreadStatusRunning {
                                 session_thread_id: thread_id.to_string(),
                                 agent_name,
                             },
-                            processed_at: None,
-                        });
+                        );
                     }
                 }
                 None => {
@@ -110,37 +112,21 @@ impl ManagedState {
                     // converge without a protocol-owned retry registry.
                     record.child_threads[index].status = SessionThreadStatus::Rescheduling;
                     record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
-                    record.events.push(Event {
-                        id: managed_multiagent_event_id(
-                            &record.session.id,
-                            thread_id,
-                            event_role::LIFECYCLE_STATUS_RESCHEDULED,
-                            ManagedMultiagentEventProvenance::Lifecycle {
-                                cursor: event.cursor.0,
-                            },
-                        ),
-                        kind: OutboundKind::SessionThreadStatusRescheduled {
+                    record.push_fact(
+                        at(FactRole::LifecycleStatusRescheduled),
+                        OutboundKind::SessionThreadStatusRescheduled {
                             session_thread_id: thread_id.to_string(),
                             agent_name: agent_name.clone(),
                         },
-                        processed_at: None,
-                    });
+                    );
                     record.child_threads[index].status = SessionThreadStatus::Running;
-                    record.events.push(Event {
-                        id: managed_multiagent_event_id(
-                            &record.session.id,
-                            thread_id,
-                            event_role::RESCHEDULED_LIFECYCLE_STATUS_RUNNING,
-                            ManagedMultiagentEventProvenance::Lifecycle {
-                                cursor: event.cursor.0,
-                            },
-                        ),
-                        kind: OutboundKind::SessionThreadStatusRunning {
+                    record.push_fact(
+                        at(FactRole::RescheduledLifecycleStatusRunning),
+                        OutboundKind::SessionThreadStatusRunning {
                             session_thread_id: thread_id.to_string(),
                             agent_name,
                         },
-                        processed_at: None,
-                    });
+                    );
                 }
                 Some(_) => {
                     let terminal_pending = historical_pending.get(&event.cursor).or_else(|| {
@@ -176,20 +162,12 @@ impl ManagedState {
                                 StateError::Run(RunError::internal(error.to_string()))
                             })?
                     {
-                        let id = managed_multiagent_event_id(
-                            &record.session.id,
-                            thread_id,
-                            event_role::LIFECYCLE_ERROR,
-                            ManagedMultiagentEventProvenance::Lifecycle {
-                                cursor: event.cursor.0,
-                            },
-                        );
-                        record
-                            .event_thread_owners
-                            .insert(id.clone(), thread_id.to_string());
-                        record.events.push(Event {
-                            id,
-                            kind: OutboundKind::SessionError {
+                        let key = at(FactRole::LifecycleError);
+                        let id = record.fact_id(&key);
+                        record.event_thread_owners.insert(id, thread_id.to_string());
+                        record.push_fact(
+                            key,
+                            OutboundKind::SessionError {
                                 error: if is_advisor {
                                     SessionError::classify(
                                         "advisor_consultation_failed",
@@ -199,8 +177,7 @@ impl ManagedState {
                                     error
                                 },
                             },
-                            processed_at: None,
-                        });
+                        );
                     }
                     record
                         .checkpoint
@@ -214,41 +191,25 @@ impl ManagedState {
                         // would promise follow-up input that Runtime must reject.
                         record.child_threads[index].status = SessionThreadStatus::Terminated;
                         record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
-                        record.events.push(Event {
-                            id: managed_multiagent_event_id(
-                                &record.session.id,
-                                thread_id,
-                                event_role::FAILED_LIFECYCLE_STATUS_TERMINATED,
-                                ManagedMultiagentEventProvenance::Lifecycle {
-                                    cursor: event.cursor.0,
-                                },
-                            ),
-                            kind: OutboundKind::SessionThreadStatusTerminated {
+                        record.push_fact(
+                            at(FactRole::FailedLifecycleStatusTerminated),
+                            OutboundKind::SessionThreadStatusTerminated {
                                 session_thread_id: thread_id.to_string(),
                                 agent_name,
                             },
-                            processed_at: None,
-                        });
+                        );
                         continue;
                     }
                     record.child_threads[index].status = SessionThreadStatus::Idle;
                     record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
-                    record.events.push(Event {
-                        id: managed_multiagent_event_id(
-                            &record.session.id,
-                            thread_id,
-                            event_role::LIFECYCLE_STATUS_IDLE,
-                            ManagedMultiagentEventProvenance::Lifecycle {
-                                cursor: event.cursor.0,
-                            },
-                        ),
-                        kind: OutboundKind::SessionThreadStatusIdle {
+                    record.push_fact(
+                        at(FactRole::LifecycleStatusIdle),
+                        OutboundKind::SessionThreadStatusIdle {
                             session_thread_id: thread_id.to_string(),
                             agent_name: agent_name.clone(),
                             stop_reason,
                         },
-                        processed_at: None,
-                    });
+                    );
                     if run_terminates_thread {
                         // Each consultation owns one Thread and self-terminates
                         // after its one ordinary Run. This terminal is derived
@@ -257,21 +218,13 @@ impl ManagedState {
                         record.child_threads[index].status = SessionThreadStatus::Terminated;
                         record.child_threads[index].archived_at =
                             Some(LEGACY_UNRECORDED_AT.to_string());
-                        record.events.push(Event {
-                            id: managed_multiagent_event_id(
-                                &record.session.id,
-                                thread_id,
-                                event_role::ADVISOR_LIFECYCLE_STATUS_TERMINATED,
-                                ManagedMultiagentEventProvenance::Lifecycle {
-                                    cursor: event.cursor.0,
-                                },
-                            ),
-                            kind: OutboundKind::SessionThreadStatusTerminated {
+                        record.push_fact(
+                            at(FactRole::AdvisorLifecycleStatusTerminated),
+                            OutboundKind::SessionThreadStatusTerminated {
                                 session_thread_id: thread_id.to_string(),
                                 agent_name,
                             },
-                            processed_at: None,
-                        });
+                        );
                     }
                 }
             }
@@ -284,6 +237,7 @@ impl ManagedState {
         record: &mut SessionRecord,
         dispositions: &std::collections::HashMap<String, awaken_agent_contract::ThreadDisposition>,
     ) {
+        let mut archived = Vec::new();
         for child in &mut record.child_threads {
             if dispositions.get(&child.id)
                 != Some(&awaken_agent_contract::ThreadDisposition::Archived)
@@ -295,19 +249,20 @@ impl ManagedState {
             child.status = SessionThreadStatus::Terminated;
             child.archived_at = Some(LEGACY_UNRECORDED_AT.to_string());
             child.updated_at = LEGACY_UNRECORDED_AT.to_string();
-            record.events.push(Event {
-                id: managed_multiagent_event_id(
-                    &record.session.id,
-                    &child.id,
-                    event_role::ARCHIVED_STATUS_TERMINATED,
-                    ManagedMultiagentEventProvenance::ArchivedDisposition,
+            archived.push((
+                FactKey::new(
+                    child.id.clone(),
+                    FactRole::ArchivedStatusTerminated,
+                    FactProvenance::ArchivedDisposition,
                 ),
-                kind: OutboundKind::SessionThreadStatusTerminated {
+                OutboundKind::SessionThreadStatusTerminated {
                     session_thread_id: child.id.clone(),
                     agent_name,
                 },
-                processed_at: None,
-            });
+            ));
+        }
+        for (key, kind) in archived {
+            record.push_fact(key, kind);
         }
     }
 
@@ -321,6 +276,7 @@ impl ManagedState {
         if record.session.status != SessionStatus::Terminated {
             return;
         }
+        let mut terminated = Vec::new();
         for child in &mut record.child_threads {
             if child.status == SessionThreadStatus::Terminated {
                 continue;
@@ -332,33 +288,31 @@ impl ManagedState {
                 .archived_at
                 .clone()
                 .unwrap_or_else(|| LEGACY_UNRECORDED_AT.to_string());
-            record.events.push(Event {
-                id: managed_multiagent_event_id(
-                    &record.session.id,
-                    &child.id,
-                    event_role::PARENT_TERMINAL_CHILD_STATUS_TERMINATED,
-                    ManagedMultiagentEventProvenance::ParentTerminal,
+            terminated.push((
+                FactKey::new(
+                    child.id.clone(),
+                    FactRole::ParentTerminalChildStatusTerminated,
+                    FactProvenance::ParentTerminal,
                 ),
-                kind: OutboundKind::SessionThreadStatusTerminated {
+                OutboundKind::SessionThreadStatusTerminated {
                     session_thread_id: child.id.clone(),
                     agent_name: child.agent.display_name().to_string(),
                 },
-                processed_at: None,
-            });
+            ));
         }
-        let primary_terminated_id = managed_multiagent_event_id(
-            &record.session.id,
-            &record.session.id,
-            event_role::PARENT_TERMINAL_PRIMARY_STATUS_TERMINATED,
-            ManagedMultiagentEventProvenance::ParentTerminal,
+        for (key, kind) in terminated {
+            record.push_fact(key, kind);
+        }
+        let session_id = record.session.id.clone();
+        let primary_terminated = FactKey::new(
+            session_id.as_str(),
+            FactRole::ParentTerminalPrimaryStatusTerminated,
+            FactProvenance::ParentTerminal,
         );
-        if !record.has_event_id(&primary_terminated_id) {
-            let primary_terminated = primary_thread_status_event(
-                record,
-                primary_terminated_id,
-                PrimaryThreadStatusProjection::Terminated,
-            );
-            record.append_event_once(primary_terminated);
+        if !record.has_event_id(&record.fact_id(&primary_terminated)) {
+            let kind =
+                primary_thread_status_kind(record, PrimaryThreadStatusProjection::Terminated);
+            record.append_fact_once(primary_terminated, kind);
         }
         if record
             .events
@@ -367,16 +321,14 @@ impl ManagedState {
         {
             return;
         }
-        record.events.push(Event {
-            id: managed_multiagent_event_id(
-                &record.session.id,
-                &record.session.id,
-                event_role::PARENT_TERMINAL_SESSION_STATUS_TERMINATED,
-                ManagedMultiagentEventProvenance::ParentTerminal,
+        record.push_fact(
+            FactKey::new(
+                session_id,
+                FactRole::ParentTerminalSessionStatusTerminated,
+                FactProvenance::ParentTerminal,
             ),
-            kind: OutboundKind::SessionStatusTerminated {},
-            processed_at: None,
-        });
+            OutboundKind::SessionStatusTerminated {},
+        );
     }
 
     /// Decide the aggregate Running edge from committed Session state and the
@@ -489,38 +441,29 @@ impl ManagedState {
             });
             record.child_threads[index].usage = usage.get(&thread_id).cloned().flatten();
             if is_new {
-                record.events.extend([
-                    Event {
-                        id: managed_multiagent_event_id(
-                            &record.session.id,
-                            &thread_id,
-                            event_role::LINK_THREAD_CREATED,
-                            ManagedMultiagentEventProvenance::LinkOperation {
-                                operation_id: &link.created_by_operation_id,
-                            },
-                        ),
-                        kind: OutboundKind::SessionThreadCreated {
-                            session_thread_id: thread_id.clone(),
-                            agent_name: name.clone(),
+                let at = |role| {
+                    FactKey::new(
+                        thread_id.as_str(),
+                        role,
+                        FactProvenance::LinkOperation {
+                            operation_id: link.created_by_operation_id.clone(),
                         },
-                        processed_at: None,
+                    )
+                };
+                record.push_fact(
+                    at(FactRole::LinkThreadCreated),
+                    OutboundKind::SessionThreadCreated {
+                        session_thread_id: thread_id.clone(),
+                        agent_name: name.clone(),
                     },
-                    Event {
-                        id: managed_multiagent_event_id(
-                            &record.session.id,
-                            &thread_id,
-                            event_role::LINK_STATUS_RUNNING,
-                            ManagedMultiagentEventProvenance::LinkOperation {
-                                operation_id: &link.created_by_operation_id,
-                            },
-                        ),
-                        kind: OutboundKind::SessionThreadStatusRunning {
-                            session_thread_id: thread_id.clone(),
-                            agent_name: name.clone(),
-                        },
-                        processed_at: None,
+                );
+                record.push_fact(
+                    at(FactRole::LinkStatusRunning),
+                    OutboundKind::SessionThreadStatusRunning {
+                        session_thread_id: thread_id.clone(),
+                        agent_name: name.clone(),
                     },
-                ]);
+                );
             }
             debug_assert_eq!(record.child_threads[index].id, thread_id);
         }

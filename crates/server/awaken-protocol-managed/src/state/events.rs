@@ -13,6 +13,7 @@ use awaken_session_event_contract::{
     SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
     SessionEventToolReplyKind, SessionOutcomeRubric,
 };
+use awaken_managed_session_events::{FactKey, FactProvenance, FactRole};
 #[cfg(test)]
 use awaken_session_execution_contract::SessionThreadToolReply;
 use awaken_session_execution_contract::{
@@ -248,7 +249,7 @@ fn public_inbound_kind_from_command(
 /// move it ahead of the durable entry.
 fn merge_durable_inbound_projections(
     record: &mut SessionRecord,
-    projected: Vec<DurableInboundProjection>,
+    projected: &[DurableInboundProjection],
 ) {
     for projection in projected {
         if let Some(existing) = record
@@ -257,11 +258,11 @@ fn merge_durable_inbound_projections(
             .find(|existing| existing.id == projection.event.id)
         {
             if projection.event.processed_at.is_some() {
-                existing.processed_at = projection.event.processed_at;
+                existing.processed_at = projection.event.processed_at.clone();
             }
             continue;
         }
-        record.events.push(projection.event);
+        record.events.push(projection.event.clone());
     }
 }
 
@@ -273,15 +274,58 @@ struct DurableOutcomeProjection {
     terminal: CommittedOutcomeProjection,
 }
 
-/// A terminal Outcome paired with the exact root-Thread commit coordinates
-/// that make each projected fact public. Keeping the evidence with the value
-/// prevents admission and canonical ordering from independently rediscovering
-/// (and potentially disagreeing about) the same anchors.
+/// A terminal Outcome paired with the root-Thread commits (from the timeline
+/// domain's [`awaken_managed_session_events::anchor_outcome`]) that make each of
+/// its facts public.
 struct AnchoredOutcomeProjection {
     outcome_id: String,
     terminal: CommittedOutcomeProjection,
     terminal_commit_cursor: u64,
     evaluation_commit_cursors: std::collections::HashMap<u32, u64>,
+}
+
+impl AnchoredOutcomeProjection {
+    fn owns_failure_run(&self, run_id: &awaken_agent_contract::agent::run::Id) -> bool {
+        awaken_managed_session_events::outcome_owns_failure_run(&self.terminal, run_id)
+    }
+}
+
+impl DurableOutcomeProjection {
+    /// Pair the terminal query with its exact Outcome-owned root commits; a
+    /// terminal the prefix cannot anchor yet stays withheld.
+    fn anchor(
+        self,
+        snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Option<AnchoredOutcomeProjection> {
+        let awaken_managed_session_events::OutcomeAnchor {
+            terminal_commit_cursor,
+            evaluation_commit_cursors,
+        } = awaken_managed_session_events::anchor_outcome(&self.outcome_id, &self.terminal, snapshot)?;
+        Some(AnchoredOutcomeProjection {
+            outcome_id: self.outcome_id,
+            terminal: self.terminal,
+            terminal_commit_cursor,
+            evaluation_commit_cursors,
+        })
+    }
+}
+
+fn validate_durable_outcome_projection(
+    outcome_id: String,
+    terminal: CommittedOutcomeProjection,
+) -> Result<DurableOutcomeProjection, StateError> {
+    awaken_managed_session_events::validate_outcome(&outcome_id, &terminal)
+        .map_err(projection_error)?;
+    Ok(DurableOutcomeProjection {
+        outcome_id,
+        terminal,
+    })
+}
+
+/// A committed prefix the timeline domain refuses to project is an internal
+/// Runtime fault; the published projection is kept.
+fn projection_error(error: awaken_managed_session_events::ProjectionError) -> StateError {
+    StateError::Run(RunError::internal(error.to_string()))
 }
 
 /// Borrowed committed evidence for one child transcript fold. This is only a
@@ -321,103 +365,6 @@ struct DelegationProjectionEvidence<'a> {
     usage: &'a std::collections::HashMap<String, Option<crate::types::SessionThreadUsage>>,
 }
 
-impl AnchoredOutcomeProjection {
-    fn owns_failure_run(&self, run_id: &awaken_agent_contract::agent::run::Id) -> bool {
-        matches!(
-            &self.terminal,
-            CommittedOutcomeProjection::Errored(failure)
-                if failure.source_run_id.as_ref() == Some(run_id)
-        )
-    }
-}
-
-impl DurableOutcomeProjection {
-    /// Pair the terminal query with its exact Outcome-owned root commit. The
-    /// terminal state update and removal of the active pointer are emitted by
-    /// one commit, so their shared cursor is a typed terminal fence without
-    /// decoding extension-private JSON. A cancellation can synthesize its last
-    /// public `interrupted` cycle without a Grade; that cycle is ordered by the
-    /// terminal fence, while every ordinary cycle still requires its immutable
-    /// evaluation command.
-    fn anchor(
-        self,
-        snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Option<AnchoredOutcomeProjection> {
-        let snapshot = snapshot?;
-        if snapshot.state.len() != snapshot.state_commit_cursors.len() {
-            return None;
-        }
-        let commands = snapshot
-            .state
-            .iter()
-            .zip(snapshot.state_commit_cursors.iter().copied())
-            .collect::<Vec<_>>();
-        let state_key = format!("outcome/{}/state", self.outcome_id);
-        let terminal_commit_cursor = commands
-            .iter()
-            .rev()
-            .find_map(|(command, cursor)| (command.key.0 == state_key).then_some(*cursor))?;
-        let has_terminal_pointer_removal = commands.iter().any(|(command, cursor)| {
-            command.key.0 == "outcome/active"
-                && matches!(
-                    command.action,
-                    awaken_agent_contract::agent::state::Action::Remove
-                )
-                && *cursor == terminal_commit_cursor
-        });
-        if !has_terminal_pointer_removal {
-            return None;
-        }
-
-        let mut evaluation_commit_cursors = std::collections::HashMap::new();
-        if let CommittedOutcomeProjection::Completed(report) = &self.terminal {
-            for (index, item) in report.iterations.iter().enumerate() {
-                let key = format!("outcome/{}/evaluation/{}", self.outcome_id, item.iteration);
-                let cursor = commands
-                    .iter()
-                    .find_map(|(command, cursor)| (command.key.0 == key).then_some(*cursor))
-                    .or_else(|| {
-                        (index + 1 == report.iterations.len() && item.result == "interrupted")
-                            .then_some(terminal_commit_cursor)
-                    })?;
-                evaluation_commit_cursors.insert(item.iteration, cursor);
-            }
-        }
-        Some(AnchoredOutcomeProjection {
-            outcome_id: self.outcome_id,
-            terminal: self.terminal,
-            terminal_commit_cursor,
-            evaluation_commit_cursors,
-        })
-    }
-}
-
-fn validate_durable_outcome_projection(
-    outcome_id: String,
-    terminal: CommittedOutcomeProjection,
-) -> Result<DurableOutcomeProjection, StateError> {
-    if let CommittedOutcomeProjection::Completed(report) = &terminal {
-        let mut previous_iteration = None;
-        for iteration in &report.iterations {
-            if iteration.outcome_id != outcome_id {
-                return Err(StateError::Run(RunError::internal(
-                    "committed Outcome report id disagrees with Session provenance",
-                )));
-            }
-            if previous_iteration.is_some_and(|previous| iteration.iteration <= previous) {
-                return Err(StateError::Run(RunError::internal(
-                    "committed Outcome report iterations are not strictly ordered",
-                )));
-            }
-            previous_iteration = Some(iteration.iteration);
-        }
-    }
-    Ok(DurableOutcomeProjection {
-        outcome_id,
-        terminal,
-    })
-}
-
 /// Add only Outcome-owned public facts. Root transcript and lifecycle remain
 /// exclusively owned by their existing committed projectors. Stable ids plus
 /// the one Session-record lock make warm replay and active-active refreshes
@@ -426,36 +373,39 @@ fn append_durable_outcome_projections(
     record: &mut SessionRecord,
     projections: &[AnchoredOutcomeProjection],
 ) {
+    let session_id = record.session.id.clone();
     for projection in projections {
         match &projection.terminal {
             CommittedOutcomeProjection::Completed(report) => {
                 for iteration in &report.iterations {
-                    let start_id = managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        event_role::OUTCOME_EVALUATION_START,
-                        ManagedMultiagentEventProvenance::OutcomeEvaluation {
-                            outcome_id: &projection.outcome_id,
-                            iteration: iteration.iteration,
-                        },
-                    );
+                    let evaluation = |role| {
+                        FactKey::new(
+                            &session_id,
+                            role,
+                            FactProvenance::OutcomeEvaluation {
+                                outcome_id: projection.outcome_id.clone(),
+                                iteration: iteration.iteration,
+                            },
+                        )
+                    };
+                    let start_id = record.fact_id(&evaluation(FactRole::OutcomeEvaluationStart));
                     for (role, kind) in [
                         (
-                            event_role::OUTCOME_EVALUATION_START,
+                            FactRole::OutcomeEvaluationStart,
                             OutboundKind::SpanOutcomeEvaluationStart {
                                 outcome_id: projection.outcome_id.clone(),
                                 iteration: iteration.iteration,
                             },
                         ),
                         (
-                            event_role::OUTCOME_EVALUATION_ONGOING,
+                            FactRole::OutcomeEvaluationOngoing,
                             OutboundKind::SpanOutcomeEvaluationOngoing {
                                 outcome_id: projection.outcome_id.clone(),
                                 iteration: iteration.iteration,
                             },
                         ),
                         (
-                            event_role::OUTCOME_EVALUATION_END,
+                            FactRole::OutcomeEvaluationEnd,
                             OutboundKind::SpanOutcomeEvaluationEnd {
                                 outcome_id: projection.outcome_id.clone(),
                                 outcome_evaluation_start_id: start_id.clone(),
@@ -469,20 +419,7 @@ fn append_durable_outcome_projections(
                             },
                         ),
                     ] {
-                        let id = managed_multiagent_event_id(
-                            &record.session.id,
-                            &record.session.id,
-                            role,
-                            ManagedMultiagentEventProvenance::OutcomeEvaluation {
-                                outcome_id: &projection.outcome_id,
-                                iteration: iteration.iteration,
-                            },
-                        );
-                        record.append_event_once(Event {
-                            id,
-                            kind,
-                            processed_at: None,
-                        });
+                        record.append_fact_once(evaluation(role), kind);
                     }
 
                     let evaluation = project::outcome_evaluation(iteration);
@@ -499,84 +436,30 @@ fn append_durable_outcome_projections(
                 }
             }
             CommittedOutcomeProjection::Errored(failure) => {
-                let id = managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    event_role::OUTCOME_ERROR,
-                    ManagedMultiagentEventProvenance::Outcome {
-                        outcome_id: &projection.outcome_id,
-                    },
-                );
-                record.append_event_once(Event {
-                    id,
-                    kind: OutboundKind::SessionError {
+                record.append_fact_once(
+                    FactKey::new(
+                        &session_id,
+                        FactRole::OutcomeError,
+                        FactProvenance::Outcome {
+                            outcome_id: projection.outcome_id.clone(),
+                        },
+                    ),
+                    OutboundKind::SessionError {
                         error: SessionError::classify(&failure.code, failure.message.clone()),
                     },
-                    processed_at: None,
-                });
+                );
             }
         }
     }
 }
 
-/// Durable provenance accepted by the sole Managed multiagent projector.
-///
-/// This is deliberately not a second event aggregate or registry: every value
-/// is already owned by the Session/Thread stores and is supplied to the same
-/// warm/cold projector that appends the public event. A root/child assistant
-/// preview uses the same response coordinate when present; generic inbound and
-/// outcome events do not use this identity because their current durable owners
-/// do not expose an exactly replayable per-event coordinate.
-#[derive(serde::Serialize)]
-#[serde(tag = "source", rename_all = "snake_case")]
-enum ManagedMultiagentEventProvenance<'a> {
-    LinkOperation {
-        operation_id: &'a str,
-    },
-    CoordinationCall {
-        event_id: &'a str,
-    },
-    Message {
-        message_id: &'a str,
-        ordinal: usize,
-    },
-    AssistantResponse {
-        run_id: &'a str,
-        step: usize,
-        response: usize,
-    },
-    AgentReport {
-        run_id: &'a str,
-    },
-    Lifecycle {
-        cursor: u64,
-    },
-    LifecyclePrefix {
-        cursor: u64,
-    },
-    RuntimeInterval {
-        interval_id: &'a str,
-    },
-    BudgetReach {
-        generation: u64,
-    },
-    Audit {
-        run_id: &'a str,
-        sequence: u64,
-    },
-    RunState {
-        run_id: &'a str,
-    },
-    OutcomeEvaluation {
-        outcome_id: &'a str,
-        iteration: u32,
-    },
-    Outcome {
-        outcome_id: &'a str,
-    },
-    ArchivedDisposition,
-    ParentTerminal,
-}
+/// Durable provenance of one Managed multiagent event: the timeline domain's
+/// fact provenance, under the name the event-id encoder has always used.
+/// Every value is already owned by the Session/Thread stores and is supplied
+/// to the same warm/cold projector that appends the public event. Tool-use
+/// events keep their separate reversible `managed_tool_event_id` owner because
+/// command admission must recover their Runtime call id.
+pub(super) type ManagedMultiagentEventProvenance = awaken_managed_session_events::FactProvenance;
 
 /// The four official primary-Thread lifecycle projections. Session lifecycle
 /// remains the aggregate authority; this enum only prevents foreground,
@@ -620,16 +503,14 @@ fn primary_thread_status_kind(
     }
 }
 
-fn primary_thread_status_event(
-    record: &SessionRecord,
-    id: String,
+/// Append one primary-Thread lifecycle projection as a timeline fact.
+fn push_primary_thread_status(
+    record: &mut SessionRecord,
+    key: FactKey,
     status: PrimaryThreadStatusProjection,
-) -> Event {
-    Event {
-        id,
-        kind: primary_thread_status_kind(record, status),
-        processed_at: None,
-    }
+) -> String {
+    let kind = primary_thread_status_kind(record, status);
+    record.push_fact(key, kind)
 }
 
 /// Canonical deterministic id shared by root/child live previews and their
@@ -649,10 +530,20 @@ pub(crate) fn managed_assistant_event_id(
         thread_id,
         role,
         ManagedMultiagentEventProvenance::AssistantResponse {
-            run_id,
+            run_id: run_id.to_string(),
             step,
             response,
         },
+    )
+}
+
+/// The public id of one timeline fact of `session_id`.
+pub(super) fn fact_event_id(session_id: &str, key: &awaken_managed_session_events::FactKey) -> String {
+    managed_multiagent_event_id(
+        session_id,
+        &key.thread,
+        key.role.as_wire_role(),
+        key.provenance.clone(),
     )
 }
 
@@ -663,7 +554,7 @@ fn managed_multiagent_event_id(
     session_id: &str,
     thread_id: &str,
     role: &str,
-    provenance: ManagedMultiagentEventProvenance<'_>,
+    provenance: ManagedMultiagentEventProvenance,
 ) -> String {
     format!(
         "{MANAGED_MULTIAGENT_EVENT_ID_PREFIX}{}",
@@ -672,7 +563,7 @@ fn managed_multiagent_event_id(
             session_id,
             thread_id,
             role,
-            provenance,
+            &provenance,
         ))
     )
 }
@@ -822,6 +713,7 @@ mod admission;
 mod committed_projection;
 mod coordination_receipts;
 mod delivery;
+#[cfg(test)]
 mod event_role;
 pub(crate) use committed_projection::ProjectionObservationDecision;
 pub(super) use delivery::committed_delivery_delta;
