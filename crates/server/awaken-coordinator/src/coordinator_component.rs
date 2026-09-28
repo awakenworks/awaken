@@ -138,10 +138,12 @@ pub enum CoordinatorBuildError {
     WorkerTransport(#[from] WorkerTransportBuildError),
 }
 
+/// `clock` is the Coordinator process's one wall clock.
 pub async fn restore_deployment_application(
     repository: Arc<dyn DeploymentRepository>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<Arc<DeploymentApplication>, CoordinatorBuildError> {
-    DeploymentApplication::from_repository(repository)
+    DeploymentApplication::from_repository(repository, clock)
         .await
         .map(Arc::new)
         .map_err(|error| CoordinatorBuildError::DeploymentRestore(error.to_string()))
@@ -328,7 +330,7 @@ pub async fn build_coordinator_component(
         awaken_protocol_managed::ManagedWorkSessionAccess::new(environments.clone(), managed_state);
     let managed_management = awaken_protocol_managed::with_managed_response_context(
         awaken_protocol_managed::deployments_router(deployment_application.clone()).merge(
-            awaken_protocol_managed::environment_work_router(environments),
+            awaken_protocol_managed::environment_work_router(environments, clock.clone()),
         ),
     );
     let management_router = crate::with_local_workspace_scope(
@@ -441,10 +443,13 @@ mod tests {
         // supervisors (covered by CLI role-surface tests); C2 its first authority
         // read fails -> return CoordinatorBuildError and create no router, launcher,
         // scheduler, or parallel in-memory Deployment aggregate.
-        let error = restore_deployment_application(Arc::new(FailingDeploymentRepository))
-            .await
-            .err()
-            .expect("C2 must fail before component construction");
+        let error = restore_deployment_application(
+            Arc::new(FailingDeploymentRepository),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .err()
+        .expect("C2 must fail before component construction");
         assert!(error.to_string().contains("offline"), "C2 exact cause");
     }
 }

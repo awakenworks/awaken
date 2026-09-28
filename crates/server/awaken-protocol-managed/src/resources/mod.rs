@@ -70,10 +70,14 @@ pub struct ResourcesRouterInput {
 /// Mount all public resource families once. File, Memory, and Skill retain their
 /// independent aggregates and routes; this function only joins their HTTP routes.
 pub fn resources_router(input: ResourcesRouterInput) -> Router {
-    files_router(input.files.clone(), input.clock)
-        .merge(memory_stores_router(input.memories, input.memory_stores))
+    files_router(input.files.clone(), input.clock.clone())
+        .merge(memory_stores_router(
+            input.memories,
+            input.memory_stores,
+            input.clock.clone(),
+        ))
         .merge(repositories_router(input.repositories))
-        .merge(skills_router(input.skills, input.purge))
+        .merge(skills_router(input.skills, input.purge, input.clock))
 }
 
 #[cfg(test)]

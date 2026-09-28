@@ -139,7 +139,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         ManagedState::new(CoordinatedRuntimeFake::default()).with_session_repo(sessions.clone()),
     );
     let deployments = Arc::new(
-        DeploymentApplication::from_repository(sessions)
+        DeploymentApplication::from_repository(sessions, awaken_lease_contract::system_clock())
             .await
             .expect("W4 restore Deployment aggregate over the shared repository"),
     );
