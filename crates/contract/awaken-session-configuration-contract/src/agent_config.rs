@@ -1,3 +1,5 @@
+// @formal entrypoint runtime_capability.bounded_iterator_uses_the_exact_eight_member_projection
+// @formal entrypoint tool_policy.managed_agent_and_mcp_defaults_are_source_exact_and_configurable
 //! Managed Agents tool wire vocabulary retained temporarily by Session storage.
 
 use serde::{Deserialize, Serialize};

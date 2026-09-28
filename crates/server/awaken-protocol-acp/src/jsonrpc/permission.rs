@@ -1,3 +1,6 @@
+// @formal entrypoint acp.boundary_preserves_permission_authority_and_effect_order
+// @formal entrypoint acp.permission_outcome_never_widens_resolved_authority
+// @formal entrypoint acp.permission_tool_identity_normalization_is_exact
 //! Agent-to-client permission request handling for the ACP JSON-RPC driver.
 
 use super::*;

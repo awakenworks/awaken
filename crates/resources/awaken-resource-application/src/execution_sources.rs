@@ -1,3 +1,6 @@
+// @formal entrypoint skill.execution_pin_binds_exact_workspace_revision_and_hash
+// @formal entrypoint skill.invalid_workspace_or_hash_fails_closed
+// @formal entrypoint skill.loaded_version_equals_session_pin
 //! In-process adapters from Resources authorities to execution-facing ports.
 
 use std::sync::Arc;

@@ -1,3 +1,4 @@
+// @formal evidence worker_drain.registry_transition_follows_local_fence
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;

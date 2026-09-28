@@ -1,3 +1,11 @@
+// @formal entrypoint session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
+// @formal entrypoint session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+// @formal entrypoint session_environment.terminal_fence_admits_only_inflight_binding_receipts
+// @formal entrypoint session_event_batch.initial_plan_and_wake_activity_are_atomic_with_root
+// @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal entrypoint session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
+// @formal entrypoint session_resources.terminal_session_never_reactivates
 //! The durable Managed Session aggregate and its root-owned projections.
 
 use super::*;

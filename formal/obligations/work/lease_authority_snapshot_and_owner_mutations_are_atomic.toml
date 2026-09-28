@@ -7,22 +7,9 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/WorkQueue.tla",
   "formal/tla/WorkQueueProof.tla",
-  "crates/stores/awaken-work-store/src/lease_book.rs",
-  "crates/stores/awaken-work-store/src/inmem.rs",
-  "crates/stores/awaken-work-store/src/lib.rs",
-  "crates/stores/awaken-work-store/src/session_access.rs",
-  "crates/stores/awaken-work-store/src/schema.rs",
-  "crates/stores/awaken-work-store/src/inmem/loom_tests.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/stores/awaken-work-store/src/lease_book.rs",
-  "crates/stores/awaken-work-store/src/inmem.rs",
-  "crates/stores/awaken-work-store/src/lib.rs",
-  "crates/stores/awaken-work-store/src/session_access.rs",
-  "crates/stores/awaken-work-store/src/schema.rs",
-  "crates/stores/awaken-work-store/src/mutation.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Unbounded inductive invariant stated in the linked TLAPS proof; adapters remain outside the theorem.'''

@@ -1,3 +1,4 @@
+// @formal entrypoint memory_extraction.unknown_execution_never_reenters_retry
 //! Value objects and terminal outcomes for durable Memory extraction.
 
 use serde::{Deserialize, Serialize};

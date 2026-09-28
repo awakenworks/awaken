@@ -1,3 +1,4 @@
+// @formal evidence session.transcript_prefix_is_exact_request_only_context_not_durable_truth
 //! Multi-Run conversation: a fresh Run on a Thread continues the conversation
 //! when a history reader is wired. The runtime loads the thread's
 //! committed messages — the caller never assembles history.

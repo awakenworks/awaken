@@ -1,3 +1,12 @@
+// @formal entrypoint checkpoint.recovery_never_precedes_commit
+// @formal entrypoint checkpoint.terminal_completion_clears_resume
+// @formal entrypoint context.legacy_unanchored_window_never_drops_transcript
+// @formal entrypoint context.window_anchor_preserves_complete_prefix_coverage
+// @formal entrypoint runtime.max_token_continuation_requires_every_guard_and_exhaustion_never_succeeds
+// @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
+// @formal entrypoint tool_result.resume_receipt_is_atomic_with_ticket_consumption
+// @formal evidence model_operation.coverage_commit_strictly_precedes_model_entry
 //! The Agent step loop and its per-step orchestration.
 
 use super::*;

@@ -1,3 +1,5 @@
+// @formal evidence session.runtime_projection_delivery_preserves_exact_payload_digest_and_monotonic_completion
+// @formal evidence session.runtime_projection_logical_deletion_requires_positive_exact_scoped_evidence
 //! The streaming/preview plane — the crate's biggest coverage hole. The
 //! send-then-stream backfill is covered in `adapter.rs`; this suite drives the
 //! *live* broadcast path instead:

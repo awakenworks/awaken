@@ -1,3 +1,4 @@
+// @formal entrypoint acp.boundary_preserves_permission_authority_and_effect_order
 //! Incoming ACP response, notification, and agent-request pump.
 //!
 //! This module is the single owner of interleaving a target JSON-RPC response

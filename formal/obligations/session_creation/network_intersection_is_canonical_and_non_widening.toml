@@ -3,19 +3,13 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/SessionNetworkPolicy.tla",
   "formal/tla/SessionNetworkPolicy.cfg",
+  "formal/tla/SessionNetworkPolicy.tla",
   "formal/tla/SessionNetworkPolicyProof.tla",
-  "crates/contract/awaken-session-configuration-contract/src/network_policy.rs",
-  "crates/server/awaken-session-application/src/run_admission.rs",
-  "crates/server/awaken-session-application/src/tests/creation.rs",
-  "scripts/ci/check_formal_mutations.py",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/check_formal_mutations.py",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-configuration-contract/src/network_policy.rs",
-  "crates/server/awaken-session-application/src/run_admission.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''TLAPS proves canonical meet algebra over arbitrary host sets and six indexed-sequence selection properties: source membership, exact intersection, canonical hosts, exact canonical meet, order and uniqueness. Complete source-position selection, increasing positions and injectivity are explicit mathematical premises; three witnesses show that incomplete, reordered or duplicate selection breaks the corresponding result. This is not checked universal refinement of Rust library calls.'''

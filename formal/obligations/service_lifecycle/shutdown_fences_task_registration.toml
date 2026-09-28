@@ -8,11 +8,8 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/ServiceLifecycle.tla",
   "formal/tla/ServiceLifecycleProof.tla",
-  "crates/server/awaken-service-lifecycle/tests/service_lifecycle.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-service-lifecycle/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The generic TaskRegistry is the production owner called by spawn, shutdown and Drop while the one registry mutex is held. Kani exhausts all shutdown placements across three ordered operation slots, then forces terminal admission, rejected late registration, waiting follower and completed follower rows. It proves exact ordered task transfer, an absorbing registration fence, no rejected-builder execution, and no second transfer with no user assumptions; 792 checks succeed and 11 compiler/library paths are unreachable.'''

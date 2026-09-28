@@ -5,12 +5,10 @@ tcb_assumptions = [
   "external.llm_semantics",
 ]
 evidence = [
-  "formal/tla/EvalEvidence.tla",
   "formal/tla/EvalEvidence.cfg",
-  "crates/devtools/awaken-eval/src/observation_index.rs",
-  "crates/devtools/awaken-eval/src/outcome_judge.rs",
-  "scripts/ci/formal_eval_mutations.py",
+  "formal/tla/EvalEvidence.tla",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/formal_eval_mutations.py",
 ]
 production_entrypoints = []
 

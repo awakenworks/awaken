@@ -1,3 +1,6 @@
+// @formal evidence eval.frozen_ground_truth_is_not_mutated_by_observations
+// @formal evidence eval.missing_or_duplicate_observation_never_scores_schema_valid
+// @formal evidence eval.report_publication_requires_every_case_classified
 //! Canonical one-observation-per-case indexing for offline eval scorers.
 
 use std::collections::{BTreeMap, BTreeSet};

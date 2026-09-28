@@ -2,18 +2,14 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
   "formal/tla/CheckpointRecovery.tla",
-  "crates/runtime/awaken-runtime/src/engine/tests.rs",
-  "crates/runtime/awaken-runtime/tests/per_step_commit.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-runtime/src/engine/progress.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''StepLedger::commit_delta is the sole process-local owner of the message, state and audit durable-prefix watermarks. Its production successor kernel accepts an arbitrary staged usize exactly when it is at least the arbitrary current usize, returns that exact staged value, and otherwise rejects the regression. The direct Kani harness exhausts the full usize pair domain with no assumptions, stubs or narrowed input bounds.'''

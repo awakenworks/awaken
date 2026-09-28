@@ -1,3 +1,5 @@
+// @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
+// @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
 //! Builder / configuration wiring for [`SharedHost`]: `new`, the chainable
 //! `with_*` methods, per-thread registration, and the process dispatch pool.
 

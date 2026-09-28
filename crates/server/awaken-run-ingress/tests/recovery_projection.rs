@@ -1,3 +1,5 @@
+// @formal evidence remote_worker.acknowledged_projection_is_monotonic
+// @formal evidence remote_worker.recovery_projection_is_committed_prefix
 use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};

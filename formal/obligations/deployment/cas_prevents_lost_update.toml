@@ -5,18 +5,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/DeploymentCAS.tla",
-  "formal/tla/DeploymentCAS.cfg",
-  "crates/contract/awaken-deployment-contract/src/lib.rs",
-  "crates/server/awaken-deployment-application/src/lib.rs",
-  "crates/stores/awaken-session-store/src/deployments.rs",
-  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
   "docs/design/managed-deployments.md",
+  "formal/tla/DeploymentCAS.cfg",
+  "formal/tla/DeploymentCAS.tla",
 ]
-production_entrypoints = [
-  "crates/server/awaken-deployment-application/src/lib.rs",
-  "crates/stores/awaken-session-store/src/deployments.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''DeploymentCAS checks a finite two-Deployment/two-replica state space through revision three. Its Write transition advances only a replica observation equal to the current abstract revision. This is an abstract no-lost-update result; no Rust-to-model refinement is implied.'''

@@ -1,3 +1,4 @@
+// @formal entrypoint skill.pinned_version_survives_retirement
 //! Durable Skill aggregate repository for the resources plane.
 //!
 //! One repository owns definitions, immutable versions, and binary-safe bundles.

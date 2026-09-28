@@ -5,9 +5,7 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = []
-production_entrypoints = [
-  "crates/stores/awaken-store-schema/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

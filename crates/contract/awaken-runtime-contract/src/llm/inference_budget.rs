@@ -1,3 +1,4 @@
+// @formal entrypoint llm.inference_budget_requires_positive_response_before_actual_watchdog
 //! The caller-declared inference budget and the per-attempt timing derived from it.
 //!
 //! [`ModelInferenceBudget`] is the one value a caller (a Runtime host, a

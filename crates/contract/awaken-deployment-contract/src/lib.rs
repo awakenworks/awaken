@@ -1,3 +1,7 @@
+// @formal evidence deployment.cas_prevents_lost_update
+// @formal evidence deployment.claim_and_run_commit_atomically
+// @formal evidence deployment.scheduled_capacity_is_transactional
+// @formal evidence deployment.stale_scheduler_cannot_claim_or_overwrite
 //! Durable Deployment records and the one scheduled-occurrence claim port.
 //!
 //! The Managed protocol adapter owns wire projection. This inward contract keeps

@@ -1,3 +1,5 @@
+// @formal entrypoint resource_reclamation.reference_and_lease_races_fail_closed
+// @formal entrypoint resource_reclamation.stale_claim_cannot_commit_receipt
 //! Durable physical-reclamation vocabulary for platform resources.
 //!
 //! This is resource lifecycle state, not an authorization decision. A PEP/PDP has

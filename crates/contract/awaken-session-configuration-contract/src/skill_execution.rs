@@ -1,3 +1,6 @@
+// @formal entrypoint skill.execution_pin_binds_exact_workspace_revision_and_hash
+// @formal entrypoint skill.invalid_workspace_or_hash_fails_closed
+// @formal entrypoint skill.loaded_version_equals_session_pin
 //! Exact frozen-Skill realization port owned by the Session contract.
 
 use awaken_agent_contract::AgentSkillKind;

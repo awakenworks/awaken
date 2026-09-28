@@ -1,3 +1,4 @@
+// @formal entrypoint service_auth.token_rotation_fails_closed_and_retries_only_a_changed_token
 //! Typed configuration for the private Control-to-Coordinator registration edge.
 
 use std::path::{Path, PathBuf};

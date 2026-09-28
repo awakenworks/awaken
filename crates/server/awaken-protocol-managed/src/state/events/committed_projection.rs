@@ -1,3 +1,6 @@
+// @formal entrypoint session.runtime_projection_failed_refresh_stutters_warm_state
+// @formal entrypoint session.runtime_projection_logical_deletion_requires_positive_exact_scoped_evidence
+// @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 //! The sole warm/cold projection from committed Session, Thread, Run, and Outcome truth.
 
 use super::*;

@@ -1,3 +1,4 @@
+// @formal evidence sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Single synchronous grant seam shared with the current Session authority guard.
 use super::invalid;
 use std::{cell::Cell, io};

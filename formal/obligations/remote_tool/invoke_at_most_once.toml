@@ -8,13 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteTool.tla",
-  "crates/worker/awaken-tool-relay/src/serve.rs",
-  "crates/worker/awaken-tool-relay/tests/relay.rs",
 ]
-production_entrypoints = [
-  "crates/worker/awaken-tool-relay/src/ledger.rs",
-  "crates/worker/awaken-tool-relay/src/serve.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The shared production begin disposition used by both Hand ledgers: only Absent can attempt a claim, Executing joins, and Completed replays. The filesystem ledger serializes local admission and uses create_new as its cross-process single-winner CAS. Kani proves the closed local phase decision; mutex/filesystem atomicity and durability, process crashes, tool semantics, network delivery, and external orchestration remain runtime or external evidence.'''

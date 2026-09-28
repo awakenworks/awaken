@@ -5,22 +5,13 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ToolResultProtocol.tla",
   "formal/tla/ToolResultProtocol.cfg",
-  "crates/contract/awaken-session-event-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/server/awaken-session-application/src/tests/event_batches.rs",
-  "crates/server/awaken-protocol-managed/tests/adapter.rs",
-  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+  "formal/tla/ToolResultProtocol.tla",
+  "scripts/ci/check_formal.sh",
   "scripts/ci/formal_kani_options.py",
   "scripts/ci/test_formal_profile.py",
-  "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/contract/awaken-session-event-contract/src/admission.rs",
-  "crates/contract/awaken-session-application-contract/src/event_admission.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Two retry keys and fingerprints, atomic Session root CAS; acceptance and final close are absorbing alternatives. SQLite and HTTP tests exercise implementation boundaries but no universal Rust/SQL or transport refinement is claimed.'''

@@ -8,14 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ObservationReconcileProof.tla",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-  "crates/bin/awaken-cli/src/observation_reconcile.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-worker-contract/src/registry.rs",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-  "crates/bin/awaken-cli/src/observation_reconcile.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The opaque contract-owned production fence admits Coalesce only when the observed fingerprint exactly matches its private successful-publication state. Kani exhausts every u8 prior/current fingerprint pair and both prior completion outcomes. Fingerprint construction, hash collision resistance and the gate mutex remain runtime TCB; every observed fingerprint crosses this fence before publication.'''

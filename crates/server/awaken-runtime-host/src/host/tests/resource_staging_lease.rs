@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::*;
 
 // B1-B4: after the synchronous close, remove/recreate the SAME Session id with

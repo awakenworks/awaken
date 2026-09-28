@@ -1,3 +1,6 @@
+// @formal evidence outcome.stable_run_identity_and_exactly_once_ack
+// @formal evidence run.commit_shape_atomicity
+// @formal evidence thread_state.atomic_commit_and_replay
 //! SQLite passes the shared store conformance suite, and a fresh instance over
 //! the same database file resumes from committed facts (ADR-0039 2.5 / D4).
 

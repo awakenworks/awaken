@@ -1,3 +1,5 @@
+// @formal evidence sandbox.k8s_process_observation_requires_complete_exit
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! Real HTTP + canonical Registry/Dispatch. Provider outcomes are deterministic
 //! fixtures here; this suite does not claim Kubernetes or remote termination.
 mod postgres_support;

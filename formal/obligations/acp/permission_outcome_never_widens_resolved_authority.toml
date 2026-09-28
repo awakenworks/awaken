@@ -3,12 +3,9 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/server/awaken-protocol-acp/src/lib.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts the neutral Allow, Await and Deny consensus classes against every combination of allow-once, allow-always, reject-once and reject-always offers. The production projection selects the least-persistent same-polarity option, cancels when none exists, and never turns Await or an opposite-polarity offer into authority.'''

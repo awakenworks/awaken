@@ -1,3 +1,9 @@
+// @formal evidence audit.business_action_follows_audit_record
+// @formal evidence audit.business_commit_and_audit_transition_are_atomic
+// @formal evidence audit.call_identity_is_stable
+// @formal evidence audit.stable_call_replay_does_not_repeat_business_write
+// @formal evidence config.generation_is_monotonic
+// @formal evidence config.stale_writer_never_applies
 //! One backend conformance table for the domain-owned management audit identity.
 use awaken_agent_config::{
     AgentConfig, AuditedConfigWrite, ManagementAuditRecord, ScopeId, ScopedConfigRegistry,

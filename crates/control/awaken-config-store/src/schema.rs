@@ -1,3 +1,8 @@
+// @formal entrypoint config.generation_is_monotonic
+// @formal evidence audit.business_action_follows_audit_record
+// @formal evidence audit.business_commit_and_audit_transition_are_atomic
+// @formal evidence audit.call_identity_is_stable
+// @formal evidence audit.stable_call_replay_does_not_repeat_business_write
 //! Current Control config-store schema shared by PostgreSQL and SQLite.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};

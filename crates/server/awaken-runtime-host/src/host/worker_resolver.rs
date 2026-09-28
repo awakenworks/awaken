@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
 //! [`HostWorkerResolver`]: routes a claimed dispatch to the worker that owns
 //! its thread, opening (or reusing) the session through the host.
 

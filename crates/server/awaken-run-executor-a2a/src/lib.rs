@@ -1,3 +1,12 @@
+// @formal evidence delegation.remote_cancel_redelivery
+// @formal evidence remote_attempt.cancel_addresses_pinned_task
+// @formal evidence remote_attempt.committed_task_is_endpoint_pinned
+// @formal evidence remote_attempt.endpoint_mismatch_fails_closed
+// @formal evidence remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
+// @formal evidence remote_attempt.recovery_reattaches_without_resending
+// @formal evidence remote_attempt.replay_uses_stable_message_identity
+// @formal evidence remote_attempt.resume_preserves_context_and_task_reference
+// @formal evidence remote_attempt.terminal_commit_retires_task_reference
 //! `A2aRunExecutor`: a remote A2A agent (Coze / any A2A HTTP endpoint) driven as a
 //! peer [`RunAttemptExecutor`]. Like the ACP executor it is *a second implementation*
 //! of the one attempt port — no local process, no model loop of our own: it dials the

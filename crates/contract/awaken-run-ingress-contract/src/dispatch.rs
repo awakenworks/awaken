@@ -1,3 +1,10 @@
+// @formal entrypoint run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
+// @formal entrypoint run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal entrypoint run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
+// @formal entrypoint session_execution.pre_start_cancel_ack_requires_fresh_slot_install
+// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
+// @formal evidence ingress.epoch_reclaim
+// @formal evidence ingress.single_owner
 //! The durable-ingress store ports and their data.
 //!
 //! Two aggregates, per the run-ingress DDD split:

@@ -1,3 +1,4 @@
+// @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 // awaken-file-limit-ceiling: 3821 (legacy oversized test file: split, never grow)
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;

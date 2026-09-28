@@ -1,3 +1,5 @@
+// @formal entrypoint authz.agent_publisher_role_is_exact_workspace_agent_model_read_and_skill_only
+// @formal entrypoint authz.credential_ingress_role_is_exact_workspace_apikey_and_provider_connect_only
 use super::*;
 
 #[test]

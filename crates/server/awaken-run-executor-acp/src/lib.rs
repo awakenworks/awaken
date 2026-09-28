@@ -1,3 +1,8 @@
+// @formal entrypoint acp.mcp_alias_permission_consensus_never_widens_authority
+// @formal entrypoint acp.permission_tool_identity_normalization_is_exact
+// @formal entrypoint acp.process_cleanup_requires_observed_exit_and_retained_owner
+// @formal entrypoint session.legacy_derived_context_remains_durable_but_is_hidden_from_new_model_requests
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! `AcpRunExecutor`: an external ACP agent (Claude Code / Codex / …) as a peer
 //! [`RunExecutor`].
 //!

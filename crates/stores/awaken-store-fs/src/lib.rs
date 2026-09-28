@@ -1,3 +1,14 @@
+// @formal entrypoint checkpoint.crash_preserves_durable_truth
+// @formal entrypoint checkpoint.recovery_never_precedes_commit
+// @formal entrypoint remote_worker.operation_identity_maps_to_one_hash_and_append
+// @formal entrypoint run.commit_shape_atomicity
+// @formal entrypoint store_history.commits_form_one_dense_stable_global_order
+// @formal entrypoint store_history.exact_retry_and_every_rejection_are_atomic_stutters
+// @formal entrypoint store_history.receipt_refines_one_exact_durable_record
+// @formal entrypoint store_history.recovery_preserves_committed_time_and_receipt_identity
+// @formal entrypoint store_history.terminal_run_is_final_for_every_backend_history
+// @formal entrypoint thread_state.atomic_commit_and_replay
+// @formal evidence outcome.stable_run_identity_and_exactly_once_ack
 //! Filesystem-backed durable store (ADR-0039 slice 2.3).
 //!
 //! Persistence is an append-only commit log (`commits.ndjson`): each `commit`

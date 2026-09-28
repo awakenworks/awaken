@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
 //! Canonical Resource Registry use cases.
 //!
 //! Database adapters store aggregates; this application is the sole production

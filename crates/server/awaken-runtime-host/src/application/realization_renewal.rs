@@ -1,3 +1,5 @@
+// @formal entrypoint session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Lease-only scheduling and response application for the canonical Session slot.
 
 use super::realization_control_deadline::{

@@ -1,3 +1,4 @@
+// @formal entrypoint delegation.independent_child_scheduling_lease
 //! Execution-edge materialization for a child attempt.
 //!
 //! A delegated child selects its execution edge only through its immutable

@@ -1,3 +1,4 @@
+// @formal entrypoint runtime.settled_step_projection_is_closed_exact_and_non_widening
 //! Committed-step and resume assertions at the Host boundary.
 
 use super::*;

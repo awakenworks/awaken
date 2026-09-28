@@ -1,3 +1,7 @@
+// @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
+// @formal entrypoint credential_reference.exact_revision_never_resolves_another_revision
+// @formal entrypoint worker.revoked_credential_blocks_new_materialization
+// @formal evidence worker.secret_materialization_is_claim_fenced
 //! Exact credential realization for publication-pinned runtime access.
 //!
 //! This host adapter owns no selection policy and cannot enumerate credentials. It

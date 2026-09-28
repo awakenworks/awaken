@@ -1,3 +1,4 @@
+// @formal evidence checkpoint.crash_preserves_durable_truth
 //! The filesystem checkpoint store is durable across process restarts: a fresh
 //! instance over the same directory reads a checkpoint a prior instance wrote —
 //! this is what makes an interrupted inference step resumable in a new process.

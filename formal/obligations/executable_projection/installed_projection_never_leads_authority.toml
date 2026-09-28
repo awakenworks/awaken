@@ -2,20 +2,14 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
   "formal/tla/ExecutableProjectionRefreshProof.tla",
-  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
-  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-durable-projection/src/lib.rs",
-  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
-  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The sole load_full/load_refresh owner creates an opaque ProjectionTarget only from the exact high-water returned by ProjectionLog after the selected command range validates through that coordinate. ProjectionBatch carries that target instead of a free u64, both production registrar types must consume it in ProjectionCursor::install_then_reconcile, and hydration initializes its cursor from the same target after successful replay. No external constructor or parallel install coordinate exists.'''

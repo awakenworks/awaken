@@ -1,3 +1,5 @@
+// @formal entrypoint session.runtime_projection_delivery_preserves_exact_payload_digest_and_monotonic_completion
+// @formal evidence session.runtime_projection_logical_deletion_requires_positive_exact_scoped_evidence
 //! One monotonic delivery rule for published history, broadcasts and SSE.
 //! Fingerprints are disposable equality observations, never event authority.
 

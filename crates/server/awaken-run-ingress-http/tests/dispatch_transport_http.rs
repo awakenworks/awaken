@@ -1,3 +1,5 @@
+// @formal evidence session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal evidence session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 //! The worker-facing dispatch transport over its real HTTP surface: a database-less
 //! worker's `enqueue` → `claim` → `renew` → `settle` round-trip drives the same
 //! process-shared dispatch store the co-located pool drains. Its own test binary: it

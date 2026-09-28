@@ -1,3 +1,10 @@
+// @formal entrypoint remote_attempt.cancel_addresses_pinned_task
+// @formal entrypoint remote_attempt.committed_task_is_endpoint_pinned
+// @formal entrypoint remote_attempt.endpoint_mismatch_fails_closed
+// @formal entrypoint remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
+// @formal entrypoint remote_attempt.recovery_reattaches_without_resending
+// @formal entrypoint remote_attempt.resume_preserves_context_and_task_reference
+// @formal entrypoint remote_attempt.terminal_commit_retires_task_reference
 //! Durable remote-operation identity and task binding for one A2A Run.
 
 use awaken_agent_contract::agent::state::{

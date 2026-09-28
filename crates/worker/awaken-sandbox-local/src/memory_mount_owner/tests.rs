@@ -1,3 +1,4 @@
+// @formal evidence memory_participant.live_provider_retains_pending_and_failed_operations
 use super::*;
 use crate::provider::workdir_helper_tests::{TeardownProbe, workdir_spec};
 use std::pin::Pin;

@@ -1,3 +1,10 @@
+// @formal entrypoint observation_reconcile.evidence_aba_has_fresh_fence
+// @formal entrypoint observation_reconcile.skipped_epoch_was_published_or_superseded
+// @formal entrypoint observation_reconcile.unchanged_evidence_coalesces
+// @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
+// @formal entrypoint worker.drain_and_replacement_races_preserve_registry_authority
+// @formal entrypoint worker.incarnation_generation_fences_stale_processes
+// @formal entrypoint worker_credential.stale_heartbeat_never_rolls_back_revision
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerHeartbeat, WorkerIdentity,
     WorkerProcessExit, WorkerRegistration, WorkerSnapshot, WorkerState,

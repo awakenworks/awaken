@@ -1,3 +1,5 @@
+// @formal evidence management_http.crash_preserves_pending_audit
+// @formal evidence resource_binding.draft_audit_and_effect_are_atomic
 use std::time::Duration;
 
 use awaken_agent_config::{

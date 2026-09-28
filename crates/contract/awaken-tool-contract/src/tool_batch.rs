@@ -1,3 +1,9 @@
+// @formal entrypoint tool.executor_entry_order
+// @formal entrypoint tool.publication_barrier
+// @formal entrypoint tool.recovery_policy
+// @formal entrypoint tool.session_thread_composition
+// @formal entrypoint tool.transition_preconditions
+// @formal entrypoint tool_result.call_is_consumed_at_most_once
 //! Durable state of one model-emitted tool-call batch.
 //!
 //! The transcript is exposed to the model only after every call has a terminal

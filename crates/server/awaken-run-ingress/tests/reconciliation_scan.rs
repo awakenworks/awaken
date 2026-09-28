@@ -1,3 +1,4 @@
+// @formal evidence remote_worker.terminal_scan_is_bounded_and_preserves_authority
 //! Scheduling evidence for the one Host/Worker scan, not execution authority.
 mod harness;
 

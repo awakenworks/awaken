@@ -4,14 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.mcp_busy_acp_revocation_propagation_and_process_termination",
 ]
-evidence = [
-  "crates/server/awaken-run-executor-acp/src/lib.rs",
-  "crates/server/awaken-run-executor-acp/src/tests.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
-  "crates/server/awaken-run-executor-acp/src/lib.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts present/absent and equal/unequal requested and observed scalar identities without assumptions. The production-generic selector admits Observed only for one exact nonempty match and otherwise retains Raw.'''

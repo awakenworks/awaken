@@ -1,3 +1,5 @@
+// @formal entrypoint worker.acp_capability_is_detected_only_after_a_verified_handshake
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! ACP execution for the managed host (R3/R4). Backend selection belongs to the
 //! immutable Agent publication and its frozen Session projection; this module
 //! owns only the executor that drives an already-selected ACP backend.

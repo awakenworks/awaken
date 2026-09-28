@@ -3,13 +3,10 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/BackgroundTask.tla",
   "formal/tla/BackgroundTask.cfg",
-  "crates/runtime/awaken-ext-background-task/tests/state_machine.rs",
+  "formal/tla/BackgroundTask.tla",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-ext-background-task/src/model.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

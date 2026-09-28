@@ -1,3 +1,6 @@
+// @formal entrypoint authz.application_protocol_is_scoped_by_application_guard_not_service_guard
+// @formal entrypoint authz.legacy_workspace_binding_migration_is_authority_preserving_and_idempotent
+// @formal entrypoint authz.run_backed_protocol_routes_use_the_exact_run_action_namespace
 //! Embedded IAM for the management plane (ADR-0042/0043 P1): bearer `ApiToken`
 //! authn + grant-based authz gating `/v1/config/*` and `/v1/vaults/*`.
 //!

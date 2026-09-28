@@ -6,20 +6,10 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "formal/tla/SessionResourceActivation.tla",
   "formal/tla/SessionResourceActivation.cfg",
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-  "crates/server/awaken-session-application/src/tests/resource_resume.rs",
-  "crates/server/awaken-session-application/src/tests/realization.rs",
+  "formal/tla/SessionResourceActivation.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation/ordinary_reconciliation_gate.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhaustively checks the production ordinary-Resource reconciliation gate across terminal/live and Idle/non-Idle states. Every terminal combination denies ordinary Runtime installation, while only live Idle admits it; the sole ordinary apply branch consumes this gate directly.'''

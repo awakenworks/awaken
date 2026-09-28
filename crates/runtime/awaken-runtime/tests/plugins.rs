@@ -1,3 +1,4 @@
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! Active plugins contribute behavior only through declared seams: a phase hook
 //! stages state via the commit path, and an out-of-bound plugin fails closed
 //! (G9/G30). Plugins are resolved once per run.

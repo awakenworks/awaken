@@ -1,3 +1,5 @@
+// @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 //! Exact post-Dispatch settlement of retained User Event commands.
 
 use super::{

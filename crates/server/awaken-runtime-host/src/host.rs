@@ -1,3 +1,5 @@
+// @formal evidence worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
+// @formal evidence worker_drain.grace_expiry_retains_cancellation_observer
 //! `SharedHost` — the protocol-neutral, thread-keyed session substrate.
 //!
 //! This is the "waist" both protocol adapters (Managed Agents, AI SDK) drive. It

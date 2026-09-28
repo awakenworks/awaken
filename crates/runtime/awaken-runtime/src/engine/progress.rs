@@ -1,3 +1,6 @@
+// @formal entrypoint background_task.never_replay_and_attempt_exhaustion_fail_closed
+// @formal entrypoint checkpoint.durable_watermark_never_rolls_back
+// @formal entrypoint tool_result.resume_receipt_is_atomic_with_ticket_consumption
 //! Attempt progress, incremental commit watermarks, and state reconstruction.
 
 use super::*;

@@ -1,3 +1,20 @@
+// @formal evidence credential.managed_rollout_abstract_ack_requires_every_target_adoption
+// @formal evidence deployment.cas_prevents_lost_update
+// @formal evidence deployment.claim_and_run_commit_atomically
+// @formal evidence deployment.scheduled_capacity_is_transactional
+// @formal evidence deployment.stale_scheduler_cannot_claim_or_overwrite
+// @formal evidence session.delete_tombstone_requires_hidden_terminal_verified_cleanup
+// @formal evidence session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+// @formal evidence session.owner_saved_atomically
+// @formal evidence session.visible_row_always_owned
+// @formal evidence session_creation.atomic_complete_root_precedes_every_projection
+// @formal evidence session_event_batch.final_non_admission_excludes_late_acceptance
+// @formal evidence session_resources.restart_retries_same_pending_revision
+// @formal evidence webhook.delivery_requires_an_enqueued_fact
+// @formal evidence webhook.failed_delivery_remains_pending
+// @formal evidence webhook.lifecycle_commit_and_outbox_are_atomic
+// @formal evidence webhook.outbox_fact_identity_is_stable
+// @formal evidence webhook.periodic_retry_never_retires_a_failed_fact
 //! Trait-generic **conformance suite** for the `SessionRepository` port — the
 //! shared behavioural contract every backend must satisfy (ADR-0059, the
 //! `awaken-store-conformance` pattern).

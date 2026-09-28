@@ -1,3 +1,4 @@
+// @formal entrypoint acp.fixed_official_launch_preserves_process_local_mcp_routes
 //! ACP launch projection for the Session environment owned by the Runtime Host.
 //!
 //! Environment discovery and realization happen before this adapter is constructed.

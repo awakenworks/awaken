@@ -5,20 +5,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ErasureSaga.tla",
-  "crates/control/awaken-data-subject-application/src/lib.rs",
-  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
-  "crates/stores/awaken-data-subject-store/src/postgres.rs",
-  "crates/control/awaken-data-subject-application/src/tests.rs",
-  "crates/stores/awaken-data-subject-store/tests/repo_conformance.rs",
   "formal/tla/ErasureSaga.cfg",
+  "formal/tla/ErasureSaga.tla",
   "scripts/ci/check_formal_mutations.py",
 ]
-production_entrypoints = [
-  "crates/control/awaken-data-subject-application/src/lib.rs",
-  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
-  "crates/stores/awaken-data-subject-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The existing ErasureProgress::follows is the sole directly proved checkpoint successor relation: observed row presence/revision must match the caller expectation, creation starts at zero, a present revision advances exactly once without overflow, and the candidate contains every old target. Duplicate/reordered entries have set semantics; count and terminal flags are not additional relation claims.'''

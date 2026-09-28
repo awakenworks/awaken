@@ -1,3 +1,4 @@
+// @formal evidence session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
 //! Controlled-poll qualification of the existing two-stage scheduler adapter.
 use super::*;
 use std::cell::Cell;

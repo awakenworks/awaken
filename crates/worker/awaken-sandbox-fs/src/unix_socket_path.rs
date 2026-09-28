@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox_control.single_publication_is_stale_fenced_non_wrapping_and_close_absorbing
 //! Linux pathname socket addresses rooted in an opened directory.
 use super::*;
 use std::os::fd::AsRawFd as _;

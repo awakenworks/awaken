@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox_continuation.distinct_mutable_roots_share_one_retained_claim_without_aliasing
 use std::path::{Component, Path};
 
 use awaken_provisioning_contract as pc;

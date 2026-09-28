@@ -1,3 +1,4 @@
+// @formal entrypoint background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
 //! Runtime-facing durable authority contracts.
 //!
 //! The Runtime Host owns execution semantics, but it does not select or open a

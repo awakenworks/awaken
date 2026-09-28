@@ -1,3 +1,20 @@
+// @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
+// @formal entrypoint ingress.pending_input_exactly_once
+// @formal entrypoint ingress.settle_fence
+// @formal entrypoint remote_worker.pending_signal_is_consumed_by_commit
+// @formal entrypoint remote_worker.single_live_claim_owner
+// @formal entrypoint run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
+// @formal entrypoint run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
+// @formal entrypoint run_ingress.request_local_resolution_retry_honors_persisted_deadline
+// @formal entrypoint session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
+// @formal entrypoint session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
+// @formal entrypoint session_run.recovery_claim_is_admission_only
+// @formal entrypoint session_run.reservation_ttl_uses_store_clock
+// @formal entrypoint worker.durable_dispatch_contains_no_plaintext_secret
+// @formal evidence ingress.epoch_reclaim
+// @formal evidence ingress.single_owner
 // SQLite realization of the one neutral DispatchQueue contract. Included by
 // `sqlite.rs` so the public adapter and trait implementation paths do not move.
 #[async_trait]

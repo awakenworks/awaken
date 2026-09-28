@@ -1,3 +1,4 @@
+// @formal entrypoint worker_authority.independent_evidence_never_extends_expired_proof
 //! One conservative decision boundary for Worker-local Environment evidence.
 
 use std::time::Duration;

@@ -8,14 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerCredentialLiveness.tla",
-  "crates/server/awaken-worker-registry/src/memory.rs",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-  "crates/server/awaken-coordinator/tests/worker_control_http.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-worker-contract/src/registry.rs",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production closed heartbeat-admission domain over record presence, exact incarnation identity, half-open lease validity, monotonic sequence and Worker state; registry lock or transaction serialization remains adapter TCB.'''

@@ -2,19 +2,8 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/control/awaken-authz-enforce/src/lib.rs",
-  "crates/control/awaken-control/src/authz.rs",
-  "crates/control/awaken-control/src/authz/application_protocol_tests.rs",
-  "crates/server/awaken-coordinator/src/lib.rs",
-]
-production_entrypoints = [
-  "crates/control/awaken-control/src/authz/roles.rs",
-  "crates/control/awaken-authz-enforce/src/lib.rs",
-  "crates/control/awaken-control/src/authz.rs",
-  "crates/control/awaken-control/src/authz/application_protocol_tests.rs",
-  "crates/server/awaken-coordinator/src/lib.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

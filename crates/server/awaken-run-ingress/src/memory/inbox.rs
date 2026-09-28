@@ -1,3 +1,4 @@
+// @formal entrypoint ingress.pending_mutation_plan_requires_exact_revision_and_nonwrapping_edit
 //! In-memory Inbox projection over the canonical dispatch state.
 
 use super::*;

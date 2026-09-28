@@ -1,3 +1,9 @@
+// @formal evidence run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal evidence session_run.recovery_claim_is_admission_only
+// @formal evidence session_run.reservation_never_executes
+// @formal evidence session_run.reservation_precedes_activity
+// @formal evidence session_run.reservation_ttl_uses_store_clock
+// @formal evidence session_terminal.unstarted_reservation_is_rejected_after_cancel
 // Session reservation, claim guard, sandbox recovery, and completion rules.
 // Included at crate root to retain all existing conformance function paths.
 /// Session Run reservation cause/effect graph. Causes: C1 canonical dispatch is

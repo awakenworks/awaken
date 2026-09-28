@@ -1,3 +1,23 @@
+// @formal entrypoint credential.failed_create_compensates_material
+// @formal entrypoint credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+// @formal entrypoint credential.managed_creation_begin_rejects_every_published_source_or_child_identity
+// @formal entrypoint credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+// @formal entrypoint credential.managed_creation_pair_requires_exact_workspace_source_and_initial_lifecycle
+// @formal entrypoint credential.managed_creation_publishes_source_and_child_atomically
+// @formal entrypoint credential.managed_deleted_lifecycle_is_absorbing
+// @formal entrypoint credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+// @formal entrypoint credential.managed_mutation_requires_exact_source_and_child_successor_fences
+// @formal entrypoint credential.managed_rollout_abstract_ack_requires_every_target_adoption
+// @formal entrypoint credential.managed_rollout_ack_requires_converged_progress
+// @formal entrypoint credential.managed_rollout_event_id_replay_requires_exact_payload_and_colliding_ack_is_rejected
+// @formal entrypoint credential.managed_rollout_failure_or_busy_session_remains_pending
+// @formal entrypoint credential.managed_rollout_outbox_is_atomic_with_exact_pair_publication
+// @formal entrypoint credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
+// @formal entrypoint credential.material_is_always_published_or_intent_tracked
+// @formal entrypoint credential.provider_scope_widening_requires_exact_revision_provider_and_endpoint
+// @formal entrypoint credential.restart_recovery_compensates_unpublished_material
+// @formal entrypoint credential.rotation_revision_cas
+// @formal entrypoint credential.visible_row_always_has_material
 //! The credential source repository port (ADR-0043) — stores the **secret-free**
 //! [`CredentialSource`] rows (the sealed material lives behind [`SecretStore`], a
 //! separate port). Its own `credential` migration scope is what lets the whole

@@ -1,3 +1,5 @@
+// @formal evidence management_http.no_business_write_without_durable_audit
+// @formal evidence resource_binding.replay_is_idempotent_and_identity_stable
 //! Restart persistence for the durable management plane (ADR-0043): a router
 //! built over typed `data_dir` SQLite stores is dropped and rebuilt over
 //! the same directory + key. Catalog storage is seeded through its domain port;

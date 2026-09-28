@@ -1,3 +1,9 @@
+// @formal entrypoint checkpoint.crash_preserves_durable_truth
+// @formal entrypoint checkpoint.recovery_never_precedes_commit
+// @formal entrypoint checkpoint.terminal_completion_clears_resume
+// @formal entrypoint runtime_resilience.retry_is_exact_bounded_terminal_and_fail_closed
+// @formal evidence llm.inference_budget_requires_positive_response_before_actual_watchdog
+// @formal evidence model_operation.reentry_requires_positive_execution_evidence
 //! The model-inference call seam: retry + circuit-breaker + streaming +
 //! mid-stream recovery (R1–R4) + durable checkpoint flush, plus the OTel GenAI
 //! `chat` span. Split out of `engine/mod.rs` (the step-loop driver) so the

@@ -3,9 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = []
-production_entrypoints = [
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''All production order-key scalar fields and optional u64 observations. The comparator is proved directly; event ownership and source selection require projection tests.'''

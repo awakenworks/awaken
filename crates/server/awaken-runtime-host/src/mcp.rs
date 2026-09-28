@@ -1,3 +1,6 @@
+// @formal entrypoint credential.mcp_adopted_revocation_removes_accepting_generation_before_new_calls
+// @formal entrypoint credential.mcp_client_admission_requires_exact_delivery_adapter_and_http_transport
+// @formal entrypoint credential.mcp_delivery_mode_is_frozen_and_never_falls_back
 //! MCP runtime services for the shared Host (ADR-0043 Phase 3).
 //!
 //! Owns the wire-client half of per-thread MCP wiring: given the servers a

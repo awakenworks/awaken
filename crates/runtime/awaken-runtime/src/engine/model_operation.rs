@@ -1,3 +1,6 @@
+// @formal entrypoint checkpoint.recovery_never_precedes_commit
+// @formal evidence model_operation.ordinal_never_wraps_or_reuses_a_coordinate
+// @formal evidence model_operation.reentry_requires_positive_execution_evidence
 //! Model invocation evidence uses the same incremental commit owner as tools.
 //! There is no receipt store, recovery scheduler, or new execution authority.
 

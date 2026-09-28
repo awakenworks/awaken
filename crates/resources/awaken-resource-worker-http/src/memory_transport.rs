@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.external_io_requires_durable_prepared_state
 //! Claim-fenced Memory snapshot and CAS write-back adapters.
 //!
 //! This is a Memory-specific Worker boundary. It carries one frozen

@@ -1,3 +1,4 @@
+// @formal evidence checkpoint.terminal_completion_clears_resume
 //! White-box decision-table coverage for the in-memory reference backend, filling
 //! the rows the shared conformance suite does not reach: commit validation and
 //! terminal-is-final rejection, awaiting-ticket await/clear, event-id density across

@@ -1,3 +1,4 @@
+// @formal entrypoint remote_attempt.replay_uses_stable_message_identity
 //! Stable, replay-safe identity for outbound A2A user messages.
 
 use awaken_agent_contract::agent::run::Id as RunId;

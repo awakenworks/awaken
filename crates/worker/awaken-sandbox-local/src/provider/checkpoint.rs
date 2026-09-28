@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Portable filesystem checkpoint encoding for the local provider.
 
 use std::io::{Read as _, Write};

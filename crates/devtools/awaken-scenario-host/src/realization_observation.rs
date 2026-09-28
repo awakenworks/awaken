@@ -1,3 +1,4 @@
+// @formal evidence session_realization.publication_excludes_staged_retired_generation
 //! File observation/fault adapter for the existing real HTTP scenario server.
 //! The contract port emits observations; this adapter never selects transitions.
 use awaken_session_realization_contract::realization_observation::{self, RealizationObserver};

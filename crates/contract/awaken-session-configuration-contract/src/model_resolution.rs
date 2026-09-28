@@ -1,3 +1,4 @@
+// @formal entrypoint model_route.session_override_reuses_only_exact_identity_and_resolves_every_mismatch
 //! Authority port for resolving a Session-scoped model selection.
 
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;

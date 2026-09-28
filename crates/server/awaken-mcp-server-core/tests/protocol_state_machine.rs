@@ -1,3 +1,4 @@
+// @formal evidence mcp.sessionless_stream_lifecycle
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

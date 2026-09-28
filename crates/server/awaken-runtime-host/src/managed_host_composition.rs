@@ -1,3 +1,6 @@
+// @formal entrypoint session_resources.install_replacement_requires_newer_or_unattempted_authority_amendment
+// @formal entrypoint session_run.reservation_never_executes
+// @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 //! Process-local composition of the Managed adapter around one shared Host.
 
 use super::*;

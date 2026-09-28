@@ -1,3 +1,5 @@
+// @formal evidence worker.drain_and_replacement_races_preserve_registry_authority
+// @formal evidence worker.incarnation_generation_fences_stale_processes
 //!
 //! The laws live in `awaken_store_conformance::worker_directory`; this file only
 //! supplies the backends.

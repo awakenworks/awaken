@@ -1,3 +1,4 @@
+// @formal entrypoint session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
 //! The single durable terminal-cleanup state machine.
 //!
 //! Preparation and publication modules contribute evidence and sidecars to

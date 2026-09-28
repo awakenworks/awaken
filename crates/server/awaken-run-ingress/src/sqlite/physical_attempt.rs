@@ -1,3 +1,4 @@
+// @formal evidence session_execution.one_physical_attempt_per_thread
 // SQLite physical-slot admission uses the canonical Dispatch transition kernel.
 // Included by sqlite.rs; no separate state or transition authority.
 struct PersistedAttemptFacts {

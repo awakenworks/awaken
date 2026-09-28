@@ -3,9 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = []
-production_entrypoints = [
-  "crates/server/awaken-protocol-managed/src/routes/user_profiles.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts the three User Profiles beta selectors (2026-03-24 legacy, 2026-08-18 current, 2026-09-04 external) crossed with the two selector-gated request fields (access_type, external_user_details): exactly one selector chooses a projection, none or several choose nothing, and the admitted field set is monotone in the selector's age (legacy admits neither, current admits access_type, external admits both). Production Rust type domain under the named bounded Kani harness assumptions; the HTTP decode of the selectors and fields is covered by the integration decision tables.'''

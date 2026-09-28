@@ -3,17 +3,9 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-runtime-contract/src/resolved.rs",
   "scripts/ci/check_crate_boundaries.py",
-  "crates/contract/awaken-runtime-contract/src/llm.rs",
-  "crates/contract/awaken-runtime-contract/tests/model_binding_projection.rs",
-  "crates/server/awaken-credential-materializer/src/inference.rs",
-  "crates/server/awaken-credential-materializer/src/brokered_inference.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs",
-  "crates/contract/awaken-runtime-contract/src/llm.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts the unchanged production admission(AdmissionFacts) kernel over every padded, provider-empty, model-empty and backend-class combination; the selected harness passes 85 checks. The derivation from real strings and Backend::from_ref remains executable-table and proptest evidence, not a whole parser proof. A2A URL/IDNA syntax is outside the supported Kani codegen and is not claimed.'''

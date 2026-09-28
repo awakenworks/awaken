@@ -1,3 +1,6 @@
+// @formal entrypoint assembly_role.local_managed_mount_requires_exact_local_worker_component
+// @formal entrypoint executable_projection.runtime_admission_requires_both_refreshes
+// @formal evidence resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
 //! Coordinator/AllInOne process startup over canonical domain components.
 
 use super::*;

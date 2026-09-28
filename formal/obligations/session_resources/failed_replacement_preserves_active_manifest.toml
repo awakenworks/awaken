@@ -5,18 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SessionResourceActivation.tla",
   "formal/tla/SessionResourceActivation.cfg",
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation/manifest_command.rs",
-  "crates/server/awaken-session-application/src/tests/realization.rs",
-  "crates/server/awaken-session-application/src/tests/resource_resume.rs",
+  "formal/tla/SessionResourceActivation.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation/manifest_command.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhaustively checks the closed production manifest-settlement plan across commit, completed rollback and retryable rollback failure. Only commit can promote pending; rollback clears pending while preserving active, and retryable failure preserves both active and pending. SessionResourceState::commit, rollback and note_retryable_failure consume that one plan.'''

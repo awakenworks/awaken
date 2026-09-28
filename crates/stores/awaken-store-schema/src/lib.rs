@@ -1,3 +1,6 @@
+// @formal entrypoint migration.replay_of_applied_plan_is_noop
+// @formal entrypoint migration.step_never_rolls_back_or_skips
+// @formal entrypoint migration.versions_are_dense_and_increasing
 //! The durable commit schema, shared by every store backend.
 //!
 //! The commit tables are a faithful projection of the staged `ThreadCommit`

@@ -1,3 +1,8 @@
+// @formal entrypoint audit.business_commit_and_audit_transition_are_atomic
+// @formal entrypoint config.generation_is_monotonic
+// @formal entrypoint config.stale_writer_never_applies
+// @formal entrypoint resource_binding.pending_effect_survives_until_readback
+// @formal entrypoint resource_binding.replay_is_idempotent_and_identity_stable
 //! Durable SQLite and Postgres adapters for the Agent Config repository ports.
 
 #![forbid(unsafe_code)]

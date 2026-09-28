@@ -1,3 +1,7 @@
+// @formal entrypoint sandbox.admission_never_weakens_isolation
+// @formal entrypoint sandbox.admission_requires_requested_capabilities
+// @formal entrypoint sandbox.fail_closed_policy_never_downgrades
+// @formal entrypoint sandbox.workspace_path_projection_is_one_logical_root_and_never_discloses_provider_host_paths
 //! Durable sandbox handles, provider selection, and live execution ports.
 
 use async_trait::async_trait;

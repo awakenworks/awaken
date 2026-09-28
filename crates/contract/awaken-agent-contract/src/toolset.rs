@@ -1,3 +1,5 @@
+// @formal entrypoint tool_policy.managed_agent_and_mcp_defaults_are_source_exact_and_configurable
+// @formal entrypoint tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
 //! Neutral, resolved tool-family policy shared by authoring and execution.
 
 use serde::{Deserialize, Serialize};

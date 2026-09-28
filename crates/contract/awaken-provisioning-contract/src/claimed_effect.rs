@@ -1,3 +1,4 @@
+// @formal entrypoint claimed_effect.retention_runs_once_for_an_unsettled_drop
 //! A physical effect that cannot run before someone is on record for it.
 //!
 //! # Why this exists as a type

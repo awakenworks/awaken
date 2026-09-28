@@ -1,3 +1,6 @@
+// @formal entrypoint authz.application_protocol_is_scoped_by_application_guard_not_service_guard
+// @formal entrypoint authz.decision_collapse_fail_closed
+// @formal entrypoint authz.method_mapping_total
 //! Request enforcement for the agent runtime's HTTP surface — the open
 //! "judgment" half of access control.
 //!

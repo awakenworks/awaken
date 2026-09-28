@@ -1,3 +1,7 @@
+// @formal entrypoint credential.mcp_adopted_revocation_removes_accepting_generation_before_new_calls
+// @formal entrypoint credential.mcp_delivery_mode_is_frozen_and_never_falls_back
+// @formal entrypoint credential.mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism
+// @formal entrypoint session_realization.publication_excludes_staged_retired_generation
 //! Durable MCP attachment generations owned by the Session aggregate (ADR-0066).
 
 use std::collections::{BTreeMap, BTreeSet};

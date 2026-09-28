@@ -1,3 +1,7 @@
+// @formal evidence session_resources.external_io_requires_durable_prepared_state
+// @formal evidence session_resources.failed_replacement_preserves_active_manifest
+// @formal evidence session_resources.restart_retries_same_pending_revision
+// @formal evidence session_resources.terminal_session_never_reactivates
 use super::*;
 use awaken_session_realization_contract::{
     ActivateSessionRealization, BeginSessionRealization, FrozenResourceTransitionUse,

@@ -1,3 +1,8 @@
+// @formal entrypoint assembly_role.process_role_projects_exact_startup_authority
+// @formal entrypoint assembly_role.worker_never_acquires_service_startup_or_migration_authority
+// @formal entrypoint service_lifecycle.startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
+// @formal entrypoint service_lifecycle.startup_wiring_is_exact_for_every_service_role
+// @formal entrypoint service_lifecycle.startup_wiring_requires_every_role_owned_component
 //! Role-owned store groups used by product-process startup.
 //!
 //! These types make acquisition authority explicit: a split process receives

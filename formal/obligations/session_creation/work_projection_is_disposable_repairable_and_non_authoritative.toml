@@ -8,13 +8,10 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/SessionRootProof.tla",
   "formal/tla/SessionStartProtocol.tla",
-  "crates/server/awaken-session-application/src/tests/creation.rs",
-  "formal/tla/SessionStartRootProof.tla",
   "formal/tla/SessionStartProtocolReachability.cfg",
+  "formal/tla/SessionStartRootProof.tla",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/application.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''SessionStartRootProof reuses the exact canonical SessionRootProof instance and proves acceptance implies a complete durable root, accepted activation failure remains queryable, complete root precedes projections, and Work row/root authority agree over unbounded abstract traces. It does not prove all Event/Work safety or recovery liveness.'''

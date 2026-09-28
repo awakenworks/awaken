@@ -3,28 +3,15 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
+  "e2e/managed_mcp_recovery_e2e.ts",
+  "formal/runtime-refinement-manifest.json",
   "formal/tla/SessionRealizationMutex.tla",
   "formal/tla/SessionRealizationRenewal.cfg",
-  "crates/server/awaken-session-application/src/realization/control.rs",
-  "crates/server/awaken-session-application/src/tests/realization.rs",
-  "formal/runtime-refinement-manifest.json",
-  "scripts/ci/render_runtime_refinement_traces.py",
   "scripts/ci/check_formal_mutations.py",
   "scripts/ci/formal_realization_trace_mutations.py",
-  "e2e/managed_mcp_recovery_e2e.ts",
-  "crates/contract/awaken-session-realization-contract/src/session_realization.rs",
-  "crates/contract/awaken-session-realization-contract/src/session_realization/model.rs",
-  "crates/devtools/awaken-scenario-host/src/realization_observation.rs",
-  "crates/server/awaken-session-application/src/realization/publication/collection_tests.rs",
-  "crates/contract/awaken-session-mcp-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/realization.rs",
+  "scripts/ci/render_runtime_refinement_traces.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/realization/control.rs",
-  "crates/server/awaken-session-application/src/realization/publication.rs",
-  "crates/contract/awaken-session-mcp-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/realization.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Existing fair phase-driver model includes the old+new Stage receipt regression witness. Thirteen real HTTP crash/restart traces additionally check continuous legal phases, Session/incarnation/epoch identity, completed physical effects before ACK, and terminal cardinality. Counterfactuals cover every selected field and directive/call/report occurrence in all thirteen rules, including missing authority, full reference identity, event order and positive renewal/permutation controls; the invocation artifact owns the executed case counts. Other forged receipt axes remain executable/kernel evidence; no universal implementation refinement or external exactly-once effect claim.'''

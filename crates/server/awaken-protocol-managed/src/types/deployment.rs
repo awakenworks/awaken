@@ -1,3 +1,4 @@
+// @formal entrypoint public_dto.deployment_failure_projection_is_total_exact_and_non_strengthening
 //! Wire types for the `deployments` + `deployment-runs` resources
 //! (`beta.deployments.*` / `beta.deploymentRuns.*`): `BetaManagedAgentsDeployment`
 //! and `BetaManagedAgentsDeploymentRun`.

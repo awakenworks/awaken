@@ -6,17 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ResourceReclamation.tla",
-  "crates/contract/awaken-resource-contract/src/lifecycle.rs",
-  "crates/stores/awaken-resource-store/src/sqlite_lifecycle.rs",
-  "crates/stores/awaken-resource-store/src/postgres.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-resource-contract/src/lifecycle.rs",
-  "crates/server/awaken-resource-reclaimer/src/lib.rs",
-  "crates/stores/awaken-resource-store/src/lib.rs",
-  "crates/stores/awaken-resource-store/src/sqlite_lifecycle.rs",
-  "crates/stores/awaken-resource-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhaustively checks that an existing fence or indexed reference cannot select fence installation and that physical purge is denied unless the current fence/reference result and final guard read are both clear. Cross-process serialization, durable row reads and transaction rollback remain database-engine responsibilities; executable SQLite/Postgres and late-guard tests retain those integration boundaries.'''

@@ -1,3 +1,5 @@
+// @formal evidence checkpoint.durable_watermark_never_rolls_back
+// @formal evidence tool.executor_entry_order
 //! Per-step durability: each completed step's messages/state/audit commit at
 //! the step boundary under a `Running` fact, so a crash loses at most the step
 //! in flight and readers see committed progress mid-run. The terminal step

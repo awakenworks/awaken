@@ -1,3 +1,5 @@
+// @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
+// @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
 //! Run driving for [`SharedHost`]: the neutral `run`/`resume`/`define_outcome`
 //! entry points, step finalization, queries, and the durable-ops verbs.
 

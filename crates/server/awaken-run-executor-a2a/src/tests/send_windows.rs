@@ -1,3 +1,4 @@
+// @formal evidence remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
 //! Observe the real executor at the existing commit and transport seams.
 
 use super::*;

@@ -1,3 +1,4 @@
+// @formal entrypoint tool_policy.scoped_catalog_admin_membership_is_exact_and_non_disclosing
 //! Scope-keyed tool visibility (ADR-0052 D3).
 //!
 //! Which tools an agent config may *name* is a projection of the global tool catalog

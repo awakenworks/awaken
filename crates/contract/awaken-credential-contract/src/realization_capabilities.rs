@@ -1,3 +1,7 @@
+// @formal entrypoint credential.material_profile_admission_preserves_complete_tuples
+// @formal entrypoint credential.mcp_delivery_mode_is_frozen_and_never_falls_back
+// @formal entrypoint credential.mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism
+// @formal entrypoint credential.mcp_delivery_selection_is_exact_and_fail_closed
 //! Installed credential realization evidence and its Worker manifest codec.
 
 use std::collections::{BTreeMap, BTreeSet};

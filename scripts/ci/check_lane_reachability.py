@@ -48,6 +48,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     "lefthook.yml",
     "formal/coverage.toml",
     "formal/obligations/**/*",
+    "web/src/**/*",
     "crates/**/*.rs",
     "crates/**/Cargo.toml",
     "scripts/**/*",

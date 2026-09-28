@@ -3,31 +3,13 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/SessionRoot.tla",
-  "formal/tla/SessionRoot.cfg",
-  "crates/server/awaken-session-application/src/mutation.rs",
-  "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs",
   "formal/runtime-refinement-manifest.json",
-  "scripts/ci/render_runtime_refinement_traces.py",
+  "formal/tla/SessionRoot.cfg",
+  "formal/tla/SessionRoot.tla",
   "scripts/ci/check_formal_mutations.py",
-  "crates/server/awaken-session-application/src/application.rs",
-  "crates/server/awaken-session-application/src/tests/authority.rs",
-  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
-  "crates/stores/awaken-session-store/src/lib.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
-  "crates/stores/awaken-session-store/src/postgres.rs",
-  "crates/stores/awaken-session-store/src/tests.rs",
-  "crates/server/awaken-session-application/src/tests/observed_commit.rs",
+  "scripts/ci/render_runtime_refinement_traces.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/mutation.rs",
-  "crates/server/awaken-session-application/src/application.rs",
-  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
-  "crates/stores/awaken-session-store/src/lib.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
-  "crates/stores/awaken-session-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Existing SessionRoot kernel with two nonmonotonic observation values, four revisions and two realization epochs. Temporal creation/update invariants are bounded TLC evidence, not Rust refinement.'''

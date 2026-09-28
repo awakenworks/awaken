@@ -6,13 +6,8 @@ tcb_assumptions = [
   "external.orchestrator_correctness",
   "external.worker_host_executor_equivalence",
 ]
-evidence = [
-  "crates/bin/awaken-worker/src/bootstrap.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-worker-transport-security/src/lib.rs",
-  "crates/bin/awaken-worker/src/bootstrap.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite production selector: 6 endpoint x 7 credential x 6 identity postures; exactly HTTPS plus signed or Pod-bound credential verification plus exact identity is admitted. TokenReview parsing, API-server honesty, TLS implementation, deployment wiring and physical termination are outside this kernel proof.'''

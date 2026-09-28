@@ -1,3 +1,8 @@
+// @formal entrypoint delegation.cancel_intent
+// @formal entrypoint delegation.depth_cycle_parallel_total
+// @formal entrypoint delegation.relationship_identity
+// @formal entrypoint delegation.relationship_transition
+// @formal evidence delegation.remote_cancel_redelivery
 //! Durable parent/child Run relationships created by Agent tool calls.
 //!
 //! This aggregate owns relationship identity, lineage budgets, and cancellation.

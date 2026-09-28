@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! Trusted Kubernetes facts lowered into existing Coordinator ports.
 
 use super::*;

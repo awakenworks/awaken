@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox_continuation.distinct_mutable_roots_share_one_retained_claim_without_aliasing
 //! Pure projection of neutral bind material into Kubernetes objects.
 
 use std::collections::BTreeMap;

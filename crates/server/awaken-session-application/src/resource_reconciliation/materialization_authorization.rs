@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.external_io_requires_durable_prepared_state
 //! Session-root authorization for ordinary Resource materialization.
 
 use awaken_session_realization_contract::{

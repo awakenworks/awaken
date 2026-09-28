@@ -1,3 +1,10 @@
+// @formal entrypoint session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
+// @formal entrypoint session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
+// @formal entrypoint session.agent_message_missing_lifecycle_projection_relinquishes_without_settlement
+// @formal entrypoint session.agent_message_requires_exact_committed_tool_source_and_payload
+// @formal entrypoint session.agent_message_target_boundary_not_source_receipt_settles_activity
+// @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 //! Session-owned admission for asynchronous Agent coordination.
 //!
 //! This module adds no child registry. It resolves the roster already frozen by

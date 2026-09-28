@@ -1,3 +1,5 @@
+// @formal entrypoint session_environment.closed_revoked_recovery_consumes_only_exact_unprotected_owner
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Worker projection synchronization and physical MCP effect adapters.
 //!
 //! The canonical realization phase driver remains in the parent module. This

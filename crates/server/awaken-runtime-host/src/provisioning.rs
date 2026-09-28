@@ -1,3 +1,5 @@
+// @formal entrypoint resource_catalog.artifact_publication_receipt_requires_exact_publication_identity
+// @formal entrypoint sandbox.workspace_path_projection_is_one_logical_root_and_never_discloses_provider_host_paths
 //! Session provisioning + capability advertisement on [`SharedHost`]: the sandbox
 //! spec (with staged resource mounts, ADR-0038), the per-thread resource staging +
 //! blob store accessor, and the tool/skill/delegate sets advertised on a managed

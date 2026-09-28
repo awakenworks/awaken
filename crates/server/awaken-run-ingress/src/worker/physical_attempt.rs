@@ -1,3 +1,10 @@
+// @formal entrypoint live_inbox.attempt_scope_is_local_current_capability_gated_and_never_carried_over
+// @formal entrypoint remote_worker.execution_requires_claimed_snapshot
+// @formal entrypoint remote_worker.single_live_claim_owner
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
+// @formal entrypoint session_execution.pre_start_cancel_ack_requires_fresh_slot_install
+// @formal entrypoint worker_credential.exact_revision_and_current_epoch_required
+// @formal entrypoint worker_credential.expired_observation_never_executes
 //! Physical model/tool/Sandbox admission for one claimed dispatch.
 //!
 //! This is part of [`super::DispatchWorker`], not a second executor or state

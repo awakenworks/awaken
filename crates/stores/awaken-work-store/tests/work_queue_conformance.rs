@@ -1,3 +1,8 @@
+// @formal evidence session_work.release_requires_exact_owner_and_epoch
+// @formal evidence work.exact_boundary_reclaim
+// @formal evidence work.pre_heartbeat_worker_identity
+// @formal evidence work.single_active_claim
+// @formal evidence work.terminal_lease_clear
 //! Trait-generic **conformance suite** for the `WorkQueue` port — the shared behavioural
 //! contract EVERY backend must satisfy, run here against the in-memory reference,
 //! SQLite, and PostgreSQL backends (ADR-0059 / ADR-0039-slice-2.6 pattern, mirroring

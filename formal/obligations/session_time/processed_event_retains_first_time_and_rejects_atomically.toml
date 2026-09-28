@@ -3,16 +3,13 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/SessionEventProtocol.tla",
-  "formal/tla/SessionEventProtocol.cfg",
-  "crates/contract/awaken-session-event-contract/src/lib.rs",
   "formal/runtime-refinement-manifest.json",
-  "scripts/ci/render_runtime_refinement_traces.py",
+  "formal/tla/SessionEventProtocol.cfg",
+  "formal/tla/SessionEventProtocol.tla",
   "scripts/ci/check_formal_mutations.py",
+  "scripts/ci/render_runtime_refinement_traces.py",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-event-contract/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''All u64 clock/cursor inputs and optional legacy metadata of the production processed-marker reducer. Batch lookup and repository atomicity remain executable adapter evidence.'''

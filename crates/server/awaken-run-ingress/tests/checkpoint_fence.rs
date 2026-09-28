@@ -1,3 +1,4 @@
+// @formal evidence checkpoint.terminal_completion_clears_resume
 mod harness;
 
 use std::sync::Arc;

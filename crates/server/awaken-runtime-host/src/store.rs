@@ -1,3 +1,5 @@
+// @formal entrypoint background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
+// @formal entrypoint remote_worker.committed_truth_is_coordinator_owned
 //! The per-thread commit boundary injected by Coordinator or projected by Worker.
 //!
 //! A session's commit coordinator is the source of committed truth. Runtime Host

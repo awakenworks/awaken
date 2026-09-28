@@ -1,3 +1,4 @@
+// @formal entrypoint memory_extraction.unknown_execution_never_reenters_retry
 //! Out-of-band memory extraction: the process-startup wiring.
 //!
 //! The persistence half — the `write_memory` tool, the extractor agent's config

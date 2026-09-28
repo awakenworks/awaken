@@ -1,3 +1,4 @@
+// @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 use super::*;
 use awaken_sandbox_container::k8s::{
     ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessStopper,

@@ -1,3 +1,5 @@
+// @formal entrypoint worker.accepted_protocol_version_is_inside_advertised_range
+// @formal entrypoint worker.sandbox_tool_recovery_is_a_hard_claim_axis
 use std::collections::BTreeSet;
 
 use awaken_provisioning_contract::{ResourceLimits, SandboxCapabilities};

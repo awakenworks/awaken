@@ -8,15 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerCredentialLiveness.tla",
-  "crates/contract/awaken-worker-contract/src/registry.rs",
-  "crates/bin/awaken-worker/src/credential_liveness.rs",
-  "crates/bin/awaken-worker/src/lib.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-worker-contract/src/registry.rs",
-  "crates/bin/awaken-worker/src/credential_liveness.rs",
-  "crates/bin/awaken-worker/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The closed production DynamicEvidenceProbeState domain; startup readiness is independent of pending, successful, or failed probe state while missing dynamic evidence remains a separate fail-closed placement gate.'''

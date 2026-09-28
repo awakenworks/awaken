@@ -1,3 +1,4 @@
+// @formal evidence worker.placement_extension_cannot_widen_eligibility
 //! `AnyDispatchStore`, the runtime-selectable backend (ADR-0019 multi-node
 //! wiring). Proves the enum-free wrapper delegates the full `Dispatch` bundle to
 //! its active backend and preserves the owner-scoped claim/lease semantics the

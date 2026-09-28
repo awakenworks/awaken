@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! `awaken-sandbox` — the execution-plane binary (opposite the control-plane
 //! `awaken`). The first arg selects the role the pod runs: `acp`, `hand`, or an
 //! internal filesystem effect used by the host's container adapter.

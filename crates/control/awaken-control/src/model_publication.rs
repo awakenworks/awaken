@@ -1,3 +1,5 @@
+// @formal entrypoint config.inference_access_resolved_once_at_publication
+// @formal entrypoint model_readiness.brokered_and_direct_routes_require_exact_access_evidence
 //! Control-owned catalog publication of complete model candidates.
 //!
 //! The adapter reads one catalog snapshot and, when required, one Workspace

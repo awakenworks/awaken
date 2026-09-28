@@ -1,3 +1,6 @@
+// @formal evidence data_subject.stale_writer_never_applies
+// @formal evidence erasure.checkpoint_never_forgets_completed_targets
+// @formal evidence erasure.concurrent_replicas_have_one_checkpoint_winner
 //! Backend-generic conformance for `DataSubjectRepo`, run against every store backend
 //! (in-memory + sqlite), plus a sqlite cross-restart durability check.
 

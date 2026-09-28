@@ -1,3 +1,6 @@
+// @formal entrypoint worker.drain_and_replacement_races_preserve_registry_authority
+// @formal entrypoint worker.incarnation_generation_fences_stale_processes
+// @formal evidence worker_credential.stale_heartbeat_never_rolls_back_revision
 #[cfg(all(test, feature = "loom"))]
 use loom::sync::Mutex;
 use std::collections::BTreeMap;

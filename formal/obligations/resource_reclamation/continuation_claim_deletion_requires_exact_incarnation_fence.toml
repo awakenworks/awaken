@@ -2,21 +2,8 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/worker/awaken-sandbox-container/src/k8s/creation.rs",
-  "crates/worker/awaken-sandbox-container/src/k8s/runtime_contract.rs",
-  "crates/worker/awaken-sandbox-container/src/provider.rs",
-  "crates/worker/awaken-sandbox-container/src/runtime.rs",
-]
-production_entrypoints = [
-  "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",
-  "crates/worker/awaken-sandbox-container/src/k8s.rs",
-  "crates/worker/awaken-sandbox-container/src/k8s/creation.rs",
-  "crates/worker/awaken-sandbox-container/src/k8s/runtime_contract.rs",
-  "crates/worker/awaken-sandbox-container/src/provider.rs",
-  "crates/worker/awaken-sandbox-container/src/runtime.rs",
-  "crates/worker/awaken-sandbox-container/src/runtime/realization.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust deletion admission type domain under the named bounded Kani harness assumptions.'''

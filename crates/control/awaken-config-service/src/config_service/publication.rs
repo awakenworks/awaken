@@ -1,3 +1,5 @@
+// @formal entrypoint config.publication_revision_is_scoped_by_execution_target_and_exact_replay
+// @formal entrypoint config_activation.stale_publication_never_installs
 //! Immutable publication persistence, registration, preview, and reconciliation.
 //!
 //! Publication construction remains delegated to publication_build and policy

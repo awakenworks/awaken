@@ -1,3 +1,5 @@
+// @formal entrypoint sandbox.file_read_authority_is_explicit
+// @formal entrypoint session_files.read_only_tree_publication_requires_complete_restricted_safe_staging
 //! Path-safe file operations inside a Session-owned container workspace.
 
 use awaken_provisioning_contract as pc;

@@ -8,13 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/CredentialInventory.tla",
-  "crates/control/awaken-credential-vault/src/repo/credential_operations/tests.rs",
-  "crates/control/awaken-control/src/component.rs",
 ]
-production_entrypoints = [
-  "crates/control/awaken-credential-vault/src/repo/inventory.rs",
-  "crates/control/awaken-control/src/component.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The sole generic credential inventory classifier has exactly Preserve, ReportOrphan and ReportMissing outcomes; it exposes no delete outcome, and the compatibility report always returns an empty orphaned_deleted set. Kani exhausts all sixteen Boolean cause combinations and permits ReportOrphan exactly for a present sec:cred material that is neither committed nor pending.'''

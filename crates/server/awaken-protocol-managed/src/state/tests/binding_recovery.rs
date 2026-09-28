@@ -1,3 +1,4 @@
+// @formal evidence credential.managed_rollout_abstract_ack_requires_every_target_adoption
 use super::*;
 use crate::state::test_support::{ConflictInjectingRepo, ReadControl};
 use awaken_runtime_contract::tool_batch::ToolBatch;

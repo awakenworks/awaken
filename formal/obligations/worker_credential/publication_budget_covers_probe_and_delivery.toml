@@ -5,19 +5,8 @@ tcb_assumptions = [
   "external.eventual_network_delivery",
   "external.orchestrator_correctness",
 ]
-evidence = [
-  "crates/bin/awaken-worker/src/credential_liveness.rs",
-  "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs",
-  "crates/bin/awaken-worker/src/bootstrap.rs",
-  "crates/bin/awaken-worker/src/lib.rs",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-]
-production_entrypoints = [
-  "crates/bin/awaken-worker/src/credential_liveness/observation_budget.rs",
-  "crates/bin/awaken-worker/src/bootstrap.rs",
-  "crates/bin/awaken-worker/src/lib.rs",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Standalone Kani verifies the actual production Duration kernel over all u64 seconds and all valid nanoseconds, using an independent wide normalized-sum oracle. Admission requires positive probe and TTL strictly greater than probe plus heartbeat plus request budget; overflow denies.'''

@@ -1,3 +1,7 @@
+// @formal entrypoint session.runtime_projection_historical_pending_precedes_terminal_projection
+// @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
+// @formal entrypoint session_time.event_order_is_independent_of_wall_time
+// @formal evidence session_event_batch.idempotent_receipt_is_admission_stable
 //! Canonical ordering and time projection for the disposable Managed event vector.
 
 use super::*;

@@ -8,14 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteTool.tla",
-  "crates/contract/awaken-tool-contract/src/tool.rs",
-  "crates/worker/awaken-tool-relay/src/wire.rs",
-  "crates/worker/awaken-tool-relay/tests/relay.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-tool-contract/src/tool.rs",
-  "crates/worker/awaken-tool-relay/src/executor.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production identity-source decision before Hand dispatch: a present Runtime token always selects the canonical ledger_id, durable recovery without that token rejects before dispatch, and only non-durable compatibility execution may use call identity. Kani proves the closed source decision; fingerprint collision resistance, serialization, Runtime context installation, transport delivery, and external orchestration remain implementation or external evidence.'''

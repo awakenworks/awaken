@@ -5,9 +5,7 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/OutcomeLifecycle.tla",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-ext-goal/src/outcome.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

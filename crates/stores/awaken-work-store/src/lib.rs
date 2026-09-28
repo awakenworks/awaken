@@ -1,3 +1,9 @@
+// @formal entrypoint session_work.release_requires_exact_owner_and_epoch
+// @formal entrypoint work.exact_boundary_reclaim
+// @formal entrypoint work.heartbeat_compare_and_set
+// @formal entrypoint work.lease_authority_snapshot_and_owner_mutations_are_atomic
+// @formal entrypoint work.single_active_claim
+// @formal entrypoint work.terminal_lease_clear
 //! Durable [`WorkQueue`] backend: the self-hosted environment work queue over a
 //! store, so a session dispatched to a self-hosted environment survives a restart
 //! and can be claimed by a worker on any node. SQLite (embedded, single machine)

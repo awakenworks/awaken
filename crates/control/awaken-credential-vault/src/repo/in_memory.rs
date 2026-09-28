@@ -1,3 +1,10 @@
+// @formal entrypoint credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+// @formal entrypoint credential.managed_creation_begin_rejects_every_published_source_or_child_identity
+// @formal entrypoint credential.managed_creation_publishes_source_and_child_atomically
+// @formal entrypoint credential.managed_rollout_event_id_replay_requires_exact_payload_and_colliding_ack_is_rejected
+// @formal entrypoint credential.managed_rollout_outbox_is_atomic_with_exact_pair_publication
+// @formal entrypoint credential.rotation_revision_cas
+// @formal evidence credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
 //! Canonical in-memory credential repository used by tests and fixtures.
 
 use std::{collections::HashMap, sync::Mutex};

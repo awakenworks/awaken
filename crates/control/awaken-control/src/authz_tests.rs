@@ -1,3 +1,4 @@
+// @formal entrypoint authz.run_backed_protocol_routes_use_the_exact_run_action_namespace
 use super::*;
 use awaken_iam_contract::AccountId;
 

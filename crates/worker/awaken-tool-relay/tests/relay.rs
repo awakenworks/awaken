@@ -1,3 +1,8 @@
+// @formal evidence remote_tool.cancelled_channel_never_correlates_a_late_reply_to_another_call
+// @formal evidence remote_tool.indeterminate_never_false_success
+// @formal evidence remote_tool.invoke_at_most_once
+// @formal evidence remote_tool.result_matches_operation
+// @formal evidence remote_tool.stable_operation_identity
 //! ADR-0044 first vertical slice: prove the brain–hand split end to end over an
 //! in-process duplex, plus the Indeterminate and idempotent-re-drive guarantees.
 

@@ -1,3 +1,4 @@
+// @formal evidence session.agent_message_requires_exact_committed_tool_source_and_payload
 //! The ten required roles of [`SessionRuntime`]: a runtime that answers `Some` from an
 //! accessor owns every method of that role (ADR-0081 capability ladder); neutral behaviour lives in [`super::neutral`].
 

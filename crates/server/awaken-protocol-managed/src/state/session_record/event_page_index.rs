@@ -1,3 +1,4 @@
+// @formal evidence session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 //! Derived positions and primary action references for one published event log.
 //! Unlike the canonicalizer's pre-sort Message joins, these positions describe
 //! the final ordered vector and are installed with it at the existing cache CAS.

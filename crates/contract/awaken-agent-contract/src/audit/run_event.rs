@@ -1,3 +1,4 @@
+// @formal evidence tool_result.resume_receipt_is_atomic_with_ticket_consumption
 //! The rich, typed domain event a run emits at its commit boundary.
 //!
 //! `RunEvent` is the authoritative producer-side vocabulary: each variant is a

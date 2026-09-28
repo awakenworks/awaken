@@ -5,22 +5,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/StoreHistory.tla",
-  "formal/tla/StoreHistory.cfg",
-  "crates/stores/awaken-store-conformance/src/lib.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
   "crates/stores/awaken-store-postgres/src/migrations/V0002__transactional_dense_commit_order.sql",
-  "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
+  "formal/tla/StoreHistory.cfg",
+  "formal/tla/StoreHistory.tla",
 ]
-production_entrypoints = [
-  "crates/stores/awaken-store-conformance/src/lib.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''

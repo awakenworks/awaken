@@ -1,3 +1,4 @@
+// @formal entrypoint session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
 //! Child lifecycle, disposition, delegation, and aggregate terminal projection.
 
 use super::*;

@@ -1,3 +1,6 @@
+// @formal entrypoint resource_binding.draft_audit_and_effect_are_atomic
+// @formal entrypoint resource_binding.pending_effect_survives_until_readback
+// @formal entrypoint resource_binding.replay_is_idempotent_and_identity_stable
 //! Host-side wiring for the management assistant (ADR-0052): the real adapters behind
 //! the admin tools' ports, plus the startup seeding that publishes the assistant as an
 //! ordinary agent in the reserved scope.

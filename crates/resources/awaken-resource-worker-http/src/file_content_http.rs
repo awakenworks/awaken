@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.external_io_requires_durable_prepared_state
 //! Coordinator HTTP adapter for claim-fenced immutable File reads.
 
 use std::sync::Arc;

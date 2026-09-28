@@ -1,3 +1,4 @@
+// @formal entrypoint session.runtime_projection_historical_pending_precedes_terminal_projection
 //! Historical Awaiting targets recovered from the Thread audit prefix.
 
 use super::*;

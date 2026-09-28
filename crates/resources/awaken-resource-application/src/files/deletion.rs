@@ -1,3 +1,4 @@
+// @formal evidence resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
 //! Logical File deletion and recovery share the original durable intent.
 
 use super::{FileApplication, file_catalog_error, logical_file_reference};

@@ -1,3 +1,5 @@
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
 //! Claim-bound dispatch realization and worker selection.
 
 use super::session_realization::WorkerMcpEffects;

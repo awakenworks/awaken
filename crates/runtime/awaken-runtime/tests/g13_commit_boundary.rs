@@ -1,3 +1,7 @@
+// @formal evidence thread_state.atomic_commit_and_replay
+// @formal evidence thread_state.exclusive_batch_conflict
+// @formal evidence thread_state.materialization_effect
+// @formal evidence thread_state.run_identity_binding
 //! G1 / G13 commit boundary conformance tests (memory coordinator).
 //!
 //! G1: durable runtime writes go through `CommitCoordinator`; `ThreadCommit`

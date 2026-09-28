@@ -1,3 +1,8 @@
+// @formal entrypoint acp.tool_export_requires_claim_execution_environment
+// @formal entrypoint background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
+// @formal entrypoint memory.recall_config_contributes_authority_exactly_when_enabled
+// @formal entrypoint session_run.reservation_never_executes
+// @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 //! Session/context management for [`SharedHost`]: building a thread's commit
 //! boundary, stream-checkpoint store, run-delivery ingress, and `ctx_for`.
 

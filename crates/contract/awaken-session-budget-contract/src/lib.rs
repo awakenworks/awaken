@@ -1,3 +1,4 @@
+// @formal entrypoint session_budget.accepted_cost_arithmetic_never_wraps
 //! Exact Managed list-cost budget values owned by the Session aggregate.
 
 use std::collections::BTreeMap;

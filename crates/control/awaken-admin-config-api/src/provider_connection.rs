@@ -1,3 +1,4 @@
+// @formal entrypoint credential.provider_scope_widening_requires_exact_revision_provider_and_endpoint
 //! Provider-connection application service shared by HTTP and embedded hosts.
 //!
 //! The service owns the cross-aggregate use case; transports own only scope,

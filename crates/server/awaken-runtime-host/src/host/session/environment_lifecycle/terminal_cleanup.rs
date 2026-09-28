@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Two-stage terminal cleanup orchestration and process-local acknowledgement.
 //!
 //! Durable phase authority remains in the Session aggregate. This private split

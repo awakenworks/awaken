@@ -1,3 +1,4 @@
+// @formal entrypoint environment.registration_intent_is_atomic_recoverable_and_idempotent
 //! Canonical Control application service for static Environment definitions.
 //!
 //! The service is the only command path that coordinates `EnvRegistry`, exact

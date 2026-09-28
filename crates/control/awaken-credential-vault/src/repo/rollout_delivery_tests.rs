@@ -1,3 +1,4 @@
+// @formal evidence credential.managed_rollout_failure_or_busy_session_remains_pending
 //! Exercise the existing delivery Future at its repository-call boundary.
 //! This monitor has no storage state or repository algorithm. Every repository
 //! call fails a check; actual adapters, durability and Session busy detection

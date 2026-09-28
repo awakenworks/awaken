@@ -8,12 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ObservationReconcileProof.tla",
-  "crates/bin/awaken-cli/src/observation_reconcile.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-worker-contract/src/registry.rs",
-  "crates/bin/awaken-cli/src/observation_reconcile.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The opaque production fence owns the completion transition and Kani exhausts both completion outcomes over arbitrary u8 fingerprints. Failure retains the exact prior admission relation; only success installs the attempted fingerprint. Publication result integrity and the gate mutex remain runtime TCB.'''

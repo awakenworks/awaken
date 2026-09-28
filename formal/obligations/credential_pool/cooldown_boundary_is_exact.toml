@@ -5,13 +5,8 @@ tcb_assumptions = [
   "external.mcp_busy_acp_revocation_propagation_and_process_termination",
   "external.provider_revocation_propagation",
 ]
-evidence = [
-  "crates/control/awaken-credential-vault/src/availability.rs",
-]
-production_entrypoints = [
-  "crates/control/awaken-credential-vault/src/lib.rs",
-  "crates/control/awaken-credential-vault/src/availability.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

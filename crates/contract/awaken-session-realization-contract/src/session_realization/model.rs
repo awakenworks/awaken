@@ -1,3 +1,7 @@
+// @formal entrypoint session_realization.concurrent_drivers_preserve_one_owner_fence
+// @formal entrypoint session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal evidence session_realization.publication_excludes_staged_retired_generation
 //! Immutable realization commands, projections and exact receipt vocabulary.
 //! Control roles remain at the parent boundary; no state authority moves.
 

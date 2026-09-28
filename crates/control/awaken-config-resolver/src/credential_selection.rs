@@ -1,3 +1,4 @@
+// @formal entrypoint credential.provider_scope_widening_requires_exact_revision_provider_and_endpoint
 //! Resolver-owned model dialect and credential-selection joins.
 //!
 //! This module is the single secret-free selection authority shared by

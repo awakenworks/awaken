@@ -1,3 +1,5 @@
+// @formal entrypoint compaction.artifact_identity_coverage_and_content_fail_closed
+// @formal entrypoint context.window_anchor_preserves_complete_prefix_coverage
 //! Compaction as a plugin hook.
 //!
 //! [`CompactPlugin`] contributes a `BeforeInference` [`PhaseHook`] symmetric with

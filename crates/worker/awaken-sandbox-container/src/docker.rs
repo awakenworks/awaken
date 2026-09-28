@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.docker_absence_requires_explicit_backend_not_found
 //! Real Docker backend (ADR-0041 Slice 5, `docker` feature).
 //!
 //! Implements [`ContainerRuntime`] over **bollard** — the Docker Engine HTTP API

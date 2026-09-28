@@ -5,14 +5,11 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "formal/tla/MemoryInvalidationLifecycle.tla",
   "formal/tla/MemoryInvalidationLifecycle.cfg",
+  "formal/tla/MemoryInvalidationLifecycle.tla",
   "scripts/ci/check_formal_mutations.py",
-  "crates/worker/awaken-sandbox-memoryd/src/fuse/tests.rs",
 ]
-production_entrypoints = [
-  "crates/worker/awaken-sandbox-memoryd/src/fuse.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Two projection-local listeners; setup failure/unwind and successful handle disposal share stop, exit and join. Five semantic mutants and four witnesses cover missing stop, premature return, detached join, peer cancellation and disabled completion. Fair worker scheduling and terminating cache critical sections are assumed.'''

@@ -2,19 +2,14 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
   "formal/tla/RuntimeSystemProof.tla",
-  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
-  "crates/runtime/awaken-runtime/tests/delegation.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
-  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts all three production DelegationStatus values and both RelationshipTransition values. Only Open plus RequestCancel applies a CancelRequested successor and newly enables cancellation projection; a repeated request stutters without manufacturing another relationship effect, completion never enables cancellation, and crossed terminal transitions produce no successor.'''

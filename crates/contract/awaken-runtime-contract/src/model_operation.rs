@@ -1,3 +1,7 @@
+// @formal entrypoint checkpoint.recovery_never_precedes_commit
+// @formal entrypoint model_operation.ordinal_never_wraps_or_reuses_a_coordinate
+// @formal entrypoint model_operation.reentry_requires_positive_execution_evidence
+// @formal evidence llm.inference_budget_requires_positive_response_before_actual_watchdog
 //! Run-scoped evidence for actual model executor invocations, not usage or a
 //! provider terminal receipt. The existing ThreadCommit log owns persistence.
 

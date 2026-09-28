@@ -2,24 +2,16 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.exactly_once_side_effects",
   "external.async_runtime_synchronization_and_scheduling",
   "external.database_engine_correctness",
+  "external.exactly_once_side_effects",
 ]
 evidence = [
-  "formal/tla/ToolBatch.tla",
-  "formal/tla/ThreadCommitProjection.tla",
   "formal/runtime-refinement-manifest.json",
-  "crates/contract/awaken-tool-contract/src/tool.rs",
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
-  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
-  "crates/runtime/awaken-runtime/tests/permission.rs",
-  "crates/runtime/awaken-runtime/tests/tools.rs",
+  "formal/tla/ThreadCommitProjection.tla",
+  "formal/tla/ToolBatch.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''ToolBatch::recover_execution is the sole production recovery admission and attempt-phase owner for Requested or Executing ordinary calls. It combines the pinned ToolRecoveryPolicy, ToolRecoveryMode::is_supported_by trusted capability rule, and the existing next_execution_attempt budget kernel; dispatch::recover_tool_batch now consumes that one aggregate action instead of independently deciding NeverReplay, capability mismatch, and exhaustion.'''

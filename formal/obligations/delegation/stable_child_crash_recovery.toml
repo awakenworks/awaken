@@ -4,12 +4,8 @@ status = "model_linked"
 tcb_assumptions = []
 evidence = [
   "formal/tla/Delegation.tla",
-  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Captured production Runtime scenarios and transition families declared by formal/runtime-refinement-manifest.json.'''

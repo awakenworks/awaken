@@ -1,3 +1,4 @@
+// @formal evidence remote_worker.pending_signal_is_consumed_by_commit
 //! Negative-path / edge-case correctness tests for the durable dispatch worker.
 //!
 //! These drive `DispatchWorker` directly (claim + drive + settle) rather than

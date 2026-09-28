@@ -1,3 +1,6 @@
+// @formal evidence checkpoint.crash_preserves_durable_truth
+// @formal evidence run.commit_shape_atomicity
+// @formal evidence thread_state.atomic_commit_and_replay
 //! SQLite process-death and capacity-failure refinement tests.
 
 use std::io::{Seek, SeekFrom, Write};

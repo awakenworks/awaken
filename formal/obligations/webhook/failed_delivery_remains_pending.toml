@@ -2,18 +2,14 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
   "external.exactly_once_side_effects",
 ]
 evidence = [
   "formal/tla/WebhookOutbox.tla",
-  "crates/server/awaken-webhook-managed/tests/crud.rs",
-  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-webhook-managed/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production notifier's borrowed pending-fact admission yields no completion identity for a failed delivery and the sole drain therefore cannot call complete_lifecycle on that row. Kani exhausts success/failure and repeats the failed decision without assumptions or stubs; native fault tests retain the exact pending String fact after exhausted transport retries. Repository retention until complete_lifecycle, SQL behavior, process durability, async cancellation/scheduling, HTTP outcomes and external side effects remain implementation evidence or TCB.'''

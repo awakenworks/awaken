@@ -1,3 +1,4 @@
+// @formal evidence worker.incarnation_generation_fences_stale_processes
 //! The production migration is one portable SQL body for both durable backends.
 use super::*;
 use crate::{PostgresWorkerDirectory, SqliteWorkerDirectory};

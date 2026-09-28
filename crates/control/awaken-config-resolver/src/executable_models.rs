@@ -1,3 +1,4 @@
+// @formal entrypoint model_readiness.brokered_and_direct_routes_require_exact_access_evidence
 use awaken_credential_vault::CredentialSource;
 use awaken_model_catalog::ProviderCatalog;
 use awaken_runtime_contract::resolved::ProviderAccessKind;

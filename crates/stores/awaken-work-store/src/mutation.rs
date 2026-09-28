@@ -1,3 +1,5 @@
+// @formal entrypoint work.lease_authority_snapshot_and_owner_mutations_are_atomic
+// @formal entrypoint work.persisted_epoch_is_exact_nonnegative_and_nonwrapping
 //! Pure mutation helpers shared by the durable WorkQueue adapters.
 
 use std::collections::BTreeMap;

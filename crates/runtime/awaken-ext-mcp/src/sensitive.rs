@@ -1,3 +1,4 @@
+// @formal entrypoint mcp.sensitive_marker_projection_is_never_public_or_widened
 //! Sensitive-field marking and redaction for MCP tool schemas.
 //!
 //! Sensitivity lives **in the tool's input schema** so it travels with the

@@ -1,3 +1,5 @@
+// @formal entrypoint sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Shared Local/Namespace terminal disposal, under the original marker participant.
 //! Session owns durable authorization; this adapter serializes physical effects.
 

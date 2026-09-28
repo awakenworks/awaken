@@ -1,3 +1,4 @@
+// @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 //! Pod authentication through the production registration/client path. The API
 //! review is a fixture; Registry persistence and HTTP are real, not k3d evidence.
 

@@ -1,3 +1,5 @@
+// @formal entrypoint live_inbox.boundary_drain_retires_exactly_the_returned_best_effort_fold
+// @formal entrypoint live_inbox.boundary_priority_is_pause_then_input_then_idle
 //! The safe loop boundary as a shared kernel policy (ADR-0054).
 //!
 //! A *safe boundary* is the point in an execution loop where the current Step

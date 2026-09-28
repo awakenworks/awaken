@@ -39,19 +39,22 @@ import re
 import subprocess
 import sys
 import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import formal_anchors
 from formal_sources import SourceError, detached_git_environment, source_text
 
-# Input set: the profile, every obligation file, and the Rust sources and Cargo
-# manifests whose anchors name the harness of each obligation. Each gate that
-# loads the ledger spells the same globs in its own INPUT_GLOBS.
+# Input set: the profile, every obligation file, the Rust sources and Cargo
+# manifests whose anchors name the harness of each obligation, and the Web
+# sources whose opening lines anchor evidence. Each gate that loads the
+# ledger spells the same globs in its own INPUT_GLOBS.
 INPUT_GLOBS: tuple[str, ...] = (
     "formal/coverage.toml",
     "formal/obligations/**/*",
     "crates/**/*.rs",
     "crates/**/Cargo.toml",
+    "web/src/**/*",
 )
 
 # Consumers of these names: ``load``/``files``/``write`` below.
@@ -144,24 +147,53 @@ def present(root: Path) -> bool:
     )
 
 
-def _anchored(root: Path, rows: dict[str, dict]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Obligation id -> harness names, and -> harness files, from the anchors.
+@dataclass
+class Derived:
+    """What the source anchors state about each obligation id.
 
-    Refuses every orphan by source location: an anchor outside a harness
-    block, an anchor naming no obligation file, a harness serving no
-    obligation, a repeated anchor, and two harnesses with one name.
+    Consumers: ``load`` (adds it to the stored rows) and ``files`` (leaves it
+    out of the stored rows, so a fixture round-trips).
+    """
+
+    harnesses: dict[str, set[str]] = field(default_factory=dict)
+    evidence: dict[str, set[str]] = field(default_factory=dict)
+    entrypoints: dict[str, set[str]] = field(default_factory=dict)
+
+    def add(self, table: dict[str, set[str]], identifier: str, value: str) -> None:
+        table.setdefault(identifier, set()).add(value)
+
+
+def _derived(root: Path, rows: dict[str, dict] | None) -> Derived:
+    """Harness names, evidence and entrypoints stated by the anchors under ``root``.
+
+    With ``rows`` (the stored obligations) every orphan is refused by source
+    location: an anchor outside a harness block or a file head, an anchor
+    naming no obligation file, a harness serving no obligation, a repeated or
+    redundant anchor, and two harnesses with one name. Without ``rows`` the
+    anchors are read as they are (``files`` storing a fixture).
     """
 
     scan = formal_anchors.scan(root)
-    errors = list(scan.errors)
+    headers, header_errors = formal_anchors.headers(root)
+    errors = list(scan.errors) + header_errors
     errors += [
         f"{anchor.where}: @{anchor.tag} is not in the attribute block of a #[kani::proof] fn "
         "(dangling anchor)"
         for anchor in scan.dangling
     ]
-    harnesses: dict[str, set[str]] = {}
-    paths: dict[str, set[str]] = {}
+    derived = Derived()
     defined: dict[str, formal_anchors.Harness] = {}
+
+    def known(identifier: str, where: str, anchor: str) -> bool:
+        if rows is None or identifier in rows:
+            return True
+        prefix, _, name = identifier.partition(".")
+        errors.append(
+            f"{where}: {anchor} {identifier!r} names no obligation file "
+            f"{OBLIGATION_DIRECTORY}/{prefix}/{name}.toml"
+        )
+        return False
+
     for harness in scan.harnesses:
         if harness.name in defined:
             errors.append(
@@ -180,18 +212,48 @@ def _anchored(root: Path, rows: dict[str, dict]) -> tuple[dict[str, set[str]], d
             if anchor.value in seen:
                 errors.append(f"{anchor.where}: duplicate @obligation {anchor.value} on {harness.name}")
             seen.add(anchor.value)
-            if anchor.value not in rows:
-                prefix, _, name = anchor.value.partition(".")
-                errors.append(
-                    f"{anchor.where}: @obligation {anchor.value!r} names no obligation file "
-                    f"{OBLIGATION_DIRECTORY}/{prefix}/{name}.toml"
-                )
-                continue
-            harnesses.setdefault(anchor.value, set()).add(harness.name)
-            paths.setdefault(anchor.value, set()).add(harness.path)
+            if known(anchor.value, anchor.where, "@obligation"):
+                derived.add(derived.harnesses, anchor.value, harness.name)
+                derived.add(derived.evidence, anchor.value, harness.path)
+    harness_files = {key: set(value) for key, value in derived.evidence.items()}
+    stated: dict[tuple[str, str], formal_anchors.Header] = {}
+    for header in headers:
+        if header.role not in ("entrypoint", "evidence"):
+            continue
+        key = (header.path, header.value)
+        if key in stated:
+            errors.append(
+                f"{header.where}: {header.value} is already anchored at {stated[key].where} "
+                "(one line per obligation; an entrypoint is evidence too)"
+            )
+            continue
+        stated[key] = header
+        if header.role == "evidence" and header.path in harness_files.get(header.value, set()):
+            errors.append(
+                f"{header.where}: evidence {header.value} is already stated by this file's "
+                "`/// @obligation` harness anchor"
+            )
+            continue
+        if known(header.value, header.where, f"@formal {header.role}"):
+            derived.add(derived.evidence, header.value, header.path)
+            if header.role == "entrypoint":
+                derived.add(derived.entrypoints, header.value, header.path)
     if errors:
         raise LedgerError("\n".join(sorted(set(errors))))
-    return harnesses, paths
+    return derived
+
+
+def _source_anchored_in_storage(relative: str, row: dict) -> list[str]:
+    """The ratchet: an obligation file may not name a Rust or Web source."""
+
+    return [
+        f"{relative}: {key} names {path}, a source that states its own role; "
+        f"write `// @formal {'entrypoint' if key == 'production_entrypoints' else 'evidence'} "
+        f"{row['id']}` as an opening line of {path} instead"
+        for key in ("evidence", "production_entrypoints")
+        for path in row.get(key, [])
+        if formal_anchors.SOURCE_ANCHORED.fullmatch(path)
+    ]
 
 
 def load(root: Path) -> dict:
@@ -205,22 +267,28 @@ def load(root: Path) -> dict:
             row["id"]: row
             for row in (_obligation(relative, text) for relative, text in sorted(stored.items()))
         }
-        harnesses, paths = _anchored(root, rows)
+        derived = _derived(root, rows)
     except SourceError as error:
         raise LedgerError(str(error)) from error
+    errors: list[str] = []
     for identifier, row in rows.items():
-        if identifier in harnesses:
-            row["proof_harnesses"] = sorted(harnesses[identifier])
-            row["evidence"] = sorted(set(row.get("evidence", [])) | paths[identifier])
+        relative = f"{OBLIGATION_DIRECTORY}/{identifier.replace('.', '/', 1)}.toml"
+        errors += _source_anchored_in_storage(relative, row)
+        if identifier in derived.harnesses:
+            row["proof_harnesses"] = sorted(derived.harnesses[identifier])
         elif row.get("proof_grade") == "production_kernel_proved":
-            raise LedgerError(
-                f"{OBLIGATION_DIRECTORY}/{identifier.replace('.', '/', 1)}.toml: {identifier} "
-                "production-kernel grade has no Kani harness; anchor one with "
-                f"`/// @obligation {identifier}`"
+            errors.append(
+                f"{relative}: {identifier} production-kernel grade has no Kani harness; "
+                f"anchor one with `/// @obligation {identifier}`"
             )
+        for key, table in (("evidence", derived.evidence), ("production_entrypoints", derived.entrypoints)):
+            if identifier in table:
+                row[key] = sorted(set(row.get(key, [])) | table[identifier])
         for key in ARRAY_FIELDS:
             if key in row:
                 row[key] = sorted(row[key])
+    if errors:
+        raise LedgerError("\n".join(sorted(errors)))
     ledger["obligations"] = list(rows.values())
     return ledger
 
@@ -287,18 +355,14 @@ def files(ledger: dict, root: Path | None = None) -> dict[str, str]:
     """The stored form of an assembled ledger: repository path -> text.
 
     What the anchors under ``root`` already state -- each obligation's harness
-    names and harness files -- is left out, since ``load`` derives it. A row
-    whose ``proof_harnesses`` differ from those anchors cannot be stored: the
-    anchor is where that fact is written.
+    names, harness files, and the evidence and entrypoints its sources claim in
+    their opening lines -- is left out, since ``load`` derives it. A fact the
+    storage may not hold (harness names that differ from the anchors, a Rust or
+    Web source the anchors do not state) is refused: its anchor is where it is
+    written.
     """
 
-    harnesses: dict[str, set[str]] = {}
-    paths: dict[str, set[str]] = {}
-    if root is not None:
-        for harness in formal_anchors.scan(root).harnesses:
-            for anchor in harness.values("obligation"):
-                harnesses.setdefault(anchor.value, set()).add(harness.name)
-                paths.setdefault(anchor.value, set()).add(harness.path)
+    derived = _derived(root, None) if root is not None else Derived()
     stored = {PROFILE_FILE: render_profile(ledger)}
     for row in ledger["obligations"]:
         prefix, dot, name = str(row["id"]).partition(".")
@@ -308,15 +372,19 @@ def files(ledger: dict, root: Path | None = None) -> dict[str, str]:
         if relative in stored:
             raise LedgerError(f"duplicate obligation id {row['id']}")
         declared = set(row.get("proof_harnesses", []))
-        if declared != harnesses.get(row["id"], set()):
+        if declared != derived.harnesses.get(row["id"], set()):
             raise LedgerError(
                 f"{row['id']}: proof_harnesses {sorted(declared)} differ from the "
-                f"`/// @obligation` anchors {sorted(harnesses.get(row['id'], set()))}; edit the anchors"
+                f"`/// @obligation` anchors {sorted(derived.harnesses.get(row['id'], set()))}; edit the anchors"
             )
         kept = dict(row)
         kept.pop("proof_harnesses", None)
-        if "evidence" in kept:
-            kept["evidence"] = [path for path in kept["evidence"] if path not in paths.get(row["id"], set())]
+        for key, table in (("evidence", derived.evidence), ("production_entrypoints", derived.entrypoints)):
+            if key in kept:
+                kept[key] = [path for path in kept[key] if path not in table.get(row["id"], set())]
+        refused = _source_anchored_in_storage(relative, kept)
+        if refused:
+            raise LedgerError("\n".join(refused))
         stored[relative] = render_obligation(kept)
     return stored
 
@@ -373,13 +441,17 @@ def self_test() -> None:
     harness name defined twice, or one anchor repeated; A5 a
     production-kernel obligation no harness serves; A6 a row whose
     proof_harnesses disagree with the anchors is stored.
+    Header causes: H1 a `// @formal` anchor after code; H2 one naming no
+    obligation file; H3 one repeated; H4 evidence already stated by the
+    file's harness anchor; H5 an unknown role; H6 an obligation file naming
+    a Rust or Web source (the ratchet), or a fixture storing one.
     Reader causes: C7 in a repository the staged and the on-disk bytes
     differ; C8 the same tree is not a repository; C9 a hook exported this
     repository with the index being committed; C10 a hook exported another.
     Effects: E1 load returns what was written, harness names and harness
     files derived from the anchors; E2 refusal naming the file (and line);
     E3 load reads the staged bytes; E4 load reads disk; E5 the hook's index.
-    Rules: C1 => E1; C2|C3|C4|C5|A1..A6 => E2; C6 => formalizable ==
+    Rules: C1 => E1; C2|C3|C4|C5|A1..A6|H1..H6 => E2; C6 => formalizable ==
     (scope == repository_safety); C7 => E3; C8 => E4; C9 => E5; C10 => E3.
     """
 
@@ -388,7 +460,8 @@ def self_test() -> None:
     import tempfile  # noqa: PLC0415
     from unittest import mock  # noqa: PLC0415
 
-    harness_source = (
+    header = "// @formal entrypoint run.safe\n"
+    harness_source = header + (
         "#[cfg(kani)]\n/// @obligation run.safe\n#[kani::proof]\n#[kani::unwind(2)]\nfn safe() {}\n"
     )
     rows = [
@@ -423,8 +496,8 @@ def self_test() -> None:
         write(root, ledger)
         safe = root / OBLIGATION_DIRECTORY / "run" / "safe.toml"
         original = safe.read_text()
-        assert "proof_harnesses" not in original and "crates/a/src/lib.rs\",\n]" not in original.split(
-            "production_entrypoints")[0], "C1 derived facts are not stored"
+        assert "proof_harnesses" not in original and "crates/a/src/lib.rs" not in original, (
+            "C1 derived facts are not stored")
         assert canonical_bytes(load(root)) == canonical_bytes(expected), "C1/E1 and C6"
         assert present(root) and not present(root / "formal"), "presence"
         stray = root / OBLIGATION_DIRECTORY / "run" / "deep" / "x.toml"
@@ -439,13 +512,16 @@ def self_test() -> None:
         for field in ("formalizable = true\n", 'proof_harnesses = ["safe"]\n'):
             safe.write_text(field + original)
             refused(root, f"unknown field(s) {field.split(' ')[0]}")
-        repeated = '"crates/a/src/lib.rs",\n  "crates/a/src/lib.rs",\n]'
-        safe.write_text(original.replace('"crates/a/src/lib.rs",\n]', repeated, 1))
-        refused(root, "production_entrypoints repeats a value")
+        safe.write_text(original.replace("tcb_assumptions = []", 'tcb_assumptions = ["x", "x"]', 1))
+        refused(root, "tcb_assumptions repeats a value")
+        for stored_path in ("crates/a/src/other.rs", "web/src/x.ts"):
+            safe.write_text(original.replace("evidence = []", f'evidence = ["{stored_path}"]', 1))
+            refused(root, f"names {stored_path}, a source that states its own role")
         safe.write_text(original)
         for broken, fragment in (
             ({"obligations": [rows[0], dict(rows[0])]}, "duplicate obligation id run.safe"),
             ({"obligations": [dict(rows[0], proof_harnesses=["safe", "other"])]}, "differ from the"),
+            ({"obligations": [dict(rows[1], evidence=["crates/a/src/other.rs"])]}, "states its own role"),
         ):
             try:
                 files(broken, root)
@@ -456,21 +532,29 @@ def self_test() -> None:
 
         for text, fragment in (
             (harness_source + "/// @obligation run.safe\nfn helper() {}\n",
-             "crates/a/src/lib.rs:6: @obligation is not in the attribute block"),
-            (harness_source.replace("run.safe", "run.missing"),
-             "crates/a/src/lib.rs:2: @obligation 'run.missing' names no obligation file "
+             "crates/a/src/lib.rs:7: @obligation is not in the attribute block"),
+            (harness_source.replace("/// @obligation run.safe", "/// @obligation run.missing"),
+             "crates/a/src/lib.rs:3: @obligation 'run.missing' names no obligation file "
              "formal/obligations/run/missing.toml"),
             (harness_source.replace("/// @obligation run.safe\n", "/// A proof.\n"),
-             "crates/a/src/lib.rs:5: Kani harness safe serves no obligation"),
+             "crates/a/src/lib.rs:6: Kani harness safe serves no obligation"),
             (harness_source.replace("/// @obligation run.safe\n", "/// @obligation run.safe\n" * 2),
-             "crates/a/src/lib.rs:3: duplicate @obligation run.safe on safe"),
+             "crates/a/src/lib.rs:4: duplicate @obligation run.safe on safe"),
+            (harness_source + header,
+             "crates/a/src/lib.rs:7: a @formal anchor belongs in the file's opening lines"),
+            ("// @formal evidence run.missing\n" + harness_source,
+             "crates/a/src/lib.rs:1: @formal evidence 'run.missing' names no obligation file"),
+            (header + harness_source, "crates/a/src/lib.rs:2: run.safe is already anchored at crates/a/src/lib.rs:1"),
+            (harness_source.replace(header, "// @formal evidence run.safe\n"),
+             "crates/a/src/lib.rs:1: evidence run.safe is already stated by this file's"),
+            ("// @formal proof run.safe\n" + harness_source, "crates/a/src/lib.rs:1: expected `// @formal <"),
         ):
             source.write_text(text)
             refused(root, fragment)
         source.write_text(harness_source)
         twin = root / "crates/a/src/twin.rs"
         twin.write_text(harness_source)
-        refused(root, "crates/a/src/twin.rs:5: Kani harness safe is also defined at crates/a/src/lib.rs:5")
+        refused(root, "crates/a/src/twin.rs:6: Kani harness safe is also defined at crates/a/src/lib.rs:6")
         twin.unlink()
         source.write_text("")
         refused(root, "run.safe production-kernel grade has no Kani harness")

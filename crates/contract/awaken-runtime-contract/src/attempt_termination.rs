@@ -1,3 +1,5 @@
+// @formal entrypoint model_operation.coverage_commit_strictly_precedes_model_entry
+// @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! Durable evidence used to decide whether a crashed Native attempt has any
 //! execution participant left after its Worker process is independently gone.
 //!

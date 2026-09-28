@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Durable physical-target fencing for local restore composition.
 //!
 //! Checkpoint bytes and formats deliberately do not live here. The sole job of

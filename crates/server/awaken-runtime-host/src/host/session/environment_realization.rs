@@ -1,3 +1,7 @@
+// @formal entrypoint runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal entrypoint session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+// @formal evidence session_environment.terminal_fence_admits_only_inflight_binding_receipts
 //! Ordinary Session Environment selection, effect authorization, and publication.
 
 use super::*;

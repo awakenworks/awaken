@@ -1,3 +1,4 @@
+// @formal entrypoint acp.process_cleanup_requires_observed_exit_and_retained_owner
 //! Retain the current ACP process inside its original execution Future.
 //! Dispatch owns durable occupancy; this scope owns only the existing handle
 //! and duplex channel, including after a bounded cleanup attempt failed.

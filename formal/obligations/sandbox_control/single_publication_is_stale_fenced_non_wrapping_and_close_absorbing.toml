@@ -7,18 +7,10 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/SandboxControlPublication.tla",
-  "scripts/ci/check_formal_mutations.py",
-  "crates/worker/awaken-sandbox-container/src/control.rs",
-  "crates/worker/awaken-sandbox-local/src/namespace/control.rs",
-  "crates/worker/awaken-sandbox-fs/src/unix_socket_path.rs",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/check_formal_mutations.py",
 ]
-production_entrypoints = [
-  "crates/worker/awaken-sandbox-control-transport/src/publication.rs",
-  "crates/worker/awaken-sandbox-container/src/control.rs",
-  "crates/worker/awaken-sandbox-local/src/namespace/control.rs",
-  "crates/worker/awaken-sandbox-fs/src/unix_socket_path.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The named Kani harness invokes the actual generic SandboxControlPublicationSlot Mutex/Arc methods across every non-poisoned state shape: open vacant, open active with current/stale/foreign leases, replacement while the predecessor remains live, closed with retained cleanup, closed after finish and closed vacant. It proves one active publication, foreign and stale mutation/release stutter, distinct live allocation identity, absorbing close, exact retained cleanup mutation, retained retry cleanup and exactly one finish.'''

@@ -1,3 +1,4 @@
+// @formal entrypoint scheduled_work.minute_timestamp_projection_is_exact_bounded_and_in_domain
 //! The Deployment domain's 5-field POSIX cron schedule value object:
 //! `minute hour day-of-month
 //! month day-of-week`. It validates an expression at create/update (a malformed

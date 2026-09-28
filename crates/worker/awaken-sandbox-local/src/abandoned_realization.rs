@@ -1,3 +1,4 @@
+// @formal evidence claimed_effect.retention_runs_once_for_an_unsettled_drop
 //! Where a cancelled provider creation leaves the name of the root it touched.
 //!
 //! The durable record for a filesystem-tier realization is the on-disk marker

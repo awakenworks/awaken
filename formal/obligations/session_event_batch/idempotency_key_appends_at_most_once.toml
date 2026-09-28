@@ -5,23 +5,15 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ToolResultProtocol.tla",
-  "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/server/awaken-session-application/src/tests/event_batches.rs",
-  "formal/tla/ToolResultProtocol.cfg",
-  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
   "formal/runtime-refinement-manifest.json",
-  "scripts/ci/render_runtime_refinement_traces.py",
-  "scripts/ci/formal_event_batch_mutations.py",
-  "scripts/ci/check_formal_mutations.py",
+  "formal/tla/ToolResultProtocol.cfg",
+  "formal/tla/ToolResultProtocol.tla",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/check_formal_mutations.py",
+  "scripts/ci/formal_event_batch_mutations.py",
+  "scripts/ci/render_runtime_refinement_traces.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
-  "crates/contract/awaken-session-event-contract/src/admission.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''ToolResultProtocol exhausts the finite domains in its configuration, including an action property that a retained key fingerprint never changes. Three semantic model mutants and two accepted/closed reachability witnesses qualify append-at-most-once, replay retention and conflict stutter.'''

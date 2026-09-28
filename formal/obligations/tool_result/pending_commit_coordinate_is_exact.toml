@@ -2,20 +2,14 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
   "formal/tla/ToolResultProtocol.tla",
-  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The finite ToolResultProtocol model remains independent transition evidence; no Rust-to-model refinement is implied.'''

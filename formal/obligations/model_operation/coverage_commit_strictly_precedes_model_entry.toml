@@ -2,18 +2,11 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
-evidence = [
-  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
-  "crates/runtime/awaken-runtime/tests/execution.rs",
-  "crates/bin/awaken-cli/src/worker_transport_security/kubernetes/tests.rs",
-  "crates/bin/awaken-cli/src/worker_transport_security/kubernetes/tests/live.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/attempt_termination.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani calls the actual chronology predicate over every u64 coverage/model commit coordinate; a positive coverage coordinate must be strictly earlier. Same commit, zero, reversed order and MAX coverage refuse. Default checks retained; 0 of 2 failed.'''

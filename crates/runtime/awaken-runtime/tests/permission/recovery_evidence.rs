@@ -1,3 +1,5 @@
+// @formal evidence checkpoint.recovery_never_precedes_commit
+// @formal evidence tool_result.resume_receipt_is_atomic_with_ticket_consumption
 use super::*;
 use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_agent_contract::observation::{Observed, UnknownCause};

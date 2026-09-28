@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Real kube HTTP boundaries, with one deterministic API response-loss scheduler
 //! shared by cleanup and checkpoint participant tests.
 use super::*;

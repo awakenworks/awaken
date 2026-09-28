@@ -1,3 +1,11 @@
+// @formal entrypoint capture.persistence_redaction_selection_is_total_exact_and_non_widening
+// @formal entrypoint session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+// @formal entrypoint session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
+// @formal entrypoint session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+// @formal entrypoint session_resources.install_replacement_requires_newer_or_unattempted_authority_amendment
+// @formal entrypoint session_resources.terminal_assignment_retains_desired_generation
 //! Claim-bound Runtime projections of one frozen Session.
 //!
 //! The host remains the sole owner of Session realization. An embedding

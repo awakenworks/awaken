@@ -1,3 +1,6 @@
+// @formal entrypoint tenancy.all_selectors_checked
+// @formal entrypoint tenancy.authority_never_widens
+// @formal entrypoint tenancy.selector_agreement
 //! Tenancy as an edge aspect (ADR-0051).
 //!
 //! The neutral core is tenancy-agnostic: its **processing** logic never reads a

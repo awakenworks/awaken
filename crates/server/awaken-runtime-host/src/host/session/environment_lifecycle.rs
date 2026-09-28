@@ -1,3 +1,6 @@
+// @formal entrypoint session_environment.closed_revoked_recovery_consumes_only_exact_unprotected_owner
+// @formal evidence session_environment.owner_topology_is_exact_and_frozen
+// @formal evidence session_environment.source_disposal_requires_a_verified_checkpoint
 //! Session Environment publication, adoption, fencing, and retirement.
 //!
 //! This module is the sole writer of [`SessionEnvironmentOwner`]. Durable

@@ -1,3 +1,4 @@
+// @formal entrypoint worker.acp_capability_is_detected_only_after_a_verified_handshake
 //! Collection-independent agreement kernel for live ACP capability evidence.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

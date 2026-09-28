@@ -8,13 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteAttempt.tla",
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/lib.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-run-executor-a2a/src/message_identity.rs",
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The sole outbound A2A message identity generator, using a domain-separated structured fingerprint over Run identity and optional committed resume correlation. Kani proves the closed initial/resume admission rule; executable tests establish deterministic replay, phase separation, coordinate sensitivity and delimiter safety. Hash collision resistance, serialization, remote idempotency, transport delivery and external orchestration remain implementation or external evidence.'''

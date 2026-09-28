@@ -1,3 +1,8 @@
+// @formal entrypoint session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
+// @formal entrypoint session_event_batch.exact_retry_replays_and_changed_retry_conflicts
+// @formal entrypoint session_event_batch.idempotency_key_appends_at_most_once
+// @formal entrypoint tool_result.pending_commit_coordinate_is_exact
+// @formal entrypoint tool_result.terminal_run_rejects_late_result
 //! Atomic Managed inbound-event validation, lowering, retention, and receipt projection.
 
 use super::*;

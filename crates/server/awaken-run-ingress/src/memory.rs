@@ -1,3 +1,23 @@
+// @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
+// @formal entrypoint delegation.independent_child_scheduling_lease
+// @formal entrypoint ingress.epoch_reclaim
+// @formal entrypoint ingress.pending_input_exactly_once
+// @formal entrypoint ingress.settle_fence
+// @formal entrypoint ingress.single_owner
+// @formal entrypoint remote_worker.pending_signal_is_consumed_by_commit
+// @formal entrypoint remote_worker.single_live_claim_owner
+// @formal entrypoint remote_worker.stale_epoch_never_mutates_truth
+// @formal entrypoint run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
+// @formal entrypoint run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
+// @formal entrypoint run_ingress.request_local_resolution_retry_honors_persisted_deadline
+// @formal entrypoint session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
+// @formal entrypoint session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
+// @formal entrypoint session_run.recovery_claim_is_admission_only
+// @formal entrypoint session_run.reservation_ttl_uses_store_clock
+// @formal entrypoint worker.retry_preserves_pinned_binding
+// @formal evidence run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
 //! In-memory reference implementation of the durable-ingress store.
 //!
 //! It mirrors the Postgres store's behaviour exactly so the worker and ingress

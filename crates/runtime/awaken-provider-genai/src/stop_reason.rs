@@ -1,3 +1,4 @@
+// @formal entrypoint model_stop.unclassified_provider_reason_fails_closed
 use awaken_runtime_contract::llm::{Error, Result, StopReason};
 use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, TerminalReceipt};
 

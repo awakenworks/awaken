@@ -1,3 +1,4 @@
+// @formal entrypoint workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
 //! Pure state-machine evaluation.
 //!
 //! - [`gate_evaluate`] runs **before** execution: the result is unknown, so it

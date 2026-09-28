@@ -1,3 +1,4 @@
+// @formal entrypoint mcp.sessionless_stream_lifecycle
 //! Axum-free Streamable HTTP decision kernel.
 
 use std::sync::Mutex;

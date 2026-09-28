@@ -1,3 +1,4 @@
+// @formal entrypoint outcome.stable_run_identity_and_exactly_once_ack
 //! Durable Outcome aggregate projection over the existing Worker Thread log.
 //!
 //! This is the Outcome extension's typed state codec, not a second persistence

@@ -1,3 +1,5 @@
+// @formal entrypoint executable_projection.failed_refresh_never_enters_handler
+// @formal entrypoint executable_projection.runtime_admission_requires_both_refreshes
 //! Ordered admission over the two rebuildable executable projections.
 
 use std::sync::Arc;

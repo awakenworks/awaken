@@ -1,3 +1,6 @@
+// @formal entrypoint session_work.release_requires_exact_owner_and_epoch
+// @formal entrypoint work.heartbeat_compare_and_set
+// @formal entrypoint work.lease_authority_snapshot_and_owner_mutations_are_atomic
 //! In-memory reference [`WorkQueue`] backend.
 //!
 //! This executable specification is available only to unit tests and consumers that

@@ -1,3 +1,11 @@
+// @formal entrypoint outcome.stable_run_identity_and_exactly_once_ack
+// @formal entrypoint remote_worker.acknowledged_projection_is_monotonic
+// @formal entrypoint remote_worker.committed_truth_is_coordinator_owned
+// @formal entrypoint remote_worker.operation_identity_maps_to_one_hash_and_append
+// @formal entrypoint store_history.concurrent_compare_and_swap_has_one_winner_per_thread_version
+// @formal entrypoint store_history.exact_retry_and_every_rejection_are_atomic_stutters
+// @formal entrypoint store_history.receipt_refines_one_exact_durable_record
+// @formal entrypoint store_history.recovery_preserves_committed_time_and_receipt_identity
 //! Stable logical identities and durable receipts for retryable Thread commits.
 //!
 //! A dispatch claim authorizes one delivery attempt; it is deliberately absent

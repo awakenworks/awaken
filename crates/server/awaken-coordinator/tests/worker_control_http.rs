@@ -1,3 +1,4 @@
+// @formal evidence worker_credential.stale_heartbeat_never_rolls_back_revision
 use awaken_run_ingress::ClaimedCheckpointTransport as _;
 use awaken_run_ingress::ControlDispatchQueue;
 use std::sync::Arc;

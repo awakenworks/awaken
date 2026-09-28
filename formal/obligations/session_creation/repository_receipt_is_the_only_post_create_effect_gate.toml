@@ -2,13 +2,8 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/server/awaken-protocol-managed/src/state/deployment_sessions.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/creation.rs",
-  "crates/server/awaken-protocol-managed/src/state/deployment_sessions.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Closed repository receipt kind x caller completion-mode decision table over the production post-create effect gate. Repository transaction durability and external realization effects remain outside this kernel.'''

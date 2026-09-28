@@ -2,39 +2,22 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SessionDeletion.tla",
-  "formal/tla/SessionDeletion.cfg",
-  "formal/tla/SessionDeletionUnconfirmed.cfg",
-  "crates/server/awaken-session-application/src/terminal.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation/terminal_cleanup.rs",
-  "crates/server/awaken-session-application/src/tests/authority.rs",
-  "crates/server/awaken-session-application/src/tests/observation_refinement.rs",
   "formal/runtime-refinement-manifest.json",
-  "scripts/ci/render_runtime_refinement_traces.py",
-  "scripts/ci/formal_session_deletion_mutations.py",
-  "scripts/ci/check_formal_mutations.py",
-  "crates/contract/awaken-session-state-contract/src/session_repo/disposition.rs",
-  "crates/server/awaken-session-application/src/mutation.rs",
-  "crates/server/awaken-session-application/src/tests/mod.rs",
-  "crates/contract/awaken-session-state-contract/src/terminal_cleanup/state.rs",
-  "scripts/ci/formal_kani_options.py",
-  "scripts/ci/test_formal_profile.py",
+  "formal/tla/SessionDeletion.cfg",
+  "formal/tla/SessionDeletion.tla",
+  "formal/tla/SessionDeletionUnconfirmed.cfg",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/check_formal_mutations.py",
+  "scripts/ci/formal_kani_options.py",
+  "scripts/ci/formal_session_deletion_mutations.py",
+  "scripts/ci/render_runtime_refinement_traces.py",
+  "scripts/ci/test_formal_profile.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/terminal.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/disposition.rs",
-  "crates/contract/awaken-session-state-contract/src/terminal_cleanup/state.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The existing SessionDeletion model reuses SessionCleanupKernel with MaxRevision = 5 and MaxCleanupFailures = 2. Active and Archived roots reach the first DELETE; Archived Fenced, Requested and Completed cleanup frames survive that fence. Replay preserves the complete modeled state; historical deleted-fact count remains one while delivery acknowledgement independently clears pending state. Normal recovery and permanently unconfirmed cleanup retain their separate configurations.'''

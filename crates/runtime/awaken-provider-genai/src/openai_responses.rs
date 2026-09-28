@@ -1,3 +1,4 @@
+// @formal evidence llm.inference_budget_requires_positive_response_before_actual_watchdog
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{
     ContentBlock, DocumentSource, ImageSource, SearchResultContent,

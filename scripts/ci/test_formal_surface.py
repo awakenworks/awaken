@@ -90,7 +90,7 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
             manifest.write_text('[package]\nname="example"\nversion="0.0.0"\n')
             (crate / "src/lib.rs").write_text("mod policy;")
             policy = "crates/runtime/example/src/policy.rs"
-            (root / policy).write_text("fn authorize() {}")
+            (root / policy).write_text("// @formal evidence example.policy\nfn authorize() {}")
             MODULE.formal_ledger.write(root, {"obligations": [{
                 "id": "example.policy", "status": "model_linked", "evidence": [policy],
             }]})

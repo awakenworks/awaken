@@ -1,3 +1,4 @@
+// @formal evidence sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Strict Linux composition of the existing scoped owner and real Memory adapter.
 //! No fake guard, successful substrate skip, or Copy fallback in this case.
 use super::*;

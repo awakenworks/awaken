@@ -7,18 +7,12 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "formal/tla/RemoteAttempt.tla",
   "formal/tla/RemoteAttempt.cfg",
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/lib.rs",
-  "crates/server/awaken-run-executor-a2a/src/tests/send_windows.rs",
-  "scripts/ci/formal_execution_replacement_mutations.py",
+  "formal/tla/RemoteAttempt.tla",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/formal_execution_replacement_mutations.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''One initial and one resume operation, one predecessor and two remote tasks. The model checks that Prepared precedes each send, both sides of the send/Accepted-commit crash window retain an unconfirmed operation with no addressable task, and neither resend nor predecessor-task cancellation is reachable. Rust decision-table tests exercise the production ThreadCommit/send order, response loss, Prepared recovery, fail-closed flat or unknown-version state and exact Accepted binding. ThreadCommit durability and read order, async Rust-to-TLA refinement, hash collision resistance, peer idempotency/query semantics, transport delivery and remote task honesty remain executable or external TCB.'''

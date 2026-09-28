@@ -1,3 +1,6 @@
+// @formal entrypoint authz.agent_publisher_role_is_exact_workspace_agent_model_read_and_skill_only
+// @formal entrypoint authz.credential_ingress_role_is_exact_workspace_apikey_and_provider_connect_only
+// @formal entrypoint authz.hosted_workspace_and_runtime_member_grants_are_exact
 //! Deterministic authorization profiles owned by Awaken.
 
 use super::roles::{

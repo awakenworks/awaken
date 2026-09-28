@@ -1,3 +1,4 @@
+// @formal entrypoint remote_attempt.terminal_commit_retires_task_reference
 //! Atomic A2A Run commits and terminal-observer delivery.
 
 use awaken_agent_contract::agent::message::Message;

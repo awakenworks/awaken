@@ -1,3 +1,6 @@
+// @formal evidence live_inbox.attempt_scope_is_local_current_capability_gated_and_never_carried_over
+// @formal evidence remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
+// @formal evidence run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
 //! Durable ingress over the in-memory dispatch store and commit coordinator.
 //!
 //! These prove the durable slice end to end without a database: a durable submit

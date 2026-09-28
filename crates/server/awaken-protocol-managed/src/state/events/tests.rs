@@ -1,3 +1,13 @@
+// @formal evidence session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
+// @formal evidence session.runtime_projection_equal_source_and_content_is_a_read_without_cache_write_or_broadcast
+// @formal evidence session.runtime_projection_failed_refresh_stutters_warm_state
+// @formal evidence session.runtime_projection_historical_pending_precedes_terminal_projection
+// @formal evidence session.runtime_projection_stale_writer_never_rolls_back_visible_result
+// @formal evidence session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
+// @formal evidence session_event_batch.exact_retry_replays_and_changed_retry_conflicts
+// @formal evidence session_event_batch.idempotency_key_appends_at_most_once
+// @formal evidence tool_result.pending_commit_coordinate_is_exact
+// @formal evidence tool_result.terminal_run_rejects_late_result
 // awaken-file-limit-ceiling: 13669 (legacy oversized test file: split, never grow)
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;

@@ -1,3 +1,6 @@
+// @formal evidence eval.frozen_ground_truth_is_not_mutated_by_observations
+// @formal evidence eval.missing_or_duplicate_observation_never_scores_schema_valid
+// @formal evidence eval.report_publication_requires_every_case_classified
 //! Versioned, provider-neutral evaluation for the production Outcome Judge wire.
 //!
 //! This module deliberately evaluates only the Judge's three business decisions.

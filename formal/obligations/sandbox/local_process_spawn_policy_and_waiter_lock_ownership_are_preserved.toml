@@ -3,13 +3,10 @@ proof_grade = "abstract_model_checked"
 status = "model_linked"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/LocalProcessLifecycle.tla",
   "formal/tla/LocalProcessLifecycle.cfg",
-  "crates/worker/awaken-local-process/src/lib.rs",
+  "formal/tla/LocalProcessLifecycle.tla",
 ]
-production_entrypoints = [
-  "crates/worker/awaken-local-process/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''One process handle and two concurrent waiters in the finite linked configuration. Rust-to-model refinement, mutex fairness, OS signal delivery, descendant quiescence and abrupt Worker-death containment are not proved. Crash deliberately leaves OS processes alive.'''

@@ -1,3 +1,9 @@
+// @formal entrypoint session_resources.external_io_requires_durable_prepared_state
+// @formal entrypoint session_resources.failed_replacement_preserves_active_manifest
+// @formal entrypoint session_resources.restart_retries_same_pending_revision
+// @formal entrypoint session_resources.terminal_assignment_retains_desired_generation
+// @formal entrypoint session_resources.terminal_session_never_reactivates
+// @formal evidence session_resources.repository_rotation_requires_original_live_generation
 //! Durable Session resource-activation state.
 //!
 //! This is application state for crash recovery, not an authorization decision

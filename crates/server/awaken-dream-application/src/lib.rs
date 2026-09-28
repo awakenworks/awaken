@@ -1,3 +1,5 @@
+// @formal entrypoint dream.lifecycle_is_closed_exact_and_terminal_absorbing
+// @formal entrypoint dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
 //! Coordinator-owned Dream process application.
 
 use std::collections::{BTreeMap, BTreeSet};

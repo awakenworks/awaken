@@ -4,18 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
-evidence = [
-  "crates/contract/awaken-runtime-contract/src/model_operation.rs",
-  "crates/runtime/awaken-runtime/src/engine/inference.rs",
-  "crates/runtime/awaken-runtime/src/engine/tests.rs",
-  "crates/runtime/awaken-provider-genai/src/inference_budget.rs",
-  "crates/runtime/awaken-provider-genai/src/lib.rs",
-  "crates/runtime/awaken-provider-genai/src/openai_responses.rs",
-  "crates/runtime/awaken-provider-genai/tests/stall.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani calls the actual ModelInferenceBudget constructor predicate over all u128 nanosecond total/attempt-response/idle/return-allowance values, a superset of Duration. Admission is exactly 0 < idle <= attempt response <= total with a positive return allowance, which implies a positive response window strictly before the attempt watchdog and no silence window beyond the request's logical deadline.'''

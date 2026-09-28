@@ -1,3 +1,7 @@
+// @formal entrypoint resource_catalog.aggregate_revision_is_strictly_monotonic_and_never_wraps
+// @formal entrypoint resource_catalog.config_publication_is_exact_and_never_wraps
+// @formal entrypoint resource_catalog.lifecycle_timestamp_projection_is_total_and_exact
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
 //! Resource Registry domain vocabulary and ports.
 //!
 //! This module owns resource identity, immutable configuration versions, and live

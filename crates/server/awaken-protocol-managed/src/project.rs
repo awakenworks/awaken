@@ -1,3 +1,4 @@
+// @formal entrypoint session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
 //! Project committed neutral messages into public Managed Agents events.
 //!
 //! The message fold is shared (`awaken_agent_contract::event`); this module

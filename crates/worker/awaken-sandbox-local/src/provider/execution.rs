@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Optional physical execution boundary on the existing Local spawn seam.
 //! Native Hand, ACP and sandbox-stdio MCP all use that seam. Durable evidence
 //! lives in the realization marker; weak handles here only deliver live cutoff

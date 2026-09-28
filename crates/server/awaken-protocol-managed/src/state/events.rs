@@ -1,3 +1,4 @@
+// @formal entrypoint session_event_batch.idempotent_receipt_is_admission_stable
 //! Event driving for [`ManagedState`]: projecting committed Runs/outcomes,
 //! the live-inbox surface, and `send_events`/`list_events`.
 

@@ -433,14 +433,21 @@ class VerificationManifestTests(unittest.TestCase):
                    proof_grade="abstract_model_checked", bounds=["fixture only"], evidence=["formal/tla/Fixture.tla"])
         feature = dict(id="fixture", criticality="P0", requirements=[dict(
             kind="safety", repository_controlled=True, obligations=["fixture.safe"])])
-        # The copied admission sources carry `/// @obligation` anchors on their
-        # Kani harnesses; a consistent source tree stores those obligations too.
+        # The copied admission sources carry ledger anchors (`/// @obligation`
+        # on their Kani harnesses, `// @formal` in their opening lines); a
+        # consistent source tree stores those obligations too.
         import formal_anchors
         admission = "crates/server/awaken-service-lifecycle/src/release_admission.rs"
+        admission_main = "crates/server/awaken-service-lifecycle/src/release_admission_main.rs"
         anchored = sorted({
             anchor.value
             for harness in formal_anchors.scan_text(admission, (ROOT / admission).read_text(), None).harnesses
             for anchor in harness.values("obligation")
+        } | {
+            match["value"]
+            for relative in (admission, admission_main)
+            for line in (ROOT / relative).read_text().splitlines()
+            if (match := formal_anchors.HEADER.match(line)) is not None
         })
         rows = [row, *(dict(row, id=identifier) for identifier in anchored)]
         root = directory / "source"

@@ -1,3 +1,4 @@
+// @formal entrypoint service_auth.token_rotation_fails_closed_and_retries_only_a_changed_token
 //! Authentication primitives shared by private service-to-service adapters.
 //!
 //! This leaf owns no HTTP framework, identity store, authorization policy, or

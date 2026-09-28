@@ -1,3 +1,10 @@
+// @formal entrypoint remote_worker.execution_requires_claimed_snapshot
+// @formal entrypoint remote_worker.single_live_claim_owner
+// @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
+// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
+// @formal entrypoint session_work.release_requires_exact_owner_and_epoch
+// @formal entrypoint worker.incarnation_generation_fences_stale_processes
 //! Authenticated worker-facing dispatch transport.
 //!
 //! Wire callers submit only business data. Worker ownership, time, and lease

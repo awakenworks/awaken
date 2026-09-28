@@ -1,3 +1,7 @@
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal entrypoint session_realization.publication_excludes_staged_retired_generation
+// @formal entrypoint session_resources.terminal_assignment_retains_desired_generation
+// @formal evidence session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
 //! Durable realization and terminal-cleanup control state machine.
 
 use super::*;

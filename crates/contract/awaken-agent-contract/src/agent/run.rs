@@ -1,3 +1,6 @@
+// @formal entrypoint run.lifecycle_absorption
+// @formal entrypoint store_history.terminal_run_is_final_for_every_backend_history
+// @formal entrypoint tool_result.terminal_run_rejects_late_result
 use serde::{Deserialize, Serialize};
 
 /// Opaque Run identity. Ordering is lexical for indexed pagination, never

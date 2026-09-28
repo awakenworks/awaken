@@ -6,12 +6,8 @@ tcb_assumptions = [
   "external.orchestrator_correctness",
   "external.worker_host_executor_equivalence",
 ]
-evidence = [
-  "crates/worker/awaken-tool-relay/tests/relay.rs",
-]
-production_entrypoints = [
-  "crates/worker/awaken-tool-relay/src/executor.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

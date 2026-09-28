@@ -1,3 +1,4 @@
+// @formal entrypoint worker.durable_dispatch_contains_no_plaintext_secret
 //! Exact material shapes and the sole neutral material-resolution port.
 use std::collections::BTreeSet;
 

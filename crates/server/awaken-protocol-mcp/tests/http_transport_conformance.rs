@@ -1,3 +1,4 @@
+// @formal evidence mcp.sessionless_stream_lifecycle
 //! Shared Streamable HTTP conformance driven through the real axum router.
 //!
 //! This complements method-level conformance: status codes, content negotiation,

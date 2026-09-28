@@ -5,25 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ResourceBindingEffect.tla",
   "formal/tla/ResourceBindingEffect.cfg",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-config-service/src/config_plane.rs",
-  "crates/control/awaken-control/src/admin_assistant.rs",
-  "crates/control/awaken-config-store/tests/support/effect_retirement.rs",
-  "crates/control/awaken-config-store/tests/postgres.rs",
-  "crates/control/awaken-config-store/tests/integration.rs",
-  "crates/bin/awaken-cli/tests/management_persistence.rs",
+  "formal/tla/ResourceBindingEffect.tla",
 ]
-production_entrypoints = [
-  "crates/control/awaken-agent-config/src/store.rs",
-  "crates/control/awaken-config-store/src/lib.rs",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-config-service/src/config_plane.rs",
-  "crates/control/awaken-control/src/admin_assistant.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The Config Store's one typed ManagementEffect::requires_enqueue authority now consumes a closed production decision kernel. Kani exhausts revision validity, pending-row presence and complete-payload equality: an absent valid identity inserts, an exact retry stutters, changed content conflicts, and every nonpositive revision rejects. Both SQLite and PostgreSQL already delegate to this same method while holding their existing transaction, so no adapter owns a replay policy.'''

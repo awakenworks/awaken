@@ -2,14 +2,8 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-session-work-contract/src/lib.rs",
-  "crates/contract/awaken-session-application-contract/src/run_application.rs",
-  "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''All i128 inputs to the production UTC projection clamp. Calendar formatting is independently tested; raw SQL clocks are not restricted by this presentation domain.'''

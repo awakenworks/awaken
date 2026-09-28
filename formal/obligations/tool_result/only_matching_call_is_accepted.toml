@@ -4,12 +4,9 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/ToolResultProtocol.tla",
-  "crates/server/awaken-protocol-ai-sdk/src/router.rs",
   "scripts/ci/formal_event_batch_mutations.py",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/resume.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Direct production validate_resume Kani decision table: all 9 closed AwaitTarget reason variants x 5 ResumeResult variants x all 32 immutable identity mismatch masks, every Option<u64> deadline and every u64 clock, including typed first-error precedence.'''

@@ -1,3 +1,5 @@
+// @formal evidence session_work.release_requires_exact_owner_and_epoch
+// @formal evidence work.lease_authority_snapshot_and_owner_mutations_are_atomic
 //! Whole reference-queue authority interleavings, using the actual public port.
 use super::*;
 use crate::test_session_access_digest;

@@ -5,19 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/AgentInputRevision.tla",
   "formal/tla/AgentInputRevision.cfg",
-  "crates/control/awaken-admin-config-api/src/sqlite.rs",
-  "crates/control/awaken-admin-config-api/src/postgres.rs",
-  "crates/control/awaken-admin-config-api/tests/postgres_store.rs",
-  "crates/control/awaken-admin-config-api/tests/agent_input_admission.rs",
-  "crates/control/awaken-admin-config-api/tests/support/agent_input_admission.rs",
+  "formal/tla/AgentInputRevision.tla",
 ]
-production_entrypoints = [
-  "crates/control/awaken-config-resolver/src/stores.rs",
-  "crates/control/awaken-admin-config-api/src/sqlite.rs",
-  "crates/control/awaken-admin-config-api/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The existing private production revision decision is the sole revision admission consumed by the opaque borrowed write plan. Kani exhausts every Option<i64> current revision, every i64 attempted revision and both aggregate-equality classes: nonpositive, stale, skipped, changed same-revision, corrupt-current and exhausted attempts return their exact typed rejection and cannot yield a write decision. The same harness already owns exact successor and replay properties; it is reused here rather than duplicating that kernel or its proof.'''

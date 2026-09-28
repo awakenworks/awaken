@@ -1,3 +1,4 @@
+// @formal evidence sandbox.workspace_path_projection_is_one_logical_root_and_never_discloses_provider_host_paths
 //! Hand tools execute in-process against a real (temp) filesystem.
 
 use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in};

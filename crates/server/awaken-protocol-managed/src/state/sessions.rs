@@ -1,3 +1,5 @@
+// @formal entrypoint session.missing_publication_is_available_only_to_noninteractive_frozen_projection
+// @formal entrypoint webhook.outbox_fact_identity_is_stable
 //! Session lifecycle for [`ManagedState`]: create, rehydrate, get/list,
 //! update, delete, and archive.
 

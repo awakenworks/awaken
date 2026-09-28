@@ -1,3 +1,5 @@
+// @formal entrypoint agent_profile.effective_publication_field_replacement_is_exact_and_noop_preserving
+// @formal entrypoint agent_profile.worker_projection_requires_exact_frozen_publication
 //! Canonical projection and validation of the Agent publication frozen into a Session.
 
 use crate::RunError;

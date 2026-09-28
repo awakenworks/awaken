@@ -1,3 +1,4 @@
+// @formal evidence outcome.stable_run_identity_and_exactly_once_ack
 //! Store-adapter integration tests for the Outcome extension's Thread codec.
 
 use awaken_agent_contract::agent::thread::Id as ThreadId;

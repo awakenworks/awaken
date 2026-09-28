@@ -1,3 +1,11 @@
+// @formal entrypoint credential.failed_create_compensates_material
+// @formal entrypoint credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+// @formal entrypoint credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+// @formal entrypoint credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+// @formal entrypoint credential.material_is_always_published_or_intent_tracked
+// @formal entrypoint credential.restart_recovery_compensates_unpublished_material
+// @formal entrypoint credential.rotation_revision_cas
+// @formal entrypoint credential.visible_row_always_has_material
 use super::*;
 use crate::persist_material_exact;
 

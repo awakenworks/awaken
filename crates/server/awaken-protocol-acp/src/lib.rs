@@ -1,3 +1,8 @@
+// @formal entrypoint acp.mcp_alias_permission_consensus_never_widens_authority
+// @formal entrypoint acp.process_cleanup_requires_observed_exit_and_retained_owner
+// @formal entrypoint acp.prompt_is_never_sent_before_bounded_handshake_completion
+// @formal evidence acp.boundary_preserves_permission_authority_and_effect_order
+// @formal evidence acp.permission_outcome_never_widens_resolved_authority
 //! ACP bridge + supervisor (ADR-0041 Slice 3), agents plane.
 //!
 //! An **anti-corruption layer** over an opaque agent's protocol stream. It reads

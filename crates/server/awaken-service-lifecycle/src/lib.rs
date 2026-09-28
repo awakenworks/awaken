@@ -1,3 +1,12 @@
+// @formal entrypoint assembly_role.local_managed_mount_requires_exact_local_worker_component
+// @formal entrypoint assembly_role.process_role_projects_exact_startup_authority
+// @formal entrypoint assembly_role.worker_never_acquires_service_startup_or_migration_authority
+// @formal entrypoint service_lifecycle.concurrent_shutdown_waits_for_active_drain
+// @formal entrypoint service_lifecycle.return_requires_all_tasks_stopped_or_aborted
+// @formal entrypoint service_lifecycle.shutdown_fences_task_registration
+// @formal entrypoint service_lifecycle.startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
+// @formal entrypoint service_lifecycle.startup_wiring_is_exact_for_every_service_role
+// @formal entrypoint service_lifecycle.startup_wiring_requires_every_role_owned_component
 //! Service-host supervision for long-lived component tasks.
 //!
 //! Domain components register their recurring loops here, while the outermost

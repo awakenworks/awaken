@@ -1,3 +1,10 @@
+// @formal evidence delegation.cancel_intent
+// @formal evidence delegation.relationship_identity
+// @formal evidence delegation.result_consume_once
+// @formal evidence delegation.stable_child_crash_recovery
+// @formal evidence tool.executor_entry_order
+// @formal evidence tool.publication_barrier
+// @formal evidence tool.recovery_policy
 //! Executable Rust -> TLA+ refinement traces.
 //!
 //! These tests drive the real async Runtime and capture the exact ThreadCommit

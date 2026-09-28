@@ -1,3 +1,7 @@
+// @formal entrypoint session_resources.external_io_requires_durable_prepared_state
+// @formal entrypoint skill.execution_pin_binds_exact_workspace_revision_and_hash
+// @formal entrypoint skill.invalid_workspace_or_hash_fails_closed
+// @formal entrypoint skill.loaded_version_equals_session_pin
 //! Exact immutable custom-Skill materialization across the Coordinator-to-Worker boundary.
 //!
 //! Publication freezes a [`ResolvedSkillBinding`]. This boundary lets the Worker

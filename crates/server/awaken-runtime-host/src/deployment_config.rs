@@ -1,3 +1,7 @@
+// @formal entrypoint run_ingress.durable_dispatch_deployment_admission_is_exact_store_independent_and_evidence_monotonic
+// @formal entrypoint sandbox.deployment_support_projection_is_total_exact_and_evidence_bound
+// @formal entrypoint worker.sandbox_tool_recovery_is_a_hard_claim_axis
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! The deployment configuration surface, built once by a typed process startup.
 //!
 //! Historically the deployment axes — durable ingress, the commit/dispatch store

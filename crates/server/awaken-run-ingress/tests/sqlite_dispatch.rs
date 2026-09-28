@@ -1,3 +1,5 @@
+// @formal evidence ingress.commit_epoch_atomic_local
+// @formal evidence run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
 //! The SQLite dispatch store and a fully-embedded durable loop. SQLite needs no
 //! external server, so these always run: store-level claim/lease/idempotency
 //! checks, plus an end-to-end durable submit -> await -> resume entirely on SQLite

@@ -5,16 +5,11 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "crates/server/awaken-protocol-acp/src/jsonrpc/response.rs",
-  "crates/server/awaken-protocol-acp/src/lib.rs",
   "docs/design/acp-harness-capability-and-tool-bridge.md",
   "formal/verification-boundaries/acp-permission-and-process-cleanup.md",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
-  "crates/server/awaken-protocol-acp/src/jsonrpc/response.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts both production permission-plan inputs without assumptions. When projection is open, the exact plan is ProjectCall then ResolveAuthority then SendResponse; after settlement closes projection, the exact plan is ResolveAuthority then SendResponse then NoEffect. answer_request iterates this allocation-free plan as the sole owner of those three local effects.'''

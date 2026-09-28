@@ -1,3 +1,6 @@
+// @formal entrypoint agent_profile.requested_revision_never_follows_mutable_current
+// @formal entrypoint config_activation.installed_generation_never_rolls_back
+// @formal entrypoint config_activation.stale_publication_never_installs
 //! Coordinator-owned executable Agent catalog and AllInOne local adapter.
 //!
 //! This crate owns only the rebuildable execution projection. Control's

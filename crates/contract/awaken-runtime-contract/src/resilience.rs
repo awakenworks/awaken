@@ -1,3 +1,4 @@
+// @formal entrypoint runtime_resilience.retry_is_exact_bounded_terminal_and_fail_closed
 //! Inference failure resilience: one classification and one retry decision.
 //!
 //! [`Error::class`] is the only projection of the inference error taxonomy

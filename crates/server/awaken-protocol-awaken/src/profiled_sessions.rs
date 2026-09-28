@@ -1,3 +1,4 @@
+// @formal entrypoint session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
 //! Explicit transport for complete product-authored Session creation.
 
 use std::collections::BTreeMap;

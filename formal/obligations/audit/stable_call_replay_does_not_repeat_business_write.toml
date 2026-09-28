@@ -5,20 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/AuditCommit.tla",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
   "formal/tla/AuditCommit.cfg",
-  "crates/control/awaken-config-store/src/schema.rs",
-  "crates/control/awaken-config-store/tests/support/audit_identity.rs",
-  "crates/control/awaken-config-store/tests/integration.rs",
-  "crates/control/awaken-config-store/tests/postgres.rs",
+  "formal/tla/AuditCommit.tla",
 ]
-production_entrypoints = [
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-agent-config/src/store.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The single production audit admission returns Replay exactly for an existing equal record in committed state 1 and returns no business-write authority for every replay/conflict begin result. Kani exhausts presence/equality, every i64 durable state, every begin-result class and business success without solver assumptions or stubs.'''

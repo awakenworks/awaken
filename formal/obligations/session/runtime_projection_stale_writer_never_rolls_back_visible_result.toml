@@ -3,18 +3,12 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/ManagedProjectionPublish.tla",
   "formal/tla/ManagedProjectionPublish.cfg",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
+  "formal/tla/ManagedProjectionPublish.tla",
   "formal/tla/ManagedProjectionPublishInputs.cfg",
   "formal/tla/ManagedProjectionPublishTopology.cfg",
-  "crates/server/awaken-protocol-managed/src/state/session_record/tests.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-managed/src/state/session_record.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''

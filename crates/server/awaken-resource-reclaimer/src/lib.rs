@@ -1,3 +1,6 @@
+// @formal entrypoint resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
+// @formal entrypoint resource_reclamation.reference_and_lease_races_fail_closed
+// @formal entrypoint resource_reclamation.stale_claim_cannot_commit_receipt
 //! Authorization-agnostic resource reclamation application service.
 //!
 //! Durable intent authorizes resource-owned logical preparation before reclamation.

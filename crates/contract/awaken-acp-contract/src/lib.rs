@@ -1,3 +1,4 @@
+// @formal entrypoint worker.acp_capability_is_detected_only_after_a_verified_handshake
 //! Neutral ACP capability negotiation values and port.
 //!
 //! Worker applications depend on this leaf; protocol adapters implement it.

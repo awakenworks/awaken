@@ -2,17 +2,8 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/runtime/awaken-runtime/src/engine/model_operation.rs",
-  "crates/runtime/awaken-runtime/tests/execution.rs",
-  "crates/server/awaken-credential-materializer/src/brokered_inference.rs",
-  "crates/server/awaken-credential-materializer/src/inference.rs",
-  "crates/server/awaken-protocol-managed/src/types/session.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/tests/cancelled_model.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/model_operation.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts the production u64 ordinal successor kernel. Journal commit acknowledgement, Run-scoped hydration, provider termination and SDK-internal retries are not proved by this arithmetic harness; the linked Runtime tests cover selected persistence failure cuts.'''

@@ -2,19 +2,14 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
   "formal/tla/Delegation.tla",
-  "crates/runtime/awaken-runtime/src/engine/delegation.rs",
-  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/delegation.rs",
-  "crates/runtime/awaken-runtime/src/engine/delegation.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The named Kani harness exhausts all four production delivery phases without assumptions: Consume has one applied Consumed successor exactly from Ready, while Absent, Consumed and Discarded have no consume successor.'''

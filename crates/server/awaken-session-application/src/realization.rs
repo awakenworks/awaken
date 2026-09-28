@@ -1,3 +1,7 @@
+// @formal entrypoint session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+// @formal entrypoint session_execution.terminal_state_never_reopens
+// @formal entrypoint session_realization.publication_excludes_staged_retired_generation
+// @formal entrypoint session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
 //! Canonical durable Session realization phase commands.
 
 use std::collections::BTreeSet;

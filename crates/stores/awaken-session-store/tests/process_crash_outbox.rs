@@ -1,3 +1,5 @@
+// @formal evidence webhook.committed_outbox_row_is_recoverable
+// @formal evidence webhook.lifecycle_commit_and_outbox_are_atomic
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use std::collections::BTreeMap;
 use std::time::Duration;

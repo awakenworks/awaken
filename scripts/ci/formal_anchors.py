@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from _crate_boundary_workspace import rust_syntax
-from formal_sources import source_text
+from formal_sources import matching_lines, source_text
 
 # A scan reads every Rust source (anchors and harnesses) and every Cargo
 # manifest (the package that owns a harness); the entry points that scan
@@ -159,3 +159,62 @@ def scan(root: Path) -> Scan:
         result.dangling.extend(found.dangling)
         result.errors.extend(found.errors)
     return result
+
+
+# --------------------------------------------------------------------------
+# File-head anchors.
+#
+# A Rust or Web source states what it is to the ledger in its own first lines,
+# one fact per line, before anything else in the file:
+#
+#     // @formal entrypoint <obligation id>   (production entrypoint, so evidence too)
+#     // @formal evidence <obligation id>     (evidence only: a test, a model link)
+#
+# An anchor line anywhere else in the file is refused, so the block stays the
+# one place a reader looks. Consumer: ``formal_ledger`` (evidence and
+# production entrypoints of each obligation).
+#
+# The sources that state their own role: every Rust source under crates/ and
+# every Web source under web/src/. One rule serves both sides -- the scan reads
+# anchors only here, and an obligation file may not name such a source.
+SOURCE_ANCHORED = re.compile(r"(?:crates/.+\.rs|web/src/.+)")
+HEADER_PREFIX = "// @formal "
+HEADER = re.compile(r"^// @formal (?P<role>[a-z][a-z-]*)(?: (?P<value>\S(?:.*\S)?))?$")
+HEADER_ROLES = ("entrypoint", "evidence")
+
+
+@dataclass(frozen=True)
+class Header:
+    path: str
+    line: int
+    role: str
+    value: str
+
+    @property
+    def where(self) -> str:
+        return f"{self.path}:{self.line}"
+
+
+def headers(root: Path) -> tuple[list[Header], list[str]]:
+    """Every file-head anchor under the header sources, and every misplaced one."""
+
+    found: list[Header] = []
+    errors: list[str] = []
+    by_path: dict[str, list[tuple[int, str]]] = {}
+    for path, number, text in matching_lines(root, HEADER_PREFIX.strip(), SOURCE_ANCHORED.fullmatch):
+        if text.lstrip().startswith(HEADER_PREFIX):
+            by_path.setdefault(path, []).append((number, text))
+    for path, lines in sorted(by_path.items()):
+        numbers = [number for number, _ in lines]
+        for number, text in lines:
+            where = f"{path}:{number}"
+            match = HEADER.match(text.rstrip("\r"))
+            if number > len(numbers) or numbers[: number] != list(range(1, number + 1)):
+                errors.append(f"{where}: a @formal anchor belongs in the file's opening lines, before any code")
+            elif match is None or match["role"] not in HEADER_ROLES or not match["value"]:
+                errors.append(
+                    f"{where}: expected `// @formal <{'|'.join(HEADER_ROLES)}> <value>`, got {text.strip()!r}"
+                )
+            else:
+                found.append(Header(path, number, match["role"], match["value"]))
+    return found, errors

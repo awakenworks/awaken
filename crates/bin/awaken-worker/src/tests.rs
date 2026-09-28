@@ -1,3 +1,5 @@
+// @formal evidence session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal evidence worker.realization_scope_uses_only_the_kubernetes_namespace_or_persisted_local_workspace
 use std::sync::Arc;
 
 use awaken_runtime_contract::llm::LlmExecutor;

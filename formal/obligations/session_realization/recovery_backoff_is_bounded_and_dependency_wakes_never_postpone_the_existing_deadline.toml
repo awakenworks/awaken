@@ -5,14 +5,8 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
   "external.performance_and_long_run_stability",
 ]
-evidence = [
-  "crates/server/awaken-session-application/src/realization.rs",
-  "crates/server/awaken-session-application/src/tests/realization.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/realization/recovery_backoff.rs",
-  "crates/server/awaken-session-application/src/realization.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions; external wake coalescing is capped at one second, is capped by the arming scan's own elapsed cost, cannot pass the existing scheduled deadline, and is armed only by a hint-driven scan that settled no durable work. Tokio Notify delivery, timer accuracy, scheduling, database scan cost and distributed performance remain outside the kernel proof.'''

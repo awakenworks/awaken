@@ -1,3 +1,9 @@
+// @formal entrypoint session_event_batch.idempotent_receipt_is_admission_stable
+// @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
+// @formal entrypoint session_time.processed_event_retains_first_time_and_rejects_atomically
+// @formal entrypoint tool_result.one_pending_occurrence_has_one_admitted_reply
+// @formal evidence session_event_batch.final_non_admission_excludes_late_acceptance
 //! Durable, protocol-neutral Session Event-batch intent.
 //!
 //! The Session root owns the complete ordered batch. User execution is carried

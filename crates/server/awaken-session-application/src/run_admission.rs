@@ -1,3 +1,10 @@
+// @formal entrypoint agent_profile.requested_revision_never_follows_mutable_current
+// @formal entrypoint executable_projection.failed_refresh_never_enters_handler
+// @formal entrypoint session_creation.network_intersection_is_canonical_and_non_widening
+// @formal entrypoint session_creation.selected_environment_is_frozen_in_baseline
+// @formal entrypoint session_event_batch.run_reservation_precedes_distinct_activity_receipt
+// @formal entrypoint session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+// @formal entrypoint session_run.reservation_precedes_activity
 //! Session-owned admission in front of the neutral Run application port.
 //!
 //! Runtime Host executes an already-admitted Run. Session creation/recovery is

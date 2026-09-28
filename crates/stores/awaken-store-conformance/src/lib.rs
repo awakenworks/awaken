@@ -1,3 +1,13 @@
+// @formal entrypoint store_history.commits_form_one_dense_stable_global_order
+// @formal entrypoint store_history.concurrent_compare_and_swap_has_one_winner_per_thread_version
+// @formal entrypoint store_history.exact_retry_and_every_rejection_are_atomic_stutters
+// @formal entrypoint store_history.receipt_refines_one_exact_durable_record
+// @formal evidence outcome.stable_run_identity_and_exactly_once_ack
+// @formal evidence remote_worker.operation_identity_maps_to_one_hash_and_append
+// @formal evidence run.commit_shape_atomicity
+// @formal evidence store_history.recovery_preserves_committed_time_and_receipt_identity
+// @formal evidence store_history.terminal_run_is_final_for_every_backend_history
+// @formal evidence thread_state.atomic_commit_and_replay
 //! Trait-generic store conformance suite (ADR-0039 slice 2.6).
 //!
 //! Every persistence backend that implements `Coordinator + CheckpointReader + CommittedThreadView`

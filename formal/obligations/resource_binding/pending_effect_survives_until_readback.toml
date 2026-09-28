@@ -5,24 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ResourceBindingEffect.tla",
   "formal/tla/ResourceBindingEffect.cfg",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-config-service/src/config_plane.rs",
-  "crates/control/awaken-control/src/admin_assistant.rs",
-  "crates/control/awaken-config-store/tests/support/effect_retirement.rs",
-  "crates/control/awaken-config-store/tests/integration.rs",
-  "crates/control/awaken-config-store/tests/postgres.rs",
+  "formal/tla/ResourceBindingEffect.tla",
 ]
-production_entrypoints = [
-  "crates/control/awaken-agent-config/src/store.rs",
-  "crates/control/awaken-config-store/src/lib.rs",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-config-service/src/config_plane.rs",
-  "crates/control/awaken-control/src/admin_assistant.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Two production classifiers compose the deletion admission used by both SQLite and PostgreSQL. The Agent Config harness exhaustively proves every i64 revision and payload-equality class: a receipt matches only a positive exact effect. The Config Store harness exhaustively proves both current-row-presence and receipt-match classes: retirement is admitted exactly when the row remains present and matches that receipt.'''

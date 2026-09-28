@@ -1,3 +1,12 @@
+// @formal evidence checkpoint.crash_preserves_durable_truth
+// @formal evidence checkpoint.terminal_completion_clears_resume
+// @formal evidence delegation.independent_child_scheduling_lease
+// @formal evidence ingress.commit_epoch_atomic_local
+// @formal evidence ingress.epoch_reclaim
+// @formal evidence ingress.pending_mutation_plan_requires_exact_revision_and_nonwrapping_edit
+// @formal evidence ingress.single_owner
+// @formal evidence run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! Full durable-ingress end to end on Postgres: the dispatch queue and the
 //! commit boundary both persist, sharing one database (distinct scoped bundles).
 //!

@@ -1,3 +1,9 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal evidence worker_authority.independent_evidence_never_extends_expired_proof
+// @formal evidence worker_credential.publication_budget_covers_probe_and_delivery
+// @formal evidence worker_drain.no_claim_after_acknowledgement
+// @formal evidence worker_drain.no_claim_attempt_after_registry_drain
+// @formal evidence worker_drain.registry_transition_follows_local_fence
 use awaken_worker::{StandardManifestConfig, WorkerNodeBuilder, WorkerShutdown};
 use awaken_worker_contract::{VersionRange, WorkerManifest};
 use awaken_worker_transport_security::{

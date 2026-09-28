@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Process-local acknowledgement of aggregate-owned Memory reconciliation.
 
 use super::super::foundation::{MemoryMaterializationEvidence, SandboxError};

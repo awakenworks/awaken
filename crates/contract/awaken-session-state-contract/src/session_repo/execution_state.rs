@@ -1,3 +1,5 @@
+// @formal entrypoint session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+// @formal entrypoint session_execution.terminal_state_never_reopens
 //! Durable execution state of one Session aggregate.
 
 /// The durable execution state of a Managed Session aggregate.

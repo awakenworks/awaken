@@ -1,3 +1,4 @@
+// @formal entrypoint session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
 //! Admission of complete aggregate snapshots at the existing slot boundary.
 use super::SessionRuntimeSlot;
 use crate::HostError;

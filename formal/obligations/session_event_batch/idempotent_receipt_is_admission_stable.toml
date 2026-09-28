@@ -4,17 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.database_engine_correctness",
 ]
-evidence = [
-  "crates/contract/awaken-session-event-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
-  "crates/server/awaken-protocol-managed/tests/adapter.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-session-event-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/server/awaken-protocol-managed/src/state/events.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production projection kernels exhaust admission-receipt visibility over both processed states and prove that later effect observations have no input to an admitted inbound Event's order. The Session root CAS persists the Runtime high-water observed before admission; warm/cold and pagination tests cover selected repository schedules. Runtime snapshot honesty, durable database behavior and HTTP transport remain outside these local proofs.'''

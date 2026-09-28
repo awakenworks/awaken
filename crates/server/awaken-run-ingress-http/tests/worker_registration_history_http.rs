@@ -1,3 +1,4 @@
+// @formal evidence worker.incarnation_generation_fences_stale_processes
 //! Historical registration through the actual signed client, HTTP handler and
 //! Registry adapters. The signer is re-run per request: these are valid
 //! application retries, not an attempt to bypass the signature nonce cache.

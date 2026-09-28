@@ -1,3 +1,4 @@
+// @formal evidence session_time.utc_projection_domain_is_total_exact_and_idempotent
 //! The memory-store API (`/v1/memory_stores`, ADR-0038/0053) end-to-end through its
 //! real axum router, driven over `tower::ServiceExt::oneshot`. Covers the store
 //! aggregate (create / retrieve / list / update / delete / archive), the `memories`

@@ -1,3 +1,4 @@
+// @formal entrypoint model_binding.constructor_and_wire_share_one_admission
 //! The model binding: the exact provider identity, model, and backend one
 //! attempt runs against, and the one projection every comparison of two
 //! bindings goes through.

@@ -8,13 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteAttempt.tla",
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/lib.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The complete finite production route rejects every present endpoint-mismatching reference before execute, resume, cancel, or recovery can select an outbound task operation. Durable state decoding, String equality, terminal commit availability, transport behavior, and external peer semantics remain runtime or external evidence.'''

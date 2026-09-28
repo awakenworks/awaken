@@ -1,3 +1,7 @@
+// @formal entrypoint delegation.cancel_intent
+// @formal entrypoint delegation.late_result_closed
+// @formal entrypoint delegation.remote_cancel_redelivery
+// @formal entrypoint tool_result.resume_receipt_is_atomic_with_ticket_consumption
 //! The single awaiting/terminal commit boundary for a Runtime step.
 
 use super::*;

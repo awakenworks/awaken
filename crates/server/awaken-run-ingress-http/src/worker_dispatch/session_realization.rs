@@ -1,3 +1,5 @@
+// @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
+// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 //! Authenticated Session realization and terminal-cleanup HTTP handlers.
 
 use super::*;

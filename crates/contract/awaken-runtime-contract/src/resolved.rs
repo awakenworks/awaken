@@ -1,3 +1,9 @@
+// @formal entrypoint config.inference_access_resolved_once_at_publication
+// @formal entrypoint model_advisor.never_substitutes_for_primary_admission_or_duplicates_a_binding
+// @formal entrypoint model_geography.every_attempt_candidate_requires_exact_processing_evidence
+// @formal entrypoint model_route.fallback_preserves_the_complete_publication_pin
+// @formal entrypoint worker.durable_dispatch_contains_no_plaintext_secret
+// @formal evidence model_binding.constructor_and_wire_share_one_admission
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use awaken_agent_contract::AcpSessionConfiguration;

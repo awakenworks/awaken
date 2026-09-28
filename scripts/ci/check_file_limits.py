@@ -33,6 +33,12 @@ TEST_ERROR_LIMIT = 3000
 # commit is never. Once the file is back under the limit the marker is stale.
 CEILING_MARKER_RE = re.compile(r"awaken-file-limit-ceiling:\s*(\d+)")
 CEILING_MARKER_SCAN_LINES = 5
+# The opening `// @formal ...` lines of a source are the obligation ledger's
+# file-head anchors (scripts/ci/formal_anchors.py): ledger metadata that moved
+# out of formal/coverage.json into the file it describes, not code. They count
+# toward no limit and do not push a ceiling marker out of the lines it is read
+# from. Only the opening run is skipped; an anchor line anywhere else counts.
+FORMAL_HEADER_LINE = re.compile(r"// @formal [^\n]*(?:\n|$)")
 
 CODE_SUFFIXES = {
     ".rs",
@@ -143,7 +149,15 @@ def read_content(rel: str, staged: bool) -> str | None:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def without_formal_header(text: str) -> str:
+    position = 0
+    while (match := FORMAL_HEADER_LINE.match(text, position)) is not None and match.end() > position:
+        position = match.end()
+    return text[position:]
+
+
 def count_lines(text: str) -> int:
+    text = without_formal_header(text)
     if not text:
         return 0
     return text.count("\n") + (0 if text.endswith("\n") else 1)
@@ -176,7 +190,7 @@ def is_test_code_file(rel: str) -> bool:
 
 
 def declared_ceiling(text: str) -> int | None:
-    for line in text.splitlines()[:CEILING_MARKER_SCAN_LINES]:
+    for line in without_formal_header(text).splitlines()[:CEILING_MARKER_SCAN_LINES]:
         match = CEILING_MARKER_RE.search(line)
         if match:
             return int(match.group(1))
@@ -286,6 +300,13 @@ def self_test() -> int:
             failures.append(f"{rel}: expected {expected}, got {actual}")
     if count_lines("a\nb\n") != 2 or count_lines("a\nb") != 2:
         failures.append("line counter returned an unexpected count")
+    # F1 opening ledger anchors do not count; F2 an anchor after code counts;
+    # F3 a ceiling marker below the anchors is still read.
+    anchors = "// @formal evidence run.safe\n// @formal entrypoint run.other\n"
+    if count_lines(anchors + "a\nb\n") != 2 or count_lines("a\n" + anchors) != 3:
+        failures.append("F1/F2 opening @formal anchors are metadata; later ones are lines")
+    if declared_ceiling(anchors * 3 + "// awaken-file-limit-ceiling: 3005\n") != 3005:
+        failures.append("F3 a ceiling marker below the @formal anchors must still be read")
     line_cases = [
         ("src/lib.rs", CODE_WARNING_LIMIT - 1, None),
         ("src/lib.rs", CODE_WARNING_LIMIT, "warning"),

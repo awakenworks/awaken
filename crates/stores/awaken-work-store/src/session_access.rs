@@ -1,3 +1,9 @@
+// @formal entrypoint work.exact_boundary_reclaim
+// @formal entrypoint work.heartbeat_compare_and_set
+// @formal entrypoint work.lease_authority_snapshot_and_owner_mutations_are_atomic
+// @formal entrypoint work.persisted_epoch_is_exact_nonnegative_and_nonwrapping
+// @formal entrypoint work.single_active_claim
+// @formal entrypoint work.terminal_lease_clear
 //! Session-access digest binding and epoch-fenced lease mutations.
 //!
 //! The bearer is minted by the issuing application; this store only persists

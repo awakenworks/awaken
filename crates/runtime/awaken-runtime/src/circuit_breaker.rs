@@ -1,3 +1,6 @@
+// @formal entrypoint circuit.abandoned_probe_reopens
+// @formal entrypoint circuit.half_open_probe_capacity
+// @formal entrypoint circuit.probe_generation_fencing
 //! Per-model circuit breaker for inference calls.
 //!
 //! Consecutive retryable failures against one model open its circuit; while

@@ -1,3 +1,5 @@
+// @formal entrypoint resource_catalog.artifact_publication_receipt_requires_exact_publication_identity
+// @formal evidence remote_worker.stale_epoch_never_mutates_truth
 //! Protocol-neutral execution ports into the Resources authority.
 //!
 //! `C` is the caller-owned fencing context. The Resources contract never knows

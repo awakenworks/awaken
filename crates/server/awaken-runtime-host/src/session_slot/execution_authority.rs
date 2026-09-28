@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Physical effect authorization is a view of the existing Worker and Session
 //! owners, never another lease or lifecycle. Lock order: Worker -> slots -> GO.
 

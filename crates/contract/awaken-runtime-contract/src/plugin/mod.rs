@@ -1,3 +1,4 @@
+// @formal entrypoint plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
 //! Plugin mechanism: manifests, capability bounds, resolved contributions, and
 //! the per-run execution environment.
 //!

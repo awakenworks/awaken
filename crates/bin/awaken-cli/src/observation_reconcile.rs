@@ -1,3 +1,7 @@
+// @formal entrypoint observation_reconcile.evidence_aba_has_fresh_fence
+// @formal entrypoint observation_reconcile.failed_refresh_does_not_advance_fence
+// @formal entrypoint observation_reconcile.skipped_epoch_was_published_or_superseded
+// @formal entrypoint observation_reconcile.unchanged_evidence_coalesces
 //! Coalesces Worker-observation changes into the canonical publication
 //! reconciler. Heartbeats remain the retry clock; identical evidence does no
 //! repeated authoring work after a successful reconcile.

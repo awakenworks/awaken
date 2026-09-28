@@ -1,3 +1,4 @@
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! Kubernetes attached-process lifecycle.
 
 use async_trait::async_trait;

@@ -1,3 +1,4 @@
+// @formal evidence sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Physical execution evidence for the provider's EXISTING realization marker.
 //! No process registry and no authority to signal a saved numeric PID. A cold
 //! observer can prove absence or retain uncertainty, never invent termination.

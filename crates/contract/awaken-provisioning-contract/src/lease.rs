@@ -1,3 +1,8 @@
+// @formal entrypoint lease.credential_expiry_is_bounded
+// @formal entrypoint lease.egress_fails_closed
+// @formal entrypoint lease.loss_only_fences
+// @formal entrypoint lease.recovery_grace_covers_reconciliation
+// @formal entrypoint lease.timing_has_three_renewal_windows
 //! Sandbox-lease liveness and crash-adoption reconciliation (ADR-0021 §6).
 //!
 //! A realized sandbox outlives the host that placed a run on it, so the fleet

@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! `awaken-sandbox-local` — single-machine sandbox isolation realizing the neutral
 //! [`awaken_provisioning_contract`] seam (ADR-0041).
 //!

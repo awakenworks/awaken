@@ -5,24 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ResourceBindingEffect.tla",
   "formal/tla/ResourceBindingEffect.cfg",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-config-store/tests/integration.rs",
-  "crates/control/awaken-config-store/tests/postgres.rs",
-  "crates/control/awaken-config-store/tests/process_crash_audit.rs",
-  "crates/control/awaken-config-store/tests/support/effect_retirement.rs",
-  "crates/control/awaken-config-service/src/config_plane.rs",
-  "crates/control/awaken-control/src/admin_assistant.rs",
+  "formal/tla/ResourceBindingEffect.tla",
 ]
-production_entrypoints = [
-  "crates/control/awaken-agent-config/src/store.rs",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-config-service/src/config_plane.rs",
-  "crates/control/awaken-control/src/admin_assistant.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The two durable adapters reuse the same contract-owned audit and effect kernels and keep the exact audit row lock, generation check, optional effect insert, immutable draft revision and audit committed-state update inside one backend transaction. Kani exhausts every signed audit-state and effect-revision value plus every presence/equality class: only an exact pending audit may write, an exact committed audit replays, an effect inserts only when absent and positive, and a stable effect identity cannot be replaced.'''

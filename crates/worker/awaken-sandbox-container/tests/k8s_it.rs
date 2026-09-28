@@ -1,3 +1,4 @@
+// @formal evidence sandbox_continuation.distinct_mutable_roots_share_one_retained_claim_without_aliasing
 //! Real Kubernetes integration (ADR-0041 Slice 5), gated on the `k8s` feature AND a
 //! reachable cluster (in-cluster SA or kubeconfig) — skips cleanly otherwise.
 //!

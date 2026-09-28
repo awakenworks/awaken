@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Exact physical restoration lifecycle for the canonical container provider.
 //!
 //! Ordinary create/adopt/rebuild remains owned by `provider.rs`. This module

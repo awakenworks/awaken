@@ -1,3 +1,4 @@
+// @formal evidence credential.attempt_delivery_is_exact_epoch_bound_and_authority_preserving
 //! End-to-end over real HTTP: a database-less worker's `HttpDispatchQueue` drives
 //! the Control Node's Worker routes — enqueue → claim → renew → settle —
 //! through the `DispatchQueue` trait, exactly as the pool would. Its own test binary

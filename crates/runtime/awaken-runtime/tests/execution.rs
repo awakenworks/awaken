@@ -1,3 +1,7 @@
+// @formal evidence model_operation.coverage_commit_strictly_precedes_model_entry
+// @formal evidence model_operation.ordinal_never_wraps_or_reuses_a_coordinate
+// @formal evidence model_operation.reentry_requires_positive_execution_evidence
+// @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 //! The execution loop runs one model step, commits durable facts, and streams
 //! live progress that is independent of committed truth (G1/G13).
 

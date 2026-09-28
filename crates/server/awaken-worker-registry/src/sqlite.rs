@@ -1,3 +1,4 @@
+// @formal entrypoint worker.incarnation_generation_fences_stale_processes
 use async_trait::async_trait;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,

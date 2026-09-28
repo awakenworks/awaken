@@ -1,3 +1,5 @@
+// @formal entrypoint config.publication_revision_is_scoped_by_execution_target_and_exact_replay
+// @formal evidence config_activation.stale_publication_never_installs
 //! Startup reconciliation through the same executable Agent registrar used by
 //! live publication. There is no direct catalog warm-install path.
 

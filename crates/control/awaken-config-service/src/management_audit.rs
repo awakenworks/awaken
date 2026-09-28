@@ -1,3 +1,4 @@
+// @formal entrypoint management_http.crash_preserves_pending_audit
 //! Durable management-command audit edge.
 //!
 //! The audit store is deliberately usable without constructing ConfigService.

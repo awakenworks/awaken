@@ -1,3 +1,4 @@
+// @formal evidence memory_invalidation.listener_cleanup_is_owned_and_joined
 use super::*;
 use awaken_memory_store::{VolatileMemoryRepository, sha256_hex};
 

@@ -7,22 +7,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ExecutableProjectionRefreshProof.tla",
-  "crates/server/awaken-coordinator/src/lib.rs",
-  "crates/server/awaken-session-application/src/application.rs",
-  "crates/server/awaken-session-application/src/run_admission.rs",
-  "crates/server/awaken-session-application/src/tests/run_admission.rs",
-  "crates/server/awaken-deployment-application/src/lib.rs",
-  "crates/server/awaken-deployment-application/src/scheduler.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-application-contract/src/executable_projection.rs",
-  "crates/server/awaken-coordinator/src/lib.rs",
-  "crates/server/awaken-session-application/src/application.rs",
-  "crates/server/awaken-session-application/src/run_admission.rs",
-  "crates/server/awaken-deployment-application/src/lib.rs",
-  "crates/server/awaken-deployment-application/src/scheduler.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''ExecutableProjectionAdmission::enter is the production handler boundary used after the sole paired refresh by Coordinator inventory and warmup reads, Session creation/recovery/realization paths, Managed rehydration/create paths, and Deployment resolution/scheduling. The durable-pair variant has no public constructor; only the separately named process-local AllInOne factory bypasses durable refresh, so a failed durable refresh cannot obtain it.'''

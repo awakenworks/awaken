@@ -1,3 +1,4 @@
+// @formal evidence model_operation.ordinal_never_wraps_or_reuses_a_coordinate
 use super::*;
 use awaken_agent_contract::agent::state::StateKey;
 use awaken_runtime_contract::model_operation::{

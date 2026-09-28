@@ -1,3 +1,4 @@
+// @formal entrypoint environment.registration_intent_is_atomic_recoverable_and_idempotent
 //! Control-owned recovery supervisor for static executable registrations.
 //!
 //! Agent publications and Environment revisions keep their independent

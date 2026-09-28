@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
 //! Canonical projection from immutable execution candidates to holder and
 //! Worker-placement requirements.
 

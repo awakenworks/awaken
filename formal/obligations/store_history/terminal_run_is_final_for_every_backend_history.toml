@@ -5,21 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/StoreHistory.tla",
   "formal/tla/StoreHistory.cfg",
-  "crates/stores/awaken-store-conformance/src/lib.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "formal/tla/StoreHistory.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/agent/run.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''All commit adapters use the contract-owned RunState transition relation before appending a same-Run successor; the file store delegates to the in-memory implementation. Kani proves every lifecycle class, closed terminal cause, failure kind, and next-state class, establishing that Ended permits no successor. SQLite now rejects an undecodable durable state instead of treating it as absent, matching PostgreSQL typed decoding and the in-memory typed history. Backend transaction atomicity, database integrity, and readback remain executable or TCB evidence.'''

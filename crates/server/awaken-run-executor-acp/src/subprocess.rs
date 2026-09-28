@@ -1,3 +1,5 @@
+// @formal entrypoint credential.mcp_client_admission_requires_exact_delivery_adapter_and_http_transport
+// @formal entrypoint credential.mcp_delivery_mode_is_frozen_and_never_falls_back
 //! A subprocess-backed [`AgentChannelSource`]: launch an ACP CLI as a child
 //! process and pipe its stdio into an [`AgentChannel`] (R4).
 //!

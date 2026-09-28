@@ -4,13 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
-evidence = [
-  "crates/runtime/awaken-runtime/src/engine/inference.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/resilience.rs",
-  "crates/runtime/awaken-runtime/src/engine/inference.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

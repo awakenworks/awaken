@@ -1,3 +1,13 @@
+// @formal evidence audit.business_action_follows_audit_record
+// @formal evidence audit.business_commit_and_audit_transition_are_atomic
+// @formal evidence audit.call_identity_is_stable
+// @formal evidence audit.stable_call_replay_does_not_repeat_business_write
+// @formal evidence config.generation_is_monotonic
+// @formal evidence config.stale_writer_never_applies
+// @formal evidence config_activation.stale_publication_never_installs
+// @formal evidence resource_binding.draft_audit_and_effect_are_atomic
+// @formal evidence resource_binding.pending_effect_survives_until_readback
+// @formal evidence resource_binding.replay_is_idempotent_and_identity_stable
 //! Live Postgres config-store CRUD. Skips when no Postgres is reachable; isolates
 //! each test in a fresh schema (the store takes no prefix; ADR-0029/ADR-0031).
 

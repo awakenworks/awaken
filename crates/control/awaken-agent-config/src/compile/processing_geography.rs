@@ -1,3 +1,4 @@
+// @formal entrypoint model_geography.every_attempt_candidate_requires_exact_processing_evidence
 //! Atomic processing-geography admission for one resolved model attempt pool.
 
 use awaken_runtime_contract::agent_bindings::InferenceGeography;

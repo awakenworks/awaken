@@ -2,39 +2,20 @@ claim_scope = "repository_safety"
 proof_grade = "abstract_theorem_proved"
 status = "model_linked"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/RuntimeImplementationProof.tla",
-  "formal/tla/RuntimeImplementation.tla",
-  "formal/tla/RuntimeImplementation.cfg",
-  "crates/contract/awaken-agent-contract/src/thread/commit/coordinator.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
-  "crates/stores/awaken-store-conformance/src/lib.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/runtime/awaken-store-inmem/tests/conformance.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-fs/tests/conformance.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/tests/checkpoint_reader.rs",
-  "crates/stores/awaken-store-sqlite/tests/failure_atomicity.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-  "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
-  "scripts/ci/check-reliability.sh",
-  "scripts/ci/pg_tests.sh",
   "docs/adr/0039-runtime-persistence-port-convergence-and-store-naming.md",
   "docs/design/commit-fact-projection-taxonomy.md",
   "formal/README.md",
+  "formal/tla/RuntimeImplementation.cfg",
+  "formal/tla/RuntimeImplementation.tla",
+  "formal/tla/RuntimeImplementationProof.tla",
+  "scripts/ci/check-reliability.sh",
+  "scripts/ci/pg_tests.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/thread/commit/coordinator.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''RuntimeImplementationProof proves the symbolic temporal refinement RuntimeImplementation!Spec => RuntimeSystem!Spec: every Prepare and prepared crash stutters in the abstract implementation variables, while every Apply step maps to one abstract RuntimeSystem transition. This is an unbounded TLAPS theorem over behaviors satisfying the declared constants and RuntimeAssumptions, but its atomic Apply actions do not name Rust ThreadCommit fields or prove an adapter implementation.'''

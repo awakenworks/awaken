@@ -1,3 +1,5 @@
+// @formal entrypoint credential_pool.cooldown_boundary_is_exact
+// @formal entrypoint credential_pool.exhausted_member_is_unavailable
 //! Credential availability: a time-based cooldown ledger over credential sources.
 //!
 //! When a provider answers a rate/quota signal (a `Disposition::Quota` in

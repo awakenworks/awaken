@@ -1,3 +1,4 @@
+// @formal entrypoint authz.application_protocol_is_scoped_by_application_guard_not_service_guard
 use super::*;
 use axum::http::header::AUTHORIZATION;
 use tower::ServiceExt as _;

@@ -1,3 +1,4 @@
+// @formal entrypoint session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
 //! Root-CAS reducers for one customer-visible Session Running interval.
 
 use super::{PersistedSession, SessionExecutionState};

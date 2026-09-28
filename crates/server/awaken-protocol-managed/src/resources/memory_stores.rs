@@ -1,3 +1,4 @@
+// @formal entrypoint session_time.utc_projection_domain_is_total_exact_and_idempotent
 //! The memory-store API (`/v1/memory_stores`) behind the ADR-0038 MemoryStore
 //! resource family, aligned to the official `@anthropic-ai/sdk`
 //! `beta.memoryStores.*` surface: the store (create / retrieve / update / list /

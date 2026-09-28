@@ -1,3 +1,4 @@
+// @formal entrypoint worker.acp_capability_is_detected_only_after_a_verified_handshake
 //! Host-side provisioning for a launched ACP CLI: the [`LaunchResolver`] that turns
 //! publication-pinned inference access into concrete launch inputs. Managed
 //! candidates project their exact endpoint and claimed vault credential;

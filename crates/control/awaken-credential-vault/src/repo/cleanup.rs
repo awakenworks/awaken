@@ -1,3 +1,11 @@
+// @formal entrypoint credential.failed_create_compensates_material
+// @formal entrypoint credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+// @formal entrypoint credential.managed_creation_begin_rejects_every_published_source_or_child_identity
+// @formal entrypoint credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+// @formal entrypoint credential.managed_rollout_outbox_is_atomic_with_exact_pair_publication
+// @formal entrypoint credential.material_is_always_published_or_intent_tracked
+// @formal entrypoint credential.restart_recovery_compensates_unpublished_material
+// @formal entrypoint credential.visible_row_always_has_material
 //! The owner of cleanup admission for both credential publication envelopes.
 //! Admission consumes snapshots held under one repository lock/transaction.
 //! Material IO runs outside that transaction; observed absence is not an atomic

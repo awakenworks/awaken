@@ -1,3 +1,7 @@
+// @formal evidence delegation.independent_child_scheduling_lease
+// @formal evidence ingress.epoch_reclaim
+// @formal evidence ingress.single_owner
+// @formal evidence worker.retry_preserves_pinned_binding
 // Operational-feed and exact/parent-mediated claim conformance rules. Included
 // at crate root so no parallel conformance surface is introduced.
 /// Verify the durable operational feed independently from Run lifecycle truth.

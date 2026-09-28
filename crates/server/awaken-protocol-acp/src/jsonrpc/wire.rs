@@ -1,3 +1,5 @@
+// @formal entrypoint acp.crossing_writes_preserve_bounded_order_and_progress
+// @formal entrypoint acp.read_ahead_admission_is_bounded_without_arithmetic_overflow
 //! Newline-delimited JSON-RPC transport over one ACP agent channel.
 
 use awaken_agent_channel::AgentChannel;

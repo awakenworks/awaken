@@ -1,3 +1,4 @@
+// @formal evidence remote_worker.stale_epoch_never_mutates_truth
 //! Session artifact publication over the real Worker HTTP boundary.
 
 use std::sync::{

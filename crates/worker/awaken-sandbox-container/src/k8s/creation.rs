@@ -1,3 +1,5 @@
+// @formal entrypoint resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+// @formal entrypoint sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
 //! Transactional realization of a Kubernetes Sandbox and retained claim.
 
 use super::*;

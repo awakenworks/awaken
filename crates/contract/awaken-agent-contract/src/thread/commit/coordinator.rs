@@ -1,3 +1,5 @@
+// @formal entrypoint remote_worker.committed_truth_is_coordinator_owned
+// @formal entrypoint run.commit_shape_atomicity
 use async_trait::async_trait;
 use thiserror::Error;
 

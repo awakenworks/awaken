@@ -1,3 +1,4 @@
+// @formal evidence session.runtime_projection_failed_refresh_stutters_warm_state
 //! Failure-frame checks for the actual asynchronous committed-prefix refresh.
 
 use super::*;

@@ -1,3 +1,5 @@
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal entrypoint session_resources.install_replacement_requires_newer_or_unattempted_authority_amendment
 //! Worker-side adapter over the configured Managed Session runtime.
 //!
 //! Durable dispatch carries only frozen, secret-free projections. This adapter

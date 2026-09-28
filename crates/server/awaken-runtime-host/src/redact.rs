@@ -1,3 +1,4 @@
+// @formal entrypoint capture.persistence_redaction_selection_is_total_exact_and_non_widening
 //! Text-level PII scrubbing (ADR-0050 D6): a real [`ContentRedactor`] for the
 //! managed/compliance build. Emails, US SSNs, and card-length digit runs in
 //! free text are replaced **before** the text is persisted to a span attribute,

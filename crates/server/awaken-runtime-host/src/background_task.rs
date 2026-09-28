@@ -1,3 +1,4 @@
+// @formal entrypoint background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
 //! Product post-commit execution of the state-owned BackgroundTask aggregate.
 //!
 //! This adapter observes committed Running claims and invokes their canonical

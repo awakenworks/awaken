@@ -1,3 +1,5 @@
+// @formal entrypoint model_binding.constructor_and_wire_share_one_admission
+// @formal entrypoint runtime.max_token_continuation_requires_every_guard_and_exhaustion_never_succeeds
 //! Neutral model-inference port.
 //!
 //! `LlmExecutor` is the runtime's single seam to a model provider. The request

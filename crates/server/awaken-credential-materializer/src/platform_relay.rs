@@ -1,3 +1,5 @@
+// @formal entrypoint credential.http_effect_usage_binds_exact_fields_and_placements
+// @formal entrypoint credential.platform_relay_requires_exact_holder_workspace_usage_and_target
 use awaken_runtime_contract::{
     CredentialRealizationCapabilities, CredentialRealizationKind, PlaintextBoundary,
     PlaintextHolder,

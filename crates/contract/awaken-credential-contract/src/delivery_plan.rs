@@ -1,3 +1,4 @@
+// @formal entrypoint credential_effect.repository_git_delivery_excludes_runtime_host_and_mixed_route_authority
 //! Orthogonal, secret-free credential delivery decisions.
 //!
 //! A carrier answers how bytes reach their consumer. A route answers where the

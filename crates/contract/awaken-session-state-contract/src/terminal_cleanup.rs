@@ -1,3 +1,5 @@
+// @formal entrypoint session.cleanup_completion_requires_exact_identity_and_canonical_artifact_evidence
+// @formal entrypoint session.cleanup_operation_advances_exactly_and_completed_is_absorbing
 //! Domain-owned operation vocabulary for terminal Session cleanup.
 //!
 //! The Session aggregate owns whether cleanup is required or complete. Runtime

@@ -1,3 +1,4 @@
+// @formal evidence background_task.never_replay_and_attempt_exhaustion_fail_closed
 //! BackgroundTask integration at the Runtime commit boundary.
 //!
 //! The extension has no service/repository seam. These tests therefore exercise

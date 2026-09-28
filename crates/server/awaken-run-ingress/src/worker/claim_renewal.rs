@@ -1,3 +1,4 @@
+// @formal entrypoint run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
 //! One exact dispatch claim's renewal and cancellation-signal lifecycle.
 //!
 //! Durable lease truth stays in [`Dispatch`]. This module owns only the one

@@ -1,3 +1,6 @@
+// @formal evidence credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
+// @formal evidence credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
+// @formal evidence credential_envelope.issuance_requires_exact_claim
 // awaken-file-limit-ceiling: 3697 (legacy oversized test file: split, never grow)
 //! The Managed vault/credential front door over HTTP: create a vault, enter
 //! `environment_variable` / `static_bearer` / `mcp_oauth` credentials (secrets

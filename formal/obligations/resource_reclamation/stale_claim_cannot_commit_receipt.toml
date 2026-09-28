@@ -4,12 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/ResourceReclamation.tla",
-  "crates/server/awaken-resource-reclaimer/src/lib.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-resource-contract/src/lifecycle.rs",
-  "crates/server/awaken-resource-reclaimer/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The closed production claim-admission domain over claimed status, exact owner, exact generation and a live half-open lease. Durable field reads, wall-clock correctness and repository revision CAS remain runtime TCB; every receipt attachment crosses this kernel through ResourcePurgeIntent::complete.'''

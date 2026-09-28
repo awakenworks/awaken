@@ -1,3 +1,7 @@
+// @formal entrypoint session_realization.concurrent_drivers_preserve_one_owner_fence
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal entrypoint session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
+// @formal entrypoint session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
 //! Process-local realization state for one Session.
 //!
 //! The frozen manifest remains the durable authority. This private slot owns every

@@ -3,17 +3,12 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/AcpLocalBindingBatch.tla",
   "formal/tla/AcpLocalBindingBatch.cfg",
-  "crates/server/awaken-acp-application/src/lib.rs",
-  "scripts/ci/formal_credential_mutations.py",
-  "crates/server/awaken-run-executor-acp/src/host/binding_batch_tests.rs",
+  "formal/tla/AcpLocalBindingBatch.tla",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/formal_credential_mutations.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-acp-application/src/lib.rs",
-  "crates/server/awaken-run-executor-acp/src/host/mod.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Two concurrent batches, three credential keys, revisions 1/2, independently Active/Disabled requested values, present/absent initial bindings and one observer. The existing model now separates per-key writes inside the retained mutex and checks exact decisions, each complete commit, rejected stutters and observed committed serial prefixes; a later legal status update may replace an earlier success. Six semantic mutants and six reachability witnesses cover prefix leaks, stale checks, missing writes, unlocked reads, unrelated-key loss, falsely rejected status changes, both writer orders and an observer between commits.'''

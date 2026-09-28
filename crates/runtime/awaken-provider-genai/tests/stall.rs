@@ -1,3 +1,5 @@
+// @formal evidence llm.inference_budget_requires_positive_response_before_actual_watchdog
+// @formal evidence model_operation.reentry_requires_positive_execution_evidence
 //! An incomplete provider stream must fail retryably, never become a partial
 //! success or hang the run. Protocol End owns completion; the per-event idle
 //! bound owns silent stalls; the fixed total deadline bounds active streams.

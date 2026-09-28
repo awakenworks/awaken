@@ -1,3 +1,4 @@
+// @formal entrypoint protocol_adapter.genai_signed_reasoning_transcript_projection_is_dialect_exact_nonduplicating_and_transport_independent
 //! Closed decision kernel for projecting neutral transcript messages onto `genai`.
 //!
 //! Provider payloads (text, JSON arguments, and binary content) remain opaque to

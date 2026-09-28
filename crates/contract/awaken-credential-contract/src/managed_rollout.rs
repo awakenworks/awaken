@@ -1,3 +1,5 @@
+// @formal entrypoint credential.managed_rollout_ack_requires_converged_progress
+// @formal entrypoint credential.managed_rollout_event_id_replay_requires_exact_payload_and_colliding_ack_is_rejected
 //! Secret-free credential revision adoption protocol.
 //!
 //! The Credential aggregate publishes this wire fact after committing an exact

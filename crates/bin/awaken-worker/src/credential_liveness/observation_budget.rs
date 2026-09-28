@@ -1,3 +1,4 @@
+// @formal entrypoint worker_credential.publication_budget_covers_probe_and_delivery
 //! Pure Worker observation publication budget; used directly by startup and renewal validation.
 
 use std::time::Duration;

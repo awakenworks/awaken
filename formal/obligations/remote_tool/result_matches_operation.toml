@@ -8,13 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteTool.tla",
-  "crates/worker/awaken-tool-relay/src/serve.rs",
-  "crates/worker/awaken-tool-relay/tests/relay.rs",
 ]
-production_entrypoints = [
-  "crates/worker/awaken-tool-relay/src/ledger.rs",
-  "crates/worker/awaken-tool-relay/src/serve.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The exact operation-keyed Executing-entry admission used by both Hand ledgers before a result can replace local state; the filesystem ledger additionally requires its matching durable claim file before writing a completion marker. Kani proves only the closed local admission predicate; mutex/filesystem behavior, crash durability, tool semantics, network delivery, and external orchestration remain runtime or external evidence.'''

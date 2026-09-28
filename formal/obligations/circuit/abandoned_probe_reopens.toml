@@ -6,12 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/CircuitBreaker.tla",
-  "crates/runtime/awaken-runtime/src/circuit_breaker.rs",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-runtime/src/circuit_breaker.rs",
-  "crates/runtime/awaken-runtime/src/circuit_breaker/kernel.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production reducer over every u32 probe budget/failure count and u64 generation; closed and probe permit phase/epoch fencing. TLC explores three permits, generations 0..3, probe budgets 0/1/2. Clock accuracy, mutex/runtime scheduling and provider behavior are not proved.'''

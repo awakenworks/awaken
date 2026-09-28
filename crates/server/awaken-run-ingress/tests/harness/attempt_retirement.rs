@@ -1,3 +1,4 @@
+// @formal evidence session_execution.one_physical_attempt_per_thread
 use awaken_run_ingress::{
     AttemptAdmission as A, DispatchQueue, LeaseRenewalOutcome as L, RunClaim, RunDispatch,
     SettleOutcome as S,

@@ -5,9 +5,7 @@ tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
 evidence = []
-production_entrypoints = [
-  "crates/contract/awaken-provisioning-contract/src/lease.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

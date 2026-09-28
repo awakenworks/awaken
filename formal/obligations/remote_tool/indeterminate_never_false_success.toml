@@ -8,12 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteTool.tla",
-  "crates/worker/awaken-tool-relay/src/ledger.rs",
-  "crates/worker/awaken-tool-relay/tests/relay.rs",
 ]
-production_entrypoints = [
-  "crates/worker/awaken-tool-relay/src/executor.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The no-allocation branch selector used by the sole HandResult-to-ToolExecutor mapper. Kani exhausts the valid success/error/indeterminate branch partitions and additionally checks the production Indeterminate adapter arm with a fixed diagnostic tool id under unwind 16: it remains typed ToolError::Indeterminate, never ordinary Execution or success. General success/error payload projection, diagnostic formatting, channel delivery, ledger durability, tool semantics, and external orchestration remain executable or external evidence.'''

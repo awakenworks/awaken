@@ -1,3 +1,4 @@
+// @formal evidence session.runtime_projection_delivery_preserves_exact_payload_digest_and_monotonic_completion
 //! Subscription, committed-tail broadcast, and Session-event list projection.
 
 use super::*;

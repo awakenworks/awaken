@@ -1,3 +1,7 @@
+// @formal evidence credential.material_is_always_published_or_intent_tracked
+// @formal evidence credential.restart_recovery_compensates_unpublished_material
+// @formal evidence credential.rotation_revision_cas
+// @formal evidence credential.visible_row_always_has_material
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Private-process transport for the existing RepositoryRealizer operation.
 //! No Git policy lives here: clone, publication CAS and credential isolation
 //! remain in git_transport. Requests/receipts are secret-free; credentials use

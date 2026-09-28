@@ -1,3 +1,5 @@
+// @formal evidence model_binding.constructor_and_wire_share_one_admission
+// @formal evidence model_operation.ordinal_never_wraps_or_reuses_a_coordinate
 //! Portable client-side seam for exact, short-lived managed inference access.
 //!
 //! The Cloud implementation owns identity, entitlement, pricing, quota, route

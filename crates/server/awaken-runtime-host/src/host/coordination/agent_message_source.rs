@@ -1,3 +1,5 @@
+// @formal entrypoint session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
+// @formal entrypoint session.agent_message_requires_exact_committed_tool_source_and_payload
 //! Refinement from one committed model tool call to a Session command.
 
 use super::*;

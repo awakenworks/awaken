@@ -6,21 +6,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ThreadCommitProjectionProof.tla",
   "formal/runtime-refinement-manifest.json",
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
-  "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
-  "crates/runtime/awaken-runtime/src/engine/resume.rs",
-  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
-  "crates/runtime/awaken-runtime/tests/per_step_commit.rs",
+  "formal/tla/ThreadCommitProjectionProof.tla",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
-  "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
-  "crates/runtime/awaken-runtime/src/engine/resume.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''ActiveToolBatch remains the sole foreground tool lifecycle and operation-identity owner. Its borrowed ToolExecutionAdmission has private fields and is produced only for the exact Executing call; fresh sequential, compatible parallel-wave and replay-safe recovery paths request that value only after persist_batch returns, while approval resume requests it only after the Awaiting-to-Executing ThreadCommit returns. Every regular ToolExecutor entry consumes this admission and the batch-owned operation identity, eliminating the former resume-only identity path.'''

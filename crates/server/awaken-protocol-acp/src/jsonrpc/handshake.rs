@@ -1,3 +1,4 @@
+// @formal entrypoint acp.prompt_is_never_sent_before_bounded_handshake_completion
 //! ACP initialize/authenticate/session setup shared by turns and capability probes.
 
 use agent_client_protocol::{

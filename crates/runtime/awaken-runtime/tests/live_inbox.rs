@@ -1,3 +1,7 @@
+// @formal evidence live_inbox.boundary_drain_retires_exactly_the_returned_best_effort_fold
+// @formal evidence live_inbox.boundary_priority_is_pause_then_input_then_idle
+// @formal evidence live_inbox.close_is_absorbing
+// @formal evidence live_inbox.retired_message_never_reappears
 //! Live-inbox consumption: messages queued on the attempt's inbox are drained
 //! at the natural-end boundary, folded into the transcript as re-identified
 //! Steps, and shown to the model before any Run-end decision. An empty inbox

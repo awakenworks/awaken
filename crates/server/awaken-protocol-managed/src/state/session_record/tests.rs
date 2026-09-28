@@ -1,3 +1,6 @@
+// @formal evidence session.runtime_projection_equal_source_and_content_is_a_read_without_cache_write_or_broadcast
+// @formal evidence session.runtime_projection_stale_writer_never_rolls_back_visible_result
+// @formal evidence session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 //! Closed cause/effect table for the actual publication decision and owned maps.
 use super::*;
 use std::cmp::Ordering::{self, Equal, Greater, Less};

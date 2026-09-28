@@ -1,3 +1,4 @@
+// @formal evidence session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 use super::*;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};

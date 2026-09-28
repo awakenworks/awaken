@@ -1,3 +1,8 @@
+// @formal entrypoint mcp.at_most_one_final_response
+// @formal entrypoint mcp.cancellation_has_no_success_result
+// @formal entrypoint mcp.final_stops_progress
+// @formal entrypoint mcp.notification_has_no_response
+// @formal entrypoint mcp.rejected_request_skips_host
 //! Pure refinement model for the MCP request lifecycle.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

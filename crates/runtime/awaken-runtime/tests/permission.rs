@@ -1,3 +1,6 @@
+// @formal evidence tool.publication_barrier
+// @formal evidence tool.recovery_policy
+// @formal evidence tool_result.resume_receipt_is_atomic_with_ticket_consumption
 //! The permission axis end to end (ADR-0030): a `PermissionGate` backed by a
 //! `ToolPermissionPolicy` gates every protected tool call. allow runs the tool; deny
 //! blocks it (and only permission can grant — visibility/registration do not,

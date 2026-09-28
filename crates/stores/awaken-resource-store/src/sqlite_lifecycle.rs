@@ -1,3 +1,5 @@
+// @formal entrypoint resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
+// @formal entrypoint resource_reclamation.reference_and_lease_races_fail_closed
 //! SQLite Resource lifecycle and reference-index adapter implementations.
 
 use async_trait::async_trait;

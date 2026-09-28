@@ -1,3 +1,4 @@
+// @formal entrypoint executable_projection.runtime_admission_requires_both_refreshes
 //! One active-active refresh boundary for Coordinator executable projections.
 
 use std::sync::Arc;

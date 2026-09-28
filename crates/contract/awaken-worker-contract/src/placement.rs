@@ -1,3 +1,4 @@
+// @formal entrypoint worker.placement_extension_cannot_widen_eligibility
 use std::collections::{BTreeMap, HashSet};
 
 use thiserror::Error;

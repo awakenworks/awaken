@@ -1,3 +1,4 @@
+// @formal entrypoint session_run.reservation_ttl_uses_store_clock
 //! Construction and clock ownership for the in-memory dispatch adapter.
 
 use std::sync::{Arc, Mutex};

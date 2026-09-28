@@ -1,3 +1,4 @@
+// @formal entrypoint protocol_adapter.genai_signed_reasoning_transcript_projection_is_dialect_exact_nonduplicating_and_transport_independent
 //! Multimodal message content.
 //!
 //! All message content is `Vec<ContentBlock>` — there is no wrapper enum and no
