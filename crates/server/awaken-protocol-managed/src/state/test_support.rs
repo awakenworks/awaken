@@ -400,7 +400,7 @@ impl RehydrateFake {
                 awaken_agent_contract::agent::message::Role::Assistant,
                 vec![ContentBlock::tool_use(
                     call_id,
-                    awaken_ext_builtin_tools::SEND_MESSAGE,
+                    awaken_session_projection::SEND_MESSAGE_TOOL_ID,
                     serde_json::json!({
                         "agent_id": agent_id,
                         "message": "fixture coordination"

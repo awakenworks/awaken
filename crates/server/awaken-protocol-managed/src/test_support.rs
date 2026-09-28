@@ -627,7 +627,7 @@ impl awaken_session_runtime_contract::SessionRuntime for CoordinatedRuntimeFake 
                     ContentBlock::text(format!("coordinating {run_ordinal}")),
                     ContentBlock::ToolUse {
                         id: call_id.clone(),
-                        name: awaken_ext_builtin_tools::SEND_MESSAGE.into(),
+                        name: awaken_session_projection::SEND_MESSAGE_TOOL_ID.into(),
                         input: target,
                     },
                 ],

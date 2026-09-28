@@ -2,9 +2,7 @@
 //! Child lifecycle, disposition, delegation, and aggregate terminal projection.
 
 use super::*;
-use awaken_session_projection::{
-    CoordinatedThread, FactKey, FactProvenance, FactRole, ThreadStatus,
-};
+use awaken_session_projection::{CoordinatedThread, ThreadStatus};
 
 impl ManagedState {
     pub(super) fn run_stop_reason(
@@ -37,7 +35,7 @@ impl ManagedState {
     }
 
     /// The coordinated children as the timeline domain sees them.
-    fn coordinated_threads(record: &SessionRecord) -> Vec<CoordinatedThread> {
+    pub(super) fn coordinated_threads(record: &SessionRecord) -> Vec<CoordinatedThread> {
         record
             .child_threads
             .iter()
@@ -232,7 +230,6 @@ impl ManagedState {
             .retain(|child| seen.contains(&child.id));
         for (link, agent) in resolved {
             let thread_id = link.thread_id.0.clone();
-            let name = agent.display_name().to_string();
             let existing = record
                 .child_threads
                 .iter()
@@ -245,33 +242,13 @@ impl ManagedState {
             });
             record.child_threads[index].usage = usage.get(&thread_id).cloned().flatten();
             if is_new {
-                let at = |role| {
-                    FactKey::new(
-                        thread_id.as_str(),
-                        role,
-                        FactProvenance::LinkOperation {
-                            operation_id: link.created_by_operation_id.clone(),
-                        },
-                    )
-                };
-                record.push_fact(
-                    at(FactRole::LinkThreadCreated),
-                    OutboundKind::SessionThreadCreated {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                    },
-                );
-                record.push_fact(
-                    at(FactRole::LinkStatusRunning),
-                    OutboundKind::SessionThreadStatusRunning {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                    },
-                );
+                for fact in awaken_session_projection::link_facts(link) {
+                    record.publish_fact(&fact, None)?;
+                }
             }
             debug_assert_eq!(record.child_threads[index].id, thread_id);
         }
-        self.append_coordination_cross_posts(record, links);
+        self.append_coordination_cross_posts(record, links)?;
         for link in links {
             let thread_id = link.thread_id.0.as_str();
             let child = record
@@ -279,7 +256,6 @@ impl ManagedState {
                 .iter()
                 .find(|child| child.id == thread_id)
                 .expect("validated coordinated Thread is cached");
-            let agent_name = child.agent.display_name().to_string();
             let advisor_model = match &child.agent {
                 crate::types::SessionThreadAgentValue::Advisor(advisor) => {
                     Some(advisor.model.clone())
@@ -300,7 +276,6 @@ impl ManagedState {
                 record,
                 ChildTranscriptProjection {
                     thread_id,
-                    agent_name: &agent_name,
                     advisor_model: advisor_model.as_deref(),
                     messages: transcripts
                         .get(thread_id)

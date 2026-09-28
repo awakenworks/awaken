@@ -75,7 +75,6 @@ awaken-provisioning-contract.workspace = true
 awaken-protocol-awaken.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-observability.workspace = true
-awaken-ext-builtin-tools.workspace = true
 awaken-ext-skills.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -151,6 +150,8 @@ required-features = ["test-support"]
 
 [dev-dependencies]
 async-trait.workspace = true
+# Pins the timeline's coordination-send id to the tool that owns it.
+awaken-ext-builtin-tools.workspace = true
 # Store fixtures behind their ports; also re-exported for integration tests.
 awaken-protocol-managed-testkit.workspace = true
 tempfile = "3"

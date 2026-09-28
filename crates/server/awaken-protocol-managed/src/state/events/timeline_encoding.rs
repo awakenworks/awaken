@@ -9,7 +9,9 @@
 //! Consumers: every Managed projector that publishes a timeline fact.
 
 use super::*;
-use awaken_session_projection::{FactKind, FactRole, RunFault, StopFact, TimelineFact};
+use awaken_session_projection::{
+    FactKind, FactRole, IssuedToolEvent, RunFault, StopFact, TimelineFact,
+};
 
 /// Resolve a stop fact to the Managed stop reason, naming each answerable
 /// call by the public tool event that `owner_thread_id`'s stream published.
@@ -72,6 +74,10 @@ pub(super) fn encode_fact(
     let thread_id = fact.key.thread.as_str();
     let primary = thread_id == record.session.id;
     Ok(match &fact.kind {
+        FactKind::ThreadCreated => OutboundKind::SessionThreadCreated {
+            session_thread_id: thread_id.to_string(),
+            agent_name: child_name(record, thread_id)?,
+        },
         FactKind::ThreadRunning if primary => {
             primary_thread_status_kind(record, PrimaryThreadStatusProjection::Running)
         }
@@ -146,6 +152,16 @@ pub(super) fn encode_fact(
             is_error: Some(*is_error),
             model_usage: SpanModelUsage::from(*usage),
         },
+        FactKind::MessageSent { message } => OutboundKind::AgentThreadMessageSent {
+            to_session_thread_id: thread_id.to_string(),
+            to_agent_name: Some(child_name(record, thread_id)?),
+            content: vec![ContentBlock::text(message.clone())],
+        },
+        FactKind::ReportReceived { text } => OutboundKind::AgentThreadMessageReceived {
+            from_session_thread_id: thread_id.to_string(),
+            from_agent_name: Some(child_name(record, thread_id)?),
+            content: vec![ContentBlock::text(text.clone())],
+        },
         FactKind::ActivationFailed { message } => OutboundKind::SessionError {
             error: SessionError::classify(
                 awaken_session_state_contract::SessionExecutionState::ActivationFailed.as_str(),
@@ -177,6 +193,10 @@ fn apply_thread_effect(record: &mut SessionRecord, fact: &TimelineFact) {
         }
         FactRole::RescheduledLifecycleStatusRunning => {
             child.status = SessionThreadStatus::Running;
+        }
+        FactRole::CoordinationStatusRunning => {
+            child.status = SessionThreadStatus::Running;
+            child.updated_at = unrecorded();
         }
         FactRole::LifecycleStatusIdle => {
             child.status = SessionThreadStatus::Idle;
@@ -245,5 +265,64 @@ impl SessionRecord {
         }
         self.publish_fact(fact, price_snapshot)?;
         Ok(true)
+    }
+}
+
+/// The published built-in tool uses and results, seen neutrally, in
+/// publication order.
+pub(super) fn issued_tool_events(record: &SessionRecord) -> Vec<IssuedToolEvent<'_>> {
+    let session_id = record.session.id.as_str();
+    let primary = public_thread_id(session_id, session_id);
+    record
+        .events
+        .iter()
+        .filter_map(|event| {
+            let owned = record.event_thread_owners.contains_key(&event.id);
+            match &event.kind {
+                OutboundKind::AgentToolUse { name, input, .. } => {
+                    let identity = decode_managed_tool_event_id(&event.id);
+                    Some(IssuedToolEvent::Use {
+                        event_id: &event.id,
+                        call_id: identity.map_or(event.id.as_str(), |identity| identity.call_id),
+                        source: identity.map(|identity| {
+                            let thread = if identity.thread_id == primary {
+                                session_id
+                            } else {
+                                identity.thread_id
+                            };
+                            (thread, identity.source_id)
+                        }),
+                        name,
+                        input,
+                        owned,
+                    })
+                }
+                OutboundKind::AgentToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => Some(IssuedToolEvent::Result {
+                    event_id: &event.id,
+                    tool_use_id,
+                    content,
+                    is_error: *is_error,
+                    owned,
+                }),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn coordination_send_is_classified_by_the_tool_that_owns_the_id() {
+        // The timeline classifies committed `send_message` calls by its own
+        // spelling of the id; the builtin coordination tool owns the id.
+        assert_eq!(
+            awaken_session_projection::SEND_MESSAGE_TOOL_ID,
+            awaken_ext_builtin_tools::SEND_MESSAGE
+        );
     }
 }

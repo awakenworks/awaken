@@ -6,19 +6,19 @@ use super::*;
 use crate::types::{EvaluatedPermission, RecordedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
-use awaken_ext_builtin_tools::SEND_MESSAGE;
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::{
     SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
     SessionEventToolReplyKind, SessionOutcomeRubric,
 };
+#[cfg(test)]
+use awaken_session_projection::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
 use awaken_session_projection::{FactKey, FactProvenance, FactRole};
 #[cfg(test)]
 use awaken_session_runtime_contract::SessionThreadToolReply;
 use awaken_session_runtime_contract::{
     CoordinatedThreadLink, CoordinatedThreadTarget, SessionThreadTarget,
-    session_agent_report_messages, session_agent_report_text,
 };
 
 const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
@@ -333,7 +333,6 @@ fn projection_error(error: awaken_session_projection::ProjectionError) -> StateE
 /// no cursor, cache, or projection state.
 struct ChildTranscriptProjection<'a> {
     thread_id: &'a str,
-    agent_name: &'a str,
     advisor_model: Option<&'a str>,
     messages: &'a [awaken_agent_contract::agent::message::Message],
     lifecycle_events: &'a [RunLifecycleEvent],
@@ -701,7 +700,6 @@ enum ValidatedEventBatchDrive {
 
 mod admission;
 mod committed_projection;
-mod coordination_receipts;
 mod delivery;
 #[cfg(test)]
 mod event_role;

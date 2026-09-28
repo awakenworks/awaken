@@ -11,6 +11,7 @@
 mod acceptance;
 mod activation;
 mod aggregate;
+mod coordination;
 mod error;
 mod evidence;
 mod fact;
@@ -27,11 +28,16 @@ mod prefix;
 mod role;
 mod stop;
 mod transcript;
+mod transcript_plan;
 mod usage;
 
 pub use acceptance::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
 pub use activation::activation_failure_fact;
 pub use aggregate::{IntervalAggregatePlan, IntervalStep, IntervalUsage, plan_interval_aggregate};
+pub use coordination::{
+    CoordinationReceipts, IssuedToolEvent, SEND_MESSAGE_TOOL_ID, coordination_orders, cross_posts,
+    is_coordination_send, link_facts,
+};
 pub use error::ProjectionError;
 pub use evidence::{
     ProjectionThreadSnapshots, SessionProjectionEvidence, SessionProjectionReadTimings,
@@ -61,5 +67,13 @@ pub use outcome::{
 pub use prefix::same_thread_projection_prefix;
 pub use role::{FactRole, TranscriptRole, phase};
 pub use stop::{StopFact, terminal_stop};
-pub use transcript::assistant_response_coordinates;
+pub use transcript::{
+    AdvisorConsultationBlocks, CommittedMessageProjection, CommittedTranscriptEvidence,
+    RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase, advisor_consultation_blocks,
+    assistant_response_coordinates, committed_transcript_evidence, fold_transcript,
+};
+pub use transcript_plan::{
+    ChildTranscript, ChildTranscriptPlan, ChildTranscriptStep, MessageFold, plan_child_transcript,
+    plan_folds,
+};
 pub use usage::committed_thread_usage;

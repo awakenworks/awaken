@@ -340,22 +340,20 @@ impl ManagedState {
             .filter(|event| event.kind == RunLifecycleEventKind::Awaiting)
             .map(|event| &event.run_id);
         let mut pending_is_in_new_message = false;
-        for message in &new_messages {
+        let folds = awaken_session_projection::plan_folds(
+            session_id,
+            &new_messages,
+            &evidence.root_response_coordinates,
+            historical_pending,
+            all_accepted_lifecycle,
+            root_pending_source_run_id,
+        );
+        for fold in folds {
+            let message = fold.message;
             let coordinates = evidence.root_response_coordinates.get(&message.id.0);
-            let historical_boundaries = awaken_session_projection::historical_message_boundaries(
-                message,
-                historical_pending,
-                all_accepted_lifecycle,
-                session_id,
-                coordinates.map(|(run, _, _)| run.as_str()),
-            );
-            let message_source_run_id = root_pending_source_run_id
-                .or_else(|| historical_boundaries.first().map(|(_, run)| *run));
+            let message_source_run_id = fold.source_run_id;
             let tool_index = record.projected_tool_index_for(None);
-            let pending_history = historical_boundaries
-                .iter()
-                .map(|(pending, _)| pending)
-                .collect::<Vec<_>>();
+            let pending_history = fold.pending_history();
             let selected = transcript_evidence.project_message(
                 message,
                 &tool_index.sources,

@@ -136,21 +136,6 @@ pub(crate) fn session_thread_usage_value(
     }))
 }
 
-/// Concatenate the text of a content-block list.
-pub(crate) fn content_text(
-    content: &[awaken_agent_contract::agent::content::ContentBlock],
-) -> String {
-    use awaken_agent_contract::agent::content::ContentBlock;
-    content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 #[cfg(test)]
 mod usage_tests {
     use super::*;

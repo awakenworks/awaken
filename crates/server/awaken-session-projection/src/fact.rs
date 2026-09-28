@@ -19,6 +19,8 @@ pub struct TimelineFact {
 /// by its key; the Session id names the primary Thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FactKind {
+    /// A coordinated child Thread was created by its link.
+    ThreadCreated,
     ThreadRunning,
     ThreadRescheduled,
     ThreadIdle(StopFact),
@@ -46,6 +48,14 @@ pub enum FactKind {
         start: FactKey,
         is_error: bool,
         usage: TokenUsage,
+    },
+    /// The parent sent this message to the key's child Thread.
+    MessageSent {
+        message: String,
+    },
+    /// The key's child Thread reported this text to its parent.
+    ReportReceived {
+        text: String,
     },
     /// Initial activation failed with this durable cause.
     ActivationFailed {
