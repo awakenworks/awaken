@@ -236,6 +236,11 @@ async fn postgres_execution_binding_is_frozen_with_the_physical_slot() {
         &awaken_dispatch_testkit::AuthoritativeWallClock,
     )
     .await;
+    harness::attempt_binding::assert_closing_lifecycle(
+        &store,
+        &awaken_dispatch_testkit::AuthoritativeWallClock,
+    )
+    .await;
     let error = sqlx::query(
         "UPDATE runtime_dispatch SET active_attempt_binding = '{}' WHERE run_id = 'bound-attempt'",
     )

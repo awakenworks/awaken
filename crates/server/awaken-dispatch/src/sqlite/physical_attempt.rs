@@ -11,6 +11,7 @@ struct PersistedAttemptFacts {
     retired_epoch: i64,
     binding: Option<String>,
     assignment: Option<String>,
+    closing: bool,
 }
 
 impl SqliteDispatchStore {
@@ -32,7 +33,7 @@ impl SqliteDispatchStore {
                 .query_row(
                     &format!(
                         "SELECT status, lease_owner, lease_epoch, lease_until, \
-                         active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment \
+                         active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment, active_attempt_closing \
                          FROM {p}_dispatch WHERE run_id = ?1"
                     ),
                     params![claim.run_id.0],
@@ -47,6 +48,7 @@ impl SqliteDispatchStore {
                             retired_epoch: row.get(6)?,
                             binding: row.get(7)?,
                             assignment: row.get(8)?,
+                            closing: row.get(9)?,
                         })
                     },
                 )
@@ -83,7 +85,7 @@ impl SqliteDispatchStore {
                          AND peer.run_id <> target.run_id
                          AND (peer.active_attempt_owner IS NOT NULL OR peer.active_attempt_epoch IS NOT NULL))"
                     ), params![claim.run_id.0], |row| row.get::<_, bool>(0)).map_err(store_error)?
-                )?;
+                , current.closing)?;
             let stored = crate::dispatch::decode_physical_attempt(
                 &claim.run_id, current.active_owner, active_epoch, current.binding,
             )?;
@@ -100,7 +102,7 @@ impl SqliteDispatchStore {
                 tx.execute(
                     &format!(
                         "UPDATE {p}_dispatch SET active_attempt_owner = ?2, \
-                             active_attempt_epoch = ?3, active_attempt_binding = ?4 WHERE run_id = ?1"
+                             active_attempt_epoch = ?3, active_attempt_binding = ?4, active_attempt_closing = FALSE WHERE run_id = ?1"
                     ),
                     params![claim.run_id.0, claim.owner, epoch, binding.as_ref().map(serde_json::to_string).transpose().map_err(DispatchError::unavailable)?],
                 )
@@ -110,5 +112,84 @@ impl SqliteDispatchStore {
             Ok(admission)
         })
         .await
+    }
+}
+
+impl SqliteDispatchStore {
+    pub(super) async fn finish_physical_attempt_with(
+        &self,
+        claim: &RunClaim,
+        closure_evidence: bool,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let claim = claim.clone();
+        self.with_conn(move |conn, p| {
+            let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(store_error)?;
+            let current: Option<(Option<String>, Option<i64>, bool)> = tx
+                .query_row(
+                    &format!(
+                        "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_closing \
+                         FROM {p}_dispatch WHERE run_id = ?1"
+                    ),
+                    params![claim.run_id.0],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            let Some((active_owner, active_epoch, closing)) = current else {
+                let _ = tx.rollback();
+                return Ok(SettleOutcome::Fenced);
+            };
+            let active_epoch = active_epoch
+                .map(|value| durable_u64("dispatch attempt epoch", value))
+                .transpose()?;
+            let slot = PhysicalAttemptSlot::from_facts(
+                active_owner.is_some(),
+                active_epoch.is_some(),
+                active_owner.as_deref() == Some(&claim.owner),
+                active_epoch == Some(claim.epoch),
+            );
+            let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(slot, closing, closure_evidence)?;
+            if transition == PhysicalAttemptTransition::Clear {
+                tx.execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
+                             active_attempt_epoch = NULL, active_attempt_binding = NULL, active_attempt_closing = FALSE, retired_attempt_epoch = ?3 WHERE run_id = ?1 \
+                             AND active_attempt_owner = ?2 AND active_attempt_epoch = ?3"
+                    ),
+                    params![claim.run_id.0, claim.owner, epoch],
+                )
+                .map_err(store_error)?;
+            }
+            tx.commit().map_err(store_error)?;
+            Ok(outcome)
+        })
+        .await
+    }
+}
+
+impl SqliteDispatchStore {
+    pub(super) async fn close_physical_attempt(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let claim = claim.clone();
+        self.with_conn(move |conn, p| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(store_error)?;
+            let row: Option<(Option<String>, Option<i64>)> = tx.query_row(
+                &format!("SELECT active_attempt_owner, active_attempt_epoch FROM {p}_dispatch WHERE run_id = ?1"),
+                params![claim.run_id.0], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(store_error)?;
+            let Some((owner, epoch)) = row else { return Ok(SettleOutcome::Fenced); };
+            let epoch = epoch.map(|value| durable_u64("physical attempt epoch", value)).transpose()?;
+            let slot = PhysicalAttemptSlot::from_facts(owner.is_some(), epoch.is_some(), owner.as_deref() == Some(&claim.owner), epoch == Some(claim.epoch));
+            let outcome = crate::dispatch::decide_physical_attempt_close(slot)?;
+            if outcome == SettleOutcome::Applied {
+                tx.execute(&format!("UPDATE {p}_dispatch SET active_attempt_closing = TRUE WHERE run_id = ?1"), params![claim.run_id.0]).map_err(store_error)?;
+            }
+            tx.commit().map_err(store_error)?;
+            Ok(outcome)
+        }).await
     }
 }

@@ -70,6 +70,7 @@ pub(crate) fn decode_physical_attempt(
                 binding,
                 thread_id: None,
                 session_thread_id: None,
+                closing: false,
             }))
         }
         _ => Err(corrupt_physical_attempt()),
@@ -85,6 +86,7 @@ pub(crate) fn decide_physical_attempt_admission(
     slot: awaken_dispatch_contract::PhysicalAttemptSlot,
     handoff: bool,
     thread_peer_occupied: bool,
+    closing: bool,
 ) -> Result<
     (
         awaken_dispatch_contract::PhysicalAttemptTransition,
@@ -96,9 +98,9 @@ pub(crate) fn decide_physical_attempt_admission(
         PhysicalAttemptTransition as T, begin_physical_attempt, handoff_physical_attempt,
     };
     let transition = if handoff {
-        handoff_physical_attempt(current, slot, thread_peer_occupied)
+        handoff_physical_attempt(current, slot, thread_peer_occupied, closing)
     } else {
-        begin_physical_attempt(current, slot, thread_peer_occupied)
+        begin_physical_attempt(current, slot, thread_peer_occupied, closing)
     };
     let outcome = match transition {
         T::Install => AttemptAdmission::Applied,
@@ -118,6 +120,8 @@ pub(crate) fn decide_physical_attempt_admission(
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn decide_physical_attempt_finish(
     slot: awaken_dispatch_contract::PhysicalAttemptSlot,
+    closing: bool,
+    closure_evidence: bool,
 ) -> Result<
     (
         awaken_dispatch_contract::PhysicalAttemptTransition,
@@ -126,7 +130,7 @@ pub(crate) fn decide_physical_attempt_finish(
     DispatchError,
 > {
     use awaken_dispatch_contract::{PhysicalAttemptTransition as T, finish_physical_attempt};
-    let transition = finish_physical_attempt(slot);
+    let transition = finish_physical_attempt(slot, closing, closure_evidence);
     let outcome = match transition {
         T::Clear | T::Stutter => SettleOutcome::Applied,
         T::Fenced => SettleOutcome::Fenced,
@@ -140,6 +144,22 @@ pub(crate) fn decide_physical_attempt_finish(
 fn corrupt_physical_attempt() -> DispatchError {
     DispatchError::Rejected(
         "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+    )
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn decide_physical_attempt_close(
+    slot: awaken_dispatch_contract::PhysicalAttemptSlot,
+) -> Result<SettleOutcome, DispatchError> {
+    if slot == awaken_dispatch_contract::PhysicalAttemptSlot::Corrupt {
+        return Err(corrupt_physical_attempt());
+    }
+    Ok(
+        if awaken_dispatch_contract::can_close_physical_attempt(slot) {
+            SettleOutcome::Applied
+        } else {
+            SettleOutcome::Fenced
+        },
     )
 }
 
@@ -182,7 +202,8 @@ mod physical_attempt_tests {
                     };
                     // P1 peer absent => base table; P2 occupied peer cannot
                     // grant Install/Replace/Stutter, even outside Running.
-                    let occupied = decide_physical_attempt_admission(current, slot, handoff, true);
+                    let occupied =
+                        decide_physical_attempt_admission(current, slot, handoff, true, false);
                     let peer_expected = match (current, slot) {
                         (false, _) => Some((T::Fenced, AttemptAdmission::Fenced)),
                         (true, S::Corrupt) => None,
@@ -192,7 +213,8 @@ mod physical_attempt_tests {
                         Some(expected) => assert_eq!(occupied.unwrap(), expected, "P2"),
                         None => assert!(matches!(occupied, Err(DispatchError::Rejected(_))), "P2"),
                     }
-                    let actual = decide_physical_attempt_admission(current, slot, handoff, false);
+                    let actual =
+                        decide_physical_attempt_admission(current, slot, handoff, false, false);
                     match expected {
                         Some(expected) => {
                             let actual = actual.unwrap();
@@ -214,7 +236,7 @@ mod physical_attempt_tests {
             (S::OtherClaim, Some((T::Fenced, SettleOutcome::Fenced))),
             (S::Corrupt, None),
         ] {
-            let actual = decide_physical_attempt_finish(slot);
+            let actual = decide_physical_attempt_finish(slot, false, false);
             match expected {
                 Some(expected) => assert_eq!(actual.unwrap(), expected),
                 None => assert!(matches!(actual, Err(DispatchError::Rejected(_)))),

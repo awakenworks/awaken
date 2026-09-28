@@ -401,18 +401,7 @@ pub(super) async fn finish_attempt(
     Json(request): Json<AttemptExecutionReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        let identity = request.identity.as_ref().ok_or_else(|| {
-            HostError::bad_request("registered Worker identity is required for quiescence")
-        })?;
-        // Unlike begin/commit, a quiescence ACK may arrive after the registry or
-        // Run lease advanced. Authenticate the exact signed incarnation, then let
-        // the Dispatch aggregate clear only its matching predecessor slot.
-        verify_worker_identity(&worker, identity).map_err(HostError::bad_request)?;
-        if identity.lease_owner() != request.claim.owner {
-            return Err(HostError::bad_request(
-                "authenticated Worker does not own the quiesced physical attempt",
-            ));
-        }
+        exact_attempt_return_identity(&worker, &request)?;
         let finished = service
             .dispatch
             .finish_attempt(&request.claim)
@@ -475,6 +464,58 @@ pub(super) async fn resolve_session_run_reservation(
             .map_err(|error| HostError::internal(error.to_string()))?
             .applied();
         Ok(json!({ "applied": applied }))
+    }
+    .await;
+    respond(result)
+}
+
+fn exact_attempt_return_identity<'a>(
+    worker: &VerifiedWorkerContext,
+    request: &'a AttemptExecutionReq,
+) -> Result<&'a WorkerIdentity, HostError> {
+    let identity = request.identity.as_ref().ok_or_else(|| {
+        HostError::bad_request("registered Worker identity is required for quiescence")
+    })?;
+    // Unlike begin/commit, a quiescence ACK may arrive after the registry or
+    // Run lease advanced. Authenticate the exact signed incarnation, then let
+    // the Dispatch aggregate clear only its matching predecessor slot.
+    verify_worker_identity(worker, identity).map_err(HostError::bad_request)?;
+    if identity.lease_owner() != request.claim.owner {
+        return Err(HostError::bad_request(
+            "authenticated Worker does not own the quiesced physical attempt",
+        ));
+    }
+    Ok(identity)
+}
+
+pub(super) async fn close_attempt(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<AttemptExecutionReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let identity = exact_attempt_return_identity(&worker, &request)?;
+        let directory = service
+            .directory
+            .as_ref()
+            .ok_or_else(|| HostError::bad_request("entry closure requires a registered Worker"))?;
+        let record = directory
+            .incarnation(identity)
+            .await
+            .map_err(|error| HostError::unavailable(error.to_string()))?
+            .ok_or_else(|| HostError::bad_request("Worker incarnation is unknown"))?;
+        if !record.snapshot.manifest.supports_current_runtime_protocol() {
+            return Err(HostError::bad_request(
+                "Worker cannot attest the current attempt-closure protocol",
+            ));
+        }
+        let closed = service
+            .dispatch
+            .close_attempt(&request.claim)
+            .await
+            .map_err(|error| HostError::unavailable(error.to_string()))?
+            .applied();
+        Ok(json!({"closed": closed}))
     }
     .await;
     respond(result)

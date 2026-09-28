@@ -37,13 +37,27 @@ impl SandboxToolOutputSpiller {
 
 #[async_trait]
 impl ToolOutputSpiller for SandboxToolOutputSpiller {
+    async fn execution_domain(
+        &self,
+        _run_id: &RunId,
+        _call_id: &str,
+        content: &str,
+    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolError> {
+        if !needs_materialization(content) {
+            return Ok(awaken_runtime_contract::tool_batch::ToolExecutionDomain::Worker {});
+        }
+        self.environment
+            .tool_execution_domain()
+            .await
+            .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))
+    }
     async fn spill(
         &self,
         run_id: &RunId,
         call_id: &str,
         content: String,
     ) -> Result<String, ToolError> {
-        if content.chars().count() <= MAX_INLINE_TOOL_OUTPUT_CHARS {
+        if !needs_materialization(&content) {
             return Ok(content);
         }
 
@@ -52,7 +66,7 @@ impl ToolOutputSpiller for SandboxToolOutputSpiller {
             .write_workspace_file(&logical_path, content.as_bytes())
             .await
             .map_err(|error| {
-                ToolError::DefinitiveFailure(format!(
+                ToolError::Indeterminate(format!(
                     "write oversized tool output `{logical_path}`: {error}"
                 ))
             })?;
@@ -63,6 +77,10 @@ impl ToolOutputSpiller for SandboxToolOutputSpiller {
         // both leak placement and be re-jailed incorrectly by Native path tools.
         Ok(truncated_preview(&content, &logical_path))
     }
+}
+
+fn needs_materialization(content: &str) -> bool {
+    content.chars().count() > MAX_INLINE_TOOL_OUTPUT_CHARS
 }
 
 fn stable_output_path(run_id: &RunId, call_id: &str) -> String {

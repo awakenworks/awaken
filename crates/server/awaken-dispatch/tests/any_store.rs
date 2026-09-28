@@ -57,6 +57,7 @@ async fn execution_binding_is_frozen_with_the_physical_slot() {
         any_in_memory_with_clock(&clock),
     ] {
         harness::attempt_binding::assert_binding_lifecycle(&store, &clock).await;
+        harness::attempt_binding::assert_closing_lifecycle(&store, &clock).await;
     }
 }
 

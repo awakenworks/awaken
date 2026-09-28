@@ -29,6 +29,31 @@ impl DeferredSandboxExecutor {
 
 #[async_trait]
 impl ToolExecutor for DeferredSandboxExecutor {
+    async fn execution_domain(
+        &self,
+        call: &ToolCall,
+    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolError> {
+        let host = self.host()?;
+        if call.tool_id == "read" {
+            let args = awaken_runtime_contract::tool::parse_tool_args(call.arguments.clone())?;
+            if host
+                .session_slots
+                .read(&self.thread, |slot| {
+                    crate::skills::read_pinned_skill(slot, &args)
+                })
+                .flatten()
+                .is_some()
+            {
+                return Ok(awaken_runtime_contract::tool_batch::ToolExecutionDomain::Worker {});
+            }
+        }
+        host.ensure_session_environment_for_tool(&self.thread)
+            .await
+            .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))?
+            .tool_execution_domain()
+            .await
+            .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))
+    }
     fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
         self.host
             .upgrade()

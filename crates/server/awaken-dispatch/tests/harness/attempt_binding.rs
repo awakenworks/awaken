@@ -87,6 +87,7 @@ pub async fn assert_binding_lifecycle(
         "B1"
     );
     let expected_a = Some(PhysicalAttempt {
+        closing: false,
         claim: a.clone(),
         binding: Some(binding_a.clone()),
         thread_id: Some(ThreadId("bound-attempt".into())),
@@ -221,6 +222,7 @@ pub async fn assert_binding_lifecycle(
     assert_eq!(
         store.load_physical_attempt(&c.run_id).await.unwrap(),
         Some(PhysicalAttempt {
+            closing: false,
             claim: c.clone(),
             binding: Some(binding_c.clone()),
             thread_id: Some(ThreadId("bound-attempt".into())),
@@ -314,6 +316,7 @@ pub async fn assert_binding_lifecycle(
     assert_eq!(
         store.load_physical_attempt(&race.run_id).await.unwrap(),
         Some(PhysicalAttempt {
+            closing: false,
             claim: race.clone(),
             binding: Some(winner.clone()),
             thread_id: Some(ThreadId("binding-race".into())),
@@ -363,6 +366,7 @@ pub async fn assert_binding_lifecycle(
             .await
             .unwrap(),
         Some(PhysicalAttempt {
+            closing: false,
             claim: partitioned.clone(),
             binding: None,
             thread_id: Some(ThreadId("logical-thread".into())),
@@ -373,5 +377,106 @@ pub async fn assert_binding_lifecycle(
     assert_eq!(
         store.finish_attempt(&partitioned).await.unwrap(),
         S::Applied
+    );
+}
+
+pub async fn assert_closing_lifecycle(
+    store: &impl ControlDispatchQueue,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) {
+    // C1 exact old entry vs foreign epoch; C2 durable closing phase; C3 late
+    // ordinary ACK or successor handoff; C4 complete Coordinator closure.
+    // D1 foreign close => Fenced, no phase change. D2 exact close (even after
+    // cancellation revokes its mutation lease) => retained identity+binding. D3 closing => ACK and
+    // handoff blocked. D4 exact closure => retire once; replay stutters. D5
+    // admission at the retired epoch => Fenced. Run across every real backend;
+    // this tests storage atomicity/provenance, not provider stop authenticity.
+    let (old, binding, mut worker) = bound_claim(store, "closing-attempt", clock).await;
+    store.begin_attempt(&old, Some(&binding)).await.unwrap();
+    let foreign = RunClaim {
+        epoch: old.epoch + 100,
+        ..old.clone()
+    };
+    assert_eq!(
+        store.close_attempt(&foreign).await.unwrap(),
+        S::Fenced,
+        "D1"
+    );
+    assert!(
+        !store
+            .load_physical_attempt(&old.run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .closing
+    );
+    store.cancel(&old.run_id).await.unwrap();
+    assert_eq!(store.close_attempt(&old).await.unwrap(), S::Applied, "D2");
+    assert_eq!(
+        store.close_attempt(&old).await.unwrap(),
+        S::Applied,
+        "D2 retry"
+    );
+    let closed = store
+        .load_physical_attempt(&old.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(closed.closing);
+    assert_eq!(closed.claim, old);
+    assert_eq!(closed.binding.as_ref(), Some(&binding));
+    assert_eq!(
+        store.finish_attempt(&old).await.unwrap(),
+        S::Fenced,
+        "D3 late ACK"
+    );
+    worker.identity = WorkerIdentity::new("closing-attempt:2", "boot", 2);
+    let next = store
+        .claim_run_compatible(&old.run_id, &worker, 60_000)
+        .await
+        .unwrap()
+        .unwrap();
+    let next = RunClaim::from(&next.lease);
+    let next_binding = AttemptExecutionBinding::new(
+        worker.identity.clone(),
+        "kubernetes-installation-a",
+        "new-process",
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .handoff_attempt(&next, Some(&next_binding))
+            .await
+            .unwrap(),
+        A::Blocked,
+        "D3 handoff"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&old.run_id).await.unwrap(),
+        Some(closed)
+    );
+    assert_eq!(
+        store.finish_attempt_closure(&foreign).await.unwrap(),
+        S::Fenced,
+        "D4 wrong evidence subject"
+    );
+    assert_eq!(
+        store.finish_attempt_closure(&old).await.unwrap(),
+        S::Applied,
+        "D4"
+    );
+    assert_eq!(
+        store.finish_attempt_closure(&old).await.unwrap(),
+        S::Applied,
+        "D4 replay"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&old.run_id).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        store.begin_attempt(&old, Some(&binding)).await.unwrap(),
+        A::Fenced,
+        "D5"
     );
 }

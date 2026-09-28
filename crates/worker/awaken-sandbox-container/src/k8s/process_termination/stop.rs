@@ -47,7 +47,7 @@ impl PodProcessStopper {
         if matching_statuses(binding, &pod).is_none() {
             return Ok(PodProcessTermination::Unknown);
         }
-        if !evidence_is_retained(&pod) {
+        if !binding_retention_is_present(binding, &pod) {
             return Err(backend("Worker process evidence retention was lost"));
         }
         if pod.metadata.deletion_timestamp.is_some() {
@@ -94,6 +94,12 @@ impl PodProcessStopper {
                 "Worker process evidence was not retained before binding",
             ));
         }
+        // Session continuation retention belongs to its Resource lifecycle.
+        // This process observer may consume it but must not release its PVC/
+        // harvest fence. Worker-owned retention keeps its existing release.
+        if binding.retention_finalizer != WORKER_PROCESS_EVIDENCE_FINALIZER {
+            return Ok(());
+        }
         release_exact_pod_finalizer(
             &self.observer.pods,
             &binding.name,
@@ -101,7 +107,7 @@ impl PodProcessStopper {
             &|| Ok(()),
             &|pod| {
                 if pod.metadata.uid.as_deref() != Some(binding.uid.as_str())
-                    || !evidence_is_retained(pod)
+                    || !binding_retention_is_present(binding, pod)
                 {
                     Ok(ExactFinalizerReleaseAdmission::Complete)
                 } else {

@@ -9,7 +9,7 @@
   same-Thread resumption indefinitely; no recovery API or receipt is invented.
   The one attempt-local observer counts active participants and atomically closes
   first-poll entry before physical ACK. A returned parent drains entered children;
-  delayed entry is refused before its effect is polled, and any dropped/unknown
+  delayed entry is refused before its effect is polled, and an effectful dropped/unknown
   participant retains the veto. Continuation permission is separate from return
   permission so an observed inline child may run its own nested model/tool work.
   Gates, model preparation/admission, phase hooks and run-end guards use the same
@@ -17,10 +17,15 @@
   Mutex/Notify scheduling, unobserved adapter work and durable hard-crash recovery
   remain outside those scalar proofs. Test comments own the 30-row local table
   and the Memory/SQLite parent-return-before-child decision rules.
-  Pure Native inference returns data, and its discarded response cannot invoke
-  a governed tool. Without execution-termination evidence, abandoned inference remains
-  Indeterminate and keeps its physical fence. Neither this test nor the model
-  proves that provider computation/billing stopped.
+  Qualified response-only inference retains Unknown/Indeterminate after its
+  consumer closes and cannot invoke a governed tool or replay. Its result-only
+  veto prevents continuation while local drain may finish; provider computation
+  and billing are not asserted stopped. Opaque inference retains the effect veto.
+  Durable Native footprint tests consume the existing model/ToolBatch history,
+  including output-spill domains. Complete restricted Sandbox closure still
+  requires independent exact retained process evidence. Closing-slot tests cover
+  cold SQLite reopen, ordinary ACK/handoff fencing and trusted exact retirement;
+  these protocol tests do not substitute for deployed image qualification.
   The same owned drive retries an observed-return ACK after transient write
   failure, response loss or request timeout, without rerunning execution; a
   permanent rejection remains an error. Tests inject all four outcomes into

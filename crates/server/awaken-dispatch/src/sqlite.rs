@@ -520,7 +520,7 @@ mod migration_history_tests {
     fn store_open_selects_and_converges_the_durable_expanded_history() {
         /* Adapter-selection cause/effect table:
          * Q1 no ledger -> fresh compact history; Q2 exact expanded V15 receipt
-         * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V5;
+         * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V7;
          * Q3 reopen Q2 -> no duplicate columns/triggers or receipts.
          * This test owns Q2/Q3; ordinary open-in-memory tests own Q1.
          */
@@ -560,8 +560,8 @@ mod migration_history_tests {
             .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
         assert_eq!(
-            converged_count, 6,
-            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline"
+            converged_count, 7,
+            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline, entry closure"
         );
     }
 }

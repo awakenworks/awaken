@@ -332,6 +332,7 @@ mod fast_pending_tests {
             );
         }
         let exact = awaken_dispatch::PhysicalAttempt {
+            closing: false,
             claim: claim.clone(),
             binding: None,
             thread_id: None,

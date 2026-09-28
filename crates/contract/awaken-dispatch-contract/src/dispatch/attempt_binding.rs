@@ -81,6 +81,10 @@ pub struct PhysicalAttempt {
     /// Physical Session partition used by child-Thread recovery. `None` means
     /// the logical Thread is also its storage partition.
     pub session_thread_id: Option<ThreadId>,
+    /// Local entry has irreversibly closed, or the exact Worker exited. The
+    /// same slot then requires an independent domain-closure ACK; ordinary
+    /// late return and continuation handoff cannot clear or replace it.
+    pub closing: bool,
 }
 
 /// Response-loss retry must preserve even the absence of a binding. In
