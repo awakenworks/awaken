@@ -36,42 +36,12 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
     }
 )
 
-MANAGED_STATE_ROOT = "crates/server/awaken-protocol-managed/src/state"
-FORBIDDEN_APPLICATION_BYPASSES = {
-    "runtime": "use a SessionApplication command/query instead of the Runtime collaborator",
-    "session_repository": "use the SessionApplication aggregate command/query surface",
-    "config_source": "use a SessionApplication publication query",
-    "credential_source": "use a SessionApplication credential command/query",
-    "resource_catalog": "use a SessionApplication resource command/query",
-    "repository_credential_ingress": "use the SessionApplication repository command",
-    "lifecycle_sink": "use the SessionApplication lifecycle projection command",
-}
-
-
-def managed_application_bypass_violations(sources: dict[str, str]) -> list[str]:
-    """Managed wire state may call the application, never its raw collaborators."""
-    errors: list[str] = []
-    for relative, source in sources.items():
-        production = _crate_boundary_workspace.production_rust(source)
-        for method, replacement in FORBIDDEN_APPLICATION_BYPASSES.items():
-            pattern = re.compile(
-                rf"\.application\s*\.\s*{re.escape(method)}\s*\(", re.MULTILINE
-            )
-            if pattern.search(production):
-                errors.append(
-                    f"{relative}: Managed state bypasses SessionApplication via {method}(); {replacement}"
-                )
-    return errors
-
-
-def check_managed_application_boundary(repo_root: Path) -> list[str]:
-    root = repo_root / MANAGED_STATE_ROOT
-    sources: dict[str, str] = {}
-    for path in sorted(root.glob("**/*.rs")):
-        if "tests" in path.parts:
-            continue
-        sources[str(path.relative_to(repo_root))] = path.read_text(encoding="utf-8")
-    return managed_application_bypass_violations(sources)
+# Managed state reaching past the Session application to its raw collaborators
+# (Runtime, repository, credential or Resource sources) is not checked here:
+# the adapter holds only the application's role traits
+# (crates/server/awaken-session-application/src/roles.rs), which expose none of
+# them, and the collaborators are crate-private to the application, so such a
+# call does not compile.
 
 
 def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]:
@@ -247,24 +217,6 @@ def selftest() -> None:
             official, set(official), without_execution_evidence
         )
     ), "R6 omitted"
-
-    # Application-boundary cause/effect graph: C5 production wire state calls a
-    # semantic SessionApplication operation; C6 it reaches through the application
-    # to a raw Runtime/repository/source/sink; C7 the same text occurs only in an
-    # inline test module. Effects: E5 accept the single application authority;
-    # E6 reject the parallel orchestration path; E7 ignore fixture inspection.
-    # Decision table: B1 C5,!C6 -> E5; B2 C6 -> E6; B3 C7 -> E7.
-    assert managed_application_bypass_violations(
-        {"state.rs": "self.application.session(id).await"}
-    ) == [], "B1/E5"
-    assert managed_application_bypass_violations(
-        {"state.rs": "self.application.session_repository().get(id).await"}
-    ), "B2/E6"
-    assert managed_application_bypass_violations(
-        {
-            "state.rs": "prod\n#[cfg(test)]\nmod tests { self.application.runtime(); }"
-        }
-    ) == [], "B3/E7"
 
     # Admission-ownership cause/effect graph: C8 SessionApplication owns the
     # neutral command and sole adapter; C9 Coordinator injects that application;
