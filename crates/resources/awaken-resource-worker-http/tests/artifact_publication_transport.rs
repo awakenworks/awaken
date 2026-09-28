@@ -1069,13 +1069,13 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
         epoch: 9,
         expires_at_unix_ms: support::unix_now_ms().saturating_add(30_000),
     };
-    let generation = awaken_session_state_contract::SandboxGeneration {
-        id: "generation-a".into(),
-        created_at_unix_ms: 0,
-        expires_at_unix_ms: u64::MAX,
-        environment_fingerprint: "environment-a".into(),
-        base_image_fingerprint: "base-image-a".into(),
-    };
+    let generation = awaken_session_state_contract::SandboxGeneration::new(
+        &awaken_session_types::SessionId::from("session-checkpoint-artifact"),
+        0,
+        u64::MAX,
+        "environment-a",
+        "base-image-a",
+    );
     let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
         "workspace-artifacts",
         &awaken_session_types::SessionId::from("session-checkpoint-artifact"),

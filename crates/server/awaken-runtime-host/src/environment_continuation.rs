@@ -21,9 +21,9 @@ pub(super) fn provisioning_checkpoint_request(
     awaken_provisioning_contract::SandboxCheckpointRequest {
         workspace_id: request.workspace_id.clone(),
         session_id: request.session_id.to_string(),
-        generation_id: request.generation.id.clone(),
-        environment_fingerprint: request.generation.environment_fingerprint.clone(),
-        base_image_fingerprint: request.generation.base_image_fingerprint.clone(),
+        generation_id: request.generation.id().to_owned(),
+        environment_fingerprint: request.generation.environment_fingerprint().to_owned(),
+        base_image_fingerprint: request.generation.base_image_fingerprint().to_owned(),
         effect_id: request.operation.effect_id.clone(),
         format: request.format.clone(),
         created_at_unix_ms: request.created_at_unix_ms,
@@ -229,7 +229,7 @@ impl ManagedHost {
             .resources
             .memory
             .background()
-            .quiesce_shared_environment(thread, &generation.id, Duration::from_secs(30))
+            .quiesce_shared_environment(thread, generation.id(), Duration::from_secs(30))
             .await
         {
             return Err(RunError::unavailable_classified(
@@ -256,7 +256,7 @@ impl ManagedHost {
             .modify(thread, |slot| slot.runtime = None);
         Ok(awaken_session_state_contract::QuiescenceReceipt {
             effect_id: operation.effect_id.clone(),
-            generation_id: generation.id.clone(),
+            generation_id: generation.id().to_owned(),
             activity_epoch: operation.activity_epoch,
             live_environment_effects: 0,
             mcp_generations: mcp.generations,
@@ -526,7 +526,7 @@ impl ManagedHost {
         self.continuation_source_disposal_authorization(thread, disposal)?;
         Ok(awaken_session_state_contract::SourceDisposedReceipt {
             effect_id: operation.effect_id.clone(),
-            generation_id: generation.id.clone(),
+            generation_id: generation.id().to_owned(),
             source_binding: source_binding.to_string(),
             terminated: true,
         })

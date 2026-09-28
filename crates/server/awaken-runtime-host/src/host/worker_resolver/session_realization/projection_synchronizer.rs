@@ -292,7 +292,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         let source_generation_id = projection
             .environment
             .generation()
-            .map(|generation| generation.id.as_str());
+            .map(|generation| generation.id());
         let adoption = if let Some(binding) = projection.environment.binding() {
             let provider = self
                 .host
@@ -1069,7 +1069,14 @@ mod tests {
                 } = &mut foreign.environment
                 {
                     if foreign_generation {
-                        generation.as_mut().unwrap().id.push_str("-foreign");
+                        let source = generation.as_ref().unwrap();
+                        *generation = Some(awaken_session_state_contract::SandboxGeneration::new(
+                            &awaken_session_types::SessionId::from("foreign-session"),
+                            source.created_at_unix_ms(),
+                            source.expires_at_unix_ms(),
+                            source.environment_fingerprint(),
+                            source.base_image_fingerprint(),
+                        ));
                     } else {
                         binding.push_str("-foreign");
                     }

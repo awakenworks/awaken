@@ -567,9 +567,9 @@ fn terminal_operation_allowed(
                 && heads
                     .iter()
                     .filter(|head| {
-                        head.id == base.memory_id
-                            && head.version == base.version
-                            && head.content_sha256 == base.content_sha256
+                        head.id == base.memory_id()
+                            && head.version == base.version()
+                            && head.content_sha256 == base.content_sha256()
                             && expected_path.as_ref().is_none_or(|path| *path == head.path)
                     })
                     .count()
@@ -580,9 +580,9 @@ fn terminal_operation_allowed(
                 .iter()
                 .filter(|head| {
                     head.path == *path
-                        && head.id == base.memory_id
-                        && head.version == base.version
-                        && head.content_sha256 == base.content_sha256
+                        && head.id == base.memory_id()
+                        && head.version == base.version()
+                        && head.content_sha256 == base.content_sha256()
                 })
                 .count()
                 == 1
@@ -807,7 +807,7 @@ async fn memory_operation(
                     .materialization()
                     .heads
                     .iter()
-                    .find(|head| head.id == base.memory_id)
+                    .find(|head| head.id == base.memory_id())
                     .map(|head| head.path.as_str())
             });
             let path = frozen_path.or(expected_path.as_deref());
@@ -1504,11 +1504,11 @@ mod tests {
             terminal_operation_allowed(
                 &target,
                 &MemoryOperation::UpdateHead {
-                    base: awaken_resource_contract::MemoryGeneration {
-                        memory_id: "memory-note".into(),
-                        version: 1,
-                        content_sha256: "sha-a".into(),
-                    },
+                    base: awaken_resource_contract::MemoryGeneration::new(
+                        "memory-note",
+                        1,
+                        "sha-a"
+                    ),
                     content: "B".into(),
                     target_path: None,
                     expected_path: None,
@@ -1519,33 +1519,21 @@ mod tests {
         );
         for operation in [
             MemoryOperation::UpdateHead {
-                base: awaken_resource_contract::MemoryGeneration {
-                    memory_id: "memory-note".into(),
-                    version: 1,
-                    content_sha256: "sha-c".into(),
-                },
+                base: awaken_resource_contract::MemoryGeneration::new("memory-note", 1, "sha-c"),
                 content: "B".into(),
                 target_path: None,
                 expected_path: None,
                 actor: None,
             },
             MemoryOperation::UpdateHead {
-                base: awaken_resource_contract::MemoryGeneration {
-                    memory_id: "memory-note".into(),
-                    version: 1,
-                    content_sha256: "sha-a".into(),
-                },
+                base: awaken_resource_contract::MemoryGeneration::new("memory-note", 1, "sha-a"),
                 content: "B".into(),
                 target_path: Some("/renamed.md".into()),
                 expected_path: None,
                 actor: None,
             },
             MemoryOperation::UpdateHead {
-                base: awaken_resource_contract::MemoryGeneration {
-                    memory_id: "memory-note".into(),
-                    version: 1,
-                    content_sha256: "sha-a".into(),
-                },
+                base: awaken_resource_contract::MemoryGeneration::new("memory-note", 1, "sha-a"),
                 content: "B".into(),
                 target_path: None,
                 expected_path: Some("/foreign.md".into()),
@@ -1559,11 +1547,11 @@ mod tests {
                 &target,
                 &MemoryOperation::DeleteIfMatch {
                     path: "/note.md".into(),
-                    base: awaken_resource_contract::MemoryGeneration {
-                        memory_id: "memory-note".into(),
-                        version: 1,
-                        content_sha256: "sha-a".into(),
-                    },
+                    base: awaken_resource_contract::MemoryGeneration::new(
+                        "memory-note",
+                        1,
+                        "sha-a"
+                    ),
                     actor: None,
                 },
             ),
@@ -1574,11 +1562,11 @@ mod tests {
                 &target,
                 &MemoryOperation::DeleteIfMatch {
                     path: "/note.md".into(),
-                    base: awaken_resource_contract::MemoryGeneration {
-                        memory_id: "memory-note".into(),
-                        version: 1,
-                        content_sha256: "sha-c".into(),
-                    },
+                    base: awaken_resource_contract::MemoryGeneration::new(
+                        "memory-note",
+                        1,
+                        "sha-c"
+                    ),
                     actor: None,
                 },
             ),

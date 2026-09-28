@@ -235,11 +235,11 @@ pub struct MemoryMaterializationHead {
 impl MemoryMaterializationHead {
     #[must_use]
     pub fn generation(&self) -> awaken_resource_contract::MemoryGeneration {
-        awaken_resource_contract::MemoryGeneration {
-            memory_id: self.id.clone(),
-            version: self.version,
-            content_sha256: self.content_sha256.clone(),
-        }
+        awaken_resource_contract::MemoryGeneration::new(
+            self.id.clone(),
+            self.version,
+            self.content_sha256.clone(),
+        )
     }
 }
 

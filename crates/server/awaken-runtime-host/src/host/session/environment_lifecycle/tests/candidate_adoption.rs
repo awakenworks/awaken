@@ -689,7 +689,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
                 {
                     match rule {
                         "receipt" => effect_id.push_str("-successor"),
-                        "generation" => generation.id.push_str("-foreign"),
+                        "generation" => *generation = foreign_generation(generation),
                         "binding" => binding.push_str("-foreign"),
                         _ => {}
                     }
@@ -813,4 +813,18 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
         .expect("S2 Resident retained");
     assert!(Arc::ptr_eq(&published, &resident), "S2 exact Resident Arc");
     assert!(Arc::ptr_eq(&environment, &resident), "S2 provider Arc");
+}
+
+/// The same Sandbox coordinates minted for another Session: a generation whose
+/// id cannot match the aggregate's.
+fn foreign_generation(
+    generation: &awaken_session_state_contract::SandboxGeneration,
+) -> awaken_session_state_contract::SandboxGeneration {
+    awaken_session_state_contract::SandboxGeneration::new(
+        &awaken_session_types::SessionId::from("foreign-session"),
+        generation.created_at_unix_ms(),
+        generation.expires_at_unix_ms(),
+        generation.environment_fingerprint(),
+        generation.base_image_fingerprint(),
+    )
 }

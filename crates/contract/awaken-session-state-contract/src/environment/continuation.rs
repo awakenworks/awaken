@@ -242,13 +242,13 @@ impl SourceReleasePreparedReceipt {
             "session-environment-source-release-prepared-v3",
             &preparation,
             &provider_prepared_effect_fence,
-            generation.id.as_str(),
+            generation.id(),
             source_binding,
         ));
         Ok(Self {
             preparation,
             provider_prepared_effect_fence,
-            generation_id: generation.id.clone(),
+            generation_id: generation.id().to_owned(),
             source_binding: source_binding.to_string(),
             receipt_fingerprint,
         })
@@ -340,7 +340,7 @@ impl SourceReleasePreparedReceipt {
         self.verify_shape()?;
         if source_release_preparation_receipt_admitted(
             self.preparation.operation.effect_id == operation.effect_id,
-            self.generation_id == generation.id,
+            self.generation_id == generation.id(),
             self.source_binding == source_binding,
             true,
         ) {
@@ -811,7 +811,7 @@ mod tests {
         legacy.receipt_fingerprint = crate::stable_fingerprint(&(
             "session-environment-source-release-prepared-v2",
             &preparation,
-            generation.id.as_str(),
+            generation.id(),
             "source-wire-binding",
         ));
         let mut legacy_wire = serde_json::to_value(&legacy).unwrap();

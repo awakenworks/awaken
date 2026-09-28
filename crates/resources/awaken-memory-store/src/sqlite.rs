@@ -781,9 +781,9 @@ impl MemoryRepository for SqliteMemoryRepository {
             let admission =
                 ConditionalDeleteAdmission::new(row.as_ref().map(|(id, _, sha, version, _, _)| {
                     (
-                        id == &base.memory_id,
-                        domain_version(*version).is_ok_and(|version| version == base.version),
-                        sha == &base.content_sha256,
+                        id == base.memory_id(),
+                        domain_version(*version).is_ok_and(|version| version == base.version()),
+                        sha == base.content_sha256(),
                     )
                 }));
             match admission {
@@ -808,7 +808,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 &tx,
                 VersionAppend {
                     store: &store,
-                    memory_id: &base.memory_id,
+                    memory_id: base.memory_id(),
                     operation: MemoryVersionOperation::Deleted,
                     path: &path,
                     content: None,
@@ -964,7 +964,7 @@ impl SqliteMemoryRepository {
                         "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
                          WHERE store_id = ?1 AND id = ?2"
                     ),
-                    params![store, base.memory_id],
+                    params![store, base.memory_id()],
                     |r| {
                         Ok((
                             r.get::<_, String>(0)?,
@@ -979,7 +979,7 @@ impl SqliteMemoryRepository {
                 .optional()
                 .map_err(mem_err)?;
             let (path, cur_sha, cur_content, version, created, updated) =
-                row.ok_or_else(|| MemErr::NotFound(base.memory_id.clone()))?;
+                row.ok_or_else(|| MemErr::NotFound(base.memory_id().to_owned()))?;
             let requested_path = target_path.unwrap_or_else(|| path.clone());
             let new_sha = sha256_hex(&content);
             let already_current = cur_sha == new_sha && path == requested_path;
@@ -988,13 +988,13 @@ impl SqliteMemoryRepository {
                     .as_deref()
                     .is_none_or(|expected| expected == path),
                 true,
-                domain_version(version)? == base.version,
-                cur_sha == base.content_sha256,
+                domain_version(version)? == base.version(),
+                cur_sha == base.content_sha256(),
                 already_current,
             ) {
                 HeadUpdateAdmission::Conflict => {
                     let current = row_memory(
-                        base.memory_id,
+                        base.memory_id().to_owned(),
                         path,
                         cur_content,
                         cur_sha,
@@ -1008,7 +1008,7 @@ impl SqliteMemoryRepository {
                 }
                 HeadUpdateAdmission::Current => {
                     return row_memory(
-                        base.memory_id,
+                        base.memory_id().to_owned(),
                         path,
                         cur_content,
                         cur_sha,
@@ -1049,7 +1049,7 @@ impl SqliteMemoryRepository {
                     new_sha,
                     now,
                     store,
-                    base.memory_id
+                    base.memory_id()
                 ],
             )
             .map_err(mem_err)?;
@@ -1071,7 +1071,7 @@ impl SqliteMemoryRepository {
                 &tx,
                 VersionAppend {
                     store: &store,
-                    memory_id: &base.memory_id,
+                    memory_id: base.memory_id(),
                     operation: MemoryVersionOperation::Modified,
                     path: &requested_path,
                     content: Some(&content),
@@ -1083,7 +1083,7 @@ impl SqliteMemoryRepository {
             Ok(Memory {
                 content_size: content.len() as u64,
                 content: Some(content),
-                id: base.memory_id,
+                id: base.memory_id().to_owned(),
                 path: requested_path,
                 content_sha256: new_sha,
                 version: next_domain_version(version)?,

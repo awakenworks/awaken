@@ -407,8 +407,12 @@ mod tests {
         // A duplicate create (PathConflict) fails → no publish.
         assert!(fs.create("s", "/a.md", "dup").await.is_err());
         // A CAS update on a stale generation (Conflict) fails → no publish.
-        let mut stale = m.generation();
-        stale.content_sha256 = "deadbeef".into();
+        let head = m.generation();
+        let stale = awaken_resource_contract::MemoryGeneration::new(
+            head.memory_id(),
+            head.version(),
+            "deadbeef",
+        );
         assert!(fs.update("s", &stale, "two").await.is_err());
         // A delete of an id-less path still succeeds (idempotent) — but a create/update
         // that errored above left the bus silent.

@@ -185,8 +185,8 @@ pub(crate) async fn materialized_path_cas(fs: &dyn MemoryRepository) {
     let history = fs.list_versions(store).await.unwrap();
     for path in ["relative.md", "/", "/a/../b.md"] {
         for id in [base.id.as_str(), "absent-id"] {
-            let mut generation = base.generation();
-            generation.memory_id = id.into();
+            let head = base.generation();
+            let generation = MemoryGeneration::new(id, head.version(), head.content_sha256());
             assert!(
                 matches!(
                     fs.update_materialized(store, path, &generation, "edit")
@@ -202,11 +202,7 @@ pub(crate) async fn materialized_path_cas(fs: &dyn MemoryRepository) {
             fs.update_materialized(
                 store,
                 "invalid",
-                &MemoryGeneration {
-                    memory_id: "absent-id".into(),
-                    version: 1,
-                    content_sha256: "stale".into(),
-                },
+                &MemoryGeneration::new("absent-id", 1, "stale"),
                 &"x".repeat(MAX_MEMORY_BYTES + 1)
             )
             .await,
@@ -325,11 +321,11 @@ pub(crate) async fn complete_generation_rejects_same_content_aba(fs: &dyn Memory
 
     for stale in [
         first.generation(),
-        MemoryGeneration {
-            memory_id: current.id.clone(),
-            version: current.version - 1,
-            content_sha256: current.content_sha256.clone(),
-        },
+        MemoryGeneration::new(
+            current.id.clone(),
+            current.version - 1,
+            current.content_sha256.clone(),
+        ),
     ] {
         assert!(matches!(
             fs.update_materialized(store, "/a.md", &stale, "same").await,
@@ -572,11 +568,7 @@ pub(crate) async fn extended_conformance(fs: &dyn MemoryRepository) {
     assert!(matches!(
         fs.update(
             store,
-            &MemoryGeneration {
-                memory_id: "mem_does_not_exist".into(),
-                version: 1,
-                content_sha256: "sha".into()
-            },
+            &MemoryGeneration::new("mem_does_not_exist", 1, "sha"),
             &big
         )
         .await,
@@ -665,31 +657,15 @@ pub(crate) async fn not_found_paths(fs: &dyn MemoryRepository) {
     let store = "s";
     // update on a store that does not exist yet → NotFound.
     assert!(matches!(
-        fs.update(
-            store,
-            &MemoryGeneration {
-                memory_id: "no_id".into(),
-                version: 1,
-                content_sha256: "sha".into()
-            },
-            "x"
-        )
-        .await,
+        fs.update(store, &MemoryGeneration::new("no_id", 1, "sha"), "x")
+            .await,
         Err(MemErr::NotFound(_))
     ));
     // update an unknown id in an existing store → NotFound.
     fs.create(store, "/seed.md", "s").await.unwrap();
     assert!(matches!(
-        fs.update(
-            store,
-            &MemoryGeneration {
-                memory_id: "no_such_id".into(),
-                version: 1,
-                content_sha256: "sha".into()
-            },
-            "x"
-        )
-        .await,
+        fs.update(store, &MemoryGeneration::new("no_such_id", 1, "sha"), "x")
+            .await,
         Err(MemErr::NotFound(_))
     ));
     // rename a source that does not exist → NotFound (both the from==to and the
@@ -736,8 +712,8 @@ pub(crate) async fn atomic_head_update_conformance(fs: &dyn MemoryRepository) {
         initial_versions
     );
 
-    let mut stale = source.generation();
-    stale.content_sha256 = "stale".into();
+    let head = source.generation();
+    let stale = MemoryGeneration::new(head.memory_id(), head.version(), "stale");
     assert!(matches!(
         fs.update_head(store, &stale, "v1", Some("/moved.md"),)
             .await,

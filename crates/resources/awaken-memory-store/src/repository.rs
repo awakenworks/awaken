@@ -675,9 +675,9 @@ impl MemoryRepository for VolatileMemoryRepository {
             .cloned();
         match ConditionalDeleteAdmission::new(current.as_ref().map(|head| {
             (
-                head.id == base.memory_id,
-                head.version == base.version,
-                head.sha == base.content_sha256,
+                head.id == base.memory_id(),
+                head.version == base.version(),
+                head.sha == base.content_sha256(),
             )
         })) {
             ConditionalDeleteAdmission::Absent => return Ok(false),
@@ -797,11 +797,11 @@ impl VolatileMemoryRepository {
         let store_map = guard
             .records
             .get_mut(store)
-            .ok_or_else(|| MemErr::NotFound(base.memory_id.clone()))?;
+            .ok_or_else(|| MemErr::NotFound(base.memory_id().to_owned()))?;
         let source_path = store_map
             .iter()
-            .find_map(|(path, record)| (record.id == base.memory_id).then(|| path.clone()))
-            .ok_or_else(|| MemErr::NotFound(base.memory_id.clone()))?;
+            .find_map(|(path, record)| (record.id == base.memory_id()).then(|| path.clone()))
+            .ok_or_else(|| MemErr::NotFound(base.memory_id().to_owned()))?;
         let requested_path = target_path.unwrap_or(&source_path);
         let current = store_map
             .get(&source_path)
@@ -809,9 +809,9 @@ impl VolatileMemoryRepository {
         let already_current = current.sha == new_sha && source_path == requested_path;
         match HeadUpdateAdmission::new(
             expected_path.is_none_or(|path| path == source_path),
-            current.id == base.memory_id,
-            current.version == base.version,
-            current.sha == base.content_sha256,
+            current.id == base.memory_id(),
+            current.version == base.version(),
+            current.sha == base.content_sha256(),
             already_current,
         ) {
             HeadUpdateAdmission::Conflict => {

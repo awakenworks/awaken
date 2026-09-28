@@ -690,7 +690,7 @@ impl MemoryFuse {
         let fhs: Vec<u64> = table
             .open_files
             .iter()
-            .filter(|(_, open)| open.generation.memory_id == memory_id)
+            .filter(|(_, open)| open.generation.memory_id() == memory_id)
             .map(|(fh, _)| *fh)
             .collect();
         if fhs.is_empty() {
@@ -864,9 +864,9 @@ impl MemoryFuse {
                 Ok(updated) => updated,
                 Err(MemErr::Conflict { current }) => {
                     tracing::warn!(
-                        memory_id = %open.generation.memory_id,
-                        expected_version = open.generation.version,
-                        expected_sha256 = %open.generation.content_sha256,
+                        memory_id = %open.generation.memory_id(),
+                        expected_version = open.generation.version(),
+                        expected_sha256 = %open.generation.content_sha256(),
                         current_sha256 = %current.content_sha256,
                         current_content_size = current.content_size,
                         "memory FUSE fd flush conflict — buffer kept, EAGAIN surfaced"
@@ -919,7 +919,7 @@ impl MemoryFuse {
         // transition. An external rename cannot refresh this table, so its old
         // token conflicts at flush instead of bypassing generation.
         for open in table.open_files.values_mut() {
-            if open.generation.memory_id == generation.memory_id {
+            if open.generation.memory_id() == generation.memory_id() {
                 open.generation = generation.clone();
             }
         }

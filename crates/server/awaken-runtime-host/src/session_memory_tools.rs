@@ -188,11 +188,7 @@ struct MemoryGenerationArgs {
 
 impl From<MemoryGenerationArgs> for awaken_resource_contract::MemoryGeneration {
     fn from(value: MemoryGenerationArgs) -> Self {
-        Self {
-            memory_id: value.memory_id,
-            version: value.version,
-            content_sha256: value.content_sha256,
-        }
+        Self::new(value.memory_id, value.version, value.content_sha256)
     }
 }
 

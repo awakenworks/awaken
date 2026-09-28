@@ -348,20 +348,12 @@ fn content_lru_cache_evicts_oldest_and_refreshes_on_get() {
 fn open_fd_count_tracks_allocated_handles() {
     let fs = test_fs();
     let a = fs.allocate_fh(OpenFile {
-        generation: MemoryGeneration {
-            memory_id: "m1".into(),
-            version: 1,
-            content_sha256: sha256_hex("one"),
-        },
+        generation: MemoryGeneration::new("m1", 1, sha256_hex("one")),
         buffer: b"one".to_vec(),
         dirty: false,
     });
     let b = fs.allocate_fh(OpenFile {
-        generation: MemoryGeneration {
-            memory_id: "m2".into(),
-            version: 1,
-            content_sha256: sha256_hex("two"),
-        },
+        generation: MemoryGeneration::new("m2", 1, sha256_hex("two")),
         buffer: b"two".to_vec(),
         dirty: false,
     });
@@ -377,22 +369,14 @@ fn dirty_fd_budget_fails_closed_at_the_limit() {
     let fs = test_fs();
     for index in 0..MAX_DIRTY_OPEN_FILES {
         let fh = fs.allocate_fh(OpenFile {
-            generation: MemoryGeneration {
-                memory_id: format!("m{index}"),
-                version: 1,
-                content_sha256: sha256_hex("clean"),
-            },
+            generation: MemoryGeneration::new(format!("m{index}"), 1, sha256_hex("clean")),
             buffer: Vec::new(),
             dirty: false,
         });
         fs.write_fh_bytes(fh, 0, b"x").expect("dirty fd admitted");
     }
     let blocked = fs.allocate_fh(OpenFile {
-        generation: MemoryGeneration {
-            memory_id: "blocked".into(),
-            version: 1,
-            content_sha256: sha256_hex("blocked"),
-        },
+        generation: MemoryGeneration::new("blocked", 1, sha256_hex("blocked")),
         buffer: Vec::new(),
         dirty: false,
     });

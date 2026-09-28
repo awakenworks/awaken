@@ -855,13 +855,13 @@ mod tests {
                     artifact_now_ms() + 60_000
                 },
             };
-            let generation = awaken_session_state_contract::SandboxGeneration {
-                id: "generation".into(),
-                created_at_unix_ms: 0,
-                expires_at_unix_ms: u64::MAX,
-                environment_fingerprint: "environment".into(),
-                base_image_fingerprint: "base".into(),
-            };
+            let generation = awaken_session_state_contract::SandboxGeneration::new(
+                &awaken_session_types::SessionId::from("session"),
+                0,
+                u64::MAX,
+                "environment",
+                "base",
+            );
             let mut operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
                 "workspace",
                 &awaken_session_types::SessionId::from("session"),

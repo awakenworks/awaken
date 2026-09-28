@@ -709,8 +709,8 @@ mod mutation_tests {
             size_bytes: 1,
             created_at_unix_ms: 1,
             expires_at_unix_ms: 90_000,
-            environment_fingerprint: generation.environment_fingerprint.clone(),
-            base_image_fingerprint: generation.base_image_fingerprint.clone(),
+            environment_fingerprint: generation.environment_fingerprint().to_owned(),
+            base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
             excluded_mounts: Vec::new(),
             suspend_effect_id: "legacy-suspend".into(),
         };
@@ -954,7 +954,7 @@ mod mutation_tests {
             .record_quiescence(
                 &crate::QuiescenceReceipt {
                     effect_id: operation.effect_id.clone(),
-                    generation_id: generation.id.clone(),
+                    generation_id: generation.id().to_owned(),
                     activity_epoch: base.activity_epoch,
                     live_environment_effects: 0,
                     mcp_generations: Vec::new(),
@@ -965,7 +965,7 @@ mod mutation_tests {
         base.environment
             .record_checkpoint(&crate::CheckpointReceipt {
                 effect_id: operation.effect_id.clone(),
-                generation_id: generation.id.clone(),
+                generation_id: generation.id().to_owned(),
                 checkpoint: crate::SandboxCheckpointRef {
                     id: "continuation-checkpoint".into(),
                     format: "awaken-fs-v1".into(),
@@ -973,8 +973,8 @@ mod mutation_tests {
                     size_bytes: 1,
                     created_at_unix_ms: 2_000,
                     expires_at_unix_ms: 80_000,
-                    environment_fingerprint: generation.environment_fingerprint.clone(),
-                    base_image_fingerprint: generation.base_image_fingerprint.clone(),
+                    environment_fingerprint: generation.environment_fingerprint().to_owned(),
+                    base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
                     excluded_mounts: Vec::new(),
                     suspend_effect_id: operation.effect_id.clone(),
                 },
@@ -1102,7 +1102,7 @@ mod mutation_tests {
             .record_quiescence(
                 &crate::QuiescenceReceipt {
                     effect_id: operation.effect_id.clone(),
-                    generation_id: generation.id.clone(),
+                    generation_id: generation.id().to_owned(),
                     activity_epoch: aggregate.activity_epoch,
                     live_environment_effects: 0,
                     mcp_generations: Vec::new(),
@@ -1114,7 +1114,7 @@ mod mutation_tests {
             .environment
             .record_checkpoint(&crate::CheckpointReceipt {
                 effect_id: operation.effect_id.clone(),
-                generation_id: generation.id.clone(),
+                generation_id: generation.id().to_owned(),
                 checkpoint: crate::SandboxCheckpointRef {
                     id: "checkpoint".into(),
                     format: "awaken-fs-v1".into(),
@@ -1122,8 +1122,8 @@ mod mutation_tests {
                     size_bytes: 42,
                     created_at_unix_ms: 2_000,
                     expires_at_unix_ms: 50_000,
-                    environment_fingerprint: generation.environment_fingerprint.clone(),
-                    base_image_fingerprint: generation.base_image_fingerprint.clone(),
+                    environment_fingerprint: generation.environment_fingerprint().to_owned(),
+                    base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
                     excluded_mounts: Vec::new(),
                     suspend_effect_id: operation.effect_id.clone(),
                 },

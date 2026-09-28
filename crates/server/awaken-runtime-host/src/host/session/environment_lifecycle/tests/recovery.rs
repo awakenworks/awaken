@@ -241,7 +241,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.handle()).unwrap();
-    let source_generation = generation(thread).id;
+    let source_generation = generation(thread).id().to_owned();
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     host.session_slots.update(thread, |slot| {
         slot.environment_owner = resident(thread, environment.clone());

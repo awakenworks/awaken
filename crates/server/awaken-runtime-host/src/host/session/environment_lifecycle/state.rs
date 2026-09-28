@@ -376,7 +376,7 @@ impl SessionEnvironmentOwner {
                                 effect_id,
                                 generation,
                             } if effect_id == &request.effect_id
-                                && generation.id == request.generation_id
+                                && generation.id() == request.generation_id
                         );
                         if !exact_restore {
                             return Err(HostError::internal(
