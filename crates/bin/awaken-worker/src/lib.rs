@@ -77,6 +77,8 @@ use awaken_coordinator_client::WorkerControlClient;
 use awaken_worker_transport_security::WorkerUpstream;
 
 struct WorkerProcessConfig {
+    /// The embedded Worker process's one wall clock.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     deployment: awaken_session_executor::DeploymentConfig,
     manifest: StandardManifestConfig,
     admin_listen: Option<String>,
@@ -86,8 +88,11 @@ struct WorkerProcessConfig {
 }
 
 impl WorkerProcessConfig {
-    fn embedded_defaults() -> Self {
+    /// The `run_with_*` embedder entry points take the embedding process's
+    /// clock from its `main`, like every other Worker composition.
+    fn embedded_defaults(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
         Self {
+            clock,
             deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
             manifest: StandardManifestConfig::default(),
             admin_listen: None,
@@ -117,6 +122,7 @@ impl std::error::Error for WorkerNodeBuildError {}
 /// application ports on this same path.
 pub struct WorkerNodeBuilder {
     upstream: WorkerUpstream,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     manifest: ManifestSelection,
     deployment: awaken_session_executor::DeploymentConfig,
     standard_manifest_config: StandardManifestConfig,
@@ -231,10 +237,13 @@ fn worker_realization_namespace(
 }
 
 impl WorkerNodeBuilder {
+    /// `clock` is the Worker process's one wall clock: the Host this builder
+    /// assembles drives its dispatch pool, recovery and child schedulers on it.
     #[must_use]
-    pub fn new(upstream: WorkerUpstream) -> Self {
+    pub fn new(upstream: WorkerUpstream, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
         Self {
             upstream,
+            clock,
             manifest: ManifestSelection::Unset,
             deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
             standard_manifest_config: StandardManifestConfig::default(),
@@ -768,6 +777,7 @@ impl WorkerNodeBuilder {
         }
         Ok(WorkerNode {
             upstream: self.upstream,
+            clock: self.clock,
             manifest,
             deployment: self.deployment,
             attempt_decorator_factory: self.attempt_decorator_factory,
@@ -861,6 +871,8 @@ fn validate_worker_manifest(
 /// One assembled remote Worker lifecycle.
 pub struct WorkerNode {
     upstream: WorkerUpstream,
+    /// The Worker process's one wall clock, from its builder.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     manifest: WorkerManifest,
     deployment: awaken_session_executor::DeploymentConfig,
     attempt_decorator_factory: Option<RegisteredAttemptDecoratorFactory>,
@@ -906,13 +918,16 @@ struct InstalledSandboxBoundary {
 /// It receives each durable run's snapshot-pinned inference access and may
 /// realize an executor through a remote broker without opening a credential
 /// vault or persisting provider keys in this process.
+///
+/// `clock` is the embedding process's one wall clock, chosen in its `main`.
 pub async fn run_with_inference_materializer(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     build_secretless_worker(
         WorkerUpstream::new(upstream),
-        WorkerProcessConfig::embedded_defaults(),
+        WorkerProcessConfig::embedded_defaults(clock),
         materializer,
         None,
         None,
@@ -924,10 +939,12 @@ pub async fn run_with_inference_materializer(
 
 /// Run a secretless Worker whose one authoritative adapter supplies both exact
 /// executor materialization and typed Worker-local credential observations.
+/// `clock` is the embedding process's one wall clock, chosen in its `main`.
 pub async fn run_with_inference_and_credential_resolver<R>(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     resolver: Arc<R>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     R: awaken_runtime_contract::CredentialMaterialResolver
@@ -936,7 +953,7 @@ where
 {
     build_secretless_worker(
         WorkerUpstream::new(upstream),
-        WorkerProcessConfig::embedded_defaults(),
+        WorkerProcessConfig::embedded_defaults(clock),
         materializer,
         Some(resolver.clone()),
         Some(resolver),
@@ -951,11 +968,13 @@ where
 /// Embedders and deterministic process tests use this seam when platform process
 /// signals cannot express a graceful stop (notably Node child processes on
 /// Windows). Production binaries should normally use
-/// [`run_with_inference_materializer`].
+/// [`run_with_inference_materializer`]. `clock` is the embedding process's one
+/// wall clock, chosen in its `main`.
 pub async fn run_with_inference_materializer_until<F>(
     upstream: &str,
     materializer: Arc<dyn InferenceExecutorMaterializer>,
     shutdown: F,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     F: std::future::Future<
@@ -964,7 +983,7 @@ where
 {
     build_secretless_worker(
         WorkerUpstream::new(upstream),
-        WorkerProcessConfig::embedded_defaults(),
+        WorkerProcessConfig::embedded_defaults(clock),
         materializer,
         None,
         None,
@@ -981,7 +1000,8 @@ async fn build_secretless_worker(
     material_resolver: Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
     local_resolver: Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
 ) -> Result<WorkerNode, Box<dyn std::error::Error + Send + Sync>> {
-    let mut builder = WorkerNodeBuilder::new(upstream).with_process_config(process);
+    let mut builder =
+        WorkerNodeBuilder::new(upstream, process.clock.clone()).with_process_config(process);
     if let Some(resolver) = material_resolver {
         builder = builder.with_credential_materializer(
             awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver),
@@ -1259,6 +1279,7 @@ impl WorkerNode {
             remote_memory,
             local_workspace,
             deployment.clone(),
+            self.clock.clone(),
         )
         .with_artifact_publisher(remote_artifacts)
         // Every execution topology installs the same Session MCP adapter.

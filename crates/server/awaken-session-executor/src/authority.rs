@@ -391,13 +391,6 @@ pub struct EphemeralRuntimeAuthority {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl Default for EphemeralRuntimeAuthority {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
 impl EphemeralRuntimeAuthority {
     /// Seed the existing test authority with a deliberately stale query adapter.
     #[cfg(test)]
@@ -409,13 +402,14 @@ impl EphemeralRuntimeAuthority {
         self
     }
 
+    /// `clock` judges the dispatch store's rows and stamps every Thread's
+    /// commits; the Host that installs this authority passes its own.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
         // The ephemeral authority is the Coordinator-side durable owner used by
         // scenario/integration compositions. Preserve its atomic Session
         // continuation role when erasing the concrete Memory store; the
         // Worker-only constructor intentionally omits that role.
-        let clock = awaken_lease_contract::system_clock();
         let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_dispatch(Arc::new(
             awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
         ));

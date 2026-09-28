@@ -406,6 +406,7 @@ async fn serve_prepared_process(
     prepared_worker: Option<crate::PreparedLocalWorker>,
 ) -> Result<(), String> {
     let controller = configured_process_admin_controller(&process);
+    let process_clock = process.clock.clone();
     let local_setup = process.local_setup;
     let service_lifecycle = process.service_lifecycle;
     let prepared_worker =
@@ -482,6 +483,7 @@ async fn serve_prepared_process(
                     .clone()
                     .expect("AllInOne always binds its private Worker surface"),
                 &deployment,
+                process_clock.clone(),
             )
             .await?;
     }
@@ -582,6 +584,7 @@ async fn serve_prepared_process(
             worker_url,
             worker_deployment,
             worker_shutdown_rx,
+            process_clock,
         )
         .await
     });
@@ -755,13 +758,16 @@ async fn supervise_local_worker(
     upstream: String,
     deployment: ResolvedDeployment,
     mut shutdown: tokio::sync::watch::Receiver<Option<awaken_worker::WorkerShutdown>>,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<(), String> {
     let mut restart_attempt = 0_u32;
     loop {
         if shutdown.borrow().is_some() {
             return Ok(());
         }
-        let worker = prepared.build_worker(upstream.clone(), &deployment).await?;
+        let worker = prepared
+            .build_worker(upstream.clone(), &deployment, clock.clone())
+            .await?;
         let mut run_shutdown = shutdown.clone();
         let result = worker
             .run_until(async move {
@@ -1021,6 +1027,7 @@ mod tests {
             event_batch_cutover_validation: None,
             coordinator_authorities: None,
             admin_tools: Vec::new(),
+            clock: awaken_lease_contract::system_clock(),
         }
     }
 
@@ -1399,6 +1406,7 @@ mod tests {
             event_batch_cutover_validation: Some(source.clone()),
             coordinator_authorities: None,
             admin_tools: Vec::new(),
+            clock: awaken_lease_contract::system_clock(),
         };
         let controller = configured_process_admin_controller(&process);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

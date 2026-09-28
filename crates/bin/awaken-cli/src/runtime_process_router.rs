@@ -507,6 +507,7 @@ pub(super) async fn prepare_runtime_routers(
             memory_extractions,
             platform_workspace.clone(),
             deployment,
+            clock.clone(),
         ),
         #[cfg(any(test, feature = "test-support"))]
         None => {
@@ -696,6 +697,7 @@ pub(super) async fn prepare_runtime_routers(
                 local_realization_owner: host.dispatch_owner().to_string(),
                 ..Default::default()
             },
+            clock.clone(),
         );
     session_application.set_credential_source(credential_source);
     if let Some(vault_state) = local_vault_state.as_ref() {

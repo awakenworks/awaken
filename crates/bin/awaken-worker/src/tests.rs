@@ -440,9 +440,10 @@ fn worker_uses_the_injected_web_search_registry_as_its_only_catalog() {
     // replacement). This proves Cloud does not append a second provider path
     // beside the Worker's default registry.
     let registry = awaken_ext_builtin_tools::WebSearchProviderRegistry::default();
-    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-        "https://control.test",
-    ))
+    let worker = WorkerNodeBuilder::new(
+        awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
+        awaken_lease_contract::system_clock(),
+    )
     .with_standard_manifest(Default::default())
     .with_web_search_provider_registry(registry)
     .build()
@@ -556,9 +557,10 @@ fn worker_manifest_reports_trusted_host_only_from_operator_configuration() {
 
 #[test]
 fn standard_builder_derives_from_its_installed_materializer() {
-    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-        "http://control",
-    ))
+    let worker = WorkerNodeBuilder::new(
+        awaken_worker_transport_security::WorkerUpstream::new("http://control"),
+        awaken_lease_contract::system_clock(),
+    )
     .with_inference_materializer(Arc::new(SchemeMaterializer))
     .with_standard_manifest(Default::default())
     .build()
@@ -579,6 +581,7 @@ fn worker_builder_rejects_scoped_execution_without_platform_or_host_consent() {
             deployment.sandbox.trusted_host_scoped_execution = scoped;
             let result = WorkerNodeBuilder::new(
                 awaken_worker_transport_security::WorkerUpstream::new("http://control"),
+                awaken_lease_contract::system_clock(),
             )
             .with_deployment_config(deployment)
             .with_standard_manifest(Default::default())
@@ -716,9 +719,10 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
     // in the existing WorkerManifest authority; R3 C1+C2+C3 => the decoration
     // seam has identical admission semantics and creates no second capability.
     let base = || {
-        WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-            "https://control.test",
-        ))
+        WorkerNodeBuilder::new(
+            awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
+            awaken_lease_contract::system_clock(),
+        )
         .with_session_container_provider("hosted", Arc::new(CheckpointContainerProvider))
         .with_hand_executor_factory(crate::relay_hand_executor_factory())
         .with_standard_manifest(Default::default())
@@ -744,9 +748,10 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
         "R2"
     );
 
-    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-        "https://control.test",
-    ))
+    let worker = WorkerNodeBuilder::new(
+        awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
+        awaken_lease_contract::system_clock(),
+    )
     .with_session_container_environment_components(
         "hosted",
         awaken_session_executor::ContainerEnvironmentComponents {
@@ -797,9 +802,10 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
         package_provisioning: false,
         control_services: Default::default(),
     };
-    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-        "https://control.test",
-    ))
+    let worker = WorkerNodeBuilder::new(
+        awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
+        awaken_lease_contract::system_clock(),
+    )
     .with_enclosing_sandbox_boundary("kubernetes-pod", capabilities.clone())
     .with_standard_manifest(Default::default())
     .build()
@@ -810,9 +816,10 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
         ["kubernetes-pod".to_string()].into_iter().collect()
     );
 
-    let error = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-        "https://control.test",
-    ))
+    let error = WorkerNodeBuilder::new(
+        awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
+        awaken_lease_contract::system_clock(),
+    )
     .with_enclosing_sandbox_boundary(" ", worker.manifest().sandbox.clone())
     .with_standard_manifest(Default::default())
     .build()
@@ -823,9 +830,10 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
         "enclosing sandbox backend must not be empty"
     );
 
-    let error = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-        "https://control.test",
-    ))
+    let error = WorkerNodeBuilder::new(
+        awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
+        awaken_lease_contract::system_clock(),
+    )
     .with_enclosing_sandbox_boundary("kubernetes-pod", worker.manifest().sandbox.clone())
     .with_session_container_provider("per-session", Arc::new(UnusedContainerProvider))
     .with_standard_manifest(Default::default())
@@ -849,9 +857,10 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
 /// | X2 | F | T | exact external source + Worker provider-adapter evidence |
 #[test]
 fn external_credential_resolver_has_one_canonical_resolution_path() {
-    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-        "http://control",
-    ))
+    let worker = WorkerNodeBuilder::new(
+        awaken_worker_transport_security::WorkerUpstream::new("http://control"),
+        awaken_lease_contract::system_clock(),
+    )
     .with_credential_materializer(
         awaken_credential_materializer::PinnedCredentialMaterializer::external_only(Arc::new(
             ExternalCredentialResolver,
@@ -1526,9 +1535,10 @@ fn a_configured_zero_grace_exits_immediately_even_on_sigterm() {
 #[test]
 fn resource_capability_follows_the_canonical_registered_remote_projection() {
     let builder = || {
-        WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-            "http://control",
-        ))
+        WorkerNodeBuilder::new(
+            awaken_worker_transport_security::WorkerUpstream::new("http://control"),
+            awaken_lease_contract::system_clock(),
+        )
         .with_standard_manifest(Default::default())
     };
     let without = builder().build().expect("R1 no unsupported Resource claim");

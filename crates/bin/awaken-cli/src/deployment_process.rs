@@ -60,6 +60,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     // The process's one wall clock: Worker assertions, stores and every
     // Coordinator component built below judge time with this handle.
     let clock = awaken_lease_contract::system_clock();
+    let process_clock = clock.clone();
     let worker_transport = worker_transport_security::select(
         deployment,
         coordinator_services.worker_authenticator,
@@ -234,6 +235,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         event_batch_cutover_validation: prepared.event_batch_cutover_validation,
         coordinator_authorities,
         admin_tools: prepared.admin_tools,
+        clock: process_clock,
     })
 }
 

@@ -10,6 +10,7 @@ use std::sync::{
 };
 
 use awaken_executable_environment_contract::EnvironmentImageBuildError;
+use awaken_lease_contract::system_clock;
 use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_configuration_contract::{SandboxProvisioning, SessionRuntimePlacement};
 use awaken_session_error_contract::RunError;
@@ -5070,11 +5071,7 @@ fn application(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: Arc<dyn SessionEnvironmentSource>,
 ) -> SessionApplication {
-    application_with_configuration(
-        repo,
-        environments,
-        SessionApplicationConfiguration::default(),
-    )
+    application_with_configuration(repo, environments, Default::default())
 }
 
 fn application_with_runtime(
@@ -5082,7 +5079,8 @@ fn application_with_runtime(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: Arc<dyn SessionEnvironmentSource>,
 ) -> SessionApplication {
-    SessionApplication::new(runtime, Arc::new(NoopMcpRealizer), repo, environments)
+    let mcp = Arc::new(NoopMcpRealizer);
+    SessionApplication::new(runtime, mcp, repo, environments, system_clock())
 }
 
 #[test]
@@ -5101,7 +5099,7 @@ fn complete_runtime_composition_does_not_require_optional_role_discovery() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     )
-    .with_clock(awaken_lease_contract::system_clock());
+    .with_clock(system_clock());
     app.replace_repository(repository);
 }
 
@@ -5116,6 +5114,7 @@ fn application_with_configuration(
         repo,
         environments,
         configuration,
+        system_clock(),
     )
 }
 

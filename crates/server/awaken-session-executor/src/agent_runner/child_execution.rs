@@ -113,6 +113,9 @@ mod owned_task_tests {
 /// and child Runs; creation is the only difference.
 #[derive(Clone)]
 pub(crate) struct RunScheduler {
+    /// The Host's clock: the foreground child scheduler and every later
+    /// ownership operation retain this one edge clock.
+    pub(crate) clock: Arc<dyn WallClock>,
     pub(crate) store: Arc<AnyDispatchStore>,
     /// Unfenced session commit authority. The child worker binds its own
     /// `RunClaim`; inheriting the parent's already-fenced coordinator would nest
@@ -358,7 +361,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
             // The foreground child scheduler and every later ownership operation
             // retain this one edge clock. The Worker never substitutes another time
             // source after the queue grants the claim.
-            let clock: Arc<dyn WallClock> = awaken_lease_contract::system_clock();
+            let clock: Arc<dyn WallClock> = scheduler.clock.clone();
             let runtime = Arc::new(runtime);
             let attempt_executor = child_attempt_executor(
                 runtime.clone(),
@@ -1116,6 +1119,7 @@ mod tests {
                 awaken_lease_contract::system_clock(),
             ));
             let scheduler = durable.then(|| RunScheduler {
+                clock: awaken_lease_contract::system_clock(),
                 store: Arc::new(
                     AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
                         .unwrap(),
@@ -1238,6 +1242,7 @@ mod tests {
         let dispatch_path = tmp.path().join("child-dispatch.db");
         let dispatch_path = dispatch_path.to_string_lossy().to_string();
         let scheduler = RunScheduler {
+            clock: awaken_lease_contract::system_clock(),
             store: Arc::new(
                 AnyDispatchStore::open_sqlite(
                     &dispatch_path,
@@ -1308,6 +1313,7 @@ mod tests {
         // A replacement process reopens the durable queue and rebuilds every live
         // runtime object from committed truth; no child handle crosses this seam.
         let replacement = RunScheduler {
+            clock: awaken_lease_contract::system_clock(),
             store: Arc::new(
                 AnyDispatchStore::open_sqlite(
                     &dispatch_path,
@@ -1376,6 +1382,7 @@ mod tests {
         let replay = run_agent_until_boundary(
             Arc::new(PermissionModel),
             execution(RunScheduler {
+                clock: awaken_lease_contract::system_clock(),
                 store: Arc::new(
                     AnyDispatchStore::open_sqlite(
                         &dispatch_path,
