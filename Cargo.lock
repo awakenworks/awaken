@@ -917,6 +917,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-credential-vault",
+ "awaken-lease-contract",
  "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
