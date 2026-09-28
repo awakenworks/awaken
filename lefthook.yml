@@ -168,6 +168,15 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_gate_arguments.py
 
+    # 3a'. A shell or YAML gate that hands a crate file path to a tool must name
+    #    a file that exists. A refactor moved a UTC codec and the reliability
+    #    lane kept mutating the old path; nothing ran until hours later.
+    gate-path-references:
+      # >>> generated glob from check_gate_path_references.py INPUT_GLOBS — do not edit
+      glob: "{.github/**/*.yml,crates/**,deploy/**/*.sh,deploy/**/*.yaml,deploy/**/*.yml,e2e/**/*.sh,lefthook.yml,scripts/**/*.sh,scripts/ci/check_gate_path_references.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/check_gate_path_references.py --self-test && python3 scripts/ci/check_gate_path_references.py
+
     # 3c-ter. An executable no lane runs still reads as coverage, still gets
     #    cited as evidence, and rots in place. Three k3d runners sat unrun for
     #    months and one of them is named in the formal/obligations ledger as the proof of
