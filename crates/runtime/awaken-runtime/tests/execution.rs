@@ -9,6 +9,8 @@
 mod cancelled_model_observation;
 #[path = "execution/checkpoint_observation.rs"]
 mod checkpoint_observation;
+#[path = "execution/tool_domain_preparation.rs"]
+mod tool_domain_preparation;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

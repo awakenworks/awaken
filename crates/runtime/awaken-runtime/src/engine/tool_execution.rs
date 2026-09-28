@@ -614,9 +614,6 @@ async fn execute_tool_action(
     // A malformed returned handle still names possibly live external work.
     // No await or result normalization may erase this uncertainty, and replay
     // capability says nothing about physical termination or locality.
-    if matches!(outcome, Err(ToolError::Indeterminate(_))) {
-        context.physical_quiescence.mark_uncertain();
-    }
     if let Some(bound) = state_bound {
         let invalid_command = match &outcome {
             Ok(ToolExecutorOutcome::Output(output))
@@ -639,8 +636,21 @@ async fn execute_tool_action(
         if outcome.is_err() { "error" } else { "ok" },
         started.elapsed(),
     );
+    tool_executor_result(context, call, outcome)
+}
+
+/// Preserve fatal executor evidence at both metadata and invocation boundaries.
+/// Ordinary pre-entry errors remain values for the batch's one result recorder.
+fn tool_executor_result<T>(
+    context: &RuntimeRunContext,
+    call: &ToolCall,
+    outcome: std::result::Result<T, ToolError>,
+) -> Result<std::result::Result<T, ToolError>> {
     match outcome {
-        Err(ToolError::Indeterminate(_)) => Err(Error::Indeterminate),
+        Err(ToolError::Indeterminate(_)) => {
+            context.physical_quiescence.mark_uncertain();
+            Err(Error::Indeterminate)
+        }
         Err(ToolError::StateInvalidatedAfterDispatch(detail)) => {
             tracing::error!(tool_id = %call.tool_id, call_id = %call.call_id, %detail,
                 "tool effect completed after its executor projection became unavailable");
@@ -916,7 +926,8 @@ pub(super) async fn prepare_tool_domain(
     env: &ResolvedExecutionEnv,
     context: &RuntimeRunContext,
     call: &ToolCall,
-) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain> {
+) -> Result<std::result::Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolOutput>>
+{
     verify_attempt_ownership(context.ownership.as_deref()).await?;
     if !context.physical_quiescence.permits_execution() {
         return Err(Error::Indeterminate);
@@ -933,14 +944,8 @@ pub(super) async fn prepare_tool_domain(
                 .execution_domain(call),
         )
         .await;
-    match result {
-        Ok(domain) => Ok(domain),
-        Err(ToolError::Indeterminate(_)) => {
-            context.physical_quiescence.mark_uncertain();
-            Err(Error::Indeterminate)
-        }
-        Err(error) => Err(Error::Execution(error.to_string())),
-    }
+    Ok(tool_executor_result(context, call, result)?
+        .map_err(|error| ToolOutput::error(&call.call_id, error.to_string())))
 }
 
 #[async_trait::async_trait]
