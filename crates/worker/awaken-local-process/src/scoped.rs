@@ -40,19 +40,11 @@ fn timed_out() -> io::Error {
         "scoped execution deadline exceeded",
     )
 }
-/// Suspend-inclusive clock shared by the Worker proof and physical cutoff.
-/// Values are meaningful only during this boot, never durable authority.
-pub fn execution_elapsed_time() -> io::Result<Duration> {
-    let time = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds = u64::try_from(time.tv_sec).map_err(|_| invalid())?;
-    let nanos = u32::try_from(time.tv_nsec).map_err(|_| invalid())?;
-    if nanos >= 1_000_000_000 {
-        return Err(invalid());
-    }
-    Ok(Duration::new(seconds, nanos))
-}
+/// Cutoffs read the same suspend-inclusive BOOTTIME the authority proof
+/// samples (`awaken_authority_clock`), so a suspend cannot let a proof outlive
+/// its physical cutoff.
 fn boot_millis() -> io::Result<u64> {
-    u64::try_from(execution_elapsed_time()?.as_millis()).map_err(|_| invalid())
+    u64::try_from(awaken_authority_clock::boottime_elapsed()?.as_millis()).map_err(|_| invalid())
 }
 
 /// Conservative OS cutoff derived by the caller from CURRENT remaining Session

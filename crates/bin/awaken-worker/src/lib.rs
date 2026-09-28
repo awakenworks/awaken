@@ -205,9 +205,10 @@ fn worker_realization_namespace(
                         .into(),
                 )
             })?;
-            std::borrow::Cow::Owned(
-                awaken_session_executor::SharedHost::provision_local_workspace_at(installation_root),
-            )
+            std::borrow::Cow::Owned(awaken_installation_workspace::provision_at(
+                installation_root,
+                awaken_session_executor::SharedHost::mint_local_workspace,
+            ))
         }
     };
     awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
@@ -1226,11 +1227,25 @@ impl WorkerNode {
         let remote_repositories = Arc::new(
             awaken_resource_worker_http::HttpRepositoryBindingVerifier::new(upstream.clone()),
         );
+        // A durable Worker installation keeps one platform Workspace across
+        // restarts (the same marker its container realization namespace reads);
+        // a storage-less Worker mints a volatile one.
+        let local_workspace = match deployment.storage_dir.as_deref() {
+            Some(root) => awaken_installation_workspace::provision_at(
+                root,
+                SharedHost::mint_local_workspace,
+            ),
+            None => SharedHost::mint_local_workspace(),
+        };
+        // Claimed Runs commit back to the Coordinator under this registered
+        // identity; the Host holds only the neutral claim-fenced port.
+        let claimed_commit = awaken_coordinator_client::remote_claimed_commit(&upstream)?;
         let mut host = SharedHost::new_worker_with_deployment(
             Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
             "worker",
             remote_files,
             remote_memory,
+            local_workspace,
             deployment.clone(),
         )
         .with_artifact_publisher(remote_artifacts)
@@ -1238,6 +1253,7 @@ impl WorkerNode {
         // Host permission grants and Environment-bound executors remain owners.
         .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
         .with_worker_upstream(upstream)
+        .with_worker_claimed_commit(claimed_commit)
         .with_memory_reference_encoder(Arc::new(
             awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
         ))

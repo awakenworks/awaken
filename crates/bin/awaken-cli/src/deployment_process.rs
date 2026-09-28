@@ -311,11 +311,7 @@ mod tests {
             awaken_session_store::SqliteManagedSessionRepository::open(&sessions.to_string_lossy())
                 .unwrap(),
         );
-        awaken_session_executor::SharedHost::publish_local_workspace_at(
-            directory.path(),
-            "workspace-a",
-        )
-        .unwrap();
+        awaken_installation_workspace::publish_at(directory.path(), "workspace-a").unwrap();
         let deployment = config::local_test_deployment(directory.path().to_path_buf());
         let prepared = installation_binding::prepare_deployment_installations(
             &deployment,

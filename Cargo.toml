@@ -77,6 +77,7 @@ awaken-provider-genai = { path = "crates/runtime/awaken-provider-genai" }
 awaken-ext-permission = { path = "crates/runtime/awaken-ext-permission" }
 awaken-credential = { path = "crates/runtime/awaken-credential" }
 awaken-outbound-http = { path = "crates/runtime/awaken-outbound-http" }
+awaken-authority-clock = { path = "crates/runtime/awaken-authority-clock" }
 awaken-mcp-wire = { path = "crates/runtime/awaken-mcp-wire" }
 awaken-mcp-server-core = { path = "crates/server/awaken-mcp-server-core" }
 awaken-mcp-server-testkit = { path = "crates/server/awaken-mcp-server-testkit" }
@@ -156,6 +157,7 @@ awaken-credential-materializer = { path = "crates/server/awaken-credential-mater
 awaken-provisioning-contract = { path = "crates/contract/awaken-provisioning-contract" }
 awaken-local-process = { path = "crates/worker/awaken-local-process" }
 awaken-sandbox-fs = { path = "crates/worker/awaken-sandbox-fs" }
+awaken-installation-workspace = { path = "crates/worker/awaken-installation-workspace" }
 awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-store" }
 awaken-worker-contract = { path = "crates/contract/awaken-worker-contract" }
 awaken-worker-registry = { path = "crates/server/awaken-worker-registry" }

@@ -652,7 +652,7 @@ mod tests {
                 _ => Authority::Live(
                     SessionRealizationLeaseReceipt::issued_at(current, 0)
                         .unwrap()
-                        .observed(awaken_local_process::authority_proof_started().unwrap()),
+                        .observed(awaken_authority_clock::authority_proof_started().unwrap()),
                 ),
             };
             host.session_slots

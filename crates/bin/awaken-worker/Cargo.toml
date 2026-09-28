@@ -39,6 +39,8 @@ awaken-protocol-mcp.workspace = true
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.
 awaken-session-executor = { workspace = true, default-features = false }
+# The installation platform Workspace marker this startup reads or publishes.
+awaken-installation-workspace.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-sandbox-memoryd.workspace = true
 awaken-coordinator-client.workspace = true
@@ -48,7 +50,7 @@ awaken-credential-materializer.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-sandbox-container.workspace = true
 awaken-tool-relay.workspace = true
-awaken-local-process.workspace = true
+awaken-authority-clock.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true

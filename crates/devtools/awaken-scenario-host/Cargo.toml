@@ -18,6 +18,7 @@ awaken-protocol-mcp.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; this binary only selects and serves scenario modes.
 awaken-session-executor = { workspace = true, features = ["test-support"] }
+awaken-installation-workspace.workspace = true
 awaken-dispatch-http.workspace = true
 awaken-config-service.workspace = true
 awaken-ext-permission.workspace = true

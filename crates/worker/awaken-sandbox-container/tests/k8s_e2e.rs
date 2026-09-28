@@ -490,7 +490,7 @@ async fn gated_k8s_marker_readiness_and_first_real_helper_roundtrip() {
                 executable,
                 "git-credential".into(),
                 "--socket".into(),
-                awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
+                awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
                 "get".into(),
             ],
             cwd: String::new(),

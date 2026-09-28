@@ -374,6 +374,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-authority-clock"
+version = "1.0.0"
+dependencies = [
+ "awaken-runtime-contract",
+ "rustix 1.1.4",
+]
+
+[[package]]
 name = "awaken-authz-enforce"
 version = "1.0.0"
 dependencies = [
@@ -456,6 +464,7 @@ dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
  "awaken-iam-core",
+ "awaken-installation-workspace",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
@@ -1575,12 +1584,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-installation-workspace"
+version = "1.0.0"
+dependencies = [
+ "awaken-sandbox-fs",
+ "tempfile",
+]
+
+[[package]]
 name = "awaken-local-process"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-authority-clock",
  "awaken-provisioning-contract",
- "awaken-runtime-contract",
  "nix 0.29.0",
  "rustix 1.1.4",
  "serde",
@@ -2391,6 +2408,7 @@ dependencies = [
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
+ "awaken-installation-workspace",
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
@@ -2619,8 +2637,8 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-agent-channel",
  "awaken-agent-contract",
+ "awaken-authority-clock",
  "awaken-connection-plan",
- "awaken-coordinator-client",
  "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-materializer",
@@ -2639,7 +2657,6 @@ dependencies = [
  "awaken-ext-skills",
  "awaken-ext-state-machine",
  "awaken-file-store",
- "awaken-local-process",
  "awaken-memory-store",
  "awaken-observability",
  "awaken-outbound-http",
@@ -2653,7 +2670,6 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-sandbox-container",
  "awaken-sandbox-control",
- "awaken-sandbox-control-transport",
  "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",
@@ -3096,12 +3112,13 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
+ "awaken-authority-clock",
  "awaken-coordinator-client",
  "awaken-credential-materializer",
  "awaken-environment-contract",
  "awaken-ext-builtin-tools",
  "awaken-ext-mcp",
- "awaken-local-process",
+ "awaken-installation-workspace",
  "awaken-observability",
  "awaken-protocol-acp",
  "awaken-protocol-mcp",

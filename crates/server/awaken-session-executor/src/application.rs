@@ -1607,7 +1607,7 @@ impl crate::SharedHost {
         &self,
         assignment: &awaken_session_realization_contract::SessionTerminalCleanupAssignment,
     ) -> Result<(), crate::HostError> {
-        let started = awaken_local_process::authority_proof_started().unwrap();
+        let started = awaken_authority_clock::authority_proof_started().unwrap();
         self.install_terminal_cleanup_projection(
             assignment,
             assignment.authority.clone().observed(started),

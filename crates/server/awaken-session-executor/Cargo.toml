@@ -15,7 +15,7 @@ authority = "runtime-host"
 # (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-local-process.workspace = true
+awaken-authority-clock.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-error-contract.workspace = true
@@ -53,12 +53,10 @@ awaken-ext-background-task.workspace = true
 awaken-memory-store = { workspace = true, optional = true }
 awaken-skill-store = { workspace = true, optional = true }
 awaken-sandbox-local = { workspace = true }
-awaken-sandbox-fs = { workspace = true }
 # The container tier (podman/docker/k8s), for realizing the session-scoped execution
 # environment selected by worker configuration.
 awaken-sandbox-container = { workspace = true }
 awaken-sandbox-control.workspace = true
-awaken-sandbox-control-transport.workspace = true
 # The content-addressed store the host serves files/artifacts from + adapts behind
 # the sandbox providers' BlobSource port (was re-exported via awaken-sandbox-local,
 # now a direct dependency since that worker-tier crate no longer links it).
@@ -71,7 +69,6 @@ awaken-tenancy = { workspace = true }
 awaken-dispatch = { workspace = true, default-features = false }
 awaken-dispatch-contract.workspace = true
 awaken-worker-transport-security = { workspace = true }
-awaken-coordinator-client.workspace = true
 awaken-run-executor-acp = { workspace = true }
 awaken-connection-plan.workspace = true
 awaken-acp-contract = { workspace = true }
@@ -152,6 +149,8 @@ tokio = { workspace = true, features = ["test-util"] }
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
 awaken-dispatch-testkit = { workspace = true }
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.
+# Test fixtures cut an exact physical Environment root by inode.
+awaken-sandbox-fs = { workspace = true }
 tempfile = "3"
 # The sandboxed-channel-source integration test observes what the bwrap-confined
 # agent said through the in-memory commit boundary.

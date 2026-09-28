@@ -192,6 +192,17 @@ fn scenario_deployment_from(
     deployment
 }
 
+/// The scenario installation's platform Workspace: the durable marker under a
+/// configured storage root (published on first use), else a volatile mint.
+pub(crate) fn installation_workspace(deployment: &awaken_session_executor::DeploymentConfig) -> String {
+    match deployment.storage_dir.as_deref() {
+        Some(root) => {
+            awaken_installation_workspace::provision_at(root, SharedHost::mint_local_workspace)
+        }
+        None => SharedHost::mint_local_workspace(),
+    }
+}
+
 pub(crate) fn resource_host(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
@@ -216,11 +227,18 @@ pub(crate) fn resource_host_with_deployment(
     // explicit Local sandbox tier with the fail-closed Namespace default.
     let extraction_repository =
         SharedHost::test_memory_extraction_repository(deployment.storage_dir.as_deref());
+    // A durable scenario root always carries its installation marker, even when
+    // an explicit scenario Workspace overrides the coordinate below.
+    let installation_workspace = installation_workspace(&deployment);
+    let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
+        .ok()
+        .filter(|workspace| !workspace.trim().is_empty());
     let mut host = SharedHost::new_with_resources_and_deployment(
         llm,
         model_ref,
         resources.authorities(),
         extraction_repository,
+        scenario_workspace.unwrap_or(installation_workspace),
         deployment,
     )
     .with_file_application(
@@ -232,13 +250,6 @@ pub(crate) fn resource_host_with_deployment(
     if let Some(authority) = SCENARIO_RUNTIME_AUTHORITY.get() {
         host = host.with_runtime_authority(authority.clone());
     }
-    let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
-        .ok()
-        .filter(|workspace| !workspace.trim().is_empty());
-    let host = match scenario_workspace {
-        Some(workspace) => host.with_local_workspace(workspace),
-        None => host,
-    };
     ScenarioPlatform { host, resources }
 }
 

@@ -317,26 +317,7 @@ pub async fn package_image_provisioner(
 
 /// Build the one provider used by both Native tools and ACP attempts in a Session,
 /// plus creation-time credential mounts that must exist before the environment starts.
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-pub async fn build_container_environment(
-    tier: SandboxTier,
-    image: Option<&str>,
-    settings: &crate::deployment_config::SandboxSettings,
-) -> Result<ContainerEnvironmentComponents, String> {
-    let process_id = std::process::id().to_string();
-    let legacy_namespace =
-        awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
-            "legacy-container-composition",
-            process_id.as_str(),
-        ])
-        .map_err(|error| error.to_string())?;
-    build_container_environment_for_realization(legacy_namespace, tier, image, settings).await
-}
-
+///
 /// Canonical durable-Session builder. Every concrete runtime receives the same
 /// installation-stable namespace; adapters may project it but must not derive a
 /// process/lease identity independently.
@@ -445,7 +426,8 @@ pub async fn build_container_environment_for_realization(
     feature = "container-podman",
     feature = "container-k8s"
 )))]
-pub async fn build_container_environment(
+pub async fn build_container_environment_for_realization(
+    _realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
     tier: SandboxTier,
     _image: Option<&str>,
     _settings: &crate::deployment_config::SandboxSettings,
@@ -460,20 +442,6 @@ pub async fn build_container_environment(
             SandboxTier::Namespace => "namespace",
         }
     ))
-}
-
-#[cfg(not(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-)))]
-pub async fn build_container_environment_for_realization(
-    _realization_namespace: awaken_sandbox_container::ContainerRealizationNamespace,
-    tier: SandboxTier,
-    image: Option<&str>,
-    settings: &crate::deployment_config::SandboxSettings,
-) -> Result<ContainerEnvironmentComponents, String> {
-    build_container_environment(tier, image, settings).await
 }
 
 #[cfg(all(test, feature = "container-podman"))]
@@ -494,7 +462,13 @@ mod tests {
             container_hand_residency: ContainerHandResidency::Resident,
             ..Default::default()
         };
-        let error = match build_container_environment(
+        let namespace =
+            awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
+                "resident-hand-rejection-test",
+            ])
+            .expect("static namespace parts are valid");
+        let error = match build_container_environment_for_realization(
+            namespace,
             SandboxTier::Podman,
             Some("sandbox:latest"),
             &settings,

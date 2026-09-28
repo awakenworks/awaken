@@ -933,8 +933,10 @@ mod tests {
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         };
 
-        let workspace =
-            awaken_session_executor::SharedHost::provision_local_workspace_at(&deployment.data_dir);
+        let workspace = awaken_installation_workspace::provision_at(
+            &deployment.data_dir,
+            awaken_session_executor::SharedHost::mint_local_workspace,
+        );
         let prepared = prepare_local_acp_with(
             &mut deployment,
             discovery.clone(),
@@ -1133,8 +1135,10 @@ mod tests {
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         };
 
-        let workspace =
-            awaken_session_executor::SharedHost::provision_local_workspace_at(&deployment.data_dir);
+        let workspace = awaken_installation_workspace::provision_at(
+            &deployment.data_dir,
+            awaken_session_executor::SharedHost::mint_local_workspace,
+        );
         let prepared = prepare_local_acp_with(
             &mut deployment,
             discovery,

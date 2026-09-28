@@ -16,7 +16,6 @@
 mod acp_backend;
 mod acp_capability_probe;
 mod acp_provision;
-mod acp_serve;
 mod acp_tool_export;
 mod agent_catalog;
 mod agent_runner;
@@ -43,8 +42,8 @@ mod config;
 mod container_environment;
 mod coordination;
 pub use container_environment::{
-    ContainerEnvironmentComponents, build_container_environment,
-    build_container_environment_for_realization, package_image_provisioner,
+    ContainerEnvironmentComponents, build_container_environment_for_realization,
+    package_image_provisioner,
 };
 mod delegate;
 mod deployment_config;
@@ -130,7 +129,6 @@ use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialM
 use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
-pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource, resolve_sandbox_tier};
 pub use crate::skills::SkillForkPlacement;
 use managed_adapter_error::{to_live_inbox_error, to_run_error};
@@ -140,7 +138,6 @@ pub(crate) use managed_input_projection::{
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the process startup builds a config host from.
 pub use crate::acp_provision::PublishedAcpLaunchResolver;
-pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
 pub use crate::commit_ingest::claimed_commit_service;
 pub use crate::config::{
     advertised_tools, authorable_tools, block_text, platform_plugin_capabilities,
@@ -292,7 +289,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
     fn observe_realization_request(
         &self,
     ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
-        awaken_local_process::authority_proof_started()
+        awaken_authority_clock::authority_proof_started()
             .map_err(|error| RunError::unavailable(format!("authority clock: {error}")))
     }
 

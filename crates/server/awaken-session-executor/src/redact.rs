@@ -101,7 +101,7 @@ mod kani_proofs {
 
 /// Regex-based PII redactor. Compiled patterns are process-shared.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct PiiRedactor;
+pub(crate) struct PiiRedactor;
 
 impl PiiRedactor {
     /// Construct the redactor (patterns compile lazily on first use).
