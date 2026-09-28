@@ -2457,6 +2457,7 @@ name = "awaken-sandbox-control-transport"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-lease-contract",
  "awaken-sandbox-control",
  "serde",
  "serde_json",

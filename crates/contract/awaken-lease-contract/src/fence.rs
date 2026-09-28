@@ -7,7 +7,8 @@
 //! judgement goes through one law, [`fence_succession`]: another subject is
 //! never a successor; a strictly higher epoch reassigns; only the exact tenure
 //! renews, and only without shortening expiry. [`EffectFence`] projects a lease
-//! onto one exact operation.
+//! onto one exact operation. [`SlotToken`] is the identity of one occupancy
+//! of a process-local single-holder slot.
 //!
 //! [`FenceToken`] is the same law over the persisted coordinates of the
 //! realization leases that predate [`Lease`] (the Session realization lease and
@@ -21,10 +22,12 @@
 
 mod effect;
 mod epoch;
+mod slot;
 mod tenure;
 
 pub use effect::EffectFence;
 pub use epoch::{Epoch, ZeroEpoch};
+pub use slot::SlotToken;
 pub use tenure::{Lease, Tenure, TenureScope};
 
 /// How a successor fence relates to the fence it takes over from.

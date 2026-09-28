@@ -28,6 +28,7 @@
 //! dropped wake only defers work to the poll fallback; a crash drops the guard and
 //! leaves the lease to expire and be reclaimed.
 
+use awaken_lease_contract::fence::SlotToken;
 use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 use std::time::Duration;
@@ -313,7 +314,7 @@ struct PoolAdmission {
 struct DrainErrorState {
     consecutive_errors: u32,
     retry_not_before: Option<tokio::time::Instant>,
-    probe_in_flight: Option<Arc<()>>,
+    probe_in_flight: Option<SlotToken>,
 }
 
 impl DrainErrorState {
@@ -326,15 +327,15 @@ impl DrainErrorState {
         if self.probe_in_flight.is_some() || !retry_deadline_reached {
             return false;
         }
-        self.probe_in_flight = Some(Arc::new(()));
+        self.probe_in_flight = Some(SlotToken::mint());
         true
     }
 
-    fn release_probe(&mut self, probe: &Arc<()>) -> bool {
+    fn release_probe(&mut self, probe: &SlotToken) -> bool {
         if self
             .probe_in_flight
             .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, probe))
+            .is_some_and(|current| current == probe)
         {
             self.probe_in_flight = None;
             true
@@ -352,7 +353,7 @@ struct DrainErrorGate {
 
 enum DrainCycle {
     Healthy,
-    Probe(Arc<()>),
+    Probe(SlotToken),
 }
 
 impl DrainErrorGate {
@@ -1586,7 +1587,7 @@ mod in_flight_tests {
         let gate = DrainErrorGate::default();
         let shutdown = CancellationToken::new();
         gate.record_failure().await;
-        gate.state.lock().await.probe_in_flight = Some(Arc::new(()));
+        gate.state.lock().await.probe_in_flight = Some(SlotToken::mint());
         let mut observed = false;
         let waiter = gate.wait_cycle_observed(&shutdown, || {
             assert!(!observed, "the reopened gate must admit on the next check");
