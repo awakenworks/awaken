@@ -974,6 +974,10 @@ mod tests {
 
 #[cfg(kani)]
 /// @obligation resource_reclamation.stale_claim_cannot_commit_receipt
+/// @proof-input-debt free_symbol resource_purge_claim_is_current generation_matches
+/// @proof-input-debt free_symbol resource_purge_claim_is_current lease_is_live
+/// @proof-input-debt free_symbol resource_purge_claim_is_current owner_matches
+/// @proof-input-debt free_symbol resource_purge_claim_is_current status_is_claimed
 #[kani::proof]
 fn stale_resource_purge_claim_cannot_commit_receipt() {
     // Symbolic form of the receipt-admission decision table: Kani covers every

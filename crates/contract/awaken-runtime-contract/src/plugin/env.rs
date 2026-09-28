@@ -339,6 +339,7 @@ mod kani_proofs {
     use super::{PluginActivationDecision, plugin_activation_decision};
 
     /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
+    /// @proof-input-debt free_symbol plugin_activation_decision selected
     #[kani::proof]
     fn plugin_activation_is_exactly_the_requested_identity() {
         let selected: bool = kani::any();
@@ -363,6 +364,7 @@ mod kani_proofs {
     }
 
     /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
+    /// @proof-input-debt free_symbol plugin_activation_decision capability_within_bound
     #[kani::proof]
     fn plugin_activation_never_widens_the_capability_bound() {
         let capability_within_bound: bool = kani::any();
@@ -378,6 +380,8 @@ mod kani_proofs {
     }
 
     /// @obligation plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
+    /// @proof-input-debt free_symbol plugin_activation_decision capability_within_bound
+    /// @proof-input-debt free_symbol plugin_activation_decision unique
     #[kani::proof]
     fn plugin_activation_never_admits_a_duplicate_identity() {
         let unique: bool = kani::any();

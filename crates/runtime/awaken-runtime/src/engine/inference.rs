@@ -838,6 +838,7 @@ mod verification {
     use super::should_clear_spent_checkpoint;
 
     /// @obligation checkpoint.terminal_completion_clears_resume
+    /// @proof-input-debt tautology should_clear_spent_checkpoint
     #[kani::proof]
     fn checkpoint_clear_requires_unvetoed_terminal_completion() {
         let cancelled = kani::any::<bool>();

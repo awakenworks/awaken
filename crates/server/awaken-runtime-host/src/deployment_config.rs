@@ -932,6 +932,7 @@ mod verification {
     }
 
     /// @obligation run_ingress.durable_dispatch_deployment_admission_is_exact_store_independent_and_evidence_monotonic
+    /// @proof-input-debt free_symbol durable_dispatch_is_admitted has_storage_dir
     #[kani::proof]
     fn durable_dispatch_admission_is_exact_and_commit_store_independent() {
         let durable: bool = kani::any();
@@ -954,6 +955,7 @@ mod verification {
     }
 
     /// @obligation run_ingress.durable_dispatch_deployment_admission_is_exact_store_independent_and_evidence_monotonic
+    /// @proof-input-debt free_symbol durable_dispatch_is_admitted has_storage_dir
     #[kani::proof]
     fn durable_dispatch_admission_is_monotonic_in_persistence_evidence() {
         let durable: bool = kani::any();
@@ -990,6 +992,8 @@ mod verification {
     }
 
     /// @obligation sandbox.deployment_support_projection_is_total_exact_and_evidence_bound
+    /// @proof-input-debt free_symbol sandbox_support_projection has_package_builder
+    /// @proof-input-debt free_symbol sandbox_support_projection has_package_registry
     #[kani::proof]
     fn sandbox_support_projection_is_total_exact_and_evidence_bound() {
         let tier = symbolic_sandbox_tier(kani::any());

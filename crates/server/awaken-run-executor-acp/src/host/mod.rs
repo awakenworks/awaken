@@ -331,6 +331,7 @@ const fn host_observation_is_routable(
 
 #[cfg(kani)]
 /// @obligation worker_credential.host_observation_projection_is_backend_scoped
+/// @proof-input-debt tautology host_observation_is_routable
 #[kani::proof]
 fn host_observation_projection_is_exactly_backend_scoped() {
     // Causes: C1 backend selected; C2 executable detected; C3 current login is

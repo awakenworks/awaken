@@ -231,6 +231,12 @@ pub fn legacy_agent_publication_decision(
 
 #[cfg(kani)]
 /// @obligation agent_profile.worker_projection_requires_exact_frozen_publication
+/// @proof-input-debt free_symbol frozen_agent_publication_facts agent_id_matches
+/// @proof-input-debt free_symbol frozen_agent_publication_facts has_frozen_revision
+/// @proof-input-debt free_symbol frozen_agent_publication_facts model_candidate_present
+/// @proof-input-debt free_symbol frozen_agent_publication_facts publication_present
+/// @proof-input-debt free_symbol frozen_agent_publication_facts source_revision_matches
+/// @proof-input-debt free_symbol frozen_agent_publication_facts worker_placement
 #[kani::proof]
 fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
     let has_frozen_revision: bool = kani::any();

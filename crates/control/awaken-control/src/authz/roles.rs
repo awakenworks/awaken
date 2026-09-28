@@ -639,6 +639,7 @@ mod verification {
     }
 
     /// @obligation authz.application_protocol_is_scoped_by_application_guard_not_service_guard
+    /// @proof-input-debt tautology application_route_policy
     #[kani::proof]
     fn application_route_policy_never_enters_the_service_guard() {
         assert_eq!(

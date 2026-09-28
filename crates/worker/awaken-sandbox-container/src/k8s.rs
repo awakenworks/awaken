@@ -530,6 +530,8 @@ fn continuation_claim_observation_required(
 #[cfg(kani)]
 /// @obligation sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
 /// @kani profile=solver-kissat-v1 features=k8s
+/// @proof-input-debt free_symbol continuation_claim_observation_required continuation_configured
+/// @proof-input-debt free_symbol continuation_claim_observation_required exact_claim_expected
 #[kani::proof]
 fn disabled_continuation_has_no_claim_api_obligation_without_durable_evidence() {
     let continuation_configured: bool = kani::any();

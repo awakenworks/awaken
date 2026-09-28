@@ -290,6 +290,7 @@ fn memory_conditional_delete_admission_is_exact() {
 
 #[cfg(kani)]
 /// @obligation memory.rename_replace_preserves_source_identity
+/// @proof-input-debt tautology rename_replace_identity
 #[kani::proof]
 fn memory_rename_replace_preserves_source_identity() {
     // Causes: C1 arbitrary source identity; C2 destination absent/present; C3

@@ -193,6 +193,7 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
 
 #[cfg(kani)]
 /// @obligation session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
+/// @proof-input-debt free_symbol control_permit_release_plan has_owned_permit
 #[kani::proof]
 fn session_realization_control_permit_ownership_release_is_total_and_exact() {
     let has_owned_permit: bool = kani::any();

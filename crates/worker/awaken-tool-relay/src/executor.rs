@@ -268,6 +268,7 @@ mod verification {
     use super::*;
 
     /// @obligation remote_tool.cancelled_channel_never_correlates_a_late_reply_to_another_call
+    /// @proof-input-debt tautology hand_channel_reply_admitted
     #[kani::proof]
     fn hand_channel_only_exact_decoded_reply_restores_readiness() {
         let decoded = kani::any();
@@ -279,6 +280,8 @@ mod verification {
     }
 
     /// @obligation remote_tool.indeterminate_never_false_success
+    /// @proof-input-debt free_symbol hand_result_disposition explicit_success
+    /// @proof-input-debt free_symbol hand_result_disposition indeterminate
     #[kani::proof]
     #[kani::unwind(16)]
     fn hand_result_disposition_allows_only_explicit_success() {
@@ -317,6 +320,7 @@ mod verification {
     }
 
     /// @obligation remote_tool.stable_operation_identity
+    /// @proof-input-debt free_symbol operation_identity_decision has_runtime_token
     #[kani::proof]
     fn durable_hand_identity_requires_the_runtime_operation_token() {
         // Causes: C1 a Runtime-owned operation token is present; C2 durable

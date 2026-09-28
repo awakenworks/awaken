@@ -166,6 +166,9 @@ mod proofs {
     use super::*;
 
     /// @obligation mcp.sensitive_marker_projection_is_never_public_or_widened
+    /// @proof-input-debt free_symbol projection_exposure explicit_sensitive
+    /// @proof-input-debt free_symbol projection_exposure password_format
+    /// @proof-input-debt free_symbol projection_exposure write_only
     #[kani::proof]
     fn sensitive_marker_never_projects_payload_publicly() {
         let explicit_sensitive: bool = kani::any();
@@ -181,6 +184,9 @@ mod proofs {
     }
 
     /// @obligation mcp.sensitive_marker_projection_is_never_public_or_widened
+    /// @proof-input-debt free_symbol projection_exposure explicit_sensitive
+    /// @proof-input-debt free_symbol projection_exposure password_format
+    /// @proof-input-debt free_symbol projection_exposure write_only
     #[kani::proof]
     fn sensitivity_markers_can_never_widen_a_redacted_projection() {
         let explicit_sensitive: bool = kani::any();

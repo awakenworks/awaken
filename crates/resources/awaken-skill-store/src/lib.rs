@@ -220,6 +220,8 @@ pub(crate) fn remove_version_from(
 
 #[cfg(kani)]
 /// @obligation skill.pinned_version_survives_retirement
+/// @proof-input-debt free_symbol skill_version_retirement_decision already_retired
+/// @proof-input-debt free_symbol skill_version_retirement_decision version_present
 #[kani::proof]
 fn skill_version_retirement_is_visibility_only_and_total() {
     // Causes: C1 aggregate deleted; C2 target is stored; C3 target already

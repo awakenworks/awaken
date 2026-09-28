@@ -197,6 +197,10 @@ mod verification {
     /// @obligation remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
     /// @obligation remote_worker.pending_signal_is_consumed_by_commit
     /// @obligation tool_result.terminal_run_rejects_late_result
+    /// @proof-input-debt free_symbol committed_terminal_admission ended
+    /// @proof-input-debt free_symbol committed_terminal_admission record_present
+    /// @proof-input-debt free_symbol committed_terminal_admission run_identity_matches
+    /// @proof-input-debt free_symbol committed_terminal_admission thread_identity_matches
     #[kani::proof]
     fn committed_terminal_projection_admits_only_exact_ended_identity() {
         let present: bool = kani::any();

@@ -433,6 +433,7 @@ mod proofs {
     }
 
     /// @obligation protocol_adapter.genai_signed_reasoning_transcript_projection_is_dialect_exact_nonduplicating_and_transport_independent
+    /// @proof-input-debt free_symbol decide_reasoning_fold has_reasoning
     #[kani::proof]
     fn reasoning_fold_prepends_exactly_once_and_is_transport_independent() {
         let has_reasoning: bool = kani::any();

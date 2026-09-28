@@ -1776,6 +1776,9 @@ fn settle_outcome(state: &RunState) -> Result<DispatchOutcome, Error> {
 /// @obligation remote_worker.pending_signal_is_consumed_by_commit
 /// @obligation tool_result.terminal_run_rejects_late_result
 /// @kani default-features=false
+/// @proof-input-debt free_symbol classify_pending_input_admission committed_ticket_exists
+/// @proof-input-debt free_symbol classify_pending_input_admission correlation_matches_ticket
+/// @proof-input-debt free_symbol classify_pending_input_admission input_is_unbound
 #[kani::proof]
 fn pending_signal_is_deliverable_only_without_consuming_commit() {
     // Causes: C1 committed truth is terminal; C2 it retains an awaiting ticket;
@@ -1801,6 +1804,7 @@ fn pending_signal_is_deliverable_only_without_consuming_commit() {
 #[cfg(kani)]
 /// @obligation remote_worker.execution_requires_claimed_snapshot
 /// @kani default-features=false
+/// @proof-input-debt tautology claimed_snapshot_execution_admission
 #[kani::proof]
 fn claimed_snapshot_execution_requires_exact_identity() {
     // Causes: C1 Run identity matches; C2 Thread identity matches; C3 claim

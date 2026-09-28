@@ -322,6 +322,7 @@ mod kani_proofs {
     };
 
     /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
+    /// @proof-input-debt free_symbol transition_trigger_matches pattern_matches
     #[kani::proof]
     fn tool_and_event_transitions_never_cross_trigger_kinds() {
         let pattern_matches: bool = kani::any();
@@ -346,6 +347,7 @@ mod kani_proofs {
     }
 
     /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
+    /// @proof-input-debt tautology transition_preconditions_met
     #[kani::proof]
     fn state_transition_requires_every_exact_precondition() {
         let trigger_matches: bool = kani::any();
@@ -358,6 +360,7 @@ mod kani_proofs {
     }
 
     /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
+    /// @proof-input-debt free_symbol transition_advance_decision has_fallback
     #[kani::proof]
     fn result_transition_and_authored_fallback_are_exact() {
         let preconditions_met: bool = kani::any();
@@ -380,6 +383,7 @@ mod kani_proofs {
     }
 
     /// @obligation workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
+    /// @proof-input-debt tautology terminal_state_decision
     #[kani::proof]
     fn terminal_state_classification_is_exact() {
         let state_is_known: bool = kani::any();

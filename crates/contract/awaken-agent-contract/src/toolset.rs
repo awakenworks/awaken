@@ -265,6 +265,8 @@ mod verification {
     }
 
     /// @obligation tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
+    /// @proof-input-debt free_symbol select_tool_policy exact_tool_match
+    /// @proof-input-debt free_symbol select_tool_policy registered
     #[kani::proof]
     fn tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls() {
         // Cause/effect graph over the COMPLETE requirement vocabulary.

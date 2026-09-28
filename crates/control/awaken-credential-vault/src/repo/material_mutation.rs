@@ -832,6 +832,7 @@ mod tests {
 /// @obligation credential.managed_material_admission_predicate_requires_owner_and_namespace_match
 /// @obligation credential.material_is_always_published_or_intent_tracked
 /// @obligation credential.visible_row_always_has_material
+/// @proof-input-debt free_symbol credential_material_attempt_admitted writing
 #[kani::proof]
 fn credential_material_attempt_requires_owner_and_exact_physical_namespace() {
     let writing = kani::any::<bool>();

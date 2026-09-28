@@ -93,6 +93,8 @@ pub const fn attempt_binding_retry_is_exact(exact_slot: bool, binding_equal: boo
 
 #[cfg(kani)]
 /// @obligation session_execution.one_physical_attempt_per_thread
+/// @proof-input-debt free_symbol attempt_binding_retry_is_exact binding_equal
+/// @proof-input-debt free_symbol attempt_binding_retry_is_exact exact_slot
 #[kani::proof]
 fn physical_binding_cannot_change_on_admission_retry() {
     // B1 exact slot + equal binding => stutter; B2 exact + different (including

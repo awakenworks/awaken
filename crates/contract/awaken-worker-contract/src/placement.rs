@@ -233,6 +233,8 @@ mod tests {
 
 #[cfg(kani)]
 /// @obligation worker.placement_extension_cannot_widen_eligibility
+/// @proof-input-debt free_symbol ranked_candidate_admission is_allowed
+/// @proof-input-debt free_symbol ranked_candidate_admission was_already_seen
 #[kani::proof]
 fn placement_extension_admits_only_allowed_unique_identity() {
     // Symbolic form of the unit decision table: all four C1/C2 combinations

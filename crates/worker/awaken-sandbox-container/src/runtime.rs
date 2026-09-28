@@ -309,6 +309,7 @@ mod capability_tests {
 
 #[cfg(kani)]
 /// @obligation sandbox.allowlist_claim_requires_runtime_and_issuer_evidence
+/// @proof-input-debt free_symbol allowlist_capability_advertised issuer_installed
 #[kani::proof]
 fn allowlist_claim_never_exceeds_its_evidence() {
     let runtime_attested: bool = kani::any();

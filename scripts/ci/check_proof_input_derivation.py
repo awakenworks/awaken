@@ -24,9 +24,13 @@ The third shape has legitimate instances: a genuinely environmental input (a
 clock, a wire byte, an operator choice) is free by nature.  Those live in
 `formal/proof-input-exceptions.json` under ``justified`` with a written reason
 and the obligation the reason belongs to.  Everything this sweep found and
-nobody has reviewed lives under ``backlog``: it is not a licence, it is a
-ceiling.  A finding in neither list fails the gate, and a list entry that no
-longer matches a finding fails too, so the backlog can only shrink.
+nobody has reviewed is a debt, written on the harness itself as
+``/// @proof-input-debt <rule> <kernel> [<parameter>]``: not a licence, a
+ceiling.  A finding that is neither justified nor tagged fails the gate, and a
+tag or entry that no longer matches a finding fails too.  The debt can only
+shrink, with no stored ceiling: the pre-commit hook refuses a staged debt HEAD
+does not already carry, and ``--debt-ratchet`` refuses more debts at HEAD than
+at its merge-base (failing closed when that history is missing).
 
 Modes: ``--require-complete`` walks the tree, ``--staged <paths>`` asks the
 same question about the given files, ``--survey`` prints the classification.
@@ -35,14 +39,18 @@ same question about the given files, ``--survey`` prints the classification.
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import io
 import json
 import pathlib
 import re
+import subprocess
 import sys
+from unittest import mock as unittest_mock
 
 import _crate_boundary_workspace
+import formal_anchors
 import formal_ledger
 
 
@@ -62,6 +70,9 @@ INPUT_GLOBS: tuple[str, ...] = (
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "formal" / "proof-input-exceptions.json"
 RULES = ("kani_fork", "tautology", "free_symbol")
+# A debt: a finding nobody has reviewed yet, recorded on the harness itself.
+DEBT_TAG = "proof-input-debt"
+DEBT_LINE = re.compile(r"^\s*///\s*@proof-input-debt\s+(?P<debt>\S.*?)\s*$")
 FIELDS = ("rule", "source", "harness", "kernel", "parameter", "derived_in")
 
 
@@ -456,21 +467,14 @@ def key(finding: dict[str, str]) -> tuple[str, ...]:
     )
 
 
-def load_registry() -> tuple[dict[tuple[str, ...], dict], dict[tuple[str, ...], dict]]:
-    if not REGISTRY.exists():
-        fail(f"{REGISTRY.relative_to(ROOT)} is missing")
-    obligations = {
-        obligation["id"] for obligation in load_ledger()["obligations"]
-    }
-    return validate_registry(json.loads(REGISTRY.read_text()), obligations)
-
-
 def validate_registry(
     registry: dict, obligations: set[str]
 ) -> tuple[dict[tuple[str, ...], dict], dict[tuple[str, ...], dict]]:
     """Every shape rule the registry itself must satisfy."""
     justified: dict[tuple[str, ...], dict] = {}
     backlog: dict[tuple[str, ...], dict] = {}
+    if "backlog" in registry:
+        fail(f"the registry holds justified entries only; a debt is a `/// @{DEBT_TAG}` tag on its harness")
     for section, target in (("justified", justified), ("backlog", backlog)):
         for entry in registry.get(section, ()):
             missing = {"rule", "source", "harness", "kernel", "parameter"} - entry.keys()
@@ -497,9 +501,132 @@ def validate_registry(
     return justified, backlog
 
 
+def load_registry() -> tuple[dict[tuple[str, ...], dict], dict[tuple[str, ...], dict]]:
+    """The justified entries (registry file) and the debts (harness tags)."""
+
+    if not REGISTRY.exists():
+        fail(f"{REGISTRY.relative_to(ROOT)} is missing")
+    obligations = {
+        obligation["id"] for obligation in load_ledger()["obligations"]
+    }
+    justified, _ = validate_registry(json.loads(REGISTRY.read_text()), obligations)
+    debts, errors = debt_tags(formal_anchors.scan(ROOT).harnesses)
+    if errors:
+        fail("\n".join(errors))
+    overlap = justified.keys() & debts.keys()
+    if overlap:
+        fail(f"{len(overlap)} findings are both justified and tagged @{DEBT_TAG}")
+    return justified, debts
+
+
+def debt_tags(harnesses: list) -> tuple[dict[tuple[str, ...], dict], list[str]]:
+    """Each harness's own debts: `/// @proof-input-debt <rule> <kernel> [<parameter>]`.
+
+    The tag sits on the harness the finding is about, so it moves with the
+    harness; the kernel is named because one harness may leave the same
+    parameter free for two kernels.
+    """
+
+    debts: dict[tuple[str, ...], dict] = {}
+    errors: list[str] = []
+    for harness in harnesses:
+        for anchor in harness.values(DEBT_TAG):
+            parts = anchor.value.split()
+            if not (
+                (len(parts) == 3 and parts[0] == "free_symbol")
+                or (len(parts) == 2 and parts[0] == "tautology")
+            ):
+                errors.append(
+                    f"{anchor.where}: expected `/// @{DEBT_TAG} free_symbol <kernel> <parameter>` "
+                    f"or `/// @{DEBT_TAG} tautology <kernel>`, got {anchor.value!r}"
+                )
+                continue
+            entry = {
+                "rule": parts[0], "source": harness.path, "harness": harness.name,
+                "kernel": parts[1], "parameter": parts[2] if len(parts) == 3 else "",
+                "where": anchor.where,
+            }
+            if key(entry) in debts:
+                errors.append(f"{anchor.where}: repeats the debt at {debts[key(entry)]['where']}")
+            debts[key(entry)] = entry
+    return debts, errors
+
+
+def debt_text(line: str) -> str | None:
+    """The location-free identity of one debt line, or None for any other line."""
+
+    match = DEBT_LINE.match(line)
+    return " ".join(match["debt"].split()) if match else None
+
+
+def debts_at(revision: str) -> collections.Counter[str]:
+    """Every debt a revision records (``:`` for the index), however recorded.
+
+    A debt is a harness tag today; before the tags existed it was a
+    ``backlog`` row of the registry file. Both count, so a comparison with an
+    older base sees the same debts in their older form.
+    """
+
+    location = [] if revision == ":" else [revision]
+    cached = ["--cached"] if revision == ":" else []
+    listed = subprocess.run(
+        ["git", "grep", "-h", "--no-color", "-I", *cached, "-e", f"@{DEBT_TAG}", *location, "--",
+         ":(glob)crates/**/*.rs"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    if listed.returncode not in (0, 1):
+        fail(f"cannot read the debts of {revision}: {listed.stderr.strip()}")
+    found = collections.Counter(
+        text for line in listed.stdout.splitlines() if (text := debt_text(line)) is not None
+    )
+    registry = subprocess.run(
+        ["git", "show", f"{revision}{'' if revision == ':' else ':'}{REGISTRY.relative_to(ROOT).as_posix()}"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    if registry.returncode == 0:
+        for row in json.loads(registry.stdout).get("backlog", ()):
+            found[" ".join(value for value in (row["rule"], row["kernel"], row["parameter"]) if value)] += 1
+    return found
+
+
+def refuse_new_debt(before: collections.Counter[str], after: collections.Counter[str]) -> list[str]:
+    """Debts ``after`` records that ``before`` did not: a move keeps its text."""
+
+    return sorted((after - before).elements())
+
+
+def ratchet_base(requested: str | None) -> str:
+    """The merge-base the CI ratchet compares with, or a fail-closed refusal."""
+
+    candidates = [requested] if requested else ["origin/main", "main"]
+    for candidate in candidates:
+        found = subprocess.run(
+            ["git", "merge-base", "HEAD", candidate], cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        if found.returncode == 0 and found.stdout.strip():
+            return found.stdout.strip()
+    fail(
+        f"cannot evaluate the @{DEBT_TAG} ratchet: HEAD has no merge-base with "
+        f"{' or '.join(candidates)} (a shallow clone or a missing ref). Fetch full history "
+        "(actions/checkout fetch-depth: 0) or pass --debt-ratchet <ref>; the ratchet is not skipped."
+    )
+
+
+def debt_ratchet(requested: str | None) -> None:
+    base = ratchet_base(requested)
+    before, after = debts_at(base), debts_at("HEAD")
+    if sum(after.values()) > sum(before.values()):
+        fail(
+            f"HEAD records {sum(after.values())} @{DEBT_TAG} debts, more than the "
+            f"{sum(before.values())} at its merge-base {base[:12]}; fix the harness instead: "
+            + ", ".join(refuse_new_debt(before, after))
+        )
+    print(f"proof input debt: {sum(after.values())} at HEAD, {sum(before.values())} at merge-base {base[:12]}")
+
+
 def report(found: list[dict[str, str]], complete: bool) -> None:
-    justified, backlog = load_registry()
-    allowed = justified.keys() | backlog.keys()
+    justified, debts = load_registry()
+    allowed = justified.keys() | debts.keys()
     seen = {key(finding) for finding in found}
     problems = []
     for finding in sorted(found, key=key):
@@ -514,9 +641,13 @@ def report(found: list[dict[str, str]], complete: bool) -> None:
             )
         )
     if complete:
-        # Ratchet: an entry that no longer matches a finding has been fixed (or
-        # renamed) and must leave the registry, so the backlog cannot be padded.
-        for entry in sorted(allowed - seen):
+        # Ratchet: a debt or entry that no longer matches a finding has been
+        # fixed (or renamed) and must go, so the debt cannot be padded.
+        for entry in sorted(debts.keys() - seen):
+            problems.append(
+                f"stale @{DEBT_TAG} at {debts[entry]['where']} matches no finding; delete that line"
+            )
+        for entry in sorted(justified.keys() - seen):
             problems.append(
                 f"stale registry entry {entry[1]}::{entry[2]} ({entry[0]}) matches no finding"
             )
@@ -527,46 +658,12 @@ def report(found: list[dict[str, str]], complete: bool) -> None:
             f"  {joined}\n"
             "A harness must feed the production derivation symbolic fields, not a free "
             "symbol or the callee's own body. A genuinely environmental input belongs "
-            "in formal/proof-input-exceptions.json under \"justified\" with a reason."
+            "in formal/proof-input-exceptions.json under \"justified\" with a reason; "
+            f"a new @{DEBT_TAG} line is refused."
         )
     print(
         f"proof input derivation: {len(found)} classified "
-        f"({len(justified)} justified, {len(backlog)} backlogged)"
-    )
-
-
-def write_registry(found: list[dict[str, str]]) -> None:
-    """Rewrite the backlog from the current findings, keeping every justification.
-
-    Only ever run after *fixing* harnesses: the checker already refuses a new
-    finding, so regenerating is how a shrunken backlog is recorded, not how a
-    new one is waved through. Entries are one line each so the file stays
-    reviewable in a diff.
-    """
-    registry = json.loads(REGISTRY.read_text()) if REGISTRY.exists() else {}
-    justified = {key(entry): entry for entry in registry.get("justified", ())}
-    kept, backlog = [], []
-    for finding in sorted(found, key=key):
-        row = {field: finding[field] for field in FIELDS}
-        if key(row) in justified:
-            kept.append(justified[key(row)])
-        else:
-            backlog.append(row)
-    body = ["{"]
-    for field in ("$comment", "justified_note", "backlog_note"):
-        if field in registry:
-            body.append(f"  {json.dumps(field)}: {json.dumps(registry[field])},")
-    for name, rows in (("justified", kept), ("backlog", backlog)):
-        body.append(f'  "{name}": [')
-        for index, row in enumerate(rows):
-            comma = "," if index < len(rows) - 1 else ""
-            body.append("    " + json.dumps(row, ensure_ascii=False) + comma)
-        body.append("  ]," if name == "justified" else "  ]")
-    body.append("}")
-    REGISTRY.write_text("\n".join(body) + "\n")
-    print(
-        f"proof input derivation: wrote {len(kept)} justified and "
-        f"{len(backlog)} backlogged entries"
+        f"({len(justified)} justified, {len(debts)} tagged @{DEBT_TAG})"
     )
 
 
@@ -602,14 +699,16 @@ def main() -> None:
     parser.add_argument("--survey", action="store_true")
     parser.add_argument("--staged", nargs="*", default=None)
     parser.add_argument("--selftest", action="store_true")
-    parser.add_argument("--write-backlog", action="store_true")
+    parser.add_argument(
+        "--debt-ratchet", nargs="?", const="", default=None, metavar="REF",
+        help="refuse more debts at HEAD than at its merge-base with REF (default origin/main, then main)",
+    )
     options = parser.parse_args()
     if options.selftest:
         selftest()
         return
-    if options.write_backlog:
-        write_registry(findings())
-        return
+    if options.debt_ratchet is not None:
+        debt_ratchet(options.debt_ratchet or None)
     if options.survey:
         survey()
         return
@@ -621,6 +720,15 @@ def main() -> None:
             or candidate.startswith("formal/obligations/")
             for candidate in options.staged
         )
+        head = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=ROOT,
+                              capture_output=True, check=False).returncode == 0
+        new = refuse_new_debt(debts_at("HEAD") if head else collections.Counter(), debts_at(":"))
+        if new:
+            fail(
+                f"the staged tree adds {len(new)} @{DEBT_TAG} debt(s) HEAD does not carry: "
+                + ", ".join(new) + ". Fix the harness so it feeds the production derivation; "
+                "a debt is only ever removed."
+            )
         if not interesting and not registry_touched:
             return
         # A staged Rust file is judged on its own; a registry or ledger edit is
@@ -747,7 +855,7 @@ def selftest() -> None:
     for label, registry in (
         ("R9 justified without a reason", {"justified": [row | {"obligation": "o"}]}),
         ("R10 justified naming no obligation", {"justified": [good | {"obligation": "x"}]}),
-        ("R11 the same entry justified and backlogged", {"justified": [good], "backlog": [row]}),
+        ("R11 a backlog section in the registry", {"justified": [good], "backlog": [row]}),
         ("R12 an unknown rule name", {"backlog": [row | {"rule": "invented"}]}),
     ):
         try:
@@ -758,6 +866,39 @@ def selftest() -> None:
         except SystemExit:
             continue
         raise AssertionError(label)
+
+    # Debts. R13 a tag on a harness is a debt keyed by that harness; R14 a
+    # malformed or repeated tag is refused by file:line; R15 a staged debt HEAD
+    # does not carry is refused, a moved one (same text) is not; R16 a missing
+    # merge-base fails closed instead of skipping the ratchet.
+    harness = formal_anchors.Harness("h", "crates/x/src/lib.rs", 9, "x", [
+        formal_anchors.Anchor("crates/x/src/lib.rs", 5, DEBT_TAG, "free_symbol k p"),
+        formal_anchors.Anchor("crates/x/src/lib.rs", 6, DEBT_TAG, "tautology k"),
+    ])
+    debts, errors = debt_tags([harness])
+    assert not errors and set(debts) == {
+        ("free_symbol", "crates/x/src/lib.rs", "h", "k", "p"), ("tautology", "crates/x/src/lib.rs", "h", "k", ""),
+    }, ("R13", debts, errors)
+    for value in ("free_symbol k", "tautology k p", "invented k p"):
+        broken = formal_anchors.Harness("h", "crates/x/src/lib.rs", 9, "x", [
+            formal_anchors.Anchor("crates/x/src/lib.rs", 5, DEBT_TAG, value)])
+        assert debt_tags([broken])[1][0].startswith("crates/x/src/lib.rs:5: expected"), ("R14", value)
+    twice = formal_anchors.Harness("h", "crates/x/src/lib.rs", 9, "x", [harness.anchors[0], harness.anchors[0]])
+    assert "repeats the debt" in debt_tags([twice])[1][0], "R14 repeated"
+    assert debt_text("    /// @proof-input-debt  free_symbol k p ") == "free_symbol k p", "R15 text"
+    assert debt_text("    /// @obligation a.b") is None, "R15 text"
+    before = collections.Counter({"free_symbol k p": 1})
+    assert refuse_new_debt(before, before) == [], "R15 a moved debt"
+    assert refuse_new_debt(before, collections.Counter()) == [], "R15 a paid debt"
+    assert refuse_new_debt(before, before + collections.Counter({"tautology k": 1})) == ["tautology k"], "R15"
+    failed = subprocess.CompletedProcess([], 128, "", "fatal: not a valid object name")
+    with unittest_mock.patch("subprocess.run", return_value=failed), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            ratchet_base("missing")
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("R16 a missing merge-base must fail closed")
 
     print("proof input derivation: selftest passed")
 

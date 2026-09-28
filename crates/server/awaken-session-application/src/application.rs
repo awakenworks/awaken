@@ -104,6 +104,7 @@ mod environment_owner_kani_proof {
 
     /// @obligation session_creation.work_projection_is_disposable_repairable_and_non_authoritative
     /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
+    /// @proof-input-debt free_symbol session_work_projection_required terminal
     #[kani::proof]
     fn work_projection_is_derived_only_from_durable_session_truth() {
         // Cause/effect table: C1 root has no frozen baseline / local / external;

@@ -836,6 +836,8 @@ impl SessionEnvironmentOwner {
 
 #[cfg(kani)]
 /// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
+/// @proof-input-debt free_symbol durable_projection_identity_decision binding_is_exact
+/// @proof-input-debt free_symbol durable_projection_identity_decision identity_is_exact
 #[kani::proof]
 fn durable_projection_identity_is_exact_or_a_same_physical_owner_stutter() {
     // Cause/effect decision table:

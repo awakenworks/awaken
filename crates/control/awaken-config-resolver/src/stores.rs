@@ -347,6 +347,7 @@ fn agent_input_revision_decision(
 /// @obligation agent_inputs.applied_revision_is_exact_successor
 /// @obligation agent_inputs.rejected_revision_does_not_mutate
 /// @obligation agent_inputs.same_revision_same_content_is_idempotent
+/// @proof-input-debt free_symbol agent_input_revision_decision same_aggregate
 #[kani::proof]
 fn agent_input_revision_decision_is_exact_non_wrapping_and_replay_first() {
     // Causes: existence x all i64 current/attempted values x aggregate equality.

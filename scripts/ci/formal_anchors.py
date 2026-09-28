@@ -39,8 +39,10 @@ RUST_SOURCES = "crates/**/*.rs"
 CARGO_MANIFESTS = "crates/**/Cargo.toml"
 PROOF_ATTRIBUTE = "#[kani::proof]"
 # `@obligation <id>` names an obligation the harness serves (formal_ledger);
-# `@kani key=value ...` states its non-default Kani selection (formal_plan).
-TAGS = ("obligation", "kani")
+# `@kani key=value ...` states its non-default Kani selection (formal_plan);
+# `@proof-input-debt <rule> <kernel> [<parameter>]` records an unreviewed
+# proof-input finding (check_proof_input_derivation).
+TAGS = ("obligation", "kani", "proof-input-debt")
 # A doc-comment line carrying one tag: `/// @<tag> <value...>`.
 ANCHOR = re.compile(r"^\s*///\s*@(?P<tag>[a-z][a-z-]*)(?:\s+(?P<value>.*?))?\s*$")
 BLOCK_LINE = re.compile(r"^\s*(?:#\[.*\]|///.*|//(?!!).*)\s*$")

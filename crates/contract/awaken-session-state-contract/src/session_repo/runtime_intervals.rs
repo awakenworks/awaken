@@ -134,6 +134,8 @@ const fn normalized_runtime_interval_end(started_at_unix_ms: u64, ended_at_unix_
 
 #[cfg(kani)]
 /// @obligation session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
+/// @proof-input-debt free_symbol runtime_interval_may_open execution_is_running
+/// @proof-input-debt free_symbol runtime_interval_may_open interval_is_open
 #[kani::proof]
 fn runtime_intervals_open_once_and_never_close_before_start() {
     let execution_is_running = kani::any();

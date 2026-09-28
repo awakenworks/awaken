@@ -377,6 +377,7 @@ mod session_replacement_proofs {
     use super::{DispatchState, session_run_replacement_candidate_is_safe};
 
     /// @obligation run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+    /// @proof-input-debt tautology session_run_replacement_candidate_is_safe
     #[kani::proof]
     fn only_awaiting_or_already_superseded_is_replacement_safe() {
         let tag: u8 = kani::any();

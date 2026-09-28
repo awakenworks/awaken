@@ -183,6 +183,9 @@ pub(crate) fn existing_realization_decision(
 #[cfg(kani)]
 /// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
 /// @kani profile=solver-kissat-v1 features=k8s
+/// @proof-input-debt free_symbol observation_admitted exact_continuation
+/// @proof-input-debt free_symbol observation_admitted is_source
+/// @proof-input-debt free_symbol observation_admitted reconstructible
 #[kani::proof]
 fn rebuild_activation_requires_exact_continuation_and_effect() {
     // Finite quotient of every source/result, continuity, recoverability,
