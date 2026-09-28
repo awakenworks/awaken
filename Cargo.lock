@@ -1762,6 +1762,7 @@ dependencies = [
  "awaken-session-error-contract",
  "awaken-session-event-contract",
  "awaken-session-mcp-contract",
+ "awaken-session-projection",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
  "awaken-session-resource-contract",
@@ -2633,6 +2634,7 @@ dependencies = [
  "awaken-session-error-contract",
  "awaken-session-event-contract",
  "awaken-session-mcp-contract",
+ "awaken-session-projection",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
  "awaken-session-resource-contract",
@@ -2739,6 +2741,23 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-resource-contract",
+ "awaken-session-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "awaken-session-projection"
+version = "1.0.0"
+dependencies = [
+ "awaken-agent-contract",
+ "awaken-runtime-contract",
+ "awaken-session-application-contract",
+ "awaken-session-budget-contract",
+ "awaken-session-event-contract",
+ "awaken-session-runtime-contract",
+ "awaken-session-state-contract",
  "awaken-session-types",
  "serde",
  "serde_json",

@@ -670,7 +670,7 @@ impl ManagedState {
             .map(|projection| projection.event.clone())
             .collect::<Vec<_>>();
         self.publish_projection_update(session_id, |candidate| {
-            merge_durable_inbound_projections(candidate, receipt_projections.clone());
+            merge_durable_inbound_projections(candidate, &receipt_projections);
             Ok(())
         })?;
         Ok(SendEventsResponse { data: receipts })
