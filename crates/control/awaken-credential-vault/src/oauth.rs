@@ -19,7 +19,9 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use awaken_lease_contract::mono::{self, Instant};
 
 use awaken_agent_contract::RedactedString;
 
@@ -127,7 +129,7 @@ impl<T: TokenSource> TokenSource for CachingTokenSource<T> {
             return Ok(token.clone());
         }
         let fresh = self.inner.access_token().await?;
-        *self.cached.lock().unwrap() = Some((fresh.clone(), Instant::now()));
+        *self.cached.lock().unwrap() = Some((fresh.clone(), mono::now()));
         Ok(fresh)
     }
 }

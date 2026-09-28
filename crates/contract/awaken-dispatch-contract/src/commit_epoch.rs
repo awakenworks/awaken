@@ -190,14 +190,14 @@ impl CommitEpochGuard {
             && self.request.thread_id().0 == session_id
     }
 
-    /// Whether the guarded claim's lease is live at `now_ms`. The exact expiry
-    /// boundary remains live, matching the queue's recovery rule.
+    /// Whether the guarded claim's lease is live at `now_ms`: the Expiry law,
+    /// dead from the instant a successor may reclaim the row.
     #[must_use]
     pub fn is_live_at(&self, now_ms: u64) -> bool {
-        self.expires_ms >= now_ms
+        Expiry::from_epoch_ms(self.expires_ms).is_live_at(UtcTime::from_epoch_ms(now_ms))
     }
 
-    /// Inclusive expiry of the exact claim protected by this guard.
+    /// Expiry of the exact claim protected by this guard.
     #[must_use]
     pub fn expires_ms(&self) -> u64 {
         self.expires_ms
@@ -326,6 +326,34 @@ mod commit_epoch_tests {
         .release_after::<(), _>(Err("inner failed"))
         .await;
         assert_eq!(failed, Err("release failed".to_string()), "R3/E3");
+    }
+
+    #[test]
+    fn guard_liveness_follows_the_expiry_law_at_the_boundary() {
+        // Boundary decision table for the guard's lease (expiry E = 100):
+        // | now   | live | reason                                   |
+        // | E - 1 | yes  | before the expiry                        |
+        // | E     | no   | the Expiry law: expired from `now >= E`  |
+        // | E + 1 | no   | after the expiry                         |
+        // | 0 / E=0 | no | a zero expiry is already expired at 0    |
+        let guard = |expires_ms| {
+            CommitEpochGuard::new(
+                (),
+                crate::dispatch::tests::a_request(),
+                expires_ms,
+                false,
+                crate::PhysicalAttemptSlot::Empty,
+            )
+        };
+        let lease = guard(100);
+        assert!(lease.is_live_at(99), "E - 1");
+        assert!(!lease.is_live_at(100), "E");
+        assert!(!lease.is_live_at(101), "E + 1");
+        assert!(!guard(0).is_live_at(0), "E = 0");
+        assert!(
+            guard(u64::MAX).is_live_at(u64::MAX - 1),
+            "E = u64::MAX, one before"
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ use awaken_agent_contract::agent::awaiting::{
 };
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_lease_contract::{Expiry, UtcTime};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -160,7 +161,7 @@ pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result
         return Err(ResumeError::FingerprintMismatch);
     }
     if let Some(deadline) = ticket.deadline_ms
-        && command.now_ms > deadline
+        && Expiry::from_epoch_ms(deadline).is_expired_at(UtcTime::from_epoch_ms(command.now_ms))
     {
         return Err(ResumeError::Expired);
     }
@@ -709,7 +710,7 @@ mod tests {
                 3 => ResumeError::SnapshotMismatch,
                 _ => ResumeError::FingerprintMismatch,
             })
-        } else if deadline.is_some_and(|limit| now_ms > limit) {
+        } else if deadline.is_some_and(|limit| now_ms >= limit) {
             Err(ResumeError::Expired)
         } else if RESULT_MASKS[usize::from(target)] & (1 << result) == 0 {
             Err(ResumeError::ResultKindMismatch)

@@ -9,8 +9,9 @@
 // Retry, identity, terminal recovery, and credential conformance rules. Included
 // at crate root; every rule still exercises the one DispatchQueue contract.
 /// Retry-exhaustion cause/effect decision table shared by every backend:
-/// C1 state=Leased; C2 lease strictly expired; C3 attempts>=max. R1 !C1 => no
-/// claim; R2 C1+!C2 (including equality) => no claim; R3 C1+C2+!C3 => no claim;
+/// C1 state=Leased; C2 lease expired (the Expiry law: from `now >= expiry` on);
+/// C3 attempts>=max. R1 !C1 => no claim; R2 C1+!C2 (one instant before expiry)
+/// => no claim; R3 C1+C2+!C3 => no claim;
 /// R4 C1+C2+C3 => mint one newer ordinary Claimed epoch without execution
 /// credentials; R5 two concurrent claimants for one eligible row => exactly one
 /// receives the unique newer epoch and one receives None; R6 the losing/stale
@@ -41,8 +42,11 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
         .await
         .expect("fresh claim")
         .expect("fresh row claimable");
-    if clock.exact_boundary_is_controllable() {
-        clock.set(fresh.lease.expires_ms);
+    // A controllable clock judges C2 at the exact boundary: live one instant
+    // before the expiry, expired at it. A moving clock is advanced past it.
+    let exact = clock.exact_boundary_is_controllable();
+    if exact {
+        clock.set(fresh.lease.expires_ms - 1);
         assert!(
             store
                 .claim_retry_exhausted("terminal", LEASE_MS, 0)
@@ -51,9 +55,10 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
                 .is_none(),
             "R2"
         );
+        clock.set(fresh.lease.expires_ms);
+    } else {
+        clock.advance_past(fresh.lease.expires_ms).await;
     }
-    clock.advance_past(fresh.lease.expires_ms).await;
-    clock.set(fresh.lease.expires_ms.saturating_add(1));
     assert!(
         store
             .claim_retry_exhausted("terminal", LEASE_MS, 1,)
@@ -62,15 +67,18 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
             .is_none(),
         "R3"
     );
-    clock.set(fresh.lease.expires_ms.saturating_add(1));
     let recovered = store
         .claim_run(&run_id, "crashed-b", LEASE_MS, &Default::default())
         .await
         .expect("ordinary recovery")
         .expect("ordinary recovery is claimable");
-    clock.advance_past(recovered.lease.expires_ms).await;
-    let terminal_now = recovered.lease.expires_ms.saturating_add(1);
-    clock.set(terminal_now);
+    // R4 at the exact expiry of the recovered lease when the clock allows it.
+    let terminal_now = recovered.lease.expires_ms;
+    if exact {
+        clock.set(terminal_now);
+    } else {
+        clock.advance_past(terminal_now).await;
+    }
     let (left, right) = tokio::join!(
         store.claim_retry_exhausted("terminal", LEASE_MS, 1),
         store.claim_retry_exhausted("terminal-racer", LEASE_MS, 1),
@@ -482,18 +490,20 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         "T6: a currently claimed repair row cannot be claimed twice"
     );
     if clock.exact_boundary_is_controllable() {
-        clock.set(repair.lease.expires_ms);
+        clock.set(repair.lease.expires_ms - 1);
         assert!(
             store
                 .claim_for_terminal_recovery(&awaiting_id, "boundary", LEASE_MS,)
                 .await
                 .expect("repair claim at lease boundary")
                 .is_none(),
-            "T6: a lease remains live at its exact expiry boundary"
+            "T6: a lease is live one instant before its expiry"
         );
+        // The Expiry law: from the exact expiry instant the lease has passed.
+        clock.set(repair.lease.expires_ms);
+    } else {
+        clock.advance_past(repair.lease.expires_ms).await;
     }
-    clock.advance_past(repair.lease.expires_ms).await;
-    clock.set(repair.lease.expires_ms.saturating_add(1));
     let repair_after_crash = store
         .claim_for_terminal_recovery(&awaiting_id, "repair-after-crash", LEASE_MS)
         .await

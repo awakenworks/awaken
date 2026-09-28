@@ -15,9 +15,9 @@ impl SqliteDispatchStore {
                     &format!(
                         "SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
                          (d.status IN ('reserved', 'reservation_running') \
-                           AND d.lease_until IS NOT NULL AND d.lease_until < ?1 AND {}) OR \
+                           AND d.lease_until IS NOT NULL AND d.lease_until <= ?1 AND {}) OR \
                          (d.status = 'pending' AND {thread_available}) OR \
-                         (d.status = 'running' AND d.lease_until < ?1) OR \
+                         (d.status = 'running' AND d.lease_until <= ?1) OR \
                          (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
                            SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
                            AND (i.available_at IS NULL OR i.available_at <= ?1)\

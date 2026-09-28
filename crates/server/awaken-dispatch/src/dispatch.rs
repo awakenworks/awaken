@@ -7,7 +7,7 @@
 // @formal entrypoint session_run.reservation_never_executes
 // @formal entrypoint session_run.reservation_precedes_activity
 // @formal entrypoint worker.retry_preserves_pinned_binding
-// @formal evidence run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
+// @formal evidence run_ingress.a_deadline_passes_once_it_is_reached
 //! The dispatch ports now live in `awaken-dispatch-contract` (ADR-0039 2.1),
 //! re-exported here so the host's internal `crate::dispatch::*` paths and existing
 //! consumers are unchanged.

@@ -13,7 +13,9 @@
 //! `llm::Error::is_retryable()`.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use awaken_lease_contract::mono::{self, Instant};
 
 use awaken_runtime_contract::metrics::MetricsRecorder;
 use parking_lot::Mutex;
@@ -149,7 +151,7 @@ impl CircuitBreaker {
             .kernel
             .finish(key, outcome, self.config.failure_threshold)
         {
-            circuit.open_since = Some(Instant::now());
+            circuit.open_since = Some(mono::now());
             drop(circuits);
             if outcome == Completion::Inconclusive {
                 metrics.record_circuit_transition(model, "open");
