@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 6600 (legacy oversized test file: split, never grow)
 use awaken_session_types::SessionId;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::AtomicU64;

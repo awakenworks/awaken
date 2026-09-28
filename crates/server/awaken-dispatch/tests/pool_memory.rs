@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 4500 (legacy oversized test file: split, never grow)
 //! The process-level dispatch pool (O2) over the in-memory store, and its
 //! no-loss guarantees (O5).
 //!

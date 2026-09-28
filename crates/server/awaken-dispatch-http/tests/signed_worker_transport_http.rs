@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 3223 (legacy oversized test file: split, never grow)
 //! The production request identity is wired through lifecycle and dispatch
 //! clients over a real socket, including the post-registration incarnation bind.
 

@@ -31,11 +31,16 @@ LAYERS = frozenset(
 # edges are handled separately because a published contract is precisely the
 # legal cross-context seam.
 CONTEXT_DEPENDENCIES: dict[str, frozenset[str]] = {
-    # Shared application/infrastructure crates integrate cross-context contracts.
-    # Their lower contract/domain layers remain protected by layer direction.
-    "shared": CONTEXTS,
+    # Shared crates sit under every context, so they may reach only each other
+    # and the neutral runtime; everything else arrives through a contract.
+    # This used to be `CONTEXTS`, and that wildcard is how the shared runtime
+    # host came to link the worker's sandbox implementations and the
+    # coordinator's stores into the control plane (see KNOWN_INVERSIONS).
+    "shared": frozenset({"shared", "runtime"}),
     # Protocol crates translate public wire vocabularies across domain
-    # applications but own no domain state or persistence authority.
+    # applications but own no domain state or persistence authority; the
+    # persistence half of that sentence is enforced by
+    # PROTOCOL_INFRASTRUCTURE_CONTEXTS below.
     "protocol": CONTEXTS,
     "runtime": frozenset({"shared", "runtime"}),
     "control": frozenset({"shared", "runtime", "resources", "control"}),
@@ -64,6 +69,74 @@ LAYER_DEPENDENCIES: dict[str, frozenset[str]] = {
 }
 
 
+# A protocol adapter may use outer-ring infrastructure only when it is neutral
+# plumbing (shared transport, observability) or a runtime extension. A store or
+# catalog owned by another context is that context's persistence authority, and
+# reading it from a wire adapter is how the same projection came to be computed
+# twice (protocol state/ beside the session application).
+PROTOCOL_INFRASTRUCTURE_CONTEXTS = frozenset({"shared", "runtime", "protocol"})
+
+# Edges that violate the direction above and exist today. Each entry names the
+# refactor that removes it. The set only shrinks: a listed edge that no longer
+# exists, or no longer violates, is itself an error, so the removal is recorded
+# in the same commit that achieves it. Nothing may be added here.
+KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
+    **{
+        ("awaken-session-executor", target): "runtime-host links execution-plane implementations; inject them from the bin through provisioning/environment ports"
+        for target in (
+            "awaken-local-process",
+            "awaken-run-executor-acp",
+            "awaken-sandbox-container",
+            "awaken-sandbox-control-transport",
+            "awaken-sandbox-fs",
+            "awaken-sandbox-local",
+            "awaken-coordinator-client",
+        )
+    },
+    **{
+        ("awaken-session-executor", target): "runtime-host reaches another context's application/store; depend on its contract and let the bin inject the implementation"
+        for target in (
+            "awaken-credential-vault",
+            "awaken-file-store",
+            "awaken-memory-store",
+            "awaken-resource-application",
+            "awaken-dispatch",
+            "awaken-session-application",
+            "awaken-session-store",
+            "awaken-skill-store",
+        )
+    },
+    **{
+        ("awaken-credential-materializer", target): "credential materializer reaches control/worker implementations; depend on their contracts"
+        for target in (
+            "awaken-admin-config-api",
+            "awaken-credential-vault",
+            "awaken-model-catalog",
+            "awaken-run-executor-acp",
+        )
+    },
+    **{
+        ("awaken-webhook-managed", target): "managed webhook projection reaches control/coordinator implementations; depend on their contracts"
+        for target in (
+            "awaken-authz-enforce",
+            "awaken-config-resolver",
+            "awaken-credential-vault",
+            "awaken-webhook",
+        )
+    },
+    **{
+        ("awaken-protocol-managed", target): "protocol-managed reads another context's persistence directly; move the projection into the session application and depend on its repository contract"
+        for target in (
+            "awaken-env-store",
+            "awaken-executable-environment-catalog",
+            "awaken-sandbox-policy-store",
+            "awaken-session-store",
+            "awaken-work-store",
+        )
+    },
+}
+
+
 class CrateSpec(NamedTuple):
     name: str
     context: str
@@ -83,9 +156,36 @@ def metadata_violations(spec: CrateSpec) -> list[str]:
     return errors
 
 
-def dependency_violations(specs: list[CrateSpec]) -> list[str]:
+def dependency_violations(
+    specs: list[CrateSpec],
+    known: dict[tuple[str, str], str] | None = None,
+) -> list[str]:
+    """Direction violations, minus the ratcheted KNOWN_INVERSIONS.
+
+    `known` defaults to the module ratchet; the self-test passes an explicit
+    table so its fixtures do not depend on today's workspace.
+    """
+
+    known = KNOWN_INVERSIONS if known is None else known
+    raw = _raw_dependency_violations(specs)
+    errors = [message for edge, message in raw if edge not in known]
+    violating = {edge for edge, _ in raw}
+    names = {spec.name for spec in specs}
+    for edge, removal in sorted(known.items()):
+        source, target = edge
+        if source not in names:
+            continue
+        if edge not in violating:
+            errors.append(
+                f"KNOWN_INVERSIONS lists {source} -> {target}, which no longer violates the "
+                f"dependency direction ({removal}); delete the entry in the commit that removed it"
+            )
+    return errors
+
+
+def _raw_dependency_violations(specs: list[CrateSpec]) -> list[tuple[tuple[str, str], str]]:
     by_name = {spec.name: spec for spec in specs}
-    errors: list[str] = []
+    errors: list[tuple[tuple[str, str], str]] = []
     for source in specs:
         if metadata_violations(source):
             continue
@@ -94,12 +194,13 @@ def dependency_violations(specs: list[CrateSpec]) -> list[str]:
             if target is None or metadata_violations(target):
                 continue
             allowed_layers = LAYER_DEPENDENCIES[source.layer]
+            edge = (source.name, target.name)
             if target.layer not in allowed_layers:
-                errors.append(
+                errors.append((edge,
                     f"{source.name} ({source.context}/{source.layer}) depends on {target.name} "
                     f"({target.context}/{target.layer}); layer `{source.layer}` may depend only on "
                     f"{sorted(allowed_layers)}"
-                )
+                ))
                 continue
             if target.layer == "contract":
                 continue
@@ -115,11 +216,24 @@ def dependency_violations(specs: list[CrateSpec]) -> list[str]:
                 continue
             allowed_contexts = CONTEXT_DEPENDENCIES[source.context]
             if target.context not in allowed_contexts:
-                errors.append(
+                errors.append((edge,
                     f"{source.name} ({source.context}/{source.layer}) depends on {target.name} "
                     f"({target.context}/{target.layer}); context `{source.context}` may depend only "
                     f"on {sorted(allowed_contexts)} or another context's contract"
-                )
+                ))
+                continue
+            if (
+                source.context == "protocol"
+                and source.layer in {"interface", "infrastructure"}
+                and target.layer == "infrastructure"
+                and target.context not in PROTOCOL_INFRASTRUCTURE_CONTEXTS
+            ):
+                errors.append((edge,
+                    f"{source.name} ({source.context}/{source.layer}) depends on {target.name} "
+                    f"({target.context}/{target.layer}); a protocol adapter may not read another "
+                    "context's persistence or implementation directly -- depend on its application "
+                    "or repository contract"
+                ))
     return errors
 
 
@@ -163,6 +277,37 @@ def selftest() -> None:
     | R12  | contract      | extension       | no                | no            | E12    |
     """
     c = lambda n, x, l, a="owner", d=frozenset(): CrateSpec(n, x, l, a, d)
+    # R13-R16: the shared wildcard, the protocol persistence rule, and the ratchet.
+    shared_to_worker = [
+        c("host", "shared", "infrastructure", d=frozenset({"sandbox"})),
+        c("sandbox", "worker", "infrastructure"),
+    ]
+    assert dependency_violations(shared_to_worker, known={}), "R13 shared may not reach a worker implementation"
+    assert dependency_violations(
+        [c("host", "shared", "infrastructure", d=frozenset({"port"})), c("port", "worker", "contract")],
+        known={},
+    ) == [], "R13 shared reaches a worker contract"
+    assert dependency_violations(
+        [
+            c("wire", "protocol", "interface", d=frozenset({"store"})),
+            c("store", "coordinator", "infrastructure"),
+        ],
+        known={},
+    ), "R14 protocol may not read another context's store"
+    assert dependency_violations(
+        [
+            c("wire", "protocol", "interface", d=frozenset({"http"})),
+            c("http", "shared", "infrastructure"),
+        ],
+        known={},
+    ) == [], "R14 protocol may use shared plumbing"
+    ratchet = {("host", "sandbox"): "fixture"}
+    assert dependency_violations(shared_to_worker, known=ratchet) == [], "R15 a ratcheted edge is admitted"
+    stale = dependency_violations(
+        [c("host", "shared", "infrastructure"), c("sandbox", "worker", "infrastructure")],
+        known=ratchet,
+    )
+    assert stale and "no longer violates" in stale[0], "R16 a removed edge must leave the ratchet"
     assert metadata_violations(c("missing", "", "", "")), "R2"
     assert dependency_violations(
         [c("domain", "runtime", "domain", d=frozenset({"adapter"})), c("adapter", "runtime", "infrastructure")]

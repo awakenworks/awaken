@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 4256 (legacy oversized test file: split, never grow)
 use super::state::ProjectedEnvironmentOwner;
 use super::*;
 use crate::session_slot::UnboundSessionEnvironmentOrigin;

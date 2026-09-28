@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 6486 (legacy oversized test file: split, never grow)
 use super::*;
 mod cleanup_timing;
 use awaken_session_realization_contract::{

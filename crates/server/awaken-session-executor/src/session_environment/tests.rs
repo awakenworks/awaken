@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 4690 (legacy oversized test file: split, never grow)
 use super::*;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
