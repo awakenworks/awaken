@@ -84,7 +84,16 @@ pub(super) async fn session_cleanup_claim_next(
         // it. Rejecting an otherwise exact proposal here creates a periodic
         // recovery blackout near every registry-renewal edge.
         let mut target = request.target;
-        target.lease_expires_at_unix_ms = target.lease_expires_at_unix_ms.min(registry_expiry);
+        target.lease_expires_at_unix_ms = narrowed_to_registry(
+            target.lease_expires_at_unix_ms,
+            registry_expiry,
+            authority.now_ms,
+        )
+        .ok_or_else(|| {
+            RealizationHttpError::from(HostError::bad_request(
+                "Session cleanup recovery claim outlives the authenticated Worker authority",
+            ))
+        })?;
         let assignment = terminal_cleanup_control(&service)
             .map_err(RealizationHttpError::from)?
             .claim_next_terminal_cleanup(target)
@@ -660,8 +669,16 @@ pub(super) async fn renew_session_realization(
         // desired retention window. Network/SQLite delay between an independent
         // heartbeat and renewal must not turn a live Worker into a false loss of
         // authority. Preserve shorter requests and cap only their upper bound.
-        command.requested_expires_at_unix_ms =
-            command.requested_expires_at_unix_ms.min(registry_expiry);
+        command.requested_expires_at_unix_ms = narrowed_to_registry(
+            command.requested_expires_at_unix_ms,
+            registry_expiry,
+            authority.now_ms,
+        )
+        .ok_or_else(|| {
+            RealizationHttpError::from(HostError::bad_request(
+                "Session realization renewal outlives the authenticated Worker authority",
+            ))
+        })?;
         if command.requested_expires_at_unix_ms < command.asserted_lease.expires_at_unix_ms {
             return Err(RealizationHttpError::from(HostError::bad_request(
                 "Worker registry authority cannot extend the asserted Session realization lease",
@@ -785,4 +802,49 @@ pub(super) async fn fail_session_realization(
     }
     .await;
     respond_realization(result)
+}
+
+/// A Worker-proposed Session lease deadline narrowed to the authenticated
+/// Worker Registry lease under the one child-grant law: never later than the
+/// registry deadline, and refused (`None`) when the narrowed deadline is
+/// already expired at the authority's clock, so a lapsed registry lease can
+/// never hand the aggregate a dead claim.
+fn narrowed_to_registry(
+    requested_unix_ms: u64,
+    registry_unix_ms: u64,
+    now_unix_ms: u64,
+) -> Option<u64> {
+    awaken_lease_contract::Expiry::from_unix_ms(requested_unix_ms)
+        .within(
+            awaken_lease_contract::Expiry::from_unix_ms(registry_unix_ms),
+            awaken_lease_contract::UtcTime::from_epoch_ms(now_unix_ms),
+        )
+        .map(awaken_lease_contract::Expiry::to_unix_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::narrowed_to_registry;
+
+    #[test]
+    fn a_worker_proposal_is_narrowed_to_the_live_registry_lease() {
+        // Registry lease expires at 1000; the authority clock reads `now`.
+        // | Rule | proposed | now  | effect                           |
+        // | N1   | 800      | 100  | 800 (the proposal already fits)  |
+        // | N2   | 1500     | 100  | 1000 (capped at the registry)    |
+        // | N3   | 1500     | 1000 | refused: the registry is dead    |
+        // | N4   | 1500     | 1200 | refused: the registry is dead    |
+        for (rule, proposed, now, narrowed) in [
+            ("N1", 800, 100, Some(800)),
+            ("N2", 1_500, 100, Some(1_000)),
+            ("N3", 1_500, 1_000, None),
+            ("N4", 1_500, 1_200, None),
+        ] {
+            assert_eq!(
+                narrowed_to_registry(proposed, 1_000, now),
+                narrowed,
+                "{rule}"
+            );
+        }
+    }
 }
