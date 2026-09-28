@@ -26,13 +26,8 @@ impl SessionMcpAttachmentSet {
                     .realization
                     .as_ref()
                     .ok_or(McpAttachmentError::StaleRealizationClaim)?;
-                Ok(McpGenerationRef {
-                    session_id: session_id.clone(),
-                    generation: attachment.generation.clone(),
-                    runtime_incarnation: claim.runtime_incarnation.clone(),
-                    lease_epoch: claim.lease_epoch,
-                    lease_expires_at_unix_ms: claim.lease_expires_at_unix_ms,
-                })
+                McpGenerationRef::from_claim(session_id, &attachment.generation, claim)
+                    .ok_or(McpAttachmentError::StaleRealizationClaim)
             })
             .collect::<Result<Vec<_>, _>>()?;
         generations.sort_by_key(awaken_agent_contract::stable_fingerprint);
@@ -195,7 +190,9 @@ mod tests {
         assert_eq!(accepted.revision, replay_revision, "Q4/E3");
 
         let mut foreign = exact.clone();
-        foreign[0].session_id = "session-b".into();
+        let mut wire = foreign[0].to_wire();
+        wire.session_id = "session-b".into();
+        foreign[0] = McpGenerationRef::try_from(wire).unwrap();
         let duplicate = vec![exact[0].clone(), exact[0].clone()];
         for (rule, asserted) in [
             ("Q2-partial", exact[..1].to_vec()),

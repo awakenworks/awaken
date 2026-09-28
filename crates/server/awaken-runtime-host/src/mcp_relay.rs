@@ -33,6 +33,7 @@ use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 
 use crate::mcp::McpTransportMaterial;
+use awaken_lease_contract::fence::FenceSuccession;
 
 /// Where one relay route forwards to, with the host-held credential to inject.
 #[derive(Clone)]
@@ -145,7 +146,7 @@ impl McpRelay {
         Self::start_with_authority_and_exposure(
             Arc::new(|generation, now| {
                 awaken_session_realization_contract::realization_lease_is_live_at(
-                    generation.lease_expires_at_unix_ms,
+                    generation.lease_expires_at_unix_ms(),
                     now,
                 )
             }),
@@ -267,7 +268,12 @@ impl McpRelay {
         server: &McpTransportMaterial,
     ) -> bool {
         let mut routes = self.routes.lock().unwrap();
-        let Some(route) = routes.get_mut(&route_key(generation)) else {
+        // Only a renewal of the staging tenure may advance the route: a
+        // predecessor or successor tenure of the same key, or a shortened
+        // expiry, fails closed.
+        let Some(route) = routes.get_mut(&route_key(generation)).filter(|route| {
+            route.generation.succession(generation) == Some(FenceSuccession::Renewal)
+        }) else {
             return false;
         };
         let Some(url) = server.http_url() else {
@@ -283,13 +289,25 @@ impl McpRelay {
     /// Remove an exact route only when it was never published or after its
     /// shared call fence has proved quiescent. Callers own that ordering; raw
     /// map removal is deliberately not a cancellation or drain mechanism.
+    ///
+    /// The route is removed only for its own tenure: a late drain asserted
+    /// under a predecessor (or any other) tenure of the same route key leaves
+    /// the current owner's route in place.
     pub(crate) fn remove_route(&self, generation: &awaken_session_mcp_contract::McpGenerationRef) {
-        self.routes.lock().unwrap().remove(&route_key(generation));
+        let mut routes = self.routes.lock().unwrap();
+        let key = route_key(generation);
+        if routes
+            .get(&key)
+            .is_some_and(|route| route.generation.tenure() == generation.tenure())
+        {
+            routes.remove(&key);
+        }
     }
 
     /// Clone the exact route's process-local activity handle. The route stays
     /// the sole owner; canonical MCP drain closes this shared handle before it
-    /// removes the route and acknowledges `Removed`.
+    /// removes the route and acknowledges `Removed`. Another tenure of the
+    /// same route key gets nothing, so it can never close the owner's fence.
     pub(crate) fn route_call_fence(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
@@ -298,6 +316,7 @@ impl McpRelay {
             .lock()
             .expect("MCP relay routes mutex poisoned")
             .get(&route_key(generation))
+            .filter(|route| route.generation.tenure() == generation.tenure())
             .map(|route| route.call_fence.clone())
     }
 
@@ -311,7 +330,8 @@ impl McpRelay {
     }
 
     /// The loopback URL a sandboxed CLI dials for `(thread, name)` — the value written into
-    /// the sandboxed MCP config in place of the real url.
+    /// the sandboxed MCP config in place of the real url. Only the route's own
+    /// tenure may read its capability.
     pub(crate) fn route_url(
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
@@ -320,15 +340,16 @@ impl McpRelay {
             .routes
             .lock()
             .expect("MCP relay routes mutex poisoned")
-            .get(&route_key(generation))?
+            .get(&route_key(generation))
+            .filter(|route| route.generation.tenure() == generation.tenure())?
             .capability
             .clone();
         Some(format!(
             "{}/{}/{}/{}/{}",
             self.advertised_origin,
-            generation.session_id,
+            generation.session_id(),
             generation.attachment_id().0,
-            generation.generation.version(),
+            generation.generation().version(),
             capability
         ))
     }
@@ -357,9 +378,9 @@ impl crate::SharedHost {
 
 fn route_key(generation: &awaken_session_mcp_contract::McpGenerationRef) -> RouteKey {
     (
-        generation.session_id.to_string(),
+        generation.session_id().to_string(),
         generation.attachment_id().0.clone(),
-        generation.generation.version(),
+        generation.generation().version(),
     )
 }
 
@@ -544,18 +565,7 @@ mod tests {
         attachment: &str,
         generation: u64,
     ) -> awaken_session_mcp_contract::McpGenerationRef {
-        awaken_session_mcp_contract::McpGenerationRef {
-            session_id: session.into(),
-            generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                awaken_session_mcp_contract::McpAttachmentId(attachment.into()),
-                generation,
-                &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                    .unwrap(),
-            ),
-            runtime_incarnation: "runtime-1".into(),
-            lease_epoch: 4,
-            lease_expires_at_unix_ms: u64::MAX,
-        }
+        crate::test_mcp::mcp_fence(session, attachment, generation, "runtime-1", 4, u64::MAX)
     }
 
     fn http_material(
@@ -729,9 +739,9 @@ mod tests {
         let accepted = tokio::spawn(forward(
             State(relay.state.clone()),
             Path((
-                generation.session_id.to_string(),
+                generation.session_id().to_string(),
                 generation.attachment_id().0.clone(),
-                generation.generation.version(),
+                generation.generation().version(),
                 capability.clone(),
             )),
             Request::builder().method("POST").body(body).unwrap(),
@@ -747,9 +757,9 @@ mod tests {
         let rejected = forward(
             State(relay.state.clone()),
             Path((
-                generation.session_id.to_string(),
+                generation.session_id().to_string(),
                 generation.attachment_id().0.clone(),
-                generation.generation.version(),
+                generation.generation().version(),
                 capability,
             )),
             Request::builder()
@@ -895,7 +905,7 @@ mod tests {
             Some("route-secret".into()),
         );
         let mut live = generation("session-cap", "mcp-github", 1);
-        live.lease_expires_at_unix_ms = u64::MAX - 1;
+        live = live.expiring_at(u64::MAX - 1);
         relay.set_route(&live, &server);
         let live_url = relay.route_url(&live).unwrap();
         let client = reqwest::Client::new();
@@ -908,7 +918,7 @@ mod tests {
         assert_eq!(denied.status(), reqwest::StatusCode::NOT_FOUND, "V2");
 
         let mut renewed = live.clone();
-        renewed.lease_expires_at_unix_ms = u64::MAX;
+        renewed = renewed.expiring_at(u64::MAX);
         relay.set_route(&renewed, &server);
         assert_eq!(
             relay.route_url(&renewed).as_deref(),
@@ -923,13 +933,13 @@ mod tests {
                 .get(&route_key(&renewed))
                 .unwrap()
                 .generation
-                .lease_expires_at_unix_ms,
+                .lease_expires_at_unix_ms(),
             u64::MAX,
             "V4 extended expiry"
         );
 
         let mut expired = generation("session-expired", "mcp-github", 1);
-        expired.lease_expires_at_unix_ms = 0;
+        expired = expired.expiring_at(0);
         relay.set_route(&expired, &server);
         let expired_call = client
             .post(relay.route_url(&expired).unwrap())

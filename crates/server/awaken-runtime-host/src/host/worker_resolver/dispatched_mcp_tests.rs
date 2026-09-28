@@ -44,18 +44,14 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     let request = |session: &str, attachment: &str, expiry: u64| {
         awaken_session_mcp_contract::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
-            generation: awaken_session_mcp_contract::McpGenerationRef {
-                session_id: session.into(),
-                generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                    awaken_session_mcp_contract::McpAttachmentId(attachment.into()),
-                    1,
-                    &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                        .unwrap(),
-                ),
-                runtime_incarnation: "control-runtime".into(),
-                lease_epoch: 1,
-                lease_expires_at_unix_ms: expiry,
-            },
+            generation: crate::test_mcp::mcp_fence(
+                session,
+                attachment,
+                1,
+                "control-runtime",
+                1,
+                expiry,
+            ),
             realization_id: format!("realize-{attachment}"),
             stage_idempotency_key: format!("stage-{attachment}"),
             name: attachment.into(),

@@ -10,21 +10,11 @@ use super::*;
 async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     use crate::mcp::{McpTransportMaterial, McpWiring, project_mcp_session_transport};
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
-    use awaken_session_mcp_contract::{
-        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-    };
+    use awaken_session_mcp_contract::McpRealizationReceipt;
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let generation = |number: u64| McpGenerationRef {
-        session_id: "mcp-parity".into(),
-        generation: McpGeneration::of_bare_target(
-            McpAttachmentId("mcp-docs".into()),
-            number,
-            &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-        ),
-        runtime_incarnation: "runtime-1".into(),
-        lease_epoch: 7,
-        lease_expires_at_unix_ms: u64::MAX,
+    let generation = |number: u64| {
+        crate::test_mcp::mcp_fence("mcp-parity", "mcp-docs", number, "runtime-1", 7, u64::MAX)
     };
     let projection = |number: u64, secret: &str| {
         let request = awaken_session_mcp_contract::StageMcpAttachment {
@@ -126,7 +116,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         host.active_mcp_projections("mcp-parity")[0]
             .request
             .generation
-            .generation
+            .generation()
             .version(),
         1,
         "P3"
@@ -161,7 +151,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         host.active_mcp_projections("mcp-parity")[0]
             .request
             .generation
-            .generation
+            .generation()
             .version(),
         2,
         "P5"
@@ -185,10 +175,7 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
     use async_trait::async_trait;
     use awaken_ext_mcp::transport::{McpToolTransport, revocable_transport};
     use awaken_ext_mcp::{CallToolResult, McpToolDefinition, McpTransportError};
-    use awaken_session_mcp_contract::{
-        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-        StageMcpAttachment,
-    };
+    use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
     use crate::mcp::{McpTransportMaterial, McpTransportMaterialKind, McpWiring};
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
@@ -239,17 +226,8 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
     // Q0 C0=>the start observation is retained; Q1 C1+C2+C3+C4=>E1+E2;
     // Q2 Q1+quiesced=>E3+E4.
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let generation = McpGenerationRef {
-        session_id: "mcp-busy-drain".into(),
-        generation: McpGeneration::of_bare_target(
-            McpAttachmentId("docs".into()),
-            1,
-            &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-        ),
-        runtime_incarnation: "runtime-1".into(),
-        lease_epoch: 1,
-        lease_expires_at_unix_ms: u64::MAX,
-    };
+    let generation =
+        crate::test_mcp::mcp_fence("mcp-busy-drain", "docs", 1, "runtime-1", 1, u64::MAX);
     let request = StageMcpAttachment {
         workspace_id: "workspace-a".into(),
         generation: generation.clone(),
@@ -341,10 +319,7 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
 #[tokio::test(start_paused = true)]
 async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry() {
     use awaken_runtime_contract::CredentialRealizationKind;
-    use awaken_session_mcp_contract::{
-        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-        StageMcpAttachment,
-    };
+    use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
     use crate::mcp::{McpTransportMaterial, McpTransportMaterialKind};
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
@@ -362,17 +337,14 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
     assert!(host.mcp.mcp_relay.set(relay.clone()).is_ok());
-    let generation = McpGenerationRef {
-        session_id: "mcp-worker-relay-drain".into(),
-        generation: McpGeneration::of_bare_target(
-            McpAttachmentId("docs".into()),
-            1,
-            &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-        ),
-        runtime_incarnation: "runtime-1".into(),
-        lease_epoch: 1,
-        lease_expires_at_unix_ms: u64::MAX,
-    };
+    let generation = crate::test_mcp::mcp_fence(
+        "mcp-worker-relay-drain",
+        "docs",
+        1,
+        "runtime-1",
+        1,
+        u64::MAX,
+    );
     let request = StageMcpAttachment {
         workspace_id: "workspace-a".into(),
         generation: generation.clone(),
@@ -465,7 +437,7 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
     drop(permit);
     let proof = host
         .drain_mcp_projections(
-            generation.session_id.as_str(),
+            generation.session_id().as_str(),
             std::slice::from_ref(&generation),
         )
         .await
@@ -491,8 +463,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     use async_trait::async_trait;
     use awaken_provisioning_contract as pc;
     use awaken_session_mcp_contract::{
-        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-        StageMcpAttachment,
+        McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
     };
 
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
@@ -540,27 +511,26 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     }
 
     let host = SharedHost::new(Arc::new(OkModel), "stub");
-    let generation = |session: &str, number| McpGenerationRef {
-        session_id: session.into(),
-        generation: McpGeneration::of_bare_target(
-            McpAttachmentId(format!("mcp-{number}")),
+    let generation = |session: &str, number| {
+        crate::test_mcp::mcp_fence(
+            session,
+            format!("mcp-{number}"),
             number,
-            &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-        ),
-        runtime_incarnation: "runtime-1".into(),
-        lease_epoch: 1,
-        lease_expires_at_unix_ms: u64::MAX,
+            "runtime-1",
+            1,
+            u64::MAX,
+        )
     };
     let projection = |generation: McpGenerationRef, unreapable| {
         let request = StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation.clone(),
-            realization_id: format!("realize-{}", generation.generation.version()),
-            stage_idempotency_key: format!("stage-{}", generation.generation.version()),
-            name: format!("mcp-{}", generation.generation.version()),
+            realization_id: format!("realize-{}", generation.generation().version()),
+            stage_idempotency_key: format!("stage-{}", generation.generation().version()),
+            name: format!("mcp-{}", generation.generation().version()),
             target: awaken_session_mcp_contract::McpTarget::parse_http(format!(
                 "https://mcp-{}.example.test",
-                generation.generation.version()
+                generation.generation().version()
             ))
             .unwrap(),
             prompts_as_skills: false,
@@ -579,7 +549,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
             server: None,
             native_wiring: None,
             mcp_process: Some(Arc::new(Process {
-                id: format!("process-{}", generation.generation.version()),
+                id: format!("process-{}", generation.generation().version()),
                 unreapable,
             })),
             staging: None,
@@ -738,10 +708,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
 async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     use async_trait::async_trait;
     use awaken_provisioning_contract as pc;
-    use awaken_session_mcp_contract::{
-        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-        StageMcpAttachment,
-    };
+    use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
     use crate::session_slot::{McpGenerationProjection, McpProjectionState, McpStagingActivity};
 
@@ -773,17 +740,14 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     }
 
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
-    let generation = McpGenerationRef {
-        session_id: "mcp-staging-quiescence".into(),
-        generation: McpGeneration::of_bare_target(
-            McpAttachmentId("docs".into()),
-            1,
-            &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-        ),
-        runtime_incarnation: "runtime-1".into(),
-        lease_epoch: 1,
-        lease_expires_at_unix_ms: u64::MAX,
-    };
+    let generation = crate::test_mcp::mcp_fence(
+        "mcp-staging-quiescence",
+        "docs",
+        1,
+        "runtime-1",
+        1,
+        u64::MAX,
+    );
     let request = StageMcpAttachment {
         workspace_id: "workspace-a".into(),
         generation: generation.clone(),
@@ -863,8 +827,17 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         "S5 residual staging owner keeps expiry projection closed"
     );
     let mut late_projection = projection.clone();
-    late_projection.request.generation.generation =
-        late_projection.request.generation.generation.at_version(2);
+    late_projection.request.generation = late_projection
+        .request
+        .generation
+        .with_persisted(|w| {
+            w.generation = late_projection
+                .request
+                .generation
+                .generation()
+                .at_version(2)
+        })
+        .unwrap();
     late_projection.receipt.generation = late_projection.request.generation.clone();
     let late_generation = late_projection.request.generation.clone();
     assert_eq!(
@@ -964,7 +937,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         "S6 exact replay fenced"
     );
     let mut renewed_removed_request = removed_request.clone();
-    renewed_removed_request.generation.lease_expires_at_unix_ms = u64::MAX;
+    renewed_removed_request.generation = renewed_removed_request.generation.expiring_at(u64::MAX);
     renewed_removed_request
         .stage_idempotency_key
         .push_str("-renewed");
@@ -1010,18 +983,14 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
 #[test]
 fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_renewal() {
     let base = crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000;
-    let generation = awaken_session_mcp_contract::McpGenerationRef {
-        session_id: "mcp-effect-authority".into(),
-        generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-            awaken_session_mcp_contract::McpAttachmentId("browser".into()),
-            1,
-            &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                .unwrap(),
-        ),
-        runtime_incarnation: "runtime-a/boot-1".into(),
-        lease_epoch: 3,
-        lease_expires_at_unix_ms: base + 101,
-    };
+    let generation = crate::test_mcp::mcp_fence(
+        "mcp-effect-authority",
+        "browser",
+        1,
+        "runtime-a/boot-1",
+        3,
+        base + 101,
+    );
     let live = SharedHost::new(Arc::new(OkModel), "stub");
     assert!(
         live.mcp_generation_is_authorized_at(&generation, base + 100),
@@ -1029,7 +998,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
     );
 
     let mut expired = generation.clone();
-    expired.lease_expires_at_unix_ms = base + 90;
+    expired = expired.expiring_at(base + 90);
     for (rule, lease, expected) in [
         (
             "A2",
@@ -1084,7 +1053,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
                 crate::session_slot::test_observed_lease(lease)
             };
             host.session_slots
-                .update(expired.session_id.as_str(), |slot| {
+                .update(expired.session_id().as_str(), |slot| {
                     slot.realization_authority =
                         crate::session_slot::SessionRealizationAuthority::Live(proof);
                 });
@@ -1107,10 +1076,7 @@ fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_ren
 #[tokio::test]
 async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
-    use awaken_session_mcp_contract::{
-        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-        StageMcpAttachment,
-    };
+    use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
     /* Runtime renewal cause/effect decision table. C1 the same logical
      * generation/incarnation/epoch and immutable binding exists; C2 its state is
@@ -1129,17 +1095,14 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         ("R2", McpProjectionState::Active),
     ] {
         let host = SharedHost::new(Arc::new(OkModel), "stub");
-        let old_generation = McpGenerationRef {
-            session_id: SessionId::from(format!("renew-{rule}")),
-            generation: McpGeneration::of_bare_target(
-                McpAttachmentId("browser".into()),
-                1,
-                &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-            ),
-            runtime_incarnation: "runtime-a/boot-1".into(),
-            lease_epoch: 3,
-            lease_expires_at_unix_ms: u64::MAX - 1,
-        };
+        let old_generation = crate::test_mcp::mcp_fence(
+            SessionId::from(format!("renew-{rule}")),
+            "browser",
+            1,
+            "runtime-a/boot-1",
+            3,
+            u64::MAX - 1,
+        );
         let request = StageMcpAttachment {
             workspace_id: "workspace".into(),
             generation: old_generation.clone(),
@@ -1172,7 +1135,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         })
         .unwrap();
         let mut renewed = request;
-        renewed.generation.lease_expires_at_unix_ms = u64::MAX;
+        renewed.generation = renewed.generation.expiring_at(u64::MAX);
         renewed.stage_idempotency_key = "renew-max".into();
         // R6: an otherwise valid renewed request must never forget an effect
         // that is still Staging, Staged, Active or Draining. Only Removed has
@@ -1184,7 +1147,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             McpProjectionState::Draining,
         ] {
             host.session_slots
-                .modify(old_generation.session_id.as_str(), |slot| {
+                .modify(old_generation.session_id().as_str(), |slot| {
                     slot.mcp[0].state = live_state
                 });
             assert!(
@@ -1197,15 +1160,15 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             );
         }
         host.session_slots
-            .modify(old_generation.session_id.as_str(), |slot| {
+            .modify(old_generation.session_id().as_str(), |slot| {
                 slot.mcp[0].state = state
             });
         host.install_session_realization_lease(
-            old_generation.session_id.as_str(),
+            old_generation.session_id().as_str(),
             awaken_session_resource_contract::SessionRealizationLease {
                 owner: "worker-a".into(),
-                runtime_incarnation: old_generation.runtime_incarnation.clone(),
-                epoch: old_generation.lease_epoch,
+                runtime_incarnation: old_generation.runtime_incarnation().to_owned(),
+                epoch: old_generation.lease_epoch().get(),
                 expires_at_unix_ms: u64::MAX,
             },
         )
@@ -1229,7 +1192,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         );
         assert_eq!(
             host.session_slots
-                .read(renewed.generation.session_id.as_str(), |slot| slot
+                .read(renewed.generation.session_id().as_str(), |slot| slot
                     .mcp
                     .len()),
             Some(1),
@@ -1248,17 +1211,14 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
     let absent = SharedHost::new(Arc::new(OkModel), "stub");
     let request = StageMcpAttachment {
         workspace_id: "workspace".into(),
-        generation: McpGenerationRef {
-            session_id: "renew-absent".into(),
-            generation: McpGeneration::of_bare_target(
-                McpAttachmentId("browser".into()),
-                1,
-                &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-            ),
-            runtime_incarnation: "runtime-a/boot-1".into(),
-            lease_epoch: 3,
-            lease_expires_at_unix_ms: u64::MAX,
-        },
+        generation: crate::test_mcp::mcp_fence(
+            "renew-absent",
+            "browser",
+            1,
+            "runtime-a/boot-1",
+            3,
+            u64::MAX,
+        ),
         realization_id: "realization-1".into(),
         stage_idempotency_key: "renew-max".into(),
         name: "browser".into(),
@@ -1280,21 +1240,16 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
 async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     use crate::mcp::McpTransportMaterial;
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
-    use awaken_session_mcp_contract::{
-        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-    };
+    use awaken_session_mcp_contract::McpRealizationReceipt;
 
-    let generation = McpGenerationRef {
-        session_id: "mcp-stage-authority".into(),
-        generation: McpGeneration::of_bare_target(
-            McpAttachmentId("mcp-docs".into()),
-            1,
-            &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-        ),
-        runtime_incarnation: "runtime-1".into(),
-        lease_epoch: 4,
-        lease_expires_at_unix_ms: u64::MAX,
-    };
+    let generation = crate::test_mcp::mcp_fence(
+        "mcp-stage-authority",
+        "mcp-docs",
+        1,
+        "runtime-1",
+        4,
+        u64::MAX,
+    );
     let server = McpTransportMaterial {
         name: "docs".into(),
         prompts_as_skills: false,
@@ -1350,7 +1305,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
         "S1"
     );
     assert!(
-        host.active_mcp_projections(generation.session_id.as_str())
+        host.active_mcp_projections(generation.session_id().as_str())
             .is_empty(),
         "S1"
     );
@@ -1362,7 +1317,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
         "S2"
     );
     assert!(
-        host.active_mcp_projections(generation.session_id.as_str())
+        host.active_mcp_projections(generation.session_id().as_str())
             .is_empty(),
         "S2"
     );
@@ -1370,7 +1325,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     relay.set_route(&generation, &server);
     host.publish_mcp_projection(&generation).await.expect("S3");
     assert_eq!(
-        host.active_mcp_projections(generation.session_id.as_str())
+        host.active_mcp_projections(generation.session_id().as_str())
             .len(),
         1,
         "S3"
@@ -1381,9 +1336,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
 async fn worker_authority_loss_revokes_every_session_projection() {
     use crate::mcp::{McpTransportMaterial, McpWiring};
     use crate::session_slot::{McpGenerationProjection, McpProjectionState};
-    use awaken_session_mcp_contract::{
-        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-    };
+    use awaken_session_mcp_contract::McpRealizationReceipt;
 
     // Cause graph: unprovable Worker authority -> enumerate the canonical
     // process-local Session projections -> nonterminal realization revocation ->
@@ -1395,17 +1348,14 @@ async fn worker_authority_loss_revokes_every_session_projection() {
     // | A1 | lost/unprovable | one | detach + revoke route + remove slot |
     // | A2 | lost/unprovable | none | zero/no-op |
     let host = SharedHost::new(Arc::new(OkModel), "stub");
-    let generation = McpGenerationRef {
-        session_id: "authority-loss".into(),
-        generation: McpGeneration::of_bare_target(
-            McpAttachmentId("mcp-docs".into()),
-            1,
-            &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-        ),
-        runtime_incarnation: "worker-a/boot-1".into(),
-        lease_epoch: 3,
-        lease_expires_at_unix_ms: u64::MAX,
-    };
+    let generation = crate::test_mcp::mcp_fence(
+        "authority-loss",
+        "mcp-docs",
+        1,
+        "worker-a/boot-1",
+        3,
+        u64::MAX,
+    );
     let server = McpTransportMaterial {
         name: "docs".into(),
         prompts_as_skills: false,

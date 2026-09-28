@@ -943,7 +943,7 @@ impl crate::SharedHost {
             // capability, by contrast, always requires the current root.
             .unwrap_or_else(|| {
                 awaken_session_realization_contract::realization_lease_is_live_at(
-                    generation.lease_expires_at_unix_ms,
+                    generation.lease_expires_at_unix_ms(),
                     now_unix_ms,
                 )
             })
@@ -956,14 +956,14 @@ impl crate::SharedHost {
         generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Option<bool> {
         self.session_slots
-            .read(generation.session_id.as_str(), |slot| {
+            .read(generation.session_id().as_str(), |slot| {
                 if slot.realization_authority.is_closed() {
                     return Some(false);
                 }
                 slot.realization_authority.lease().map(|current| {
-                    current.runtime_incarnation == generation.runtime_incarnation
-                        && current.epoch == generation.lease_epoch
-                        && current.expires_at_unix_ms >= generation.lease_expires_at_unix_ms
+                    current.runtime_incarnation == generation.runtime_incarnation()
+                        && current.epoch == generation.lease_epoch().get()
+                        && current.expires_at_unix_ms >= generation.lease_expires_at_unix_ms()
                         && slot.realization_authority.remaining().is_some()
                 })
             })

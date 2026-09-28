@@ -1510,6 +1510,8 @@ name = "awaken-lease-contract"
 version = "1.0.0"
 dependencies = [
  "proptest",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -2837,6 +2839,7 @@ version = "1.0.0"
 dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-lease-contract",
  "awaken-resource-contract",
  "awaken-session-types",
  "serde",

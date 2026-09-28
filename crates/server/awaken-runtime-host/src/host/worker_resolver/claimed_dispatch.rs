@@ -140,7 +140,7 @@ impl HostWorkerResolver {
         let mut desired_generations = std::collections::BTreeSet::new();
         let mut desired_names = std::collections::BTreeSet::new();
         for stage in &stages {
-            if stage.generation.session_id != session_id
+            if stage.generation.session_id() != session_id
                 || !desired_generations
                     .insert(awaken_agent_contract::stable_fingerprint(&stage.generation))
                 || !desired_names.insert(stage.name.clone())

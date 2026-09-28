@@ -23,18 +23,14 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         .await
         .unwrap();
     let (upstream, seen) = crate::test_mcp::start(Some("Bearer test-relay-secret")).await;
-    let generation = awaken_session_mcp_contract::McpGenerationRef {
-        session_id: session.into(),
-        generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-            awaken_session_mcp_contract::McpAttachmentId("browser".into()),
-            1,
-            &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                .unwrap(),
-        ),
-        runtime_incarnation: lease.runtime_incarnation.clone(),
-        lease_epoch: lease.epoch,
-        lease_expires_at_unix_ms: 1,
-    };
+    let generation = crate::test_mcp::mcp_fence(
+        session,
+        "browser",
+        1,
+        lease.runtime_incarnation.clone(),
+        lease.epoch,
+        1,
+    );
     let material = crate::mcp::McpTransportMaterial {
         name: "browser".into(),
         prompts_as_skills: false,
@@ -65,16 +61,22 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
     assert_eq!(seen.lock().unwrap().len(), 1);
     for incarnation in [false, true] {
         let mut foreign = generation.clone();
-        foreign.generation = awaken_session_mcp_contract::McpGeneration::new(
-            awaken_session_mcp_contract::McpAttachmentId(format!("foreign-{incarnation}")),
-            foreign.generation.version(),
-            foreign.generation.digest().clone(),
-        );
-        foreign.lease_expires_at_unix_ms = u64::MAX;
+        foreign = foreign
+            .with_persisted(|w| {
+                w.generation = awaken_session_mcp_contract::McpGeneration::new(
+                    awaken_session_mcp_contract::McpAttachmentId(format!("foreign-{incarnation}")),
+                    foreign.generation().version(),
+                    foreign.generation().digest().clone(),
+                )
+            })
+            .unwrap();
+        foreign = foreign.expiring_at(u64::MAX);
         if incarnation {
-            foreign.runtime_incarnation = "other/1".into();
+            foreign = foreign
+                .with_persisted(|w| w.runtime_incarnation = "other/1".into())
+                .unwrap();
         } else {
-            foreign.lease_epoch += 1;
+            foreign = foreign.with_persisted(|w| w.lease_epoch += 1).unwrap();
         }
         assert!(relay.stage_route(&foreign, &material));
         assert_eq!(
@@ -99,12 +101,16 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         "R3"
     );
     let mut live = generation.clone();
-    live.generation = awaken_session_mcp_contract::McpGeneration::new(
-        awaken_session_mcp_contract::McpAttachmentId("live-assertion".into()),
-        live.generation.version(),
-        live.generation.digest().clone(),
-    );
-    live.lease_expires_at_unix_ms = u64::MAX;
+    live = live
+        .with_persisted(|w| {
+            w.generation = awaken_session_mcp_contract::McpGeneration::new(
+                awaken_session_mcp_contract::McpAttachmentId("live-assertion".into()),
+                live.generation().version(),
+                live.generation().digest().clone(),
+            )
+        })
+        .unwrap();
+    live = live.expiring_at(u64::MAX);
     assert!(relay.stage_route(&live, &material));
     for remove in [false, true] {
         // Independent R5 allocations: a closed/expired owner cannot be revived
@@ -137,4 +143,70 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         1,
         "no unauthorized upstream effects"
     );
+}
+
+/// A relay route is keyed by (Session, attachment, version) because that is
+/// the path a sandboxed CLI dials, but it is *owned* by one lease tenure. A
+/// drain, publication or call-fence lookup asserted under any other tenure of
+/// the same key must not touch the route, or a predecessor's late drain in
+/// this process removes or re-points its successor's route.
+///
+/// Cause: the tenure the caller asserts against a route staged at
+/// (incarnation `worker/1`, epoch 3, expiry 100).
+/// | Rule | asserted tenure / expiry            | route_call_fence | update_staged_route | remove_route |
+/// |------|-------------------------------------|------------------|---------------------|--------------|
+/// | T1   | predecessor epoch 2                 | None             | false               | keeps route  |
+/// | T2   | foreign incarnation, same epoch     | None             | false               | keeps route  |
+/// | T3   | successor epoch 4                   | None             | false               | keeps route  |
+/// | T4   | exact tenure, shorter expiry 50     | Some             | false               | -            |
+/// | T5   | exact tenure, renewed expiry 200    | Some             | true                | removes      |
+#[tokio::test]
+async fn only_the_exact_route_tenure_may_fence_update_or_remove_a_relay_route() {
+    let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
+    let staged = crate::test_mcp::mcp_fence("tenure-relay", "browser", 1, "worker/1", 3, 100);
+    let material = crate::mcp::McpTransportMaterial {
+        name: "browser".into(),
+        prompts_as_skills: false,
+        transport: crate::mcp::McpTransportMaterialKind::Http {
+            url: "https://fixture.test/mcp".into(),
+            bearer: None,
+            refresh: None,
+        },
+    };
+    assert!(relay.stage_route(&staged, &material), "setup");
+    let staged_url = relay.route_url(&staged).expect("setup route");
+    let with = |incarnation: &str, epoch: u64, expiry: u64| {
+        let mut asserted = staged.clone();
+        asserted = asserted
+            .with_persisted(|w| w.runtime_incarnation = incarnation.into())
+            .unwrap();
+        asserted = asserted.with_persisted(|w| w.lease_epoch = epoch).unwrap();
+        asserted = asserted.expiring_at(expiry);
+        asserted
+    };
+    for (rule, asserted) in [
+        ("T1", with("worker/1", 2, 100)),
+        ("T2", with("worker/2", 3, 100)),
+        ("T3", with("worker/1", 4, 100)),
+    ] {
+        assert!(relay.route_call_fence(&asserted).is_none(), "{rule} fence");
+        assert!(
+            !relay.update_staged_route(&asserted, &material),
+            "{rule} update"
+        );
+        relay.remove_route(&asserted);
+        assert_eq!(
+            relay.route_url(&staged).as_deref(),
+            Some(staged_url.as_str()),
+            "{rule} the owner's route survives"
+        );
+    }
+    let shorter = with("worker/1", 3, 50);
+    assert!(relay.route_call_fence(&shorter).is_some(), "T4 fence");
+    assert!(!relay.update_staged_route(&shorter, &material), "T4 update");
+    let renewed = with("worker/1", 3, 200);
+    assert!(relay.route_call_fence(&renewed).is_some(), "T5 fence");
+    assert!(relay.update_staged_route(&renewed, &material), "T5 update");
+    relay.remove_route(&renewed);
+    assert!(relay.route_url(&staged).is_none(), "T5 removed");
 }

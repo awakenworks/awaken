@@ -7776,19 +7776,13 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             "F1/E2 preserves the admitted attachment"
         );
         assert_eq!(
-            renewed_generation.generation, admitted_request.generation.generation,
-            "F1/E2 preserves the admitted generation"
+            renewed_generation.tenure(),
+            admitted_request.generation.tenure(),
+            "F1/E2 preserves the admitted Session, generation, runtime incarnation and lease epoch"
         );
         assert_eq!(
-            renewed_generation.runtime_incarnation, admitted_request.generation.runtime_incarnation,
-            "F1/E2 preserves the admitted runtime incarnation"
-        );
-        assert_eq!(
-            renewed_generation.lease_epoch, admitted_request.generation.lease_epoch,
-            "F1/E2 preserves the admitted lease epoch"
-        );
-        assert_eq!(
-            renewed_generation.lease_expires_at_unix_ms, admitted_expiry,
+            renewed_generation.lease_expires_at_unix_ms(),
+            admitted_expiry,
             "F1/E2 publishes the exact staged receipt, not a fabricated renewed receipt"
         );
         if pending_resources {
@@ -8000,7 +7994,8 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                     "E2 exact physical receipt"
                 );
                 assert_eq!(
-                    generation.lease_expires_at_unix_ms, expiry,
+                    generation.lease_expires_at_unix_ms(),
+                    expiry,
                     "E2 no fabricated renewed receipt"
                 );
                 assert!(
@@ -8008,14 +8003,14 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                         .mcp
                         .attachments
                         .iter()
-                        .any(|a| a.generation == generation.generation
+                        .any(|a| &a.generation == generation.generation()
                             && a.state == McpAttachmentState::Active),
                     "E2 active only"
                 );
                 assert!(
                     !drain
                         .iter()
-                        .any(|old| old.generation == generation.generation),
+                        .any(|old| old.generation() == generation.generation()),
                     "E3 disjoint sets"
                 );
             }
@@ -8045,19 +8040,22 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 match fault {
                     "foreign" => {
                         let mut extra = invalid.mcp_receipts[0].clone();
-                        extra.generation.generation = extra.generation.generation.at_version(99);
+                        let mut w = extra.generation.to_wire();
+                        w.generation = w.generation.at_version(99);
+                        extra.generation = w.try_into().unwrap();
                         invalid.mcp_receipts.push(extra);
                     }
                     "duplicate" => invalid.mcp_receipts.push(invalid.mcp_receipts[0].clone()),
                     "fingerprint" => invalid.mcp_receipts[0]
                         .receipt_fingerprint
                         .push_str("-corrupt"),
-                    "incarnation" => invalid.mcp_receipts[0]
-                        .generation
-                        .runtime_incarnation
-                        .push_str("-foreign"),
-                    "future" => {
-                        invalid.mcp_receipts[0].generation.lease_expires_at_unix_ms = u64::MAX
+                    "incarnation" | "future" => {
+                        let mut w = invalid.mcp_receipts[0].generation.to_wire();
+                        match fault {
+                            "incarnation" => w.runtime_incarnation.push_str("-foreign"),
+                            _ => w.lease_expires_at_unix_ms = u64::MAX,
+                        }
+                        invalid.mcp_receipts[0].generation = w.try_into().unwrap();
                     }
                     _ => unreachable!(),
                 }

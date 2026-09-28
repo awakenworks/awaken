@@ -486,11 +486,11 @@ mod tests {
             }
             let lease = self.lease.lock().unwrap().clone();
             let needs_renewal_stage = command.mcp_receipts.iter().any(|receipt| {
-                receipt.generation.lease_expires_at_unix_ms < lease.expires_at_unix_ms
+                receipt.generation.lease_expires_at_unix_ms() < lease.expires_at_unix_ms
             });
             let action = if needs_renewal_stage {
                 let mut stage = self.stage.clone();
-                stage.generation.lease_expires_at_unix_ms = lease.expires_at_unix_ms;
+                stage.generation = stage.generation.expiring_at(lease.expires_at_unix_ms);
                 stage.stage_idempotency_key = format!("renew:{}", lease.expires_at_unix_ms);
                 awaken_session_realization_contract::SessionRealizationAction::Stage {
                     prepare_session: false,
@@ -525,10 +525,10 @@ mod tests {
             let lease = self.lease.lock().unwrap().clone();
             let action =
                 if command.published.iter().any(|generation| {
-                    generation.lease_expires_at_unix_ms < lease.expires_at_unix_ms
+                    generation.lease_expires_at_unix_ms() < lease.expires_at_unix_ms
                 }) {
                     let mut stage = self.stage.clone();
-                    stage.generation.lease_expires_at_unix_ms = lease.expires_at_unix_ms;
+                    stage.generation = stage.generation.expiring_at(lease.expires_at_unix_ms);
                     stage.stage_idempotency_key = format!("renew:{}", lease.expires_at_unix_ms);
                     awaken_session_realization_contract::SessionRealizationAction::Stage {
                         prepare_session: false,
@@ -594,18 +594,14 @@ mod tests {
         };
         let stage = awaken_session_mcp_contract::StageMcpAttachment {
             workspace_id: "workspace".into(),
-            generation: awaken_session_mcp_contract::McpGenerationRef {
-                session_id: thread.into(),
-                generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                    awaken_session_mcp_contract::McpAttachmentId("browser".into()),
-                    1,
-                    &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                        .unwrap(),
-                ),
-                runtime_incarnation: lease.runtime_incarnation.clone(),
-                lease_epoch: lease.epoch,
-                lease_expires_at_unix_ms: expires_at_unix_ms,
-            },
+            generation: crate::test_mcp::mcp_fence(
+                thread,
+                "browser",
+                1,
+                lease.runtime_incarnation.clone(),
+                lease.epoch,
+                expires_at_unix_ms,
+            ),
             realization_id: "realize-browser-1".into(),
             stage_idempotency_key: "stage-browser-1".into(),
             name: "browser".into(),
@@ -622,7 +618,7 @@ mod tests {
             .push(awaken_session_mcp_contract::SessionMcpAttachment {
                 attachment_id: stage.generation.attachment_id().clone(),
                 name: stage.name.clone(),
-                generation: stage.generation.generation.clone(),
+                generation: stage.generation.generation().clone(),
                 target: stage.target.clone(),
                 prompts_as_skills: stage.prompts_as_skills,
                 origin: awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
@@ -632,9 +628,9 @@ mod tests {
                 publication_acknowledged: false,
                 realization: Some(awaken_session_mcp_contract::McpRealizationClaim {
                     realization_id: stage.realization_id.clone(),
-                    runtime_incarnation: stage.generation.runtime_incarnation.clone(),
-                    lease_epoch: stage.generation.lease_epoch,
-                    lease_expires_at_unix_ms: stage.generation.lease_expires_at_unix_ms,
+                    runtime_incarnation: stage.generation.runtime_incarnation().to_owned(),
+                    lease_epoch: stage.generation.lease_epoch().get(),
+                    lease_expires_at_unix_ms: stage.generation.lease_expires_at_unix_ms(),
                     stage_idempotency_key: stage.stage_idempotency_key.clone(),
                 }),
                 attempts: 1,
@@ -1441,18 +1437,7 @@ mod tests {
 
         let stage = awaken_session_mcp_contract::StageMcpAttachment {
             workspace_id: "workspace".into(),
-            generation: awaken_session_mcp_contract::McpGenerationRef {
-                session_id: thread.into(),
-                generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                    awaken_session_mcp_contract::McpAttachmentId("browser".into()),
-                    1,
-                    &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                        .unwrap(),
-                ),
-                runtime_incarnation: "worker-a".into(),
-                lease_epoch: 1,
-                lease_expires_at_unix_ms: u64::MAX,
-            },
+            generation: crate::test_mcp::mcp_fence(thread, "browser", 1, "worker-a", 1, u64::MAX),
             realization_id: "realize-browser-1".into(),
             stage_idempotency_key: "recover-browser-1".into(),
             name: "browser".into(),
@@ -1704,10 +1689,10 @@ mod tests {
         let first_use_activation = test_activation(first_use_thread, "run-cold-first-use");
         let first_use_projection = frozen_projection();
         let first_use_stage = awaken_session_mcp_contract::StageMcpAttachment {
-            generation: awaken_session_mcp_contract::McpGenerationRef {
-                session_id: first_use_thread.into(),
-                ..stage.generation.clone()
-            },
+            generation: stage
+                .generation
+                .with_persisted(|w| w.session_id = first_use_thread.into())
+                .unwrap(),
             realization_id: "realize-browser-first-use".into(),
             stage_idempotency_key: "stage-browser-first-use".into(),
             ..stage.clone()

@@ -834,13 +834,14 @@ fn add_acknowledged_active_mcp(
             attempts: 1,
             last_error: None,
         });
-    awaken_session_mcp_contract::McpGenerationRef {
-        session_id: session.session_id.clone(),
-        generation: witness,
-        runtime_incarnation: lease.runtime_incarnation,
-        lease_epoch: lease.epoch,
-        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
-    }
+    awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+        session.session_id.clone(),
+        witness,
+        lease.runtime_incarnation,
+        lease.epoch,
+        lease.expires_at_unix_ms,
+    )
+    .expect("MCP generation fence epoch is nonzero")
 }
 
 fn externally_placed(mut session: PersistedSession) -> PersistedSession {
@@ -1398,7 +1399,9 @@ async fn inexact_quiescence_receipts_leave_the_complete_root_unchanged() {
             "X1" => expected[..1].to_vec(),
             "X2" => {
                 let mut foreign = expected.clone();
-                foreign[0].session_id = "foreign-session".into();
+                foreign[0] = foreign[0]
+                    .with_persisted(|w| w.session_id = "foreign-session".into())
+                    .unwrap();
                 foreign
             }
             "X3" => vec![expected[0].clone(), expected[0].clone()],

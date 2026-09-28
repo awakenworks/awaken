@@ -459,7 +459,7 @@ impl SessionApplication {
             if attachment.state == McpAttachmentState::Draining
                 && receipt_generations
                     .iter()
-                    .any(|generation| generation.generation == attachment.generation)
+                    .any(|generation| generation.generation() == &attachment.generation)
             {
                 expected.push(
                     projection::stage_mcp_request(&owner_scope, &session.session_id, attachment)
@@ -553,12 +553,12 @@ impl SessionApplication {
                     .mcp
                     .attachments
                     .iter()
-                    .find(|attachment| attachment.generation == request.generation.generation)
+                    .find(|attachment| &attachment.generation == request.generation.generation())
                     .ok_or(SessionRealizationControlFailure::NotReady)?;
                 if attachment.state == McpAttachmentState::Realizing {
                     session
                         .mcp
-                        .activate(&request.generation.generation, &request.realization_id)
+                        .activate(request.generation.generation(), &request.realization_id)
                         .map_err(unavailable)?;
                 }
             }
@@ -686,19 +686,19 @@ impl SessionApplication {
                 .mcp
                 .attachments
                 .iter()
-                .find(|attachment| attachment.generation == generation.generation)
+                .find(|attachment| &attachment.generation == generation.generation())
                 .and_then(|attachment| attachment.realization.as_ref())
                 .map(|claim| claim.realization_id.clone())
                 .ok_or(SessionRealizationControlFailure::NotReady)?;
             session
                 .mcp
-                .acknowledge_publication(&generation.generation, &realization_id)
+                .acknowledge_publication(generation.generation(), &realization_id)
                 .map_err(unavailable)?;
         }
         for generation in expected_drain {
             session
                 .mcp
-                .finish_drain(&generation.generation)
+                .finish_drain(generation.generation())
                 .map_err(unavailable)?;
         }
         let initial_ready = !session.has_active_activities()

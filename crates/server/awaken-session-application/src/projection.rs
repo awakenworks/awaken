@@ -178,13 +178,8 @@ pub(crate) fn mcp_generation_ref(
         .realization
         .as_ref()
         .ok_or_else(|| RunError::internal("MCP generation has no durable realization claim"))?;
-    Ok(McpGenerationRef {
-        session_id: session_id.clone(),
-        generation: attachment.generation.clone(),
-        runtime_incarnation: claim.runtime_incarnation.clone(),
-        lease_epoch: claim.lease_epoch,
-        lease_expires_at_unix_ms: claim.lease_expires_at_unix_ms,
-    })
+    McpGenerationRef::from_claim(session_id, &attachment.generation, claim)
+        .ok_or_else(|| RunError::internal("MCP realization claim carries a zero lease epoch"))
 }
 
 pub(crate) fn stage_mcp_request(

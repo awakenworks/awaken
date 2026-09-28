@@ -735,7 +735,7 @@ impl SharedHost {
                         HostError::internal(format!(
                             "native MCP generation {}:{} has no staged connection",
                             projection.request.generation.attachment_id().0,
-                            projection.request.generation.generation.version()
+                            projection.request.generation.generation().version()
                         ))
                     })?;
                     combined.plugins.extend(wiring.plugins.clone());

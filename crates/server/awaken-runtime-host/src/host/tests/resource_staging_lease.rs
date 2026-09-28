@@ -257,9 +257,9 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     expires_at_unix_ms: now + 5_000,
                 };
                 install_test_renewal_authority(&host, &control, SESSION, lease.clone());
-                let generation = awaken_session_mcp_contract::McpGenerationRef {
-                    session_id: SESSION.into(),
-                    generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+                let generation = awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+                    SESSION.into(),
+                    awaken_session_mcp_contract::McpGeneration::of_bare_target(
                         awaken_session_mcp_contract::McpAttachmentId("mcp".into()),
                         1,
                         &awaken_session_mcp_contract::McpTarget::parse_http(
@@ -267,10 +267,11 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                         )
                         .unwrap(),
                     ),
-                    runtime_incarnation: lease.runtime_incarnation.clone(),
-                    lease_epoch: lease.epoch,
-                    lease_expires_at_unix_ms: lease.expires_at_unix_ms,
-                };
+                    lease.runtime_incarnation.clone(),
+                    lease.epoch,
+                    lease.expires_at_unix_ms,
+                )
+                .expect("MCP generation fence epoch is nonzero");
                 assert!(host.mcp_generation_is_authorized_at(&generation, now));
                 let h = host.clone();
                 let renewal = tokio::spawn(async move {

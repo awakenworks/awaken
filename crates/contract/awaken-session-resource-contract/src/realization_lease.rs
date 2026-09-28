@@ -57,7 +57,7 @@ pub const fn realization_lease_is_live_at(expires_at_unix_ms: u64, now_unix_ms: 
 }
 
 #[must_use]
-const fn realization_lease_facts_authorize(
+fn realization_lease_facts_authorize(
     same_owner: bool,
     same_runtime_incarnation: bool,
     same_epoch: bool,
@@ -72,6 +72,7 @@ const fn realization_lease_facts_authorize(
         && same_epoch
         && matches!(
             awaken_lease_contract::fence::fence_succession(
+                true,
                 0,
                 asserted_expires_at_unix_ms,
                 0,

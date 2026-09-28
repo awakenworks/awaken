@@ -152,10 +152,10 @@ impl StageMcpAttachment {
         if !self.prompts_as_skills {
             return awaken_agent_contract::stable_fingerprint(&(
                 &self.workspace_id,
-                &self.generation.session_id,
-                &self.generation.generation,
-                &self.generation.runtime_incarnation,
-                self.generation.lease_epoch,
+                &self.generation.session_id(),
+                &self.generation.generation(),
+                &self.generation.runtime_incarnation(),
+                self.generation.lease_epoch(),
                 &self.realization_id,
                 &self.name,
                 &self.target,
@@ -165,10 +165,10 @@ impl StageMcpAttachment {
         }
         awaken_agent_contract::stable_fingerprint(&(
             &self.workspace_id,
-            &self.generation.session_id,
-            &self.generation.generation,
-            &self.generation.runtime_incarnation,
-            self.generation.lease_epoch,
+            &self.generation.session_id(),
+            &self.generation.generation(),
+            &self.generation.runtime_incarnation(),
+            self.generation.lease_epoch(),
             &self.realization_id,
             &self.name,
             &self.target,
@@ -922,7 +922,10 @@ fn exact_mut<'a>(
 }
 
 mod generation;
-pub use generation::{McpAttachmentContentDigest, McpGeneration, McpGenerationRef};
+pub use generation::{
+    McpAttachmentContentDigest, McpGeneration, McpGenerationRef, McpGenerationRefWire,
+    McpRealization,
+};
 #[cfg(test)]
 pub(crate) use generation::{test_generation, test_generation_at_version};
 
@@ -983,13 +986,14 @@ mod tests {
         let selected = holder("worker-a");
         let request = StageMcpAttachment {
             workspace_id: "workspace-a".into(),
-            generation: McpGenerationRef {
-                session_id: "session-a".into(),
-                generation: witness("mcp-docs", 3, "https://mcp.example.test"),
-                runtime_incarnation: "runtime-a".into(),
-                lease_epoch: 7,
-                lease_expires_at_unix_ms: u64::MAX,
-            },
+            generation: McpGenerationRef::from_persisted(
+                "session-a".into(),
+                witness("mcp-docs", 3, "https://mcp.example.test"),
+                "runtime-a".into(),
+                7,
+                u64::MAX,
+            )
+            .expect("MCP generation fence epoch is nonzero"),
             realization_id: "realization-a".into(),
             stage_idempotency_key: "stage-a".into(),
             name: "docs".into(),
@@ -1016,7 +1020,9 @@ mod tests {
             match mutation {
                 0 => {}
                 1 => {
-                    receipt.generation.generation = at_version(&receipt.generation.generation, 4);
+                    let mut wire = receipt.generation.to_wire();
+                    wire.generation = at_version(&wire.generation, 4);
+                    receipt.generation = McpGenerationRef::try_from(wire).unwrap();
                 }
                 2 => receipt.realization_id = "realization-b".into(),
                 3 => receipt.selected_plaintext_holder = Some(holder("worker-b")),
@@ -1081,13 +1087,14 @@ mod tests {
             let selected = PlaintextHolder::new(boundary, format!("{rule}.holder"));
             let request = StageMcpAttachment {
                 workspace_id: "workspace-a".into(),
-                generation: McpGenerationRef {
-                    session_id: "session-a".into(),
-                    generation: witness("mcp-docs", 3, "https://mcp.example.test"),
-                    runtime_incarnation: "runtime-a".into(),
-                    lease_epoch: 7,
-                    lease_expires_at_unix_ms: u64::MAX,
-                },
+                generation: McpGenerationRef::from_persisted(
+                    "session-a".into(),
+                    witness("mcp-docs", 3, "https://mcp.example.test"),
+                    "runtime-a".into(),
+                    7,
+                    u64::MAX,
+                )
+                .expect("MCP generation fence epoch is nonzero"),
                 realization_id: "realization-a".into(),
                 stage_idempotency_key: "stage-a".into(),
                 name: "docs".into(),
@@ -1104,7 +1111,10 @@ mod tests {
                 receipt_fingerprint: request.fingerprint(),
             };
             if tamper {
-                receipt.generation.lease_epoch += 1;
+                receipt.generation = receipt
+                    .generation
+                    .reassigned(receipt.generation.runtime_incarnation())
+                    .expect("epoch capacity");
             }
             assert_eq!(
                 receipt
@@ -1842,13 +1852,14 @@ mod tests {
 
     #[test]
     fn projection_receipt_is_bound_to_generation_and_effect_kind() {
-        let generation = McpGenerationRef {
-            session_id: "session".into(),
-            generation: witness("attachment", 3, "https://attachment.test/mcp"),
-            runtime_incarnation: "runtime".into(),
-            lease_epoch: 7,
-            lease_expires_at_unix_ms: 99,
-        };
+        let generation = McpGenerationRef::from_persisted(
+            "session".into(),
+            witness("attachment", 3, "https://attachment.test/mcp"),
+            "runtime".into(),
+            7,
+            99,
+        )
+        .expect("MCP generation fence epoch is nonzero");
         let receipt =
             McpProjectionReceipt::new(generation.clone(), McpProjectionEffectKind::Publish);
         assert!(
@@ -1862,8 +1873,9 @@ mod tests {
                 .is_err(),
             "publish evidence cannot acknowledge drain"
         );
-        let mut stale = generation;
-        stale.lease_epoch += 1;
+        let stale = generation
+            .reassigned(generation.runtime_incarnation())
+            .expect("epoch capacity");
         assert!(
             receipt
                 .verify(&stale, McpProjectionEffectKind::Publish)

@@ -89,17 +89,33 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
     let mut actual_new = new_receipt.clone();
     match fault {
         0..=2 => {}
-        3 => actual_new.lease_expires_at_unix_ms = 4,
-        4 => actual_new.session_id = "b".into(),
-        5 => actual_new.generation = old_generation.clone(),
-        6 => actual_new.runtime_incarnation = "b".into(),
-        7 => actual_new.lease_epoch = 2,
+        3 => actual_new = actual_new.expiring_at(4),
+        4 => {
+            actual_new = actual_new
+                .with_persisted(|w| w.session_id = "b".into())
+                .unwrap()
+        }
+        5 => {
+            actual_new = actual_new
+                .with_persisted(|w| w.generation = old_generation.clone())
+                .unwrap()
+        }
+        6 => {
+            actual_new = actual_new
+                .with_persisted(|w| w.runtime_incarnation = "b".into())
+                .unwrap()
+        }
+        7 => actual_new = actual_new.with_persisted(|w| w.lease_epoch = 2).unwrap(),
         8 => {
-            actual_new.generation = awaken_session_mcp_contract::McpGeneration::new(
-                awaken_session_mcp_contract::McpAttachmentId("b".into()),
-                actual_new.generation.version(),
-                actual_new.generation.digest().clone(),
-            );
+            actual_new = actual_new
+                .with_persisted(|w| {
+                    w.generation = awaken_session_mcp_contract::McpGeneration::new(
+                        awaken_session_mcp_contract::McpAttachmentId("b".into()),
+                        actual_new.generation().version(),
+                        actual_new.generation().digest().clone(),
+                    )
+                })
+                .unwrap();
         }
         _ => unreachable!("closed fault table"),
     }
@@ -132,7 +148,7 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
             publish[0], new_receipt,
             "only the exact staged active receipt publishes"
         );
-        assert_eq!(publish[0].lease_expires_at_unix_ms, 2);
+        assert_eq!(publish[0].lease_expires_at_unix_ms(), 2);
     }
     assert_eq!(drain.len(), if removed { 2 } else { 1 });
     assert_eq!(
@@ -142,14 +158,14 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
     if removed {
         let mut expected = new_receipt;
         if renewed {
-            expected.lease_expires_at_unix_ms = 3;
+            expected = expected.expiring_at(3);
         }
         assert_eq!(drain[1], expected);
     }
     for published in &publish {
         for drained in &drain {
             assert!(
-                published.generation != drained.generation,
+                published.generation() != drained.generation(),
                 "publication and drain generation identities are disjoint"
             );
         }
