@@ -307,19 +307,19 @@ where
 /// the [`ConformanceClock`] the suite drives, so `set` moves the exact
 /// millisecond that store's rows are judged against.
 #[derive(Debug, Clone, Default)]
-pub struct ManualStoreClock(std::sync::Arc<awaken_agent_contract::clock::ManualClock>);
+pub struct ManualStoreClock(std::sync::Arc<awaken_lease_testkit::ManualClock>);
 
 impl ManualStoreClock {
     #[must_use]
     pub fn new(now_ms: u64) -> Self {
-        Self(std::sync::Arc::new(
-            awaken_agent_contract::clock::ManualClock::new(now_ms),
-        ))
+        Self(std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(
+            now_ms,
+        )))
     }
 
     /// The handle to inject into the store under test.
     #[must_use]
-    pub fn clock(&self) -> std::sync::Arc<dyn awaken_agent_contract::clock::Clock> {
+    pub fn clock(&self) -> std::sync::Arc<dyn awaken_lease_contract::WallClock> {
         self.0.clone()
     }
 }

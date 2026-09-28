@@ -121,8 +121,8 @@ pub fn assert_completed_model_invocations(commit: &dyn CommittedThreadView, coun
 
 /// One deterministic edge clock shared by claim, renewal, ownership checks, and
 /// settlement in a direct Worker drive.
-pub fn clock(now_ms: u64) -> Arc<dyn awaken_dispatch::Clock> {
-    Arc::new(awaken_dispatch::ManualClock::new(now_ms))
+pub fn clock(now_ms: u64) -> Arc<dyn awaken_lease_contract::WallClock> {
+    Arc::new(awaken_lease_testkit::ManualClock::new(now_ms))
 }
 
 /// Move the store's own authority clock to `now_ms` and hand the same reading to
@@ -130,9 +130,9 @@ pub fn clock(now_ms: u64) -> Arc<dyn awaken_dispatch::Clock> {
 /// so a drive that must see an expired lease has to advance that one clock, not a
 /// private copy.
 pub fn at(
-    clock: &Arc<awaken_dispatch::ManualClock>,
+    clock: &Arc<awaken_lease_testkit::ManualClock>,
     now_ms: u64,
-) -> Arc<dyn awaken_dispatch::Clock> {
+) -> Arc<dyn awaken_lease_contract::WallClock> {
     clock.set(now_ms);
     clock.clone()
 }
@@ -868,7 +868,7 @@ impl FlakyDispatchStore {
     /// due, and reservation lapse are all judged against it. It is required so a
     /// drive that means to control those deadlines cannot silently end up
     /// reading wall time instead.
-    pub fn new(fail_claims: usize, clock: Arc<dyn awaken_dispatch::Clock>) -> Self {
+    pub fn new(fail_claims: usize, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
         Self {
             maintenance_probe: None,
             inner: Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock)),
@@ -2841,7 +2841,7 @@ pub async fn assert_defer_claim_is_request_local<
 
 pub async fn assert_defer_claim_deadline_edge<S: awaken_dispatch::ControlDispatch>(
     store: &S,
-    clock: &awaken_dispatch::ManualClock,
+    clock: &awaken_lease_testkit::ManualClock,
 ) {
     use awaken_dispatch::{RunClaim, RunDispatch};
 

@@ -162,8 +162,6 @@ mod remote;
 use remote::{RemoteAuthenticationFailure, authenticate_off_event_loop};
 
 use bootstrap::bootstrap_admin_token;
-#[cfg(test)]
-use clock::civil_from_days;
 use clock::{canonical_timestamp_shape, now_rfc3339, now_unix};
 use directory::reconcile_agents_directory;
 use hosted_route_profile::HostedRuntimeRouteDescriptor;

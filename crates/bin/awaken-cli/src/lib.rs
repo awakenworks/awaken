@@ -43,8 +43,8 @@ mod worker_transport_security;
 
 use std::sync::Arc;
 
-use awaken_agent_contract::clock::system_clock;
 use awaken_config_service::ManagementAuditPlane;
+use awaken_lease_contract::system_clock;
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_session_executor::{ExtMcpProbe, ManagedHost, SharedHost};

@@ -133,10 +133,10 @@ mod tests {
     /// avoids a second store-contract test in this Worker realization suite.
     #[tokio::test]
     async fn cold_worker_runtime_projection_decision_table() {
-        use awaken_dispatch::{Clock, DispatchQueue, WorkerResolver as _};
+        use awaken_dispatch::{DispatchQueue, WorkerResolver as _};
 
-        let now = awaken_dispatch::SystemClock.now_ms();
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
                 .expect("dispatch store"),

@@ -2450,9 +2450,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> =
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     let runtime = Arc::new(RecordingCreateRuntime::default());
-    let clock = Arc::new(awaken_agent_contract::clock::ManualClock::new(
-        1_800_000_000_123,
-    ));
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_800_000_000_123));
     let application = SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),

@@ -160,9 +160,10 @@ mod inbox_revision_tests {
         // SQL R1 exact MAX BIGINT edit=>typed pre-write rejection, retained
         // INTEGER and bytes; R2 stale edit=>Mismatch; R3 exact retract=>Applied.
         // SQLite's `revision+1` otherwise silently becomes REAL at this edge.
-        let store =
-            SqliteDispatchStore::open_in_memory(Arc::new(crate::clock::ManualClock::new(0)))
-                .unwrap();
+        let store = SqliteDispatchStore::open_in_memory(Arc::new(
+            awaken_lease_testkit::ManualClock::new(0),
+        ))
+        .unwrap();
         let thread = ThreadId("sqlite-revision-limit".into());
         store
             .append(PendingInput {

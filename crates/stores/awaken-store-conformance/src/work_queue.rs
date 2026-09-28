@@ -12,8 +12,10 @@
 //! Session ownership fencing, and injected-clock observation are the port's
 //! observable contract, not one backend's behaviour.
 
-use awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339;
-use awaken_agent_contract::clock::{Clock, ManualClock, system_clock};
+use awaken_lease_contract::WallClock;
+use awaken_lease_contract::system_clock;
+use awaken_lease_contract::utc::epoch_millis_to_rfc3339;
+use awaken_lease_testkit::ManualClock;
 use awaken_session_types::SessionId;
 use awaken_session_work_contract::{
     HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
@@ -765,7 +767,7 @@ pub async fn observation_timestamps_are_the_injected_clock<Q: WorkQueue>(
 /// Run the whole contract against a freshly-built backend `Q`. The factory takes
 /// the clock so the observation rules can name the instants they expect.
 pub async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(
-    fresh_with: impl Fn(Arc<dyn Clock>) -> F,
+    fresh_with: impl Fn(Arc<dyn WallClock>) -> F,
     lease_ttl_ms: u64,
 ) {
     let fresh = || fresh_with(system_clock());

@@ -69,9 +69,9 @@ impl Fixture {
         .unwrap();
         let clock = Arc::new(ManualWorkerClock::new(100));
         let service = WorkerDispatchService::new(
-            Arc::new(MemoryDispatchStore::new(Arc::new(
-                awaken_dispatch::SystemClock,
-            ))),
+            Arc::new(MemoryDispatchStore::new(
+                awaken_lease_contract::system_clock(),
+            )),
             Arc::new(auth),
             clock.clone(),
             Arc::new(FixedWorkerLeasePolicy::new(50)),

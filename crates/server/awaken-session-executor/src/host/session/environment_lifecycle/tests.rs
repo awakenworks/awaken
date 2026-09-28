@@ -2392,7 +2392,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.handle()).unwrap();
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
         );

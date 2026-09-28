@@ -69,7 +69,10 @@ impl AnyDispatchStore {
     /// expiry, retry due, reservation lapse — and is required for the reason
     /// given on [`SqliteDispatchStore::open`].
     #[cfg(feature = "durable")]
-    pub fn open_sqlite(path: &str, clock: Arc<dyn crate::Clock>) -> Result<Self, String> {
+    pub fn open_sqlite(
+        path: &str,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, String> {
         SqliteDispatchStore::open(path, clock)
             .map(Self::from_store)
             .map_err(|e| e.to_string())
@@ -80,7 +83,9 @@ impl AnyDispatchStore {
     /// judges its rows against.
     #[cfg(feature = "durable")]
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_sqlite_in_memory(clock: Arc<dyn crate::Clock>) -> Result<Self, String> {
+    pub fn open_sqlite_in_memory(
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, String> {
         SqliteDispatchStore::open_in_memory(clock)
             .map(Self::from_store)
             .map_err(|e| e.to_string())
@@ -758,9 +763,9 @@ mod capability_tests {
         // Session continuation role; E2 C2 retains that exact role. This is a
         // construction-time partition: neither branch probes an operation and
         // catches an "unsupported" failure to infer topology.
-        let backend = Arc::new(crate::MemoryDispatchStore::new(Arc::new(
-            crate::SystemClock,
-        )));
+        let backend = Arc::new(crate::MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let worker = AnyDispatchStore::from_dispatch(backend.clone());
         let coordinator = AnyDispatchStore::from_durable_dispatch(backend);
 

@@ -43,7 +43,6 @@ use tokio_util::sync::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
 
 use crate::Error;
-use crate::clock::Clock;
 use crate::dispatch::{Claimed, PendingInput};
 use crate::execution_capacity::ExecutionCapacity;
 use crate::service::{
@@ -52,6 +51,8 @@ use crate::service::{
 };
 use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::{DispatchWorker, renew_claim_while_active};
+use awaken_lease_contract::WallClock;
+use awaken_lease_contract::WallClockExt;
 use awaken_dispatch_contract::RunDispatch;
 
 /// Resolves the worker that owns a thread's runtime. The pool claims from the one
@@ -185,7 +186,7 @@ pub struct DispatchReconciler {
 impl DispatchReconciler {
     pub fn spawn<S: ControlDispatch + 'static>(
         store: Arc<S>,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         wake: Arc<dyn WakeSignal>,
         config: DispatchServiceConfig,
         resolver: Arc<dyn WorkerResolver<S>>,
@@ -473,7 +474,7 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     /// number of runs driven in parallel (clamped to at least 1).
     pub fn spawn(
         store: Arc<S>,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         owner: impl Into<String>,
         lease_ms: u64,
         config: DispatchServiceConfig,
@@ -497,7 +498,7 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_wake(
         store: Arc<S>,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         owner: impl Into<String>,
         lease_ms: u64,
         config: DispatchServiceConfig,
@@ -526,7 +527,7 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_wake_and_completion(
         store: Arc<S>,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         owner: impl Into<String>,
         lease_ms: u64,
         config: DispatchServiceConfig,
@@ -553,7 +554,7 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_completion(
         store: Arc<S>,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         owner: impl Into<String>,
         lease_ms: u64,
         config: DispatchServiceConfig,
@@ -577,7 +578,7 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     #[allow(clippy::too_many_arguments)]
     fn spawn_inner(
         store: Arc<S>,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         owner: impl Into<String>,
         lease_ms: u64,
         config: DispatchServiceConfig,
@@ -788,7 +789,7 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
 #[allow(clippy::too_many_arguments)]
 async fn drain_loop<S: ControlDispatch + 'static>(
     store: Arc<S>,
-    clock: Arc<dyn Clock>,
+    clock: Arc<dyn WallClock>,
     shutdown: CancellationToken,
     owner: String,
     lease_ms: u64,
@@ -1110,7 +1111,7 @@ async fn wake_coordinator_loop(
 #[allow(clippy::too_many_arguments)]
 async fn claim_and_drive<S: ControlDispatch + 'static>(
     store: &Arc<S>,
-    clock: &Arc<dyn Clock>,
+    clock: &Arc<dyn WallClock>,
     owner: &str,
     lease_ms: u64,
     resolver: &dyn WorkerResolver<S>,
@@ -1253,7 +1254,7 @@ async fn defer_failed_claim<S: ControlDispatch + 'static>(
 /// so coordinator-only maintenance never competes with a remote Worker.
 struct ReconciliationContext<S> {
     store: Arc<S>,
-    clock: Arc<dyn Clock>,
+    clock: Arc<dyn WallClock>,
     wake: Arc<dyn WakeSignal>,
     // Standalone: the external port. Pool: its sole listener's local fan-out.
     // Both reuse WakeSignal; do not add a competing external subscription.
@@ -1355,8 +1356,9 @@ mod in_flight_tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use crate::{ManualClock, MemoryDispatchStore};
+    use crate::MemoryDispatchStore;
     use awaken_agent_contract::agent::run::EndCause;
+    use awaken_lease_testkit::ManualClock;
 
     #[test]
     fn pool_admission_transition_is_total_and_drain_absorbing() {

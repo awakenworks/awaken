@@ -109,7 +109,7 @@ async fn coordinator(
         // the same phase time at both existing authority ports on each reopen.
         SqliteDispatchStore::open(
             files.join("dispatch.sqlite").to_str().unwrap(),
-            Arc::new(awaken_dispatch::ManualClock::new(clock.now_ms())),
+            Arc::new(awaken_lease_testkit::ManualClock::new(clock.now_ms())),
         )
         .unwrap(),
     );

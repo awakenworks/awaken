@@ -38,7 +38,7 @@ struct Fixture {
     directory: Arc<TestWorkerDirectory>,
     clock: Arc<ManualWorkerClock>,
     /// The dispatch store's own clock, held at the same reading as `clock`.
-    dispatch_clock: Arc<awaken_dispatch::ManualClock>,
+    dispatch_clock: Arc<awaken_lease_testkit::ManualClock>,
     claim: RunClaim,
     upstream: WorkerUpstream,
     server: tokio::task::JoinHandle<()>,
@@ -55,7 +55,7 @@ impl Fixture {
         let (ready, identity) = support::ready_worker("binding-http").await;
         let record = ready.current(&identity.worker_id).await.unwrap().unwrap();
         let directory = Arc::new(TestWorkerDirectory(Mutex::new(Some(record.clone()))));
-        let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(10_000));
+        let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(10_000));
         let store = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
         store
             .enqueue(

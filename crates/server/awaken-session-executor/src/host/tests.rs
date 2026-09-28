@@ -3119,9 +3119,9 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     let reached = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-            awaken_dispatch::SystemClock,
-        ))
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_lease_contract::system_clock(),
+        )
         .expect("dispatch store"),
     );
     let host = Arc::new(
@@ -3232,9 +3232,9 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
     );
 
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-            awaken_dispatch::SystemClock,
-        ))
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_lease_contract::system_clock(),
+        )
         .expect("live-control dispatch store"),
     );
     let durable = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
@@ -3302,7 +3302,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     // | R4 | trace changed | Reserved | E5 |
     let thread = "cold-session-reservation";
     let run_id = RunId("cold-session-reservation-run".into());
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("reservation dispatch"),
@@ -4039,7 +4039,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     // | C3 | multiple | absent | any | accepted | reject (ambiguity sibling) |
     let thread = "cold-managed-interrupt";
     let run_id = RunId("cold-managed-interrupt-run".into());
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
@@ -4189,7 +4189,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
             "sha256:active-remote",
         )
         .expect("coherent active remote candidate");
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
@@ -4291,9 +4291,9 @@ async fn managed_primary_interrupt_fails_closed_on_ambiguous_dispatch_authority(
     // | A1 | absent | two | requested | E1+E2 |
     let thread = "ambiguous-managed-primary-interrupt";
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-            awaken_dispatch::SystemClock,
-        ))
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_lease_contract::system_clock(),
+        )
         .expect("dispatch store"),
     );
     for run in ["ambiguous-primary-a", "ambiguous-primary-b"] {
@@ -8609,7 +8609,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     let local_store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite(
             ":memory:",
-            Arc::new(awaken_dispatch::SystemClock),
+            awaken_lease_contract::system_clock(),
         )
         .unwrap(),
     );
@@ -8622,7 +8622,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     let coordinator_store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite(
             ":memory:",
-            Arc::new(awaken_dispatch::SystemClock),
+            awaken_lease_contract::system_clock(),
         )
         .unwrap(),
     );
@@ -8663,9 +8663,9 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         manifest.capacity.max_concurrent = capacity as u32;
         let registered = awaken_dispatch_contract::RegisteredCapacity::of(&manifest)
             .expect("R2 non-zero registered capacity");
-        let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(Arc::new(
-            awaken_dispatch::SystemClock,
-        )));
+        let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let worker = Arc::new(
             SharedHost::new(Arc::new(OkModel), "stub").with_worker_dispatch(store, registered),
         );
@@ -8686,15 +8686,15 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         let coordinator = Arc::new(
             SharedHost::new(Arc::new(OkModel), "stub")
                 .with_worker_dispatch(
-                    Arc::new(awaken_dispatch::MemoryDispatchStore::new(Arc::new(
-                        awaken_dispatch::SystemClock,
-                    ))),
+                    Arc::new(awaken_dispatch::MemoryDispatchStore::new(
+                        awaken_lease_contract::system_clock(),
+                    )),
                     awaken_dispatch_contract::RegisteredCapacity::of(&manifest).expect("R3"),
                 )
                 .with_coordinator_dispatch_store(Arc::new(
                     awaken_dispatch::AnyDispatchStore::open_sqlite(
                         ":memory:",
-                        Arc::new(awaken_dispatch::SystemClock),
+                        awaken_lease_contract::system_clock(),
                     )
                     .unwrap(),
                 )),
@@ -16447,9 +16447,9 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     // | R2 | yes | no | yes | E2 (existing durable tests) |
     // | R3 | yes | yes | remote | E2 fallback; no false replay guarantee |
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-            awaken_dispatch::SystemClock,
-        ))
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_lease_contract::system_clock(),
+        )
         .expect("in-memory dispatch"),
     );
     let host =
@@ -16491,7 +16491,7 @@ async fn terminal_child_report_atomically_admits_one_deterministic_primary_run()
     // | R2 | Ended | exact | yes | same | E3 |
     // | R3 | Ended | wrong | any | any | reject before mutation |
     // | R4 | Ended | exact | any | zero | reject before mutation |
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("in-memory dispatch"),
@@ -16633,7 +16633,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     let parent = ThreadId("coordinated-reply-parent".into());
     let child = ThreadId("coordinated-reply-child".into());
     let child_run = RunId("coordinated-reply-run".into());
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("coordinated reply dispatch"),
@@ -17403,7 +17403,7 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
     for extension in [false, true] {
         let parent = ThreadId(format!("primary-reply-session-{extension}"));
         let run_id = RunId("primary-reply-run".into());
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
                 .expect("primary reply dispatch"),
@@ -17661,7 +17661,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
         SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
     };
 
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("budget resume dispatch"),
@@ -18075,9 +18075,9 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     // R3 is owned by run-ingress worker settle tests; R4 by the resume-identity
     // test plus each Inbox backend's idempotency-conflict conformance suite.
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-            awaken_dispatch::SystemClock,
-        ))
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_lease_contract::system_clock(),
+        )
         .expect("in-memory dispatch"),
     );
     let host = Arc::new(
@@ -18246,9 +18246,9 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
     // M2 C1+supersede=>E1+E2. Constraint: Session Run reservation and its
     // activity receipt remain the sole Managed-root ingress; no Host fallback.
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-            awaken_dispatch::SystemClock,
-        ))
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_lease_contract::system_clock(),
+        )
         .expect("managed ingress fence dispatch"),
     );
     let host = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
@@ -22092,14 +22092,14 @@ async fn terminal_physical_claim_fixture(
 ) -> (
     Arc<SharedHost>,
     Arc<awaken_dispatch::AnyDispatchStore>,
-    Arc<awaken_dispatch::ManualClock>,
+    Arc<awaken_lease_testkit::ManualClock>,
     ThreadId,
     RunId,
     awaken_dispatch::RunClaim,
 ) {
     use awaken_dispatch::{DispatchQueue, RunClaim, RunDispatch};
 
-    let clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("physical Dispatch fixture"),
@@ -22368,9 +22368,9 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
     use awaken_dispatch::{DispatchQueue, RunDispatch};
 
     let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-            awaken_dispatch::SystemClock,
-        ))
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_lease_contract::system_clock(),
+        )
         .expect("remote quiescence dispatch"),
     );
     let host = Arc::new(
@@ -24848,7 +24848,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_dispatch::{DispatchOutcome, DispatchState, RunDispatch};
 
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("archive saga dispatch"),

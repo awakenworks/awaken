@@ -26,9 +26,9 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     // boundary Worker; E3 no Session Environment or Sandbox side effect is
     // created. Decision rule R1=C0+C1+C2+C3=>E1+E2+E3. Missing/unknown command
     // fingerprints remain owned by the queue conformance table.
-    use awaken_dispatch::{Clock, DispatchQueue};
+    use awaken_dispatch::DispatchQueue;
 
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
@@ -63,7 +63,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     // C1 is governed by the queue-owned clock. Wait past the relative TTL,
     // then sample the edge clock used by the existing execution-lease claim.
     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-    let repair_now = awaken_dispatch::SystemClock.now_ms();
+    let repair_now = awaken_lease_contract::system_clock().now().as_epoch_ms();
     clock.set(repair_now);
     let claimed = store
         .claim("repair-worker", 1_000, &Default::default())
@@ -173,7 +173,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     // | R1 | direct | yes | yes, C4 | E1+E2 |
     // | R2 | durable | yes | no | E3 |
     // | R3 | durable | no | yes | E4 |
-    use awaken_dispatch::{Clock as _, DispatchQueue as _, WorkerResolver as _};
+    use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
 
     let ephemeral = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
     let ephemeral_managed = managed_test_host(ephemeral.clone());
@@ -207,7 +207,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .await
         .expect("R1 queue root continuation");
     let ephemeral_store = ephemeral.dispatch_store().expect("R1 dispatch authority");
-    let now = awaken_dispatch::SystemClock.now_ms();
+    let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
     let claimed = ephemeral_store
         .claim(
             ephemeral.dispatch_owner(),
@@ -231,7 +231,10 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .expect("R1 resident Session context");
     assert!(Arc::ptr_eq(&worker, &resident.claimed_worker), "R1/E2");
     let (_, state) = worker
-        .drive_claimed(claimed, Arc::new(awaken_dispatch::ManualClock::new(now)))
+        .drive_claimed(
+            claimed,
+            Arc::new(awaken_lease_testkit::ManualClock::new(now)),
+        )
         .await
         .expect("R1/E2 execute root continuation")
         .expect("R1/E2 root continuation settles");
@@ -246,7 +249,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         "R1/E2 report reached the root Run"
     );
 
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let durable_store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("R2 dispatch store"),
@@ -325,15 +328,15 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
 /// claim-settled setup failure while D1 proves no Control lookup is needed.
 #[tokio::test]
 async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
-    use awaken_dispatch::{Clock, DispatchQueue};
+    use awaken_dispatch::DispatchQueue;
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
     use awaken_runtime_contract::snapshot::{
         AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
         AgentSnapshotMetadata,
     };
 
-    let now = awaken_dispatch::SystemClock.now_ms();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
@@ -470,7 +473,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
     // lease identity remain attempt context, while publication/model inputs
     // are Runtime construction inputs. Rules K1=C1+C2=>E1+E2,
     // K2=C3=>E3, K3=C4=>E4.
-    use awaken_dispatch::{Clock, DispatchQueue};
+    use awaken_dispatch::DispatchQueue;
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 
     let child_v1 = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
@@ -506,7 +509,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
     let root = activation.snapshot.clone();
     let catalog = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([child_v1])
         .expect("warm catalog source");
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
@@ -532,7 +535,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
     let request =
         awaken_dispatch::RunDispatch::new(activation).with_agent_publications(vec![child_v2]);
     store.enqueue(request).await.expect("enqueue K1");
-    let now = awaken_dispatch::SystemClock.now_ms();
+    let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
     clock.set(now);
     let claimed = store
         .claim("worker-a", 30_000, &Default::default())
@@ -628,12 +631,12 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
 /// represent one attempted mutation plus its authoritative readback replay.
 #[tokio::test]
 async fn durable_deferred_sandbox_publication_decision_table() {
-    use awaken_dispatch::{Clock, DispatchQueue};
+    use awaken_dispatch::DispatchQueue;
     use awaken_session_execution_contract::SessionRuntime;
 
-    let now = awaken_dispatch::SystemClock.now_ms();
+    let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
     let storage = tempfile::tempdir().expect("isolated deferred Sandbox root");
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
@@ -733,7 +736,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         })
         .expect("runtime role")
         .install_environment_binding_sink(loss_sink.clone());
-    let loss_now = awaken_dispatch::SystemClock.now_ms();
+    let loss_now = awaken_lease_contract::system_clock().now().as_epoch_ms();
     let loss_claim = claim(
         &loss_store,
         "durable-loss",
@@ -896,7 +899,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
      * E4 never consult or synthesize a second publication source. Rule S1:
      * C1+C2+C3+C4=>E1+E2+E3+E4. The adjacent malformed-envelope and stale-
      * claim rules retain fail-closed coverage for invalid authority. */
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("dispatch store"),
@@ -1190,7 +1193,7 @@ fn ordinary_frozen_projection() -> awaken_session_realization_contract::FrozenSe
 async fn claimed_worker_uses_only_frozen_session_realization() {
     use awaken_dispatch::DispatchQueue;
 
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("in-memory dispatch"),
@@ -1375,7 +1378,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
     // differing coordinate. Exact equality is covered by the projection table;
     // transient Control failures retain the contract-disposition table's retry.
     for rule in ["workspace", "revision", "bindings"] {
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
         );
@@ -2844,7 +2847,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
             eager_environment(),
             &activation.snapshot,
         );
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
         );

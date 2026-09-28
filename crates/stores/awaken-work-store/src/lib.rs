@@ -22,9 +22,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_agent_contract::clock::Clock;
+use awaken_lease_contract::WallClock;
 #[cfg(test)]
-use awaken_agent_contract::clock::system_clock;
+use awaken_lease_contract::system_clock;
 use awaken_session_work_contract::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
     SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkMutationResult,
@@ -57,6 +57,7 @@ mod inmem;
 #[cfg(any(test, feature = "test-support"))]
 pub use inmem::InMemoryWorkQueue;
 mod schema;
+use awaken_lease_contract::WallClockExt;
 use schema::*;
 mod session_access;
 
@@ -74,13 +75,13 @@ pub struct SqliteWorkQueue {
     conn: SharedSqliteConnection,
     book: LeaseBook,
     /// The one source of every observation timestamp this backend writes.
-    clock: Arc<dyn Clock>,
+    clock: Arc<dyn WallClock>,
 }
 
 impl SqliteWorkQueue {
     /// A private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory(clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, String> {
         Self::from_connection(
             awaken_sqlite_pool::SqliteConnectionFactory::memory()
                 .open()
@@ -668,7 +669,7 @@ pub struct PostgresWorkQueue {
     pool: PgPool,
     book: LeaseBook,
     /// The one source of every observation timestamp this backend writes.
-    clock: Arc<dyn Clock>,
+    clock: Arc<dyn WallClock>,
 }
 
 #[async_trait]
@@ -1139,9 +1140,7 @@ impl WorkQueue for PostgresWorkQueue {
                  lease_owner = $2, lease_epoch = $3, lease_expires_ms = $4, \
                  lease_refreshed_ms = $5, latest_heartbeat_at = NULL WHERE work_id = $6",
             )
-            .bind(awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(
-                now_ms,
-            ))
+            .bind(awaken_lease_contract::utc::epoch_millis_to_rfc3339(now_ms))
             .bind(next_authority.owner)
             .bind(epoch_db)
             .bind(next_authority.expires_at)
@@ -1799,7 +1798,7 @@ mod tests {
         // so the value is persisted rather than recomputed on read. Rule
         // R1 = C1 + C2 => E1 + E2. Diffusion: a sibling accepted one second
         // later keeps its own distinct instant across the same reopen.
-        use awaken_agent_contract::clock::ManualClock;
+        use awaken_lease_testkit::ManualClock;
 
         const WRITE_MS: u64 = 1_600_000_000_000;
         const SIBLING_MS: u64 = WRITE_MS + 1_000;
@@ -1829,7 +1828,7 @@ mod tests {
             Arc::new(ManualClock::new(REOPEN_MS)),
         )
         .expect("C2");
-        let expected = awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(WRITE_MS);
+        let expected = awaken_lease_contract::utc::epoch_millis_to_rfc3339(WRITE_MS);
         let read = reopened
             .get("rt-env", &first)
             .await
@@ -1838,7 +1837,7 @@ mod tests {
         assert_eq!(read.created_at, expected, "E1");
         assert_ne!(
             read.created_at,
-            awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(REOPEN_MS),
+            awaken_lease_contract::utc::epoch_millis_to_rfc3339(REOPEN_MS),
             "E2 the reopening clock must not supply the value"
         );
         let sibling = reopened
@@ -1848,7 +1847,7 @@ mod tests {
             .expect("sibling survives");
         assert_eq!(
             sibling.created_at,
-            awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(SIBLING_MS),
+            awaken_lease_contract::utc::epoch_millis_to_rfc3339(SIBLING_MS),
             "E1 diffusion: the sibling keeps its own instant"
         );
         let _ = std::fs::remove_file(&path);

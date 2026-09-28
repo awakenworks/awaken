@@ -370,7 +370,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
         } else {
             original.clone()
         };
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = awaken_dispatch::MemoryDispatchStore::new(clock.clone());
         let activation = model_only_activation("cli-stop");
         let model_activation = activation.clone();

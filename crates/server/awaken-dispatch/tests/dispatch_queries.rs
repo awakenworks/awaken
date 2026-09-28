@@ -219,7 +219,7 @@ async fn sqlite_corrupt_summary_does_not_poison_identity_pages() {
     let path = dir.path().join("queries.sqlite");
     let store = SqliteDispatchStore::open(
         path.to_str().unwrap(),
-        std::sync::Arc::new(awaken_dispatch::SystemClock),
+        awaken_lease_contract::system_clock(),
     )
     .unwrap();
     for run in ["bad", "healthy"] {

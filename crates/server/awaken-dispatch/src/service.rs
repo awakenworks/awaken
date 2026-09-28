@@ -5,7 +5,7 @@
 //! [`DispatchService`] turns the [`DispatchWorker`] into a long-running service:
 //! one background task drains the queue, woken by a nudge when new work arrives
 //! and by a periodic timer otherwise (so a crashed lease is recovered without new
-//! work). It owns the edge [`Clock`] and passes that same source into every
+//! work). It owns the edge [`WallClock`](awaken_lease_contract::WallClock) and passes that same source into every
 //! Worker drive, keeping claim, renewal, and ownership checks on one timeline.
 //! It waits on a [`WakeSignal`] — a `LocalWakeSignal`
 //! for one process, or a cross-node signal for a fleet (ADR-0011, ADR-0019).
@@ -20,10 +20,11 @@ use tokio_util::sync::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
 
 use crate::Error;
-use crate::clock::Clock;
 use crate::dispatch::PendingInput;
 use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::DispatchWorker;
+use awaken_lease_contract::WallClock;
+use awaken_lease_contract::WallClockExt;
 use awaken_dispatch_contract::RunDispatch;
 
 /// One process-level observation cadence, independent of execution throughput.
@@ -186,7 +187,7 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
     /// Start the daemon with the single-process wake signal.
     pub fn spawn(
         worker: Arc<DispatchWorker<S>>,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         config: DispatchServiceConfig,
     ) -> Self {
         Self::spawn_with_wake(worker, clock, config, Arc::new(LocalWakeSignal::new()))
@@ -196,7 +197,7 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
     /// process, or a cross-node signal (e.g. NATS) so a fleet need not busy-poll.
     pub fn spawn_with_wake(
         worker: Arc<DispatchWorker<S>>,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         config: DispatchServiceConfig,
         wake: Arc<dyn WakeSignal>,
     ) -> Self {
@@ -277,7 +278,7 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
 
 async fn run_loop<S: ControlDispatch + 'static>(
     worker: Arc<DispatchWorker<S>>,
-    clock: Arc<dyn Clock>,
+    clock: Arc<dyn WallClock>,
     wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     config: DispatchServiceConfig,

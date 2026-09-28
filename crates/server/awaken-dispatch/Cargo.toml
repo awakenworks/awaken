@@ -32,6 +32,7 @@ awaken-scoped-migration.workspace = true
 awaken-scoped-migration-sqlite = { workspace = true, optional = true }
 awaken-sqlite-pool = { workspace = true, optional = true }
 async-nats = { version = "0.50", optional = true }
+awaken-lease-contract.workspace = true
 futures-lite = { version = "2", optional = true }
 
 [features]
@@ -53,6 +54,7 @@ test-support = ["durable"]
 nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
+awaken-lease-testkit.workspace = true
 awaken-store-conformance.workspace = true
 awaken-reliability-testkit.workspace = true
 awaken-dispatch-testkit = { workspace = true }

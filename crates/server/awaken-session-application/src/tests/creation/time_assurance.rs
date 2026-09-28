@@ -1,6 +1,6 @@
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 use super::*;
-use awaken_agent_contract::clock::ManualClock;
+use awaken_lease_testkit::ManualClock;
 use awaken_session_state_contract::{
     IdempotencyRecord, SessionMutationPayload, SessionRepositoryError,
 };

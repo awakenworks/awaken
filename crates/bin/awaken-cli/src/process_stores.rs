@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::clock::system_clock;
+use awaken_lease_contract::system_clock;
 
 use awaken_service_lifecycle::StartupComponent;
 

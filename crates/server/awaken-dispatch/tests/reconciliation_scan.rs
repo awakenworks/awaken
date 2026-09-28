@@ -15,7 +15,7 @@ async fn inspection_budget_counts_failed_and_nonterminal_rows_and_wraps() {
     // 256 inspected IDs, even when the first 120 fail and the next 120 have no
     // terminal result. R2 next page reaches all remaining healthy rows. R3 a
     // short page wraps; resetting process-local cursor rechecks, never claims.
-    let store = MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock));
+    let store = MemoryDispatchStore::new(awaken_lease_contract::system_clock());
     for n in 0..300 {
         store
             .enqueue(RunDispatch::new(harness::activation(&format!(
@@ -72,9 +72,9 @@ async fn concurrent_scan_yields_and_cancelled_page_keeps_cursor_progress() {
     // Cross R1 full page (limit=1) and R2 short page (limit=3): abort must
     // retain progress in both, including when normal exhaustion would wrap.
     for (page_limit, row_count) in [(1, 2), (3, 2), (3, 1)] {
-        let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-            awaken_dispatch::SystemClock,
-        )));
+        let store = Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        ));
         for run in ["a", "b"].into_iter().take(row_count) {
             store
                 .enqueue(RunDispatch::new(harness::activation(run)))
@@ -135,7 +135,7 @@ async fn full_page_end_and_new_process_cursor_never_strand_rows() {
     // R1 exact full page => next empty page resets without observations;
     // R2 next cycle retries first row. R3 process restart loses only schedule:
     // a new cursor also rechecks first row, with all durable records unchanged.
-    let store = MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock));
+    let store = MemoryDispatchStore::new(awaken_lease_contract::system_clock());
     store
         .enqueue(RunDispatch::new(harness::activation("a")))
         .await
@@ -220,7 +220,7 @@ async fn sqlite_scan_counts_corrupt_payload_and_reaches_healthy_suffix() {
     let path = dir.path().join("reconciliation.sqlite");
     let store = awaken_dispatch::SqliteDispatchStore::open(
         path.to_str().unwrap(),
-        Arc::new(awaken_dispatch::SystemClock),
+        awaken_lease_contract::system_clock(),
     )
     .unwrap();
     for run in ["bad", "healthy"] {
@@ -269,7 +269,7 @@ async fn oversized_adapter_page_cannot_exceed_observation_budget() {
     // spends one slot even on error; R2 300 returned IDs -> <=256 observations;
     // R3 unvisited suffix is reached next call, never skipped or settled.
     for limit in [0, 1, 256, 257, usize::MAX] {
-        let store = harness::FlakyDispatchStore::new(0, Arc::new(awaken_dispatch::SystemClock))
+        let store = harness::FlakyDispatchStore::new(0, awaken_lease_contract::system_clock())
             .with_oversized_scan_page();
         for n in 0..300 {
             store

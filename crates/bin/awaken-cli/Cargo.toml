@@ -129,6 +129,7 @@ awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
 awaken-connection-plan = { workspace = true }
 async-trait.workspace = true
+awaken-lease-contract.workspace = true
 axum = "0.8"
 bytes = "1"
 http-body = "1"
@@ -209,6 +210,7 @@ awaken-ext-mcp = { workspace = true }
 # management_authz drives a legacy iam.sqlite import: the contract ids + the sqlite driver.
 awaken-iam-contract = { workspace = true }
 awaken-iam-core = { workspace = true }
+awaken-lease-testkit.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 http-body-util = "0.1"

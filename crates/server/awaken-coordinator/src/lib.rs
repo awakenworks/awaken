@@ -1063,9 +1063,9 @@ mod worker_checkpoint_authority_tests {
         // | R4   | no        | no          | yes           | E4     |
         // | R5   | no        | no          | no            | E5     |
         // R1 is covered by the PostgreSQL active/active acceptance test.
-        let dispatch = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(Arc::new(
-            awaken_dispatch::SystemClock,
-        ))) as Arc<dyn Dispatch>);
+        let dispatch = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        )) as Arc<dyn Dispatch>);
         let root = tempfile::tempdir().expect("R2 root");
         assert!(
             worker_checkpoint_authority(&dispatch, Some(root.path())).is_ok(),

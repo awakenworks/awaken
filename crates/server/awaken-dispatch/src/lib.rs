@@ -90,7 +90,6 @@ pub use awaken_dispatch_contract::{
     StreamObservationRequest, WorkerIdentityRequest,
 };
 pub use claimed_stream::ClaimedStreamPublisher;
-pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,

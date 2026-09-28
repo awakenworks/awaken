@@ -57,7 +57,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::Error;
-use crate::clock::Clock;
 use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 use crate::dispatch::{
     Claimed, DispatchOutcome, PendingInput, RunClaim, SessionRunReservationResolution,
@@ -65,11 +64,13 @@ use crate::dispatch::{
 };
 use crate::execution_capacity::ExecutionCapacity;
 use crate::worker_context::WorkerContext;
+use awaken_lease_contract::WallClock;
 
 mod claim_renewal;
 mod physical_attempt;
 mod terminal_recovery;
 
+use awaken_lease_contract::WallClockExt;
 use physical_attempt::{PhysicalAttemptOutcome, PhysicalAttemptRequest};
 
 pub(crate) use claim_renewal::{
@@ -738,7 +739,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     pub async fn start_run(
         &self,
         request: awaken_dispatch_contract::RunDispatch,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let unclaimed_request = request.clone();
         let claimed = self
@@ -768,7 +769,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     pub async fn resume_run(
         &self,
         input: PendingInput,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let claimed = self
             .store
@@ -787,7 +788,10 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
 
     /// Claim and process at most one runnable dispatch. Returns the processed
     /// run's id and resulting state, or `None` when the queue is idle.
-    pub async fn tick(&self, clock: Arc<dyn Clock>) -> Result<Option<(RunId, RunState)>, Error> {
+    pub async fn tick(
+        &self,
+        clock: Arc<dyn WallClock>,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
         let Some(claimed) = self.claim_one().await? else {
             return Ok(None);
         };
@@ -800,7 +804,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     pub async fn tick_run(
         &self,
         run_id: &RunId,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let Some(claimed) = self.claim_run(run_id).await? else {
             return Ok(None);
@@ -816,7 +820,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     pub async fn drive_claimed(
         &self,
         claimed: Claimed,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let claim = RunClaim::from(&claimed.lease);
         let lease_renewal = self.renew_claim_while_driving(&claim);
@@ -830,7 +834,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     pub(crate) async fn drive_claimed_with_renewal(
         &self,
         claimed: Claimed,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         lease_renewal: ClaimLeaseRenewal,
         execution_capacity: Option<ExecutionCapacity>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
@@ -853,7 +857,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     async fn drive_claimed_inner(
         &self,
         claimed: Claimed,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         lease_renewal: ClaimLeaseRenewal,
         execution_capacity: Option<ExecutionCapacity>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
@@ -1609,7 +1613,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     /// run and its state. A settled run becomes non-runnable, so this terminates.
     pub async fn run_until_idle(
         &self,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         let mut processed = Vec::new();
         while let Some(result) = self.tick(clock.clone()).await? {

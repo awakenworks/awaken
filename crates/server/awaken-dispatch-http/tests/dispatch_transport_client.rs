@@ -249,7 +249,7 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
      * preserving the row for ordinary recovery; E2 fail the test within its
      * named deadline. Rules R5=C1+C2+C3=>E1; R6=C4=>E2. This is the
      * response-loss/late-response window a single pre-sign check cannot close. */
-    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(10));
+    let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(10));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let source = Arc::new(BlockingSecondDelivery {
         calls: std::sync::atomic::AtomicUsize::new(0),
@@ -327,7 +327,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
     // receives a fresh carrier with the same authority/epoch. R4 expiry before
     // or during refresh returns no carrier to the stale owner.
     for fail in [false, true] {
-        let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(10));
+        let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(10));
         let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
         let clock = Arc::new(ManualWorkerClock::new(10));
         let run_id = if fail {
@@ -445,7 +445,7 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     // disagree with Control policy -> Control clock/max still decide; R5 a
     // concurrent second special claim -> None because the first lease is live.
     // The dispatch port reads "now" from its store; mirror the service clock.
-    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let clock = Arc::new(ManualWorkerClock::new(0));
     let service = Arc::new(
@@ -567,7 +567,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // authorities when Session Work is absent. Decision rule: exercise the
     // C1+C2+C3 branch over real HTTP and require one successful settlement.
     // The dispatch port reads "now" from its store; mirror the service clock.
-    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let recovery = Arc::new(MemoryCommitCoordinator::new());
     recovery
@@ -906,7 +906,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
 #[tokio::test(flavor = "multi_thread")]
 async fn credential_receipt_is_verified_and_fenced_over_real_http() {
     // The dispatch port reads "now" from its store; mirror the service clock.
-    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let clock = Arc::new(ManualWorkerClock::new(0));
     let (dispatch, capabilities) = credential_dispatch("credential-run", "credential-thread");

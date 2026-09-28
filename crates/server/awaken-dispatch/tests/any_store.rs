@@ -29,13 +29,13 @@ use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{TICKET, activation, activation_on, tool_runtime};
 
 fn any_in_memory() -> AnyDispatchStore {
-    AnyDispatchStore::open_sqlite_in_memory(Arc::new(awaken_dispatch::SystemClock))
+    AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
         .expect("open in-memory sqlite backend")
 }
 
 /// The same runtime-selected backend over a raw injected clock handle.
 fn any_in_memory_with_clock_handle(
-    clock: std::sync::Arc<dyn awaken_dispatch::Clock>,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> AnyDispatchStore {
     AnyDispatchStore::open_sqlite_in_memory(clock).expect("open in-memory sqlite backend")
 }
@@ -84,9 +84,9 @@ fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
     // path remains authoritative. This test owns R2/R3 and prevents an implicit
     // process-local checkpoint from returning inside the runtime-selected wrapper.
     assert!(any_in_memory().stream_checkpoint_store().is_none(), "R2");
-    let remote = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    ))));
+    let remote = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    )));
     assert!(remote.stream_checkpoint_store().is_none(), "R3");
 }
 
@@ -648,7 +648,7 @@ async fn any_exposes_the_builtin_backends_operational_feed() {
 #[tokio::test]
 async fn any_fails_feed_reads_closed_for_a_dispatch_only_adapter() {
     let dispatch_only: Arc<dyn awaken_dispatch::Dispatch> = Arc::new(MemoryDispatchStore::new(
-        Arc::new(awaken_dispatch::SystemClock),
+        awaken_lease_contract::system_clock(),
     ));
     let store = AnyDispatchStore::from_dispatch(dispatch_only);
 

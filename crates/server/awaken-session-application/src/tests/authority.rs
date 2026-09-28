@@ -6269,7 +6269,7 @@ async fn cancellation_before_external_realization_settles_without_a_runtime_inte
         None,
         true,
         false,
-        awaken_agent_contract::clock::Clock::now_ms(&awaken_agent_contract::clock::SystemClock),
+        awaken_lease_contract::system_clock().now().as_epoch_ms(),
     )
     .expect("P1/C2 activity admitted during external realization");
     assert!(
@@ -7190,7 +7190,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     session.created_at_unix_ms = Some(100);
     session.updated_at_unix_ms = Some(100);
     create(repo.as_ref(), session).await;
-    let clock = Arc::new(awaken_agent_contract::clock::ManualClock::new(200));
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(200));
     // B12 builder clock/repository replacement must update the Runtime-installed
     // sink. A deliberately empty original repository detects stale composition.
     let runtime = Arc::new(RecordingCleanupRuntime::default());
@@ -7767,9 +7767,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 repo.clone(),
                 Arc::new(RecordingEnvironmentSource::default()),
             );
-            let expiry = awaken_agent_contract::clock::Clock::now_ms(
-                &awaken_agent_contract::clock::SystemClock,
-            ) + 60_000;
+            let expiry = awaken_lease_contract::system_clock().now().as_epoch_ms() + 60_000;
             let lease = SessionRealizationLease {
                 owner: "owner".into(),
                 runtime_incarnation: "old-boot".into(),

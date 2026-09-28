@@ -9,9 +9,9 @@
 //! lease renewal, ownership checks and settlement fencing are NOT among them:
 //! the store that owns the row judges those against its own clock, so no caller
 //! can disagree with it. Long-running services and pools own the drive source;
-//! direct tests pass [`ManualClock`] while production uses [`SystemClock`].
-
-pub use awaken_agent_contract::clock::{Clock, ManualClock, SystemClock};
+//! every source is an `awaken_lease_contract::WallClock` handle, which direct
+//! tests build from `awaken-lease-testkit` and production from
+//! `awaken_lease_contract::system_clock()`.
 
 /// Store-owned wall-clock time for durable authority facts.
 ///
@@ -19,7 +19,7 @@ pub use awaken_agent_contract::clock::{Clock, ManualClock, SystemClock};
 /// subtly different timestamp implementation.
 #[cfg(any(feature = "durable", test))]
 pub(crate) fn system_now_ms() -> u64 {
-    SystemClock.now_ms()
+    awaken_lease_contract::system_clock().now().as_epoch_ms()
 }
 
 /// Largest epoch-millisecond value representable by the SQL backends. The

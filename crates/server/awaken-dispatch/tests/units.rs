@@ -8,13 +8,14 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::stream::sink::Sink;
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    Clock, DispatchQueue, DispatchTestHarness, DispatchWorker, ManualClock, MemoryDispatchStore,
-    RunDispatch, SystemClock,
+    DispatchQueue, DispatchTestHarness, DispatchWorker, MemoryDispatchStore, RunDispatch,
 };
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
+use awaken_lease_contract::WallClockExt;
 use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{THREAD, activation, text_runtime};
 
@@ -51,7 +52,7 @@ fn manual_clock_sets_and_advances_and_system_clock_reads() {
     clock.set(3);
     assert_eq!(clock.now_ms(), 3);
     // The system clock returns a real, non-zero epoch.
-    assert!(SystemClock.now_ms() > 0);
+    assert!(awaken_lease_contract::system_clock().now().as_epoch_ms() > 0);
 }
 
 #[test]
@@ -120,7 +121,9 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
     // the claim. Constraint/Invariant: builder composition preserves one Worker
     // path. Decision rule: compose C1+C2, execute C3, and observe all ports.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "unit-worker")
@@ -159,7 +162,9 @@ async fn dispatch_harness_attaches_one_best_effort_stream_sink_to_its_worker() {
     // | R2 | absent | yes | E2 only (existing default path) |
     // R2 is covered by the foreground submit/cancel integration below.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let sink = Arc::new(MemoryStreamSink::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone())
@@ -199,7 +204,9 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
         )),
     ] {
         let (runtime, calls) = harness::counting_text_runtime();
-        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+        let store = Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
         let partial = StreamCheckpoint {
@@ -298,7 +305,9 @@ async fn dispatch_harness_unknown_live_cancel_is_typed() {
     // `durable_inline_start_and_resume_fail_closed_before_executor_entry`.
     let ingress = DispatchTestHarness::new(
         text_runtime(),
-        Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock))),
+        Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        )),
         Arc::new(MemoryCommitCoordinator::new()),
     );
     let err = ingress
