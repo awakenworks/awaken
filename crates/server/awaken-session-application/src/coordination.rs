@@ -23,7 +23,7 @@ use awaken_session_runtime_contract::{
     SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionAgentRosterEntry,
     SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
     SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
-    SessionThreadToolReplyDelivery, coordinated_thread_failed, session_agent_boundary_action,
+    SessionThreadToolReplyDelivery, coordinated_thread_closed, session_agent_boundary_action,
     session_agent_report_text, session_agent_run_boundary, session_run_activity_operation_id,
 };
 
@@ -417,16 +417,12 @@ impl SessionApplication {
             .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await?
             .ok_or_else(|| RunError::bad_request("Session Thread has no committed Run"))?;
-        let run_id = snapshot
-            .latest_run_id
-            .clone()
+        let current = snapshot
+            .current_run()
+            .map_err(|error| RunError::internal(error.to_string()))?
             .ok_or_else(|| RunError::bad_request("Session Thread has no committed Run"))?;
-        let is_awaiting = snapshot.runs.iter().any(|run| {
-            run.id == run_id
-                && run.thread_id == snapshot.thread_id
-                && run.state == RunState::Awaiting
-        });
-        if !is_awaiting {
+        let run_id = current.id.clone();
+        if current.thread_id != snapshot.thread_id || current.state != RunState::Awaiting {
             return Err(RunError::bad_request(
                 "Session Thread is not awaiting a reply",
             ));
@@ -673,22 +669,15 @@ impl SessionAgentCoordination for SessionApplication {
                     .session_thread_recovery_snapshot(&command.session_id, &thread_id.0)
                     .await?
                 {
-                    let latest_run_id = snapshot.latest_run_id.as_ref().ok_or_else(|| {
-                        RunError::internal(
-                            "coordinated Thread recovery omitted its latest committed Run",
-                        )
-                    })?;
-                    let latest_state = snapshot
-                        .runs
-                        .iter()
-                        .find(|run| &run.id == latest_run_id)
-                        .map(|run| &run.state)
+                    let latest = snapshot
+                        .current_run()
+                        .map_err(|error| RunError::internal(error.to_string()))?
                         .ok_or_else(|| {
                             RunError::internal(
-                                "coordinated Thread recovery omitted its latest Run state",
+                                "coordinated Thread recovery omitted its latest committed Run",
                             )
                         })?;
-                    if coordinated_thread_failed(latest_state) {
+                    if coordinated_thread_closed(link.target.kind(), &latest.state) {
                         return Err(RunError::bad_request(
                             "Agent Thread terminated after a failed Run",
                         ));

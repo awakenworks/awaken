@@ -23,7 +23,7 @@ impl ManagedState {
         let id = managed_multiagent_event_id(
             &record.session.id,
             &record.session.id,
-            "root-terminal-status-running",
+            event_role::ROOT_TERMINAL_STATUS_RUNNING,
             ManagedMultiagentEventProvenance::Lifecycle {
                 cursor: terminal.cursor.0,
             },
@@ -81,7 +81,7 @@ impl ManagedState {
                     replaced_ids.insert(managed_multiagent_event_id(
                         &record.session.id,
                         &record.session.id,
-                        "aggregate-status-running",
+                        event_role::AGGREGATE_STATUS_RUNNING,
                         ManagedMultiagentEventProvenance::Lifecycle {
                             cursor: lifecycle.cursor.0,
                         },
@@ -90,18 +90,17 @@ impl ManagedState {
                 if let Some(terminal_cursor) = interval_lifecycle
                     .iter()
                     .filter(|event| {
-                        matches!(
+                        awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(
                             event.kind,
-                            RunLifecycleEventKind::Awaiting
-                                | RunLifecycleEventKind::Completed
-                                | RunLifecycleEventKind::Failed
-                                | RunLifecycleEventKind::Cancelled
                         )
                     })
                     .map(|event| event.cursor)
                     .max()
                 {
-                    for role in ["aggregate-usage", "aggregate-status-idle"] {
+                    for role in [
+                        event_role::AGGREGATE_USAGE,
+                        event_role::AGGREGATE_STATUS_IDLE,
+                    ] {
                         replaced_ids.insert(managed_multiagent_event_id(
                             &record.session.id,
                             &record.session.id,
@@ -112,7 +111,10 @@ impl ManagedState {
                         ));
                     }
                 }
-                for role in ["aggregate-usage", "aggregate-status-idle"] {
+                for role in [
+                    event_role::AGGREGATE_USAGE,
+                    event_role::AGGREGATE_STATUS_IDLE,
+                ] {
                     replaced_ids.insert(managed_multiagent_event_id(
                         &record.session.id,
                         &record.session.id,
@@ -125,7 +127,7 @@ impl ManagedState {
                 replaced_ids.insert(managed_multiagent_event_id(
                     &record.session.id,
                     &record.session.id,
-                    "aggregate-status-running",
+                    event_role::AGGREGATE_STATUS_RUNNING,
                     ManagedMultiagentEventProvenance::RuntimeInterval {
                         interval_id: &interval.interval_id,
                     },
@@ -148,7 +150,7 @@ impl ManagedState {
                     replaced_ids.insert(managed_multiagent_event_id(
                         &record.session.id,
                         &record.session.id,
-                        "aggregate-status-running",
+                        event_role::AGGREGATE_STATUS_RUNNING,
                         ManagedMultiagentEventProvenance::Lifecycle {
                             cursor: lifecycle.cursor.0,
                         },
@@ -157,7 +159,7 @@ impl ManagedState {
                 replaced_ids.insert(managed_multiagent_event_id(
                     &record.session.id,
                     &record.session.id,
-                    "aggregate-status-running",
+                    event_role::AGGREGATE_STATUS_RUNNING,
                     ManagedMultiagentEventProvenance::RuntimeInterval {
                         interval_id: &interval.interval_id,
                     },
@@ -187,7 +189,7 @@ impl ManagedState {
                 managed_multiagent_event_id(
                     &record.session.id,
                     &record.session.id,
-                    "aggregate-status-running",
+                    event_role::AGGREGATE_STATUS_RUNNING,
                     ManagedMultiagentEventProvenance::Lifecycle {
                         cursor: opening.cursor.0,
                     },
@@ -204,12 +206,8 @@ impl ManagedState {
                             && event.thread_id == observation.thread_id
                             && event.run_id == observation.run_id
                             && event.thread_id.0 == record.session.id
-                            && matches!(
+                            && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(
                                 event.kind,
-                                RunLifecycleEventKind::Awaiting
-                                    | RunLifecycleEventKind::Completed
-                                    | RunLifecycleEventKind::Failed
-                                    | RunLifecycleEventKind::Cancelled
                             )
                     })
                 })
@@ -217,7 +215,7 @@ impl ManagedState {
                 let id = managed_multiagent_event_id(
                     &record.session.id,
                     &record.session.id,
-                    "aggregate-terminal-status-running",
+                    event_role::AGGREGATE_TERMINAL_STATUS_RUNNING,
                     ManagedMultiagentEventProvenance::LifecyclePrefix {
                         cursor: terminal.cursor.0,
                     },
@@ -228,7 +226,7 @@ impl ManagedState {
             let usage_id = managed_multiagent_event_id(
                 &record.session.id,
                 &record.session.id,
-                "aggregate-usage",
+                event_role::AGGREGATE_USAGE,
                 ManagedMultiagentEventProvenance::RuntimeInterval {
                     interval_id: &interval.interval_id,
                 },
@@ -236,7 +234,7 @@ impl ManagedState {
             let idle_id = managed_multiagent_event_id(
                 &record.session.id,
                 &record.session.id,
-                "aggregate-status-idle",
+                event_role::AGGREGATE_STATUS_IDLE,
                 ManagedMultiagentEventProvenance::RuntimeInterval {
                     interval_id: &interval.interval_id,
                 },
@@ -334,7 +332,7 @@ impl ManagedState {
                 let running_id = managed_multiagent_event_id(
                     &record.session.id,
                     &record.session.id,
-                    "aggregate-status-running",
+                    event_role::AGGREGATE_STATUS_RUNNING,
                     ManagedMultiagentEventProvenance::Lifecycle {
                         cursor: opening.cursor.0,
                     },

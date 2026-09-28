@@ -246,25 +246,19 @@ const fn advance_answered_pending_commit(
 }
 
 impl ManagedState {
-    /// Resolve the one current Run coordinate carried by a recovery prefix.
-    /// Strict admission, lenient projection, and interruption must not each
-    /// invent a different latest-versus-claimed fallback or state lookup.
+    /// Resolve the one current Run carried by a recovery prefix through the
+    /// neutral contract rule ([`RunRecoverySnapshot::current_run`]). Strict
+    /// admission, projection, and interruption share it, so none can invent a
+    /// latest-versus-claimed fallback or silently skip a damaged prefix.
     pub(super) fn current_recovery_run(
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-    ) -> (
-        &awaken_agent_contract::agent::run::Id,
-        Option<&awaken_agent_contract::agent::run::RunState>,
-    ) {
-        let run_id = snapshot
-            .latest_run_id
-            .as_ref()
-            .unwrap_or(&snapshot.claimed_run_id);
-        let state = snapshot
-            .runs
-            .iter()
-            .find(|run| &run.id == run_id)
-            .map(|run| &run.state);
-        (run_id, state)
+    ) -> Result<Option<&awaken_agent_contract::agent::run::Record>, StateError> {
+        snapshot.current_run().map_err(|error| {
+            StateError::projection_recovery_required(format!(
+                "Runtime recovery for Thread {:?} is damaged: {error}; interrupt the Session to settle it",
+                snapshot.thread_id.0
+            ))
+        })
     }
 
     /// Return the latest well-formed state-change audit for one Run. Both the
@@ -301,10 +295,7 @@ impl ManagedState {
             return false;
         }
         latest_state.is_none_or(|state| {
-            !coordinated_child_run_is_terminal(
-                matches!(target, CoordinatedThreadTarget::Advisor { .. }),
-                state,
-            )
+            !awaken_session_runtime_contract::coordinated_thread_closed(target.kind(), state)
         })
     }
 
@@ -348,25 +339,21 @@ impl ManagedState {
                         "recover coordinated Thread disposition: {error}"
                     )))
                 })?;
-        let latest_run_id = snapshot.latest_run_id.as_ref().ok_or_else(|| {
-            StateError::Run(RunError::internal(
-                "coordinated Thread recovery omitted its latest committed Run",
-            ))
-        })?;
+        // A prefix with no committed Run yet is the same cancellable target as
+        // a link without a snapshot. A damaged prefix fails Internal: asking the
+        // caller to interrupt would loop back into this classification.
         let latest_state = snapshot
-            .runs
-            .iter()
-            .find(|run| &run.id == latest_run_id)
-            .map(|run| &run.state)
-            .ok_or_else(|| {
-                StateError::Run(RunError::internal(
-                    "coordinated Thread recovery omitted its latest Run state",
-                ))
-            })?;
+            .current_run()
+            .map_err(|error| {
+                StateError::Run(RunError::internal(format!(
+                    "recover coordinated Thread latest Run: {error}"
+                )))
+            })?
+            .map(|run| &run.state);
         Ok(!Self::coordinated_thread_is_interruptible(
             &link.target,
             disposition,
-            Some(latest_state),
+            latest_state,
         ))
     }
 
@@ -510,7 +497,16 @@ impl ManagedState {
     pub(super) fn pending_ticket_from_recovery_snapshot(
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<Option<(awaken_agent_contract::agent::run::Id, String, Pending)>, StateError> {
-        let (run_id, current_state) = Self::current_recovery_run(snapshot);
+        let Some(current) = Self::current_recovery_run(snapshot)? else {
+            // Nothing committed: no Run can own an answerable ticket.
+            if snapshot.resume_tickets.is_empty() {
+                return Ok(None);
+            }
+            return Err(StateError::projection_recovery_required(
+                "Runtime recovery exposed a resume ticket without a committed Run; interrupt the Session to settle it",
+            ));
+        };
+        let (run_id, current_state) = (&current.id, Some(&current.state));
         // The Runtime resumes one committed Awaiting ticket at a time. An
         // ActiveToolBatch may retain later Requested calls, but they are not
         // externally answerable until the current ticket is consumed and the
@@ -593,13 +589,19 @@ impl ManagedState {
             }
         };
 
-        let (run_id, current_state) = Self::current_recovery_run(snapshot);
-        if !matches!(
-            current_state,
-            Some(awaken_agent_contract::agent::run::RunState::Awaiting)
-        ) {
+        let current = match Self::current_recovery_run(snapshot) {
+            Ok(current) => current,
+            Err(error) => return Err(ticket_error.unwrap_or(error)),
+        };
+        let Some(current) = current.filter(|run| {
+            matches!(
+                run.state,
+                awaken_agent_contract::agent::run::RunState::Awaiting
+            )
+        }) else {
             return ticket_error.map_or(Ok(None), Err);
-        }
+        };
+        let run_id = &current.id;
         let Some((event, awaken_agent_contract::agent::run::RunState::Awaiting)) =
             Self::latest_recovery_run_state_change(snapshot, run_id)
         else {

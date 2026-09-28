@@ -8,7 +8,7 @@
 // @formal evidence session_event_batch.idempotency_key_appends_at_most_once
 // @formal evidence tool_result.pending_commit_coordinate_is_exact
 // @formal evidence tool_result.terminal_run_rejects_late_result
-// awaken-file-limit-ceiling: 13669 (legacy oversized test file: split, never grow)
+// awaken-file-limit-ceiling: 13645 (legacy oversized test file: split, never grow)
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;
 mod cancelled_model;
@@ -2736,13 +2736,12 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         "P3/C2 list projection reconstructs without choosing a duplicate ticket"
     );
 
-    // Extraction compatibility table (original strict error precedence):
+    // Current-Run precedence table:
     // P4 explicit Ended/Running overrides even duplicate+foreign-owner rows.
-    // P5 unknown legacy state + duplicates => Multiple before owner mismatch.
-    // P6 unknown + one foreign owner => Inconsistent; P7 one exact => candidate.
-    // P8 unknown + absent + historical Awaiting => missing-ticket repair.
-    // P9 unknown + absent + no audit => no candidate, not a fabricated error.
-    // P10 wrong outer row naming current inner Run => Inconsistent before P9.
+    // P5 a latest Run named without its committed record is a damaged prefix
+    // for every ticket shape (duplicate, foreign owner, exact, absent): the
+    // recovery contract has no unknown-state current Run, so no ticket is
+    // admitted from it and absence is not silently read as "no wait".
     let mut legacy = one.clone();
     legacy.resume_tickets[0].ticket.thread_id = ThreadId("foreign".into());
     for state in [RunState::Ended(EndCause::Cancelled), RunState::Running] {
@@ -2761,54 +2760,21 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         );
     }
     legacy.runs.clear();
-    assert!(
-        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
-            .unwrap_err()
-            .to_string()
-            .contains("multiple answerable tickets"),
-        "P5 cardinality before identity"
-    );
-    legacy.resume_tickets.truncate(1);
-    assert!(
-        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
-            .unwrap_err()
-            .to_string()
-            .contains("inconsistent pending-tool identity"),
-        "P6 identity error"
-    );
-    legacy.resume_tickets[0].ticket.thread_id = legacy.thread_id.clone();
-    assert!(
-        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
-            .unwrap()
-            .is_some(),
-        "P7 exact legacy ticket"
-    );
-    let mut wrong_outer = legacy.resume_tickets[0].clone();
-    wrong_outer.run_id = RunId("foreign-row".into());
-    legacy.resume_tickets.clear();
-    assert!(
-        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
-            .unwrap_err()
-            .to_string()
-            .contains("Awaiting Run without its answerable ticket"),
-        "P8 historical positive evidence"
-    );
-    legacy.events.clear();
-    assert!(
-        matches!(
-            ManagedState::pending_ticket_from_recovery_snapshot(&legacy),
-            Ok(None)
-        ),
-        "P9 unknown absence"
-    );
-    legacy.resume_tickets.push(wrong_outer);
-    assert!(
-        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
-            .unwrap_err()
-            .to_string()
-            .contains("inconsistent pending-tool identity"),
-        "P10 row corruption before absent fallback"
-    );
+    let foreign = legacy.resume_tickets[0].clone();
+    let exact = one.resume_tickets[0].clone();
+    for (shape, tickets) in [
+        ("duplicate+foreign", legacy.resume_tickets.clone()),
+        ("foreign", vec![foreign]),
+        ("exact", vec![exact]),
+        ("absent", Vec::new()),
+    ] {
+        legacy.resume_tickets = tickets;
+        assert!(
+            ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
+                .is_err_and(|error| error.is_projection_recovery_required()),
+            "P5 {shape}"
+        );
+    }
 }
 
 #[tokio::test]

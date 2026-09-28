@@ -128,23 +128,26 @@ pub(super) fn index_lifecycle_orders(
     time_for: impl Fn(&str, u64) -> Option<u64>,
 ) {
     let roles = [
-        ("root-lifecycle-status-running", 20),
-        ("root-lifecycle-session-status-rescheduled", 20),
-        ("root-lifecycle-status-rescheduled", 21),
-        ("root-rescheduled-lifecycle-status-running", 22),
-        ("root-terminal-status-running", 20),
-        ("lifecycle-status-running", 20),
-        ("lifecycle-status-rescheduled", 21),
-        ("rescheduled-lifecycle-status-running", 22),
-        ("root-lifecycle-error", 70),
-        ("lifecycle-error", 70),
-        ("root-lifecycle-status-idle", LIFECYCLE_TERMINAL_PHASE),
-        ("lifecycle-status-idle", LIFECYCLE_TERMINAL_PHASE),
+        (event_role::ROOT_LIFECYCLE_STATUS_RUNNING, 20),
+        (event_role::ROOT_LIFECYCLE_SESSION_STATUS_RESCHEDULED, 20),
+        (event_role::ROOT_LIFECYCLE_STATUS_RESCHEDULED, 21),
+        (event_role::ROOT_RESCHEDULED_LIFECYCLE_STATUS_RUNNING, 22),
+        (event_role::ROOT_TERMINAL_STATUS_RUNNING, 20),
+        (event_role::LIFECYCLE_STATUS_RUNNING, 20),
+        (event_role::LIFECYCLE_STATUS_RESCHEDULED, 21),
+        (event_role::RESCHEDULED_LIFECYCLE_STATUS_RUNNING, 22),
+        (event_role::ROOT_LIFECYCLE_ERROR, 70),
+        (event_role::LIFECYCLE_ERROR, 70),
         (
-            "failed-lifecycle-status-terminated",
+            event_role::ROOT_LIFECYCLE_STATUS_IDLE,
             LIFECYCLE_TERMINAL_PHASE,
         ),
-        ("advisor-lifecycle-status-terminated", 81),
+        (event_role::LIFECYCLE_STATUS_IDLE, LIFECYCLE_TERMINAL_PHASE),
+        (
+            event_role::FAILED_LIFECYCLE_STATUS_TERMINATED,
+            LIFECYCLE_TERMINAL_PHASE,
+        ),
+        (event_role::ADVISOR_LIFECYCLE_STATUS_TERMINATED, 81),
     ];
     for lifecycle in lifecycle_events {
         let order = |phase| CanonicalEventOrder {
@@ -164,7 +167,7 @@ pub(super) fn index_lifecycle_orders(
                 managed_multiagent_event_id(
                     session_id,
                     session_id,
-                    "aggregate-status-running",
+                    event_role::AGGREGATE_STATUS_RUNNING,
                     ManagedMultiagentEventProvenance::Lifecycle {
                         cursor: lifecycle.cursor.0,
                     },
@@ -173,20 +176,14 @@ pub(super) fn index_lifecycle_orders(
             );
         }
         if lifecycle.thread_id.0 == session_id
-            && matches!(
-                lifecycle.kind,
-                RunLifecycleEventKind::Awaiting
-                    | RunLifecycleEventKind::Completed
-                    | RunLifecycleEventKind::Failed
-                    | RunLifecycleEventKind::Cancelled
-            )
+            && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(lifecycle.kind)
         {
             retain_earliest_order(
                 orders,
                 managed_multiagent_event_id(
                     session_id,
                     session_id,
-                    "aggregate-terminal-status-running",
+                    event_role::AGGREGATE_TERMINAL_STATUS_RUNNING,
                     ManagedMultiagentEventProvenance::LifecyclePrefix {
                         cursor: lifecycle.cursor.0,
                     },
@@ -208,7 +205,10 @@ pub(super) fn index_lifecycle_orders(
                 order(phase),
             );
         }
-        for (role, phase) in [("aggregate-usage", 90), ("aggregate-status-idle", 100)] {
+        for (role, phase) in [
+            (event_role::AGGREGATE_USAGE, 90),
+            (event_role::AGGREGATE_STATUS_IDLE, 100),
+        ] {
             retain_earliest_order(
                 orders,
                 managed_multiagent_event_id(
@@ -631,12 +631,8 @@ impl ManagedState {
                         event.thread_id == awaiting.thread_id
                             && event.run_id == awaiting.run_id
                             && event.cursor > awaiting.cursor
-                            && matches!(
+                            && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(
                                 event.kind,
-                                RunLifecycleEventKind::Awaiting
-                                    | RunLifecycleEventKind::Completed
-                                    | RunLifecycleEventKind::Failed
-                                    | RunLifecycleEventKind::Cancelled
                             )
                     })
                     .min_by_key(|event| event.cursor)
@@ -699,7 +695,10 @@ impl ManagedState {
             let Some(close) = interval_close_cursor(interval) else {
                 continue;
             };
-            for (role, phase) in [("aggregate-usage", 90), ("aggregate-status-idle", 100)] {
+            for (role, phase) in [
+                (event_role::AGGREGATE_USAGE, 90),
+                (event_role::AGGREGATE_STATUS_IDLE, 100),
+            ] {
                 retain_earliest_order(
                     &mut orders,
                     managed_multiagent_event_id(
@@ -746,8 +745,8 @@ impl ManagedState {
                 )
                 .0;
                 for (role, phase) in [
-                    ("model-request-start", 40),
-                    ("model-request-end", 41),
+                    (event_role::MODEL_REQUEST_START, 40),
+                    (event_role::MODEL_REQUEST_END, 41),
                 ] {
                     retain_earliest_order(
                         &mut orders,
@@ -785,7 +784,7 @@ impl ManagedState {
                         managed_multiagent_event_id(
                             &record.session.id,
                             thread_id,
-                            "run-context-compacted",
+                            event_role::RUN_CONTEXT_COMPACTED,
                             ManagedMultiagentEventProvenance::RunState {
                                 run_id: &run.id.0,
                             },
@@ -813,7 +812,7 @@ impl ManagedState {
                     managed_multiagent_event_id(
                         &record.session.id,
                         thread_id,
-                        "archived-status-terminated",
+                        event_role::ARCHIVED_STATUS_TERMINATED,
                         ManagedMultiagentEventProvenance::ArchivedDisposition,
                     ),
                     CanonicalEventOrder {
@@ -875,9 +874,9 @@ impl ManagedState {
                                 );
                         }
                         for (role, phase) in [
-                            ("outcome-evaluation-start", 60),
-                            ("outcome-evaluation-ongoing", 61),
-                            ("outcome-evaluation-end", 62),
+                            (event_role::OUTCOME_EVALUATION_START, 60),
+                            (event_role::OUTCOME_EVALUATION_ONGOING, 61),
+                            (event_role::OUTCOME_EVALUATION_END, 62),
                         ] {
                             retain_earliest_order(
                                 &mut orders,
@@ -914,7 +913,7 @@ impl ManagedState {
                         managed_multiagent_event_id(
                             &record.session.id,
                             &record.session.id,
-                            "outcome-error",
+                            event_role::OUTCOME_ERROR,
                             ManagedMultiagentEventProvenance::Outcome {
                                 outcome_id: &projection.outcome_id,
                             },
@@ -940,8 +939,8 @@ impl ManagedState {
                 continue;
             };
             for (role, phase) in [
-                ("budget-reach-usage", 90),
-                ("budget-reach-status-idle", 100),
+                (event_role::BUDGET_REACH_USAGE, 90),
+                (event_role::BUDGET_REACH_STATUS_IDLE, 100),
             ] {
                 retain_earliest_order(
                     &mut orders,
@@ -991,7 +990,7 @@ impl ManagedState {
                 managed_multiagent_event_id(
                     &record.session.id,
                     &record.session.id,
-                    "activation-failed-error",
+                    event_role::ACTIVATION_FAILED_ERROR,
                     ManagedMultiagentEventProvenance::ParentTerminal,
                 ),
                 CanonicalEventOrder {
@@ -1010,19 +1009,19 @@ impl ManagedState {
                     .map(|link| {
                         (
                             link.thread_id.0.as_str(),
-                            "parent-terminal-child-status-terminated",
+                            event_role::PARENT_TERMINAL_CHILD_STATUS_TERMINATED,
                             110,
                         )
                     })
                     .chain([
                         (
                             record.session.id.as_str(),
-                            "parent-terminal-primary-status-terminated",
+                            event_role::PARENT_TERMINAL_PRIMARY_STATUS_TERMINATED,
                             111,
                         ),
                         (
                             record.session.id.as_str(),
-                            "parent-terminal-session-status-terminated",
+                            event_role::PARENT_TERMINAL_SESSION_STATUS_TERMINATED,
                             112,
                         ),
                     ])

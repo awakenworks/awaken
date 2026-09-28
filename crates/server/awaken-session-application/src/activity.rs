@@ -6,9 +6,9 @@
 // @formal entrypoint session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
 //! Durable activity fencing for overlapping Session Runs.
 
+use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
 use awaken_session_error_contract::RunError;
 use awaken_session_event_contract::SessionEventProjectionAnchor;
 use awaken_session_state_contract::{
@@ -1071,13 +1071,7 @@ impl SessionApplication {
             if &event.thread_id == thread_id
                 && &event.run_id == run_id
                 && &event.state == state
-                && matches!(
-                    event.kind,
-                    RunLifecycleEventKind::Awaiting
-                        | RunLifecycleEventKind::Completed
-                        | RunLifecycleEventKind::Failed
-                        | RunLifecycleEventKind::Cancelled
-                )
+                && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
             {
                 selected = Some(SessionRuntimeIntervalObservation {
                     activity_epoch,

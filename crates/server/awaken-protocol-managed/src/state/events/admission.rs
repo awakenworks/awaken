@@ -85,15 +85,12 @@ impl ManagedState {
                 .iter()
                 .all(|event| matches!(event, InboundEvent::UserInterrupt { .. }));
         if interrupt_only {
-            let snapshot_is_awaiting =
-                |snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot| {
-                    matches!(
-                        Self::current_recovery_run(snapshot).1,
-                        Some(awaken_agent_contract::agent::run::RunState::Awaiting)
-                    )
-                };
-            let has_awaiting_run = root_snapshot.as_ref().is_some_and(snapshot_is_awaiting)
-                || child_snapshots.values().any(snapshot_is_awaiting);
+            let mut has_awaiting_run = false;
+            for snapshot in root_snapshot.iter().chain(child_snapshots.values()) {
+                has_awaiting_run |= Self::current_recovery_run(snapshot)?.is_some_and(|run| {
+                    run.state == awaken_agent_contract::agent::run::RunState::Awaiting
+                });
+            }
             // Preserve the existing accepted no-op for a pure budget pause, but
             // never mistake an Awaiting Run with an isolated/corrupt ticket for
             // that no-op. Interrupt needs topology and lifecycle facts, not reply

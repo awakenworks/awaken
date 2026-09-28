@@ -49,7 +49,7 @@ impl ManagedState {
         let id = managed_multiagent_event_id(
             &record.session.id,
             &record.session.id,
-            "activation-failed-error",
+            event_role::ACTIVATION_FAILED_ERROR,
             ManagedMultiagentEventProvenance::ParentTerminal,
         );
         record.append_event_once(Event {
