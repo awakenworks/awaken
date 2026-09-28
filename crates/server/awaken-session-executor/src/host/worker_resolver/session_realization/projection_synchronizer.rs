@@ -693,7 +693,7 @@ mod tests {
         let host = Arc::new(raw_host.with_store_dir(storage.path()));
         let managed = crate::host::worker_resolver::test_support::complete_managed_test_host(
             crate::ManagedHost::new(host.clone())
-                .with_resource_validator(crate::host::tests::test_resource_validator()),
+                .with_resource_validator(crate::host::test_resource_validator()),
         );
         let snapshot = test_activation(thread, "run-claimed-ready-durable").snapshot;
         let snapshot = if successor_cancellations.is_empty() {
@@ -711,7 +711,7 @@ mod tests {
         let mut projection = frozen_projection();
         let memory_store = "replacement-chain-memory";
         if !successor_cancellations.is_empty() {
-            crate::host::tests::install_test_memory_mounter(&host);
+            crate::host::install_test_memory_mounter(&host);
             host.memory_repository()
                 .create(memory_store, "/note.txt", "seed")
                 .await

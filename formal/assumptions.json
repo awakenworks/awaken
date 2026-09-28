@@ -168,7 +168,7 @@
       "kind": "liveness",
       "integration_evidence": [
         "e2e/acp_managed_mcp_e2e.mjs",
-        "crates/server/awaken-session-executor/src/host/tests.rs",
+        "crates/server/awaken-session-executor/src/host/tests/mcp_generation.rs",
         "formal/README.md"
       ],
       "runtime_evidence": [
@@ -189,7 +189,7 @@
         "scope": "release_qualification_not_customer_sla",
         "drill_evidence": [
           "e2e/acp_managed_mcp_e2e.mjs",
-          "crates/server/awaken-session-executor/src/host/tests.rs"
+          "crates/server/awaken-session-executor/src/host/tests/mcp_generation.rs"
         ]
       },
       "version_and_configuration_contract": "ACP/MCP protocol version, process image and termination-policy fingerprint.",
@@ -268,7 +268,7 @@
       "integration_evidence": [
         "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs",
         "crates/server/awaken-session-executor/src/application/realization_control_deadline.rs",
-        "crates/server/awaken-session-executor/src/host/tests.rs"
+        "crates/server/awaken-session-executor/src/host/tests/realization_renewal.rs"
       ],
       "runtime_evidence": [],
       "status": "evidenced",
@@ -281,7 +281,7 @@
         "recovery_point_seconds": 0,
         "scope": "release_qualification_not_customer_sla",
         "drill_evidence": [
-          "crates/server/awaken-session-executor/src/host/tests.rs"
+          "crates/server/awaken-session-executor/src/host/tests/realization_renewal.rs"
         ]
       },
       "version_and_configuration_contract": "Rust standard library, Tokio runtime and operating-system scheduler exact versions and configuration fingerprint.",

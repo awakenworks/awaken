@@ -258,7 +258,9 @@ def repository_git_boundary_violations(sources: dict[str, str]) -> list[str]:
     for path, source in sources.items():
         if not path.startswith("crates/server/awaken-session-executor/src/"):
             continue
-        if path.endswith("/tests.rs") or path.endswith("_tests.rs"):
+        # A `tests.rs` module and the topic files under its `tests/` directory
+        # are compiled only behind the parent's `#[cfg(test)] mod tests;`.
+        if path.endswith("/tests.rs") or path.endswith("_tests.rs") or "/tests/" in path:
             continue
         production = _crate_boundary_workspace.production_rust(source)
         for forbidden in (
