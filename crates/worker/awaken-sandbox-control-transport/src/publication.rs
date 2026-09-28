@@ -3,14 +3,16 @@
 
 use std::sync::Arc;
 
+use awaken_lease_contract::fence::SlotToken;
 use awaken_sandbox_control::SandboxControlPublishError;
 
 /// Opaque identity of one process-local Sandbox control publication.
 ///
-/// Identity is allocation-backed rather than numeric, so an exhausted counter
-/// cannot wrap and let a stale publisher match a later publication.
-#[derive(Clone)]
-pub struct SandboxControlPublicationLease(Arc<()>);
+/// Identity is the kernel's allocation-backed [`SlotToken`] rather than a
+/// number, so an exhausted counter cannot wrap and let a stale publisher match
+/// a later publication.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxControlPublicationLease(SlotToken);
 
 /// Shared task participant for a publication, including asynchronous setup.
 /// Cancellation requests shutdown; only joining establishes completion.
@@ -104,7 +106,7 @@ impl<T> SandboxControlPublicationSlot<T> {
         if active.is_some() {
             return Err(SandboxControlPublishError);
         }
-        let lease = SandboxControlPublicationLease(Arc::new(()));
+        let lease = SandboxControlPublicationLease(SlotToken::mint());
         *active = Some((lease.clone(), value));
         Ok(lease)
     }
@@ -116,7 +118,7 @@ impl<T> SandboxControlPublicationSlot<T> {
             matches!(
                 &*state,
                 PublicationSlotState::Open(Some((current, _)))
-                    if Arc::ptr_eq(&current.0, &lease.0)
+                    if current == lease
             )
         })
     }
@@ -155,7 +157,7 @@ impl<T> SandboxControlPublicationSlot<T> {
         else {
             return Err(SandboxControlPublishError);
         };
-        if !Arc::ptr_eq(&current.0, &lease.0) {
+        if *current != *lease {
             return Err(SandboxControlPublishError);
         }
         Ok(update(value))
@@ -169,10 +171,7 @@ impl<T> SandboxControlPublicationSlot<T> {
         let PublicationSlotState::Open(active) = &mut *state else {
             return;
         };
-        if active
-            .as_ref()
-            .is_some_and(|(current, _)| Arc::ptr_eq(&current.0, &lease.0))
-        {
+        if active.as_ref().is_some_and(|(current, _)| current == lease) {
             *active = None;
         }
     }
