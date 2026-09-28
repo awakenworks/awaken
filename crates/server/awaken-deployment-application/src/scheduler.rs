@@ -7,6 +7,7 @@
 //! aggregate and its existing repository/launcher seams.
 
 use awaken_deployment_contract::{Cron, MAX_DEPLOYMENT_REVISION, ScheduledRunClaimOutcome};
+use awaken_lease_contract::WallClockExt as _;
 use chrono_tz::Tz;
 
 use super::{
@@ -121,6 +122,7 @@ impl DeploymentApplication {
                             &run_id,
                             &run.workspace_id,
                             "deployment_run.started",
+                            self.clock.now_ms(),
                         ),
                     )
                     .await?
@@ -299,7 +301,7 @@ mod tests {
         // or launch; E2 retry claims and launches once. Constraints: K1 the
         // refresh owns no Deployment state; K2 tick remains the only candidate
         // compiler. Decision table: D1 C1+!C2=>E1; D2 C1+C2+C3=>E2.
-        let application = DeploymentApplication::new();
+        let application = DeploymentApplication::new(awaken_lease_contract::system_clock());
         let refresh = Arc::new(ToggleProjectionRefresh::default());
         application.bind_executable_projection_refresh(Arc::new(
             awaken_session_application_contract::ExecutableProjectionRefresh::new(
@@ -366,7 +368,7 @@ mod tests {
         // the unjittered cron instant; S4 paused -> no later runs; S5 unpause ->
         // reseed after unpause time and never backfill missed occurrences.
         const MONDAY_0900: u64 = 1_767_603_600_000;
-        let application = DeploymentApplication::new();
+        let application = DeploymentApplication::new(awaken_lease_contract::system_clock());
         let mut create = command(true);
         create.schedule = Some(DeploymentSchedule::Cron {
             expression: "*/15 * * * *".into(),
@@ -414,7 +416,7 @@ mod tests {
                 .unwrap()
                 .record
                 .next_fire_ms
-                .is_some_and(|cursor| cursor > crate::now_ms()),
+                .is_some_and(|cursor| cursor > awaken_lease_contract::system_clock().now_ms()),
             "S5"
         );
     }
@@ -432,9 +434,12 @@ mod tests {
         let repository = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
         );
-        let application = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
+        let application = DeploymentApplication::from_repository(
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         let mut create = command(true);
         create.schedule = Some(DeploymentSchedule::Cron {
             expression: "30 1 * * *".into(),
@@ -466,9 +471,12 @@ mod tests {
             awaken_deployment_contract::DeploymentWriteOutcome::Applied,
         );
 
-        let application = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
+        let application = DeploymentApplication::from_repository(
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         application.bind_launcher(Arc::new(OutcomeLauncher {
             outcome: DeploymentLaunchOutcome::Created {
@@ -498,9 +506,12 @@ mod tests {
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2, "D1/E2");
 
-        let restarted = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
+        let restarted = DeploymentApplication::from_repository(
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         restarted.bind_launcher(Arc::new(OutcomeLauncher {
             outcome: DeploymentLaunchOutcome::Created {
                 session_id: "must-not-launch".into(),

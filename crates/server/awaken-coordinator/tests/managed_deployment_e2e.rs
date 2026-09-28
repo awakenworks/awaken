@@ -415,7 +415,9 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         catalog,
         Arc::new(DeploymentPriceProvider),
     );
-    let deployments = Arc::new(DeploymentApplication::new());
+    let deployments = Arc::new(DeploymentApplication::new(
+        awaken_lease_contract::system_clock(),
+    ));
     deployments.bind_launcher(Arc::new(ManagedDeploymentSessionLauncher::new(
         managed.managed.clone(),
     )));

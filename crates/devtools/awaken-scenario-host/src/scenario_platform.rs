@@ -189,7 +189,7 @@ pub(super) fn mount_with_environments_and_agent_source(
     // existing Managed route.
     let environments = awaken_protocol_managed::with_managed_response_context(
         awaken_protocol_managed::environment_authoring_router(environment_authoring.clone()).merge(
-            awaken_protocol_managed::environment_work_router(environment_execution),
+            awaken_protocol_managed::environment_work_router(environment_execution, host.clock()),
         ),
     )
     .layer(axum::Extension(awaken_tenancy::WorkspaceScope(

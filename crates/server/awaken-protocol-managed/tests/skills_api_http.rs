@@ -34,7 +34,11 @@ fn router_with_store() -> (
     let store = support::resources::filesystem_skill_store(dir.join("store"));
     let resources = support::resources::resources(store.clone());
     (
-        skills_router(Some(store.clone()), resources.purge_scheduler()),
+        skills_router(
+            Some(store.clone()),
+            resources.purge_scheduler(),
+            awaken_lease_contract::system_clock(),
+        ),
         store,
         dir,
     )
@@ -783,7 +787,11 @@ async fn non_sdk_json_create_is_rejected_before_store_selection() {
     // admission returns 400 whether or not a durable store is configured. Store
     // availability must not revive a removed parallel create path.
     let resources = support::resources::ephemeral_resources();
-    let router = skills_router(None, resources.purge_scheduler());
+    let router = skills_router(
+        None,
+        resources.purge_scheduler(),
+        awaken_lease_contract::system_clock(),
+    );
     let _v = post_json(
         &router,
         "/v1/skills",
@@ -815,7 +823,11 @@ async fn non_sdk_json_create_cannot_mutate_the_durable_store() {
 #[tokio::test]
 async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
     let resources = support::resources::ephemeral_resources();
-    let router = skills_router(None, resources.purge_scheduler());
+    let router = skills_router(
+        None,
+        resources.purge_scheduler(),
+        awaken_lease_contract::system_clock(),
+    );
     // Multipart fails closed (409) when nothing durable backs it.
     let _created = post_multipart(&router, "/v1/skills", SKILL_V1)
         .await

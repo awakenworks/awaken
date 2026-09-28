@@ -248,7 +248,7 @@ impl VaultState {
     /// Sample the owner clock once. The epoch itself is the system clock's
     /// failure value, so it fails closed instead of backdating expiry checks
     /// or stamping a fabricated instant on a durable object.
-    fn now_unix_ms(&self) -> Result<u64, awaken_credential_vault::CredentialError> {
+    fn clock_reading_ms(&self) -> Result<u64, awaken_credential_vault::CredentialError> {
         match self.clock.now_ms() {
             0 => Err(awaken_credential_vault::CredentialError::Storage(
                 "credential clock is unavailable".into(),
@@ -258,8 +258,8 @@ impl VaultState {
     }
 
     /// The owner clock as the RFC 3339 wire/persistence instant.
-    fn now_rfc3339(&self) -> Result<String, awaken_credential_vault::CredentialError> {
-        self.now_unix_ms()
+    fn clock_reading_rfc3339(&self) -> Result<String, awaken_credential_vault::CredentialError> {
+        self.clock_reading_ms()
             .map(awaken_session_application_contract::epoch_millis_to_rfc3339)
     }
 
@@ -377,7 +377,7 @@ impl VaultState {
             credential_generation,
         )?;
         let (descriptor, target_audience) = mcp_credential_descriptor(mcp_server_url)?;
-        let now = self.now_rfc3339()?;
+        let now = self.clock_reading_rfc3339()?;
         self.repository
             .ensure_vault(
                 workspace_id,
@@ -701,7 +701,7 @@ impl VaultState {
             selected_holder,
             binding,
         } = request;
-        let now_unix_ms = self.now_unix_ms()?;
+        let now_unix_ms = self.clock_reading_ms()?;
         self.exact_access_for_source(
             source_id,
             awaken_credential_vault::ExactCredentialAccessRequest {
@@ -814,7 +814,7 @@ impl VaultState {
                     policy: CredentialExecutionPolicy::self_hosted_mcp(),
                     selected_holder,
                     binding,
-                    now_unix_ms: self.now_unix_ms()?,
+                    now_unix_ms: self.clock_reading_ms()?,
                 },
             )
             .await?;
@@ -1091,7 +1091,7 @@ async fn create_vault(
         return Err(bad_request("display_name must be 1-255 characters"));
     }
     let id = format!("vlt_{}", uuid::Uuid::now_v7().simple());
-    let now = state.now_rfc3339().map_err(storage_error)?;
+    let now = state.clock_reading_rfc3339().map_err(storage_error)?;
     let record = VaultRecord {
         id,
         workspace_id: workspace_id.clone(),
@@ -1161,7 +1161,7 @@ async fn delete_vault(
         .await
         .map_err(storage_error)?
         .ok_or_else(|| not_found("vault"))?;
-    let requested_at = state.now_rfc3339().map_err(storage_error)?;
+    let requested_at = state.clock_reading_rfc3339().map_err(storage_error)?;
     let (requested, changed) =
         request_managed_vault_deletion(&current, requested_at).map_err(vault_mutation_error)?;
     let requested = persist_vault_deletion_request(
@@ -1244,7 +1244,7 @@ async fn archive_vault(
         return Ok(Json(VaultState::project_vault(&record)));
     }
     let expected_revision = record.revision;
-    let archived_at = state.now_rfc3339().map_err(storage_error)?;
+    let archived_at = state.clock_reading_rfc3339().map_err(storage_error)?;
     record.updated_at.clone_from(&archived_at);
     record.archived_at = Some(archived_at);
     record.revision = expected_revision
@@ -1291,7 +1291,7 @@ async fn update_vault(
     if record == before {
         return Ok(Json(VaultState::project_vault(&record)));
     }
-    record.updated_at = state.now_rfc3339().map_err(storage_error)?;
+    record.updated_at = state.clock_reading_rfc3339().map_err(storage_error)?;
     record.revision = expected_revision
         .checked_add(1)
         .ok_or_else(|| vault_mutation_error(ManagedVaultMutationError::RevisionExhausted))?;
@@ -1487,7 +1487,7 @@ async fn create_credential(
         auth,
         metadata,
         display_name,
-        created_at: state.now_rfc3339().map_err(storage_error)?,
+        created_at: state.clock_reading_rfc3339().map_err(storage_error)?,
     };
     let (_, record) =
         create_managed_credential(command, state.secrets.as_ref(), state.repository.as_ref())
@@ -1571,7 +1571,7 @@ async fn delete_credential(
         &vault_id,
         &id,
         ManagedCredentialOperation::Delete,
-        state.now_rfc3339().map_err(storage_error)?,
+        state.clock_reading_rfc3339().map_err(storage_error)?,
         state.secrets.as_ref(),
         state.repository.as_ref(),
     )
@@ -1596,7 +1596,7 @@ async fn archive_credential(
         &vault_id,
         &id,
         ManagedCredentialOperation::Archive,
-        state.now_rfc3339().map_err(storage_error)?,
+        state.clock_reading_rfc3339().map_err(storage_error)?,
         state.secrets.as_ref(),
         state.repository.as_ref(),
     )
@@ -1836,7 +1836,7 @@ async fn update_credential(
         record,
         material_patch,
         advance_source_without_material,
-        state.now_rfc3339().map_err(storage_error)?,
+        state.clock_reading_rfc3339().map_err(storage_error)?,
         state.secrets.as_ref(),
         state.repository.as_ref(),
     )

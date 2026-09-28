@@ -91,7 +91,7 @@ impl SessionApplication {
     pub async fn read_projection_evidence(
         &self,
         persisted: &PersistedSession,
-        started: std::time::Instant,
+        started: awaken_lease_contract::mono::Stopwatch,
     ) -> Result<SessionProjectionEvidence, RunError> {
         let session_id = &persisted.session_id;
         let mut outcome_terminals = Vec::new();

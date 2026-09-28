@@ -16,7 +16,10 @@ fn app() -> Router {
     let (authoring, execution) = awaken_protocol_managed_testkit::environment_components(
         awaken_lease_contract::system_clock(),
     );
-    environment_authoring_router(authoring).merge(environment_work_router(execution))
+    environment_authoring_router(authoring).merge(environment_work_router(
+        execution,
+        awaken_lease_contract::system_clock(),
+    ))
 }
 
 #[tokio::test]
@@ -848,8 +851,10 @@ async fn snapshot_normalizes_the_networking_policy() {
     let (authoring, execution) = awaken_protocol_managed_testkit::environment_components(
         awaken_lease_contract::system_clock(),
     );
-    let app =
-        environment_authoring_router(authoring).merge(environment_work_router(execution.clone()));
+    let app = environment_authoring_router(authoring).merge(environment_work_router(
+        execution.clone(),
+        awaken_lease_contract::system_clock(),
+    ));
     async fn make(app: &Router, cfg: Value) -> String {
         let e = call(
             app,
@@ -945,7 +950,10 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
         .unwrap();
     let replay = authoring.application().create(command).await.unwrap();
     assert_eq!(first.id, replay.id, "R1/R2");
-    let app = environment_authoring_router(authoring).merge(environment_work_router(execution));
+    let app = environment_authoring_router(authoring).merge(environment_work_router(
+        execution,
+        awaken_lease_contract::system_clock(),
+    ));
     let work = call(
         &app,
         "GET",

@@ -10,6 +10,7 @@
 //! maps that lease to the exact Managed HTTP resources the leased Session needs;
 //! it owns no token ledger, resource catalog, or Memory synchronization loop.
 
+use awaken_lease_contract::WallClockExt as _;
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
@@ -139,7 +140,11 @@ pub async fn work_session_guard(
     let token = RedactedString::from(presented.to_owned());
     let access = match state
         .environments
-        .authenticate_session_access(&token, now_ms())
+        // The token's expiry is judged on the Session application's clock.
+        .authenticate_session_access(
+            &token,
+            state.sessions.session_application().clock().now_ms(),
+        )
         .await
     {
         Ok(Some(access)) => access,
@@ -186,13 +191,6 @@ pub async fn work_session_guard(
         .insert(awaken_tenancy::WorkspaceScope(scope.workspace_id));
     req.extensions_mut().insert(access);
     next.run(req).await
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

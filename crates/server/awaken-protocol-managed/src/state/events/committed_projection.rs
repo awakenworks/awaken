@@ -38,7 +38,7 @@ impl ManagedState {
         publication::ProjectionRefreshBuild<publication::ProjectionRefreshCandidate>,
         StateError,
     > {
-        let started = std::time::Instant::now();
+        let started = awaken_lease_contract::mono::Stopwatch::start();
         // Private Worker realization mutates the same durable Session application
         // without passing through this protocol adapter. Include that root in the
         // same private candidate as Runtime facts so GET cannot publish a stale
@@ -189,7 +189,7 @@ impl ManagedState {
         session_id: &str,
     ) -> Result<bool, StateError> {
         let build = self.build_committed_projection_candidate(session_id).await;
-        let publication_started = std::time::Instant::now();
+        let publication_started = awaken_lease_contract::mono::Stopwatch::start();
         let result = self.finish_projection_refresh(session_id, build);
         tracing::debug!(
             session_id,

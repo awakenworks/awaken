@@ -52,7 +52,7 @@ impl CandidateEvidence {
         session_id: &str,
         persisted: &awaken_session_state_contract::PersistedSession,
         initial_cursor: RunLifecycleCursor,
-        started: std::time::Instant,
+        started: awaken_lease_contract::mono::Stopwatch,
     ) -> Result<Self, StateError> {
         let price_snapshot = persisted.budget.price_snapshot().cloned();
         let budget_reach = persisted
