@@ -280,6 +280,7 @@ pub awaken_tool_contract::tool_batch::DurableToolCall::result_state: alloc::vec:
 pub struct awaken_tool_contract::tool_batch::ToolBatch
 impl awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::bind_materialization_domain(&mut self, &str, awaken_tool_contract::tool_batch::ToolExecutionDomain) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_executing(&mut self, &str) -> core::result::Result<u16, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_executing_in_domain(&mut self, &str, core::option::Option<awaken_tool_contract::tool_batch::ToolExecutionDomain>) -> core::result::Result<u16, awaken_tool_contract::tool_batch::ToolBatchError>
 impl awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::calls(&self) -> &[awaken_tool_contract::tool_batch::DurableToolCall]
@@ -291,7 +292,6 @@ pub fn awaken_tool_contract::tool_batch::ToolBatch::for_step(awaken_agent_contra
 pub fn awaken_tool_contract::tool_batch::ToolBatch::id(&self) -> &awaken_tool_contract::tool_batch::ToolBatchId
 pub fn awaken_tool_contract::tool_batch::ToolBatch::is_complete(&self) -> bool
 pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_awaiting(&mut self, &str, awaken_tool_contract::tool_batch::ToolWaitKind, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
-pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_executing(&mut self, &str) -> core::result::Result<u16, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_indeterminate(&mut self, &str, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::operation_id(&self, &str) -> alloc::string::String
 pub fn awaken_tool_contract::tool_batch::ToolBatch::operation_id_for_step(&awaken_agent_contract::agent::run::Id, usize, &str) -> alloc::string::String
@@ -427,6 +427,7 @@ pub fn awaken_tool_contract::tool::RawToolRegistry::recovery_capability(&self, &
 pub struct awaken_tool_contract::ToolBatch
 impl awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::bind_materialization_domain(&mut self, &str, awaken_tool_contract::tool_batch::ToolExecutionDomain) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_executing(&mut self, &str) -> core::result::Result<u16, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_executing_in_domain(&mut self, &str, core::option::Option<awaken_tool_contract::tool_batch::ToolExecutionDomain>) -> core::result::Result<u16, awaken_tool_contract::tool_batch::ToolBatchError>
 impl awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::calls(&self) -> &[awaken_tool_contract::tool_batch::DurableToolCall]
@@ -438,7 +439,6 @@ pub fn awaken_tool_contract::tool_batch::ToolBatch::for_step(awaken_agent_contra
 pub fn awaken_tool_contract::tool_batch::ToolBatch::id(&self) -> &awaken_tool_contract::tool_batch::ToolBatchId
 pub fn awaken_tool_contract::tool_batch::ToolBatch::is_complete(&self) -> bool
 pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_awaiting(&mut self, &str, awaken_tool_contract::tool_batch::ToolWaitKind, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
-pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_executing(&mut self, &str) -> core::result::Result<u16, awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_indeterminate(&mut self, &str, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
 pub fn awaken_tool_contract::tool_batch::ToolBatch::operation_id(&self, &str) -> alloc::string::String
 pub fn awaken_tool_contract::tool_batch::ToolBatch::operation_id_for_step(&awaken_agent_contract::agent::run::Id, usize, &str) -> alloc::string::String
