@@ -32,6 +32,8 @@ opentelemetry-otlp = { version = "0.32", default-features = false, features = ["
 opentelemetry-prometheus = "0.32"
 prometheus = { version = "0.14", default-features = false }
 awaken-runtime-contract = { workspace = true }
+# The free-text PII patterns of `PiiRedactor`.
+regex = "1"
 
 [dev-dependencies]
 # Repo-standard helpers for driving an assembled axum `Router` through its
