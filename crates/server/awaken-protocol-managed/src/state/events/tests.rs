@@ -14,6 +14,7 @@ use awaken_session_types::SessionId;
 mod cancelled_model;
 mod pagination;
 mod refresh_failure;
+mod warm_cold_equivalence;
 
 use super::committed_projection::{
     budget_reach_close_cursor, budget_reach_projection_close_cursor,
