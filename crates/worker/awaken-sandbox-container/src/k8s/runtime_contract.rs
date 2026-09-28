@@ -317,7 +317,7 @@ impl ContainerRuntime for K8sRuntime {
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
         let fingerprint = legacy_unfenced_fingerprint(id);
-        let attempt = ContainerCreateAttempt::fresh();
+        let attempt = crate::fresh_create_attempt();
         let intent = ContainerRealizationIntent::Create;
         let context = ContainerRealizationContext::new(id, &fingerprint, None, &intent, &attempt);
         self.create_for_effect(&context, plan, &fingerprint).await
@@ -449,7 +449,7 @@ impl ContainerRuntime for K8sRuntime {
             }
         };
         let recovery_attempt =
-            ContainerCreateAttempt(observed.attempt_id.clone().ok_or_else(|| {
+            ContainerCreateAttempt::new(observed.attempt_id.clone().ok_or_else(|| {
                 backend("Kubernetes Sandbox realization has no projected-content attempt fence")
             })?);
         let recovery_context = context.with_attempt(&recovery_attempt);
@@ -994,7 +994,7 @@ mod unmaterialized_absence_tests {
         let fingerprint: pc::SandboxRealizationFingerprint =
             serde_json::from_value(serde_json::json!("fingerprint")).unwrap();
         let intent = ContainerRealizationIntent::Create;
-        let attempt = ContainerCreateAttempt::fresh();
+        let attempt = crate::fresh_create_attempt();
         let context = ContainerRealizationContext::new(
             "scope",
             &fingerprint,
@@ -1052,7 +1052,7 @@ mod unmaterialized_absence_tests {
         let fingerprint: pc::SandboxRealizationFingerprint =
             serde_json::from_value(serde_json::json!("fingerprint")).unwrap();
         let intent = ContainerRealizationIntent::Create;
-        let attempt = ContainerCreateAttempt::fresh();
+        let attempt = crate::fresh_create_attempt();
         let context = ContainerRealizationContext::new(
             "scope",
             &fingerprint,

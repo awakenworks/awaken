@@ -49,7 +49,7 @@ impl ContainerSkillCache {
 
     pub(super) async fn refresh(
         &self,
-        sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
+        sandbox: &dyn awaken_container_contract::ContainerEnvironment,
     ) -> Result<(), pc::SandboxError> {
         if let ContainerSkillSnapshot::Unavailable(error) = &*self.snapshot.read().unwrap() {
             return Err(pc::SandboxError::backend(

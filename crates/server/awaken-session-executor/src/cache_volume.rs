@@ -96,7 +96,7 @@ impl CacheVolumeInitializer for FilesystemCacheVolumeInitializer {
     feature = "container-k8s"
 ))]
 pub(crate) struct SandboxCacheVolumeInitializer {
-    provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+    provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
 }
 
 #[cfg(any(
@@ -107,7 +107,7 @@ pub(crate) struct SandboxCacheVolumeInitializer {
 impl SandboxCacheVolumeInitializer {
     #[must_use]
     pub(crate) fn new(
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
     ) -> Self {
         Self { provider }
     }
@@ -518,18 +518,60 @@ mod tests {
         feature = "container-k8s"
     ))]
     #[async_trait]
-    impl awaken_sandbox_container::ContainerEnvironment for RecordingEnvironment {
+    impl awaken_container_contract::ContainerEnvironment for RecordingEnvironment {
+        async fn checkpoint_upload(
+            &self,
+            _access: awaken_container_contract::ContainerCheckpointAccess<'_>,
+            _mutation: awaken_container_contract::ContainerCheckpointMutation<'_>,
+        ) -> Result<
+            Option<awaken_provisioning_contract::SandboxCheckpointUpload>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test container environment does not implement a fenced checkpoint participant",
+            ))
+        }
+
+        async fn remove_live_input_path(
+            &self,
+            _path: &str,
+        ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "late mount removal is unsupported on this test container",
+            ))
+        }
+
+        fn record_owned_path(
+            &self,
+            _path: &str,
+        ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test container environment does not support durable owned-path evidence",
+            ))
+        }
+
+        async fn open_agent_channel(
+            &self,
+        ) -> Result<
+            Box<dyn awaken_agent_channel::AgentChannel>,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            Err(awaken_provisioning_contract::SandboxError::unsupported(
+                "test container environment does not expose a resident agent channel",
+            ))
+        }
+
         async fn spawn_agent_process(
             &self,
             _command: pc::Command,
-        ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
+        ) -> Result<awaken_container_contract::RuntimeAgentProcess, pc::SandboxError> {
             Err(pc::SandboxError::unsupported("unused"))
         }
 
         async fn read_files(
             &self,
             _root: &str,
-        ) -> Result<Vec<awaken_sandbox_container::EnvironmentFile>, pc::SandboxError> {
+        ) -> Result<Vec<awaken_container_contract::EnvironmentFile>, pc::SandboxError> {
             Ok(Vec::new())
         }
     }
@@ -540,16 +582,16 @@ mod tests {
         feature = "container-k8s"
     ))]
     #[async_trait]
-    impl awaken_sandbox_container::SandboxControlServicePublisher for RecordingEnvironment {
+    impl awaken_sandbox_control::SandboxControlServicePublisher for RecordingEnvironment {
         async fn publish_sandbox_control_service(
             &self,
-            _kind: awaken_sandbox_container::SandboxControlServiceKind,
-            _service: Arc<dyn awaken_sandbox_container::SandboxControlService>,
+            _kind: awaken_sandbox_control::SandboxControlServiceKind,
+            _service: Arc<dyn awaken_sandbox_control::SandboxControlService>,
         ) -> Result<
-            Box<dyn awaken_sandbox_container::PublishedSandboxControlService>,
-            awaken_sandbox_container::SandboxControlPublishError,
+            Box<dyn awaken_sandbox_control::PublishedSandboxControlService>,
+            awaken_sandbox_control::SandboxControlPublishError,
         > {
-            Err(awaken_sandbox_container::SandboxControlPublishError)
+            Err(awaken_sandbox_control::SandboxControlPublishError)
         }
     }
 
@@ -571,15 +613,32 @@ mod tests {
         feature = "container-k8s"
     ))]
     #[async_trait]
-    impl awaken_sandbox_container::ContainerEnvironmentProvider for RecordingProvider {
+    impl awaken_container_contract::ContainerEnvironmentProvider for RecordingProvider {
+        fn adoption_layout(
+            &self,
+            handle: &awaken_provisioning_contract::SandboxHandle,
+        ) -> Result<
+            awaken_container_contract::ContainerAdoptionLayout,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            awaken_sandbox_container::container_adoption_layout(handle)
+        }
+
+        fn physical_incarnation(
+            &self,
+            handle: &awaken_provisioning_contract::SandboxHandle,
+        ) -> Result<String, awaken_provisioning_contract::SandboxError> {
+            awaken_sandbox_container::container_physical_incarnation(handle)
+        }
+
         async fn create_environment_for_effect(
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
-            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-            _intent: awaken_sandbox_container::ContainerRealizationIntent,
+            _intent: awaken_container_contract::EnvironmentRealizationIntent,
         ) -> Result<
-            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -588,7 +647,7 @@ mod tests {
         }
         async fn observe_environment(
             &self,
-            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
             _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
         ) -> Result<
             awaken_provisioning_contract::SandboxObservation,
@@ -600,11 +659,11 @@ mod tests {
         }
         async fn adopt_environment_for_effect(
             &self,
-            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+            _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
         ) -> Result<
-            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -615,11 +674,11 @@ mod tests {
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
             _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-            _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
-            _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+            _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
         ) -> Result<
-            Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+            Option<std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -634,7 +693,7 @@ mod tests {
         async fn create_unattached_environment(
             &self,
             spec: &pc::SandboxSpec,
-        ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError>
+        ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError>
         {
             self.specs.lock().unwrap().push(spec.clone());
             Ok(Arc::new(RecordingEnvironment {
@@ -646,8 +705,8 @@ mod tests {
 
         async fn adopt_unattached_environment(
             &self,
-            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError>
+            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+        ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError>
         {
             Err(pc::SandboxError::unsupported("unused"))
         }
@@ -809,7 +868,7 @@ mod tests {
             deny_tool_egress: false,
         };
         let environment =
-            awaken_sandbox_container::ContainerEnvironmentProvider::create_unattached_environment(
+            awaken_container_contract::ContainerEnvironmentProvider::create_unattached_environment(
                 provider.as_ref(),
                 &session_spec,
             )

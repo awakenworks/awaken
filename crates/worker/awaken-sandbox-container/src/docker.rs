@@ -1062,7 +1062,7 @@ impl ContainerRuntime for DockerRuntime {
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
         let fingerprint = legacy_unfenced_fingerprint(id);
-        let attempt = crate::ContainerCreateAttempt::fresh();
+        let attempt = crate::fresh_create_attempt();
         let intent = ContainerRealizationIntent::Create;
         let context = ContainerRealizationContext::new(id, &fingerprint, None, &intent, &attempt);
         self.create_for_effect(&context, plan, &fingerprint).await

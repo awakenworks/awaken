@@ -14,7 +14,6 @@ use awaken_sandbox_local::FilesystemHandleCodec as _;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
-use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 
 /// Creates/adopts the one Session environment while auxiliary housekeeping Runs
@@ -31,8 +30,8 @@ pub(crate) enum SessionEnvironmentProvider {
         hand_idle_after: std::time::Duration,
     },
     Container {
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: String,
@@ -242,7 +241,7 @@ impl SessionEnvironmentProvider {
 
     #[cfg(test)]
     pub(crate) fn container(
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
@@ -259,8 +258,8 @@ impl SessionEnvironmentProvider {
 
     #[cfg(test)]
     pub(crate) fn container_with_capacity_and_hand_idle(
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
@@ -278,8 +277,8 @@ impl SessionEnvironmentProvider {
     }
 
     pub(crate) fn container_with_capacity_hand_idle_and_residency(
-        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
-        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+        provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
@@ -427,10 +426,10 @@ impl SessionEnvironmentProvider {
                 spec.env.clone_from(&payload.base_env);
                 spec.network.clone_from(&payload.network);
             }
-            Self::Container { .. } => {
-                let payload = handle.container_payload()?;
-                spec.outputs_path.clone_from(&payload.outputs_path);
-                spec.env.clone_from(&payload.base_env);
+            Self::Container { provider, .. } => {
+                let layout = provider.adoption_layout(handle)?;
+                spec.outputs_path = layout.outputs_path;
+                spec.env = layout.base_env;
             }
         }
         Ok(SessionEnvironmentAdoptionLayout {
@@ -447,7 +446,7 @@ impl SessionEnvironmentProvider {
             spec,
             ProviderEffect::Unattached,
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
     }
@@ -457,7 +456,7 @@ impl SessionEnvironmentProvider {
         spec: &pc::SandboxSpec,
         effect: ProviderEffect<'_>,
         source_handle: Option<&pc::SandboxHandle>,
-        intent: awaken_sandbox_container::ContainerRealizationIntent,
+        intent: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         effect.admit()?;
         let environment = match self {
@@ -511,7 +510,7 @@ impl SessionEnvironmentProvider {
                     ProviderEffect::Unattached => {
                         if matches!(
                             intent,
-                            awaken_sandbox_container::ContainerRealizationIntent::Rebuild { .. }
+                            awaken_container_contract::EnvironmentRealizationIntent::Rebuild { .. }
                         ) {
                             return Err(pc::SandboxError::fence_rejected(
                                 "a container rebuild requires an aggregate effect fence",
@@ -623,9 +622,9 @@ impl SessionEnvironmentProvider {
         spec: &'a pc::SandboxSpec,
         handle: &'a pc::SandboxHandle,
         retained: Option<&'a super::SessionEnvironment>,
-    ) -> Result<awaken_sandbox_container::ContainerEnvironmentAdoption<'a>, pc::SandboxError> {
+    ) -> Result<awaken_container_contract::ContainerEnvironmentAdoption<'a>, pc::SandboxError> {
         let mut adoption =
-            awaken_sandbox_container::ContainerEnvironmentAdoption::new(spec, handle);
+            awaken_container_contract::ContainerEnvironmentAdoption::new(spec, handle);
         if let Some(environment) = retained {
             let super::SessionEnvironment::Container { sandbox, .. } = environment else {
                 return Err(pc::SandboxError::conflict(
@@ -655,7 +654,7 @@ impl SessionEnvironmentProvider {
         handle: &pc::SandboxHandle,
         retained: Option<&super::SessionEnvironment>,
         basis: pc::SandboxObservationBasis<'_>,
-        purpose: awaken_sandbox_container::ContainerObservationPurpose,
+        purpose: awaken_container_contract::ContainerObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
@@ -693,8 +692,8 @@ impl SessionEnvironmentProvider {
                 Self::Workdir { .. } | Self::Namespace { .. } => Err(pc::SandboxError::conflict(
                     "filesystem sandbox absence carried a foreign physical incarnation",
                 )),
-                Self::Container { .. } => {
-                    let expected = handle.container_physical_incarnation()?;
+                Self::Container { provider, .. } => {
+                    let expected = provider.physical_incarnation(handle)?;
                     if physical_incarnation.as_deref() == Some(expected.as_str()) {
                         Ok(())
                     } else {
@@ -718,7 +717,7 @@ impl SessionEnvironmentProvider {
                             )
                         })?
                     }
-                    Self::Container { .. } => handle.container_physical_incarnation()?,
+                    Self::Container { provider, .. } => provider.physical_incarnation(handle)?,
                 };
                 if *physical_incarnation == expected {
                     Ok(())
@@ -897,7 +896,7 @@ impl SessionEnvironmentProvider {
             } => {
                 let capabilities = provider.sandbox_capabilities();
                 let adoption =
-                    awaken_sandbox_container::ContainerEnvironmentAdoption::new(spec, handle);
+                    awaken_container_contract::ContainerEnvironmentAdoption::new(spec, handle);
                 let environment = match effect {
                     ProviderEffect::Fenced { fence, authority } => {
                         provider

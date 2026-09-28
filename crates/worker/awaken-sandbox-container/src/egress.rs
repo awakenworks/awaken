@@ -171,26 +171,9 @@ impl AllowlistProxy {
 }
 
 pub fn normalize_hostname(host: &str) -> Result<String, EgressError> {
-    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if host.is_empty()
-        || !host.is_ascii()
-        || host.parse::<std::net::IpAddr>().is_ok()
-        || host.len() > 253
-    {
-        return Err(EgressError::InvalidAllowlistHost(host));
-    }
-    if !host.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    }) {
-        return Err(EgressError::InvalidAllowlistHost(host));
-    }
-    Ok(host)
+    awaken_container_contract::normalize_allowlist_host(host).ok_or_else(|| {
+        EgressError::InvalidAllowlistHost(host.trim().trim_end_matches('.').to_ascii_lowercase())
+    })
 }
 
 /// How one network policy is projected into a container plan.

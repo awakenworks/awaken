@@ -5,7 +5,6 @@
 //! Ordinary Session Environment selection, effect authorization, and publication.
 
 use super::*;
-use awaken_sandbox_container::ContainerHandleCodec as _;
 
 #[cfg(test)]
 mod fence_source_tests;
@@ -988,7 +987,7 @@ impl SharedHost {
             None,
             None,
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
     }
@@ -1022,21 +1021,15 @@ impl SharedHost {
             let handle = source_handle.as_ref().ok_or_else(|| {
                 HostError::internal("Container Environment rebuild lacks its source binding")
             })?;
-            awaken_sandbox_container::ContainerRealizationIntent::Rebuild {
-                source_incarnation: handle
-                    .container_physical_incarnation()
-                    .map_err(|error| HostError::internal(error.to_string()))?
-                    .to_string(),
-                source_runtime_handle: handle
-                    .container_payload()
-                    .map_err(|error| HostError::internal(error.to_string()))?
-                    .runtime_handle
-                    .clone(),
+            // The container provider decodes its own handle into the exact
+            // physical incarnation it replaces.
+            awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+                source: Box::new(handle.clone()),
             }
         } else {
             // This fact is consumed only by the Container provider. Workdir and
             // Namespace rebuilds remain owned by their realization-marker path.
-            awaken_sandbox_container::ContainerRealizationIntent::Create
+            awaken_container_contract::EnvironmentRealizationIntent::Create
         };
         self.create_session_environment_with_provider_effect(
             provider,
@@ -1056,7 +1049,7 @@ impl SharedHost {
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
         authority: Option<&dyn awaken_provisioning_contract::CurrentExecutionAuthority>,
         source_handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-        intent: awaken_sandbox_container::ContainerRealizationIntent,
+        intent: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
         let spec = self.validate_session_environment_capabilities(provider, spec)?;
         // Capture before any preparation await. A same-byte replacement slot

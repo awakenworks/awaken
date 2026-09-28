@@ -294,5 +294,27 @@ impl ContainerHandleCodec for pc::SandboxHandle {
     }
 }
 
+/// The layout a container provider reopens from one of its durable handles.
+/// Every container provider (and a test double standing in for one) answers
+/// [`awaken_container_contract::ContainerEnvironmentProvider::adoption_layout`] with this
+/// one codec projection.
+pub fn container_adoption_layout(
+    handle: &pc::SandboxHandle,
+) -> Result<awaken_container_contract::ContainerAdoptionLayout, pc::SandboxError> {
+    let payload = handle.container_payload()?;
+    Ok(awaken_container_contract::ContainerAdoptionLayout {
+        outputs_path: payload.outputs_path,
+        base_env: payload.base_env,
+    })
+}
+
+/// The exact physical incarnation a container handle records; the one answer to
+/// [`awaken_container_contract::ContainerEnvironmentProvider::physical_incarnation`].
+pub fn container_physical_incarnation(
+    handle: &pc::SandboxHandle,
+) -> Result<String, pc::SandboxError> {
+    handle.container_physical_incarnation()
+}
+
 #[cfg(test)]
 mod tests;

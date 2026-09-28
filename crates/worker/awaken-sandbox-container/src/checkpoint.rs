@@ -8,48 +8,12 @@
 //! Physical checkpoint participant access. Archive and object custody stay at
 //! the calling codec/store; Session remains the only lifecycle authority.
 
+#[cfg(feature = "k8s")]
 use awaken_provisioning_contract as pc;
-use pc::FenceToken as _;
 
-/// Immutable original upload evidence and an independently current grant.
-/// The source fence may have expired; only `authority` grants an effect.
-#[derive(Clone, Copy)]
-pub struct ContainerCheckpointAccess<'a> {
-    pub source_effect_fence: &'a pc::SandboxEffectFence,
-    pub effect_fence: &'a pc::SandboxEffectFence,
-    pub request_fingerprint: &'a str,
-    pub authority: &'a dyn pc::CurrentExecutionAuthority,
-}
-
-impl ContainerCheckpointAccess<'_> {
-    pub(crate) fn admit(&self) -> Result<(), pc::SandboxError> {
-        self.source_effect_fence.validate_identity()?;
-        if self.request_fingerprint.trim().is_empty()
-            || !self
-                .source_effect_fence
-                .authorizes_successor(self.effect_fence)
-        {
-            return Err(pc::SandboxError::invalid(
-                "invalid container checkpoint access",
-            ));
-        }
-        pc::with_current_sandbox_effect(self.effect_fence, self.authority, |_| Ok(()))
-    }
-
-    #[cfg(feature = "k8s")]
-    pub(crate) fn is_terminal(&self) -> bool {
-        self.source_effect_fence.operation_id != self.effect_fence.operation_id
-    }
-}
-
-/// One physical participant, not an object-storage or Session command. Acquire
-/// is also the current-authority/physical-identity check before and after I/O.
-#[derive(Clone, Copy)]
-pub enum ContainerCheckpointMutation<'a> {
-    Acquire,
-    Begin(&'a pc::SandboxCheckpointUpload),
-    Complete(&'a pc::SandboxCheckpointRef),
-}
+// The access/mutation values are the container port's vocabulary and live in
+// the container contract beside `ContainerEnvironment::checkpoint_upload`.
+pub use awaken_container_contract::{ContainerCheckpointAccess, ContainerCheckpointMutation};
 
 #[cfg(feature = "k8s")]
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

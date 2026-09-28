@@ -11,6 +11,8 @@ layer = "infrastructure"
 authority = "runtime-host"
 
 [dependencies]
+# The backend-erased container environment ports the Session owner holds.
+awaken-container-contract.workspace = true
 # The neutral session substrate (SharedHost) and the two port adapters
 # (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true

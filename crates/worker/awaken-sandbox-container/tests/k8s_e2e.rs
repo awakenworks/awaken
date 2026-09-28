@@ -33,9 +33,9 @@ use awaken_sandbox_container::k8s::{
 };
 use awaken_sandbox_container::{
     ContainerEnvironment, ContainerEnvironmentAdoption, ContainerEnvironmentProvider,
-    ContainerProvider, ContainerRealizationIntent, ContainerRuntime, ContainerSandbox,
-    ContainerState, ResidentHandConfig, SandboxControlService, SandboxControlServiceKind,
-    SandboxControlServicePublisher, WarmContainerPool, command_of,
+    ContainerProvider, ContainerRuntime, ContainerSandbox, ContainerState, ResidentHandConfig,
+    SandboxControlService, SandboxControlServiceKind, SandboxControlServicePublisher,
+    WarmContainerPool, command_of,
 };
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use common::memory_mount;
@@ -969,7 +969,7 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         &first_spec,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("create the initial Session Pod and project A");
@@ -1181,7 +1181,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         &memory_spec,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("create fenced Pod with two MemoryStore volumes");

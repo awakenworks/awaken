@@ -459,17 +459,34 @@ mod tests {
     struct CountingRejectedEnvironmentProvider(Arc<AtomicUsize>);
 
     #[async_trait]
-    impl awaken_sandbox_container::ContainerEnvironmentProvider
+    impl awaken_container_contract::ContainerEnvironmentProvider
         for CountingRejectedEnvironmentProvider
     {
+        fn adoption_layout(
+            &self,
+            handle: &awaken_provisioning_contract::SandboxHandle,
+        ) -> Result<
+            awaken_container_contract::ContainerAdoptionLayout,
+            awaken_provisioning_contract::SandboxError,
+        > {
+            awaken_sandbox_container::container_adoption_layout(handle)
+        }
+
+        fn physical_incarnation(
+            &self,
+            handle: &awaken_provisioning_contract::SandboxHandle,
+        ) -> Result<String, awaken_provisioning_contract::SandboxError> {
+            awaken_sandbox_container::container_physical_incarnation(handle)
+        }
+
         async fn create_environment_for_effect(
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
-            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-            _intent: awaken_sandbox_container::ContainerRealizationIntent,
+            _intent: awaken_container_contract::EnvironmentRealizationIntent,
         ) -> Result<
-            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -478,7 +495,7 @@ mod tests {
         }
         async fn observe_environment(
             &self,
-            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
             _basis: awaken_provisioning_contract::SandboxObservationBasis<'_>,
         ) -> Result<
             awaken_provisioning_contract::SandboxObservation,
@@ -490,11 +507,11 @@ mod tests {
         }
         async fn adopt_environment_for_effect(
             &self,
-            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-            _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+            _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
         ) -> Result<
-            std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -505,11 +522,11 @@ mod tests {
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
             _handle: Option<&awaken_provisioning_contract::SandboxHandle>,
-            _expected_effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
-            _terminal_effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+            _expected_effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+            _terminal_effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
             _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
         ) -> Result<
-            Option<std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+            Option<std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::unsupported(
@@ -525,7 +542,7 @@ mod tests {
             &self,
             _spec: &awaken_provisioning_contract::SandboxSpec,
         ) -> Result<
-            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             self.0.fetch_add(1, Ordering::SeqCst);
@@ -537,9 +554,9 @@ mod tests {
 
         async fn adopt_unattached_environment(
             &self,
-            _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+            _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
         ) -> Result<
-            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            Arc<dyn awaken_container_contract::ContainerEnvironment>,
             awaken_provisioning_contract::SandboxError,
         > {
             Err(awaken_provisioning_contract::SandboxError::backend(

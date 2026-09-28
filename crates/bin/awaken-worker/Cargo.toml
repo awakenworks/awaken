@@ -35,6 +35,7 @@ container-podman = ["awaken-session-executor/container-podman"]
 container-k8s = ["awaken-session-executor/container-k8s", "awaken-worker-transport-security/kubernetes"]
 
 [dependencies]
+awaken-container-contract.workspace = true
 awaken-protocol-mcp.workspace = true
 # The neutral host substrate: SharedHost, the dispatch pool, and the worker dispatch
 # store that routes the drain over HTTP to the cell server.

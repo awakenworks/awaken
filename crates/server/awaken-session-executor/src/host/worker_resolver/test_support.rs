@@ -272,7 +272,7 @@ pub(crate) async fn available_local_environment_binding(
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .expect("create typed available-Environment fixture");
