@@ -47,7 +47,9 @@ async fn a_transient_store_error_is_swallowed_and_the_daemon_recovers() {
         2,
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let worker = Arc::new(DispatchWorker::new(
         text_runtime(),
         store.clone(),
@@ -102,7 +104,9 @@ async fn queue_depth_is_sampled_by_the_process_not_each_drive() {
     let worker = Arc::new(DispatchWorker::new(
         runtime,
         store.clone(),
-        Arc::new(MemoryCommitCoordinator::new()),
+        Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        )),
         "sampler",
     ));
     let service = DispatchService::spawn(
@@ -152,7 +156,9 @@ async fn hosted_depth_owner_disables_only_the_open_sampler() {
         0,
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let worker = Arc::new(DispatchWorker::new(
         text_runtime_with_metrics(metrics.clone() as Arc<_>),
         store.clone(),
@@ -209,7 +215,9 @@ async fn blocked_depth_observation_cannot_delay_a_run_or_shutdown() {
         .enqueue(RunDispatch::new(activation("depth-blocked-run")))
         .await
         .unwrap();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let worker = Arc::new(DispatchWorker::new(
         text_runtime(),
         store.clone(),
@@ -267,7 +275,9 @@ async fn held_worker_drives_count_only_current_executions_not_queued_runs() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     for index in 0..4 {
         store
             .enqueue(RunDispatch::new(activation_on(
@@ -334,7 +344,9 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     store
         .enqueue(RunDispatch::new(activation("run-1")))
@@ -384,7 +396,9 @@ async fn an_awaiting_drive_meters_one_claim_one_drive_and_one_awaiting_settle() 
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     store
         .enqueue(RunDispatch::new(activation("run-1")))
@@ -431,7 +445,9 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let run = RunId("run-1".to_string());
 
     // Commit a terminal record for the run first, then enqueue a fresh dispatch for it
@@ -492,7 +508,9 @@ async fn an_expired_lease_reclaim_is_reported_as_recovery() {
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     store
         .enqueue(RunDispatch::new(activation("run-recovered")))
@@ -530,7 +548,9 @@ async fn a_stale_settlement_increments_the_fenced_metric() {
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     store
         .enqueue(RunDispatch::new(activation("run-fenced")))

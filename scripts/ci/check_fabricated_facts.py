@@ -160,6 +160,10 @@ COMPOSITION_ROOTS: frozenset[str] = frozenset(
         # The Worker daemon's bootstrap: it composes the Worker transport and
         # chooses the clock its signed request assertions are stamped with.
         "crates/bin/awaken-worker/src/bootstrap.rs",
+        # Standalone example programs: each `main` composes one embedded
+        # runtime and chooses the clock its commit store stamps with.
+        "crates/devtools/awaken-runtime-examples/examples/direct_runtime.rs",
+        "crates/devtools/awaken-runtime-examples/examples/hello_agent.rs",
     }
 )
 

@@ -28,6 +28,7 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm_0
 crossterm = { version = "0.28", optional = true }
 genai = { workspace = true, optional = true }
 anyhow = { version = "1", optional = true }
+awaken-lease-contract.workspace = true
 
 [features]
 # Core coding-agent logic (config, tools, permission, run/resume loop). Light

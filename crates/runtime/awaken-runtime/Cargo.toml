@@ -36,6 +36,7 @@ tempfile = "3"
 [dev-dependencies]
 awaken-ext-background-task.workspace = true
 awaken-ext-compact.workspace = true
+awaken-lease-contract.workspace = true
 awaken-store-fs.workspace = true
 awaken-store-inmem.workspace = true
 awaken-store-sqlite = { workspace = true, features = ["test-support"] }

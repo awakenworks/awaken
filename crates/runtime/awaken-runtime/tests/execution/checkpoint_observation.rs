@@ -110,7 +110,9 @@ async fn failed_checkpoint_reads_cannot_become_absence() {
     // zero model calls, no new invocation evidence, no checkpoint put/delete.
     for terminated in [false, true] {
         for outcome in [ReadOutcome::Storage, ReadOutcome::Fenced] {
-            let durable = Arc::new(MemoryCommitCoordinator::new());
+            let durable = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             if terminated {
                 commit_terminated_model(&durable).await;
             }
@@ -144,7 +146,9 @@ async fn checkpoint_identity_must_match_both_run_and_thread() {
     // accepted and no new invocation. R4 C1+C2+C3 is the adjacent positive test
     // restored_checkpoint_with_confirmed_termination_continues_once.
     for (run_matches, thread_matches) in [(false, true), (true, false), (false, false)] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         commit_terminated_model(&durable).await;
         let (_, mut checkpoint) = interrupted_model_checkpoint().await;
         if !run_matches {
@@ -189,7 +193,9 @@ async fn cancellation_interrupts_pending_checkpoint_read_without_erasing_uncerta
     // journal survives. R1 C1+C2+C3 => bounded local Cancelled return, physical
     // veto, no model/journal/checkpoint writes. Notify establishes the window;
     // the timeout is only a test failure bound, never termination evidence.
-    let durable = Arc::new(MemoryCommitCoordinator::new());
+    let durable = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let checkpoints = Arc::new(CheckpointObservation::new(ReadOutcome::Pending));
     let model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
     let token = tokio_util::sync::CancellationToken::new();
@@ -222,7 +228,9 @@ async fn confirmed_checkpoint_absence_allows_fresh_execution() {
     // R5 successful None + absent journal => one fresh invocation, ordinary
     // completion. Positive control: fail-closed errors must not disable fresh Runs.
     let checkpoints = Arc::new(CheckpointObservation::new(ReadOutcome::Value(None)));
-    let durable = Arc::new(MemoryCommitCoordinator::new());
+    let durable = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new()
         .with_commit(durable.clone())
         .with_reader(durable.clone())
@@ -250,7 +258,9 @@ async fn stalled_checkpoint_observation_has_a_deadline_without_cancelling_the_ru
     for entry in ["execute", "cancel", "stop"] {
         for terminated in [false, true] {
             for with_token in [false, true] {
-                let durable = Arc::new(MemoryCommitCoordinator::new());
+                let durable = Arc::new(MemoryCommitCoordinator::new(
+                    awaken_lease_contract::system_clock(),
+                ));
                 if terminated {
                     commit_terminated_model(&durable).await;
                 }
@@ -323,7 +333,9 @@ async fn successful_slow_checkpoint_observation_preserves_execution_admission() 
         let checkpoints = Arc::new(CheckpointObservation::new(ReadOutcome::DelayedAbsence(
             std::time::Duration::from_secs(seconds),
         )));
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let context = RuntimeRunContext::new()
             .with_commit(durable.clone())
             .with_reader(durable.clone())
@@ -355,7 +367,9 @@ async fn checkpoint_observation_precedes_committed_tool_batch_recovery() {
     // absence cannot override independent model evidence.
     // R2 proves a missing capability/gate cannot make R1 vacuously pass.
     for (failed, unknown) in [(true, false), (false, false), (false, true)] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         commit_model_evidence(
             &durable,
             if unknown {
@@ -456,7 +470,9 @@ async fn early_cancellation_preserves_recovered_model_uncertainty() {
     // R3 unknown journal => Cancelled but no physical ACK. Cancellation precedes
     // inference, so the inference-only guard cannot satisfy this test.
     for evidence in [None, Some(terminated), Some(Unknown)] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         if let Some(evidence) = evidence {
             commit_model_evidence(&durable, evidence).await;
         }
@@ -501,7 +517,9 @@ async fn control_completion_never_supplies_predecessor_stop_evidence() {
             .into_iter()
             .flat_map(|evidence| [false, true].map(|later| (evidence, later)))
         {
-            let durable = Arc::new(MemoryCommitCoordinator::new());
+            let durable = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             if let Some(evidence) = evidence {
                 commit_model_evidence(&durable, evidence).await;
             }

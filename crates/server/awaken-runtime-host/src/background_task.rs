@@ -1376,7 +1376,9 @@ mod tests {
                 .with_plugin(Arc::new(RecordingAfterToolPlugin(after_tool_calls.clone())))
                 .with_tool(counter.clone()),
         );
-        let process_projection = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
+        let process_projection = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let authoritative_state = crate::authority::ScriptedStateQueries::new(Ok(Vec::new()));
         let commit = Arc::new(HostCommit::Local(Arc::new(
             crate::LocalCommitAdapter::with_queries(
@@ -1623,7 +1625,8 @@ mod tests {
         ));
         let remote = Arc::new(RemoteTaskTool::default());
         let runtime = Arc::new(Runtime::new().with_plugin(plugin).with_tool(remote.clone()));
-        let memory = awaken_store_inmem::MemoryCommitCoordinator::new();
+        let memory =
+            awaken_store_inmem::MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
         let commit = Arc::new(HostCommit::Local(Arc::new(
             crate::LocalCommitAdapter::projected(memory),
         )));

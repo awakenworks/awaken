@@ -956,7 +956,8 @@ impl DispatchQueue for SqliteDispatchStore {
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         let claim = claim.clone();
-        self.with_conn(move |conn, p| release_claim_transaction(conn, p, claim, None))
+        let now_ms = self.clock.now_ms();
+        self.with_conn(move |conn, p| release_claim_transaction(conn, p, claim, None, now_ms))
             .await
     }
 
@@ -966,12 +967,13 @@ impl DispatchQueue for SqliteDispatchStore {
         retry_after_ms: u64,
     ) -> Result<SettleOutcome, DispatchError> {
         let claim = claim.clone();
+        let now_ms = self.clock.now_ms();
         let retry_not_before = durable_i64(
             "dispatch resolution retry deadline",
-            crate::clock::deadline_millis(self.clock.now_ms(), retry_after_ms),
+            crate::clock::deadline_millis(now_ms, retry_after_ms),
         )?;
         self.with_conn(move |conn, p| {
-            release_claim_transaction(conn, p, claim, Some(retry_not_before))
+            release_claim_transaction(conn, p, claim, Some(retry_not_before), now_ms)
         })
         .await
     }
@@ -985,6 +987,7 @@ impl DispatchQueue for SqliteDispatchStore {
     ) -> Result<SettleOutcome, DispatchError> {
         let run_id = run_id.0.clone();
         let consumed = consumed.to_vec();
+        let now_ms = self.clock.now_ms();
         self.with_conn(move |conn, p| {
             let epoch_i64 = durable_i64("dispatch lease epoch", epoch)?;
             let tx = conn
@@ -1125,7 +1128,12 @@ impl DispatchQueue for SqliteDispatchStore {
                 }
                 PendingInputSettlementPlan::Fenced => unreachable!("handled before mutation"),
             }
-            insert_operation(&tx, p, &DispatchOperation::Settled { claim, outcome })?;
+            insert_operation(
+                &tx,
+                p,
+                &DispatchOperation::Settled { claim, outcome },
+                now_ms,
+            )?;
             tx.commit().map_err(store_error)?;
             Ok(SettleOutcome::Applied)
         })
@@ -1137,6 +1145,7 @@ impl DispatchQueue for SqliteDispatchStore {
         max_attempts: u64,
         expired_before_ms: u64,
     ) -> Result<usize, DispatchError> {
+        let now_ms = self.clock.now_ms();
         self.with_conn(move |conn, p| {
             let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
             let tx = conn
@@ -1242,6 +1251,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         claim: claim.clone(),
                         reason: LeaseLossReason::RetryExhausted,
                     },
+                    now_ms,
                 )?;
                 insert_operation(
                     &tx,
@@ -1250,6 +1260,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         claim,
                         attempt_count: durable_u64("dispatch attempt count", attempt_count)?,
                     },
+                    now_ms,
                 )?;
                 quarantined += 1;
             }
@@ -1320,6 +1331,7 @@ impl DispatchQueue for SqliteDispatchStore {
 
     async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
         let run_id = run_id.0.clone();
+        let now_ms = self.clock.now_ms();
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1399,6 +1411,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             },
                             reason: LeaseLossReason::Cancelled,
                         },
+                        now_ms,
                     )?;
                 }
             }

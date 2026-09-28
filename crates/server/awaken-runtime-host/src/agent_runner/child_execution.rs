@@ -782,7 +782,9 @@ mod tests {
         let parent_executor: Arc<dyn ToolExecutor> =
             Arc::new(RawToolRegistry::new(parent.rooted_tools()));
         let context = || {
-            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let commit = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             RuntimeRunContext::new()
                 .with_commit(commit.clone())
                 .with_reader(commit)
@@ -1110,7 +1112,9 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let commit = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             let scheduler = durable.then(|| RunScheduler {
                 store: Arc::new(
                     AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
@@ -1228,7 +1232,9 @@ mod tests {
             .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("parent"))
             .await
             .unwrap();
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let dispatch_path = tmp.path().join("child-dispatch.db");
         let dispatch_path = dispatch_path.to_string_lossy().to_string();
         let scheduler = RunScheduler {
@@ -1247,7 +1253,9 @@ mod tests {
             session_resources: None,
             publication_source: None,
         };
-        let parent_reader: Arc<dyn CommittedThreadView> = Arc::new(MemoryCommitCoordinator::new());
+        let parent_reader: Arc<dyn CommittedThreadView> = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let context = || {
             RuntimeRunContext::new()
                 .with_commit(commit.clone())

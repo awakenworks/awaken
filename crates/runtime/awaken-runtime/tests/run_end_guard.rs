@@ -217,7 +217,9 @@ async fn guard_steers_then_completes_and_surfaces_each_round() {
             seen_fc: seen_fc.clone(),
         }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let collector = Arc::new(ContinuationCollector::default());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -272,7 +274,9 @@ async fn no_guard_ends_at_the_first_natural_end() {
             seen_fc: seen_fc.clone(),
         }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let collector = Arc::new(ContinuationCollector::default());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -300,7 +304,9 @@ async fn an_always_steering_guard_is_bounded_by_max_steps() {
             seen_fc: seen_fc.clone(),
         }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let collector = Arc::new(ContinuationCollector::default());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -330,7 +336,9 @@ async fn a_guard_outside_its_bound_fails_the_run_closed() {
         .with_llm(Arc::new(EchoLlm))
         .with_plugin(Arc::new(RogueGuardPlugin));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .execute(activation(vec!["rogue".to_string()], 16), context)
@@ -441,7 +449,9 @@ async fn a_later_guards_steer_overrides_an_earlier_guards_completion() {
         .with_plugin(g1)
         .with_plugin(g2);
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let collector = Arc::new(ContinuationCollector::default());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -477,7 +487,9 @@ async fn all_completing_guards_end_with_the_last_guards_detail() {
         .with_plugin(g1)
         .with_plugin(g2);
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let collector = Arc::new(ContinuationCollector::default());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -512,7 +524,9 @@ async fn a_guard_receives_the_run_conversation() {
         .with_llm(Arc::new(EchoLlm))
         .with_plugin(plugin);
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     runtime
         .execute(activation(vec!["g1".to_string()], 16), context)
@@ -538,7 +552,9 @@ async fn no_step_ceiling_allows_long_work_and_still_finishes_naturally() {
             steer_budget: 24,
             seen_fc: seen_fc.clone(),
         }));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let mut input = activation(vec!["scripted".into()], 16);
     input.snapshot.resolved_spec.max_steps = None;
     let state = tokio::time::timeout(

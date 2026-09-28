@@ -53,7 +53,9 @@ async fn cancelled_native_call_retains_its_exact_future_and_uses_only_returned_e
     // Notify plus semaphore establish the exact entry/return boundaries; no
     // sleeps, fabricated journal, replacement operation, or expiry assumption.
     for confirmed in [false, true] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let model = Arc::new(HeldReceipt {
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
@@ -131,7 +133,9 @@ async fn attempt_without_a_claim_bound_journal_aborts_and_retains_unknown() {
             ModelCancellationObservation::RetainClaimedUntilReceipt,
         ),
     ] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let model = Arc::new(HeldReceipt {
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
@@ -187,7 +191,9 @@ async fn retained_cancelled_call_expires_at_its_original_deadline_without_reentr
     // Cancel at 500ms; the call must still be pending at 999ms and end at 1s.
     // This distinguishes bounded retention from a fresh post-cancel timeout.
     // The existing HeldReceipt and Tokio clock own both exact boundaries.
-    let durable = Arc::new(MemoryCommitCoordinator::new());
+    let durable = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let model = Arc::new(HeldReceipt {
         entered: tokio::sync::Notify::new(),
         release: tokio::sync::Semaphore::new(0),

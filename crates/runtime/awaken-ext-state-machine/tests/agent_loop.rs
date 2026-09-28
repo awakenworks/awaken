@@ -212,7 +212,9 @@ async fn deny_then_corrected_read_write_reaches_terminal() {
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime.execute(activation(), context).await.expect("runs");
 
@@ -301,7 +303,9 @@ async fn state_machine_rechecks_gate_after_each_conflicting_resource_wave() {
         }))
         .with_plugin(Arc::new(plugin));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let state = runtime
         .execute(
             activation(),
@@ -406,7 +410,9 @@ async fn warn_message_reaches_the_next_model_step() {
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
@@ -458,7 +464,9 @@ async fn continuation_nudge_keeps_running_until_terminal() {
         .with_tool(Arc::new(OkTool("Finish")))
         .with_plugin(Arc::new(plugin));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
@@ -512,7 +520,9 @@ async fn config_section_drives_the_machine_set() {
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(StateMachinePlugin::empty()));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .execute(
@@ -549,7 +559,9 @@ async fn no_section_leaves_calls_unconstrained() {
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(StateMachinePlugin::empty()));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
@@ -575,7 +587,9 @@ async fn malformed_section_fails_the_run_closed() {
         "state_machine",
         r#"{"machines":[{"name":"m","initial":"a","transitions":[{"on":"Read(","from":"a","to":"b"}]}]}"#,
     );
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .execute(activation_configured(bad), context)
@@ -674,7 +688,9 @@ async fn warn_emit_is_in_the_models_next_request() {
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
 
-    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
+    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    )));
     let state = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
@@ -707,7 +723,9 @@ async fn success_transition_emit_is_in_the_models_next_request() {
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
 
-    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
+    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    )));
     let state = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
 
@@ -747,7 +765,9 @@ async fn lifecycle_reminder_is_request_only_and_visible_on_the_next_step() {
         .with_tool(Arc::new(OkTool("Write")))
         .with_plugin(Arc::new(plugin));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
@@ -793,7 +813,9 @@ async fn lifecycle_reminder_is_removed_after_the_request_consumes_it() {
     let state = runtime
         .execute(
             activation(),
-            RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new())),
+            RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ))),
         )
         .await
         .expect("runs");
@@ -873,7 +895,9 @@ async fn emit_survives_a_await_and_is_in_the_resumed_request() {
     // Resume rebuilds the run from the snapshot registry, so register it.
     runtime.register_snapshot(activation().snapshot);
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let awaiting = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(

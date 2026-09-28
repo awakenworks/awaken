@@ -235,7 +235,9 @@ async fn reclaimed_running_run_advances_assistant_id_from_committed_history() {
     let activation = activation();
     let run_id = activation.run_id.clone();
     let thread_id = activation.thread_id.clone();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     commit
         .commit(ThreadCommit::assemble(
             thread_id.clone(),
@@ -323,7 +325,9 @@ async fn scheduled_action_commits_then_perform_runs_it() {
     // RS-SCH-001.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     // The run defers the call: it awaits on a committed ScheduledAction ticket.
     let state = runtime
@@ -382,7 +386,9 @@ async fn repeated_scheduled_resumes_keep_every_assistant_fact() {
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ScheduleEveryGate));
     runtime.register_snapshot(snapshot());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let run_id = RunId("run-1".to_string());
 
     assert_eq!(
@@ -438,7 +444,9 @@ async fn performing_a_scheduled_action_twice_is_idempotent() {
     // rejected, not run again.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     runtime
         .execute(activation(), context(&commit))
@@ -475,7 +483,9 @@ async fn scheduling_an_unselected_plugin_action_kind_fails_closed() {
     // (its owning plugin is not selected) fails the run closed at the bound.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone(), Arc::new(UnknownKindGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     let state = runtime
         .execute(activation(), context(&commit))
@@ -501,7 +511,9 @@ async fn perform_on_a_non_scheduled_run_fails_closed() {
     // RS-SCH-004: a result for a run not awaiting on a scheduled action is rejected.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran, Arc::new(SuspendGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     // No such run: not awaiting.
     let err = runtime
@@ -541,7 +553,9 @@ async fn an_uncommitted_scheduled_action_is_not_wakeable() {
     // not wakeable — only committed records are dispatch truth.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     // Execute with no commit boundary: the run reaches an awaiting state, but the
     // candidate ticket is never persisted.
@@ -582,7 +596,9 @@ async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() 
     // the committed ticket.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     runtime
         .execute(activation(), context(&commit))
@@ -622,7 +638,9 @@ async fn a_stop_policy_makes_a_late_scheduled_result_fail_closed() {
     // that arrives later is rejected without running the action or mutating facts.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     runtime
         .execute(activation(), context(&commit))
@@ -663,7 +681,9 @@ async fn cancel_makes_a_late_scheduled_perform_fail_closed() {
     // RS-CTRL-001.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(ran.clone(), Arc::new(ScheduleGate));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     runtime
         .execute(activation(), context(&commit))

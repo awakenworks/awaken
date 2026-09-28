@@ -345,7 +345,8 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         .expect("read operational transitions");
     // Cause-effect graph / decision table:
     // C1=an authority mutation is applied; C2=the mutation is fenced/rejected.
-    // R1 (C1,!C2) => one event with a store timestamp; R2 (!C1,C2) => no event.
+    // R1 (C1,!C2) => one event with a store timestamp; R2 (!C1,C2) => no event;
+    // R3 (C1 on a controllable store clock) => the timestamp is that clock's.
     // For a sequence of R1 mutations, cursors and store timestamps must both be
     // monotonic. The operation assertions below cover claim, recovery, settle,
     // dead-letter, cancellation, and the fenced-settle R2 case for every store.
@@ -368,6 +369,27 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         }),
         "store timestamps are nondecreasing in cursor order"
     );
+    if clock.exact_boundary_is_controllable() {
+        // R3: a store that judges its rows on an injected clock stamps its
+        // facts with that same clock, never the host's: the first claim was
+        // applied at t=0 and the cancellation pair at t=5000.
+        let stamps = page
+            .events
+            .iter()
+            .map(|event| event.recorded_at_ms)
+            .collect::<Vec<_>>();
+        assert_eq!(stamps.first().copied().flatten(), Some(0), "R3 {stamps:?}");
+        assert_eq!(
+            stamps.get(9).copied().flatten(),
+            Some(5_000),
+            "R3 {stamps:?}"
+        );
+        assert_eq!(
+            stamps.get(10).copied().flatten(),
+            Some(5_000),
+            "R3 {stamps:?}"
+        );
+    }
     let operations = page
         .events
         .iter()

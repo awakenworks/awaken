@@ -1164,7 +1164,9 @@ mod durable_cancel_tests {
             AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
                 .expect("durable advisor dispatch store"),
         );
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let scheduler = RunScheduler {
             store: store.clone(),
             commit: commit.clone(),
@@ -1415,7 +1417,9 @@ mod durable_cancel_tests {
             AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
                 .expect("durable child dispatch store"),
         );
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let scheduler = RunScheduler {
             store: store.clone(),
             commit: commit.clone(),

@@ -46,13 +46,17 @@ async fn two_threads_stay_isolated_across_reopen() {
     let tb = ThreadId("t-b".to_string());
 
     {
-        let store = FsCommitCoordinator::open(&dir).await.expect("open");
+        let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+            .await
+            .expect("open");
         store.commit(ended("t-a", "r-a", "alpha")).await.expect("A");
         store.commit(ended("t-b", "r-b", "beta")).await.expect("B");
         // store dropped — the in-memory read model is gone; only the log remains
     }
 
-    let reopened = FsCommitCoordinator::open(&dir).await.expect("reopen");
+    let reopened = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        .await
+        .expect("reopen");
 
     // Each thread reads exactly its own message — no loss, no leak — after replay.
     let a = reopened.committed_messages(&ta);
@@ -104,7 +108,9 @@ async fn resume_ticket_is_durable_across_reopen() {
     let run = RunId("r1".to_string());
 
     {
-        let store = FsCommitCoordinator::open(&dir).await.expect("open");
+        let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+            .await
+            .expect("open");
         store
             .commit(ThreadCommit {
                 thread_id: ThreadId("t1".to_string()),
@@ -126,7 +132,9 @@ async fn resume_ticket_is_durable_across_reopen() {
         // store dropped — the in-memory read model is gone; only the log remains
     }
 
-    let reopened = FsCommitCoordinator::open(&dir).await.expect("reopen");
+    let reopened = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        .await
+        .expect("reopen");
     assert!(
         reopened.resume_ticket(&run).is_some(),
         "the active awaiting ticket rehydrated from the durable log"
@@ -173,7 +181,9 @@ async fn commit_time_survives_reopen_and_legacy_time_stays_unknown() {
     .unwrap();
     let thread = ThreadId("current".into());
     let run = RunId("new".into());
-    let store = FsCommitCoordinator::open(&dir).await.unwrap();
+    let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        .await
+        .unwrap();
     store
         .commit(ended("current", "new", "current"))
         .await
@@ -181,7 +191,9 @@ async fn commit_time_survives_reopen_and_legacy_time_stays_unknown() {
     let before = store.recovery_snapshot(&thread, &run).await.unwrap();
     assert_eq!(before.commit_timestamps.len(), 1, "T1");
     drop(store);
-    let store = FsCommitCoordinator::open(&dir).await.unwrap();
+    let store = FsCommitCoordinator::open(&dir, awaken_lease_contract::system_clock())
+        .await
+        .unwrap();
     assert_eq!(
         store.recovery_snapshot(&thread, &run).await.unwrap(),
         before,

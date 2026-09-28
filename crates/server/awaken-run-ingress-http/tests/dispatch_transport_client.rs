@@ -568,7 +568,9 @@ async fn db_less_worker_drives_runs_over_real_http() {
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
-    let recovery = Arc::new(MemoryCommitCoordinator::new());
+    let recovery = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     recovery
         .commit(ThreadCommit {
             thread_id: ThreadId("t1".into()),

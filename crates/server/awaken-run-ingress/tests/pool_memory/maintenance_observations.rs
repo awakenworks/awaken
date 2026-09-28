@@ -87,7 +87,9 @@ async fn check_case(
     let worker = Arc::new(DispatchWorker::new(
         text_runtime(),
         store.clone(),
-        Arc::new(MemoryCommitCoordinator::new()),
+        Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        )),
         "pool",
     ));
     let resolver = Arc::new(ObservedResolver {

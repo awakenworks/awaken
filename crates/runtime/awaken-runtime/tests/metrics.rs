@@ -168,7 +168,9 @@ async fn a_successful_run_records_an_ok_inference_metric_with_model_and_tokens()
         .with_llm(Arc::new(OkLlm))
         .with_metrics(spy.clone());
 
-    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
+    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    )));
     runtime.execute(activation(), context).await.expect("runs");
 
     let inferences = spy.inferences.lock().unwrap();
@@ -229,7 +231,9 @@ async fn a_tool_call_records_a_tool_metric_with_id_and_outcome() {
         .with_tool(Arc::new(EchoTool))
         .with_metrics(spy.clone());
 
-    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
+    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    )));
     runtime.execute(activation(), context).await.expect("runs");
 
     // The tool chokepoint recorded exactly one `echo` execution, outcome `ok`.
@@ -247,7 +251,9 @@ async fn a_permanent_failure_records_the_error_class_as_the_outcome() {
         .with_metrics(spy.clone())
         .with_retry_policy(no_retries());
 
-    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new()));
+    let context = RuntimeRunContext::new().with_commit(Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    )));
     runtime.execute(activation(), context).await.expect("runs");
 
     let inferences = spy.inferences.lock().unwrap();
@@ -274,7 +280,9 @@ async fn a_cancelled_call_records_cancellation_as_the_outcome() {
         .with_retry_policy(no_retries());
     let cancellation = tokio_util::sync::CancellationToken::new();
     let context = RuntimeRunContext::new()
-        .with_commit(Arc::new(MemoryCommitCoordinator::new()))
+        .with_commit(Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        )))
         .with_cancellation(cancellation.clone());
     let run = tokio::spawn(async move { runtime.execute(activation(), context).await });
     tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())

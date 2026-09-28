@@ -34,7 +34,7 @@ impl MemoryDispatchStore {
     #[must_use]
     pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
         Self {
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State::new(clock.clone())),
             authority: Arc::new(tokio::sync::Mutex::new(())),
             clock,
         }

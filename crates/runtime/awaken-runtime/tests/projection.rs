@@ -54,7 +54,9 @@ async fn run() -> (MemoryCommitCoordinator, MemoryStreamSink) {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm));
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let sink = Arc::new(MemoryStreamSink::new());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -96,7 +98,7 @@ async fn run() -> (MemoryCommitCoordinator, MemoryStreamSink) {
     };
     runtime.execute(activation, context).await.expect("runs");
     (
-        Arc::try_unwrap(commit).unwrap_or_default(),
+        Arc::try_unwrap(commit).unwrap_or_else(|shared| (*shared).clone()),
         Arc::try_unwrap(sink).unwrap_or_default(),
     )
 }

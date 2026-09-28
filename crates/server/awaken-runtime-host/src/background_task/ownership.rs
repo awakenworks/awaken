@@ -258,7 +258,9 @@ mod tests {
 
     fn local_commit() -> Arc<HostCommit> {
         Arc::new(HostCommit::Local(Arc::new(
-            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new()),
+            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            )),
         )))
     }
 
@@ -598,7 +600,9 @@ mod tests {
         assert!(projected.committed_authority().is_none(), "R3");
         let unavailable_commit: HostCommit =
             HostCommit::Local(Arc::new(crate::LocalCommitAdapter::with_queries(
-                Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new()),
+                Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+                    awaken_lease_contract::system_clock(),
+                )),
                 crate::authority::ScriptedStateQueries::new(Err("state read unavailable".into())),
             )));
         let unavailable = BackgroundTaskOwnership {

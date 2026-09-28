@@ -313,6 +313,7 @@ pub(super) fn claim_exact_transaction_with_mode(
                 claim: previous.clone(),
                 reason,
             },
+            now_ms,
         )?;
         insert_operation(
             tx,
@@ -321,6 +322,7 @@ pub(super) fn claim_exact_transaction_with_mode(
                 previous,
                 claim: claim.clone(),
             },
+            now_ms,
         )?;
     } else {
         insert_operation(
@@ -329,6 +331,7 @@ pub(super) fn claim_exact_transaction_with_mode(
             &DispatchOperation::Claimed {
                 claim: claim.clone(),
             },
+            now_ms,
         )?;
     }
     Ok(Some(Claimed {

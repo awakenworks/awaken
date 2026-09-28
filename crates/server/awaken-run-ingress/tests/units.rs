@@ -124,7 +124,9 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let sink = Arc::new(MemoryStreamSink::new());
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "unit-worker")
         .with_stream_sink(sink.clone() as Arc<dyn Sink>)
@@ -165,7 +167,9 @@ async fn dispatch_harness_attaches_one_best_effort_stream_sink_to_its_worker() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let sink = Arc::new(MemoryStreamSink::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone())
         .with_stream_sink(sink.clone() as Arc<dyn Sink>);
@@ -207,7 +211,9 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
         let store = Arc::new(MemoryDispatchStore::new(
             awaken_lease_contract::system_clock(),
         ));
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let checkpoints = Arc::new(MemoryStreamCheckpointStore::new());
         let partial = StreamCheckpoint {
             run_id: "run-ckpt".into(),
@@ -308,7 +314,9 @@ async fn dispatch_harness_unknown_live_cancel_is_typed() {
         Arc::new(MemoryDispatchStore::new(
             awaken_lease_contract::system_clock(),
         )),
-        Arc::new(MemoryCommitCoordinator::new()),
+        Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        )),
     );
     let err = ingress
         .cancel(&RunId("not-running".to_string()))

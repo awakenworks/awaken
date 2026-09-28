@@ -217,7 +217,9 @@ async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
         (Returned, false, 1, vec![Entered]),
         (Returned, true, 1, vec![Entered, Returned]),
     ] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let (checkpoints, prior_checkpoint) = interrupted_model_checkpoint().await;
         commit_terminated_model(&durable).await;
         let model = Arc::new(RetryOnceLlm(AtomicUsize::new(0)));
@@ -292,7 +294,9 @@ async fn cancellation_drains_model_evidence_commit_before_terminalizing() {
     // Both cancel before releasing C2. This catches an outer select dropping
     // the whole inference future while its durable write is still in flight.
     for phase in [Entered, Returned] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let (checkpoints, prior_checkpoint) = interrupted_model_checkpoint().await;
         commit_terminated_model(&durable).await;
         let pause = Arc::new(ModelEvidencePause {
@@ -384,7 +388,9 @@ async fn restored_model_history_cannot_hide_an_older_unknown_invocation() {
     // The same real committed log feeds Native and the protocol projection;
     // these historical inputs do not authorize creating overlapping new calls.
     for (older_stopped, late_receipt) in [(false, false), (true, false), (false, true)] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let mut older = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
         if older_stopped {
             older.execution = ModelExecutionEvidence::Terminated(
@@ -449,7 +455,9 @@ async fn restored_model_history_rejects_damage_hidden_by_a_valid_latest_value() 
     // every binding field, merge mode and historical commit-prefix coordinate.
     for foreign in [false, true] {
         for damage in 0..5 {
-            let durable = Arc::new(MemoryCommitCoordinator::new());
+            let durable = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             let mut first = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
             first.execution = ModelExecutionEvidence::Terminated(
                 awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
@@ -536,7 +544,9 @@ async fn restored_model_evidence_is_run_scoped_and_invalid_coordinates_fail_clos
         ("run-1", 0, None),
         ("run-1", u64::MAX, None),
     ] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         awaken_runtime_contract::CommitCoordinator::commit(
             durable.as_ref(),
             ThreadCommit::assemble(
@@ -618,7 +628,9 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
     // invocation after an abandoned Future; its existing quiescence latch vetoes
     // the Worker ACK. Timeout ends Indeterminate, not a known provider failure.
     for timeout in [false, true] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let entered = Arc::new(tokio::sync::Notify::new());
         let model = Arc::new(BlockedModelEvidence {
             durable: durable.clone(),
@@ -741,7 +753,9 @@ async fn provider_operation_context_follows_committed_invocations_across_retry_a
         }
     }
     for restored in [false, true] {
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         if restored {
             commit_terminated_model(&commit).await;
         }
@@ -864,7 +878,9 @@ async fn returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance(
             calls: AtomicUsize::new(0),
             timeout,
         });
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let (checkpoints, checkpoint) = interrupted_model_checkpoint().await;
         commit_terminated_model(&durable).await;
         let runtime = Runtime::new()
@@ -924,7 +940,9 @@ async fn restored_unknown_invocation_blocks_checkpoint_salvage_and_provider_reen
             if phase == "Missing" && explicit {
                 continue; // No record also means no field; this is one rule.
             }
-            let durable = Arc::new(MemoryCommitCoordinator::new());
+            let durable = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             let mut value = serde_json::json!({"ordinal":7,
                 "binding":ModelBinding::new("p", "m", "b"), "phase":phase});
             if explicit {
@@ -999,7 +1017,9 @@ async fn restored_checkpoint_with_confirmed_termination_continues_once() {
     // P1+P2 => exact next ordinal, joined response, checkpoint consumed.
     // This positive control excludes a blanket checkpoint-recovery shutdown;
     // the adjacent table denies missing/unknown evidence even with tool JSON.
-    let durable = Arc::new(MemoryCommitCoordinator::new());
+    let durable = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     commit_terminated_model(&durable).await;
     let (checkpoints, checkpoint) = interrupted_model_checkpoint().await;
     let state = Runtime::new()
@@ -1443,7 +1463,9 @@ async fn native_attempt_coverage_is_committed_only_before_a_fresh_closed_executi
         "existing",
         "existing-covered-tool",
     ] {
-        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let durable = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         if row.starts_with("existing") {
             let state = (row == "existing-covered-tool")
                 .then(|| ActiveNativeAttemptCoverage::write(&NativeAttemptCoverage::ModelOnlyV1))
@@ -1582,7 +1604,9 @@ fn advisor_activation(with_candidate: bool) -> RunActivation {
 async fn one_model_step_commits_facts_and_streams_progress() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("hi there")));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let sink = Arc::new(MemoryStreamSink::new());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -1659,7 +1683,9 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
             awaken_agent_contract::agent::awaiting::PauseReason::BudgetReached,
         ),
     ]));
-    let paused_commit = Arc::new(MemoryCommitCoordinator::new());
+    let paused_commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let paused = Runtime::new()
         .with_llm(paused_model.clone())
         .execute(
@@ -1689,7 +1715,9 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
             awaken_agent_contract::agent::awaiting::PauseReason::BudgetReached,
         ),
     ]));
-    let continuation_commit = Arc::new(MemoryCommitCoordinator::new());
+    let continuation_commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let continuation = Runtime::new()
         .with_llm(continuation_model.clone())
         .execute(
@@ -1745,7 +1773,9 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
             awaken_agent_contract::agent::awaiting::PauseReason::BudgetReached,
         ),
     ]));
-    let failover_commit = Arc::new(MemoryCommitCoordinator::new());
+    let failover_commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let mut failover_activation = activation("catalog-a");
     failover_activation
         .snapshot
@@ -1792,7 +1822,9 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
         overloaded_backoff_base_ms: 0,
         ..Default::default()
     };
-    let retry_commit = Arc::new(MemoryCommitCoordinator::new());
+    let retry_commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let retried = Runtime::new()
         .with_retry_policy(one_retry)
         .with_llm(retry_model.clone())
@@ -1887,7 +1919,9 @@ async fn model_preparation_and_quota_pause_cannot_mask_a_participant_veto() {
     }
     for at in 0..=2 {
         for pause in [false, true] {
-            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let commit = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             let mut context = RuntimeRunContext::new()
                 .with_commit(commit.clone())
                 .with_reader(commit.clone());
@@ -1994,7 +2028,9 @@ async fn advisor_call_uses_the_durable_delegation_capability_and_folds_usage() {
     let runtime = Runtime::new()
         .with_llm(model.clone())
         .with_run_delegation(service.clone());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let result = runtime
         .execute(
             advisor_activation(true),
@@ -2049,7 +2085,9 @@ async fn advisor_without_a_host_service_is_consistently_unavailable_without_prov
         } else {
             runtime
         };
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
 
         let initial = runtime
             .execute(
@@ -2124,7 +2162,9 @@ async fn advisor_terminal_failure_is_generic_and_the_primary_run_continues() {
         starts: AtomicUsize::new(0),
         terminal_failure: Some("sensitive provider detail"),
     });
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let result = Runtime::new()
         .with_llm(model.clone())
         .with_run_delegation(service.clone())

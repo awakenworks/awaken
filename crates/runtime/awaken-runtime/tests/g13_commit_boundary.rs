@@ -42,7 +42,7 @@ fn ticket(run: &str, thread: &str) -> ResumeTicket {
 // pre-visible from a staged but uncommitted plan.
 #[tokio::test]
 async fn g13_projection_absent_before_first_commit() {
-    let store = MemoryCommitCoordinator::new();
+    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     assert!(
         store.run(&RunId("run-1".to_string())).is_none(),
         "projection must be empty before any commit"
@@ -54,7 +54,7 @@ async fn g13_projection_absent_before_first_commit() {
 // shared reference sees absent-before and present-after in one test.
 #[tokio::test]
 async fn g13_projection_visible_only_after_commit_returns_ok() {
-    let store = MemoryCommitCoordinator::new();
+    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     let run = RunId("run-1".to_string());
 
     assert!(store.run(&run).is_none(), "projection absent before commit");
@@ -78,7 +78,7 @@ async fn g13_projection_visible_only_after_commit_returns_ok() {
 // failed `commit()` call so no partial state is ever observable.
 #[tokio::test]
 async fn g13_failed_commit_leaves_no_partial_state() {
-    let store = MemoryCommitCoordinator::new();
+    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     let run = RunId("run-1".to_string());
 
     // Empty thread_id fails validate() before any lock is taken.
@@ -111,7 +111,7 @@ async fn g13_invalid_state_batch_is_atomic_at_the_real_commit_boundary() {
     // state, or sequence mutation. R2 admitted Run/Shared commands -> bind only
     // Run scope, commit once, and rebuild the same materialized Store. Kani and
     // state unit tests cover complementary policy/action combinations.
-    let store = MemoryCommitCoordinator::new();
+    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     let thread = ThreadId("state-thread".into());
     let run = RunId("state-run".into());
     let invalid = ThreadCommit::assemble(

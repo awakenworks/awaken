@@ -60,7 +60,9 @@ async fn run(chunks: Vec<&'static str>) -> (MemoryCommitCoordinator, MemoryStrea
     let runtime = Runtime::new().with_llm(Arc::new(StreamingLlm { chunks }));
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let sink = Arc::new(MemoryStreamSink::new());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -103,7 +105,7 @@ async fn run(chunks: Vec<&'static str>) -> (MemoryCommitCoordinator, MemoryStrea
     let outcome = runtime.execute(activation, context).await.expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     (
-        Arc::try_unwrap(commit).unwrap_or_default(),
+        Arc::try_unwrap(commit).unwrap_or_else(|shared| (*shared).clone()),
         Arc::try_unwrap(sink).unwrap_or_default(),
     )
 }

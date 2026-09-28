@@ -204,7 +204,9 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         .unwrap()
         .expect("same-incarnation reclaim");
     assert_eq!(current.lease.epoch, stale.lease.epoch + 1, "R2/C2");
-    let coordinator = Arc::new(MemoryCommitCoordinator::new());
+    let coordinator = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let service = Arc::new(ClaimedCommitHttpService::new(
         Arc::new(ClaimedCommitService::new(dispatch, coordinator.clone())),
         directory,

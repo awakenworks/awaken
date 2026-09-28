@@ -51,7 +51,9 @@ async fn service_drains_submitted_runs_and_shuts_down() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
     let service = ingress.spawn_service(
         awaken_lease_contract::system_clock(),
@@ -79,7 +81,9 @@ async fn service_resumes_an_awaiting_run_on_delivery() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(
         awaken_lease_contract::system_clock(),
@@ -118,7 +122,9 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
     // the daemon polls with, so the recovery boundary stays exact.
     let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // Simulate a crashed worker: a claimed run with a held lease, nothing run.
@@ -163,7 +169,9 @@ async fn shutdown_is_clean_with_no_work() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ingress = DispatchTestHarness::new(runtime, store, commit);
     let service = ingress.spawn_service(
         awaken_lease_contract::system_clock(),
@@ -188,7 +196,9 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     // so it must read the same hand-driven reading the daemon polls with.
     let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(
         clock.clone(),
@@ -246,7 +256,9 @@ async fn service_relays_a_cross_thread_send() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(
         awaken_lease_contract::system_clock(),
@@ -285,7 +297,9 @@ async fn service_commits_retry_exhaustion_and_settles_done() {
     // reading the daemon polls with.
     let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
     // Drive two crash-recoveries by hand so attempt_count reaches the budget.
@@ -347,7 +361,9 @@ async fn daemon_runs_with_worker_owned_renewal_and_ttl_gc_enabled() {
     let store = Arc::new(MemoryDispatchStore::new(
         awaken_lease_contract::system_clock(),
     ));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
     let service = ingress.spawn_service(
         awaken_lease_contract::system_clock(),

@@ -225,7 +225,9 @@ mod resolve_seam_tests {
     }
 
     fn ctx() -> WorkerContext {
-        WorkerContext::new(Arc::new(MemoryCommitCoordinator::new()))
+        WorkerContext::new(Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        )))
     }
 
     fn activation(model_ref: &str) -> RunActivation {
@@ -294,12 +296,16 @@ mod resolve_seam_tests {
         // | R3 | absent | B | no inner checkpoint/inbox (delegated child) |
         // Decision rule: R1-R3 exhaust worker authority present/absent and
         // inherited authority present/absent without allowing parent replacement.
-        let worker_commit = Arc::new(MemoryCommitCoordinator::new());
+        let worker_commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let worker_commit_port: Arc<dyn CommitCoordinator> = worker_commit.clone();
         let worker_reader_port: Arc<dyn CommittedThreadView> = worker_commit.clone();
         let worker_checkpoint: Arc<dyn StreamCheckpointStore> =
             Arc::new(awaken_store_inmem::MemoryStreamCheckpointStore::new());
-        let parent_commit = Arc::new(MemoryCommitCoordinator::new());
+        let parent_commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let parent_checkpoint: Arc<dyn StreamCheckpointStore> =
             Arc::new(awaken_store_inmem::MemoryStreamCheckpointStore::new());
         let parent_inbox = LiveInbox::new();

@@ -108,7 +108,9 @@ async fn local_remote_and_lost_reply_uncertainty_share_one_runtime_terminal_path
             calls: AtomicUsize::new(0),
         });
         let mut runtime = Runtime::new().with_llm(model.clone());
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let mut context = RuntimeRunContext::new().with_commit(commit.clone());
         let mut hand = None;
         if transport == 0 {
@@ -246,7 +248,9 @@ async fn brain_runs_its_tool_on_an_in_process_hand() {
     let (brain_end, hand_end) = awaken_connection_plan::in_process_pair();
     let hand = tokio::spawn(serve_hand(hand_end, session));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_tool_executor(Arc::new(RemoteToolExecutor::new(brain_end)));
@@ -297,7 +301,9 @@ async fn brain_runs_its_tool_on_a_unix_socket_hand() {
         .connect(&ConnectionPlan::unix_dial(&path))
         .await
         .expect("dial hand");
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_tool_executor(Arc::new(RemoteToolExecutor::new(brain_channel)));

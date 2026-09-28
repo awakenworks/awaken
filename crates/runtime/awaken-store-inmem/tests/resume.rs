@@ -17,7 +17,7 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 
 #[tokio::test]
 async fn fresh_reader_resumes_from_committed_facts() {
-    let store = MemoryCommitCoordinator::new();
+    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     let thread = ThreadId("t1".to_string());
     let run = RunId("r1".to_string());
 

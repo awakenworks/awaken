@@ -47,7 +47,9 @@ async fn main() {
 
     // 3. Assemble the runtime and run one turn.
     let runtime = Runtime::new().with_llm(Arc::new(GreeterLlm));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .run(&snapshot, "Say hi.", context)

@@ -66,10 +66,19 @@ const THREAD_ID: &str = "formal-thread";
 const SNAPSHOT_ID: &str = "formal-snapshot";
 const FINGERPRINT: &str = "formal-catalog";
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct TracingCoordinator {
     inner: MemoryCommitCoordinator,
     commits: Arc<Mutex<Vec<ThreadCommit>>>,
+}
+
+impl Default for TracingCoordinator {
+    fn default() -> Self {
+        Self {
+            inner: MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
+            commits: Arc::default(),
+        }
+    }
 }
 
 impl TracingCoordinator {

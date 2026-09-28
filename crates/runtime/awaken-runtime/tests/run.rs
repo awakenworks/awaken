@@ -38,7 +38,9 @@ async fn run_registers_and_executes_one_snapshot_in_one_call() {
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
     // One call: registers the snapshot and executes a fresh Run.
@@ -82,7 +84,9 @@ async fn snapshot_file_loads_and_runs_as_an_embedded_sdk() {
     );
     assert_eq!(loaded.fingerprint, loaded.resolved_spec.catalog_fingerprint);
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let state = runtime
         .run(
             &loaded,
@@ -112,7 +116,9 @@ async fn per_run_model_executor_override_wins_over_the_runtime_default() {
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         // The per-run override: this attempt must use OVERRIDE, not DEFAULT.
@@ -142,7 +148,9 @@ async fn without_an_override_the_run_uses_the_runtime_default() {
     let config = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ctx = RuntimeRunContext::new().with_commit(commit.clone());
 
     runtime.run(&config, "go", ctx).await.expect("run");
@@ -167,7 +175,9 @@ async fn with_neither_an_override_nor_a_bound_default_the_run_fails_closed() {
     let config = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ctx = RuntimeRunContext::new().with_commit(commit.clone()); // no with_model_executor
 
     let err = runtime
@@ -190,7 +200,9 @@ async fn run_to_completion_drives_an_ungated_run_without_asking() {
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());

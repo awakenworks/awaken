@@ -78,10 +78,15 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
     };
     let persistence = match deployment.mode {
         config::OperatingMode::Local => {
-            awaken_coordinator::open_coordinator_persistence(&deployment.runtime).await?
+            awaken_coordinator::open_coordinator_persistence(&deployment.runtime, clock.clone())
+                .await?
         }
         config::OperatingMode::Server => {
-            awaken_coordinator::open_existing_coordinator_persistence(&deployment.runtime).await?
+            awaken_coordinator::open_existing_coordinator_persistence(
+                &deployment.runtime,
+                clock.clone(),
+            )
+            .await?
         }
     };
     let worker_directory = persistence.worker_directory.clone();

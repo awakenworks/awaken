@@ -27,8 +27,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
@@ -114,6 +114,9 @@ fn recovery_replay_preserves_complete_entry_and_time() {
 pub struct FsCommitCoordinator {
     log: Mutex<File>,
     inner: MemoryCommitCoordinator,
+    /// Stamps each appended record's `committed_at_unix_ms`, the same clock the
+    /// in-memory read model is built over.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     write_lock: tokio::sync::Mutex<()>,
     // The OS lock is retained for the complete coordinator lifetime. Migration,
     // replay, append admission, and append acknowledgement therefore share one
@@ -294,14 +297,17 @@ fn migrate_log_if_needed(lock: &ExclusiveFileLock) -> std::io::Result<()> {
 impl FsCommitCoordinator {
     /// Open (creating if needed) a store rooted at `dir`, replaying the committed
     /// log into the read model. A torn final line is discarded (crash recovery).
-    pub async fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
+    pub async fn open(
+        dir: impl AsRef<Path>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> std::io::Result<Self> {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)?;
         let path: PathBuf = dir.join(LOG_FILE);
         let lifecycle_lock = try_lock_exclusive(&dir.join(LOG_LOCK_FILE))?;
         migrate_log_if_needed(&lifecycle_lock)?;
 
-        let inner = MemoryCommitCoordinator::new();
+        let inner = MemoryCommitCoordinator::new(clock.clone());
         let mut durable_len = 0_u64;
         if let Ok(file) = File::open(&path) {
             let mut reader = BufReader::new(file);
@@ -349,6 +355,7 @@ impl FsCommitCoordinator {
         Ok(Self {
             log: Mutex::new(log),
             inner,
+            clock,
             write_lock: tokio::sync::Mutex::new(()),
             _lifecycle_lock: lifecycle_lock,
         })
@@ -413,7 +420,7 @@ impl Coordinator for FsCommitCoordinator {
         }
         // Durable first: append + fsync the record before it is acknowledged, so a
         // crash after ack cannot lose it and a crash before ack replays nothing.
-        let committed_at_unix_ms = Some(awaken_lease_contract::system_clock().now().as_epoch_ms());
+        let committed_at_unix_ms = Some(awaken_lease_contract::WallClockExt::now_ms(&*self.clock));
         self.append(&StoredCommitLogEntry {
             committed_at_unix_ms,
             entry: CommitLogEntry::Commit(commit.clone()),
@@ -430,7 +437,7 @@ impl OperationCoordinator for FsCommitCoordinator {
         if let Some(duplicate) = self.inner.inspect_operation(&operation)? {
             return Ok(duplicate);
         }
-        let committed_at_unix_ms = Some(awaken_lease_contract::system_clock().now().as_epoch_ms());
+        let committed_at_unix_ms = Some(awaken_lease_contract::WallClockExt::now_ms(&*self.clock));
         self.append(&StoredCommitLogEntry {
             committed_at_unix_ms,
             entry: CommitLogEntry::Operation(operation.clone()),

@@ -214,8 +214,10 @@ struct PendingRow {
     revision: u64,
 }
 
-#[derive(Debug, Default)]
 struct State {
+    /// The store's clock, reachable under the lock so every operational event
+    /// is stamped on the same timeline the store judges its rows on.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     /// Enqueue order, so claim is deterministic (oldest first).
     order: Vec<RunId>,
     rows: BTreeMap<RunId, Row>,
@@ -227,6 +229,20 @@ struct State {
     completions: Vec<DispatchCompletion>,
     /// Dispatch-authority transitions in the same order as their mutations.
     operations: Vec<DispatchOperationalEvent>,
+}
+
+impl State {
+    fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
+        Self {
+            clock,
+            order: Vec::new(),
+            rows: BTreeMap::new(),
+            pending: Vec::new(),
+            outbox: Vec::new(),
+            completions: Vec::new(),
+            operations: Vec::new(),
+        }
+    }
 }
 
 impl MemoryDispatchStore {
@@ -298,7 +314,7 @@ fn lock(state: &Mutex<State>) -> Result<std::sync::MutexGuard<'_, State>, Dispat
 fn push_operation(state: &mut State, operation: DispatchOperation) {
     state.operations.push(DispatchOperationalEvent {
         cursor: DispatchCursor(state.operations.len() as u64 + 1),
-        recorded_at_ms: Some(crate::clock::system_now_ms()),
+        recorded_at_ms: Some(awaken_lease_contract::WallClockExt::now_ms(&*state.clock)),
         operation,
     });
 }

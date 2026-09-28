@@ -109,7 +109,9 @@ async fn permission_resume_checks_recovery_before_approval_and_tool_entry() {
             context = match context_reader {
                 0 => context,
                 1 => context.with_reader(fixture.commit.clone()),
-                _ => context.with_reader(Arc::new(MemoryCommitCoordinator::new())),
+                _ => context.with_reader(Arc::new(MemoryCommitCoordinator::new(
+                    awaken_lease_contract::system_clock(),
+                ))),
             };
             if !model_fault {
                 context = context.with_stream_checkpoint(Arc::new(fault));
@@ -223,7 +225,9 @@ async fn permission_resume_keeps_the_validated_model_ordinal_after_a_late_receip
         let context = match context_reader {
             0 => context(&fixture.commit),
             1 => context(&fixture.commit).with_reader(fixture.commit.clone()),
-            _ => context(&fixture.commit).with_reader(Arc::new(MemoryCommitCoordinator::new())),
+            _ => context(&fixture.commit).with_reader(Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ))),
         };
         assert_eq!(
             runtime

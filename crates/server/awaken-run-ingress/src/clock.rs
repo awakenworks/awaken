@@ -13,15 +13,6 @@
 //! tests build from `awaken-lease-testkit` and production from
 //! `awaken_lease_contract::system_clock()`.
 
-/// Store-owned wall-clock time for durable authority facts.
-///
-/// Keeping this edge clock here prevents each storage backend from inventing a
-/// subtly different timestamp implementation.
-#[cfg(any(feature = "durable", test))]
-pub(crate) fn system_now_ms() -> u64 {
-    awaken_lease_contract::system_clock().now().as_epoch_ms()
-}
-
 /// Largest epoch-millisecond value representable by the SQL backends. The
 /// public contract is `u64`; all stores normalize through this one boundary so
 /// SQLite/Postgres never turn a far-future value into a negative integer and the

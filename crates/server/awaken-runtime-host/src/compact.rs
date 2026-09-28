@@ -215,7 +215,9 @@ mod tests {
                 .expect("literal model reference"),
             Arc::new(HostCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::projected(
-                    awaken_store_inmem::MemoryCommitCoordinator::new(),
+                    awaken_store_inmem::MemoryCommitCoordinator::new(
+                        awaken_lease_contract::system_clock(),
+                    ),
                 ),
             ))),
         );
@@ -254,7 +256,9 @@ mod tests {
                 .expect("literal model reference"),
             Arc::new(HostCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::projected(
-                    awaken_store_inmem::MemoryCommitCoordinator::new(),
+                    awaken_store_inmem::MemoryCommitCoordinator::new(
+                        awaken_lease_contract::system_clock(),
+                    ),
                 ),
             ))),
         );

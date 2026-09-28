@@ -110,7 +110,9 @@ async fn cancellation_case(case: Case) {
     // R4 expires the claim by advancing this clock at the HTTP boundary, and the
     // dispatch port now reads "now" from the store it was built with.
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     store.enqueue(dispatch).await.unwrap();
     let first = worker(&peer, store.clone(), commit.clone(), "first-worker");
     assert_eq!(

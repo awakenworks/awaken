@@ -53,7 +53,9 @@ fn awaiting_commit(thread: &str, run: &str) -> ThreadCommit {
 }
 
 async fn current_fixture(dir: &std::path::Path) -> String {
-    let store = FsCommitCoordinator::open(dir).await.expect("open fixture");
+    let store = FsCommitCoordinator::open(dir, awaken_lease_contract::system_clock())
+        .await
+        .expect("open fixture");
     store
         .commit(ended_commit("direct-thread", "direct-run"))
         .await
@@ -108,7 +110,7 @@ async fn old_and_nested_wire_shapes_migrate_to_the_current_log_version() {
     assert!(historical.contains("RunWaiting"));
     assert!(historical.contains("\"waiting\""));
 
-    let migrated = FsCommitCoordinator::open(dir.path())
+    let migrated = FsCommitCoordinator::open(dir.path(), awaken_lease_contract::system_clock())
         .await
         .expect("migrate historical log");
     assert_eq!(
@@ -141,7 +143,10 @@ async fn current_mixed_and_repeated_upgrade_are_idempotent() {
     // Decision table: R1=C1->E1; R2=C2->E2; R3=C3->E3; R4=R2+reopen->E3.
     let current_dir = tempfile::tempdir().unwrap();
     let current = current_fixture(current_dir.path()).await;
-    let reopened = FsCommitCoordinator::open(current_dir.path()).await.unwrap();
+    let reopened =
+        FsCommitCoordinator::open(current_dir.path(), awaken_lease_contract::system_clock())
+            .await
+            .unwrap();
     drop(reopened);
     assert_eq!(
         std::fs::read_to_string(current_dir.path().join(LOG)).unwrap(),
@@ -156,11 +161,17 @@ async fn current_mixed_and_repeated_upgrade_are_idempotent() {
         .replacen("\"resume_ticket\"", "\"waiting\"", 1);
     std::fs::write(mixed_dir.path().join(LOG), mixed).unwrap();
     std::fs::remove_file(mixed_dir.path().join(VERSION)).unwrap();
-    let migrated = FsCommitCoordinator::open(mixed_dir.path()).await.unwrap();
+    let migrated =
+        FsCommitCoordinator::open(mixed_dir.path(), awaken_lease_contract::system_clock())
+            .await
+            .unwrap();
     drop(migrated);
     let once = std::fs::read_to_string(mixed_dir.path().join(LOG)).unwrap();
     assert_current_log(&once);
-    let reopened = FsCommitCoordinator::open(mixed_dir.path()).await.unwrap();
+    let reopened =
+        FsCommitCoordinator::open(mixed_dir.path(), awaken_lease_contract::system_clock())
+            .await
+            .unwrap();
     drop(reopened);
     assert_eq!(
         std::fs::read_to_string(mixed_dir.path().join(LOG)).unwrap(),
@@ -171,7 +182,10 @@ async fn current_mixed_and_repeated_upgrade_are_idempotent() {
     // R3 models the exact durable state after log rename and before version
     // publication. Reapplying the decoder/encoder is safe and publishes marker.
     std::fs::remove_file(mixed_dir.path().join(VERSION)).unwrap();
-    let recovered = FsCommitCoordinator::open(mixed_dir.path()).await.unwrap();
+    let recovered =
+        FsCommitCoordinator::open(mixed_dir.path(), awaken_lease_contract::system_clock())
+            .await
+            .unwrap();
     drop(recovered);
     assert_current_log(&std::fs::read_to_string(mixed_dir.path().join(LOG)).unwrap());
 }
@@ -188,7 +202,9 @@ async fn phase_one_marker_upgrades_after_current_only_validation() {
     let current = current_fixture(dir.path()).await;
     std::fs::write(dir.path().join(VERSION), b"1\n").unwrap();
 
-    let upgraded = FsCommitCoordinator::open(dir.path()).await.unwrap();
+    let upgraded = FsCommitCoordinator::open(dir.path(), awaken_lease_contract::system_clock())
+        .await
+        .unwrap();
     drop(upgraded);
     assert_eq!(
         std::fs::read(dir.path().join(VERSION)).unwrap(),
@@ -206,10 +222,11 @@ async fn phase_one_marker_upgrades_after_current_only_validation() {
     let historical = current.replace("RunStateChanged", "RunPhaseChanged");
     std::fs::write(contradictory.path().join(LOG), historical.as_bytes()).unwrap();
     std::fs::write(contradictory.path().join(VERSION), b"1\n").unwrap();
-    let error = FsCommitCoordinator::open(contradictory.path())
-        .await
-        .err()
-        .expect("R2/E3");
+    let error =
+        FsCommitCoordinator::open(contradictory.path(), awaken_lease_contract::system_clock())
+            .await
+            .err()
+            .expect("R2/E3");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(
         std::fs::read(contradictory.path().join(LOG)).unwrap(),
@@ -235,10 +252,11 @@ async fn corruption_and_torn_tail_have_distinct_migration_outcomes() {
     let historical = make_historical(corrupt_dir.path(), &current);
     let corrupt = format!("{historical}{{not-json}}\n");
     std::fs::write(corrupt_dir.path().join(LOG), corrupt.as_bytes()).unwrap();
-    let error = FsCommitCoordinator::open(corrupt_dir.path())
-        .await
-        .err()
-        .expect("R1/E1");
+    let error =
+        FsCommitCoordinator::open(corrupt_dir.path(), awaken_lease_contract::system_clock())
+            .await
+            .err()
+            .expect("R1/E1");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(
         std::fs::read(corrupt_dir.path().join(LOG)).unwrap(),
@@ -255,9 +273,10 @@ async fn corruption_and_torn_tail_have_distinct_migration_outcomes() {
         .unwrap();
     log.write_all(b"{\"torn\":").unwrap();
     drop(log);
-    let migrated = FsCommitCoordinator::open(torn_dir.path())
-        .await
-        .expect("R2/E2");
+    let migrated =
+        FsCommitCoordinator::open(torn_dir.path(), awaken_lease_contract::system_clock())
+            .await
+            .expect("R2/E2");
     drop(migrated);
     let migrated = std::fs::read_to_string(torn_dir.path().join(LOG)).unwrap();
     assert_current_log(&migrated);
@@ -271,14 +290,18 @@ async fn lifecycle_lock_excludes_another_coordinator_and_releases_on_drop() {
     // Decision table: R1=C1->E1; R2=C2->E2. The guard lifetime therefore owns
     // migration, replay, and every append instead of protecting migration alone.
     let dir = tempfile::tempdir().unwrap();
-    let owner = FsCommitCoordinator::open(dir.path()).await.unwrap();
-    let conflict = FsCommitCoordinator::open(dir.path())
+    let owner = FsCommitCoordinator::open(dir.path(), awaken_lease_contract::system_clock())
+        .await
+        .unwrap();
+    let conflict = FsCommitCoordinator::open(dir.path(), awaken_lease_contract::system_clock())
         .await
         .err()
         .expect("R1/E1");
     assert_eq!(conflict.kind(), std::io::ErrorKind::WouldBlock);
     drop(owner);
-    FsCommitCoordinator::open(dir.path()).await.expect("R2/E2");
+    FsCommitCoordinator::open(dir.path(), awaken_lease_contract::system_clock())
+        .await
+        .expect("R2/E2");
 }
 
 #[tokio::test]
@@ -296,7 +319,9 @@ async fn stale_private_stage_cannot_replace_the_authoritative_log() {
         b"not authoritative",
     )
     .unwrap();
-    let migrated = FsCommitCoordinator::open(dir.path()).await.unwrap();
+    let migrated = FsCommitCoordinator::open(dir.path(), awaken_lease_contract::system_clock())
+        .await
+        .unwrap();
     drop(migrated);
     assert_current_log(&std::fs::read_to_string(dir.path().join(LOG)).unwrap());
 }
@@ -312,7 +337,7 @@ async fn a_version_marker_can_never_substitute_for_missing_log_data() {
     for (rule, version) in [("R1", b"2\n".as_slice()), ("R2", b"1\n".as_slice())] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(VERSION), version).unwrap();
-        let error = FsCommitCoordinator::open(dir.path())
+        let error = FsCommitCoordinator::open(dir.path(), awaken_lease_contract::system_clock())
             .await
             .err()
             .expect("E1");

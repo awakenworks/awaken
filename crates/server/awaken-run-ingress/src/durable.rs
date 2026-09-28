@@ -483,7 +483,9 @@ mod tests {
             Arc::new(crate::MemoryDispatchStore::new(
                 awaken_lease_contract::system_clock(),
             )),
-            Arc::new(MemoryCommitCoordinator::new()),
+            Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            )),
         );
         let provisional = Arc::downgrade(&ingress.reader);
         let projection = Arc::new(crate::RecoveryProjection::new());

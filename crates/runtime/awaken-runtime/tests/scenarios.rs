@@ -94,7 +94,9 @@ fn activation() -> RunActivation {
 #[tokio::test]
 async fn live_stream_is_not_replay_truth() {
     let runtime = runtime();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let sink = Arc::new(MemoryStreamSink::new());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
@@ -126,7 +128,9 @@ async fn live_stream_is_not_replay_truth() {
 #[tokio::test]
 async fn cancel_commits_terminal_outcome() {
     let runtime = runtime();
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let token = CancellationToken::new();
     token.cancel();
     let context = RuntimeRunContext::new()
