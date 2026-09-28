@@ -272,6 +272,7 @@ pub(super) async fn prepare_control_routers(
             Arc::new(
                 awaken_protocol_managed::ManagedRateLimiter::for_organization(
                     data_subject_org.clone(),
+                    stores.clock.clone(),
                 ),
             )
         });

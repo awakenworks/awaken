@@ -7,6 +7,7 @@
 //! adapters invoke these use-case methods and never reach through to either
 //! collaborator, preventing a second orchestration boundary in protocol state.
 
+use awaken_lease_contract::WallClockExt as _;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -1119,7 +1120,7 @@ impl SessionApplication {
         Ok(Self::project_session_usage(
             &session,
             thread_usages,
-            self.now_unix_ms(),
+            self.clock.now_ms(),
         ))
     }
 

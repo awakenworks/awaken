@@ -1078,7 +1078,7 @@ pub(super) async fn await_claim_deletion(
     pending: &PendingClaimDeletion,
     admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
-    let deadline = tokio::time::Instant::now() + DELETE_TIMEOUT;
+    let deadline = awaken_lease_contract::mono::MonoDeadline::after(DELETE_TIMEOUT);
     loop {
         admit()?;
         let observed = claims.get(&pending.name).await;
@@ -1087,7 +1087,7 @@ pub(super) async fn await_claim_deletion(
             Err(error) if api_not_found(&error) => return Ok(()),
             Err(error) => return Err(backend(error)),
             Ok(observed) if claim_uid(&observed)? != pending.uid => return Ok(()),
-            Ok(_) if tokio::time::Instant::now() >= deadline => {
+            Ok(_) if deadline.has_passed() => {
                 return Err(backend(format!(
                     "continuation PVC `{}` incarnation `{}` was not deleted within {}s",
                     pending.name,

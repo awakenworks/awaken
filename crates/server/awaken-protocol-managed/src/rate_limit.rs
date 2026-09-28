@@ -6,8 +6,12 @@
 //! hosted adapters resolve it through their IAM tenant authority before taking
 //! an organization bucket.
 
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+use awaken_lease_contract::WallClockExt as _;
+use awaken_lease_contract::mono::Stopwatch;
 
 use axum::Json;
 use axum::extract::{Request, State};
@@ -51,6 +55,9 @@ pub struct ManagedRateLimitDecision {
     pub remaining: u32,
     pub retry_after: Option<u64>,
     pub reset_after: u64,
+    /// The instant, in Unix milliseconds on the limiter's clock, at which the
+    /// bucket is full again; the edge renders it without reading a clock.
+    pub reset_at_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -104,7 +111,9 @@ impl Bucket {
         }
     }
 
-    fn take(&mut self, now: Duration) -> ManagedRateLimitDecision {
+    /// `now` is monotonic bucket time; `wall_now_ms` is the same instant on
+    /// the wall clock, from which the rendered reset instant is derived.
+    fn take(&mut self, now: Duration, wall_now_ms: u64) -> ManagedRateLimitDecision {
         let elapsed = now.saturating_sub(self.last_refill);
         let elapsed_millis = elapsed
             .as_millis()
@@ -123,15 +132,17 @@ impl Bucket {
                 self.capacity,
             ))
         };
+        let reset_after = seconds_for_quanta(
+            capacity_quanta(self.capacity) - self.token_quanta,
+            self.capacity,
+        );
         ManagedRateLimitDecision {
             allowed,
             limit: u32::from(self.capacity),
             remaining: (self.token_quanta / TOKEN_QUANTA_PER_TOKEN) as u32,
             retry_after,
-            reset_after: seconds_for_quanta(
-                capacity_quanta(self.capacity) - self.token_quanta,
-                self.capacity,
-            ),
+            reset_after,
+            reset_at_unix_ms: wall_now_ms.saturating_add(reset_after.saturating_mul(1_000)),
         }
     }
 }
@@ -266,24 +277,45 @@ struct Buckets {
 }
 
 /// Shared limiter for one organization-serving router.
-#[derive(Debug)]
 pub struct ManagedRateLimiter {
     organization_id: String,
-    started_at: Instant,
+    /// Monotonic bucket time: refill is judged on elapsed time only.
+    started_at: Stopwatch,
+    /// The composing process's wall clock; only the rendered reset instant
+    /// reads it.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     buckets: Mutex<Buckets>,
+}
+
+impl std::fmt::Debug for ManagedRateLimiter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedRateLimiter")
+            .field("organization_id", &self.organization_id)
+            .field("buckets", &self.buckets)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ManagedRateLimiter {
     #[must_use]
-    pub fn for_organization(organization_id: impl Into<String>) -> Self {
-        Self::with_limits(organization_id, ManagedRateLimits::default())
+    pub fn for_organization(
+        organization_id: impl Into<String>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
+        Self::with_limits(organization_id, ManagedRateLimits::default(), clock)
     }
 
     #[must_use]
-    pub fn with_limits(organization_id: impl Into<String>, limits: ManagedRateLimits) -> Self {
+    pub fn with_limits(
+        organization_id: impl Into<String>,
+        limits: ManagedRateLimits,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
         Self {
             organization_id: organization_id.into(),
-            started_at: Instant::now(),
+            started_at: Stopwatch::start(),
+            clock,
             buckets: Mutex::new(Buckets {
                 create: Bucket::new(limits.create_per_minute),
                 read: Bucket::new(limits.read_per_minute),
@@ -292,17 +324,22 @@ impl ManagedRateLimiter {
     }
 
     fn check(&self, operation: ManagedOperation) -> ManagedRateLimitDecision {
-        self.check_at(operation, self.started_at.elapsed())
+        self.check_at(operation, self.started_at.elapsed(), self.clock.now_ms())
     }
 
     /// Admit a Session created internally by a Deployment. Scheduled/manual
     /// deployment launches bypass HTTP but consume the same organization Create
     /// bucket as `POST /v1/sessions`.
-    fn check_at(&self, operation: ManagedOperation, now: Duration) -> ManagedRateLimitDecision {
+    fn check_at(
+        &self,
+        operation: ManagedOperation,
+        now: Duration,
+        wall_now_ms: u64,
+    ) -> ManagedRateLimitDecision {
         let mut buckets = self.buckets.lock().unwrap();
         match operation {
-            ManagedOperation::Create => buckets.create.take(now),
-            ManagedOperation::Read => buckets.read.take(now),
+            ManagedOperation::Create => buckets.create.take(now, wall_now_ms),
+            ManagedOperation::Read => buckets.read.take(now, wall_now_ms),
         }
     }
 
@@ -399,13 +436,8 @@ fn apply_headers(headers: &mut HeaderMap, decision: ManagedRateLimitDecision) {
         "anthropic-ratelimit-requests-remaining",
         u64::from(decision.remaining),
     );
-    let reset_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-        + decision.reset_after.saturating_mul(1_000);
     if let Ok(value) = HeaderValue::from_str(
-        &awaken_session_application_contract::epoch_millis_to_rfc3339(reset_ms),
+        &awaken_session_application_contract::epoch_millis_to_rfc3339(decision.reset_at_unix_ms),
     ) {
         headers.insert("anthropic-ratelimit-requests-reset", value);
     }
@@ -584,6 +616,7 @@ mod tests {
 
     #[test]
     fn token_buckets_are_independent_and_continuously_replenished() {
+        const WALL_MS: u64 = 1_800_000_000_000;
         // Token-bucket decision table (capacity 2/minute per operation):
         // T1 first two creates -> admitted; T2 immediate third -> 429 decision;
         // T3 read at the exhausted create instant -> admitted (independent bucket);
@@ -594,31 +627,37 @@ mod tests {
                 create_per_minute: 2,
                 read_per_minute: 2,
             },
+            awaken_lease_contract::system_clock(),
         );
         assert!(
             limiter
-                .check_at(ManagedOperation::Create, Duration::ZERO)
+                .check_at(ManagedOperation::Create, Duration::ZERO, WALL_MS)
                 .allowed,
             "T1"
         );
         assert!(
             limiter
-                .check_at(ManagedOperation::Create, Duration::ZERO)
+                .check_at(ManagedOperation::Create, Duration::ZERO, WALL_MS)
                 .allowed,
             "T1"
         );
-        let rejected = limiter.check_at(ManagedOperation::Create, Duration::ZERO);
+        let rejected = limiter.check_at(ManagedOperation::Create, Duration::ZERO, WALL_MS);
         assert!(!rejected.allowed, "T2");
         assert_eq!(rejected.retry_after, Some(30), "T2");
+        assert_eq!(
+            rejected.reset_at_unix_ms,
+            WALL_MS + rejected.reset_after * 1_000,
+            "T2 reset instant is the wall reading plus the refill time"
+        );
         assert!(
             limiter
-                .check_at(ManagedOperation::Read, Duration::ZERO)
+                .check_at(ManagedOperation::Read, Duration::ZERO, WALL_MS)
                 .allowed,
             "T3"
         );
         assert!(
             limiter
-                .check_at(ManagedOperation::Create, Duration::from_secs(30))
+                .check_at(ManagedOperation::Create, Duration::from_secs(30), WALL_MS)
                 .allowed,
             "T4"
         );
@@ -637,8 +676,9 @@ mod tests {
         // limiter is not given a caller-invented fallback tenant. Decision rule
         // A1=C1+C2 -> E1+E2+E3. The scoped success and shared-bucket rules are
         // exercised by the following compatibility test.
-        let limiter: Arc<dyn ManagedRequestLimiter> =
-            Arc::new(ManagedRateLimiter::for_organization("org"));
+        let limiter: Arc<dyn ManagedRequestLimiter> = Arc::new(
+            ManagedRateLimiter::for_organization("org", awaken_lease_contract::system_clock()),
+        );
         let app = Router::new()
             .route("/v1/sessions", post(|| async { StatusCode::CREATED }))
             .layer(axum::middleware::from_fn_with_state(
@@ -668,6 +708,7 @@ mod tests {
                 create_per_minute: 2,
                 read_per_minute: 1,
             },
+            awaken_lease_contract::system_clock(),
         ));
         let app = Router::new()
             .route("/v1/sessions", post(accepted).get(|| async { "sessions" }))
@@ -731,6 +772,7 @@ mod tests {
                 create_per_minute: 1,
                 read_per_minute: 1,
             },
+            awaken_lease_contract::system_clock(),
         ));
         let app = Router::new()
             .route(

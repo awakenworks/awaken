@@ -359,7 +359,7 @@ pub(crate) fn spawn_heartbeat(
     lifecycle: Arc<WorkerSupervisor>,
     sequence: u64,
     timing: AuthorityLeaseTiming,
-    environment_proof_started: Instant,
+    environment_proof_started: awaken_lease_contract::mono::Instant,
 ) -> tokio::task::JoinHandle<WorkerRevocationReport> {
     tokio::spawn(async move {
         // Independent, single-flight lanes under the same incarnation owner.
@@ -372,7 +372,7 @@ pub(crate) fn spawn_heartbeat(
                     () = async {
                         if let Some(provider) = &lifecycle.session_environment_provider {
                             environment_evidence::monitor(
-                                tokio::time::Instant::from_std(environment_proof_started),
+                                environment_proof_started,
                                 timing,
                                 || provider.probe_ready(),
                             ).await;
@@ -643,8 +643,10 @@ async fn supervise_session_realization_reconciliation<Renewal, RenewalFuture, Co
         }
     };
     let cold_recovery = async move {
-        let mut interval =
-            tokio::time::interval_at(tokio::time::Instant::now() + cold_period, cold_period);
+        let mut interval = tokio::time::interval_at(
+            awaken_lease_contract::mono::now() + cold_period,
+            cold_period,
+        );
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
@@ -778,7 +780,7 @@ where
         }
     };
 
-    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let remaining = deadline.saturating_duration_since(awaken_lease_contract::mono::now());
     let returned = match tokio::time::timeout_at(deadline, observe_return(remaining)).await {
         Ok(returned) => returned,
         Err(_) => {
@@ -840,7 +842,7 @@ where
 pub(crate) async fn revoke_worker_session_authority(
     lifecycle: &WorkerSupervisor,
 ) -> WorkerRevocationReport {
-    let deadline = tokio::time::Instant::now() + WORKER_REVOCATION_BUDGET;
+    let deadline = awaken_lease_contract::mono::now() + WORKER_REVOCATION_BUDGET;
     WorkerRevocationReport {
         outcome: revoke_worker_session_authority_before(lifecycle, deadline).await,
         deadline,
@@ -1016,7 +1018,7 @@ mod tests {
         // | R5 | yes | yes | pending | - | yes | E2/Retirement |
         // | R6 | yes | yes | yes | pending | yes | E2/Capacity+E5 |
         let budget = std::time::Duration::from_secs(5);
-        let completed_deadline = tokio::time::Instant::now() + budget;
+        let completed_deadline = awaken_lease_contract::mono::now() + budget;
         let completed = complete_worker_revocation_before(
             completed_deadline,
             async { Ok(2) },
@@ -1033,7 +1035,7 @@ mod tests {
         );
 
         let fence_timeout = complete_worker_revocation_before(
-            tokio::time::Instant::now() + budget,
+            awaken_lease_contract::mono::now() + budget,
             std::future::pending(),
             |_| async { true },
             async { Ok(()) },
@@ -1053,7 +1055,7 @@ mod tests {
 
         let observer_dropped = Arc::new(AtomicBool::new(false));
         let observer_started = Arc::new(tokio::sync::Notify::new());
-        let deadline = tokio::time::Instant::now() + budget;
+        let deadline = awaken_lease_contract::mono::now() + budget;
         let task = tokio::spawn(complete_worker_revocation_before(
             deadline,
             async { Ok(3) },
@@ -1099,7 +1101,7 @@ mod tests {
 
         let retired = Arc::new(AtomicBool::new(false));
         let explicit_unknown = complete_worker_revocation_before(
-            tokio::time::Instant::now() + budget,
+            awaken_lease_contract::mono::now() + budget,
             async { Ok(4) },
             |_| async { false },
             {
@@ -1125,7 +1127,7 @@ mod tests {
         );
 
         let retirement_timeout = complete_worker_revocation_before(
-            tokio::time::Instant::now() + budget,
+            awaken_lease_contract::mono::now() + budget,
             async { Ok(5) },
             |_| async { true },
             std::future::pending(),
@@ -1144,7 +1146,7 @@ mod tests {
         );
 
         let capacity_timeout = complete_worker_capacity_before(
-            tokio::time::Instant::now() + budget,
+            awaken_lease_contract::mono::now() + budget,
             WorkerRevocationOutcome::Completed { interrupted: 6 },
             std::future::pending(),
         )
@@ -1470,7 +1472,7 @@ mod tests {
                 lifecycle,
                 1,
                 AuthorityLeaseTiming::from_ttl_ms(6000),
-                Instant::now(),
+                awaken_lease_contract::mono::now(),
             );
             if mode < 2 {
                 let heartbeat = tokio::time::timeout(Duration::from_secs(5), received.recv())
@@ -1536,7 +1538,7 @@ mod tests {
         let captured = awaken_reliability_testkit::events::CapturedEvents::default();
         let timing =
             awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
-        let started = tokio::time::Instant::now();
+        let started = awaken_lease_contract::mono::now();
         let calls = AtomicUsize::new(0);
         let active = AtomicUsize::new(0);
         struct Flight<'a>(&'a AtomicUsize);
@@ -1589,7 +1591,7 @@ mod tests {
             awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
         let calls = AtomicUsize::new(0);
         super::environment_evidence::monitor(
-            tokio::time::Instant::now() - timing.proof_window(),
+            awaken_lease_contract::mono::now() - timing.proof_window(),
             timing,
             || async {
                 calls.fetch_add(1, Ordering::SeqCst);
@@ -1607,7 +1609,7 @@ mod tests {
         // T5 explicit error is independently covered by the real Worker test P3.
         let timing =
             awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
-        let started = tokio::time::Instant::now();
+        let started = awaken_lease_contract::mono::now();
         let calls = AtomicUsize::new(0);
         super::environment_evidence::monitor(started, timing, || async {
             if calls.fetch_add(1, Ordering::SeqCst) == 0 {

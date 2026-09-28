@@ -2,6 +2,7 @@
 // @formal reason: Application integration for proved budget arithmetic.
 //! Session-root list-cost admission and cumulative usage settlement.
 
+use awaken_lease_contract::WallClockExt as _;
 use awaken_session_budget_contract::{ManagedBudgetUsageCursor, SessionUsage};
 use awaken_session_state_contract::{ManagedLifecycleFact, PersistedSession};
 
@@ -91,7 +92,7 @@ impl SessionApplication {
                     object_id: session_id.to_string(),
                     workspace_id: Some(owner_scope.clone()),
                     event_type: "session.budget_reached".into(),
-                    timestamp: i64::try_from(self.now_unix_ms() / 1_000).unwrap_or(i64::MAX),
+                    timestamp: i64::try_from(self.clock.now_ms() / 1_000).unwrap_or(i64::MAX),
                     runtime_interval: None,
                 }]
             } else {

@@ -406,6 +406,10 @@ impl WorkerDaemonConfig {
         &self,
         adapters: awaken_run_executor_acp::host::HostAcpAdapters,
     ) -> Result<crate::WorkerNode, String> {
+        // The Worker daemon's one wall clock: its request assertions, its
+        // credential envelopes and the Host it builds (dispatch pool, recovery,
+        // children) share it.
+        let clock = awaken_lease_contract::system_clock();
         let resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver> = match &self
             .worker
             .credential_envelope_keys_file
@@ -419,6 +423,7 @@ impl WorkerDaemonConfig {
             None => Arc::new(crate::WorkerCredentialFileResolver::new(
                 &self.worker.credential_material_root,
                 &self.worker.credential_trust_domain,
+                clock.clone(),
             )),
         };
         let credentials =
@@ -435,9 +440,6 @@ impl WorkerDaemonConfig {
                 })
             })
             .transpose()?;
-        // The Worker daemon's one wall clock: its request assertions and the
-        // Host it builds (dispatch pool, recovery, children) share it.
-        let clock = awaken_lease_contract::system_clock();
         let upstream = self.worker.upstream(
             &self.server,
             WorkerUpstreamSecurity::Remote {

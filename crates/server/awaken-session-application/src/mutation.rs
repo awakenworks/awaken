@@ -4,6 +4,7 @@
 //! Canonical durable Session root mutation boundary.
 
 use super::*;
+use awaken_lease_contract::WallClockExt as _;
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionMutation,
     SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
@@ -188,7 +189,7 @@ impl SessionApplication {
     ) -> Result<CompleteSessionCreateResult, SessionCreationError> {
         // Receipt identity was compiled before this server-owned observation.
         // A repository replay returns the first committed times unchanged.
-        let now = self.now_unix_ms();
+        let now = self.clock.now_ms();
         {
             let session = root.as_session_mut();
             session.created_at_unix_ms = Some(now);
@@ -341,7 +342,7 @@ impl SessionApplication {
             &mut session,
             idempotency,
             lifecycle_facts,
-            self.now_unix_ms(),
+            self.clock.now_ms(),
         )
         .await
         .map_err(repository_failure)?;

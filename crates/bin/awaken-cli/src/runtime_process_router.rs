@@ -84,7 +84,12 @@ pub(super) async fn prepare_runtime_routers(
         .request_limiter
         .clone()
         .unwrap_or_else(|| {
-            Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()))
+            Arc::new(
+                awaken_protocol_managed::ManagedRateLimiter::for_organization(
+                    org_id.clone(),
+                    stores.clock.clone(),
+                ),
+            )
         });
     let mcp_bearer_token = process.mcp_bearer_token;
     let ai_sdk_browser_cors = process.ai_sdk_browser_cors;

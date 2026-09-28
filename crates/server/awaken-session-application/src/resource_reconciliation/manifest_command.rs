@@ -7,6 +7,7 @@
 //! only the caller-issued manifest command and the exact receipt it returns.
 
 use awaken_agent_contract::stable_fingerprint;
+use awaken_lease_contract::WallClockExt as _;
 use awaken_session_error_contract::RunError;
 use awaken_session_state_contract::{IdempotencyRecord, SessionExecutionState};
 
@@ -150,7 +151,7 @@ impl SessionApplication {
             return Err(SessionResourceManifestError::Conflict);
         }
         let mut desired = command.resources.clone();
-        desired.observe_input_times(session.resources.desired(), self.now_unix_ms());
+        desired.observe_input_times(session.resources.desired(), self.clock.now_ms());
         if let Some(baseline) = session.frozen_baseline()
             && !baseline
                 .mutation_policy

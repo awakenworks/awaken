@@ -43,14 +43,21 @@ const MAX_PROJECTED_FIELD_BYTES: u64 = 1024 * 1024;
 pub struct WorkerCredentialFileResolver {
     root: PathBuf,
     holder: PlaintextHolder,
+    /// The Worker's wall clock; a sealed envelope's validity is judged on it.
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl WorkerCredentialFileResolver {
     #[must_use]
-    pub fn new(root: impl Into<PathBuf>, trust_domain: impl Into<String>) -> Self {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        trust_domain: impl Into<String>,
+        clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
         Self {
             root: root.into(),
             holder: worker_projection::exact_worker_holder(trust_domain),
+            clock,
         }
     }
 
@@ -169,7 +176,10 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
                 CredentialMaterialSource::ControlPlaneReference,
                 Some(envelope @ CredentialEnvelope::SealedForWorker { envelope_ref, .. }),
             ) => {
-                envelope.validate_for_holder(request.selected_holder, unix_time_ms())?;
+                envelope.validate_for_holder(
+                    request.selected_holder,
+                    awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
+                )?;
                 if envelope_ref.id.trim().is_empty()
                     || envelope_ref.payload_fingerprint.trim().is_empty()
                 {
@@ -210,13 +220,6 @@ impl CredentialMaterialResolver for WorkerCredentialFileResolver {
     }
 }
 
-fn unix_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,7 +250,11 @@ mod tests {
         CredentialMaterialBinding,
     ) {
         let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "worker-a");
-        let resolver = WorkerCredentialFileResolver::new(root, "worker-a");
+        let resolver = WorkerCredentialFileResolver::new(
+            root,
+            "worker-a",
+            awaken_lease_contract::system_clock(),
+        );
         let access = CredentialAccess::new(
             CredentialRef {
                 id: "credential/alpha".into(),
@@ -291,7 +298,11 @@ mod tests {
             ] {
                 for envelope in [false, true] {
                     let root = temp_root("capability-relation");
-                    let resolver = Arc::new(WorkerCredentialFileResolver::new(&root, domain));
+                    let resolver = Arc::new(WorkerCredentialFileResolver::new(
+                        &root,
+                        domain,
+                        awaken_lease_contract::system_clock(),
+                    ));
                     for holder in [
                         resolver.holder().clone(),
                         PlaintextHolder::new(PlaintextBoundary::Worker, "other.worker"),

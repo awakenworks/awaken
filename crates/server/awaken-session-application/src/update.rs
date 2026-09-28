@@ -4,6 +4,7 @@
 // @formal reason: Revisioned Session update path.
 //! Canonical mutable Session command and its durable/effect ordering.
 
+use awaken_lease_contract::WallClockExt as _;
 use std::collections::BTreeMap;
 
 use awaken_agent_contract::stable_fingerprint;
@@ -152,11 +153,8 @@ impl SessionUpdateError {
 fn mcp_projection_requires_realization(
     session: &PersistedSession,
     runtime_incarnation: &str,
+    now_unix_ms: u64,
 ) -> bool {
-    let now_unix_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default();
     let lease_is_current = session.realization.as_ref().is_some_and(|lease| {
         lease.runtime_incarnation == runtime_incarnation
             && realization_lease_is_live_at(lease.expires_at_unix_ms, now_unix_ms)
@@ -496,7 +494,11 @@ impl SessionApplication {
         budget_in_request: bool,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
         if mcp_in_request
-            && mcp_projection_requires_realization(&outcome.session, self.runtime_incarnation())
+            && mcp_projection_requires_realization(
+                &outcome.session,
+                self.runtime_incarnation(),
+                self.clock.now_ms(),
+            )
         {
             match self
                 .realize_session_after_refresh(&outcome.session.session_id)

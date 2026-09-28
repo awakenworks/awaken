@@ -558,8 +558,9 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
         let jobs: Api<Job> = Api::namespaced(self.client.clone(), &self.namespace);
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         create_or_verify_exact(&jobs, &job, verify_exact_package_job).await?;
-        let deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_secs(PACKAGE_BUILD_TIMEOUT_SECS as u64 + 30);
+        let deadline = awaken_lease_contract::mono::MonoDeadline::after(
+            std::time::Duration::from_secs(PACKAGE_BUILD_TIMEOUT_SECS as u64 + 30),
+        );
         loop {
             let observed = jobs.get(&name).await.map_err(backend)?;
             let status = observed.status.as_ref().cloned().unwrap_or_default();
@@ -577,7 +578,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 let _ = jobs.delete(&name, &DeleteParams::background()).await;
                 return Err(backend(format!("BuildKit Job `{name}` failed")));
             }
-            if tokio::time::Instant::now() >= deadline {
+            if deadline.has_passed() {
                 let _ = jobs.delete(&name, &DeleteParams::background()).await;
                 return Err(backend(format!("BuildKit Job `{name}` timed out")));
             }
@@ -658,7 +659,8 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
             }
         })
         .await?;
-        let deadline = tokio::time::Instant::now() + image_check_client_timeout();
+        let deadline =
+            awaken_lease_contract::mono::MonoDeadline::after(image_check_client_timeout());
         loop {
             let observed = jobs.get_opt(&name).await.map_err(backend)?;
             let status = match image_check_observation(observed.clone()) {
@@ -706,7 +708,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 status.succeeded.unwrap_or_default() > 0,
                 pull_failed,
                 status.failed.unwrap_or_default() > 0,
-                tokio::time::Instant::now() >= deadline,
+                deadline.has_passed(),
             ) {
                 ImageCheckDisposition::Available => {
                     let observed_job = observed.as_ref().expect("present image-check observation");

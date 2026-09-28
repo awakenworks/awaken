@@ -185,10 +185,6 @@ impl SessionApplication {
         self
     }
 
-    pub fn now_unix_ms(&self) -> u64 {
-        self.clock.now_ms()
-    }
-
     /// The injected clock port, for an adapter that stamps observations on the
     /// same time line as this application's commands.
     #[must_use]
@@ -238,10 +234,8 @@ impl SessionApplication {
             sessions_repo.clone(),
             clock.clone(),
         )));
-        let started_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
+        // The incarnation stem: this application's start instant on its clock.
+        let started_at = clock.now().as_unix_nanos();
         let local_realization_owner = configuration.local_realization_owner.trim().to_string();
         assert!(
             !local_realization_owner.is_empty(),

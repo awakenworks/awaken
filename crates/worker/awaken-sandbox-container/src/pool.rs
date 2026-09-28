@@ -20,7 +20,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use awaken_lease_contract::mono::{self, Instant};
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
@@ -526,7 +528,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         let _guard = gate.lock().await;
         loop {
             let (ready, expired) = {
-                let now = Instant::now();
+                let now = mono::now();
                 let mut map = self.warm.lock().expect("warm pool mutex");
                 let expired_keys = map
                     .iter()
@@ -592,9 +594,9 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
                     template: spec.clone(),
                     ready: Vec::new(),
-                    last_desired: Instant::now(),
+                    last_desired: mono::now(),
                 });
-                entry.last_desired = Instant::now();
+                entry.last_desired = mono::now();
                 if self.closed.load(Ordering::SeqCst)
                     || entry.ready.len() >= target
                     || total >= self.total_size
@@ -856,9 +858,9 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
                 let entry = map.entry(key.clone()).or_insert_with(|| WarmEntry {
                     template: spec.clone(),
                     ready: Vec::new(),
-                    last_desired: Instant::now(),
+                    last_desired: mono::now(),
                 });
-                entry.last_desired = Instant::now();
+                entry.last_desired = mono::now();
                 entry.ready.pop()
             };
             let Some(candidate) = warm else {

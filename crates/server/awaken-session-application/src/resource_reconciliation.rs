@@ -8,6 +8,7 @@
 // @formal entrypoint session_resources.terminal_session_never_reactivates
 //! Durable Session Resource recovery and terminal reclamation.
 
+use awaken_lease_contract::WallClockExt as _;
 use awaken_resource_contract::{ResourceReference, ResourceReferenceKind, ResourceReferenceRecord};
 use awaken_session_error_contract::RunError;
 use awaken_session_realization_contract::SessionRealizationControlFailure;
@@ -253,14 +254,6 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError
     SessionPreparationError::Rejected(RunError::internal(error.to_string()))
 }
 
-fn deletion_timestamp() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
-        .to_string()
-}
-
 impl SessionApplication {
     fn terminal_cleanup_lease_matches(
         session: &PersistedSession,
@@ -357,7 +350,7 @@ impl SessionApplication {
         if session.realization.as_ref().is_some_and(|current| {
             awaken_session_realization_contract::realization_lease_is_live_at(
                 current.expires_at_unix_ms,
-                self.now_unix_ms(),
+                self.clock.now_ms(),
             )
         }) {
             Ok(())
@@ -1065,7 +1058,8 @@ impl SessionApplication {
                 )));
             }
             input.updated_at_unix_ms = Some(
-                self.now_unix_ms()
+                self.clock
+                    .now_ms()
                     .max(input.updated_at_unix_ms.unwrap_or(0)),
             );
             replace_desired_repository_input(&mut persisted.resources, session_id, input)?;
@@ -1201,7 +1195,14 @@ impl SessionApplication {
         let payload = SessionMutationPayload::Delete(SessionTombstone {
             session_id: session.session_id.clone(),
             deleted_revision,
-            deleted_at: deletion_timestamp(),
+            // The tombstone's deletion instant, in Unix seconds, on the
+            // application clock.
+            deleted_at: self
+                .clock
+                .now()
+                .duration_since_epoch()
+                .as_secs()
+                .to_string(),
         });
         let payload_hash = payload.stable_hash();
         let mutation = SessionMutation {
@@ -1822,10 +1823,7 @@ impl SessionApplication {
         {
             return OwnedRepositoryRetirement::Pending;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or_default();
+        let now = self.clock.now_ms();
         if let Some(scheduler) = self.resource_purge_scheduler()
             && scheduler
                 .schedule_purge(

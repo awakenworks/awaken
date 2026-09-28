@@ -9,6 +9,7 @@
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_lease_contract::WallClockExt as _;
 use awaken_session_error_contract::RunError;
 use awaken_session_event_contract::SessionEventProjectionAnchor;
 use awaken_session_state_contract::{
@@ -490,7 +491,7 @@ impl SessionApplication {
             }
             Err(error) => return Err(SessionActivityError::Unavailable(error.to_string())),
         }
-        self.ensure_environment_resident(session_id, self.now_unix_ms())
+        self.ensure_environment_resident(session_id, self.clock.now_ms())
             .await
             .map_err(|error| match error {
                 super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
@@ -519,7 +520,7 @@ impl SessionApplication {
                 None,
                 external,
                 false,
-                self.now_unix_ms(),
+                self.clock.now_ms(),
             )?;
             match self
                 .commit_session_snapshot_with_record(
@@ -654,7 +655,7 @@ impl SessionApplication {
                         &projected_root.environment,
                     );
                 let resident = self
-                    .ensure_environment_resident(session_id, self.now_unix_ms())
+                    .ensure_environment_resident(session_id, self.clock.now_ms())
                     .await
                     .map_err(|error| match error {
                         super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
@@ -667,7 +668,7 @@ impl SessionApplication {
                 })
             }
             None => {
-                self.ensure_environment_resident(session_id, self.now_unix_ms())
+                self.ensure_environment_resident(session_id, self.clock.now_ms())
                     .await
                     .map_err(|error| match error {
                         super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
@@ -719,7 +720,7 @@ impl SessionApplication {
                 Some(epoch),
                 external,
                 continue_committed_await,
-                self.now_unix_ms(),
+                self.clock.now_ms(),
             )?;
             if let Some(prior_activity_epoch) = prior_activity_epoch {
                 // The new epoch was inserted first, so removing the old one can
@@ -909,7 +910,7 @@ impl SessionApplication {
                             SessionEventProjectionAnchor {
                                 source_commit_cursor: observation.source_commit_cursor,
                             },
-                            self.now_unix_ms(),
+                            self.clock.now_ms(),
                         )
                         .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?
                     {
@@ -946,7 +947,7 @@ impl SessionApplication {
                     session
                         .transition_execution(SessionExecutionState::Idle)
                         .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
-                    let ended_at_unix_ms = self.now_unix_ms();
+                    let ended_at_unix_ms = self.clock.now_ms();
                     session.environment.mark_idle(ended_at_unix_ms);
                     session
                         .close_runtime_interval(ended_at_unix_ms)
