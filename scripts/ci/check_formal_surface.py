@@ -22,12 +22,14 @@ import re
 import sys
 
 import _crate_boundary_workspace
+import formal_ledger
 
 
 # Input set: every production Rust source it inventories, the Cargo manifests
-# that decide which of them a target actually reaches, the four formal/ JSON
-# registries (ledger, features, classifications, exclusions), and the shared
-# Rust projection whose lexer decides what counts as executable vocabulary.
+# that decide which of them a target actually reaches, the obligation ledger
+# and the three formal/ JSON registries (features, classifications,
+# exclusions) with the module that assembles the ledger, and the shared Rust
+# projection whose lexer decides what counts as executable vocabulary.
 # `crates/**/*.rs` belongs here because the checker reads every one of them --
 # the earlier hook globbed only formal/*.json, so two new production modules
 # reached main unclassified.
@@ -36,10 +38,10 @@ INPUT_GLOBS: tuple[str, ...] = (
     "crates/**/Cargo.toml",
     "formal/*.json",
     "scripts/ci/_crate_boundary_workspace.py",
+    "scripts/ci/formal_ledger.py",
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-LEDGER = ROOT / "formal" / "coverage.json"
 EXCLUSIONS = ROOT / "formal" / "surface-exclusions.json"
 CLASSIFICATIONS = ROOT / "formal" / "surface-classifications.json"
 FEATURES = ROOT / "formal" / "features.json"
@@ -391,12 +393,20 @@ def load_classifications(
     return classifications
 
 
+def ledger_obligations() -> list[dict[str, object]]:
+    """The assembled obligation rows of the tree under ``ROOT``."""
+
+    try:
+        return formal_ledger.load(ROOT)["obligations"]
+    except formal_ledger.LedgerError as error:
+        fail(str(error))
+
+
 def ledger_sources() -> dict[str, list[dict[str, object]]]:
     """Production Rust sources an obligation already cites as evidence."""
 
-    ledger = json.loads(LEDGER.read_text(encoding="utf-8"))
     by_source: dict[str, list[dict[str, object]]] = {}
-    for obligation in ledger["obligations"]:
+    for obligation in ledger_obligations():
         for evidence in obligation.get("evidence", []):
             if evidence.startswith("crates/") and evidence.endswith(".rs"):
                 by_source.setdefault(evidence, []).append(obligation)
@@ -427,7 +437,7 @@ def check_staged(paths: list[str]) -> None:
         set(ledger_sources())
         | set(load_exclusions())
         | set(load_classifications(
-            {item["id"] for item in json.loads(LEDGER.read_text(encoding="utf-8"))["obligations"]},
+            {item["id"] for item in ledger_obligations()},
             load_requirement_ids(),
         ))
     )
@@ -484,10 +494,7 @@ def main() -> None:
         check_staged(args.staged)
         return
 
-    obligations_by_id = {
-        item["id"]: item
-        for item in json.loads(LEDGER.read_text(encoding="utf-8"))["obligations"]
-    }
+    obligations_by_id = {item["id"]: item for item in ledger_obligations()}
     by_source = ledger_sources()
 
     exclusions = load_exclusions()

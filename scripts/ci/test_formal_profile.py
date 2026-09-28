@@ -18,6 +18,7 @@ import unittest
 from unittest import mock
 
 import check_feature_coverage
+import formal_ledger
 
 from formal_profile import guardrail_results, profile_result, resolve_obligations
 
@@ -503,7 +504,7 @@ class ProfileTests(unittest.TestCase):
         import verification_manifest
         self.assertIs(verification_manifest.profile_result, profile_result)
         features = json.loads((root / "formal/features.json").read_text())
-        coverage = json.loads((root / "formal/coverage.json").read_text())
+        coverage = formal_ledger.load(root)
         result = profile_result(features, coverage)
         checked = json.loads(subprocess.check_output(
             [sys.executable, str(root / "scripts/ci/check_formal_coverage.py"), "--json"], text=True

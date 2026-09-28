@@ -9,6 +9,7 @@ import shlex
 import sys
 import tomllib
 
+import formal_ledger
 from _crate_boundary_workspace import rust_syntax
 from formal_kani_options import checked_loop_override, expand_options
 from formal_profile import PROOF_GRADES, profile_result, validate_proof_grade
@@ -20,13 +21,12 @@ from formal_profile import PROOF_GRADES, profile_result, validate_proof_grade
 # obligation cites as evidence or as a production entrypoint still exists --
 # and an obligation may cite any repository path (crates/, formal/, docs/,
 # e2e/, scripts/, web/, packages/, deploy/ and .github/ all appear today). That
-# citation set is data inside formal/coverage.json, not a static path shape, so
+# citation set is data inside the obligation ledger, not a static path shape, so
 # no narrower glob can contain it: deleting a cited file while the ledger still
 # names it is exactly the failure a narrower trigger would let through.
 INPUT_GLOBS: tuple[str, ...] = ("**/*",)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-LEDGER = ROOT / "formal" / "coverage.json"
 ALLOWED = {
     "model_linked",
     "kernel_proved",
@@ -68,7 +68,10 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-data = json.loads(LEDGER.read_text(encoding="utf-8"))
+try:
+    data = formal_ledger.load(ROOT)
+except formal_ledger.LedgerError as error:
+    fail(str(error))
 minimum = float(data["minimum_ratio"])
 obligations = data["obligations"]
 profile = data.get("verified_profile")

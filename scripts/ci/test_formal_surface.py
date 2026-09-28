@@ -91,16 +91,15 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
             (crate / "src/lib.rs").write_text("mod policy;")
             policy = "crates/runtime/example/src/policy.rs"
             (root / policy).write_text("fn authorize() {}")
-            ledger = root / "coverage.json"
-            ledger.write_text(json.dumps({"obligations": [{
+            MODULE.formal_ledger.write(root, {"obligations": [{
                 "id": "example", "status": "model_linked", "evidence": [policy],
-            }]}))
+            }]})
             features = root / "features.json"
             features.write_text('{"features":[]}')
             exclusions = root / "exclusions.json"
             with (
                 mock.patch.multiple(
-                    MODULE, ROOT=root, LEDGER=ledger, FEATURES=features,
+                    MODULE, ROOT=root, FEATURES=features,
                     EXCLUSIONS=exclusions, CLASSIFICATIONS=root / "classifications.json",
                     PRODUCTION_ROOTS=[root / "crates"],
                 ),

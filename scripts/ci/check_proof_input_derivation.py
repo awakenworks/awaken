@@ -43,6 +43,7 @@ import re
 import sys
 
 import _crate_boundary_workspace
+import formal_ledger
 
 
 # Input set: every Rust source it parses (harnesses and the production kernels
@@ -55,7 +56,6 @@ INPUT_GLOBS: tuple[str, ...] = (
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-LEDGER = ROOT / "formal" / "coverage.json"
 REGISTRY = ROOT / "formal" / "proof-input-exceptions.json"
 RULES = ("kani_fork", "tautology", "free_symbol")
 FIELDS = ("rule", "source", "harness", "kernel", "parameter", "derived_in")
@@ -235,8 +235,15 @@ def rust_sources() -> list[pathlib.Path]:
     )
 
 
+def load_ledger() -> dict:
+    try:
+        return formal_ledger.load(ROOT)
+    except formal_ledger.LedgerError as error:
+        fail(str(error))
+
+
 def production_entrypoints() -> set[str]:
-    ledger = json.loads(LEDGER.read_text())
+    ledger = load_ledger()
     entrypoints: set[str] = set()
     for obligation in ledger["obligations"]:
         entrypoints.update(obligation.get("production_entrypoints") or ())
@@ -449,7 +456,7 @@ def load_registry() -> tuple[dict[tuple[str, ...], dict], dict[tuple[str, ...], 
     if not REGISTRY.exists():
         fail(f"{REGISTRY.relative_to(ROOT)} is missing")
     obligations = {
-        obligation["id"] for obligation in json.loads(LEDGER.read_text())["obligations"]
+        obligation["id"] for obligation in load_ledger()["obligations"]
     }
     return validate_registry(json.loads(REGISTRY.read_text()), obligations)
 
