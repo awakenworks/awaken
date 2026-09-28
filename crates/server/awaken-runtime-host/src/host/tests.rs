@@ -20016,7 +20016,7 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
             expired_lease.expires_at_unix_ms - 30_000,
         )
         .unwrap()
-        .observed(awaken_local_process::authority_proof_started().unwrap());
+        .observed(awaken_authority_clock::authority_proof_started().unwrap());
     host.session_slots.update(session_id, |slot| {
         slot.realization_authority =
             crate::session_slot::SessionRealizationAuthority::Live(skewed_proof);

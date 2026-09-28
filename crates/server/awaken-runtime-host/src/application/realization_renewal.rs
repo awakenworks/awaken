@@ -206,7 +206,7 @@ impl crate::SharedHost {
                     == RenewalFailureDisposition::RevokeImmediately;
                 (crate::HostError::internal(error.to_string()), revoke)
             };
-            let request_started = awaken_local_process::authority_proof_started()
+            let request_started = awaken_authority_clock::authority_proof_started()
                 .map_err(|error| (crate::HostError::internal(error.to_string()), true))?;
             match control
                 .renew_session_realization(
@@ -376,7 +376,7 @@ impl crate::SharedHost {
         owner: Option<(&str, &str)>,
         timing: AuthorityLeaseTiming,
     ) -> Result<usize, crate::HostError> {
-        let now = awaken_local_process::authority_proof_started()
+        let now = awaken_authority_clock::authority_proof_started()
             .map_err(|error| crate::HostError::internal(error.to_string()))?;
         let mut due = self
             .session_slots

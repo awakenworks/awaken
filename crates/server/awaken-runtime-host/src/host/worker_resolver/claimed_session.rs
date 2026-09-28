@@ -143,7 +143,7 @@ pub(super) async fn install_claimed_session_projection(
             claimed.lease.run_id.0
         ))
     })?;
-    let request_started = awaken_local_process::authority_proof_started()
+    let request_started = awaken_authority_clock::authority_proof_started()
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
     let directive = control
         .resume_frozen(

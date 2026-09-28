@@ -2,7 +2,7 @@
 //! The durable registry remains authoritative. Heartbeat scheduling and local
 //! Session admission consult this same projection; neither keeps a second lease.
 
-pub(crate) use awaken_local_process::authority_proof_started;
+pub(crate) use awaken_authority_clock::authority_proof_started;
 use awaken_provisioning_contract::CurrentExecutionAuthority;
 use awaken_runtime_contract::authority_lease::{
     AuthorityLeaseTiming, AuthorityProofStarted as ProofStarted,

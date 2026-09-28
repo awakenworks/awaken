@@ -15,7 +15,7 @@ authority = "runtime-host"
 # (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-local-process.workspace = true
+awaken-authority-clock.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-error-contract.workspace = true

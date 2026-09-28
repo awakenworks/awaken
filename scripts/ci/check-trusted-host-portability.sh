@@ -75,6 +75,9 @@ cargo test -p awaken-sandbox-control-transport --lib
 cargo test -p awaken-provisioning-contract --lib
 cargo test -p awaken-sandbox-container --lib
 cargo test -p awaken-sandbox-local --lib
+# The authority clock's Linux BOOTTIME and non-Linux Instant paths both need
+# every matrix runner; the local-process scoped cutoff reads the same Linux clock.
+cargo test -p awaken-authority-clock --lib
 cargo test -p awaken-local-process --lib
 # Run the actual Hand binary with an explicit resource root and a nested cwd,
 # not just a renderer/unit fixture. Non-Linux builds exercise native path parsing.

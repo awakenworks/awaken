@@ -39,7 +39,7 @@ pub(crate) fn test_lease_receipt(
 pub(crate) fn test_observed_lease(
     lease: awaken_session_resource_contract::SessionRealizationLease,
 ) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
-    let started = awaken_local_process::authority_proof_started().unwrap();
+    let started = awaken_authority_clock::authority_proof_started().unwrap();
     test_lease_receipt(lease).observed(started)
 }
 
@@ -50,7 +50,7 @@ pub(crate) fn test_observed_lease(
 pub(crate) fn test_expired_observed_lease(
     lease: awaken_session_resource_contract::SessionRealizationLease,
 ) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
-    let started = awaken_local_process::authority_proof_started().unwrap();
+    let started = awaken_authority_clock::authority_proof_started().unwrap();
     let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt {
         lease,
         remaining_ms: std::num::NonZeroU64::new(1).unwrap(),
@@ -59,7 +59,7 @@ pub(crate) fn test_expired_observed_lease(
     std::thread::sleep(std::time::Duration::from_millis(2));
     assert!(
         proof
-            .remaining_at(awaken_local_process::authority_proof_started().unwrap())
+            .remaining_at(awaken_authority_clock::authority_proof_started().unwrap())
             .is_none()
     );
     proof
@@ -87,7 +87,7 @@ impl SessionRealizationAuthority {
 
     pub(crate) fn remaining(&self) -> Option<std::time::Duration> {
         self.proof()?
-            .remaining_at(awaken_local_process::authority_proof_started().ok()?)
+            .remaining_at(awaken_authority_clock::authority_proof_started().ok()?)
     }
 
     /// One local admission rule: exact aggregate generation and a still-live
@@ -558,7 +558,7 @@ impl SessionRuntimeSlot {
         &mut self,
         proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> bool {
-        let Ok(now) = awaken_local_process::authority_proof_started() else {
+        let Ok(now) = awaken_authority_clock::authority_proof_started() else {
             return false;
         };
         if proof.remaining_at(now).is_none() {
@@ -621,7 +621,7 @@ impl SessionRuntimeSlot {
         {
             return false;
         }
-        let Some(now) = awaken_local_process::authority_proof_started().ok() else {
+        let Some(now) = awaken_authority_clock::authority_proof_started().ok() else {
             return false;
         };
         if self.realization_authority.remaining().is_none() || renewed.remaining_at(now).is_none() {

@@ -289,7 +289,7 @@ impl awaken_session_runtime_contract::RealizationRuntime for ManagedHost {
     fn observe_realization_request(
         &self,
     ) -> Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted, RunError> {
-        awaken_local_process::authority_proof_started()
+        awaken_authority_clock::authority_proof_started()
             .map_err(|error| RunError::unavailable(format!("authority clock: {error}")))
     }
 

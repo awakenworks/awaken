@@ -29,7 +29,7 @@ impl HostWorkerResolver {
             control,
             directive,
             synchronizer,
-            awaken_local_process::authority_proof_started()
+            awaken_authority_clock::authority_proof_started()
                 .map_err(|error| Self::execution_error(error.to_string()))?,
             &realization,
         )

@@ -486,7 +486,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
             lease: f.lease.clone(),
             remaining_ms: std::num::NonZeroU64::new(3).unwrap(),
         }
-        .observed(awaken_local_process::authority_proof_started().unwrap());
+        .observed(awaken_authority_clock::authority_proof_started().unwrap());
         let install = f.host.install_frozen_session_projection(
             SESSION,
             projection,
@@ -502,7 +502,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
         tokio::time::sleep(std::time::Duration::from_millis(3)).await;
         assert!(
             proof
-                .remaining_at(awaken_local_process::authority_proof_started().unwrap())
+                .remaining_at(awaken_authority_clock::authority_proof_started().unwrap())
                 .is_none()
         );
         drop(held);
