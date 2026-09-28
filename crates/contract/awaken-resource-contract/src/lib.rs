@@ -796,12 +796,49 @@ pub struct Memory {
 /// content cycle can retain the same hash while advancing the authoritative head.
 /// Every conditional mutation therefore carries the immutable Memory identity,
 /// its monotonic version, and the content digest observed together.
+///
+/// The coordinates are private: a witness is read from one head
+/// ([`Memory::generation`], [`MemoryEntry::generation`]) or minted whole by
+/// [`MemoryGeneration::new`], and is thereafter only carried, never edited one
+/// coordinate at a time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryGeneration {
-    pub memory_id: String,
-    pub version: u64,
-    pub content_sha256: String,
+    memory_id: String,
+    version: u64,
+    content_sha256: String,
+}
+
+impl MemoryGeneration {
+    /// The witness of Memory `memory_id` observed at `version` with content
+    /// digest `content_sha256`, all read together from one head.
+    #[must_use]
+    pub fn new(
+        memory_id: impl Into<String>,
+        version: u64,
+        content_sha256: impl Into<String>,
+    ) -> Self {
+        Self {
+            memory_id: memory_id.into(),
+            version,
+            content_sha256: content_sha256.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn memory_id(&self) -> &str {
+        &self.memory_id
+    }
+
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    #[must_use]
+    pub fn content_sha256(&self) -> &str {
+        &self.content_sha256
+    }
 }
 
 impl sealed::Sealed for MemoryGeneration {}
@@ -823,22 +860,14 @@ impl CompleteGeneration for MemoryGeneration {
 impl Memory {
     #[must_use]
     pub fn generation(&self) -> MemoryGeneration {
-        MemoryGeneration {
-            memory_id: self.id.clone(),
-            version: self.version,
-            content_sha256: self.content_sha256.clone(),
-        }
+        MemoryGeneration::new(self.id.clone(), self.version, self.content_sha256.clone())
     }
 }
 
 impl MemoryEntry {
     #[must_use]
     pub fn generation(&self) -> MemoryGeneration {
-        MemoryGeneration {
-            memory_id: self.id.clone(),
-            version: self.version,
-            content_sha256: self.content_sha256.clone(),
-        }
+        MemoryGeneration::new(self.id.clone(), self.version, self.content_sha256.clone())
     }
 }
 

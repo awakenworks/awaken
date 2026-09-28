@@ -53,9 +53,9 @@
     },
     "awaken-resource-contract": {
       "depth": 0,
-      "production_lines": 3163,
+      "production_lines": 3181,
       "growth_reasons": {
-        "production_lines": "Replace the last generic Resource Invalid payloads with domain causes and remove ResourceErrorDetail"
+        "production_lines": "MemoryGeneration coordinates become private: one whole-witness constructor and three accessors replace public fields so no caller edits one coordinate of an observed head (+18)"
       }
     },
     "awaken-dispatch-contract": {

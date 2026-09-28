@@ -274,7 +274,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
             "quiesce",
             source_effect_id.into(),
             source_binding.into(),
-            generation.id.clone(),
+            generation.id().to_owned(),
         ));
         self.expected_mcp_generations
             .lock()
@@ -291,7 +291,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
             .unwrap_or_else(|| expected_mcp_generations.to_vec());
         Ok(awaken_session_state_contract::QuiescenceReceipt {
             effect_id: operation.effect_id.clone(),
-            generation_id: generation.id.clone(),
+            generation_id: generation.id().to_owned(),
             activity_epoch: operation.activity_epoch,
             live_environment_effects: 0,
             mcp_generations,
@@ -308,7 +308,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
             "checkpoint",
             request.source_effect_id.clone(),
             request.source_binding.clone(),
-            request.generation.id.clone(),
+            request.generation.id().to_owned(),
         ));
         self.checkpoint_scopes
             .lock()
@@ -319,7 +319,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
         }
         Ok(awaken_session_state_contract::CheckpointReceipt {
             effect_id: request.operation.effect_id.clone(),
-            generation_id: request.generation.id.clone(),
+            generation_id: request.generation.id().to_owned(),
             checkpoint: awaken_session_state_contract::SandboxCheckpointRef {
                 id: "object".into(),
                 format: request.format,
@@ -327,8 +327,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
                 size_bytes: 10,
                 created_at_unix_ms: request.created_at_unix_ms,
                 expires_at_unix_ms: request.expires_at_unix_ms,
-                environment_fingerprint: request.generation.environment_fingerprint,
-                base_image_fingerprint: request.generation.base_image_fingerprint,
+                environment_fingerprint: request.generation.environment_fingerprint().to_owned(),
+                base_image_fingerprint: request.generation.base_image_fingerprint().to_owned(),
                 excluded_mounts: Vec::new(),
                 suspend_effect_id: request.operation.effect_id,
             },
@@ -378,7 +378,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
         }
         Ok(awaken_session_state_contract::SourceDisposedReceipt {
             effect_id: disposal.operation().effect_id.clone(),
-            generation_id: disposal.generation().id.clone(),
+            generation_id: disposal.generation().id().to_owned(),
             source_binding: disposal.source_binding().into(),
             terminated: true,
         })
@@ -897,10 +897,10 @@ pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> Persisted
     let source_generation = session.environment.generation().unwrap();
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(id),
-        source_generation.created_at_unix_ms,
+        source_generation.created_at_unix_ms(),
         expires_at_unix_ms,
-        source_generation.environment_fingerprint.clone(),
-        source_generation.base_image_fingerprint.clone(),
+        source_generation.environment_fingerprint().to_owned(),
+        source_generation.base_image_fingerprint().to_owned(),
     );
     let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
         "workspace",
@@ -919,8 +919,8 @@ pub(super) fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> Persisted
             size_bytes: 10,
             created_at_unix_ms: 10,
             expires_at_unix_ms,
-            environment_fingerprint: generation.environment_fingerprint.clone(),
-            base_image_fingerprint: generation.base_image_fingerprint.clone(),
+            environment_fingerprint: generation.environment_fingerprint().to_owned(),
+            base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
             excluded_mounts: Vec::new(),
             suspend_effect_id: operation.effect_id,
         },
@@ -956,8 +956,8 @@ async fn due_idle_environment_suspends_once_in_order() {
         .environment
         .generation()
         .expect("hibernated generation")
-        .id
-        .clone();
+        .id()
+        .to_owned();
     assert!(matches!(
         settled.environment,
         awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
@@ -2166,7 +2166,7 @@ async fn driving_ingress_during_upload_completes_suspend_then_restores() {
         .record_quiescence(
             &awaken_session_state_contract::QuiescenceReceipt {
                 effect_id: operation.effect_id,
-                generation_id: generation.id,
+                generation_id: generation.id().to_owned(),
                 activity_epoch: 0,
                 live_environment_effects: 0,
                 mcp_generations: Vec::new(),

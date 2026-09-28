@@ -1131,9 +1131,9 @@ pub(super) fn checkpoint_request_for(session_id: &str) -> pc::SandboxCheckpointR
     pc::SandboxCheckpointRequest {
         workspace_id: "workspace-a".into(),
         session_id: session_id.into(),
-        generation_id: generation.id,
-        environment_fingerprint: generation.environment_fingerprint,
-        base_image_fingerprint: generation.base_image_fingerprint,
+        generation_id: generation.id().to_owned(),
+        environment_fingerprint: generation.environment_fingerprint().to_owned(),
+        base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
         effect_id: "suspend".into(),
         format: "awaken-fs-tar-v1".into(),
         created_at_unix_ms: 20,

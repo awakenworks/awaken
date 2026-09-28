@@ -20,8 +20,8 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
         size_bytes: 7,
         created_at_unix_ms: 10,
         expires_at_unix_ms: u64::MAX,
-        environment_fingerprint: generation.environment_fingerprint.clone(),
-        base_image_fingerprint: generation.base_image_fingerprint.clone(),
+        environment_fingerprint: generation.environment_fingerprint().to_owned(),
+        base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
         excluded_mounts: Vec::new(),
         suspend_effect_id: suspend.effect_id,
     };
@@ -38,7 +38,7 @@ fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestor
         workspace_id: "workspace".into(),
         session_id: thread.into(),
         effect_id: restore.effect_id,
-        generation_id: generation.id,
+        generation_id: generation.id().to_owned(),
         checkpoint,
     }
 }

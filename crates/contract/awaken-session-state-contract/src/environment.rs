@@ -220,7 +220,7 @@ impl SessionEnvironmentState {
             workspace_id: workspace_id.to_owned(),
             session_id: session_id.as_str().to_owned(),
             effect_id: operation.effect_id.clone(),
-            generation_id: generation.id.clone(),
+            generation_id: generation.id().to_owned(),
             checkpoint: checkpoint.clone(),
         })
     }
@@ -278,7 +278,7 @@ impl SessionEnvironmentState {
             generation: generation.clone(),
             format: policy.checkpoint_format.clone(),
             created_at_unix_ms: operation.started_at_unix_ms,
-            expires_at_unix_ms: generation.expires_at_unix_ms,
+            expires_at_unix_ms: generation.expires_at_unix_ms(),
             max_bytes: policy.max_checkpoint_bytes,
         }))
     }
@@ -354,7 +354,7 @@ impl SessionEnvironmentState {
                     source_generation_id,
                 },
             ) if intent.source_binding() == Some(binding.as_str())
-                && source_generation_id.as_deref() == Some(generation.id.as_str()) => {}
+                && source_generation_id.as_deref() == Some(generation.id()) => {}
             (
                 Self::Resident {
                     binding,
@@ -681,7 +681,7 @@ impl QuiescenceReceipt {
     ) -> Result<(), SessionEnvironmentTransitionError> {
         if quiescence_receipt_admitted(
             self.effect_id == operation.effect_id,
-            self.generation_id == generation.id,
+            self.generation_id == generation.id(),
             self.activity_epoch == operation.activity_epoch,
             self.mcp_generations == expected_mcp_generations,
             self.live_environment_effects,
@@ -708,10 +708,10 @@ impl CheckpointReceipt {
     ) -> Result<(), SessionEnvironmentTransitionError> {
         if checkpoint_receipt_admitted(
             self.effect_id == operation.effect_id,
-            self.generation_id == generation.id,
+            self.generation_id == generation.id(),
             self.checkpoint.suspend_effect_id == operation.effect_id,
-            self.checkpoint.environment_fingerprint == generation.environment_fingerprint,
-            self.checkpoint.base_image_fingerprint == generation.base_image_fingerprint,
+            self.checkpoint.environment_fingerprint == generation.environment_fingerprint(),
+            self.checkpoint.base_image_fingerprint == generation.base_image_fingerprint(),
         ) {
             Ok(())
         } else {
@@ -737,7 +737,7 @@ impl SourceDisposedReceipt {
     ) -> Result<(), SessionEnvironmentTransitionError> {
         if source_disposal_receipt_admitted(
             self.effect_id == operation.effect_id,
-            self.generation_id == generation.id,
+            self.generation_id == generation.id(),
             self.source_binding == source_binding,
             self.terminated,
         ) {
@@ -765,7 +765,7 @@ impl RestoreReceipt {
     ) -> Result<(), SessionEnvironmentTransitionError> {
         if restore_receipt_admitted(
             self.effect_id == operation.effect_id,
-            self.generation_id == generation.id,
+            self.generation_id == generation.id(),
             self.checkpoint_id == checkpoint.id,
             !self.binding.is_empty(),
         ) {
@@ -1092,7 +1092,7 @@ mod tests {
             .record_quiescence(
                 &QuiescenceReceipt {
                     effect_id: operation.effect_id.clone(),
-                    generation_id: generation().id,
+                    generation_id: generation().id().to_owned(),
                     activity_epoch: 7,
                     live_environment_effects: 0,
                     mcp_generations: Vec::new(),
@@ -1157,7 +1157,7 @@ mod tests {
         state
             .record_checkpoint(&CheckpointReceipt {
                 effect_id: operation.effect_id.clone(),
-                generation_id: generation().id,
+                generation_id: generation().id().to_owned(),
                 checkpoint: checkpoint(&operation),
             })
             .unwrap();
@@ -1262,7 +1262,7 @@ mod tests {
         };
         let rebuild = environment_receipt(
             SessionEnvironmentEffectKind::Rebuild {
-                source_generation_id: Some(source_generation.id.clone()),
+                source_generation_id: Some(source_generation.id().to_owned()),
             },
             "replacement",
             Some("source"),
@@ -1416,7 +1416,7 @@ mod tests {
             .record_quiescence(
                 &QuiescenceReceipt {
                     effect_id: operation.effect_id.clone(),
-                    generation_id: generation().id,
+                    generation_id: generation().id().to_owned(),
                     activity_epoch: 7,
                     live_environment_effects: 0,
                     mcp_generations: Vec::new(),
@@ -1428,13 +1428,13 @@ mod tests {
         state
             .record_checkpoint(&CheckpointReceipt {
                 effect_id: operation.effect_id.clone(),
-                generation_id: generation().id,
+                generation_id: generation().id().to_owned(),
                 checkpoint,
             })
             .unwrap();
         let disposed = SourceDisposedReceipt {
             effect_id: operation.effect_id.clone(),
-            generation_id: generation().id,
+            generation_id: generation().id().to_owned(),
             source_binding: "source".into(),
             terminated: true,
         };
@@ -1477,7 +1477,7 @@ mod tests {
             .record_quiescence(
                 &QuiescenceReceipt {
                     effect_id: operation.effect_id.clone(),
-                    generation_id: generation().id,
+                    generation_id: generation().id().to_owned(),
                     activity_epoch: 7,
                     live_environment_effects: 0,
                     mcp_generations: Vec::new(),
@@ -1488,7 +1488,7 @@ mod tests {
         assert_eq!(
             state.complete_suspend(&SourceDisposedReceipt {
                 effect_id: operation.effect_id,
-                generation_id: generation().id,
+                generation_id: generation().id().to_owned(),
                 source_binding: "source".into(),
                 terminated: true,
             }),
@@ -1526,7 +1526,7 @@ mod tests {
             .record_quiescence(
                 &QuiescenceReceipt {
                     effect_id: operation.effect_id.clone(),
-                    generation_id: generation().id,
+                    generation_id: generation().id().to_owned(),
                     activity_epoch: 7,
                     live_environment_effects: 0,
                     mcp_generations: Vec::new(),
@@ -1537,7 +1537,7 @@ mod tests {
         state
             .record_checkpoint(&CheckpointReceipt {
                 effect_id: operation.effect_id.clone(),
-                generation_id: generation().id,
+                generation_id: generation().id().to_owned(),
                 checkpoint: checkpoint(&operation),
             })
             .unwrap();
@@ -1630,7 +1630,7 @@ mod tests {
             .record_quiescence(
                 &QuiescenceReceipt {
                     effect_id: operation.effect_id.clone(),
-                    generation_id: generation().id,
+                    generation_id: generation().id().to_owned(),
                     activity_epoch: 7,
                     live_environment_effects: 0,
                     mcp_generations: Vec::new(),
@@ -1641,7 +1641,7 @@ mod tests {
         state
             .record_checkpoint(&CheckpointReceipt {
                 effect_id: operation.effect_id.clone(),
-                generation_id: generation().id,
+                generation_id: generation().id().to_owned(),
                 checkpoint: checkpoint(&operation),
             })
             .unwrap();
@@ -1749,7 +1749,7 @@ mod tests {
             .record_quiescence(
                 &QuiescenceReceipt {
                     effect_id: suspend.effect_id.clone(),
-                    generation_id: generation().id,
+                    generation_id: generation().id().to_owned(),
                     activity_epoch: 7,
                     live_environment_effects: 0,
                     mcp_generations: Vec::new(),
@@ -1761,7 +1761,7 @@ mod tests {
         state
             .record_checkpoint(&CheckpointReceipt {
                 effect_id: suspend.effect_id.clone(),
-                generation_id: generation().id,
+                generation_id: generation().id().to_owned(),
                 checkpoint,
             })
             .unwrap();
@@ -1771,7 +1771,7 @@ mod tests {
         state
             .complete_suspend(&SourceDisposedReceipt {
                 effect_id: suspend.effect_id,
-                generation_id: generation().id,
+                generation_id: generation().id().to_owned(),
                 source_binding: "source".into(),
                 terminated: true,
             })
@@ -1790,7 +1790,7 @@ mod tests {
         state
             .complete_restore(&RestoreReceipt {
                 effect_id: restore.effect_id,
-                generation_id: generation().id,
+                generation_id: generation().id().to_owned(),
                 checkpoint_id: "checkpoint".into(),
                 binding: "restored".into(),
             })
@@ -1888,7 +1888,7 @@ mod tests {
             let before = state.clone();
             let receipt = QuiescenceReceipt {
                 effect_id: operation.effect_id,
-                generation_id: generation().id,
+                generation_id: generation().id().to_owned(),
                 activity_epoch: if wrong_epoch == 7 { 8 } else { wrong_epoch },
                 live_environment_effects: wrong_live_count,
                 mcp_generations: Vec::new(),

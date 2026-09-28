@@ -2646,8 +2646,8 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
         size_bytes: 7,
         created_at_unix_ms: 1,
         expires_at_unix_ms: 90_000,
-        environment_fingerprint: generation.environment_fingerprint.clone(),
-        base_image_fingerprint: generation.base_image_fingerprint.clone(),
+        environment_fingerprint: generation.environment_fingerprint().to_owned(),
+        base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
         excluded_mounts: Vec::new(),
         suspend_effect_id: "restoring-suspend-effect".into(),
     };

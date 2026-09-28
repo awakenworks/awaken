@@ -121,7 +121,9 @@ impl BoundSessionEnvironment {
 
     pub(crate) fn activity_generation_id(&self) -> String {
         match &self.identity {
-            BoundSessionEnvironmentIdentity::Durable { generation, .. } => generation.id.clone(),
+            BoundSessionEnvironmentIdentity::Durable { generation, .. } => {
+                generation.id().to_owned()
+            }
             BoundSessionEnvironmentIdentity::LegacyDirect(_) => {
                 self.environment.handle().sandbox_id
             }
