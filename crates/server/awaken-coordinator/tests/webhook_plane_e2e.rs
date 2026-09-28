@@ -5,6 +5,7 @@
 //! mock transport: the dispatcher uses `ReqwestSender`, the receiver is an axum
 //! server on an ephemeral port.
 
+use awaken_protocol_managed_testkit::ManagedStateFixture as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 

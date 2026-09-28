@@ -10,7 +10,6 @@
 mod support;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_protocol_managed::ManagedState;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_error_contract::RunError;
 use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
@@ -421,7 +420,7 @@ async fn call(
 
 async fn app() -> (Router, String) {
     let (environment_authoring, environment_execution) =
-        awaken_protocol_managed::test_support::environment_components();
+        awaken_protocol_managed_testkit::environment_components();
     let environment = environment_authoring
         .application()
         .create(awaken_environment_contract::CreateEnvironmentCommand {
@@ -437,7 +436,7 @@ async fn app() -> (Router, String) {
         .expect("publish Environment through the Control application");
     (
         support::edge_stamped(awaken_protocol_managed::router(std::sync::Arc::new(
-            ManagedState::new(AcceptingFake).with_environments(environment_execution),
+            support::state(AcceptingFake).with_environments(environment_execution),
         ))),
         environment.id,
     )

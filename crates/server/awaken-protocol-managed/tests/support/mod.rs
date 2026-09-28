@@ -1,5 +1,24 @@
 pub mod resources;
 
+/// A volatile `ManagedState` over the testkit's stores behind their ports.
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+pub fn state(
+    runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
+) -> awaken_protocol_managed::ManagedState {
+    <awaken_protocol_managed::ManagedState as awaken_protocol_managed_testkit::ManagedStateFixture>::new(runtime)
+}
+
+/// As [`state`], with the one fixture object also realizing MCP attachments.
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+pub fn state_with_mcp<R>(runtime: R) -> awaken_protocol_managed::ManagedState
+where
+    R: awaken_session_execution_contract::CompleteSessionRuntime
+        + awaken_session_execution_contract::McpAttachmentRealizer
+        + 'static,
+{
+    <awaken_protocol_managed::ManagedState as awaken_protocol_managed_testkit::ManagedStateFixture>::new_with_mcp(runtime)
+}
+
 use awaken_session_types::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};

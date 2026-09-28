@@ -54,6 +54,10 @@ awaken-agent-config.workspace = true
 awaken-config-store = { workspace = true }
 awaken-resource-persistence = { workspace = true, optional = true }
 awaken-session-store = { workspace = true }
+# Volatile Environment execution for test/scenario startup only.
+awaken-work-store = { workspace = true, optional = true }
+awaken-executable-environment-catalog = { workspace = true, optional = true }
+awaken-environment-application = { workspace = true, optional = true }
 # Concrete worker adapter is assembled here, outside runtime-host, behind the
 # neutral MemoryMounter port (FUSE where available, copy/harvest otherwise).
 awaken-sandbox-memoryd = { workspace = true }
@@ -136,6 +140,10 @@ url.workspace = true
 [features]
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
+    "dep:awaken-work-store",
+    "dep:awaken-executable-environment-catalog",
+    "dep:awaken-environment-application",
+    "awaken-work-store/test-support",
     "awaken-session-application/test-support",
     "awaken-webhook-managed/test-support",
     "dep:awaken-store-inmem",
@@ -170,6 +178,7 @@ container-podman = ["awaken-session-executor/container-podman"]
 container-k8s = ["awaken-session-executor/container-k8s"]
 
 [dev-dependencies]
+awaken-protocol-managed-testkit.workspace = true
 awaken-runtime.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }

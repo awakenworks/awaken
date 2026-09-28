@@ -2,7 +2,7 @@
 // @formal evidence session_event_batch.exact_retry_replays_and_changed_retry_conflicts
 // @formal evidence session_event_batch.final_non_admission_excludes_late_acceptance
 // @formal evidence session_event_batch.idempotent_receipt_is_admission_stable
-// awaken-file-limit-ceiling: 7148 (legacy oversized test file: split, never grow)
+// awaken-file-limit-ceiling: 7147 (legacy oversized test file: split, never grow)
 //! Adapter integration tests with fake runtimes: the happy path, and the HITL
 //! await -> `requires_action` -> `user.tool_confirmation` -> resume round-trip.
 
@@ -174,7 +174,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     // mounted: no fields or paths are added to the standard Anthropic surface.
     let runtime = EchoFake::default();
     let repo = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
-    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
+    let state = Arc::new(support::state(runtime.clone()).with_session_repo(repo.clone()));
     // The native admission route is merged before the edge stamp so BOTH
     // surfaces sit behind the one composition-root tenancy layer.
     let app = support::edge_stamped(
@@ -298,7 +298,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         repo.get(&SessionId::from(id)).await,
         Err(awaken_session_state_contract::SessionRepositoryError::NotFound)
     ));
-    let restarted = Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo));
+    let restarted = Arc::new(support::state(EchoFake::default()).with_session_repo(repo));
     let cold = support::edge_stamped(
         awaken_protocol_managed::router(restarted.clone()).merge(
             awaken_protocol_awaken::session_event_admission_router(
@@ -368,7 +368,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
 // Decision table: same key+payload=replay; changed payload=409; invalid key=400; different owner=independent.
 #[tokio::test]
 async fn session_create_idempotency_replays_one_canonical_session() {
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let first = post_session_with_idempotency(&app, Some("design-project-a"), "Project A")
         .await
         .expect_for(StatusCode::OK, "I2 first create succeeds");
@@ -442,7 +442,7 @@ async fn session_create_idempotency_replays_one_canonical_session() {
         "I2/I3/I4/I6 add no duplicate"
     );
 
-    let state = Arc::new(ManagedState::new(EchoFake::default()));
+    let state = Arc::new(support::state(EchoFake::default()));
     let request = || {
         serde_json::from_value(session_request(serde_json::json!({ "agent": "coder" }))).unwrap()
     };
@@ -471,7 +471,7 @@ async fn prefer_header_cannot_select_a_second_standard_create_semantics() {
     // Decision rules: A1 !C1+C2=>E1+E2+E3; A2 C1+C2=>E1+E2+E3.
     // Constraint: product async admission remains under `/v1/awaken`; a generic
     // HTTP preference cannot create an undocumented Managed response contract.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let post = |prefer: bool, key: &'static str| {
         let app = app.clone();
         async move {
@@ -548,7 +548,7 @@ async fn session_routes_emit_only_the_current_official_sdk_recursive_shape() {
     // S1=C1+C2+!C3=>E1; S2=C3=>E2. The SDK oracle, not this test, owns the
     // property catalog; the default agent's absent coordinator covers the
     // required-nullable `multiagent` serialization rule.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let created = json_call(
         &app,
         "POST",
@@ -608,7 +608,7 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     let repo = Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open Session repository"),
     );
-    let original = Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo.clone()));
+    let original = Arc::new(support::state(EchoFake::default()).with_session_repo(repo.clone()));
     let app = router(original.clone());
     let created = post_session_with_idempotency(&app, Some("failed-create"), "Failed create")
         .await
@@ -630,8 +630,7 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     drop(app);
     drop(original);
 
-    let restarted =
-        Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo.clone()));
+    let restarted = Arc::new(support::state(EchoFake::default()).with_session_repo(repo.clone()));
     let app = router(restarted.clone());
     let replay = post_session_with_idempotency(&app, Some("failed-create"), "Failed create")
         .await
@@ -692,7 +691,7 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     drop(app);
     drop(restarted);
 
-    let cold = Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo.clone()));
+    let cold = Arc::new(support::state(EchoFake::default()).with_session_repo(repo.clone()));
     let app = router(cold);
     let cold_events = json_call(
         &app,
@@ -1657,7 +1656,7 @@ async fn an_unknown_inbound_event_type_is_rejected() {
     // causes.
     // A well-formed body carrying an unknown event `type` fails the tagged-enum
     // decode → 400, not a silently-ignored event.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let id = create(&app).await;
     let req = Request::builder()
         .method("POST")
@@ -1686,7 +1685,7 @@ async fn session_agent_model_override_is_honored_and_echoed() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     // Plain reference → the host default model (`EchoFake::model`), version 1.
     let base = json_call(
         &app,
@@ -1728,7 +1727,7 @@ async fn clearing_the_model_on_a_session_override_is_rejected() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let req = Request::builder()
         .method("POST")
         .uri("/v1/sessions")
@@ -1787,7 +1786,7 @@ async fn session_initial_events_decision_table_case() {
 }
 
 async fn initial_events_idle_case() {
-    let idle_app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let idle_app = router(Arc::new(support::state(EchoFake::default())));
     for (rule, body) in [
         (
             "C1 omitted",
@@ -1807,7 +1806,7 @@ async fn initial_events_idle_case() {
 
 async fn initial_events_message_case() {
     let runtime = EchoFake::default();
-    let running_state = Arc::new(ManagedState::new(runtime.clone()));
+    let running_state = Arc::new(support::state(runtime.clone()));
     let running_app = router(running_state.clone());
     let session = json_response(
         &running_app,
@@ -1850,7 +1849,7 @@ async fn initial_events_message_case() {
 }
 
 async fn initial_events_outcome_case() {
-    let outcome_app = router(Arc::new(ManagedState::new(OutcomeFake::default())));
+    let outcome_app = router(Arc::new(support::state(OutcomeFake::default())));
     let session = json_response(
         &outcome_app,
         "POST",
@@ -1874,7 +1873,7 @@ async fn initial_events_outcome_case() {
 }
 
 async fn initial_events_rejected_cases() {
-    let rejected_app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let rejected_app = router(Arc::new(support::state(EchoFake::default())));
     let message = serde_json::json!({
         "type": "user.message",
         "content": [{"type": "text", "text": "must not run"}]
@@ -1944,7 +1943,7 @@ async fn happy_path_projects_message_and_idle() {
     // selects only its stated effect and preserves the authority constraint.
     let runtime = EchoFake::default();
     let repo = Arc::new(SqliteManagedSessionRepository::open(":memory:").unwrap());
-    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
+    let state = Arc::new(support::state(runtime.clone()).with_session_repo(repo.clone()));
     let app = router(state.clone());
     let id = create(&app).await;
     // Send-response cause/effect rules: C1 one valid User Event is atomically
@@ -2026,7 +2025,7 @@ async fn happy_path_projects_message_and_idle() {
     assert!(settled.active_activity_epochs.is_empty(), "S2");
     assert_eq!(settled.closed_runtime_intervals.len(), 1, "S2 one interval");
     let cold = router(Arc::new(
-        ManagedState::new(runtime.clone()).with_session_repo(repo),
+        support::state(runtime.clone()).with_session_repo(repo),
     ));
     for reader in [&app, &cold, &cold] {
         let replay = json_call(
@@ -2468,7 +2467,7 @@ impl awaken_session_execution_contract::CapabilityRuntime for CapableFake {
 /// built-in toolset, a custom tool, skills, and a multiagent roster — not an empty set.
 #[tokio::test]
 async fn create_session_advertises_capabilities() {
-    let app = router(Arc::new(ManagedState::new(CapableFake)));
+    let app = router(Arc::new(support::state(CapableFake)));
     let s = json_call(
         &app,
         "POST",
@@ -2502,7 +2501,7 @@ async fn create_session_defaults_to_empty_surface() {
     // selecting `all output, state, side-effect, error, and terminal assertions below hold
     // together`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let s = json_call(
         &app,
         "POST",
@@ -2568,7 +2567,7 @@ async fn session_capability_objects_match_wire_contract() {
     // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
     // together`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let app = router(Arc::new(ManagedState::new(CapableFake)));
+    let app = router(Arc::new(support::state(CapableFake)));
     let s = json_call(
         &app,
         "POST",
@@ -4158,7 +4157,7 @@ async fn outcome_send_returns_the_root_receipt_before_lifecycle_execution() {
     // | R2 | yes | blocked | E1 + E2 |
     // | R3 | yes | released | E3 through the sole supervisor |
     let gate = Arc::new(OutcomePrepareGate::default());
-    let state = Arc::new(ManagedState::new(OutcomeFake {
+    let state = Arc::new(support::state(OutcomeFake {
         reports: Default::default(),
         next_commit_cursor: AtomicU64::new(0),
         prepare_gate: Some(gate.clone()),
@@ -4219,7 +4218,7 @@ async fn outcome_loop_projects_evaluations() {
         (20, StatusCode::OK),
         (21, StatusCode::BAD_REQUEST),
     ] {
-        let boundary_app = router(Arc::new(ManagedState::new(OutcomeFake::default())));
+        let boundary_app = router(Arc::new(support::state(OutcomeFake::default())));
         let boundary_id = create(&boundary_app).await;
         let _ = json_response(
             &boundary_app,
@@ -4249,7 +4248,7 @@ async fn outcome_loop_projects_evaluations() {
         }
     }
 
-    let state = Arc::new(ManagedState::new(OutcomeFake::default()));
+    let state = Arc::new(support::state(OutcomeFake::default()));
     let cancellation = awaken_runtime_contract::CancellationToken::new();
     let supervisor = tokio::spawn(
         state
@@ -4365,7 +4364,7 @@ async fn hitl_await_confirm_resume() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     let runtime = ToolAwaitingFake::permission();
-    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()));
     let app = router(state.clone());
     let id = create(&app).await;
 
@@ -4709,7 +4708,7 @@ async fn custom_tool_use_await_and_result() {
     // client receipt already owns the public result. Its adapter effect is the
     // same Thread's terminal committed prefix; aggregate Session settlement
     // belongs to the Host observer and official SDK E2E, not this test fixture.
-    let state = Arc::new(ManagedState::new(ToolAwaitingFake::custom()));
+    let state = Arc::new(support::state(ToolAwaitingFake::custom()));
     let app = router(state.clone());
     let id = create(&app).await;
 
@@ -4850,7 +4849,7 @@ async fn interrupt_event_is_acknowledged_without_starting_a_run() {
     // id; I2 starts no Run and therefore emits no fabricated usage/lifecycle.
     // Decision rule R1=C1+C2 -> I1+I2. Runtime failure/retry is owned by the
     // retained-batch reconciliation table, not by a second adapter path.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let id = create(&app).await;
 
     let receipts = json_call(
@@ -5627,7 +5626,7 @@ async fn system_message_follows_the_batch_admission_decision_table() {
     let interrupts = Arc::new(Mutex::new(Vec::new()));
     let subjects = Arc::new(Mutex::new(Vec::new()));
     let runtime = EchoFake::default();
-    let state = Arc::new(ManagedState::new(RecordingFake {
+    let state = Arc::new(support::state(RecordingFake {
         interrupts: interrupts.clone(),
         subjects: subjects.clone(),
         committed: runtime.clone(),
@@ -5770,7 +5769,7 @@ async fn system_message_follows_the_batch_admission_decision_table() {
         "H3 has no interrupt effect"
     );
 
-    let unsupported = router(Arc::new(ManagedState::new(RecordingFake {
+    let unsupported = router(Arc::new(support::state(RecordingFake {
         interrupts: Arc::new(Mutex::new(Vec::new())),
         subjects: Arc::new(Mutex::new(Vec::new())),
         committed: EchoFake::default(),
@@ -5821,7 +5820,7 @@ async fn managed_event_attribution_uses_request_header_not_body_field() {
     // selects only its stated effect and preserves the authority constraint.
     let subjects = Arc::new(Mutex::new(Vec::new()));
     let runtime = EchoFake::default();
-    let state = Arc::new(ManagedState::new(RecordingFake {
+    let state = Arc::new(support::state(RecordingFake {
         interrupts: Arc::new(Mutex::new(Vec::new())),
         subjects: subjects.clone(),
         committed: runtime.clone(),
@@ -6637,7 +6636,7 @@ async fn interrupt_then_message_redirects_in_order() {
     // causes.
     let order = Arc::new(Mutex::new(Vec::new()));
     let runtime = EchoFake::default();
-    let state = Arc::new(ManagedState::new(InterruptRedirectFake {
+    let state = Arc::new(support::state(InterruptRedirectFake {
         order: order.clone(),
         committed: runtime.clone(),
     }));
@@ -6690,7 +6689,7 @@ async fn retrieve_session_and_sse_event_names() {
     // together`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
     let runtime = EchoFake::default();
-    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()));
     let app = router(state.clone());
     let id = create(&app).await;
 
@@ -6785,7 +6784,7 @@ async fn unknown_session_is_404_with_error_envelope() {
     // Coverage rationale: `unknown session` is one independent branch selecting `is 404 with error
     // envelope`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let body = raw_call(&app, "GET", "/v1/sessions/nope/events", Body::empty())
         .await
         .expect(StatusCode::NOT_FOUND);
@@ -6811,7 +6810,7 @@ async fn malformed_body_is_400_with_error_envelope() {
     // Coverage rationale: `malformed body` is one independent branch selecting `is 400 with error
     // envelope`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     // Syntactically broken JSON on a managed route.
     let body = raw_call(&app, "POST", "/v1/sessions", Body::from("{ not json "))
         .await
@@ -6838,7 +6837,7 @@ async fn missing_content_type_is_400_with_error_envelope() {
     // alternate causes.
     // A body without `content-type: application/json` is rejected as an invalid
     // request in the envelope shape (not axum's plain-text default).
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let req = Request::builder()
         .method("POST")
         .uri("/v1/sessions")
@@ -6903,7 +6902,7 @@ async fn a_scoped_session_is_invisible_to_another_workspace() {
     // Coverage rationale: `a scoped session` is one independent branch selecting `is invisible to
     // another workspace`; a multi-row decision table is not applicable, and sibling tests own
     // alternate causes.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let id = create_owned(&app, Some("ws_a")).await;
     let path = format!("/v1/sessions/{id}");
     // The owner reads it.
@@ -6934,7 +6933,7 @@ async fn a_cross_tenant_write_is_also_fenced() {
     // Coverage rationale: `a cross tenant write` is one independent branch selecting `is also
     // fenced`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let id = create_owned(&app, Some("ws_a")).await;
     // A write (archive) from another workspace is 404'd before the handler runs.
     assert_eq!(
@@ -6974,7 +6973,7 @@ async fn a_bare_session_stays_visible_to_bare_requests() {
     // causes.
     // A single-tenant deployment resolves no workspace; the session owns under the
     // seeded default scope and a bare request (also default) never 404s itself.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let id = create_owned(&app, None).await;
     assert_eq!(
         call_owned(&app, "GET", &format!("/v1/sessions/{id}"), None).await,
@@ -6999,7 +6998,7 @@ async fn the_collection_route_is_never_fenced() {
     // fenced`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
     // POST/GET /v1/sessions has no id → the guard passes it through regardless of scope.
-    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let app = router(Arc::new(support::state(EchoFake::default())));
     let _ = create_owned(&app, Some("ws_a")).await;
     assert_eq!(
         call_owned(&app, "GET", "/v1/sessions", Some("ws_b")).await,
@@ -7028,7 +7027,7 @@ async fn events_are_paged_by_cursor() {
      * timestamps; E4 invalid order is rejected. Rules: R1=C1(asc)+C2=>E1;
      * R2=C1(desc)+C2+C3=>E2+E3; R3=C4=>E4. */
     let runtime = EchoFake::default();
-    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let state = Arc::new(support::state(runtime.clone()));
     let app = router(state.clone());
     let id = create(&app).await;
     // Two Runs → 14 events (User/Session-running/Thread-running/message/

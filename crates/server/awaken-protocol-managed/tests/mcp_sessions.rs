@@ -64,7 +64,7 @@ fn lifecycle_test_state() -> (
 ) {
     let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     let notifier = Arc::new(CountingLifecycleNotifier::default());
-    let state = ManagedState::new_with_mcp(PreparingFake {
+    let state = support::state_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
         staged: Arc::new(Mutex::new(Vec::new())),
         observed_durable: Arc::new(Mutex::new(Vec::new())),
@@ -1238,7 +1238,7 @@ fn hot_harness_with_repo(
 ) -> HotHarness {
     let runtime_state = Arc::new(Mutex::new(HotRuntimeState::default()));
     let managed = Arc::new(
-        ManagedState::new_with_mcp(HotRuntime {
+        support::state_with_mcp(HotRuntime {
             state: runtime_state.clone(),
             repo: repo.clone(),
         })
@@ -1264,7 +1264,7 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open Session repository"),
     );
-    let state = ManagedState::new_with_mcp(PreparingFake {
+    let state = support::state_with_mcp(PreparingFake {
         captured: captured.clone(),
         staged: staged.clone(),
         observed_durable: observed_durable.clone(),
@@ -1294,7 +1294,7 @@ async fn check_bind_is_fail_closed_on_unknown_vault() {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
     let vaults = Arc::new(VaultState::new(secrets, credentials));
-    let state = ManagedState::new_with_mcp(PreparingFake {
+    let state = support::state_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
         staged: Arc::new(Mutex::new(Vec::new())),
         observed_durable: Arc::new(Mutex::new(Vec::new())),
@@ -3790,7 +3790,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         }
     }
 
-    let state = ManagedState::new(HauntedRuntime);
+    let state = support::state(HauntedRuntime);
     let session = state
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {

@@ -14,9 +14,6 @@ use awaken_session_application::SessionApplication;
 use awaken_session_application::{CredentialMaterialIngress, SessionCredentialSource};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_application_contract::LifecycleFactNotifier;
-#[cfg(any(test, feature = "test-support"))]
-#[cfg(any(test, feature = "test-support"))]
-use awaken_session_store::SqliteManagedSessionRepository;
 
 use super::ManagedState;
 #[cfg(any(test, feature = "test-support"))]
@@ -25,25 +22,27 @@ use super::mcp_attachment::UnsupportedMcpAttachmentRealizer;
 use crate::routes::vaults::VaultState;
 
 impl ManagedState {
-    /// Volatile fixture constructor. Product startup must inject the durable
+    /// Volatile fixture constructor for this crate's own tests. The stores come
+    /// from `awaken-protocol-managed-testkit` (a dev-dependency); other crates
+    /// use its `ManagedStateFixture`. Product startup injects the durable
     /// Session repository and the canonical Environment execution projection via
     /// [`ManagedState::from_application`].
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn new(
         runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
     ) -> Self {
-        Self::from_runtime_fixture(
+        Self::from_fixture_parts(
             Arc::new(runtime),
-            Arc::new(UnsupportedMcpAttachmentRealizer),
-            ephemeral_session_repository(),
-            crate::test_support::environment_components().1,
+            None,
+            awaken_protocol_managed_testkit::ephemeral_session_repository(),
+            awaken_protocol_managed_testkit::environment_fixture().execution,
         )
     }
 
     /// Use one fixture object that provides both independent application services.
     /// The shared `Arc` preserves one instance without merging the
     /// Session Run lifecycle with MCP attachment realization.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn new_with_mcp<R>(runtime: R) -> Self
     where
         R: awaken_session_execution_contract::CompleteSessionRuntime
@@ -51,11 +50,11 @@ impl ManagedState {
             + 'static,
     {
         let runtime = Arc::new(runtime);
-        Self::from_runtime_fixture(
+        Self::from_fixture_parts(
             runtime.clone(),
-            runtime,
-            ephemeral_session_repository(),
-            crate::test_support::environment_components().1,
+            Some(runtime),
+            awaken_protocol_managed_testkit::ephemeral_session_repository(),
+            awaken_protocol_managed_testkit::environment_fixture().execution,
         )
     }
 
@@ -125,10 +124,13 @@ impl ManagedState {
         self
     }
 
+    /// Store-agnostic volatile constructor: the caller supplies the Session
+    /// repository and Environment execution projection behind their ports. No
+    /// MCP realizer means attachments are refused, never silently realized.
     #[cfg(any(test, feature = "test-support"))]
-    fn from_runtime_fixture(
+    pub fn from_fixture_parts(
         runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
-        mcp_realizer: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
+        mcp_realizer: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
         sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
         environments: Arc<
             awaken_environment_execution_application::EnvironmentExecutionApplication,
@@ -137,7 +139,7 @@ impl ManagedState {
         Self::from_application(
             Arc::new(SessionApplication::new(
                 runtime,
-                mcp_realizer,
+                mcp_realizer.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
                 sessions_repo,
                 environments.clone(),
             )),
@@ -300,12 +302,4 @@ impl ManagedState {
         self.application_mut().set_resource_registry(catalog);
         self
     }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn ephemeral_session_repository() -> Arc<dyn awaken_session_repository_contract::SessionStore> {
-    Arc::new(
-        SqliteManagedSessionRepository::open_in_memory()
-            .expect("open ephemeral managed Session repository"),
-    )
 }
