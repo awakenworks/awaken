@@ -278,6 +278,7 @@ async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
 struct BlockedModelEvidence {
     durable: Arc<MemoryCommitCoordinator>,
     entered: Arc<tokio::sync::Notify>,
+    scope: awaken_runtime_contract::model_operation::ModelEffectScope,
 }
 
 #[tokio::test]
@@ -602,6 +603,13 @@ async fn restored_model_evidence_is_run_scoped_and_invalid_coordinates_fail_clos
 
 #[async_trait::async_trait]
 impl LlmExecutor for BlockedModelEvidence {
+    fn effect_scope(
+        &self,
+        _: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        self.scope
+    }
+
     async fn infer(
         &self,
         _request: ChatRequest,
@@ -627,7 +635,19 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
     // R7: retry + failover + outer tolerance enabled must still admit only one
     // invocation after an abandoned Future; its existing quiescence latch vetoes
     // the Worker ACK. Timeout ends Indeterminate, not a known provider failure.
-    for timeout in [false, true] {
+    // R8 scoped response-only + either abandonment cause => Unknown remains,
+    // continuation/retry/failover stay forbidden, but a drained local consumer
+    // may ACK governed return. R9 opaque + either cause => physical veto.
+    // This crosses the actual journal/executor/watchdog seam for all four rows;
+    // the scope is a test adapter contract, not provider stop evidence.
+    for (timeout, scope) in [false, true].into_iter().flat_map(|timeout| {
+        [
+            awaken_runtime_contract::model_operation::ModelEffectScope::Opaque,
+            awaken_runtime_contract::model_operation::ModelEffectScope::ResponseOnly,
+        ]
+        .into_iter()
+        .map(move |scope| (timeout, scope))
+    }) {
         let durable = Arc::new(MemoryCommitCoordinator::new(
             awaken_lease_contract::system_clock(),
         ));
@@ -635,6 +655,7 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
         let model = Arc::new(BlockedModelEvidence {
             durable: durable.clone(),
             entered: entered.clone(),
+            scope,
         });
         let runtime = Runtime::new()
             .with_llm(model)
@@ -684,10 +705,19 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
             driving.abort();
             assert!(driving.await.unwrap_err().is_cancelled());
         }
-        assert!(
-            !quiescence.can_acknowledge_return(),
-            "R5/R6/R7 no remote ACK"
+        assert_eq!(
+            quiescence.can_acknowledge_return(),
+            scope == awaken_runtime_contract::model_operation::ModelEffectScope::ResponseOnly,
+            "R8/R9 local ACK is distinct from provider termination"
         );
+        assert!(!quiescence.permits_execution(), "R8/R9 no continuation");
+        for operation in model_operations(&durable) {
+            assert_eq!(operation.effect_scope, scope, "scope pinned before entry");
+            assert_eq!(
+                operation.execution,
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown
+            );
+        }
         assert_eq!(
             model_operations(&durable)
                 .iter()
@@ -1441,8 +1471,7 @@ fn activation(fingerprint: &str) -> RunActivation {
 async fn native_attempt_coverage_is_committed_only_before_a_fresh_closed_execution_surface() {
     use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
     use awaken_runtime_contract::attempt_termination::{
-        ActiveNativeAttemptCoverage, NativeAttemptCoverage, NativeAttemptTermination,
-        classify_native_attempt_termination,
+        ActiveNativeAttemptCoverage, NativeAttemptCoverage,
     };
     use awaken_runtime_contract::model_operation::ActiveModelOperation;
     use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
@@ -1450,16 +1479,20 @@ async fn native_attempt_coverage_is_committed_only_before_a_fresh_closed_executi
     // Cause/effect decision table:
     // R1 fresh Run + no tools/plugins => one coverage marker is committed before
     //    model entry; terminal model evidence then proves all execution stopped.
-    // R2 fresh Run + a model-visible tool => no marker and classification Unknown.
+    // R2 fresh Run + ordinary tool surface => Journalled marker before entry;
+    //    an uncalled tool grants no effect and cannot invent an active participant.
     // R3 pre-existing Run without the marker => Runtime never backfills it after
-    //    an earlier execution window; classification remains Unknown.
+    //    an earlier execution window; coordinator classification remains Unknown.
     // R4 a pre-existing model-only marker + a wider recovered tool surface =>
     //    reject before model entry; the earlier closed profile remains intact.
+    // R5 delegated tool-bearing Run may share a parent's Sandbox => no closed
+    //    profile, even with ordinary tools and a complete model response.
     // The same committed snapshot drives the production classifier. No fixture
     // injects a termination receipt or a parallel coverage store.
     for row in [
         "fresh-closed",
         "fresh-tool",
+        "delegated-tool",
         "existing",
         "existing-covered-tool",
     ] {
@@ -1484,7 +1517,10 @@ async fn native_attempt_coverage_is_committed_only_before_a_fresh_closed_executi
                 .unwrap();
         }
         let mut request = activation("coverage");
-        if row == "fresh-tool" || row == "existing-covered-tool" {
+        if matches!(
+            row,
+            "fresh-tool" | "delegated-tool" | "existing-covered-tool"
+        ) {
             request
                 .snapshot
                 .resolved_spec
@@ -1495,6 +1531,15 @@ async fn native_attempt_coverage_is_committed_only_before_a_fresh_closed_executi
                     "tool",
                     serde_json::json!({"type":"object","properties":{}}),
                 ));
+        }
+        if row == "delegated-tool" {
+            request.delegation_origin = Some(
+                awaken_agent_contract::agent::delegation::DelegationOrigin::root_for_agent(
+                    RunId("parent".into()),
+                    "call",
+                    "parent-agent",
+                ),
+            );
         }
         let result = Runtime::new()
             .with_llm(Arc::new(TextLlm("done")))
@@ -1537,25 +1582,24 @@ async fn native_attempt_coverage_is_committed_only_before_a_fresh_closed_executi
             .find_map(|(command, cursor)| {
                 (command.key.0 == ActiveModelOperation::KEY).then_some(*cursor)
             });
-        if row == "fresh-closed" {
+        if row == "fresh-closed" || row == "fresh-tool" {
             assert_eq!(coverage.len(), 1, "R1");
-            assert!(coverage[0].1 < &model_entry_cursor.unwrap(), "R1 ordering");
-            assert_eq!(
-                classify_native_attempt_termination(&snapshot).unwrap(),
-                NativeAttemptTermination::AllExecutionStopped,
-                "R1"
+            let profile = serde_json::to_value(if row == "fresh-tool" {
+                NativeAttemptCoverage::JournalledV1
+            } else {
+                NativeAttemptCoverage::ModelOnlyV1
+            })
+            .unwrap();
+            assert!(
+                matches!(&coverage[0].0.action, awaken_agent_contract::agent::state::Action::Set(value) if *value == profile)
             );
+            assert!(coverage[0].1 < &model_entry_cursor.unwrap(), "R1 ordering");
         } else if row == "existing-covered-tool" {
             assert_eq!(coverage.len(), 1, "R4 retained marker");
             assert!(model_entry_cursor.is_none(), "R4 no model entry");
         } else {
-            assert!(coverage.is_empty(), "R2/R3 {row}");
-            assert!(model_entry_cursor.is_some(), "R2/R3 model entry");
-            assert_eq!(
-                classify_native_attempt_termination(&snapshot).unwrap(),
-                NativeAttemptTermination::Unknown,
-                "R2/R3 {row}"
-            );
+            assert!(coverage.is_empty(), "R3 {row}");
+            assert!(model_entry_cursor.is_some(), "R3 model entry");
         }
     }
 }

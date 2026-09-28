@@ -8,6 +8,54 @@
 mod harness;
 
 #[tokio::test]
+async fn closed_entry_survives_process_reopen_and_rejects_late_worker_ack() {
+    use awaken_dispatch::{
+        ControlDispatchQueue, DispatchQueue, SettleOutcome, SqliteDispatchStore,
+    };
+    // C1 close is committed before its caller loses the response; C2 all
+    // process-local handles vanish; C3 an old ACK arrives after cold reopen;
+    // C4 independent exact closure becomes available. S1=C1+C2 => closing
+    // survives with the original binding. S2=C3 => Fenced, no early release.
+    // S3=C4 => one retirement; duplicate closure cannot resurrect the epoch.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("closing.db");
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock()).unwrap();
+    let (claim, binding, _) =
+        harness::attempt_binding::bound_claim(&store, "cold-closing", &clock).await;
+    store.begin_attempt(&claim, Some(&binding)).await.unwrap();
+    store.close_attempt(&claim).await.unwrap();
+    drop(store);
+    let reopened = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock()).unwrap();
+    let stored = reopened
+        .load_physical_attempt(&claim.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.closing);
+    assert_eq!(stored.binding, Some(binding));
+    assert_eq!(
+        reopened.finish_attempt(&claim).await.unwrap(),
+        SettleOutcome::Fenced
+    );
+    assert_eq!(
+        reopened.finish_attempt_closure(&claim).await.unwrap(),
+        SettleOutcome::Applied
+    );
+    assert_eq!(
+        reopened.finish_attempt_closure(&claim).await.unwrap(),
+        SettleOutcome::Applied
+    );
+    assert!(
+        reopened
+            .load_physical_attempt(&claim.run_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn sqlite_execution_binding_survives_reopen_without_the_worker() {
     // B11 admitted binding -> all store handles dropped -> reopen => exact
     // provider/Worker/physical coordinates remain. B12 raw SQL cannot clear
@@ -25,6 +73,7 @@ async fn sqlite_execution_binding_survives_reopen_without_the_worker() {
     drop(store);
     let reopened = SqliteDispatchStore::open(path, clock.clock()).unwrap();
     let expected = Some(awaken_dispatch::PhysicalAttempt {
+        closing: false,
         claim: claim.clone(),
         binding: Some(binding.clone()),
         thread_id: Some(awaken_agent_contract::agent::thread::Id(

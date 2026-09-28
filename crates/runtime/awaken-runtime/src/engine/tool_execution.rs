@@ -64,12 +64,18 @@ pub(crate) async fn spill_tool_output(
     {
         verify_attempt_ownership(context.ownership.as_deref()).await?;
         let text = output.text();
-        output.content = vec![ContentBlock::text(
-            spiller
-                .spill(run_id, &output.call_id, text)
-                .await
-                .map_err(|error| Error::Execution(error.to_string()))?,
-        )];
+        let spilled = context
+            .physical_quiescence
+            .observe_return(spiller.spill(run_id, &output.call_id, text))
+            .await;
+        output.content = vec![ContentBlock::text(match spilled {
+            Ok(text) => text,
+            Err(ToolError::Indeterminate(_)) => {
+                context.physical_quiescence.mark_uncertain();
+                return Err(Error::Indeterminate);
+            }
+            Err(error) => return Err(Error::Execution(error.to_string())),
+        })];
     }
     Ok(output)
 }
@@ -505,13 +511,7 @@ async fn execute_tool_action(
     action: ToolExecutorAction<'_>,
 ) -> Result<std::result::Result<ToolExecutorOutcome, ToolError>> {
     let local = LocalToolExecutor { runtime, env };
-    let missing_sandbox = MissingSandboxExecutor;
-    let executor: &dyn ToolExecutor = match local.execution_target(&call.tool_id) {
-        Some(ToolExecutionTarget::Sandbox) => {
-            context.tool_executor.as_deref().unwrap_or(&missing_sandbox)
-        }
-        Some(ToolExecutionTarget::Brain) | None => &local,
-    };
+    let executor = local.routed_executor(context, &call.tool_id);
     let _admission = match context.tool_execution_admission.as_ref() {
         Some(admission) => {
             let claim = env.map_or_else(
@@ -848,6 +848,19 @@ impl ToolExecutionFactsResolver for CurrentToolExecutionFacts {
 }
 
 impl LocalToolExecutor<'_> {
+    fn routed_executor<'a>(
+        &'a self,
+        context: &'a RuntimeRunContext,
+        id: &str,
+    ) -> &'a dyn ToolExecutor {
+        static MISSING: MissingSandboxExecutor = MissingSandboxExecutor;
+        match self.execution_target(id) {
+            Some(ToolExecutionTarget::Sandbox) => {
+                context.tool_executor.as_deref().unwrap_or(&MISSING)
+            }
+            Some(ToolExecutionTarget::Brain) | None => self,
+        }
+    }
     fn tool(
         &self,
         tool_id: &str,
@@ -864,6 +877,15 @@ impl LocalToolExecutor<'_> {
 
 #[async_trait::async_trait]
 impl ToolExecutor for LocalToolExecutor<'_> {
+    async fn execution_domain(
+        &self,
+        call: &ToolCall,
+    ) -> std::result::Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolError>
+    {
+        Ok(self
+            .tool(&call.tool_id)
+            .map_or(Default::default(), |tool| tool.execution_domain()))
+    }
     fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
         self.tool(tool_id)
             .map_or(ToolRecoveryCapability::NonRecoverable, |tool| {
@@ -886,6 +908,38 @@ impl ToolExecutor for LocalToolExecutor<'_> {
 
     fn durable_tasks(&self) -> Option<&dyn DurableTaskExecutor> {
         Some(self)
+    }
+}
+
+pub(super) async fn prepare_tool_domain(
+    runtime: &Runtime,
+    env: &ResolvedExecutionEnv,
+    context: &RuntimeRunContext,
+    call: &ToolCall,
+) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain> {
+    verify_attempt_ownership(context.ownership.as_deref()).await?;
+    if !context.physical_quiescence.permits_execution() {
+        return Err(Error::Indeterminate);
+    }
+    let local = LocalToolExecutor {
+        runtime,
+        env: Some(env),
+    };
+    let result = context
+        .physical_quiescence
+        .observe_return(
+            local
+                .routed_executor(context, &call.tool_id)
+                .execution_domain(call),
+        )
+        .await;
+    match result {
+        Ok(domain) => Ok(domain),
+        Err(ToolError::Indeterminate(_)) => {
+            context.physical_quiescence.mark_uncertain();
+            Err(Error::Indeterminate)
+        }
+        Err(error) => Err(Error::Execution(error.to_string())),
     }
 }
 

@@ -107,6 +107,7 @@ async fn native_worker_freezes_binding_before_tool_entry_and_clears_on_return() 
             assert_eq!(
                 store.load_physical_attempt(&claim.run_id).await.unwrap(),
                 Some(awaken_dispatch::PhysicalAttempt {
+                    closing: false,
                     claim: claim.clone(),
                     binding: Some(binding),
                     thread_id: Some(ThreadId(harness::THREAD.into())),

@@ -276,7 +276,15 @@ pub(super) async fn run_tool_calls(
                         ToolOutput::error(&call.call_id, error.to_string())
                     } else {
                         batch
-                            .mark_executing(&call.call_id)
+                            .mark_executing_in_domain(
+                                &call.call_id,
+                                Some(
+                                    super::tool_execution::prepare_tool_domain(
+                                        runtime, env, context, &call,
+                                    )
+                                    .await?,
+                                ),
+                            )
                             .map_err(|error| Error::Execution(error.to_string()))?;
                         persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
                         entered_executor = true;
@@ -614,7 +622,13 @@ async fn run_concurrent_tool_calls(
                 &mut ledger.staged_state,
             )?;
             batch
-                .mark_executing(&call.call_id)
+                .mark_executing_in_domain(
+                    &call.call_id,
+                    Some(
+                        super::tool_execution::prepare_tool_domain(runtime, env, context, call)
+                            .await?,
+                    ),
+                )
                 .map_err(|error| Error::Execution(error.to_string()))?;
             entered_executor[position] = true;
         }
@@ -819,6 +833,27 @@ async fn record_tool_output(
     ledger: &mut StepLedger,
     store: &mut Store,
 ) -> Result<()> {
+    if let Some(spiller) = &context.tool_output_spiller
+        && output
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::Text { .. }))
+    {
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
+        let domain = context
+            .physical_quiescence
+            .observe_return(spiller.execution_domain(run_id, &output.call_id, &output.text()))
+            .await
+            .map_err(|error| Error::Execution(error.to_string()))?;
+        let effectful =
+            domain != awaken_runtime_contract::tool_batch::ToolExecutionDomain::Worker {};
+        batch
+            .bind_materialization_domain(&output.call_id, domain)
+            .map_err(|error| Error::Execution(error.to_string()))?;
+        if effectful {
+            persist_batch(batch, ledger, store, context, thread_id, run_id).await?;
+        }
+    }
     let output = spill_tool_output(context, run_id, output).await?;
     if delegation_started {
         stage_delegation_completed(runtime, run_id, call, store, &mut ledger.staged_state)?;

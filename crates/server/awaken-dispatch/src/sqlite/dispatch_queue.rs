@@ -905,53 +905,11 @@ impl DispatchQueue for SqliteDispatchStore {
             .await
     }
 
+    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        self.close_physical_attempt(claim).await
+    }
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        let claim = claim.clone();
-        self.with_conn(move |conn, p| {
-            let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(store_error)?;
-            let current: Option<(Option<String>, Option<i64>)> = tx
-                .query_row(
-                    &format!(
-                        "SELECT active_attempt_owner, active_attempt_epoch \
-                         FROM {p}_dispatch WHERE run_id = ?1"
-                    ),
-                    params![claim.run_id.0],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(store_error)?;
-            let Some((active_owner, active_epoch)) = current else {
-                let _ = tx.rollback();
-                return Ok(SettleOutcome::Fenced);
-            };
-            let active_epoch = active_epoch
-                .map(|value| durable_u64("dispatch attempt epoch", value))
-                .transpose()?;
-            let slot = PhysicalAttemptSlot::from_facts(
-                active_owner.is_some(),
-                active_epoch.is_some(),
-                active_owner.as_deref() == Some(&claim.owner),
-                active_epoch == Some(claim.epoch),
-            );
-            let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(slot)?;
-            if transition == PhysicalAttemptTransition::Clear {
-                tx.execute(
-                    &format!(
-                        "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
-                             active_attempt_epoch = NULL, active_attempt_binding = NULL, retired_attempt_epoch = ?3 WHERE run_id = ?1 \
-                             AND active_attempt_owner = ?2 AND active_attempt_epoch = ?3"
-                    ),
-                    params![claim.run_id.0, claim.owner, epoch],
-                )
-                .map_err(store_error)?;
-            }
-            tx.commit().map_err(store_error)?;
-            Ok(outcome)
-        })
-        .await
+        self.finish_physical_attempt_with(claim, false).await
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {

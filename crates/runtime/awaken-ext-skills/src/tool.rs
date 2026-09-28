@@ -140,6 +140,9 @@ impl SkillAllowedToolsGate {
 
 #[async_trait]
 impl ToolGateHook for SkillAllowedToolsGate {
+    fn process_bound(&self) -> bool {
+        self.inner.process_bound()
+    }
     async fn gate(&self, call: &ToolCall, state: &Store) -> GateDecision {
         // The inner gate decides first and its decision is returned whole: the
         // authority it named belongs to the gate that refused, and this gate has
@@ -174,6 +177,9 @@ impl RecordingGate {
 
 #[async_trait]
 impl ToolGateHook for RecordingGate {
+    fn process_bound(&self) -> bool {
+        self.inner.process_bound()
+    }
     async fn gate(&self, ctx: &ToolCall, state: &Store) -> GateDecision {
         // Observation only: the inner gate's decision, basis included, passes
         // through untouched.
@@ -600,6 +606,10 @@ impl RawTool for SkillTool {
             return Ok(match result {
                 Ok(output) if !output.is_error => ToolOutput::ok_blocks(call_id, output.content),
                 Ok(output) => ToolOutput::error_blocks(call_id, output.content),
+                Err(
+                    error @ (ToolError::Indeterminate(_)
+                    | ToolError::StateInvalidatedAfterDispatch(_)),
+                ) => return Err(error),
                 Err(err) => ToolOutput::error(call_id, format!("skill fork failed: {err}")),
             });
         }
@@ -1070,8 +1080,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_fork_skill_whose_runner_errors_surfaces_a_model_visible_error() {
-        // The fork failure arm: when the sub-agent runner returns Err, the activation
-        // becomes a model-visible error result (never a panic or a silent success).
+        // R3 definitive returned failure => model-visible error. R1/R2 below
+        // independently require typed uncertainty/conflict to propagate.
         struct FailingRunner;
         #[async_trait]
         impl RawTool for FailingRunner {
@@ -1103,6 +1113,47 @@ mod tests {
             "a fork runner failure is a model-visible error"
         );
         assert!(out.text().contains("skill fork failed"));
+    }
+
+    #[tokio::test]
+    async fn fork_skill_preserves_uncertain_and_invalidated_execution_errors() {
+        // C1 nested executor cannot establish the external outcome; C2 its
+        // result state is invalidated after dispatch. R1=C1 => Indeterminate;
+        // R2=C2 => StateInvalidatedAfterDispatch. Neither may become a normal
+        // ToolOutput, be fed to the model as a recoverable error, or authorize
+        // another child execution. The existing definitive-error test owns R3.
+        struct UncertainRunner(bool);
+        #[async_trait]
+        impl RawTool for UncertainRunner {
+            fn id(&self) -> &str {
+                "test_agent"
+            }
+            async fn invoke(&self, _: ToolCall) -> Result<ToolOutput, ToolError> {
+                Err(if self.0 {
+                    ToolError::Indeterminate("unknown child".into())
+                } else {
+                    ToolError::StateInvalidatedAfterDispatch("lost child state".into())
+                })
+            }
+        }
+        for uncertain in [true, false] {
+            let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
+                "review", "Review", "d", "review",
+            )
+            .with_context(SkillContext::Fork)]));
+            let result = SkillTool::new(registry)
+                .with_agent_tool(Arc::new(UncertainRunner(uncertain)))
+                .invoke(call(SKILL_TOOL_ID, serde_json::json!({"skill": "review"})))
+                .await;
+            if uncertain {
+                assert!(matches!(result, Err(ToolError::Indeterminate(_))));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ToolError::StateInvalidatedAfterDispatch(_))
+                ));
+            }
+        }
     }
 
     #[tokio::test]

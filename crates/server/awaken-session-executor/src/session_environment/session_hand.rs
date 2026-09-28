@@ -57,6 +57,22 @@ pub(super) enum SessionAgentLauncher {
 }
 
 impl SessionAgentLauncher {
+    async fn execution_domain(
+        &self,
+    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
+        use awaken_runtime_contract::tool_batch::ToolExecutionDomain;
+        match self {
+            Self::Container { sandbox } => Ok(sandbox.owned_process_binding().await?.map_or(
+                ToolExecutionDomain::Opaque {},
+                |execution_ref| ToolExecutionDomain::ControlledProcess {
+                    provider_ref: "kubernetes-sandbox".into(),
+                    execution_ref,
+                },
+            )),
+            Self::Workdir(_) | Self::Namespace(_) => Ok(ToolExecutionDomain::Opaque {}),
+        }
+    }
+
     fn operation_scope(&self) -> String {
         match self {
             Self::Workdir(sandbox) => sandbox.handle().sandbox_id,
@@ -569,6 +585,12 @@ impl HandMode {
 }
 
 impl SessionHandExecutor {
+    pub(super) async fn contained_execution_domain(
+        &self,
+    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
+        self.launcher.execution_domain().await
+    }
+
     pub(super) fn workdir(
         sandbox: Arc<LocalSandbox>,
         factory: Arc<dyn HandExecutorFactory>,
@@ -900,6 +922,15 @@ impl SessionHandExecutor {
 
 #[async_trait]
 impl ToolExecutor for SessionHandExecutor {
+    async fn execution_domain(
+        &self,
+        _call: &ToolCall,
+    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, ToolError> {
+        self.contained_execution_domain()
+            .await
+            .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))
+    }
+
     fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {
         self.mode.recovery_capability()
     }

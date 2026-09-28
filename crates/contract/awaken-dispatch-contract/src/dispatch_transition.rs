@@ -183,11 +183,11 @@ fn retired_attempts_never_reenter_even_at_integer_boundaries() {
                     PhysicalAttemptTransition::Fenced
                 };
                 assert_eq!(
-                    begin_physical_attempt(current, PhysicalAttemptSlot::Empty, false),
+                    begin_physical_attempt(current, PhysicalAttemptSlot::Empty, false, false),
                     expected
                 );
                 assert_eq!(
-                    handoff_physical_attempt(current, PhysicalAttemptSlot::Empty, false),
+                    handoff_physical_attempt(current, PhysicalAttemptSlot::Empty, false, false),
                     expected
                 );
             }
@@ -204,12 +204,17 @@ pub const fn begin_physical_attempt(
     claim_is_current: bool,
     slot: PhysicalAttemptSlot,
     thread_peer_occupied: bool,
+    closing: bool,
 ) -> PhysicalAttemptTransition {
     if !claim_is_current {
         return PhysicalAttemptTransition::Fenced;
     }
-    if !matches!(slot, PhysicalAttemptSlot::Corrupt) && thread_peer_occupied {
-        return PhysicalAttemptTransition::Blocked;
+    if !matches!(slot, PhysicalAttemptSlot::Corrupt) && (thread_peer_occupied || closing) {
+        return if closing && matches!(slot, PhysicalAttemptSlot::Empty) {
+            PhysicalAttemptTransition::Corrupt
+        } else {
+            PhysicalAttemptTransition::Blocked
+        };
     }
     match slot {
         PhysicalAttemptSlot::Empty => PhysicalAttemptTransition::Install,
@@ -231,12 +236,13 @@ pub const fn handoff_physical_attempt(
     claim_is_current: bool,
     slot: PhysicalAttemptSlot,
     thread_peer_occupied: bool,
+    closing: bool,
 ) -> PhysicalAttemptTransition {
     // Handoff changes only the disposition of a complete predecessor. Current
     // authority, exact replay, empty admission and corruption use the ordinary
     // kernel so that adding a guard cannot leave a parallel recovery bypass.
-    match begin_physical_attempt(claim_is_current, slot, thread_peer_occupied) {
-        PhysicalAttemptTransition::Blocked if !thread_peer_occupied => {
+    match begin_physical_attempt(claim_is_current, slot, thread_peer_occupied, closing) {
+        PhysicalAttemptTransition::Blocked if !thread_peer_occupied && !closing => {
             PhysicalAttemptTransition::Replace
         }
         transition => transition,
@@ -247,12 +253,87 @@ pub const fn handoff_physical_attempt(
 /// Finishing an already empty slot is an idempotent replay; another claim and a
 /// torn owner/epoch pair are never cleared.
 #[must_use]
-pub const fn finish_physical_attempt(slot: PhysicalAttemptSlot) -> PhysicalAttemptTransition {
+pub const fn finish_physical_attempt(
+    slot: PhysicalAttemptSlot,
+    closing: bool,
+    closure_evidence: bool,
+) -> PhysicalAttemptTransition {
+    if closing && matches!(slot, PhysicalAttemptSlot::Empty) {
+        return PhysicalAttemptTransition::Corrupt;
+    }
+    if closing != closure_evidence
+        && !matches!(
+            slot,
+            PhysicalAttemptSlot::Empty | PhysicalAttemptSlot::Corrupt
+        )
+    {
+        return PhysicalAttemptTransition::Fenced;
+    }
     match slot {
         PhysicalAttemptSlot::Empty => PhysicalAttemptTransition::Stutter,
         PhysicalAttemptSlot::ExactClaim => PhysicalAttemptTransition::Clear,
         PhysicalAttemptSlot::OtherClaim => PhysicalAttemptTransition::Fenced,
         PhysicalAttemptSlot::Corrupt => PhysicalAttemptTransition::Corrupt,
+    }
+}
+
+/// The original exact slot may close its local entry after losing its mutation
+/// lease. This changes no owner/epoch and grants no ACK or replacement.
+pub const fn can_close_physical_attempt(slot: PhysicalAttemptSlot) -> bool {
+    matches!(slot, PhysicalAttemptSlot::ExactClaim)
+}
+
+#[cfg(test)]
+mod closure_phase_tests {
+    use super::*;
+    #[test]
+    fn closure_phase_fences_entry_handoff_and_ordinary_late_return() {
+        // C1 current/stale claimant; C2 empty/exact/other/corrupt slot; C3
+        // open/closing phase; C4 ordinary/independent-closure return.
+        // R1 stale => Fenced. R2 closing+occupied => both entry paths Blocked.
+        // R3 closing+empty => corrupt, not reusable. R4 exact+matching return
+        // kind => Clear. R5 exact+wrong return kind => Fenced. R6 other =>
+        // Fenced; R7 corrupt => Corrupt. This exhausts every interacting slot
+        // and return-kind partition against literal expected outcomes.
+        for slot in [
+            PhysicalAttemptSlot::Empty,
+            PhysicalAttemptSlot::ExactClaim,
+            PhysicalAttemptSlot::OtherClaim,
+            PhysicalAttemptSlot::Corrupt,
+        ] {
+            for current in [false, true] {
+                let expected = if !current {
+                    PhysicalAttemptTransition::Fenced
+                } else if matches!(
+                    slot,
+                    PhysicalAttemptSlot::Empty | PhysicalAttemptSlot::Corrupt
+                ) {
+                    PhysicalAttemptTransition::Corrupt
+                } else {
+                    PhysicalAttemptTransition::Blocked
+                };
+                assert_eq!(begin_physical_attempt(current, slot, false, true), expected);
+                assert_eq!(
+                    handoff_physical_attempt(current, slot, false, true),
+                    expected
+                );
+            }
+            for closing in [false, true] {
+                for evidence in [false, true] {
+                    let expected = match slot {
+                        PhysicalAttemptSlot::Empty if closing => PhysicalAttemptTransition::Corrupt,
+                        PhysicalAttemptSlot::Empty => PhysicalAttemptTransition::Stutter,
+                        PhysicalAttemptSlot::Corrupt => PhysicalAttemptTransition::Corrupt,
+                        PhysicalAttemptSlot::OtherClaim => PhysicalAttemptTransition::Fenced,
+                        PhysicalAttemptSlot::ExactClaim if closing == evidence => {
+                            PhysicalAttemptTransition::Clear
+                        }
+                        PhysicalAttemptSlot::ExactClaim => PhysicalAttemptTransition::Fenced,
+                    };
+                    assert_eq!(finish_physical_attempt(slot, closing, evidence), expected);
+                }
+            }
+        }
     }
 }
 
@@ -596,51 +677,75 @@ mod tests {
         use PhysicalAttemptTransition::{
             Blocked, Clear, Corrupt as CorruptTransition, Fenced, Install, Replace, Stutter,
         };
-        assert_eq!(begin_physical_attempt(true, Empty, false), Install, "R1/E1");
         assert_eq!(
-            handoff_physical_attempt(true, Empty, false),
+            begin_physical_attempt(true, Empty, false, false),
             Install,
             "R1/E1"
         );
-        assert_eq!(finish_physical_attempt(Empty), Stutter, "R1/E2");
         assert_eq!(
-            begin_physical_attempt(true, ExactClaim, false),
+            handoff_physical_attempt(true, Empty, false, false),
+            Install,
+            "R1/E1"
+        );
+        assert_eq!(
+            finish_physical_attempt(Empty, false, false),
+            Stutter,
+            "R1/E2"
+        );
+        assert_eq!(
+            begin_physical_attempt(true, ExactClaim, false, false),
             Stutter,
             "R2/E2"
         );
         assert_eq!(
-            handoff_physical_attempt(true, ExactClaim, false),
+            handoff_physical_attempt(true, ExactClaim, false, false),
             Stutter,
             "R2/E2"
         );
-        assert_eq!(finish_physical_attempt(ExactClaim), Clear, "R2/E2");
         assert_eq!(
-            begin_physical_attempt(true, OtherClaim, false),
+            finish_physical_attempt(ExactClaim, false, false),
+            Clear,
+            "R2/E2"
+        );
+        assert_eq!(
+            begin_physical_attempt(true, OtherClaim, false, false),
             Blocked,
             "R3/E3"
         );
         assert_eq!(
-            handoff_physical_attempt(true, OtherClaim, false),
+            handoff_physical_attempt(true, OtherClaim, false, false),
             Replace,
             "R4/E6"
         );
-        assert_eq!(finish_physical_attempt(OtherClaim), Fenced, "R3/E3");
+        assert_eq!(
+            finish_physical_attempt(OtherClaim, false, false),
+            Fenced,
+            "R3/E3"
+        );
         for slot in [Empty, ExactClaim, OtherClaim, Corrupt] {
-            assert_eq!(begin_physical_attempt(false, slot, false), Fenced, "R4/E4");
             assert_eq!(
-                handoff_physical_attempt(false, slot, false),
+                begin_physical_attempt(false, slot, false, false),
+                Fenced,
+                "R4/E4"
+            );
+            assert_eq!(
+                handoff_physical_attempt(false, slot, false, false),
                 Fenced,
                 "R5/E4"
             );
         }
         assert_eq!(
-            begin_physical_attempt(true, Corrupt, false),
+            begin_physical_attempt(true, Corrupt, false, false),
             CorruptTransition,
             "R5/E5"
         );
-        assert_eq!(finish_physical_attempt(Corrupt), CorruptTransition, "R5/E5");
         assert_eq!(
-            handoff_physical_attempt(true, Corrupt, false),
+            finish_physical_attempt(Corrupt, false, false),
+            CorruptTransition,
+            "R5/E5"
+        );
+        assert_eq!(
+            handoff_physical_attempt(true, Corrupt, false, false),
             CorruptTransition,
             "R6/E5"
         );
@@ -1006,8 +1111,8 @@ mod proofs {
         );
         // Execution admission is untouched by the quarantine rule.
         assert_eq!(
-            begin_physical_attempt(claim_is_current, slot, thread_peer_occupied),
-            begin_physical_attempt(claim_is_current, slot, thread_peer_occupied)
+            begin_physical_attempt(claim_is_current, slot, thread_peer_occupied, false),
+            begin_physical_attempt(claim_is_current, slot, thread_peer_occupied, false)
         );
         if slot.quarantine_admits_occupation(cancellation_requested) {
             assert!(!slot.permits_settlement());
@@ -1069,11 +1174,11 @@ mod proofs {
         let current = live && attempt_epoch_is_open(epoch, retired);
         if epoch <= retired {
             assert_eq!(
-                begin_physical_attempt(current, slot, peer),
+                begin_physical_attempt(current, slot, peer, false),
                 PhysicalAttemptTransition::Fenced
             );
             assert_eq!(
-                handoff_physical_attempt(current, slot, peer),
+                handoff_physical_attempt(current, slot, peer, false),
                 PhysicalAttemptTransition::Fenced
             );
         }
@@ -1089,22 +1194,24 @@ mod proofs {
     fn physical_attempt_slot_installs_and_clears_only_exact_authority() {
         let current = kani::any::<bool>();
         let slot = arbitrary_physical_slot();
+        let closing: bool = kani::any();
+        let closure_evidence: bool = kani::any();
         // R2/R4: neither a current mutation claim nor logical completion can
         // authorize settlement effects while any physical slot remains.
         assert_eq!(
             slot.permits_settlement(),
             slot == PhysicalAttemptSlot::Empty
         );
-        let begin = begin_physical_attempt(current, slot, false);
-        let handoff = handoff_physical_attempt(current, slot, false);
-        let finish = finish_physical_attempt(slot);
+        let begin = begin_physical_attempt(current, slot, false, closing);
+        let handoff = handoff_physical_attempt(current, slot, false, closing);
+        let finish = finish_physical_attempt(slot, closing, closure_evidence);
 
         // Normalization rule: continuation changes only the disposition of a
         // complete predecessor. Every other admission guard/result is shared,
         // including a stale claim combined with corrupt persisted evidence.
         assert_eq!(
             handoff,
-            if begin == PhysicalAttemptTransition::Blocked {
+            if begin == PhysicalAttemptTransition::Blocked && !closing {
                 PhysicalAttemptTransition::Replace
             } else {
                 begin
@@ -1112,15 +1219,15 @@ mod proofs {
         );
         assert_eq!(
             begin == PhysicalAttemptTransition::Install,
-            current && slot == PhysicalAttemptSlot::Empty
+            current && !closing && slot == PhysicalAttemptSlot::Empty
         );
         assert_eq!(
             begin == PhysicalAttemptTransition::Stutter,
-            current && slot == PhysicalAttemptSlot::ExactClaim
+            current && !closing && slot == PhysicalAttemptSlot::ExactClaim
         );
         assert_eq!(
             finish == PhysicalAttemptTransition::Clear,
-            slot == PhysicalAttemptSlot::ExactClaim
+            slot == PhysicalAttemptSlot::ExactClaim && closing == closure_evidence
         );
         if !current {
             assert_eq!(begin, PhysicalAttemptTransition::Fenced);
@@ -1129,7 +1236,10 @@ mod proofs {
         if slot == PhysicalAttemptSlot::OtherClaim {
             assert_ne!(begin, PhysicalAttemptTransition::Install);
             assert_ne!(finish, PhysicalAttemptTransition::Clear);
-            assert_eq!(handoff == PhysicalAttemptTransition::Replace, current);
+            assert_eq!(
+                handoff == PhysicalAttemptTransition::Replace,
+                current && !closing
+            );
         }
     }
 
@@ -1143,15 +1253,16 @@ mod proofs {
         let slot = arbitrary_physical_slot();
         let handoff = kani::any();
         let peer = kani::any();
+        let closing = kani::any();
         let base = if handoff {
-            handoff_physical_attempt(current, slot, false)
+            handoff_physical_attempt(current, slot, false, closing)
         } else {
-            begin_physical_attempt(current, slot, false)
+            begin_physical_attempt(current, slot, false, closing)
         };
         let result = if handoff {
-            handoff_physical_attempt(current, slot, peer)
+            handoff_physical_attempt(current, slot, peer, closing)
         } else {
-            begin_physical_attempt(current, slot, peer)
+            begin_physical_attempt(current, slot, peer, closing)
         };
         if !peer {
             assert_eq!(result, base);

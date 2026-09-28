@@ -105,7 +105,7 @@ impl WorkerExecutionStopSource for StopSource {
             .map_err(ApplicationError::unavailable)
     }
 
-    async fn observe_attempt_termination(
+    async fn close_attempt_execution(
         &self,
         command: &ClosedAttemptExecution,
         recovery: &RunRecoverySnapshot,
@@ -114,11 +114,12 @@ impl WorkerExecutionStopSource for StopSource {
         let Some(probe) = probe else {
             return Ok(AttemptStopStatus::Unknown);
         };
-        assert_eq!(
-            command.attempt().binding.as_ref(),
-            Some(command.process_exit().binding())
-        );
-        assert!(!command.process_exit().evidence_ref().is_empty());
+        assert!(command.attempt().closing);
+        if let Some(exit) = command.process_exit() {
+            assert_eq!(command.attempt().binding.as_ref(), Some(exit.binding()));
+            assert!(!exit.evidence_ref().is_empty());
+        }
+        assert!(!command.local_evidence_ref().is_empty());
         assert_eq!(recovery.claimed_run_id, command.attempt().claim.run_id);
         assert_eq!(
             Some(&recovery.thread_id),
@@ -870,6 +871,7 @@ async fn complete_stop_uses_exact_retirement_and_requires_fresh_successor_admiss
             *probe.calls.lock().unwrap(),
             vec![
                 PhysicalAttempt {
+                    closing: true,
                     claim: f.old.clone(),
                     binding: Some(f.binding.clone()),
                     thread_id: Some(f.thread_id.clone()),
@@ -914,6 +916,7 @@ async fn terminal_recovery_settlement_progresses_the_same_exact_predecessor_stop
     assert_eq!(
         *probe.calls.lock().unwrap(),
         vec![PhysicalAttempt {
+            closing: true,
             claim: f.old.clone(),
             binding: Some(f.binding.clone()),
             thread_id: Some(f.thread_id.clone()),
@@ -954,6 +957,7 @@ async fn complete_stop_timeout_retains_occupancy_and_retries_the_same_subject() 
         *probe.calls.lock().unwrap(),
         vec![
             PhysicalAttempt {
+                closing: true,
                 claim: f.old.clone(),
                 binding: Some(f.binding.clone()),
                 thread_id: Some(f.thread_id.clone()),
@@ -986,18 +990,26 @@ async fn concurrent_complete_receipts_cannot_clear_a_successor_slot() {
         *probe.result.lock().unwrap() = Ok(Some("all-terminal".into()));
         f.stop.release.add_permits(2);
         let replies = Semaphore::new(0);
+        let start_second = Semaphore::new(0);
         let completed = async {
             let response = f.begin().await;
             replies.add_permits(1);
             response
         };
         let second = async {
+            start_second.acquire().await.unwrap().forget();
             let response = f.begin().await;
             replies.add_permits(1);
             response
         };
         let race = async {
-            probe.entered.acquire_many(2).await.unwrap().forget();
+            // The second request starts after the first committed closing.
+            // Concurrent pre-close observations may safely coalesce/return
+            // Blocked instead of both entering provider IO; that is H1, not
+            // a requirement that two independent reads always occur.
+            probe.entered.acquire().await.unwrap().forget();
+            start_second.add_permits(1);
+            probe.entered.acquire().await.unwrap().forget();
             probe.release.add_permits(1);
             replies.acquire().await.unwrap().forget();
             assert_eq!(
@@ -1074,7 +1086,7 @@ async fn worker_json_cannot_supply_independent_termination_evidence() {
     // Provider selection is trusted server composition, never a wire parameter.
     let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
     let probe = AttemptStopProbe::install(&f);
-    for verb in ["begin", "handoff", "finish"] {
+    for verb in ["begin", "handoff", "finish", "close"] {
         let response = reqwest::Client::new()
             .post(format!("{}/v1/worker/dispatch/attempt/{verb}", f.address))
             .header("x-awaken-worker-id", &f.worker.worker_id)
@@ -1090,6 +1102,77 @@ async fn worker_json_cannot_supply_independent_termination_evidence() {
     assert!(probe.calls.lock().unwrap().is_empty());
     assert!(f.stop.calls.lock().unwrap().is_empty());
     f.assert_occupied().await;
+}
+
+#[tokio::test]
+async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker() {
+    // C1 signed registered Worker reports its exact old entry closed after
+    // mutation-lease loss; C2 independent effect closure missing/present; C3
+    // repeated close and late ordinary ACK. H1=C1+C3 => one retained closing
+    // slot, ACK fenced. H2=!C2 => no retirement/no process kill. H3=C2 => exact
+    // Coordinator retirement; unrelated Worker activity remains admitted.
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    let old_worker = f.binding.worker().clone();
+    f.directory
+        .heartbeat(
+            &old_worker,
+            WorkerHeartbeat {
+                sequence: 2,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+            },
+            200,
+            10_000,
+        )
+        .await
+        .unwrap();
+    let probe = AttemptStopProbe::install(&f);
+    for _ in 0..2 {
+        let reply = reqwest::Client::new()
+            .post(format!("{}/v1/worker/dispatch/attempt/close", f.address))
+            .header("x-awaken-worker-id", &old_worker.worker_id)
+            .json(&json!({"identity": old_worker, "claim": f.old}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), reqwest::StatusCode::OK);
+        assert_eq!(reply.json::<Value>().await.unwrap()["closed"], true);
+    }
+    assert_eq!(
+        f.store.finish_attempt(&f.old).await.unwrap(),
+        awaken_dispatch::SettleOutcome::Fenced
+    );
+    probe.release.add_permits(1);
+    assert_eq!(f.begin().await.1["admission"], "blocked");
+    f.assert_occupied().await;
+    assert!(
+        f.stop.calls.lock().unwrap().is_empty(),
+        "H2 no whole-Worker stop"
+    );
+    *probe.result.lock().unwrap() = Ok(Some("contained-effects-closed".into()));
+    probe.release.add_permits(1);
+    assert_eq!(f.begin().await.1["admission"], "blocked");
+    assert!(
+        f.store
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "H3"
+    );
+    assert_eq!(
+        f.directory
+            .incarnation(&old_worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .state,
+        WorkerState::Ready
+    );
 }
 
 #[test]

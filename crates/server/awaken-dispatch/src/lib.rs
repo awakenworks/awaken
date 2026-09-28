@@ -16,6 +16,11 @@
 //! thread's pending input, and run outcome stays in committed facts, read back
 //! through the commit boundary's single `CommittedThreadView` port.
 
+mod attempt_termination;
+pub use attempt_termination::{
+    NativeAttemptFootprint, NativeAttemptTermination, NativeAttemptTerminationError,
+    classify_native_attempt_termination,
+};
 mod any;
 mod application;
 mod claimed_stream;
@@ -55,11 +60,11 @@ mod worker_context;
 
 pub use any::AnyDispatchStore;
 pub use application::{
-    ApplicationError, ApplicationErrorKind, AttemptStopStatus, ClaimedCommitService,
-    ClaimedOperationCoordinatorResolver, ClosedAttemptExecution, ClosedWorkerExecution,
-    DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult, ObservedAttemptStop,
-    ObservedWorkerProcessExit, WorkerExecutionBindingSource, WorkerExecutionStopSource,
-    WorkerProcessStopStatus, stop_expired_predecessor,
+    ApplicationError, ApplicationErrorKind, AttemptClosureKind, AttemptStopStatus,
+    ClaimedCommitService, ClaimedOperationCoordinatorResolver, ClosedAttemptExecution,
+    ClosedWorkerExecution, DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
+    ObservedAttemptStop, ObservedWorkerProcessExit, WorkerExecutionBindingSource,
+    WorkerExecutionStopSource, WorkerProcessStopStatus, stop_expired_predecessor,
 };
 pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

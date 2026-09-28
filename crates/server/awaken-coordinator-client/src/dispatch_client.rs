@@ -708,16 +708,7 @@ impl DispatchQueue for HttpDispatchQueue {
         binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         reject_worker_supplied_execution_binding(binding)?;
-        let value = self
-            .post_idempotent(
-                "/v1/worker/dispatch/attempt/begin",
-                &AttemptExecutionRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
-                },
-                self.worker_id(),
-            )
-            .await?;
+        let value = self.attempt_command(claim, "begin").await?;
         serde_json::from_value(
             value
                 .get("admission")
@@ -733,16 +724,7 @@ impl DispatchQueue for HttpDispatchQueue {
         binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         reject_worker_supplied_execution_binding(binding)?;
-        let value = self
-            .post_idempotent(
-                "/v1/worker/dispatch/attempt/handoff",
-                &AttemptExecutionRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
-                },
-                self.worker_id(),
-            )
-            .await?;
+        let value = self.attempt_command(claim, "handoff").await?;
         serde_json::from_value(
             value
                 .get("admission")
@@ -752,17 +734,19 @@ impl DispatchQueue for HttpDispatchQueue {
         .map_err(|error| DispatchError::Rejected(format!("decode attempt admission: {error}")))
     }
 
+    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        let value = self.attempt_command(claim, "close").await?;
+        Ok(
+            if value.get("closed").and_then(serde_json::Value::as_bool) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
+    }
+
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        let value = self
-            .post_idempotent(
-                "/v1/worker/dispatch/attempt/finish",
-                &AttemptExecutionRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
-                },
-                self.worker_id(),
-            )
-            .await?;
+        let value = self.attempt_command(claim, "finish").await?;
         Ok(
             if value
                 .get("finished")
@@ -1032,5 +1016,23 @@ impl Outbox for HttpDispatchQueue {
     }
     async fn relay(&self) -> Result<usize, DispatchError> {
         Self::server_local("outbox.relay")
+    }
+}
+
+impl HttpDispatchQueue {
+    async fn attempt_command(
+        &self,
+        claim: &RunClaim,
+        action: &str,
+    ) -> Result<serde_json::Value, DispatchError> {
+        self.post_idempotent(
+            &format!("/v1/worker/dispatch/attempt/{action}"),
+            &AttemptExecutionRequest {
+                claim: claim.clone(),
+                identity: Some(self.worker_identity.clone()),
+            },
+            self.worker_id(),
+        )
+        .await
     }
 }

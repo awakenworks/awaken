@@ -136,6 +136,9 @@ const DISPATCH_RESERVATION_CLAIM: &str =
 const PENDING_CONTEXT_MESSAGES: &str =
     include_str!("migrations/V0027__pending_context_messages.sql");
 #[cfg(feature = "durable")]
+const PHYSICAL_ATTEMPT_CLOSING: &str =
+    include_str!("migrations/V0007__physical_attempt_closing.sql");
+#[cfg(feature = "durable")]
 const PHYSICAL_ATTEMPT_SLOT_POSTGRES: &str =
     include_str!("migrations/V0002__physical_attempt_slot.postgres.sql");
 #[cfg(feature = "durable")]
@@ -351,6 +354,11 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 "V0006__dispatch_resolution_retry.sql",
                 include_str!("migrations/V0006__dispatch_resolution_retry.sql"),
             )?,
+            Migration::new(
+                7,
+                "close physical entry before independent domain stop",
+                PHYSICAL_ATTEMPT_CLOSING.trim(),
+            )?,
         ],
     )
 }
@@ -535,7 +543,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6],
+            [1, 2, 3, 4, 5, 6, 7],
             "S1/E1"
         );
         for (table, column) in [

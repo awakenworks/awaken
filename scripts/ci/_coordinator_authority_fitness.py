@@ -73,11 +73,9 @@ TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
 
 ATTEMPT_RESULT_OWNER = "crates/server/awaken-dispatch/src/dispatch.rs"
 ATTEMPT_BACKENDS = {
-    "crates/server/awaken-dispatch/src/memory.rs": ("finish",),
-    "crates/server/awaken-dispatch/src/memory/physical_attempt.rs": ("admission",),
-    "crates/server/awaken-dispatch/src/sqlite/physical_attempt.rs": ("admission",),
-    "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs": ("finish",),
-    "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs": ("admission", "finish"),
+    "crates/server/awaken-dispatch/src/memory/physical_attempt.rs": ("admission", "finish", "close"),
+    "crates/server/awaken-dispatch/src/sqlite/physical_attempt.rs": ("admission", "finish", "close"),
+    "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs": ("admission", "finish", "close"),
 }
 
 
@@ -86,7 +84,7 @@ def attempt_rule_violations(relative: str, source: str) -> list[str]:
     errors: list[str] = []
     if relative.startswith("crates/server/awaken-dispatch/src/"):
         if relative != ATTEMPT_RESULT_OWNER and re.search(
-            r"\b(?:begin|handoff|finish)_physical_attempt\s*\(", source
+            r"\b(?:begin|handoff|finish|can_close)_physical_attempt\s*\(", source
         ):
             errors.append(f"{relative}: physical-slot rules must use {ATTEMPT_RESULT_OWNER}")
     if relative in ATTEMPT_BACKENDS:
@@ -152,18 +150,19 @@ def selftest() -> None:
     # call; C3 every adapter call assigned to this file retained. Effects/rules:
     # A1 owner+C2 -> accept; A2 backend+C2 -> reject the policy bypass;
     # A3 backend+!C2+C3 -> accept; A4 backend missing any C3 call -> reject.
-    # Memory and SQLite split admission and finish into separate source files,
-    # not separate rule owners. A5 split files contain only their assigned calls
-    # => accept; removing the moved admission call must still fail A4.
+    # Memory and SQLite consolidate storage under their existing physical
+    # attempt modules. A5 each contains admission, return and closure calls;
+    # removing any moved call must still fail A4. Thin forwarding is not a
+    # second decision owner.
     # Constraint: this is structural ownership evidence, not a proof of SQL
     # transaction semantics; backend conformance owns behavioral refinement.
-    shared = "decide_physical_attempt_admission(x); decide_physical_attempt_finish(x);"
+    shared = "decide_physical_attempt_admission(x); decide_physical_attempt_finish(x); decide_physical_attempt_close(x);"
     assert attempt_rule_violations(ATTEMPT_RESULT_OWNER, "begin_physical_attempt(x)") == []
     for backend, operations in ATTEMPT_BACKENDS.items():
         assigned = " ".join(f"decide_physical_attempt_{op}(x);" for op in operations)
         assert attempt_rule_violations(backend, assigned) == []  # A5
         assert attempt_rule_violations(backend, shared) == []  # A3
-        for verb in ("begin", "handoff", "finish"):
+        for verb in ("begin", "handoff", "finish", "can_close"):
             assert attempt_rule_violations(backend, shared + f"{verb}_physical_attempt(x)")  # A2
         for operation in operations:
             missing = shared.replace(f"decide_physical_attempt_{operation}(x);", "")

@@ -327,6 +327,9 @@ macro_rules! delegate {
 
 #[async_trait]
 impl DispatchQueue for AnyDispatchStore {
+    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, close_attempt(claim))
+    }
     fn claimed_checkpoint_transport(
         &self,
     ) -> Option<&dyn awaken_dispatch_contract::ClaimedCheckpointTransport> {
@@ -596,6 +599,12 @@ macro_rules! delegate_control {
 
 #[async_trait]
 impl ControlDispatchQueue for AnyDispatchStore {
+    async fn finish_attempt_closure(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate_control!(self, finish_attempt_closure(claim))
+    }
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,

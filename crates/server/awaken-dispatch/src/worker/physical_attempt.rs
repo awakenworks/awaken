@@ -246,6 +246,9 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             }
         };
         if !quiescence.close_and_wait().await {
+            if quiescence.local_entry_closed() {
+                let _ = self.store.close_attempt(&claim).await?;
+            }
             tracing::warn!(run_id = %claim.run_id.0, owner = %claim.owner,
                 lease_epoch = claim.epoch, phase = "physical_quiescence",
                 "Executor returned without physical termination evidence; retaining attempt slot");

@@ -2,14 +2,14 @@
 //! Trusted Kubernetes facts lowered into existing Coordinator ports.
 
 use super::*;
+#[cfg(test)]
+use awaken_dispatch::classify_native_attempt_termination;
 use awaken_dispatch::{
     ApplicationError, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
     ClosedWorkerExecution, WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerIdentity,
     WorkerProcessStopStatus,
 };
-use awaken_runtime_contract::attempt_termination::{
-    NativeAttemptTermination, classify_native_attempt_termination,
-};
+use awaken_dispatch::{NativeAttemptFootprint, NativeAttemptTermination};
 use awaken_sandbox_container::k8s::{
     PodProcessBinding, PodProcessObserver, PodProcessStopper, PodProcessTermination,
 };
@@ -76,7 +76,7 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
             .map_err(|_| {
                 ApplicationError::unavailable("exact Kubernetes Worker process is unavailable")
             })?;
-        if !binding.evidence_was_retained() {
+        if !binding.worker_evidence_was_retained() {
             return Err(ApplicationError::unavailable(
                 "Kubernetes Worker process evidence must be retained before admission",
             ));
@@ -148,19 +148,65 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
         })
     }
 
-    async fn observe_attempt_termination(
+    async fn close_attempt_execution(
         &self,
         execution: &ClosedAttemptExecution,
         recovery: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<AttemptStopStatus, ApplicationError> {
-        match classify_native_attempt_termination(recovery)
-            .map_err(|error| ApplicationError::internal(error.to_string()))?
-        {
+        if !execution.attempt().closing {
+            return Err(ApplicationError::internal(
+                "attempt entry has not durably closed",
+            ));
+        }
+        let footprint = NativeAttemptFootprint::decode(recovery)
+            .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        // Check whether exact process closure could resolve this footprint
+        // before requesting any destructive provider effect. Opaque/legacy
+        // participants (including shared delegation) cannot be proved stopped
+        // by deleting a Session Sandbox, so leave that resource untouched.
+        if footprint.classify(footprint.process_domains()) == NativeAttemptTermination::Unknown {
+            return Ok(AttemptStopStatus::Unknown);
+        }
+        let mut closed = Vec::new();
+        for domain in footprint.process_domains() {
+            if let awaken_runtime_contract::tool_batch::ToolExecutionDomain::ControlledProcess {
+                provider_ref,
+                execution_ref,
+            } = domain
+            {
+                if closed.contains(domain) {
+                    continue;
+                }
+                if provider_ref != "kubernetes-sandbox" {
+                    continue;
+                }
+                let binding: PodProcessBinding =
+                    serde_json::from_str(execution_ref).map_err(|_| {
+                        ApplicationError::internal("invalid contained Sandbox process reference")
+                    })?;
+                match self
+                    .stopper
+                    .request_stop(&binding)
+                    .await
+                    .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+                {
+                    PodProcessTermination::Unknown => {}
+                    PodProcessTermination::Observed(_) => closed.push(domain.clone()),
+                }
+            }
+        }
+        match footprint.classify(&closed) {
             NativeAttemptTermination::Unknown => Ok(AttemptStopStatus::Unknown),
             NativeAttemptTermination::AllExecutionStopped => execution
                 .observed_all_execution_stopped(format!(
                     "{};thread-commit:{}",
-                    execution.process_exit().evidence_ref(),
+                    execution.local_evidence_ref(),
+                    recovery.store_cursor
+                )),
+            NativeAttemptTermination::ControlledExecutionClosed => execution
+                .observed_execution_domain_closed(format!(
+                    "{};thread-commit:{}",
+                    execution.local_evidence_ref(),
                     recovery.store_cursor
                 )),
         }

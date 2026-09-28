@@ -103,6 +103,18 @@ impl OpenAiResponsesExecutor {
 
 #[async_trait]
 impl LlmExecutor for OpenAiResponsesExecutor {
+    fn effect_scope(
+        &self,
+        request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        crate::provider_model_effect_scope(
+            &self.provider_kind,
+            "open_ai_responses",
+            "openai",
+            request,
+        )
+    }
+
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, Error> {
         response_from_wire(self.execute(&request).await?)
     }

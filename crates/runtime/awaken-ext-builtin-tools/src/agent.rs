@@ -105,6 +105,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_uses_the_generic_tool_invocation_boundary() {
+        // R1 cancellation already present => zero executor entry and a typed
+        // pre-dispatch rejection, never a claim that remote work has stopped.
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         let error = invoke_auxiliary_agent(
@@ -119,9 +121,6 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert_eq!(
-            error.to_string(),
-            "tool execution failed: tool invocation cancelled"
-        );
+        assert!(matches!(error, ToolError::UnavailableBeforeDispatch(_)));
     }
 }
