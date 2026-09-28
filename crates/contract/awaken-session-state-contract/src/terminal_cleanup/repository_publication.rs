@@ -63,14 +63,85 @@ pub struct SessionRepositoryPublicationReceipt {
 #[serde(deny_unknown_fields)]
 pub struct SessionRepositoryPublicationRejection {
     pub command_fingerprint: String,
-    pub effect_rejection: RepositoryPublicationRejection,
+    pub effect_rejection: SessionRepositoryPublicationRejectionReason,
     pub rejection_fingerprint: String,
 }
 
-/// One execution attempt at the root publication effect. Rejected is a
-/// successful observation of a permanent compare-and-swap failure and therefore
-/// must be made durable before ordinary root cleanup. Dependency loss remains a
-/// RunError outside this enum so the same command is retried.
+/// Negative Session publication evidence. The original transport CAS wire is
+/// unchanged; source closure is a Worker-observed prerequisite failure and says
+/// nothing about whether an earlier remote publication happened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum SessionRepositoryPublicationRejectionReason {
+    #[error("{0}")]
+    CompareAndSwap(RepositoryPublicationRejection),
+    #[error("Repository publication source is closed; remote publication outcome is unknown")]
+    SourceClosed {
+        source_binding_fingerprint: String,
+        observation: awaken_provisioning_contract::SandboxObservation,
+    },
+}
+
+impl SessionRepositoryPublicationRejectionReason {
+    fn verify(
+        &self,
+        expectation: &RepositoryPublicationExpectation,
+    ) -> Result<(), SessionCleanupError> {
+        let valid = match self {
+            Self::CompareAndSwap(rejection) => rejection.verify(expectation).is_ok(),
+            Self::SourceClosed {
+                source_binding_fingerprint,
+                observation,
+            } => expectation.validate().is_ok()
+                && !source_binding_fingerprint.trim().is_empty()
+                && match observation {
+                    awaken_provisioning_contract::SandboxObservation::DefinitivelyUnavailable {
+                        physical_incarnation,
+                    } => physical_incarnation
+                        .as_ref()
+                        .is_none_or(|incarnation| !incarnation.trim().is_empty()),
+                    awaken_provisioning_contract::SandboxObservation::Terminal {
+                        physical_incarnation,
+                    } => !physical_incarnation.trim().is_empty(),
+                    _ => false,
+                },
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(SessionCleanupError::RepositoryPublicationRejectionMismatch)
+        }
+    }
+
+    fn binding_fingerprint(binding: &str) -> String {
+        crate::stable_fingerprint(&("session-repository-publication-source-v1", binding))
+    }
+
+    /// Exact aggregate source comparison; provider payload interpretation and
+    /// physical-incarnation validation remain exclusively Worker-owned.
+    pub(crate) fn matches_source_binding(&self, binding: Option<&str>) -> bool {
+        match self {
+            Self::CompareAndSwap(_) => true,
+            Self::SourceClosed {
+                source_binding_fingerprint,
+                ..
+            } => binding.is_some_and(|binding| {
+                *source_binding_fingerprint == Self::binding_fingerprint(binding)
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn is_source_closed(&self) -> bool {
+        matches!(self, Self::SourceClosed { .. })
+    }
+}
+
+/// One execution attempt at the root publication effect. A permanent CAS veto
+/// or exact source-closure observation is durable before ordinary root cleanup.
+/// Source closure preserves unknown remote outcome; it is never success or CAS
+/// conflict evidence. Indeterminate dependency/observation errors remain outside
+/// this enum and retain the same command for retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionRepositoryPublicationEffect {
     Published(SessionRepositoryPublicationReceipt),
@@ -345,10 +416,10 @@ impl SessionCleanupOperation {
         )
     }
 
-    /// Verify and retain one permanent compare-and-swap rejection in the same
+    /// Verify and retain negative publication evidence in the same
     /// sidecar as a successful publication receipt. Once durable, the ordinary
     /// root cleanup command may run; exact replay cannot invoke Git again.
-    pub fn record_repository_publication_rejection(
+    pub(crate) fn record_repository_publication_rejection(
         &mut self,
         session_id: &SessionId,
         rejection: SessionRepositoryPublicationRejection,
@@ -606,9 +677,38 @@ impl SessionRepositoryPublicationRejection {
         command: &SessionRepositoryPublicationCommand,
         effect_rejection: RepositoryPublicationRejection,
     ) -> Result<Self, SessionCleanupError> {
-        effect_rejection
-            .verify(&command.intent.expectation)
-            .map_err(|_| SessionCleanupError::RepositoryPublicationRejectionMismatch)?;
+        Self::from_reason(
+            command,
+            SessionRepositoryPublicationRejectionReason::CompareAndSwap(effect_rejection),
+        )
+    }
+
+    /// Record only a provider-validated closed observation of the exact source
+    /// retained by the aggregate. Admission rechecks its binding before CAS.
+    pub fn source_closed(
+        command: &SessionRepositoryPublicationCommand,
+        binding: &str,
+        observation: awaken_provisioning_contract::SandboxObservation,
+    ) -> Result<Self, SessionCleanupError> {
+        if binding.trim().is_empty() {
+            return Err(SessionCleanupError::RepositoryPublicationRejectionMismatch);
+        }
+        Self::from_reason(
+            command,
+            SessionRepositoryPublicationRejectionReason::SourceClosed {
+                source_binding_fingerprint:
+                    SessionRepositoryPublicationRejectionReason::binding_fingerprint(binding),
+                observation,
+            },
+        )
+    }
+
+    fn from_reason(
+        command: &SessionRepositoryPublicationCommand,
+        effect_rejection: SessionRepositoryPublicationRejectionReason,
+    ) -> Result<Self, SessionCleanupError> {
+        command.intent.validate()?;
+        effect_rejection.verify(&command.intent.expectation)?;
         let command_fingerprint = command.command_fingerprint();
         let rejection_fingerprint = crate::stable_fingerprint(&(
             "session-repository-publication-rejection-v1",
@@ -637,9 +737,7 @@ impl SessionRepositoryPublicationRejection {
         &self,
         intent: &SessionRepositoryPublicationIntent,
     ) -> Result<(), SessionCleanupError> {
-        self.effect_rejection
-            .verify(&intent.expectation)
-            .map_err(|_| SessionCleanupError::RepositoryPublicationRejectionMismatch)?;
+        self.effect_rejection.verify(&intent.expectation)?;
         let canonical_fingerprint = crate::stable_fingerprint(&(
             "session-repository-publication-rejection-v1",
             self.command_fingerprint.as_str(),
@@ -838,6 +936,117 @@ mod tests {
                 commit: command.intent.expectation.commit.clone(),
             },
         )
+    }
+
+    #[test]
+    fn publication_negative_evidence_keeps_legacy_cas_wire_and_rejects_unproven_closure() {
+        // Causes: C1 CAS/source closure; C2 exact/nonempty source identity;
+        // C3 absent/terminal versus ready/provisioning/disposing/foreign facts;
+        // C4 canonical/tampered evidence. Effects: N1 legacy JSON and v1 hash
+        // stay exact; N2 only closed observations produce negative evidence;
+        // N3 no success/remote-CAS claim is derived from closure; N4 tampering
+        // is rejected before work suppression. Provider validation is a Worker
+        // prerequisite; this table proves wire/aggregate admission only.
+        let (_, command) = pending("source-evidence");
+        let cas = RepositoryPublicationRejection::RemoteRefAbsent;
+        let legacy_hash = crate::stable_fingerprint(&(
+            "session-repository-publication-rejection-v1",
+            command.command_fingerprint().as_str(),
+            &cas,
+        ));
+        let rejection = SessionRepositoryPublicationRejection::new(&command, cas.clone()).unwrap();
+        assert_eq!(rejection.rejection_fingerprint, legacy_hash, "N1 old hash");
+        assert_eq!(
+            serde_json::to_value(&rejection).unwrap()["effect_rejection"],
+            serde_json::to_value(cas).unwrap(),
+            "N1 original transport wire"
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionRepositoryPublicationRejection>(
+                serde_json::to_value(&rejection).unwrap()
+            )
+            .unwrap(),
+            rejection,
+            "N1 unchanged decoder"
+        );
+        use awaken_provisioning_contract::SandboxObservation as O;
+        for (observation, accepts) in [
+            (
+                O::DefinitivelyUnavailable {
+                    physical_incarnation: None,
+                },
+                true,
+            ),
+            (
+                O::DefinitivelyUnavailable {
+                    physical_incarnation: Some("pod-a".into()),
+                },
+                true,
+            ),
+            (
+                O::Terminal {
+                    physical_incarnation: "pod-a".into(),
+                },
+                true,
+            ),
+            (
+                O::Terminal {
+                    physical_incarnation: " ".into(),
+                },
+                false,
+            ),
+            (
+                O::DefinitivelyUnavailable {
+                    physical_incarnation: Some(String::new()),
+                },
+                false,
+            ),
+            (O::Ready, false),
+            (O::Provisioning, false),
+            (
+                O::Disposing {
+                    physical_incarnation: "pod-a".into(),
+                },
+                false,
+            ),
+            (
+                O::Incompatible {
+                    reason: "foreign".into(),
+                },
+                false,
+            ),
+        ] {
+            let result = SessionRepositoryPublicationRejection::source_closed(
+                &command,
+                "source-a",
+                observation.clone(),
+            );
+            assert_eq!(result.is_ok(), accepts, "N2 {observation:?}");
+            if let Ok(rejection) = result {
+                assert!(
+                    rejection.effect_rejection.is_source_closed(),
+                    "N3 distinct cause"
+                );
+                assert!(rejection.effect_rejection.to_string().contains("unknown"));
+                rejection.verify(&command).unwrap();
+                let mut changed = rejection.clone();
+                changed.rejection_fingerprint.push('x');
+                assert!(changed.verify(&command).is_err(), "N4 tampered closure");
+            }
+        }
+        for binding in ["", " "] {
+            assert!(
+                SessionRepositoryPublicationRejection::source_closed(
+                    &command,
+                    binding,
+                    O::DefinitivelyUnavailable {
+                        physical_incarnation: None
+                    },
+                )
+                .is_err(),
+                "N2 source identity required"
+            );
+        }
     }
 
     fn complete(mut state: SessionCleanupOperation, session_id: &str) -> SessionCleanupOperation {

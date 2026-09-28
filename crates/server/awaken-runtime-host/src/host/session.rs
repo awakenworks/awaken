@@ -77,7 +77,9 @@ pub(crate) enum BoundEnvironmentPreparationMode {
     LiveSource,
     /// The aggregate's terminal Repository command may reuse its exact bound
     /// terminal-retiring owner while the provider is still Ready. It never
-    /// reopens ordinary execution or consumes a closed/disposal source.
+    /// reopens ordinary execution. A validated terminal/absent source may only
+    /// produce negative publication evidence, never Git I/O; disposing stays
+    /// refused without inventing an outcome of an earlier publication.
     TerminalRepositoryPublication,
     Terminal,
     /// Re-observe/reconstruct only the physical owner after the aggregate has

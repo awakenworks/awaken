@@ -812,18 +812,24 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
         ) {
             return Err(awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership);
         }
-        self.session
-            .lock()
-            .unwrap()
-            .as_mut()
-            .ok_or(awaken_session_realization_contract::SessionRealizationControlFailure::NotReady)?
-            .terminal_cleanup
-            .record_repository_publication_rejection(session_id, rejection.clone())
-            .map_err(|error| {
-                awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
-                    error.to_string(),
-                )
-            })?;
+        {
+            let mut root = self.session.lock().unwrap();
+            let session = root.as_mut().ok_or(
+                awaken_session_realization_contract::SessionRealizationControlFailure::NotReady,
+            )?;
+            if session.session_id != *session_id {
+                return Err(
+                    awaken_session_realization_contract::SessionRealizationControlFailure::NotFound,
+                );
+            }
+            session
+                .record_repository_publication_rejection(rejection.clone())
+                .map_err(|error| {
+                    awaken_session_realization_contract::SessionRealizationControlFailure::Invalid(
+                        error.to_string(),
+                    )
+                })?;
+        }
         self.events
             .lock()
             .unwrap()

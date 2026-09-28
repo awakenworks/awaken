@@ -28,7 +28,7 @@ use repository_publication::{
 pub use repository_publication::{
     SessionRepositoryPublicationCommand, SessionRepositoryPublicationEffect,
     SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
-    SessionRepositoryPublicationRejection,
+    SessionRepositoryPublicationRejection, SessionRepositoryPublicationRejectionReason,
 };
 pub use state::SessionCleanupOperation;
 pub(crate) use state::SessionCleanupRequestIdentity;

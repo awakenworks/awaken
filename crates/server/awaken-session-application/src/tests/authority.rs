@@ -1704,6 +1704,8 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
 /// | R7 | exact | exact | rejected replay | stale prior | E8 |
 /// | R8 | exact | exact | no | unavailable | E9 |
 /// | R9 | exact | exact | retry | exact | E10 |
+/// | R10 | exact | exact closed source | no | exact | negative unknown-remote result -> E7 |
+/// | R11 | exact | released source | exact negative replay | exact | E8 |
 #[test]
 fn profiled_archive_publishes_one_selected_repository_before_root_cleanup() {
     // Coverage rationale: the async case below remains the sole R1-R9 oracle.
@@ -1962,6 +1964,97 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         "R7 no second publication or cleanup effect"
     );
     assert!(after_rejection > before_rejection, "R6 effects executed");
+
+    // R10/R11 source closure is not remote-ref conflict or successful delivery.
+    // This composed Runtime/SQLite/control fixture proves negative admission,
+    // ordered cleanup, reopen/replay and public failure classification; the
+    // Runtime Host/provider tests own the actual physical observation.
+    runtime.reject_publication.store(false, Ordering::SeqCst);
+    runtime
+        .close_publication_source
+        .store(true, Ordering::SeqCst);
+    let mut closed_source = persisted("profiled-source-closed", false, "idle");
+    closed_source
+        .environment
+        .set_resident("profiled-source-closed-source");
+    closed_source.resources = awaken_session_state_contract::SessionResourceState::from_active(
+        repository_resources("source", "repo-1"),
+    );
+    create(repo.as_ref(), closed_source).await;
+    let mut closed_command = command.clone();
+    closed_command.session_id = "profiled-source-closed".into();
+    closed_command.lifecycle_fact.id = "profiled-source-closed:terminated".into();
+    closed_command.lifecycle_fact.object_id = "profiled-source-closed".into();
+    let before_closed = runtime.terminal_effect_order.lock().unwrap().len();
+    assert!(
+        matches!(
+            application.archive_with_repository_publication(closed_command.clone()).await,
+            Err(SessionArchiveWithRepositoryPublicationError::Rejected(ref error))
+                if error.code == "repository_publication_source_closed" && error.message.contains("unknown")
+        ),
+        "R10 truthful non-retryable source prerequisite failure"
+    );
+    let closed = repo
+        .get(&SessionId::from("profiled-source-closed"))
+        .await
+        .unwrap();
+    assert!(
+        closed.terminal_cleanup.is_completed(),
+        "R10 ordinary cleanup"
+    );
+    assert!(
+        closed
+            .terminal_cleanup
+            .repository_publication_receipt(&closed.session_id)
+            .unwrap()
+            .is_none(),
+        "R10 no success"
+    );
+    assert!(
+        closed
+            .terminal_cleanup
+            .repository_publication_rejection(&closed.session_id)
+            .unwrap()
+            .unwrap()
+            .effect_rejection
+            .is_source_closed(),
+        "R10 distinct durable cause"
+    );
+    let effects = runtime.terminal_effect_order.lock().unwrap().clone();
+    let effects = &effects[before_closed..];
+    let publication = effects
+        .iter()
+        .position(|effect| effect == "publication")
+        .unwrap();
+    let preparation = effects
+        .iter()
+        .position(|effect| effect == "cleanup:profiled-source-closed")
+        .unwrap();
+    let disposal = effects
+        .iter()
+        .position(|effect| effect == "dispose")
+        .unwrap();
+    assert!(
+        publication < preparation && preparation < disposal,
+        "R10 source outcome precedes disposal"
+    );
+    let after_closed = runtime.terminal_effect_order.lock().unwrap().len();
+    assert!(
+        matches!(
+            application.archive_with_repository_publication(closed_command).await,
+            Err(SessionArchiveWithRepositoryPublicationError::Rejected(ref error))
+                if error.code == "repository_publication_source_closed"
+        ),
+        "R11 released-source replay"
+    );
+    assert_eq!(
+        runtime.terminal_effect_order.lock().unwrap().len(),
+        after_closed,
+        "R11 no second effect"
+    );
+    runtime
+        .close_publication_source
+        .store(false, Ordering::SeqCst);
 
     // Dependency loss records no outcome and therefore cannot expose ordinary
     // root cleanup. The same frozen command is retried and then completes.

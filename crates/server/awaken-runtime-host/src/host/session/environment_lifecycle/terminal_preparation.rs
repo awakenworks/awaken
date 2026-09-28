@@ -426,6 +426,18 @@ impl SharedHost {
                     provider
                         .validate_closed_observation(&handle, observation)
                         .map_err(|error| HostError::internal(error.to_string()))?;
+                    if mode == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
+                        && matches!(
+                            observation,
+                            awaken_provisioning_contract::SandboxObservation::DefinitivelyUnavailable { .. }
+                                | awaken_provisioning_contract::SandboxObservation::Terminal { .. }
+                        )
+                    {
+                        return Ok(PreparedBoundEnvironment::closed_publication_source(
+                            handle,
+                            observation.clone(),
+                        ));
+                    }
                     return Err(HostError::unavailable_classified(
                         "session_environment_live_source_not_ready",
                         "Session Environment live source is already closed",

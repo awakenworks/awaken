@@ -607,9 +607,7 @@ impl SessionApplication {
                     .record_repository_publication_receipt(session_id, receipt),
                 awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(
                     rejection,
-                ) => session
-                    .terminal_cleanup
-                    .record_repository_publication_rejection(session_id, rejection),
+                ) => session.record_repository_publication_rejection(rejection),
             }
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
             if changed {

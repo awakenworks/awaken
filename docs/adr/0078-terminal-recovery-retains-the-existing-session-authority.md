@@ -216,3 +216,44 @@ replay with this retained owner, rejection by ordinary LiveSource, and rejection
 of nonterminal retirement. Its original cold recovery, remote-ref rejection and
 ordered cleanup cases remain in the same test. Real product acceptance still
 requires the exact consuming revision and the UI delivery evidence above.
+
+## Amendment 2026-09-28: a closed publication source is a negative outcome
+
+A Kubernetes eviction can close the exact bound source after Coding returns
+but before its Repository publication is acknowledged. Retrying a Ready-only
+publication then has no possible local progress. A transport error, missing
+identity marker, foreign incarnation, or elapsed timeout does not prove this
+condition and must not be promoted to source closure.
+
+The existing `SandboxObservation` and provider validation own physical evidence.
+For terminal Repository publication alone, a validated `Terminal` or
+`DefinitivelyUnavailable` observation returns a non-executable preparation and
+zero Git I/O. `Disposing`, `Provisioning`, incompatible evidence and observation
+errors retain their existing refusal/retry semantics. Live/checkpoint callers
+still require Ready and cannot consume this negative preparation.
+
+`SessionRepositoryPublicationRejectionReason` extends the existing negative
+sidecar with the source-binding fingerprint and closed observation. The Session
+aggregate compares that fingerprint to its retained source before the existing
+lease-checked root CAS; identical durable replay works after source release.
+The original transport CAS JSON and fingerprints are unchanged, and the sole
+`RepositoryPublicationRejection` transport type still admits only real ref
+conflicts. The existing signed Worker rejection endpoint carries both causes.
+
+The causal sequence is observation, negative outcome CAS, ordinary preparation,
+physical disposal, and Flow's existing failure/cleanup convergence. Source
+closure explicitly retains an unknown remote publication outcome: it neither
+creates a success receipt nor proves that an earlier push did not happen.
+Any later Coding stage still needs its exact accepted inputs and publication
+CAS. The failed output and immutable publication intent remain recorded.
+
+Rejected alternatives are retrying a permanently closed source indefinitely,
+inventing `RemoteRefAbsent`, weakening the Ready requirement for Git, or deleting
+the publication sidecar to bypass cleanup. No publication queue, recovery store,
+physical-stop authority, business Git-ref writer, or new Run status is added.
+
+The test design lives with the existing cases: contract closure/legacy-wire and
+foreign-source tables; a real Namespace source-loss injection preserving its
+identity marker and independent bare remote; Session/SQLite cleanup and replay;
+and signed Worker HTTP cause/lease transport. The original FPS same-data
+deployment and UI root acceptance remain required live qualification.

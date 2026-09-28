@@ -114,6 +114,18 @@ impl ManagedHost {
             )
             .await
             .map_err(to_run_error)?;
+        if let Some(observation) = prepared.publication_source_closure() {
+            self.host
+                .authorize_terminal_cleanup_lease(&command.session_id, lease)
+                .map_err(to_run_error)?;
+            let rejection = SessionRepositoryPublicationRejection::source_closed(
+                &command,
+                binding,
+                observation.clone(),
+            )
+            .map_err(|error| RunError::internal(error.to_string()))?;
+            return Ok(SessionRepositoryPublicationEffect::Rejected(rejection));
+        }
         if !prepared.permits_live_io() {
             return Err(RunError::unavailable_classified(
                 "session_repository_publication_source_not_live",

@@ -31,6 +31,27 @@ fn publication_input_is_exactly_active(
 }
 
 impl PersistedSession {
+    /// Admit negative publication evidence through the aggregate's exact source
+    /// before the sidecar mutation. Once retained, byte-identical replay remains
+    /// valid after ordinary cleanup has cleared the Environment binding.
+    pub fn record_repository_publication_rejection(
+        &mut self,
+        rejection: crate::SessionRepositoryPublicationRejection,
+    ) -> Result<bool, crate::SessionCleanupError> {
+        let durable = self
+            .terminal_cleanup
+            .repository_publication_rejection(&self.session_id)?;
+        if durable != Some(&rejection)
+            && !rejection
+                .effect_rejection
+                .matches_source_binding(self.environment.terminal_repository_publication_binding())
+        {
+            return Err(crate::SessionCleanupError::FrozenRepositoryPublicationMismatch);
+        }
+        self.terminal_cleanup
+            .record_repository_publication_rejection(&self.session_id, rejection)
+    }
+
     /// Return terminal cleanup authority only after binding any Repository
     /// publication sidecar to this aggregate's outer Session identity.
     pub fn verified_terminal_cleanup(
@@ -146,6 +167,107 @@ mod tests {
             generation: None,
             idle_since_unix_ms: None,
         };
+    }
+
+    #[test]
+    fn source_closure_matches_the_aggregate_before_admission_and_replays_after_release() {
+        // Source admission table: A9 exact command + exact source -> retain
+        // one negative outcome and expose ordinary root cleanup; A10 foreign
+        // source/missing source -> no mutation; A11 an already-recorded exact
+        // negative replays after source release -> no mutation/no new command;
+        // A12 a different closure cannot replace the retained one. This pure
+        // aggregate fixture does not assert a physical cleanup receipt.
+        let id = crate::SessionId::from("source-closure");
+        let mut pending = session(id.as_str(), SessionRevision(1));
+        let intent = repository_publication_intent();
+        install_publication_input(&mut pending, &intent);
+        install_live_publication_source(&mut pending);
+        pending
+            .archive_with_repository_publication("2026-09-28T00:00:00Z", intent)
+            .unwrap();
+        pending.freeze_terminal_cleanup_targets([], 0, 0).unwrap();
+        let command = pending
+            .terminal_cleanup
+            .publication_command(&id)
+            .unwrap()
+            .unwrap();
+        let observation =
+            awaken_provisioning_contract::SandboxObservation::DefinitivelyUnavailable {
+                physical_incarnation: None,
+            };
+        let rejection = crate::SessionRepositoryPublicationRejection::source_closed(
+            &command,
+            "resident-publication-source",
+            observation.clone(),
+        )
+        .unwrap();
+        let mut foreign = pending.clone();
+        foreign.environment.set_resident("foreign-source");
+        let before = foreign.clone();
+        assert!(
+            foreign
+                .record_repository_publication_rejection(rejection.clone())
+                .is_err(),
+            "A10 foreign source"
+        );
+        assert_eq!(foreign, before, "A10 no mutation");
+        foreign.environment = crate::SessionEnvironmentState::Unmaterialized;
+        let before = foreign.clone();
+        assert!(
+            foreign
+                .record_repository_publication_rejection(rejection.clone())
+                .is_err(),
+            "A10 missing source"
+        );
+        assert_eq!(foreign, before);
+        assert_eq!(
+            pending.record_repository_publication_rejection(rejection.clone()),
+            Ok(true),
+            "A9"
+        );
+        assert!(
+            pending
+                .terminal_cleanup
+                .publication_command(&id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            pending
+                .terminal_cleanup
+                .command_for(&id, id.as_str())
+                .is_some(),
+            "A9 root cleanup unblocked"
+        );
+        assert!(
+            pending
+                .terminal_cleanup
+                .repository_publication_receipt(&id)
+                .unwrap()
+                .is_none(),
+            "A9 no success receipt"
+        );
+        pending.environment = crate::SessionEnvironmentState::Unmaterialized;
+        let before = pending.clone();
+        assert_eq!(
+            pending.record_repository_publication_rejection(rejection),
+            Ok(false),
+            "A11"
+        );
+        assert_eq!(pending, before);
+        let other = crate::SessionRepositoryPublicationRejection::source_closed(
+            &command,
+            "foreign-source",
+            observation,
+        )
+        .unwrap();
+        assert!(
+            pending
+                .record_repository_publication_rejection(other)
+                .is_err(),
+            "A12"
+        );
+        assert_eq!(pending, before);
     }
 
     #[test]
