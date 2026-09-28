@@ -3075,6 +3075,7 @@ dependencies = [
  "awaken-session-types",
  "proptest",
  "serde",
+ "serde_json",
  "thiserror",
  "tokio",
 ]

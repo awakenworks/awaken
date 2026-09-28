@@ -1600,7 +1600,7 @@ async fn settle(
                 })? {
                 awaken_session_work_contract::SessionWorkOwnership::NotRequired => None,
                 awaken_session_work_contract::SessionWorkOwnership::Leased(lease)
-                    if lease.owner == claim.owner =>
+                    if lease.owner() == claim.owner =>
                 {
                     Some(lease)
                 }

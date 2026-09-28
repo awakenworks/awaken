@@ -1301,7 +1301,7 @@ NON_IDENTITY_COMPOSITES: dict[str, str] = {
 # *new* unstated composite identity today rather than only after the migration
 # finishes. Lower this number as witnesses are converted or recorded above;
 # never raise it.
-UNSTATED_COMPOSITE_IDENTITY_BASELINE = 52
+UNSTATED_COMPOSITE_IDENTITY_BASELINE = 51
 
 
 def _unstated_composite_identities(

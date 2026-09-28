@@ -3215,7 +3215,7 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     else {
         panic!("W3 must revive and lease the stopped Session Work");
     };
-    assert_eq!(lease.owner, "owner", "W3");
+    assert_eq!(lease.owner(), "owner", "W3");
     assert!(
         environments.awakened.lock().unwrap().contains("self-work"),
         "W3"
