@@ -37,24 +37,26 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             ),
             data_subjects: data_subjects.clone(),
             erasure_jobs: data_subjects,
-            environments: Arc::new(awaken_env_store::InMemoryEnvRegistry::new(awaken_lease_contract::system_clock())),
+            environments: Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock.clone())),
             sandbox_policies: Arc::new(
                 awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
             ),
         }),
         coordinator: Some(CoordinatorStores {
-            resources: ephemeral_resources_application(clock),
+            resources: ephemeral_resources_application(clock.clone()),
             sessions: sessions.clone(),
             application_access: Arc::new(
-                awaken_coordinator::application_access_store::ApplicationAccessStore::open_in_memory()
-                    .expect("open ephemeral application access repository"),
+                awaken_coordinator::application_access_store::ApplicationAccessStore::open_in_memory(
+                    clock.clone(),
+                )
+                .expect("open ephemeral application access repository"),
             ),
             deployments: sessions.clone(),
             memory_extractions: sessions.clone(),
             dream_process_store: sessions,
             capture_sink: captured_content.clone(),
             captured_content_eraser: captured_content,
-            environment_work: Arc::new(awaken_work_store::InMemoryWorkQueue::new(awaken_lease_contract::system_clock())),
+            environment_work: Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock.clone())),
         }),
     }
 }
@@ -138,6 +140,7 @@ pub(super) fn process_stores_for_runtime_storage(
     coordinator.application_access = Arc::new(
         awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite_for_test(
             &dir.join("sessions.db").to_string_lossy(),
+            stores.clock.clone(),
         )
         .expect("open application access under runtime storage directory"),
     );

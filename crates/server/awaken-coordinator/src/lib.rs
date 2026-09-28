@@ -1352,8 +1352,12 @@ fn mount_with_managed_over_and_models(
         None => dream_worker,
     };
     let dream_application = Arc::new(
-        awaken_dream_application::DreamApplication::with_store(dream_worker, dream_process_store)
-            .expect("load durable Dream jobs"),
+        awaken_dream_application::DreamApplication::with_store(
+            dream_worker,
+            dream_process_store,
+            worker_clock.clone(),
+        )
+        .expect("load durable Dream jobs"),
     );
     dream_application.bind_session_source(managed_state.clone());
     struct DreamModelReadiness {
@@ -1492,6 +1496,7 @@ fn mount_with_managed_over_and_models(
         host.clone(),
         session_runs.clone(),
         session_runs,
+        host.clock(),
     );
     // The Worker-facing cross-node seam: a dispatch-store-isolated Worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
@@ -1518,7 +1523,7 @@ fn mount_with_managed_over_and_models(
             terminal_observer: host.worker_memory_settlement_observer(),
             stream_sink: host.worker_stream_sink(),
             credential_deliveries,
-            clock: worker_clock,
+            clock: worker_clock.clone(),
         },
     );
     let file_content = awaken_resource_worker_http::worker_file_content_router(Arc::new(
@@ -1588,6 +1593,7 @@ fn mount_with_managed_over_and_models(
         )),
         worker_directory.clone(),
         worker_authenticator,
+        worker_clock.clone(),
     ));
     let worker_transport =
         awaken_dispatch_http::registered_worker_transport_router_with_services(
@@ -1607,9 +1613,10 @@ fn mount_with_managed_over_and_models(
     // Fleet readiness is a deployment-wide read, so it joins the
     // service-authenticated product surface rather than the Managed data
     // plane, whose beta-header gate would reject a plain fleet question.
-    let router = a2a
-        .merge(durable_ops)
-        .merge(crate::worker_fleet::router(worker_directory.clone()));
+    let router = a2a.merge(durable_ops).merge(crate::worker_fleet::router(
+        worker_directory.clone(),
+        worker_clock.clone(),
+    ));
     let router = with_local_workspace_scope(router, local_workspace);
     let worker_transport =
         with_local_workspace_scope(worker_transport, host.local_workspace().to_string());

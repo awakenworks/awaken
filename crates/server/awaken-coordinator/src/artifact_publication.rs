@@ -9,12 +9,7 @@ use awaken_resource_contract::{
 };
 use awaken_dispatch::{AnyDispatchStore, ArtifactPublicationFence, DispatchQueue};
 
-fn artifact_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
-}
+use awaken_lease_contract::WallClockExt as _;
 
 /// Decorates the canonical Resources publisher with the same exact-epoch fence
 /// used by the remote Worker endpoint. The Runtime Host therefore has one
@@ -26,6 +21,9 @@ pub struct ClaimFencedArtifactPublisher {
         OnceLock<Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>>,
     checkpoint_artifact_control:
         OnceLock<Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>>,
+    /// The Coordinator's wall clock: claim and Session lease liveness are
+    /// judged on it.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl ClaimFencedArtifactPublisher {
@@ -33,12 +31,14 @@ impl ClaimFencedArtifactPublisher {
     pub fn new(
         inner: Arc<dyn ArtifactPublisher<ArtifactPublicationFence>>,
         dispatch: Arc<AnyDispatchStore>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             inner,
             dispatch,
             terminal_preparation_control: OnceLock::new(),
             checkpoint_artifact_control: OnceLock::new(),
+            clock,
         }
     }
 
@@ -87,7 +87,7 @@ impl ClaimFencedArtifactPublisher {
                     .lock_commit_epoch(claim)
                     .await
                     .map_err(|error| ArtifactPublicationError::new(error.to_string()))?
-                    .filter(|guard| guard.is_live_at(artifact_now_ms()))
+                    .filter(|guard| guard.is_live_at(self.clock.now_ms()))
                     .ok_or_else(|| ArtifactPublicationError::Conflict {
                         detail: "dispatch claim is stale".into(),
                     })?;
@@ -151,7 +151,7 @@ impl ClaimFencedArtifactPublisher {
         &Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>,
         ArtifactPublicationError,
     > {
-        let now_unix_ms = artifact_now_ms();
+        let now_unix_ms = self.clock.now_ms();
         if !awaken_session_realization_contract::realization_lease_is_live_at(
             lease.expires_at_unix_ms,
             now_unix_ms,
@@ -311,6 +311,10 @@ fn control_publication_error(
 
 #[cfg(test)]
 mod tests {
+    /// The tests' host-clock reading, the clock their publishers use.
+    fn artifact_now_ms() -> u64 {
+        awaken_lease_contract::WallClockExt::now_ms(awaken_lease_contract::system_clock().as_ref())
+    }
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -482,7 +486,11 @@ mod tests {
         ));
         let publisher_for = |asserted_effect, current_lease| {
             let inner = Arc::new(RecordingPublisher::default());
-            let publisher = ClaimFencedArtifactPublisher::new(inner.clone(), dispatch.clone());
+            let publisher = ClaimFencedArtifactPublisher::new(
+                inner.clone(),
+                dispatch.clone(),
+                awaken_lease_contract::system_clock(),
+            );
             publisher
                 .install_session_control(Arc::new(ExactResourceControl {
                     workspace_id: "workspace".into(),
@@ -769,6 +777,7 @@ mod tests {
             let peer = ClaimFencedArtifactPublisher::new(
                 inner.clone(),
                 Arc::new(AnyDispatchStore::from_dispatch(queue as Arc<dyn Dispatch>)),
+                awaken_lease_contract::system_clock(),
             );
             let fence = ArtifactPublicationFence::Run(claim);
             let bytes = b"result".to_vec();
@@ -872,7 +881,11 @@ mod tests {
                     awaken_lease_contract::system_clock(),
                 )) as Arc<dyn Dispatch>,
             ));
-            let peer = ClaimFencedArtifactPublisher::new(inner.clone(), queue);
+            let peer = ClaimFencedArtifactPublisher::new(
+                inner.clone(),
+                queue,
+                awaken_lease_contract::system_clock(),
+            );
             if cause != "unavailable" {
                 peer.install_session_control(Arc::new(ExactResourceControl {
                     workspace_id: "workspace".into(),
