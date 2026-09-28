@@ -6,20 +6,11 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "formal/tla/LiveInbox.tla",
   "docs/adr/0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md",
   "docs/design/run-ingress-message-delivery.md",
-  "crates/runtime/awaken-runtime/src/runtime.rs",
-  "crates/runtime/awaken-runtime/src/ingress.rs",
-  "crates/runtime/awaken-runtime/tests/control.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-  "crates/server/awaken-dispatch/tests/durable_memory.rs",
+  "formal/tla/LiveInbox.tla",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-runtime/src/runtime.rs",
-  "crates/runtime/awaken-runtime/src/ingress.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''

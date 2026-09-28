@@ -1,3 +1,10 @@
+// @formal entrypoint ingress.commit_epoch_atomic_local
+// @formal entrypoint ingress.commit_epoch_atomic_remote_custom
+// @formal entrypoint remote_worker.acknowledged_projection_is_monotonic
+// @formal entrypoint remote_worker.committed_truth_is_coordinator_owned
+// @formal entrypoint remote_worker.single_live_claim_owner
+// @formal entrypoint remote_worker.stale_epoch_never_mutates_truth
+// @formal evidence session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 //! Atomic commit authority for one claimed Run.
 //!
 //! A dispatch claim and a thread commit belong to separate aggregates, so the

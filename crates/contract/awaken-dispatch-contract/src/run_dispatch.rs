@@ -1,3 +1,7 @@
+// @formal entrypoint delegation.independent_child_scheduling_lease
+// @formal entrypoint session_run.reservation_never_executes
+// @formal entrypoint worker.durable_dispatch_contains_no_plaintext_secret
+// @formal entrypoint worker.retry_preserves_pinned_binding
 //! One Run accepted into durable dispatch.
 //!
 //! [`RunDispatch`] is exactly the data a durable queue persists and replays. It

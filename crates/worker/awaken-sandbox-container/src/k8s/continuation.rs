@@ -1,3 +1,6 @@
+// @formal entrypoint resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+// @formal entrypoint sandbox_continuation.distinct_mutable_roots_share_one_retained_claim_without_aliasing
+// @formal entrypoint sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
 //! Kubernetes realization of one retained active-filesystem volume.
 
 use crate::ContainerContinuationHandle;

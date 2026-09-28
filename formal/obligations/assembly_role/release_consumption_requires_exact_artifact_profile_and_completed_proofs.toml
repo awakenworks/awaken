@@ -6,20 +6,17 @@ tcb_assumptions = [
   "external.orchestrator_correctness",
 ]
 evidence = [
-  "formal/tla/VerifiedProfileAdmission.tla",
-  "scripts/release/verification_manifest.py",
-  "crates/server/awaken-service-lifecycle/src/release_admission_main.rs",
-  "scripts/ci/formal_run_evidence.py",
-  "scripts/ci/check_product_release.py",
   ".github/workflows/release.yml",
   "deploy/images/management/Dockerfile",
-  "scripts/e2e/management_image_e2e.sh",
+  "formal/tla/VerifiedProfileAdmission.tla",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/check_product_release.py",
+  "scripts/ci/formal_run_evidence.py",
+  "scripts/e2e/management_image_e2e.sh",
+  "scripts/release/verification_manifest.py",
 ]
 production_entrypoints = [
   "scripts/release/verification_manifest.py",
-  "crates/server/awaken-service-lifecycle/src/release_admission.rs",
-  "crates/server/awaken-service-lifecycle/src/release_admission_main.rs",
 ]
 
 [[bounds]]

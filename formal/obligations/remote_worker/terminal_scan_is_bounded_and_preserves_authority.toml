@@ -3,16 +3,12 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/TerminalReconciliationScan.tla",
   "formal/tla/TerminalReconciliationScan.cfg",
-  "scripts/ci/formal_dispatch_mutations.py",
-  "crates/server/awaken-dispatch/src/reconciliation.rs",
-  "crates/server/awaken-dispatch/tests/reconciliation_scan.rs",
+  "formal/tla/TerminalReconciliationScan.tla",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/formal_dispatch_mutations.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-dispatch/src/reconciliation.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Scheduling-only model: five stable ordered Run IDs, two permanently failing prefix rows, budget two and at most one restart. Every examined row consumes the page budget; scanning preserves an opaque authority snapshot without modeling or duplicating Dispatch transitions. A temporal cursor-advance mutant and a healthy-suffix-after-wrap witness check conditional progress. Fair periodic scheduling and eventual return of reads are explicit premises. Infinite restarts, ongoing insertion, permanent I/O waits, SQL query plans, Rust refinement and external termination are outside this proof.'''

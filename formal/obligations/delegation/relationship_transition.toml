@@ -5,9 +5,7 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/RuntimeSystemProof.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

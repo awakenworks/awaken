@@ -1,3 +1,9 @@
+// @formal entrypoint ingress.commit_epoch_atomic_local
+// @formal entrypoint ingress.commit_epoch_atomic_remote_custom
+// @formal entrypoint remote_worker.committed_truth_is_coordinator_owned
+// @formal entrypoint remote_worker.execution_requires_claimed_snapshot
+// @formal entrypoint remote_worker.single_live_claim_owner
+// @formal entrypoint remote_worker.stale_epoch_never_mutates_truth
 /// Opaque backend guard which keeps a dispatch epoch stable until it is dropped.
 /// PostgreSQL stores a row-locking transaction in it; SQLite stores its shared
 /// single-process authority mutex guard. The ingress layer needs only the

@@ -1,3 +1,6 @@
+// @formal entrypoint management_http.crash_preserves_pending_audit
+// @formal entrypoint management_http.no_business_write_without_durable_audit
+// @formal entrypoint management_http.successful_write_marks_audit_committed
 //! Authenticated Control-to-Coordinator application adapters.
 //!
 //! The domain ports and their state machines remain in their authoritative

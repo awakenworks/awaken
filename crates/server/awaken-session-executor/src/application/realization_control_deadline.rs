@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
 //! Authority-derived request deadline decoration for Session realization Control.
 
 use std::sync::Arc;

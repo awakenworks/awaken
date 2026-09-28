@@ -1,3 +1,7 @@
+// @formal entrypoint session_environment.checkpoint_receipt_requires_every_immutable_generation_axis
+// @formal entrypoint session_environment.quiescence_receipt_requires_exact_operation_epoch_mcp_set_and_zero_live_effects
+// @formal entrypoint session_environment.restore_receipt_requires_exact_checkpoint_and_nonempty_binding
+// @formal entrypoint session_environment.source_disposal_requires_a_verified_checkpoint
 //! Suspend and restore transitions on the Session-owned Environment aggregate.
 //!
 //! This private module is an implementation boundary only. Durable state and

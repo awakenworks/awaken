@@ -1,3 +1,5 @@
+// @formal evidence model_operation.coverage_commit_strictly_precedes_model_entry
+// @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 //! Actual TokenReview + HTTP + reopened SQLite + independently assembled stop.
 //! The shared k3d harness owns the isolated cluster; no fake provider receipts.
 use super::*;

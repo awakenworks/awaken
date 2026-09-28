@@ -8,17 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerCredentialLiveness.tla",
-  "crates/contract/awaken-worker-contract/src/observation.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-worker-contract/src/observation.rs",
-  "crates/contract/awaken-credential-contract/src/observation_admission.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production placement kernel rejects future or expired half-open observations, the use-time credential kernel accepts only the exact Available reference, and physical-attempt admission rejects a non-current claim. Resolver I/O, clock correctness, lock/transaction serialization and external executor equivalence remain TCB assumptions.'''

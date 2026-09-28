@@ -1,3 +1,4 @@
+// @formal entrypoint environment.registration_intent_is_atomic_recoverable_and_idempotent
 //! Control-owned Environment definitions and their persistence port.
 //!
 //! An Environment is immutable-by-revision configuration: identity, metadata,

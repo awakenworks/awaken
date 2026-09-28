@@ -7,28 +7,13 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/server/awaken-worker-registry/tests/conformance.rs",
-  "formal/tla/WorkerReplacement.tla",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-  "crates/server/awaken-worker-registry/src/memory.rs",
-  "crates/server/awaken-worker-registry/src/sqlite.rs",
-  "crates/server/awaken-worker-registry/src/postgres.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-  "crates/server/awaken-worker-registry/src/schema/history_tests.rs",
   "crates/server/awaken-worker-registry/src/migrations/V0002__retain_incarnations.sql",
-  "crates/server/awaken-dispatch-http/tests/worker_registration_history_http.rs",
   "formal/tla/RemoteWorkerProtocol.tla",
   "formal/tla/RemoteWorkerProtocolRegistration.cfg",
+  "formal/tla/WorkerReplacement.tla",
   "scripts/ci/formal_worker_registration_mutations.py",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-worker-contract/src/registry.rs",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-  "crates/server/awaken-worker-registry/src/memory.rs",
-  "crates/server/awaken-worker-registry/src/sqlite.rs",
-  "crates/server/awaken-worker-registry/src/postgres.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production exact-incarnation expiry, replacement and heartbeat admission across all Worker states and u64 deadlines; Kani proves the scalar admission kernel, Loom explores the three-command mutation-lock schedules, and shared Memory/SQLite/PostgreSQL tests exercise adapter serialization. This does not prove physical stop, external termination or Dispatch retirement.'''

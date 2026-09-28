@@ -1,3 +1,5 @@
+// @formal entrypoint ingress.commit_epoch_atomic_remote_custom
+// @formal evidence session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 //! Authenticated Coordinator HTTP adapter for claim-fenced Worker commits.
 
 use std::sync::Arc;

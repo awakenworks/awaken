@@ -1,3 +1,4 @@
+// @formal entrypoint runtime.settled_step_projection_is_closed_exact_and_non_widening
 //! Protocol-neutral Run application adapter over the shared runtime host.
 
 use std::sync::Arc;

@@ -7,9 +7,7 @@ tcb_assumptions = [
 evidence = [
   "e2e/acp_awaken_tool_bridge_e2e.mjs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-executor/src/sandbox_source.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

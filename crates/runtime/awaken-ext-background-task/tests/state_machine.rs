@@ -1,3 +1,9 @@
+// @formal evidence background_task.cancellation_absorption
+// @formal evidence background_task.expiry_reclaim_advances_epoch_or_terminates
+// @formal evidence background_task.never_replay_and_attempt_exhaustion_fail_closed
+// @formal evidence background_task.remote_continuation_survives_wait_cancel_and_reclaim
+// @formal evidence background_task.single_fenced_attempt
+// @formal evidence background_task.stale_fence_never_finishes_or_heartbeats
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{

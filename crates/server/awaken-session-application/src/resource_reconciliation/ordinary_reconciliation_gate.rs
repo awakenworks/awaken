@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.terminal_session_never_reactivates
 //! Closed admission gate for ordinary Runtime Resource reconciliation.
 //!
 //! Recovery deliberately scans terminal Session roots so their cleanup can

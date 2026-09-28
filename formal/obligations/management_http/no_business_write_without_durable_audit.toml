@@ -2,23 +2,15 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
   "external.eventual_network_delivery",
 ]
 evidence = [
   "formal/tla/ManagementAuditIntent.tla",
-  "crates/control/awaken-control/src/lib.rs",
-  "crates/control/awaken-control/src/audit_tests.rs",
-  "crates/bin/awaken-cli/tests/management_persistence.rs",
-  "crates/server/awaken-coordinator/src/control_service_boundary.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/control/awaken-agent-config/src/store.rs",
-  "crates/control/awaken-control/src/lib.rs",
-  "crates/server/awaken-coordinator/src/control_service_boundary.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''AuditedConfigWrite is the common durable-begin result and owns permits_business_write. Kani exhausts Applied, Replayed and Conflict with both business-success values and proves only Applied authorizes entry; the canonical durable_management_audit middleware consumes that exact predicate before next.run, while every repository error, replay and conflict returns first.'''

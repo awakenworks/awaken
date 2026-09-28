@@ -1,3 +1,4 @@
+// @formal evidence model_binding.constructor_and_wire_share_one_admission
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, Error};

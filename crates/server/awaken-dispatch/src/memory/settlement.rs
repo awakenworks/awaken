@@ -1,3 +1,4 @@
+// @formal entrypoint ingress.pending_input_exactly_once
 //! Atomic dispatch and pending-input settlement for the in-memory adapter.
 //!
 //! This stays inside the Memory store's single authority mutex and consumes the

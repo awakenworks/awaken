@@ -1,3 +1,4 @@
+// @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 //! Pod-bound identity adapter for the existing Worker transport ports.
 //!
 //! TokenReview (not decoded JWT claims) supplies the Pod name and immutable UID.

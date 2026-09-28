@@ -3,24 +3,11 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/SessionRealizationMutex.tla",
-  "crates/contract/awaken-session-realization-contract/src/session_realization.rs",
-  "crates/contract/awaken-session-realization-contract/src/session_realization/model.rs",
-  "crates/server/awaken-session-executor/src/session_slot.rs",
-  "crates/server/awaken-session-executor/src/host/session/environment_realization.rs",
-  "crates/server/awaken-session-application/src/realization/control.rs",
-  "crates/server/awaken-session-application/src/tests/realization.rs",
   "e2e/managed_mcp_hot_swap_e2e.ts",
   "formal/VERIFICATION_BOUNDARIES.md",
+  "formal/tla/SessionRealizationMutex.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-realization-contract/src/session_realization.rs",
-  "crates/contract/awaken-session-realization-contract/src/session_realization/model.rs",
-  "crates/contract/awaken-session-resource-contract/src/realization_lease.rs",
-  "crates/server/awaken-session-executor/src/session_slot.rs",
-  "crates/server/awaken-session-executor/src/host/session/environment_realization.rs",
-  "crates/server/awaken-session-executor/src/application.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

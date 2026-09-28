@@ -5,19 +5,13 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "formal/tla/MemoryParticipantOwnership.tla",
-  "formal/tla/MemoryParticipantOwnership.cfg",
-  "scripts/ci/formal_memory_mutations.py",
   "docs/adr/0053-memory-store-fuse-mount.md",
-  "crates/worker/awaken-sandbox-local/src/namespace/memory_mount.rs",
-  "crates/worker/awaken-sandbox-local/src/memory_mount_owner/tests.rs",
-  "crates/worker/awaken-sandbox-local/src/memory_mount_owner/tests/provider_tests.rs",
+  "formal/tla/MemoryParticipantOwnership.cfg",
+  "formal/tla/MemoryParticipantOwnership.tla",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/formal_memory_mutations.py",
 ]
-production_entrypoints = [
-  "crates/worker/awaken-sandbox-local/src/memory_mount_owner.rs",
-  "crates/worker/awaken-sandbox-local/src/namespace/memory_mount.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''One live Provider root, one Copy-or-FUSE participant and two callers. Twelve semantic mutants and six witnesses check cancellation/response/pruning retention, typed no-effect versus unknown outcomes, failed unknown recovery, no duplicate mount on resume/reuse, exclusive borrowing, fresh admission/root checks, Copy baseline preservation and settled acknowledgement. The TLA+ result is independent bounded cross-evidence and is not claimed as universal Rust refinement.'''

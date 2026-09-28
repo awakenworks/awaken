@@ -5,16 +5,10 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "formal/tla/ResourceDispatch.tla",
   "formal/tla/ResourceDispatch.cfg",
-  "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
-  "crates/server/awaken-session-executor/src/host/worker_resolver/tests.rs",
-  "crates/server/awaken-session-executor/src/host/tests.rs",
+  "formal/tla/ResourceDispatch.tla",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
-  "crates/server/awaken-session-executor/src/managed_resource_projection/transition.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhaustively checks the production live-projection classifier across generation equality and every input/Skill presence combination. A changed explicit empty manifest selects revocation, removes the previous projection, and selects no desired activation; unchanged generations retain and changed nonempty generations replace.'''

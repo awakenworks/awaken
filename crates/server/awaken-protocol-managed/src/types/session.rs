@@ -1,3 +1,5 @@
+// @formal entrypoint session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+// @formal evidence model_operation.ordinal_never_wraps_or_reuses_a_coordinate
 //! The Managed Agents wire transfer objects (anti-corruption boundary).
 //!
 //! Pure serde types, each mapping 1:1 onto the official SDK's beta

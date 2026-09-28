@@ -1,3 +1,4 @@
+// @formal entrypoint acp.tool_export_requires_claim_execution_environment
 //! Neutral Host port for exporting a Session-owned tool to an ACP workload.
 //!
 //! The Host owns when a tool is projected and how long it lives. A higher

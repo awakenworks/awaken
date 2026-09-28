@@ -1,3 +1,5 @@
+// @formal evidence store_history.recovery_preserves_committed_time_and_receipt_identity
+// @formal evidence thread_state.atomic_commit_and_replay
 //! Invariant 2 for the durable backend (ADR-0039 D4): a fresh instance over the
 //! same directory replays committed facts and resumes; a torn final line is
 //! discarded so recovery keeps exactly the committed prefix.

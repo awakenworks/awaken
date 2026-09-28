@@ -8,14 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerCredentialLiveness.tla",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-  "crates/bin/awaken-worker/src/lib.rs",
 ]
-production_entrypoints = [
-  "crates/bin/awaken-worker/src/credential_liveness.rs",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-  "crates/bin/awaken-worker/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production batch-coordinate kernel is exhaustive over u64 generation, observation time and TTL: it cannot wrap, advances exactly once, and gives both evidence families one trusted exclusive deadline. The cache publishes one complete ObservationBatch under one std RwLock write and heartbeat consumes one cloned snapshot; RwLock correctness, Tokio scheduling and host probe I/O remain TCB assumptions and are covered by the adjacent concurrent decision-table tests rather than the scalar Kani proof.'''

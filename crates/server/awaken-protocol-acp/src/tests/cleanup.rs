@@ -1,3 +1,5 @@
+// @formal evidence acp.process_cleanup_requires_observed_exit_and_retained_owner
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! Exit evidence remains independent of terminal protocol bytes.
 use crate::*;
 use pc::ProcessHandle as _;

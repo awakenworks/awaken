@@ -6,24 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RunIngress.tla",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/sqlite/release_claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/tests/harness/mod.rs",
-  "crates/server/awaken-dispatch/tests/durable_memory.rs",
-  "crates/server/awaken-dispatch/tests/sqlite_dispatch.rs",
-  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/sqlite/release_claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts the production DispatchTransition state, full u64 current/candidate epoch and attempt-count domains, owner equality, and all four physical-attempt slot classes without assumptions. Only an exact current Leased claim can transition; every applied Pending or Recovering result carries the unchanged retry budget.'''

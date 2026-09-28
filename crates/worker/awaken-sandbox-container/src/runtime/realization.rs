@@ -1,3 +1,5 @@
+// @formal entrypoint resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+// @formal evidence sandbox.effect_fence_succession_is_renewal_or_epoch_advance
 //! The Rebuild gate distinguishes its retained source from its own new result.
 //! Fingerprints, effect monotonicity and physical identity remain checked by
 //! the shared existing-realization decision before any adapter effect.

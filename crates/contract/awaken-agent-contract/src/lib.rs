@@ -1,3 +1,4 @@
+// @formal entrypoint tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
 //! Agent-domain contract for runtime truth, commits, facts, and neutral events.
 
 pub mod acp;

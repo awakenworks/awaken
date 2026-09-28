@@ -1,3 +1,5 @@
+// @formal entrypoint ingress.epoch_reclaim
+// @formal entrypoint remote_worker.maintenance_scheduler_respects_adapter_ownership
 //! The autonomous dispatch daemon.
 //!
 //! [`DispatchService`] turns the [`DispatchWorker`] into a long-running service:

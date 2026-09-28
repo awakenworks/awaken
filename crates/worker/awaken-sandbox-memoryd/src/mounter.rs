@@ -1,3 +1,7 @@
+// @formal evidence memory.cas_has_one_winner_per_generation
+// @formal evidence memory.idempotent_write_does_not_advance_generation
+// @formal evidence memory.stale_cas_never_clobbers_live_content
+// @formal evidence memory.stale_conditional_delete_never_removes_live_head
 //! The provider-facing memory-store realization (ADR-0053, item 1).
 //!
 //! [`MemoryStoreMounter`] implements the neutral [`MemoryMounter`] port a sandbox

@@ -1,3 +1,4 @@
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
 //! The one process-local participant barrier of a physical attempt.
 //!
 //! Tokio owns task counting/drain; Dispatch owns durable occupancy. This

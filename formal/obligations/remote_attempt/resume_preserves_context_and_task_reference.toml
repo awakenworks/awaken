@@ -8,13 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteAttempt.tla",
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/lib.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production task-reference admission kernel over complete endpoint/task/context fields and required identity equality. Resume first replaces Accepted A with Prepared B carrying A only as a predecessor coordinate; accepting B permits a new non-empty task id but requires exact equality with A's committed context. Kani proves only the closed admission predicate; operation hashing, JSON decoding, remote protocol honesty, transport delivery, commit durability and external orchestration remain executable or external evidence.'''

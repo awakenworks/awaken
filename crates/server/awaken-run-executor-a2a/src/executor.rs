@@ -1,3 +1,12 @@
+// @formal entrypoint delegation.remote_cancel_redelivery
+// @formal entrypoint remote_attempt.cancel_addresses_pinned_task
+// @formal entrypoint remote_attempt.committed_task_is_endpoint_pinned
+// @formal entrypoint remote_attempt.endpoint_mismatch_fails_closed
+// @formal entrypoint remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
+// @formal entrypoint remote_attempt.recovery_reattaches_without_resending
+// @formal entrypoint remote_attempt.replay_uses_stable_message_identity
+// @formal entrypoint remote_attempt.resume_preserves_context_and_task_reference
+// @formal entrypoint session.legacy_derived_context_remains_durable_but_is_hidden_from_new_model_requests
 //! Execution of one publication-pinned remote A2A attempt.
 
 use super::*;

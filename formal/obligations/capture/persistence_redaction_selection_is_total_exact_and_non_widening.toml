@@ -4,13 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.telemetry_delivery_and_retention",
 ]
-evidence = [
-  "crates/server/awaken-session-executor/src/application.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-session-executor/src/redact.rs",
-  "crates/server/awaken-session-executor/src/application.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

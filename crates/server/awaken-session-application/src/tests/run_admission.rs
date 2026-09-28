@@ -1,3 +1,7 @@
+// @formal evidence executable_projection.failed_refresh_never_enters_handler
+// @formal evidence session_event_batch.run_reservation_precedes_distinct_activity_receipt
+// @formal evidence session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+// @formal evidence session_run.reservation_precedes_activity
 use super::*;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_execution_contract::{

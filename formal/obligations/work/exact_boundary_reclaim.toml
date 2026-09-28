@@ -6,15 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkQueue.tla",
-  "crates/stores/awaken-work-store/tests/work_queue_conformance.rs",
-  "crates/stores/awaken-work-store/src/lib.rs",
-  "crates/stores/awaken-work-store/src/session_access.rs",
 ]
-production_entrypoints = [
-  "crates/stores/awaken-work-store/src/lib.rs",
-  "crates/stores/awaken-work-store/src/schema.rs",
-  "crates/stores/awaken-work-store/src/session_access.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani proves the actual shared reclaim_cutoff over all u64 times and Option<u64> ages: absent or age greater than now gives None; otherwise the exact nonnegative difference is clamped to i64::MAX, preserving Some(0) at equality. An independent i128 oracle, 72 native boundary rows, and one four-rule table executed by SQLite and PostgreSQL cross-check it.'''

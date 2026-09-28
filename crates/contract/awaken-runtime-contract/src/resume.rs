@@ -1,3 +1,4 @@
+// @formal entrypoint tool_result.only_matching_call_is_accepted
 //! Resume command and the shared `ResumeValidator`.
 //!
 //! A awaiting run resumes only through a `ResumeCommand` that the runtime validates

@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! Independent observation of one non-restarting, private Pod process domain.
 //!
 //! This evidence covers local processes only. It does not discharge a Dispatch

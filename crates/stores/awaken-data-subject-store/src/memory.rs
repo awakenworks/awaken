@@ -1,3 +1,5 @@
+// @formal entrypoint data_subject.stale_writer_never_applies
+// @formal evidence erasure.concurrent_replicas_have_one_checkpoint_winner
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 

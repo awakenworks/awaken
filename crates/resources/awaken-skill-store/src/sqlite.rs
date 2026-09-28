@@ -1,3 +1,4 @@
+// @formal evidence skill.pinned_version_survives_retirement
 //! SQLite [`SkillStore`] over the crate's `skill_store` migration scope.
 
 use rusqlite::{Connection, OptionalExtension, params};

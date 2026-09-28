@@ -6,12 +6,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/LiveInbox.tla",
-  "crates/runtime/awaken-runtime/tests/live_inbox.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/boundary.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''

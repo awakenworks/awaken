@@ -1,3 +1,4 @@
+// @formal entrypoint delegation.independent_child_scheduling_lease
 //! Durable dispatch construction for a child Run.
 //!
 //! A delegated child is admitted to the same queue as a root Run. This module

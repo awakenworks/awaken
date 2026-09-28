@@ -1,3 +1,5 @@
+// @formal entrypoint acp.prompt_is_never_sent_before_bounded_handshake_completion
+// @formal entrypoint acp.session_load_preserves_the_exact_mcp_projection
 //! The official-ACP JSON-RPC 2.0 client driver (`real-acp` feature).
 //!
 //! This is the production wire behind [`crate::Codec::Acp`]: it speaks the real

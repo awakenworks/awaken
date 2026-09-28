@@ -1,3 +1,5 @@
+// @formal evidence model_operation.coverage_commit_strictly_precedes_model_entry
+// @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 use super::*;
 use awaken_dispatch::ControlDispatchQueue;
 mod live;

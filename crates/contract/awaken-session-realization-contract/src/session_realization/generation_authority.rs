@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.generation_authority_requires_every_immutable_axis
 //! Authority of one exact MCP generation fence across lease renewal.
 //!
 //! Split from the realization control flow: this module owns only the

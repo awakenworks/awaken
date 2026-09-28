@@ -3,19 +3,12 @@ proof_grade = "production_kernel_proved"
 status = "model_linked"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/SessionEnvironmentProjection.tla",
-  "formal/tla/SessionEnvironmentProjection.cfg",
-  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/tests.rs",
-  "formal/tla/SessionEnvironmentConvergence.cfg",
   "formal/runtime-refinement-manifest.json",
-  "crates/server/awaken-session-executor/src/host/tests/projection_convergence.rs",
-  "crates/server/awaken-session-executor/src/application.rs",
+  "formal/tla/SessionEnvironmentConvergence.cfg",
+  "formal/tla/SessionEnvironmentProjection.cfg",
+  "formal/tla/SessionEnvironmentProjection.tla",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",
-  "crates/server/awaken-session-executor/src/application.rs",
-  "crates/server/awaken-session-executor/src/session_slot/projection_receipt.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production closed identity reducers exhaust effect, binding, immutable generation, source-Adoption versus committed-Candidate origin decisions. Source receipt compatibility permits the next Adopt; committed receipt replay stays exact. Both publication and retention consume this reducer. Typed legacy upgrade, handle parsing, lifecycle locking and physical provider truth remain adapter/runtime TCB; inline Rust tables cover source mapping and SQLite dispatch fencing.'''

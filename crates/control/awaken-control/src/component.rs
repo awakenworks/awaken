@@ -1,3 +1,9 @@
+// @formal entrypoint credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+// @formal entrypoint credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+// @formal entrypoint credential.managed_rollout_failure_or_busy_session_remains_pending
+// @formal entrypoint credential_inventory.committed_material_is_preserved
+// @formal entrypoint credential_inventory.orphans_are_reported_and_retained_without_an_atomic_claim
+// @formal entrypoint credential_inventory.pending_intent_material_is_preserved
 //! Canonical Control application component assembly.
 //!
 //! Process composition supplies concrete adapters through Control-owned ports.

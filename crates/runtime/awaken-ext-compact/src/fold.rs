@@ -1,3 +1,5 @@
+// @formal entrypoint compaction.fold_preserves_suffix
+// @formal entrypoint compaction.trigger_is_total
 //! The fold decision: which prefix of a conversation to summarize.
 //!
 //! Pure policy — no messages, no model. Given the publication-owned trigger

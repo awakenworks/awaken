@@ -1,3 +1,4 @@
+// @formal entrypoint mcp.notification_admission_is_exact_and_unknown_fails_closed
 //! Routes server notifications to typed sinks.
 //!
 //! A single background task drains the [`JsonRpcPeer`](crate::jsonrpc::JsonRpcPeer)

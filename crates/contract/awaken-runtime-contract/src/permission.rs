@@ -1,3 +1,4 @@
+// @formal entrypoint permission.runtime_capability_and_verdict_projection_never_widens_authority
 //! Permission policy and the tool gate.
 //!
 //! Permission is the *only* authorization path (permission-policy-axis.md,

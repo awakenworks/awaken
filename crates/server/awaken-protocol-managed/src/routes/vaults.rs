@@ -1,3 +1,10 @@
+// @formal entrypoint credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
+// @formal entrypoint credential.managed_creation_begin_rejects_every_published_source_or_child_identity
+// @formal entrypoint credential.managed_creation_pair_requires_exact_workspace_source_and_initial_lifecycle
+// @formal entrypoint credential.managed_vault_child_admission_requires_active_parent_capacity_and_unique_key
+// @formal entrypoint credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
+// @formal entrypoint credential.managed_vault_replacement_rejects_stale_and_non_successor_revisions
+// @formal entrypoint credential_envelope.issuance_requires_exact_claim
 //! The Managed Agents **vault / credential** front door (ADR-0043).
 //!
 //! These are the public `/v1/vaults...` routes the official `@anthropic-ai/sdk`

@@ -3,17 +3,10 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/WorkerAuthorityEvidence.tla",
   "formal/tla/WorkerAuthorityEvidence.cfg",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-  "crates/bin/awaken-worker/src/lib.rs",
-  "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs",
+  "formal/tla/WorkerAuthorityEvidence.tla",
 ]
-production_entrypoints = [
-  "crates/bin/awaken-worker/src/lifecycle/environment_evidence.rs",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-  "crates/bin/awaken-worker/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The Worker lifecycle now consumes one private production decision over the full u128 proof-age and proof-window domains and every due, proven, lost and unknown observation class. Kani proves that an at-or-beyond-window observation always closes and that refresh is possible only for a proven observation still inside the prior window. Both initial pool admission and the recurring provider monitor use this same boundary; a successful recurring probe anchors the next proof at request start.'''

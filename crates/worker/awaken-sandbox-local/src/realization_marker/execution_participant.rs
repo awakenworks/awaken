@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Process participation in the one filesystem realization lifecycle.
 //! No persisted PID is ever used as signal authority. The same lifecycle lock
 //! serializes pre-GO publication against cold adoption, snapshot and deletion.

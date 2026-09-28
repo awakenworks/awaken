@@ -6,17 +6,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/WorkerDrain.tla",
   "formal/tla/WorkerDrain.cfg",
-  "crates/bin/awaken-worker/src/lib.rs",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-  "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs",
-  "crates/bin/awaken-worker/tests/support/mod.rs",
+  "formal/tla/WorkerDrain.tla",
 ]
-production_entrypoints = [
-  "crates/server/awaken-dispatch/src/pool.rs",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The canonical AdmissionState transition mints the private PoolDrainFence only after selecting the absorbing Draining state; Kani exhausts every closed state and command. SharedHost propagates that token without reconstructing it, and WorkerSupervisor's only Registry publication method requires and consumes it. The actual blocked-response trace checks local readiness closure and a stable claim-request count while the Registry response remains pending. This proves the production local prerequisite, not the remote mutation itself: Tokio RwLock behavior, HTTP request delivery/decoding, Registry transaction durability, acknowledgement authenticity and process survival between local fence and remote commit remain executable or TCB evidence.'''

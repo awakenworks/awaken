@@ -1,3 +1,5 @@
+// @formal evidence session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
+// @formal evidence session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
 // Dispatch single-writer and bounded Session-child conformance rules. Included
 // at crate root so the shared public conformance API retains its original paths.
 async fn settle_done(

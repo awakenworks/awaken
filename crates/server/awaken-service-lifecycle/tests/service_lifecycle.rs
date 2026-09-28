@@ -1,3 +1,6 @@
+// @formal evidence service_lifecycle.concurrent_shutdown_waits_for_active_drain
+// @formal evidence service_lifecycle.return_requires_all_tasks_stopped_or_aborted
+// @formal evidence service_lifecycle.shutdown_fences_task_registration
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;

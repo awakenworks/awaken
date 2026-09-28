@@ -1,3 +1,4 @@
+// @formal entrypoint memory_invalidation.listener_cleanup_is_owned_and_joined
 //! The fuser-backed write-through memory filesystem (ADR-0053, D2/D3).
 //!
 //! A faithful port of awaken-next's `memoryd` FUSE, over an in-process

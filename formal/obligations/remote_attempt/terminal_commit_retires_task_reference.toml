@@ -7,15 +7,10 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "formal/tla/RemoteAttempt.tla",
-  "crates/server/awaken-run-executor-a2a/src/lib.rs",
-  "crates/server/awaken-run-executor-a2a/src/run_commit.rs",
   "e2e/remote_attempt_lifecycle_e2e.ts",
+  "formal/tla/RemoteAttempt.tla",
 ]
-production_entrypoints = [
-  "crates/server/awaken-run-executor-a2a/src/run_commit.rs",
-  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The exact no-input production command passed by every A2A finish_terminal call: one Run-scoped Disjoint Remove of the sole __a2a_task operation cell in the same ThreadCommit as Ended. Commit-store atomicity and durable readback remain executable backend evidence; an uncommitted failure is not claimed terminal.'''

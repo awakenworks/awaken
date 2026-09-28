@@ -1,3 +1,5 @@
+// @formal evidence sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::super::workdir_helper_tests::{TeardownProbe, workdir_spec};
 use super::super::{LocalProvider, pc};
 use pc::Sandbox as _;

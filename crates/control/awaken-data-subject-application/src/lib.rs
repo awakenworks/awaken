@@ -1,3 +1,14 @@
+// @formal entrypoint consent.any_withdrawal_vetoes_full_capture
+// @formal entrypoint consent.erasure_withdrawal_is_absorbing
+// @formal entrypoint consent.upsert_retains_one_purpose_row
+// @formal entrypoint data_subject.revision_is_monotonic
+// @formal entrypoint data_subject.revision_is_strict_or_exhausted
+// @formal entrypoint data_subject.stale_writer_never_applies
+// @formal entrypoint erasure.accountability_stamp_follows_all_targets
+// @formal entrypoint erasure.checkpoint_never_forgets_completed_targets
+// @formal entrypoint erasure.completion_requires_accountability_stamp
+// @formal entrypoint erasure.concurrent_replicas_have_one_checkpoint_winner
+// @formal entrypoint erasure.each_target_is_counted_once
 //! The **data-subject application** (ADR-0050): the party a run/request is
 //! attributed to, its per-purpose consent grants, and the resolver that answers
 //! the consent ceiling and executes erasure.

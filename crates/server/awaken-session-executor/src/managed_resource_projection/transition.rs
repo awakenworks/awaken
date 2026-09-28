@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.explicit_empty_manifest_revokes_runtime_projection
 //! Finite decision kernel for one aggregate-authored live Resource transition.
 //!
 //! The parent module remains the sole physical executor. This module owns no

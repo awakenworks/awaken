@@ -5,26 +5,8 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/SessionStartProtocol.tla",
   "formal/tla/SessionStartProtocolReachability.cfg",
-  "crates/server/awaken-session-application/src/creation.rs",
-  "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/contract/awaken-session-event-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/coordination.rs",
-  "crates/server/awaken-session-application/src/tests/event_batches.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/creation.rs",
-  "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/server/awaken-session-application/src/activity.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/contract/awaken-session-event-contract/src/lib.rs",
-  "crates/contract/awaken-session-event-contract/src/dispatch_settlement.rs",
-  "crates/server/awaken-session-application/src/coordination.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''

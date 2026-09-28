@@ -1,3 +1,6 @@
+// @formal evidence session_environment.closed_revoked_recovery_consumes_only_exact_unprotected_owner
+// @formal evidence session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 // awaken-file-limit-ceiling: 4256 (legacy oversized test file: split, never grow)
 use super::state::ProjectedEnvironmentOwner;
 use super::*;

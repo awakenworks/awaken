@@ -1,3 +1,6 @@
+// @formal entrypoint credential.worker_plaintext_holder_projection_is_exact_and_non_widening
+// @formal entrypoint credential_envelope.issuance_requires_exact_claim
+// @formal entrypoint environment.cloud_native_credential_custody_selection_is_exact
 use super::{
     CredentialRealizationSelection, credential_realization_selection,
     durable_material_source_is_reference_only, project_worker_plaintext_holder,

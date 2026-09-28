@@ -8,12 +8,8 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/ServiceLifecycle.tla",
   "formal/tla/ServiceLifecycleProof.tla",
-  "crates/server/awaken-service-lifecycle/src/lib.rs",
-  "crates/server/awaken-service-lifecycle/tests/service_lifecycle.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-service-lifecycle/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The linked unbounded TLAPS theorem permits return only after the abstract drain set is empty; its Timeout action classifies the selected task as stopped. This remains an abstract theorem rather than Rust or Tokio refinement.'''

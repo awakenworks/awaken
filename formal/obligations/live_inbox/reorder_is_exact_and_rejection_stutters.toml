@@ -6,9 +6,7 @@ evidence = [
   "formal/tla/LiveInbox.tla",
   "formal/tla/LiveInboxProof.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

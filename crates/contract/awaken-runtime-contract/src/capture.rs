@@ -1,3 +1,4 @@
+// @formal entrypoint capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
 //! Content-capture level and the resolved privacy primitive (ADR-0050).
 //!
 //! Telemetry/eval splits into two data classes: **structure** (span tree,

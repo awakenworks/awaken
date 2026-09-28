@@ -1,3 +1,4 @@
+// @formal entrypoint work.lease_authority_snapshot_and_owner_mutations_are_atomic
 //! Process-local lease and poll-liveness bookkeeping shared by WorkQueue backends.
 //!
 //! Durable backends keep lease ownership and expiry in database rows; they use this

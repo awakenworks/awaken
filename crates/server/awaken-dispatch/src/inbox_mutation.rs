@@ -1,3 +1,4 @@
+// @formal entrypoint ingress.pending_mutation_plan_requires_exact_revision_and_nonwrapping_edit
 //! One pending-input CAS plan, applied by each adapter inside its existing critical section.
 
 use crate::CasOutcome;

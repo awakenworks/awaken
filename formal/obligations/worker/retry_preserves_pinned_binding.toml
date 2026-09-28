@@ -6,21 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerReplacement.tla",
-  "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/operations_claims.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/dispatch.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The linked bounded TLA+ model checks that retries retain the dispatch-pinned version and candidate sequence. The named Kani harness exhausts every DispatchState, all four exact-claim modes, the cancellation bit, and every u64 lease epoch while an arbitrary four-axis binding witness passes through the private generic production claim kernel. Memory, SQLite, and PostgreSQL all call that kernel with the persisted RunDispatch; the shared conformance rule exercises the exact credential, provider, route, primary, and ordered fallback projection across fresh claim and expired-lease reclaim. Rust generic move semantics, serialization correctness, transactional adapter persistence, and database execution remain TCB.'''

@@ -1,3 +1,12 @@
+// @formal evidence remote_worker.maintenance_scheduler_respects_adapter_ownership
+// @formal evidence run_ingress.pool_retry_gate_admits_one_probe_and_uses_bounded_monotonic_backoff
+// @formal evidence run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
+// @formal evidence run_ingress.request_local_resolution_retry_honors_persisted_deadline
+// @formal evidence session_execution.one_physical_attempt_per_thread
+// @formal evidence tool.session_thread_composition
+// @formal evidence worker_drain.closed_generation_is_absorbing
+// @formal evidence worker_drain.no_claim_after_acknowledgement
+// @formal evidence worker_drain.no_claim_attempt_after_registry_drain
 // awaken-file-limit-ceiling: 4500 (legacy oversized test file: split, never grow)
 //! The process-level dispatch pool (O2) over the in-memory store, and its
 //! no-loss guarantees (O5).

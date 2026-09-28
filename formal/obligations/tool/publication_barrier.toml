@@ -6,18 +6,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/RuntimeSystemProof.tla",
   "formal/runtime-refinement-manifest.json",
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
-  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
-  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
-  "crates/runtime/awaken-runtime/tests/permission.rs",
+  "formal/tla/RuntimeSystemProof.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
-  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The sole ToolBatch owner exposes its borrowed ordered publication view only in Finalized. ToolBatch::finalize rejects any nonterminal call, and persisted Finalized batches pass the same completeness invariant during typed deserialization.'''

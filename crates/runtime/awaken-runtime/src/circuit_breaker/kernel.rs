@@ -1,3 +1,6 @@
+// @formal entrypoint circuit.abandoned_probe_reopens
+// @formal entrypoint circuit.half_open_probe_capacity
+// @formal entrypoint circuit.probe_generation_fencing
 //! The circuit's only transition authority. The enclosing adapter owns the
 //! mutex, model map, clock observation and metrics, but no state decisions.
 

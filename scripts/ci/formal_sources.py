@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 # Git exports these to a hook. They name the repository being committed, not
@@ -127,3 +128,42 @@ def source_text(root: Path, pattern: str, containing: tuple[str, ...] = ()) -> d
     if environment is None:
         return _worktree_text(root, pattern, containing)
     return _staged_text(root, pattern, containing, environment)
+
+
+def matching_lines(root: Path, needle: str, accept: Callable[[str], object]) -> list[tuple[str, int, str]]:
+    """(path, 1-based line, text) of every line holding ``needle`` in an accepted file.
+
+    ``accept`` decides by repository-relative path, so the caller's own rule is
+    the scope and no path list is restated here. One ``git grep --cached`` over
+    the index in a repository; a walk of the tree on disk otherwise (following
+    links, as a fixture tree links the repository it copies from). Consumer:
+    the file-head anchor scan, which needs only anchor lines and their numbers.
+    """
+
+    environment = repository_environment(root)
+    found: list[tuple[str, int, str]] = []
+    if environment is None:
+        for directory, directories, names in os.walk(root, followlinks=True):
+            directories[:] = sorted(name for name in directories if not name.startswith("."))
+            for name in sorted(names):
+                path = Path(directory) / name
+                relative = path.relative_to(root).as_posix()
+                if not accept(relative):
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, OSError):
+                    continue
+                found += [
+                    (relative, number, line)
+                    for number, line in enumerate(text.split("\n"), 1)
+                    if needle in line
+                ]
+        return sorted(found)
+    output = _git_grep(root, environment, ["-z", "-n", "--fixed-strings", "-e", needle])
+    for record in output.decode("utf-8").split("\n")[:-1]:
+        path, _, rest = record.partition("\0")
+        number, _, text = rest.partition("\0")
+        if accept(path):
+            found.append((path, int(number), text))
+    return sorted(found)

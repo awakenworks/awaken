@@ -1,3 +1,5 @@
+// @formal entrypoint resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+// @formal entrypoint sandbox.allowlist_claim_requires_runtime_and_issuer_evidence
 //! Dependency-inverted container runtime port and its shared value types.
 
 use async_trait::async_trait;

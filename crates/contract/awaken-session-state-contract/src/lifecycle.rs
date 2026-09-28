@@ -1,3 +1,4 @@
+// @formal entrypoint webhook.outbox_fact_identity_is_stable
 //! Managed lifecycle facts and the Session outbox notification port (ADR-0048).
 //! The generic fact is shared by Session, Deployment, and DeploymentRun aggregates;
 //! The notifier carries no fact payload: the transactional outbox is the only

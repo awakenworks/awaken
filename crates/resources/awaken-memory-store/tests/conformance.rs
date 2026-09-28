@@ -1,3 +1,10 @@
+// @formal evidence memory.absent_conditional_delete_is_idempotent
+// @formal evidence memory.cas_has_one_winner_per_generation
+// @formal evidence memory.idempotent_write_does_not_advance_generation
+// @formal evidence memory.matched_conditional_delete_removes_exact_head
+// @formal evidence memory.rename_replace_preserves_source_identity
+// @formal evidence memory.stale_cas_never_clobbers_live_content
+// @formal evidence memory.stale_conditional_delete_never_removes_live_head
 //! Backend-generic conformance for the path-addressed `MemoryRepository` port (ADR-0053).
 //! The cross-node CAS backend (`PostgresMemoryRepository`) keeps the same POSIX-replace and
 //! compare-and-swap semantics as the in-process backends.

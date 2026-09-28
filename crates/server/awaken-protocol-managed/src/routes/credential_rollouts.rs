@@ -1,3 +1,4 @@
+// @formal entrypoint credential.managed_rollout_abstract_ack_requires_every_target_adoption
 //! Private Control→Coordinator delivery of durable Vault rollout events.
 
 use std::sync::Arc;

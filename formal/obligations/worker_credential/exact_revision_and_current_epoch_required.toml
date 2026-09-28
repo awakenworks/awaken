@@ -8,15 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerCredentialLiveness.tla",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-credential-contract/src/observation_admission.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production use-time credential decision covers all closed observation states plus exact-reference equality, while the physical-attempt reducer admits only a current durable claim and an empty or exact slot. Resolver I/O and durable store serialization remain TCB assumptions.'''

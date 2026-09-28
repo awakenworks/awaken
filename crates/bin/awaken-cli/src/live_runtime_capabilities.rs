@@ -1,3 +1,4 @@
+// @formal entrypoint worker.acp_capability_is_detected_only_after_a_verified_handshake
 use std::sync::Arc;
 
 /// Project the one executable ACP catalog into the management read model. This

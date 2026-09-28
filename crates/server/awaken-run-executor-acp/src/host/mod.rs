@@ -1,3 +1,5 @@
+// @formal entrypoint worker_credential.host_observation_projection_is_backend_scoped
+// @formal entrypoint worker_credential.local_binding_batch_is_atomic
 //! Host-side ACP preparation and liveness adapters. No Control repository or secret store.
 
 #[cfg(test)]

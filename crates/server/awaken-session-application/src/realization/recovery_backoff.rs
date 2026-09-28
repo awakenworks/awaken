@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
 //! Retry cadence for the existing Session realization recovery cycle.
 
 pub(super) fn session_recovery_delay(failure_streak: u32) -> std::time::Duration {

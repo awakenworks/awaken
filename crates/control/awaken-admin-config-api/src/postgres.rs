@@ -1,3 +1,4 @@
+// @formal entrypoint agent_inputs.rejected_revision_does_not_mutate
 //! Postgres adapter (feature `postgres`, ADR-0043) for the admin-plane
 //! aggregates, over the crate's own `admin` migration scope ([`admin_bundle`]):
 //! one [`PostgresAdminStore`] serves the same three sync store ports the sqlite

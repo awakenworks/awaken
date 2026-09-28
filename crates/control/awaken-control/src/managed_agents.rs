@@ -1,3 +1,4 @@
+// @formal entrypoint config.publication_revision_is_scoped_by_execution_target_and_exact_replay
 //! ACL between the Managed Agent wire API and the durable configuration plane.
 //!
 //! This adapter owns only representation mapping and lifecycle orchestration. The

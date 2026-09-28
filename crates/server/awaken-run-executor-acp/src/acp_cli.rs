@@ -1,3 +1,5 @@
+// @formal entrypoint credential.mcp_client_admission_requires_exact_delivery_adapter_and_http_transport
+// @formal entrypoint credential.mcp_delivery_mode_is_frozen_and_never_falls_back
 //! The **ACP CLI catalog**: one data row per external coding-agent CLI (Claude
 //! Code, Codex, Gemini…) describing how to launch it and how the resolved model
 //! reaches it. Pure data + a projection function — no `match adapter_kind` anywhere

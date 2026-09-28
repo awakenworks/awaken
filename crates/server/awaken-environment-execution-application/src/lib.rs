@@ -1,3 +1,4 @@
+// @formal entrypoint environment.cloud_native_credential_custody_selection_is_exact
 //! Coordinator application for executable Environment projection and WorkQueue coordination.
 //!
 //! The Managed protocol is an outer adapter. This crate is the sole owner of

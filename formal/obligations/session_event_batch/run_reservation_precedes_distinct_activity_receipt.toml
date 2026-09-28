@@ -3,17 +3,10 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/SessionEventProtocol.tla",
   "formal/tla/SessionActivityProof.tla",
-  "crates/server/awaken-session-application/src/run_admission.rs",
-  "crates/server/awaken-session-application/src/tests/event_batches.rs",
-  "crates/server/awaken-session-application/src/tests/run_admission.rs",
+  "formal/tla/SessionEventProtocol.tla",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/run_admission.rs",
-  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
-  "crates/server/awaken-session-application/src/activity.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Unbounded inductive invariant stated in the linked TLAPS proof; adapters remain outside the theorem.'''

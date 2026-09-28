@@ -1,3 +1,4 @@
+// @formal entrypoint session.legacy_derived_context_remains_durable_but_is_hidden_from_new_model_requests
 //! Production Dream worker driven by the Resource, Session, and Runtime authorities.
 
 use std::collections::BTreeMap;

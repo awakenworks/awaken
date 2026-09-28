@@ -1,3 +1,4 @@
+// @formal entrypoint acp.session_load_preserves_the_exact_mcp_projection
 #[derive(Debug, PartialEq, Eq)]
 enum ExactMcpProjection<Name, Command, Args, Url, Auth> {
     Http {

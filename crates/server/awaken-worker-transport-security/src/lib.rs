@@ -1,3 +1,4 @@
+// @formal entrypoint worker.remote_transport_is_secure_exact_and_identity_bound
 //! Neutral security and timing SPIs for the worker-facing HTTP boundary.
 //!
 //! The open runtime defines what must be trusted; a deployment decides how that

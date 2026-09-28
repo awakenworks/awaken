@@ -1,3 +1,4 @@
+// @formal entrypoint model_route.fallback_preserves_the_complete_publication_pin
 //! Durable-foreground observation: the [`SharedHost`] pool-submit/await methods
 //! and the [`CompletionRegistry`] that owns temporary completion observers plus
 //! best-effort live routes for each foreground Run.

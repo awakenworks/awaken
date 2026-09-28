@@ -181,6 +181,42 @@ def mutate_orphaned_anchor(case_root: Path) -> None:
               expected=f"{anchor.where}: @obligation {anchor.value!r} names no obligation file")
 
 
+def mutate_dropped_entrypoint_anchor(case_root: Path) -> None:
+    # E1: a direct production proof loses the only `// @formal entrypoint`
+    # line naming its production code. The claim loses its entrypoint with it.
+    headers, _ = formal_anchors.headers(case_root)
+    entrypoints: dict[str, list[formal_anchors.Header]] = {}
+    for header in headers:
+        if header.role == "entrypoint":
+            entrypoints.setdefault(header.value, []).append(header)
+    row = next(item for item in formal_ledger.load(case_root)["obligations"]
+               if item["proof_grade"] == "production_kernel_proved"
+               and len(entrypoints.get(item["id"], [])) == len(item["production_entrypoints"]) == 1)
+    [header] = entrypoints[row["id"]]
+    path = private_source(case_root, header.path)
+    lines = path.read_text().split("\n")
+    del lines[header.line - 1]
+    path.write_text("\n".join(lines))
+    must_fail(case_root, "check_formal_coverage.py", "production entrypoint anchor deleted",
+              expected=f"{row['id']} direct production grade has no production entrypoint")
+
+
+def mutate_source_evidence_in_storage(case_root: Path) -> None:
+    # E2: an obligation file names a Rust source again. The ratchet refuses it,
+    # so a new or edited obligation must be anchored in its sources.
+    header = next(item for item in formal_anchors.headers(case_root)[0] if item.role == "evidence")
+    prefix, _, name = header.value.partition(".")
+    path = case_root / formal_ledger.OBLIGATION_DIRECTORY / prefix / f"{name}.toml"
+    text = path.read_text()
+    if "evidence = []\n" in text:
+        text = text.replace("evidence = []\n", f'evidence = ["{header.path}"]\n', 1)
+    else:
+        text = text.replace("evidence = [\n", f'evidence = [\n  "{header.path}",\n', 1)
+    path.write_text(text)
+    must_fail(case_root, "check_formal_coverage.py", "Rust evidence stored in an obligation file",
+              expected=f"names {header.path}, a source that states its own role")
+
+
 def mutate_commented_harness(case_root: Path) -> None:
     # H1: the plan is still computed but the loop that runs its batches becomes
     # a shell comment. Text presence is not execution selection; reject it.
@@ -410,6 +446,8 @@ def run_gate_mutations() -> None:
         mutate_downgraded_claim,
         mutate_unanchored_harness,
         mutate_orphaned_anchor,
+        mutate_dropped_entrypoint_anchor,
+        mutate_source_evidence_in_storage,
         mutate_unchecked_model,
         mutate_missing_proof_grade,
         mutate_false_production_grade,

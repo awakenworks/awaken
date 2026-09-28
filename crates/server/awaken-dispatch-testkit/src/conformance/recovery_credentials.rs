@@ -1,3 +1,5 @@
+// @formal evidence credential_effect.boundary_preserves_exact_materialization_authority
+// @formal evidence ingress.epoch_reclaim
 // Retry, identity, terminal recovery, and credential conformance rules. Included
 // at crate root; every rule still exercises the one DispatchQueue contract.
 /// Retry-exhaustion cause/effect decision table shared by every backend:

@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Borrow current authority around the existing physical creation participant.
 //! No new lease or persisted state: marker identity and phase remain in `super`.
 use super::*;

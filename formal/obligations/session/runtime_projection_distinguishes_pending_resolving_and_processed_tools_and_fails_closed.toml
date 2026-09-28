@@ -2,30 +2,17 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SessionRuntimeProjection.tla",
   "formal/tla/SessionRuntimeProjection.cfg",
-  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/lifecycle_projection.rs",
-  "packages/managed-session-projection/src/index.ts",
+  "formal/tla/SessionRuntimeProjection.tla",
   "packages/managed-session-projection/src/index.test.ts",
-  "web/src/lib/session-log.ts",
-  "web/src/lib/session-log.test.ts",
-  "web/src/surfaces/session-detail.tsx",
-  "web/src/surfaces/sessions.tsx",
+  "packages/managed-session-projection/src/index.ts",
   "scripts/ci/check_formal.sh",
-  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-managed/src/project.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/lifecycle_projection.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite constants and state constraints in the linked TLA+ model configuration; ClientPresentedCanSend is only the browser-facing gate, not a prohibition on durable server admission or queuing, and no Rust-to-model refinement is implied.'''

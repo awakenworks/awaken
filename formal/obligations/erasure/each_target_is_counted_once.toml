@@ -6,12 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ErasureSaga.tla",
-  "crates/control/awaken-data-subject-application/src/lib.rs",
-  "crates/control/awaken-data-subject-application/src/tests.rs",
 ]
-production_entrypoints = [
-  "crates/control/awaken-data-subject-application/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Direct bounded Kani proof calls the production ErasureProgress pending_target and record_target methods. Both harnesses cover every 0..2-row Coordinator/Resources list, including empty, duplicate and reversed rows; all four adapter-binding combinations; every u64 revision, x86_64 usize count and both independent accountability_stamped/complete flags. The count harness additionally covers every usize receipt increment. Selection carries borrowed byte adapter tokens; count carries unit tokens; generic selection is proved at those monomorphizations, not for Arc/dynamic dispatch.'''

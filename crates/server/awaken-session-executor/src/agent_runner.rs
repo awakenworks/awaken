@@ -1,3 +1,4 @@
+// @formal evidence delegation.independent_child_scheduling_lease
 //! Constructing and running an Agent through the ordinary Run lifecycle.
 //!
 //! Native delegation (`agent_run`) and skill forks use this

@@ -1,3 +1,6 @@
+// @formal entrypoint tool.executor_entry_order
+// @formal entrypoint tool_result.call_is_consumed_at_most_once
+// @formal entrypoint tool_result.resume_receipt_is_atomic_with_ticket_consumption
 //! Resume-path orchestration from committed thread truth.
 //!
 //! This module owns ticket-result folding, approval pre-commit, delegation

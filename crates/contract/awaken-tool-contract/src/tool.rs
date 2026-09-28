@@ -1,3 +1,12 @@
+// @formal entrypoint remote_tool.stable_operation_identity
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
+// @formal entrypoint tool.concurrency_resource_conflict
+// @formal entrypoint tool_schedule.every_wave_is_pairwise_compatible
+// @formal entrypoint tool_schedule.order_is_stable_and_conflicting_predecessors_are_never_bypassed
+// @formal entrypoint tool_schedule.parallel_bound_is_positive_exact_and_zero_normalizes_to_one
+// @formal entrypoint tool_schedule.partition_is_total_contiguous_and_exactly_once
+// @formal entrypoint tool_schedule.serial_is_singleton_and_compatible_prefixes_are_maximal
+// @formal evidence tool.recovery_policy
 //! Tool execution ports.
 //!
 //! Two concerns stay separate (tool-and-capability.md): a tool *implementation*

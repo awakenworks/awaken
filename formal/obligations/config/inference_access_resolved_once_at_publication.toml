@@ -2,28 +2,18 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
   "external.orchestrator_correctness",
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "formal/tla/InferenceAccessPublication.tla",
-  "formal/tla/InferenceAccessPublication.cfg",
   "docs/adr/0062-published-inference-access-and-runtime-credential-injection.md",
-  "crates/control/awaken-config-service/src/config_service/publication_tests.rs",
-  "crates/control/awaken-control/src/model_publication.rs",
-  "crates/contract/awaken-runtime-contract/src/resolved.rs",
-  "crates/server/awaken-credential-materializer/src/inference.rs",
+  "formal/tla/InferenceAccessPublication.cfg",
+  "formal/tla/InferenceAccessPublication.tla",
   "scripts/ci/_service_data_ownership_fitness.py",
 ]
-production_entrypoints = [
-  "crates/control/awaken-config-service/src/publication.rs",
-  "crates/control/awaken-control/src/model_publication.rs",
-  "crates/contract/awaken-runtime-contract/src/model_routing.rs",
-  "crates/contract/awaken-runtime-contract/src/resolved.rs",
-  "crates/server/awaken-credential-materializer/src/inference.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The linked TLA+ model remains a finite lifecycle check; it is independent cross-evidence and is not claimed as Rust refinement.'''

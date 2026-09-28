@@ -1,3 +1,5 @@
+// @formal entrypoint assembly_role.release_consumption_requires_exact_artifact_profile_and_completed_proofs
+// @formal entrypoint assembly_role.verified_admission_requires_exact_fresh_tcb_fingerprint
 //! Finite admission kernel consumed by the proof-carrying release validator.
 //!
 //! JSON shape, hashing, Git provenance, and external observations remain with

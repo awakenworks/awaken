@@ -1,3 +1,4 @@
+// @formal entrypoint resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
 //! Canonical container provider implementation over the runtime port.
 //!
 //! The crate root retains the public paths through re-exports; this module owns

@@ -1,3 +1,7 @@
+// @formal entrypoint resource_binding.draft_audit_and_effect_are_atomic
+// @formal entrypoint resource_binding.pending_effect_survives_until_readback
+// @formal entrypoint resource_binding.replay_is_idempotent_and_identity_stable
+// @formal entrypoint tool_policy.scoped_catalog_admin_membership_is_exact_and_non_disclosing
 //! Scope-aware edge over the scope-free Config Service.
 
 use std::{collections::HashSet, sync::Arc};

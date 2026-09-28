@@ -1,3 +1,4 @@
+// @formal entrypoint remote_worker.stale_epoch_never_mutates_truth
 //! Coordinator-local claim fencing for Runtime artifact publication.
 
 use std::sync::{Arc, OnceLock};

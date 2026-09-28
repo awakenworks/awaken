@@ -1,3 +1,6 @@
+// @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
+// @formal evidence memory.rename_replace_preserves_source_identity
+// @formal evidence skill.pinned_version_survives_retirement
 //! Contract-only vocabulary for the Resources context (files, memory, repositories, skills).
 //!
 //! The mountable-resource **SPIs** — [`FileStore`] + [`FileCatalog`] as the two

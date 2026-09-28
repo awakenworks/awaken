@@ -1,3 +1,4 @@
+// @formal entrypoint credential_effect.repository_git_delivery_excludes_runtime_host_and_mixed_route_authority
 //! The neutral session-mounted resource (ADR-0038). The Managed wire adapter owns
 //! the `resources[]` parse form + the DTO projection; this is the crate-boundary
 //! shape both sides speak.

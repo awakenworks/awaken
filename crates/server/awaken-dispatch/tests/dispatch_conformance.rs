@@ -1,3 +1,12 @@
+// @formal evidence delegation.independent_child_scheduling_lease
+// @formal evidence ingress.epoch_reclaim
+// @formal evidence ingress.pending_input_exactly_once
+// @formal evidence ingress.settle_fence
+// @formal evidence ingress.single_owner
+// @formal evidence run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal evidence session_run.recovery_claim_is_admission_only
+// @formal evidence session_run.reservation_precedes_activity
+// @formal evidence session_run.reservation_ttl_uses_store_clock
 use std::sync::Arc;
 
 use awaken_dispatch::{

@@ -1,3 +1,8 @@
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
+// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 //! Claimed Worker installation of one already-frozen Session projection.
 
 use super::realization_failure::{

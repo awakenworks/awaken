@@ -5,20 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/AgentMessageProtocol.tla",
   "formal/tla/AgentMessageProtocol.cfg",
-  "crates/runtime/awaken-ext-builtin-tools/src/coordination.rs",
-  "crates/server/awaken-session-executor/src/host/coordination.rs",
-  "crates/server/awaken-session-application/src/coordination.rs",
-  "crates/contract/awaken-session-execution-contract/src/session.rs",
-  "crates/contract/awaken-session-execution-contract/src/session/roles.rs",
+  "formal/tla/AgentMessageProtocol.tla",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-ext-builtin-tools/src/coordination.rs",
-  "crates/server/awaken-session-executor/src/host/coordination.rs",
-  "crates/server/awaken-session-executor/src/host/coordination/agent_message_source.rs",
-  "crates/server/awaken-session-application/src/coordination.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''

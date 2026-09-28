@@ -1,3 +1,6 @@
+// @formal entrypoint agent_profile.worker_projection_requires_exact_frozen_publication
+// @formal entrypoint session.transcript_prefix_is_exact_request_only_context_not_durable_truth
+// @formal entrypoint session_resources.terminal_assignment_retains_desired_generation
 //! Neutral frozen Session and MCP realization projections.
 
 use awaken_session_error_contract::RunError;

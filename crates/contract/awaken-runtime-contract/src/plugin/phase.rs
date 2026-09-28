@@ -1,3 +1,5 @@
+// @formal entrypoint context.legacy_unanchored_window_never_drops_transcript
+// @formal entrypoint context.window_anchor_preserves_complete_prefix_coverage
 //! Phase-hook vocabulary: the points a hook observes in one model/tool step, the
 //! per-phase context (illegal phase/data pairs made unrepresentable), the
 //! request-only injection key, and the `PhaseHook` trait itself.

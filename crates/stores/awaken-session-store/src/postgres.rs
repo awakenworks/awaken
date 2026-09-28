@@ -1,3 +1,9 @@
+// @formal entrypoint session.delete_tombstone_requires_hidden_terminal_verified_cleanup
+// @formal entrypoint session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+// @formal entrypoint session.owner_saved_atomically
+// @formal entrypoint session.visible_row_always_owned
+// @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
+// @formal entrypoint webhook.lifecycle_commit_and_outbox_are_atomic
 use super::*;
 use sqlx::Connection;
 

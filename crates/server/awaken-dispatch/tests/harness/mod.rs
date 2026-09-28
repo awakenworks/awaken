@@ -1,3 +1,9 @@
+// @formal evidence ingress.pending_mutation_plan_requires_exact_revision_and_nonwrapping_edit
+// @formal evidence remote_worker.stale_epoch_never_mutates_truth
+// @formal evidence run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
+// @formal evidence run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
+// @formal evidence run_ingress.request_local_resolution_retry_honors_persisted_deadline
+// @formal evidence session_execution.one_physical_attempt_per_thread
 // awaken-file-limit-ceiling: 3918 (legacy oversized test file: split, never grow)
 //! Shared runtime harness for the durable-ingress integration tests.
 //!

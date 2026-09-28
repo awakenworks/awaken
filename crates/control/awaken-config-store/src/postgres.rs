@@ -1,3 +1,16 @@
+// @formal entrypoint audit.business_action_follows_audit_record
+// @formal entrypoint audit.business_commit_and_audit_transition_are_atomic
+// @formal entrypoint audit.call_identity_is_stable
+// @formal entrypoint audit.stable_call_replay_does_not_repeat_business_write
+// @formal entrypoint config.generation_is_monotonic
+// @formal entrypoint config.publication_revision_is_scoped_by_execution_target_and_exact_replay
+// @formal entrypoint config.stale_writer_never_applies
+// @formal entrypoint config_activation.stale_publication_never_installs
+// @formal entrypoint management_http.crash_preserves_pending_audit
+// @formal entrypoint management_http.successful_write_marks_audit_committed
+// @formal entrypoint resource_binding.draft_audit_and_effect_are_atomic
+// @formal entrypoint resource_binding.pending_effect_survives_until_readback
+// @formal entrypoint resource_binding.replay_is_idempotent_and_identity_stable
 //! Postgres config-store adapter under the built-in `config` namespace.
 
 use sqlx::Row;

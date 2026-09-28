@@ -1,3 +1,6 @@
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal entrypoint session_resources.explicit_empty_manifest_revokes_runtime_projection
+// @formal entrypoint session_resources.external_io_requires_durable_prepared_state
 //! Pure projection from frozen Managed resource inputs to Agent-visible paths and
 //! prompt fragments. Keeping this boundary separate prevents protocol path rules
 //! from being reimplemented by individual Sandbox adapters.

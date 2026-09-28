@@ -6,21 +6,11 @@ tcb_assumptions = [
 ]
 evidence = [
   "e2e/managed_memory_extraction_crash_e2e.mjs",
-  "formal/tla/MemoryExtraction.tla",
   "formal/tla/MemoryExtraction.cfg",
+  "formal/tla/MemoryExtraction.tla",
   "scripts/ci/formal_memory_mutations.py",
-  "crates/runtime/awaken-ext-memory/src/extraction.rs",
-  "crates/runtime/awaken-ext-memory/src/extraction/types.rs",
-  "crates/server/awaken-session-executor/src/memory.rs",
-  "crates/stores/awaken-session-store/src/extraction.rs",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-ext-memory/src/extraction.rs",
-  "crates/runtime/awaken-ext-memory/src/extraction/types.rs",
-  "crates/runtime/awaken-ext-memory/src/extraction/controller.rs",
-  "crates/server/awaken-session-executor/src/memory.rs",
-  "crates/stores/awaken-session-store/src/extraction.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''One stable auxiliary Run and at most two extraction claims. Five semantic mutants and two reachability witnesses check that crash recovery re-observes the same Run and that a typed unknown becomes a non-recoverable terminal without fabricated mutations, receipts, Run replacement or later invocation.'''

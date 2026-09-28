@@ -1,3 +1,11 @@
+// @formal entrypoint session.delete_intent_is_hidden_terminal_and_idempotent
+// @formal entrypoint session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
+// @formal entrypoint session.delete_tombstone_requires_hidden_terminal_verified_cleanup
+// @formal entrypoint session.owner_saved_atomically
+// @formal entrypoint session_event_batch.initial_plan_and_wake_activity_are_atomic_with_root
+// @formal entrypoint session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+// @formal entrypoint session_execution.terminal_state_never_reopens
+// @formal entrypoint session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
 //! Persistence for the adapter-side Managed session aggregate.
 //!
 //! The runtime's committed transcript (ADR-0039) is durable, but the wire

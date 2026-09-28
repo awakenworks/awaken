@@ -1,3 +1,4 @@
+// @formal entrypoint session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
 //! Durable Session visibility and deletion admission.
 //!
 //! The parent aggregate owns persistence and terminal cleanup. This module owns

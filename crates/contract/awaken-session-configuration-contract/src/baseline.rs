@@ -1,3 +1,5 @@
+// @formal entrypoint session.transcript_prefix_is_exact_request_only_context_not_durable_truth
+// @formal entrypoint session_creation.selected_environment_is_frozen_in_baseline
 //! Immutable Session baseline and its consumed creation intent (ADR-0066 D1).
 
 use crate::{SessionMutationPolicy, SessionNetworkPolicy};

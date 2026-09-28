@@ -1,3 +1,6 @@
+// @formal entrypoint worker.remote_transport_is_secure_exact_and_identity_bound
+// @formal entrypoint worker_credential.projected_binding_use_rechecks_after_probe
+// @formal entrypoint worker_credential.publication_budget_covers_probe_and_delivery
 //! Authority-store-isolated Worker process configuration and assembly.
 
 use std::path::{Path, PathBuf};

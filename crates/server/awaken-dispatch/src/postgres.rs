@@ -1,3 +1,4 @@
+// @formal entrypoint remote_worker.stale_epoch_never_mutates_truth
 //! Postgres durable implementation of the dispatch-store ports.
 //!
 //! Two tables back the two aggregates: `runtime_dispatch` is the run-dispatch

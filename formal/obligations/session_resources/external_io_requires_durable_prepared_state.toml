@@ -5,30 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SessionResourceActivation.tla",
   "formal/tla/SessionResourceActivation.cfg",
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation/materialization_authorization.rs",
-  "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
-  "crates/server/awaken-session-executor/src/skill_catalog.rs",
-  "crates/resources/awaken-resource-worker-http/src/file_content_http.rs",
-  "crates/resources/awaken-resource-worker-http/src/memory_transport.rs",
-  "crates/resources/awaken-resource-worker-http/src/repository_binding_http.rs",
-  "crates/resources/awaken-resource-worker-http/src/skill_bundle_transport.rs",
-  "crates/server/awaken-session-application/src/tests/realization.rs",
-  "crates/server/awaken-session-application/src/tests/resource_resume.rs",
+  "formal/tla/SessionResourceActivation.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-  "crates/server/awaken-session-application/src/resource_reconciliation/materialization_authorization.rs",
-  "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
-  "crates/server/awaken-session-executor/src/skill_catalog.rs",
-  "crates/resources/awaken-resource-worker-http/src/file_content_http.rs",
-  "crates/resources/awaken-resource-worker-http/src/memory_transport.rs",
-  "crates/resources/awaken-resource-worker-http/src/repository_binding_http.rs",
-  "crates/resources/awaken-resource-worker-http/src/skill_bundle_transport.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhaustively checks the private production generation-slot kernel for all u64 active, pending and asserted revisions and both pending-presence classes, including deterministic Active precedence for an aliased corrupt or legacy row. SessionResourceState::retained_generation consumes that kernel directly, so an attempted watermark alone cannot select a manifest.'''

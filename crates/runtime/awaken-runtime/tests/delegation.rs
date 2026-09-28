@@ -1,3 +1,6 @@
+// @formal evidence checkpoint.recovery_never_precedes_commit
+// @formal evidence delegation.cancel_intent
+// @formal evidence delegation.remote_cancel_redelivery
 //! Delegation (ADR-0044): a tool call whose id matches the executor's `tool_id` is
 //! routed to `RunDelegationService` instead of the tool registry. An `Ended` step folds
 //! the delegate's token usage into the parent thread and feeds its reply back; a

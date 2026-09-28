@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! One Kubernetes CAS loop for removing an exact finalizer.
 
 use k8s_openapi::api::core::v1::Pod;

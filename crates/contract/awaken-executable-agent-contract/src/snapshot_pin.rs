@@ -1,3 +1,4 @@
+// @formal entrypoint executable_snapshot.pin_is_complete_exact_and_non_mixing
 //! Pure validation of the identities duplicated around an executable snapshot.
 //!
 //! The registration envelope and immutable snapshot deliberately repeat the

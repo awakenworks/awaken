@@ -1,3 +1,4 @@
+// @formal evidence session_execution.activity_receipts_are_unique_durable_and_exactly_settled
 //! A member set that can hold at most two epochs, for proofs of two-admission
 //! traces. Two unordered slots, no allocation, no loop longer than two: the
 //! point is that Kani can execute it twice where it cannot execute the real

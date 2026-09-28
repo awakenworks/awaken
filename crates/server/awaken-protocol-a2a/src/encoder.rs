@@ -1,3 +1,4 @@
+// @formal entrypoint protocol_adapter.a2a_task_state_projection_is_total_exact_and_non_strengthening
 //! Project a committed step (and thread history) into an A2A `Task`.
 //!
 //! A2A is a snapshot protocol: `message:send` returns the whole `Task` — its

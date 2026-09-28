@@ -1,3 +1,8 @@
+// @formal entrypoint checkpoint.recovery_never_precedes_commit
+// @formal entrypoint tool.publication_barrier
+// @formal entrypoint tool_result.call_is_consumed_at_most_once
+// @formal entrypoint tool_result.resume_receipt_is_atomic_with_ticket_consumption
+// @formal entrypoint tool_result.terminal_run_rejects_late_result
 //! Run command handling for native execution, resume, cancellation, stopping,
 //! and committed scheduled actions.
 

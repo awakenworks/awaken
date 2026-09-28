@@ -5,20 +5,14 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "formal/tla/AcpBoundary.tla",
+  "docs/adr/0069-acp-capability-configuration-lifecycle.md",
   "formal/tla/AcpBoundary.cfg",
-  "crates/server/awaken-protocol-acp/src/jsonrpc.rs",
+  "formal/tla/AcpBoundary.tla",
   "formal/verification-boundaries/acp-handshake-and-wire.md",
-  "crates/server/awaken-protocol-acp/src/lib.rs",
   "scripts/ci/check_formal.sh",
   "scripts/ci/check_formal_mutations.py",
-  "docs/adr/0069-acp-capability-configuration-lifecycle.md",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-acp/src/jsonrpc.rs",
-  "crates/server/awaken-protocol-acp/src/jsonrpc/handshake.rs",
-  "crates/server/awaken-protocol-acp/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts all four production handshake phases and every initialize, open-session, and configure completion edge without assumptions. The exact reducer's admission predicate is true only for Configured; every skipped, repeated, or reordered edge rejects. The private Rust type boundary, rather than Kani, constructs PromptReady from that predicate. run_turn_with_config advances the same private HandshakeProgress only after the corresponding bounded future succeeds, and the only production PromptRequest construction consumes that witness.'''

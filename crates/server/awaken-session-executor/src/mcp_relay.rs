@@ -1,3 +1,4 @@
+// @formal entrypoint credential.mcp_adopted_revocation_removes_accepting_generation_before_new_calls
 //! Host-side MCP relay — the α-reference resolver.
 //!
 //! A sandboxed ACP agent's MCP client must authenticate to a real HTTP MCP server (e.g. the

@@ -1,3 +1,4 @@
+// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 //! Worker-facing HTTP request values.
 //!
 //! These serializable values are the single wire source shared by the database-less

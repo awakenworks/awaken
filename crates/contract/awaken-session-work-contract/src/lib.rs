@@ -1,3 +1,12 @@
+// @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
+// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
+// @formal entrypoint session_time.utc_projection_domain_is_total_exact_and_idempotent
+// @formal entrypoint session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
+// @formal entrypoint session_work.release_requires_exact_owner_and_epoch
+// @formal entrypoint work.heartbeat_compare_and_set
+// @formal entrypoint work.pre_heartbeat_worker_identity
+// @formal entrypoint work.single_active_claim
+// @formal entrypoint work.terminal_lease_clear
 //! The environment work-queue port + its neutral vocabulary (ADR self-hosted work).
 //!
 //! The port the environments work-queue routes drive, plus the neutral domain shapes

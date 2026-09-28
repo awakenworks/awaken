@@ -1,3 +1,6 @@
+// @formal entrypoint background_task.process_completion_is_retryable_and_stale_completion_is_inert
+// @formal entrypoint background_task.single_fenced_attempt
+// @formal evidence background_task.stale_fence_never_finishes_or_heartbeats
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

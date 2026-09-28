@@ -1,3 +1,5 @@
+// @formal entrypoint live_inbox.attempt_scope_is_local_current_capability_gated_and_never_carried_over
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
 //! Direct physical-attempt delivery.
 //!
 //! Durable admission is owned by `RunDispatch` and the dispatch worker. This

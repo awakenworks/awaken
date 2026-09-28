@@ -1,3 +1,6 @@
+// @formal entrypoint remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
+// @formal entrypoint remote_worker.pending_signal_is_consumed_by_commit
+// @formal entrypoint tool_result.terminal_run_rejects_late_result
 //! Committed-terminal recovery and pre-execution terminalization for DispatchWorker.
 //! This is the existing Worker implementation split by responsibility. Every
 //! entry uses its original claim-fenced commit, observer and settlement path.

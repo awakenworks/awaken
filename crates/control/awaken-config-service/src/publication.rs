@@ -1,3 +1,4 @@
+// @formal entrypoint config.inference_access_resolved_once_at_publication
 //! Configuration publication preparation and values shared by the service and HTTP edge.
 
 use awaken_agent_config::{AgentConfig, AgentConfigRevision, ModelSelection, StoredPublication};

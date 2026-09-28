@@ -5,20 +5,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ResourceReclamation.tla",
-  "formal/tla/ResourceLifecycleWorkflow.tla",
-  "crates/stores/awaken-resource-store/src/sqlite_lifecycle.rs",
-  "crates/stores/awaken-resource-store/src/postgres.rs",
-  "crates/resources/awaken-resource-application/src/files/deletion.rs",
-  "crates/bin/awaken-cli/src/runtime_process_router.rs",
   "e2e/resource_reclamation_faults_e2e.mjs",
+  "formal/tla/ResourceLifecycleWorkflow.tla",
+  "formal/tla/ResourceReclamation.tla",
 ]
-production_entrypoints = [
-  "crates/server/awaken-resource-reclaimer/src/lib.rs",
-  "crates/stores/awaken-resource-store/src/lib.rs",
-  "crates/stores/awaken-resource-store/src/sqlite_lifecycle.rs",
-  "crates/stores/awaken-resource-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhaustively checks the production store decision over all fence-owner/reference predicates and the production pre-purge decision over all fence, indexed-reference and final guard-result predicates. It does not verify database transaction implementation, guard-source completeness, async scheduling or physical backend behavior; focused adapter/reclaimer tests cover the concrete call placement.'''

@@ -1,3 +1,4 @@
+// @formal evidence session_execution.activity_receipts_are_unique_durable_and_exactly_settled
 use super::*;
 use crate::SessionRevision;
 use crate::session_repo::{PersistedSession, mutation_tests::session};

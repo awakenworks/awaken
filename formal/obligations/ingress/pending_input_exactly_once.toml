@@ -2,35 +2,18 @@ claim_scope = "repository_safety"
 proof_grade = "abstract_model_checked"
 status = "model_linked"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/RunIngressKernel.tla",
-  "formal/tla/RunIngress.tla",
-  "formal/tla/RunIngress.cfg",
   "docs/adr/0010-idempotent-pending-consumption.md",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/memory/settlement.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
-  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
-  "crates/server/awaken-dispatch/tests/crash_before_settle.rs",
+  "formal/tla/RunIngress.cfg",
+  "formal/tla/RunIngress.tla",
+  "formal/tla/RunIngressKernel.tla",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/pending_settlement.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/memory/settlement.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''RunIngress.cfg finitely model-checks the canonical RunIngressKernel with two owners and MaxEpoch=4. PendingInputIsDurable excludes pending input from Removed and Superseded abstract rows, but the Boolean model does not encode message identities, SQL transactions, asynchronous Worker execution, or a Rust-to-model refinement.'''

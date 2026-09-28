@@ -1,3 +1,16 @@
+// @formal entrypoint credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+// @formal entrypoint credential.managed_creation_begin_rejects_every_published_source_or_child_identity
+// @formal entrypoint credential.managed_creation_publishes_source_and_child_atomically
+// @formal entrypoint credential.managed_mutation_requires_exact_source_and_child_successor_fences
+// @formal entrypoint credential.managed_rollout_event_id_replay_requires_exact_payload_and_colliding_ack_is_rejected
+// @formal entrypoint credential.managed_rollout_outbox_is_atomic_with_exact_pair_publication
+// @formal entrypoint credential.managed_vault_child_admission_requires_active_parent_capacity_and_unique_key
+// @formal entrypoint credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
+// @formal entrypoint credential.managed_vault_replacement_rejects_stale_and_non_successor_revisions
+// @formal entrypoint credential.material_is_always_published_or_intent_tracked
+// @formal entrypoint credential.rotation_revision_cas
+// @formal entrypoint credential.vault_workspace_authority_admission_is_exact_and_non_widening
+// @formal evidence credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
 //! SQLite adapters (feature `sqlite`, ADR-0043 sqlite-repos) for the credential
 //! domain, over the crate's own `credential` migration scope
 //! ([`credential_bundle`]): [`SqliteCredentialRepo`] persists the **secret-free**

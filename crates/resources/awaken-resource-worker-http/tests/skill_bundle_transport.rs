@@ -1,3 +1,5 @@
+// @formal evidence skill.invalid_workspace_or_hash_fails_closed
+// @formal evidence skill.loaded_version_equals_session_pin
 //! Custom-Skill Resource Coordinator boundary tests over real HTTP.
 
 use awaken_dispatch_testkit::worker_http as support;

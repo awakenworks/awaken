@@ -1,3 +1,7 @@
+// @formal evidence webhook.delivery_requires_an_enqueued_fact
+// @formal evidence webhook.failed_delivery_remains_pending
+// @formal evidence webhook.outbox_fact_identity_is_stable
+// @formal evidence webhook.periodic_retry_never_retires_a_failed_fact
 //! Webhook-subscription CRUD over the config-plane router. This crate shipped with
 //! zero tests; these pin the security-relevant arms: the tenant self-fence (404,
 //! never an ownership disclosure), secret sealing (minted once, never echoed), and

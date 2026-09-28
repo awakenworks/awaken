@@ -1,3 +1,5 @@
+// @formal entrypoint session.legacy_derived_context_remains_durable_but_is_hidden_from_new_model_requests
+// @formal entrypoint session.transcript_prefix_is_exact_request_only_context_not_durable_truth
 //! The async agent execution loop.
 //!
 //! `execute` resolves the activation, runs the model/tool step loop, stages a

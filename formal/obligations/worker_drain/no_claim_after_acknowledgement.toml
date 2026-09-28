@@ -7,14 +7,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerDrain.tla",
-  "crates/server/awaken-dispatch/tests/pool_memory.rs",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-  "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-dispatch/src/pool.rs",
-  "crates/bin/awaken-worker/src/lifecycle.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The canonical AdmissionState transition mints the private PoolDrainFence only with the absorbing Draining state. Kani exhausts all Open/Suspended/Draining inputs and every later admission command, proving the fenced state rejects claims and cannot resume. WorkerSupervisor consumes that unforgeable token as the sole remote-drain request prerequisite; the blocked-Control native trace checks that readiness is closed and the actual claim-request count stays fixed before an Applied response is released. The proof is local to the production admission kernel and token prerequisite: Tokio RwLock linearization, HTTP delivery/decoding, Registry database commit and acknowledgement authenticity remain executable or TCB evidence.'''

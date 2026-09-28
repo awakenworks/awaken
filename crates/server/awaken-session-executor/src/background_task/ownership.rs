@@ -1,3 +1,6 @@
+// @formal entrypoint background_task.single_fenced_attempt
+// @formal entrypoint background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! BackgroundTask binding for Runtime's existing post-admission ownership gate.
 //! This adapter reads committed truth; the extension remains the decision owner.
 

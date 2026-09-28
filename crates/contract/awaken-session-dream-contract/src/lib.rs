@@ -1,3 +1,5 @@
+// @formal entrypoint dream.lifecycle_is_closed_exact_and_terminal_absorbing
+// @formal entrypoint dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
 //! Neutral Coordinator Dream request and projection vocabulary.
 
 use awaken_session_types::{SessionContractErrorDetail, SessionId};

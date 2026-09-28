@@ -6,23 +6,12 @@ tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
 evidence = [
-  "formal/tla/SessionRealizationMutex.tla",
-  "crates/server/awaken-session-executor/src/session_slot.rs",
-  "crates/server/awaken-session-executor/src/host/tests.rs",
-  "crates/server/awaken-session-executor/src/application/realization_renewal.rs",
-  "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs",
-  "crates/server/awaken-session-executor/src/application/realization_control_deadline/composition_tests.rs",
   "formal/runtime-refinement-manifest.json",
-  "scripts/ci/render_runtime_refinement_traces.py",
+  "formal/tla/SessionRealizationMutex.tla",
   "scripts/ci/formal_realization_capacity_mutations.py",
+  "scripts/ci/render_runtime_refinement_traces.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-executor/src/application.rs",
-  "crates/server/awaken-session-executor/src/application/realization_control_deadline.rs",
-  "crates/server/awaken-session-executor/src/session_slot.rs",
-  "crates/server/awaken-session-executor/src/application/realization_renewal.rs",
-  "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The existing phase-driver model bounds ActiveSessions by driver owner and clears that owner on ControlTimeout. Those invariants remain phase-driver abstractions, not a mapping of the distinct production request permit, completion permit and Session mutex.'''

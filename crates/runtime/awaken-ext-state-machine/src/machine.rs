@@ -1,3 +1,4 @@
+// @formal entrypoint workflow_state.transitions_are_exact_typed_terminal_and_fail_closed
 //! Compiled state-machine model.
 //!
 //! A [`Machine`] constrains the order of tool calls. Each machine tracks one

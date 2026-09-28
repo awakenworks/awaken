@@ -1,3 +1,6 @@
+// @formal evidence config.generation_is_monotonic
+// @formal evidence config.stale_writer_never_applies
+// @formal evidence config_activation.stale_publication_never_installs
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, ConfigWrite, PublicationWrite, ScopeId, ScopedConfigRegistry,
 };

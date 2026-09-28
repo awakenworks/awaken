@@ -8,9 +8,7 @@ evidence = [
   "formal/tla/LiveInbox.tla",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''

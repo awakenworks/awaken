@@ -1,3 +1,4 @@
+// @formal entrypoint outcome.stable_run_identity_and_exactly_once_ack
 //! Outcome application service coordinating ordinary Worker and Grader Runs.
 //!
 //! The controller owns iteration, recovery, prompts, and state transitions. It

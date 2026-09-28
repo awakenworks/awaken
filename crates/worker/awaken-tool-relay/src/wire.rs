@@ -1,3 +1,5 @@
+// @formal entrypoint remote_tool.protocol_version_requires_stable_v2_operation_identity
+// @formal evidence remote_tool.stable_operation_identity
 //! The brain↔hand wire (ADR-0044 D2).
 //!
 //! The protocol carries the runtime's own neutral tool value objects —

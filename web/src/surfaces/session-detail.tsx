@@ -1,3 +1,4 @@
+// @formal evidence session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
 import { ArrowRight, Square } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, TabNav, TabNavItem } from "@awaken/ui";
 // Session detail: header actions (rename/archive/interrupt) + an

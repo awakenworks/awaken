@@ -2,18 +2,8 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/contract/awaken-session-configuration-contract/src/baseline.rs",
-  "crates/server/awaken-session-application/src/projection.rs",
-  "crates/runtime/awaken-runtime/src/engine/mod.rs",
-  "crates/runtime/awaken-runtime/tests/multi_run.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/runtime_context.rs",
-  "crates/contract/awaken-session-configuration-contract/src/baseline.rs",
-  "crates/server/awaken-session-application/src/projection.rs",
-  "crates/runtime/awaken-runtime/src/engine/mod.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

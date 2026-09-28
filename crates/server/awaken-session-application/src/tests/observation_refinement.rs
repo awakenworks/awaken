@@ -1,3 +1,4 @@
+// @formal evidence session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
 //! Actual durable root observations consumed by the existing Rust-to-TLA gate.
 use super::*;
 

@@ -1,3 +1,4 @@
+// @formal entrypoint checkpoint.crash_preserves_durable_truth
 //! PostgreSQL persistence for interrupted inference stream checkpoints.
 
 use async_trait::async_trait;

@@ -1,3 +1,4 @@
+// @formal entrypoint environment.registration_intent_is_atomic_recoverable_and_idempotent
 //! Durable Control-owned [`EnvRegistry`] backends. Environment definitions and
 //! exact revision history survive restart; Coordinator and Worker see only the
 //! separately registered executable projection. SQLite and PostgreSQL share one

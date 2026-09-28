@@ -1,3 +1,4 @@
+// @formal evidence delegation.independent_child_scheduling_lease
 //! Runtime-host adapters for fixed Agent coordination and durable child settlement.
 //!
 //! Both adapters route through the Session application's existing authority. A

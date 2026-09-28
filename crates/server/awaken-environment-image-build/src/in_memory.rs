@@ -1,3 +1,4 @@
+// @formal entrypoint environment_image_build.single_claim_exact_reclaim_and_stale_fence
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 

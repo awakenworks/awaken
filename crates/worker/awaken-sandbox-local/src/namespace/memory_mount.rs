@@ -1,3 +1,5 @@
+// @formal entrypoint memory_participant.live_provider_retains_pending_and_failed_operations
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

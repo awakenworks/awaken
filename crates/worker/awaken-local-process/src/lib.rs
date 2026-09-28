@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.local_process_spawn_policy_and_waiter_lock_ownership_are_preserved
 //! Process waiting policy plus the local child-process lifecycle adapter.
 //! Local/Namespace and container exec handles share cancellation-safe waiting;
 //! trusted subprocess and Local/Namespace launches share the OS child adapter.

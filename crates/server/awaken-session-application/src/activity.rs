@@ -1,3 +1,9 @@
+// @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal entrypoint session_event_batch.run_reservation_precedes_distinct_activity_receipt
+// @formal entrypoint session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
+// @formal entrypoint session_execution.terminal_state_never_reopens
+// @formal entrypoint session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
 //! Durable activity fencing for overlapping Session Runs.
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};

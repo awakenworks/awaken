@@ -1,3 +1,8 @@
+// @formal entrypoint config.inference_access_resolved_once_at_publication
+// @formal entrypoint model_route.fallback_preserves_the_complete_publication_pin
+// @formal entrypoint worker.revoked_credential_blocks_new_materialization
+// @formal evidence model_binding.constructor_and_wire_share_one_admission
+// @formal evidence model_operation.ordinal_never_wraps_or_reuses_a_coordinate
 //! Runtime realization of immutable, publication-pinned model candidates.
 //!
 //! One materializer owns exact candidate validation, fallback routing, direct

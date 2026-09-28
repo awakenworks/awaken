@@ -5,17 +5,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ToolResultProtocol.tla",
   "formal/tla/ToolResultProtocol.cfg",
+  "formal/tla/ToolResultProtocol.tla",
   "scripts/ci/formal_event_batch_mutations.py",
-  "crates/contract/awaken-session-event-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/event_batches.rs",
-  "crates/server/awaken-session-application/src/tests/event_batches.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-event-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/event_batches.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Session root CAS atomically occupies a pending call/commit before Runtime consumption. Different HTTP keys cannot admit two replies for that occurrence; exact retained-key replay precedes occupancy validation. A removed occupancy guard is rejected and pre-delivery admission is reachable in the bounded existing ToolResultProtocol model.'''

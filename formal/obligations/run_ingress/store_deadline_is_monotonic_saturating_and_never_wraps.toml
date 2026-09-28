@@ -5,9 +5,7 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = []
-production_entrypoints = [
-  "crates/server/awaken-dispatch/src/clock.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''All u64 now and lease inputs; the production reducer clamps to the signed SQL millisecond domain.'''

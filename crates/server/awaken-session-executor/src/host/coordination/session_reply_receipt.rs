@@ -1,3 +1,5 @@
+// @formal entrypoint tool_result.conflicting_delivery_operation_never_reuses_a_receipt
+// @formal entrypoint tool_result.exact_delivery_retry_replays_one_receipt
 //! Durable idempotency receipt recovery for Session Thread tool replies.
 //!
 //! The logical Thread's committed `ResumeApplied` audit fact remains the sole

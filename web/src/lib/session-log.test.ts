@@ -1,3 +1,4 @@
+// @formal evidence session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
 import { describe, expect, it } from "vitest";
 import type { ContentBlock, SessionEvent } from "./api/types";
 import {

@@ -3,24 +3,11 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/ToolResultProtocol.tla",
   "formal/tla/ToolResultProtocol.cfg",
-  "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
-  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
-  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
+  "formal/tla/ToolResultProtocol.tla",
   "scripts/ci/formal_event_batch_mutations.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
-  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
-  "crates/contract/awaken-runtime-contract/src/terminal.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
-  "crates/contract/awaken-agent-contract/src/agent/run.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The sole private production pending_ticket_admission consumes the current RunState, real expected Run/Thread identities and the existing snapshot lookup observation. It reuses validate_resume_ticket_owner, prioritizes explicit Running/Ended over absent/duplicate/corrupt tickets, preserves exact-ticket admission for unknown legacy state, and returns typed decisions to the original repair/error/Pending paths.'''

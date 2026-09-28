@@ -1,3 +1,4 @@
+// @formal evidence agent_inputs.rejected_revision_does_not_mutate
 use awaken_config_resolver::{AgentInputBindingRepository, AgentInputConfig};
 
 pub fn ambiguous_keys_fail_closed(store: &impl AgentInputBindingRepository) {

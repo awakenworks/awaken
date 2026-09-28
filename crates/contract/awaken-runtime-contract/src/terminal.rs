@@ -1,3 +1,6 @@
+// @formal entrypoint remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
+// @formal entrypoint remote_worker.pending_signal_is_consumed_by_commit
+// @formal entrypoint tool_result.terminal_run_rejects_late_result
 //! Post-commit observation of terminal Runs.
 //!
 //! This is deliberately narrower than a lifecycle hook: an observer receives

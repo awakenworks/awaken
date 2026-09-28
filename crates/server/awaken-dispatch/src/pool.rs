@@ -1,3 +1,12 @@
+// @formal entrypoint remote_worker.maintenance_scheduler_respects_adapter_ownership
+// @formal entrypoint run_ingress.pool_retry_gate_admits_one_probe_and_uses_bounded_monotonic_backoff
+// @formal entrypoint run_ingress.request_local_resolution_retry_honors_persisted_deadline
+// @formal entrypoint session.agent_message_missing_lifecycle_projection_relinquishes_without_settlement
+// @formal entrypoint session_run.recovery_claim_is_admission_only
+// @formal entrypoint worker_drain.closed_generation_is_absorbing
+// @formal entrypoint worker_drain.no_claim_after_acknowledgement
+// @formal entrypoint worker_drain.no_claim_attempt_after_registry_drain
+// @formal entrypoint worker_drain.registry_transition_follows_local_fence
 //! The process-level dispatch pool.
 //!
 //! [`DispatchService`](crate::DispatchService) binds one drain loop to one

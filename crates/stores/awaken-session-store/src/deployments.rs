@@ -1,3 +1,7 @@
+// @formal entrypoint deployment.cas_prevents_lost_update
+// @formal entrypoint deployment.claim_and_run_commit_atomically
+// @formal entrypoint deployment.scheduled_capacity_is_transactional
+// @formal entrypoint deployment.stale_scheduler_cannot_claim_or_overwrite
 //! SQLite/Postgres adapters for durable Managed Deployments.
 
 use async_trait::async_trait;

@@ -1,3 +1,4 @@
+// @formal evidence checkpoint.crash_preserves_durable_truth
 //! #1 — the durable Postgres commit backend satisfies the runtime contract.
 //!
 //! ADR-0008 landed `PostgresCommitCoordinator` but nothing drove a real run

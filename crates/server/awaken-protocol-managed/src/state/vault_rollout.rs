@@ -1,3 +1,5 @@
+// @formal entrypoint credential.managed_rollout_abstract_ack_requires_every_target_adoption
+// @formal entrypoint credential.managed_rollout_failure_or_busy_session_remains_pending
 //! Credential-outbox consumer for online Managed Sessions.
 
 use awaken_agent_contract::stable_fingerprint;

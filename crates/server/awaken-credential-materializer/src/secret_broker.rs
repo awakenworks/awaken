@@ -1,3 +1,4 @@
+// @formal entrypoint credential_reference.exact_revision_never_resolves_another_revision
 //! Claim-fenced one-shot secret delivery and authority write-back adapter.
 
 use super::*;

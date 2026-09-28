@@ -1,3 +1,5 @@
+// @formal entrypoint credential.attempt_delivery_is_exact_epoch_bound_and_authority_preserving
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! Authenticated HTTP projection of Dispatch claim and attempt commands.
 //!
 //! The parent `WorkerDispatchService` remains the single application service;

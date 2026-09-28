@@ -1,3 +1,4 @@
+// @formal entrypoint resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
 //! `ContainerRuntime` adapter for the Kubernetes backend.
 //!
 //! Kubernetes object construction, continuation, and lifecycle primitives remain

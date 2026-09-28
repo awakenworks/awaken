@@ -3,9 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = []
-production_entrypoints = [
-  "crates/contract/awaken-session-realization-contract/src/session_realization/generation_authority.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Two one-byte equality representatives for each string identity; arbitrary u64 generation, epoch and expiry. A live root lease is a separately verified precondition.'''

@@ -1,3 +1,4 @@
+// @formal evidence skill.pinned_version_survives_retirement
 //! Backend-generic conformance for the versioned, binary-safe Skill repository.
 
 #[cfg(feature = "test-support")]

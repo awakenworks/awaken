@@ -2,35 +2,15 @@ claim_scope = "repository_safety"
 proof_grade = "abstract_model_checked"
 status = "model_linked"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
   "formal/tla/CheckpointRecovery.tla",
-  "crates/contract/awaken-runtime-contract/src/model_operation.rs",
-  "crates/runtime/awaken-runtime/src/engine/inference.rs",
-  "crates/runtime/awaken-runtime/tests/checkpoint.rs",
-  "crates/runtime/awaken-runtime/src/engine/model_operation.rs",
-  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
-  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
-  "crates/runtime/awaken-runtime/tests/execution/checkpoint_observation.rs",
-  "crates/runtime/awaken-runtime/tests/permission/recovery_evidence.rs",
-  "crates/runtime/awaken-runtime/tests/delegation.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "scripts/ci/check_formal_mutations.py",
   "scripts/ci/check_formal.sh",
-  "crates/server/awaken-dispatch/tests/lease_semantics.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
+  "scripts/ci/check_formal_mutations.py",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/model_operation.rs",
-  "crates/runtime/awaken-runtime/src/engine/inference.rs",
-  "crates/runtime/awaken-runtime/src/engine/model_operation.rs",
-  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
-  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''CheckpointRecovery explores MaxChunks=3, five entry classes, four predecessor evidence classes, and pending, absent, exact, storage, fenced, Run/Thread mismatch, cancelled and expired reads. Unknown observations cannot execute, delete checkpoints or acknowledge physical return; reads including a pending store settle under fair local timer/scheduler progress. Fifteen semantic mutations and fourteen reachability witnesses qualify the finite model; physical control ACK must follow the complete control observation, not merely the backend cancel callback.'''

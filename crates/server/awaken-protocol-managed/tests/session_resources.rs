@@ -1,3 +1,4 @@
+// @formal evidence session_resources.repository_rotation_requires_original_live_generation
 // awaken-file-limit-ceiling: 7631 (legacy oversized test file: split, never grow)
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
 //! Managed Agents contract, while whole-manifest replacement is explicitly owned

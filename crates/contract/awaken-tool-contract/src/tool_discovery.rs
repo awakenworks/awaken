@@ -1,3 +1,4 @@
+// @formal entrypoint tool.discovery_limit
 //! Stable provider-neutral input vocabulary for tool discovery.
 //!
 //! Query interpretation, ranking, and reveal persistence are runtime behavior

@@ -1,3 +1,5 @@
+// @formal entrypoint outcome.grade_transition_obeys_budget
+// @formal entrypoint outcome.terminal_absorption
 //! Pure Outcome lifecycle rules.
 //!
 //! This module owns no Run execution, persistence, protocol projection, prompt,

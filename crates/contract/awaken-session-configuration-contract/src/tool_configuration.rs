@@ -1,3 +1,4 @@
+// @formal entrypoint runtime_capability.bounded_iterator_uses_the_exact_eight_member_projection
 //! Mutable neutral tool configuration owned by one Session.
 
 use awaken_agent_contract::{

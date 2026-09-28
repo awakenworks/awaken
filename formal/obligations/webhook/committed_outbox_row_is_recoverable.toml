@@ -2,27 +2,15 @@ claim_scope = "repository_safety"
 proof_grade = "abstract_model_checked"
 status = "model_linked"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
   "external.exactly_once_side_effects",
 ]
 evidence = [
   "formal/tla/WebhookOutbox.tla",
-  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
-  "crates/stores/awaken-session-store/src/lib.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
-  "crates/stores/awaken-session-store/tests/process_crash_outbox.rs",
-  "crates/server/awaken-webhook-managed/src/lib.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
-  "crates/stores/awaken-session-store/src/lib.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
-  "crates/server/awaken-webhook-managed/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The finite TLA+ crash/restart model preserves a committed pending fact, but has no Rust-to-model refinement. The strict formal gate runs a real SQLite process-crash decision table: it kills a child after create returns and before notification, then opens a fresh production adapter and observes the exact revision-one aggregate and pending fact before idempotent completion. The child marker selects the post-commit kill boundary but is not persistence evidence; recovery is read only from the reopened database after process termination. That executable witness does not prove power-loss/fsync behavior, arbitrary crash coordinates, PostgreSQL restart recovery, database correctness, scheduler progress or eventual external delivery.'''

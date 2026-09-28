@@ -5,17 +5,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/RunIngress.tla",
-  "formal/tla/CommitEpochGuard.tla",
   "formal/tla/CommitEpochGuard.cfg",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-  "crates/server/awaken-dispatch/tests/sqlite_dispatch.rs",
-  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
+  "formal/tla/CommitEpochGuard.tla",
+  "formal/tla/RunIngress.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production typestate and Kani harness prove repository-owned commit/release ordering; PostgreSQL or SQLite lock correctness remains external TCB.'''

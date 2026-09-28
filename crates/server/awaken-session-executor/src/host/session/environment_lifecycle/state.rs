@@ -1,3 +1,5 @@
+// @formal entrypoint session_environment.closed_revoked_recovery_consumes_only_exact_unprotected_owner
+// @formal entrypoint session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
 //! Pure transitions for the sole Session Environment lifecycle owner.
 //!
 //! Provider I/O remains in the parent module so every transition into or out

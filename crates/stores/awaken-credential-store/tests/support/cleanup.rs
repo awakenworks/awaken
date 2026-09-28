@@ -1,3 +1,4 @@
+// @formal evidence credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
 //! Shared cleanup-fence conformance, called by every repository backend.
 
 use super::{CredentialError, CredentialMutationIntent, CredentialRepo, source};

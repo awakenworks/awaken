@@ -1,3 +1,4 @@
+// @formal evidence remote_worker.maintenance_scheduler_respects_adapter_ownership
 //! The database-less worker's HTTP dispatch client (`HttpDispatchQueue`) over a real
 //! socket.
 //!

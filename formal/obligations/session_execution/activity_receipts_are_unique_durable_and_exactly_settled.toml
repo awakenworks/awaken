@@ -4,24 +4,9 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/SessionActivityProof.tla",
-  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state/tests.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state/model.rs",
   "scripts/ci/formal_kani_options.py",
-  "crates/server/awaken-session-application/src/run_admission.rs",
-  "crates/server/awaken-session-application/src/tests/authority.rs",
-  "crates/server/awaken-session-application/src/tests/run_admission.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
-  "crates/server/awaken-session-application/src/activity.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state.rs",
-  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
-  "crates/server/awaken-session-application/src/run_admission.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Unbounded inductive invariant stated in the linked TLAPS proof; adapters remain outside the theorem.'''

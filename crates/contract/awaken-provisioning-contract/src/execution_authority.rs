@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Synchronous authority port for committing a physical execution effect.
 
 use std::{io, marker::PhantomData, time::Duration};

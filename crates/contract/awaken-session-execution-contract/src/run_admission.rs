@@ -1,3 +1,7 @@
+// @formal entrypoint session_event_batch.run_reservation_precedes_distinct_activity_receipt
+// @formal entrypoint session_execution.activity_receipts_are_unique_durable_and_exactly_settled
+// @formal entrypoint session_run.recovery_claim_is_admission_only
+// @formal entrypoint session_run.reservation_precedes_activity
 //! Protocol-neutral admission vocabulary for one durable Session-scoped Run.
 //!
 //! The Session application coordinates the existing Session root and Run

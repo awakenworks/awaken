@@ -8,14 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ObservationReconcileProof.tla",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-  "crates/bin/awaken-cli/src/observation_reconcile.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-worker-contract/src/registry.rs",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-  "crates/bin/awaken-cli/src/observation_reconcile.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The private production fence is constructible only empty and can install a fingerprint only after a successful reconcile result; Kani exhausts every u8 prior/current fingerprint pair and both completion outcomes, proving Coalesce iff an exact success-owned fence exists. The same mutex spans admission, publication and completion. Together with the full-u64 strictly increasing changed-evidence sequence kernel, a skipped capture was the target of that successful reconciliation or was overtaken by the newer source snapshot read during it. Source-list atomicity, fingerprint collision resistance, Tokio mutex correctness, reconciler source freshness, publication I/O and external orchestration remain executable or TCB evidence.'''

@@ -1,3 +1,6 @@
+// @formal entrypoint session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+// @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
+// @formal evidence session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
 //! Canonical durable Session root mutation boundary.
 
 use super::*;

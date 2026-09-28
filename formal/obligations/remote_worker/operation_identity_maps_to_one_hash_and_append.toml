@@ -8,24 +8,11 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-  "crates/stores/awaken-store-conformance/src/lib.rs",
-  "crates/server/awaken-session-executor/src/commit_ingest.rs",
+  "scripts/ci/check_formal.sh",
   "scripts/ci/formal_kani_options.py",
   "scripts/ci/test_formal_profile.py",
-  "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-  "crates/server/awaken-session-executor/src/commit_ingest.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The contract-owned production admission kernel used by every commit-store adapter accepts replay only for the same Run identity and payload hash, and admits a new append only at the exact Thread version and Run ordinal with a nonwrapping successor version. Kani proves the complete scalar decision domains. Canonical serialization and hashing are executable contract evidence; backend locks, transaction durability, sequence allocation, transition validation, and readback remain executable backend evidence.'''

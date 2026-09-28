@@ -4,12 +4,8 @@ status = "model_linked"
 tcb_assumptions = []
 evidence = [
   "formal/tla/Delegation.tla",
-  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
-  "crates/contract/awaken-runtime-contract/src/delegation.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

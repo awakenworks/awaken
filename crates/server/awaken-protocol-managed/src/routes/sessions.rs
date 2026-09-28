@@ -1,3 +1,5 @@
+// @formal entrypoint session.runtime_projection_delivery_preserves_exact_payload_digest_and_monotonic_completion
+// @formal entrypoint session_event_batch.exact_retry_replays_and_changed_retry_conflicts
 //! The axum router: four Managed Agents routes over [`ManagedState`].
 //!
 //! Handlers only decode DTOs, call the state, and encode responses; no runtime

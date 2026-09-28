@@ -5,24 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/StoreHistory.tla",
   "formal/tla/StoreHistory.cfg",
-  "crates/contract/awaken-dispatch-contract/src/claimed_commit.rs",
-  "crates/stores/awaken-store-conformance/src/lib.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "formal/tla/StoreHistory.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-  "crates/contract/awaken-dispatch-contract/src/claimed_commit.rs",
-  "crates/stores/awaken-store-conformance/src/lib.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The contract-owned kernels require exact Run and payload identity, admit only the exact nonwrapping Thread/Run prefix, and construct the nonduplicate receipt from the adapter-persisted identity, hash, sequence, and admitted successor without remapping. In-memory, SQLite, and PostgreSQL adapters use those kernels and persist the same sequence/version at their atomic append boundary; the file store delegates to the in-memory implementation. The claim-fenced default path rejects version overflow before its underlying durable commit. Kani proves the scalar identity, admission, successor, and receipt mappings. Lock and transaction durability, database/filesystem crash persistence, generated SQL behavior, and backend engines remain executable or TCB evidence.'''

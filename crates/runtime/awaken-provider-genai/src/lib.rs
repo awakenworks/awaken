@@ -1,3 +1,6 @@
+// @formal entrypoint credential_probe.tri_state_is_total_and_fail_safe
+// @formal entrypoint protocol_adapter.genai_signed_reasoning_transcript_projection_is_dialect_exact_nonduplicating_and_transport_independent
+// @formal evidence llm.inference_budget_requires_positive_response_before_actual_watchdog
 //! `genai`-backed implementation of the runtime's `LlmExecutor` port.
 //!
 //! This adapter is the only crate allowed to name the model SDK. It maps the

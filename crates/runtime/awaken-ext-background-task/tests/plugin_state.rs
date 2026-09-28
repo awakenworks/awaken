@@ -1,3 +1,5 @@
+// @formal evidence background_task.process_completion_is_retryable_and_stale_completion_is_inert
+// @formal evidence background_task.stale_fence_never_finishes_or_heartbeats
 use std::collections::BTreeSet;
 use std::sync::Arc;
 

@@ -1,3 +1,13 @@
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal entrypoint worker_authority.independent_evidence_never_extends_expired_proof
+// @formal entrypoint worker_credential.heartbeat_observations_are_one_atomic_batch
+// @formal entrypoint worker_credential.publication_budget_covers_probe_and_delivery
+// @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
+// @formal entrypoint worker_drain.closed_generation_is_absorbing
+// @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
+// @formal entrypoint worker_drain.no_claim_after_acknowledgement
+// @formal entrypoint worker_drain.no_claim_attempt_after_registry_drain
+// @formal entrypoint worker_drain.registry_transition_follows_local_fence
 //! Worker registry authority, heartbeat, and local admission lifecycle.
 
 use std::collections::{BTreeMap, BTreeSet};

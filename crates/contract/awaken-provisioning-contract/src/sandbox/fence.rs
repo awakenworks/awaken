@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.effect_fence_succession_is_renewal_or_epoch_advance
 //! The realization-lease fence algebra shared by physical Sandbox effects.
 //!
 //! [`FenceToken`] names exactly the coordinates and the successor law that the

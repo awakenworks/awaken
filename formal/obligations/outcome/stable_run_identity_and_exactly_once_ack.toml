@@ -2,36 +2,19 @@ claim_scope = "repository_safety"
 proof_grade = "abstract_model_checked"
 status = "model_linked"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/OutcomeLifecycle.tla",
-  "formal/tla/OutcomeLifecycle.cfg",
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-  "crates/runtime/awaken-ext-goal/src/state.rs",
-  "crates/runtime/awaken-ext-goal/src/controller.rs",
-  "crates/stores/awaken-store-conformance/src/lib.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/runtime/awaken-store-inmem/tests/conformance.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-fs/tests/conformance.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/tests/checkpoint_reader.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-  "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
-  "crates/server/awaken-session-executor/tests/outcome_state.rs",
-  "scripts/ci/check_formal.sh",
-  "scripts/ci/check-reliability.sh",
-  "scripts/ci/pg_tests.sh",
   "docs/adr/0064-runtime-owned-outcome-orchestration.md",
   "formal/README.md",
+  "formal/tla/OutcomeLifecycle.cfg",
+  "formal/tla/OutcomeLifecycle.tla",
+  "scripts/ci/check-reliability.sh",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/pg_tests.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-  "crates/runtime/awaken-ext-goal/src/state.rs",
-  "crates/runtime/awaken-ext-goal/src/controller.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''OutcomeLifecycle checks MaxIterations=3 with finite phase/result/grade domains. StableRunIdentity constrains abstract Worker, Grader and evaluated iteration sets, while AcknowledgmentExactlyOnce constrains the capped acknowledgment phase and count to zero before acknowledgment and one at max_iterations_reached. ReplayOrStaleVersion is an abstract stutter. The model does not contain Rust identifiers, commit payloads, stores, executor responses or a Rust-to-model refinement.'''

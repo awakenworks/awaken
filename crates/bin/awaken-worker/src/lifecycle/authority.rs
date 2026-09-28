@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! One guarded projection of the current registry receipt per Worker instance.
 //! The durable registry remains authoritative. Heartbeat scheduling and local
 //! Session admission consult this same projection; neither keeps a second lease.

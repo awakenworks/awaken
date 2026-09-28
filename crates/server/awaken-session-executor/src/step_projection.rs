@@ -1,3 +1,4 @@
+// @formal entrypoint runtime.settled_step_projection_is_closed_exact_and_non_widening
 //! Canonical projection from one settled Runtime Host step into the neutral
 //! Session/Run application vocabulary.
 

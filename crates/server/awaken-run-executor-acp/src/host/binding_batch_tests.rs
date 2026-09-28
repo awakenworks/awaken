@@ -1,3 +1,4 @@
+// @formal evidence worker_credential.local_binding_batch_is_atomic
 //! Whole production batch calls, shared by native threads and Loom schedules.
 
 use super::*;

@@ -1,3 +1,4 @@
+// @formal evidence session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
 //! Terminal resource reclamation through the Session aggregate's one durable
 //! cleanup operation.
 

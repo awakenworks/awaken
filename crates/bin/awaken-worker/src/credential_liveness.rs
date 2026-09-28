@@ -1,3 +1,6 @@
+// @formal entrypoint worker_credential.heartbeat_observations_are_one_atomic_batch
+// @formal entrypoint worker_credential.probe_failure_does_not_drain_worker
+// @formal evidence worker_credential.publication_budget_covers_probe_and_delivery
 //! Worker-local observation lifecycle.
 //!
 //! Provider adapters own opaque login inspection. This module owns only the

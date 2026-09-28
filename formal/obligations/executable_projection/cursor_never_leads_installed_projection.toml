@@ -2,20 +2,14 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
   "formal/tla/ExecutableProjectionRefreshProof.tla",
-  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
-  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-durable-projection/src/lib.rs",
-  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
-  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The sole production ProjectionCursor transition now consumes the opaque ProjectionTarget issued by the shared durable loader for both executable domains. Kani uses no assumptions or stubs and exhausts every prior and captured-target u64 pair with both ordinary installer outcomes. A forward or equal target installs before the Release-store cursor advance; a lower complete-replay target lowers the private cursor before install and restores its prior value when installation returns an error. At installer entry, after successful publication, and at every returned terminal outcome, the cursor cannot exceed the modeled installed high-water. Fixed Kani 0.67.0 with the qualified patched CBMC/CaDiCaL backend verified the shared harness with 119 checks, zero failures and one compiler/library unreachable in 0.24571018 seconds of verification and 3.77 guarded seconds, at 290020 KiB peak process RSS; the guarded run remained below the 600-second and 12-GiB aggregate limits, with -j1, CARGO_BUILD_BUILD_DIR aligned to the isolated Kani target, and RUSTC_WRAPPER empty.'''

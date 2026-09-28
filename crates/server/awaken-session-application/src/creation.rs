@@ -1,3 +1,9 @@
+// @formal entrypoint session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+// @formal entrypoint session_creation.atomic_complete_root_precedes_every_projection
+// @formal entrypoint session_creation.exact_replay_conflict_and_tombstone_are_closed
+// @formal entrypoint session_creation.repository_receipt_is_the_only_post_create_effect_gate
+// @formal entrypoint session_event_batch.initial_plan_and_wake_activity_are_atomic_with_root
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 //! Canonical durable Session creation protocol.
 //!
 //! Public protocols lower their wire inputs into [`SessionCreationIntent`].

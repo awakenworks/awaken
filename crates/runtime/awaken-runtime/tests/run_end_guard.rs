@@ -1,3 +1,4 @@
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! The run-end continuation guard mechanism (ADR: run-end guard). At a
 //! natural-end boundary the runtime consults registered guards: a `Steer` injects
 //! a feedback user message and continues the loop; a `Complete` ends it carrying the

@@ -1,3 +1,10 @@
+// @formal entrypoint memory.absent_conditional_delete_is_idempotent
+// @formal entrypoint memory.cas_has_one_winner_per_generation
+// @formal entrypoint memory.idempotent_write_does_not_advance_generation
+// @formal entrypoint memory.matched_conditional_delete_removes_exact_head
+// @formal entrypoint memory.rename_replace_preserves_source_identity
+// @formal entrypoint memory.stale_cas_never_clobbers_live_content
+// @formal entrypoint memory.stale_conditional_delete_never_removes_live_head
 //! Postgres [`MemoryRepository`] over the crate's `memory_store` migration scope — the
 //! multi-node sibling of the SQLite backend over the same portable bundle.
 

@@ -2,41 +2,21 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/RunIngressKernel.tla",
-  "formal/tla/RunIngress.tla",
-  "formal/tla/RunIngress.cfg",
   "docs/adr/0009-durable-run-ingress-slice.md",
   "docs/adr/0011-autonomous-dispatch-service.md",
   "docs/adr/0019-distributed-dispatch-and-wake-signal.md",
   "docs/adr/0024-daemon-lease-renewal.md",
-  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/service.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/operations_claims.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/recovery_credentials.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
-  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
-  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
-  "crates/server/awaken-dispatch/tests/lease_semantics.rs",
+  "formal/tla/RunIngress.cfg",
+  "formal/tla/RunIngress.tla",
+  "formal/tla/RunIngressKernel.tla",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-  "crates/server/awaken-dispatch/src/service.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The assumption-free Kani harness exhausts every production DispatchState, cancellation bit and u64 epoch in the canonical DispatchTransition::claim reducer. Every incrementable Pending, Awaiting or Leased row becomes Leased at exactly epoch+1, while an exhausted epoch fails closed and no reserved or closed row is reopened. The proof covers epoch minting in this pure kernel; lease-expiry eligibility and adapter transactions remain outside it.'''

@@ -1,3 +1,4 @@
+// @formal evidence remote_worker.maintenance_scheduler_respects_adapter_ownership
 //! I/O observation at the existing failure-injecting Dispatch adapter.
 //! This controls returning/pending ports, never scheduler decisions.
 use awaken_dispatch::DispatchError;

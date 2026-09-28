@@ -1,3 +1,10 @@
+// @formal entrypoint session_event_batch.exact_retry_replays_and_changed_retry_conflicts
+// @formal entrypoint session_event_batch.final_non_admission_excludes_late_acceptance
+// @formal entrypoint session_event_batch.idempotency_key_appends_at_most_once
+// @formal entrypoint session_event_batch.idempotent_receipt_is_admission_stable
+// @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
+// @formal entrypoint tool_result.one_pending_occurrence_has_one_admitted_reply
 //! Admission and reconciliation of the Session root's durable Event batches.
 //!
 //! This module coordinates existing owners only. It does not persist an Event

@@ -8,24 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
-  "crates/server/awaken-dispatch/src/worker/tests.rs",
-  "crates/server/awaken-dispatch/src/recovery_projection.rs",
-  "crates/server/awaken-dispatch/tests/crash_before_settle.rs",
-  "crates/server/awaken-dispatch/tests/worker_edge_cases.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/terminal.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
-  "crates/server/awaken-dispatch/src/recovery_projection.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''One production classifier now owns fresh, awaiting and recovered input admission. Kani exhausts terminal truth, ticket presence, correlation equality and unbound-input classes: terminal truth, stale correlations and orphan bound signals cannot be delivered again; only an exact current ticket or a fresh unbound input remains executable. The existing terminal projection kernel separately proves that only exact Ended Run/Thread truth enters terminal repair.'''

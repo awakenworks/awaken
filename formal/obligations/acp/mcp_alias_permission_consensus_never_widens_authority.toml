@@ -4,14 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.mcp_busy_acp_revocation_propagation_and_process_termination",
 ]
-evidence = [
-  "crates/server/awaken-run-executor-acp/src/lib.rs",
-  "crates/server/awaken-run-executor-acp/src/tests.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-protocol-acp/src/lib.rs",
-  "crates/server/awaken-run-executor-acp/src/lib.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

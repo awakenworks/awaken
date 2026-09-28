@@ -1,3 +1,4 @@
+// @formal evidence session_resources.repository_rotation_requires_original_live_generation
 //! One server, the whole management plane: the admin config CRUD and the Managed
 //! vault/credential front door are mounted together (`build_all_in_one_router`),
 //! and a credential entered through the Managed vault surface is visible to

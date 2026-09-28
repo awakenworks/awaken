@@ -1,3 +1,9 @@
+// @formal entrypoint assembly_role.process_role_projects_exact_startup_authority
+// @formal entrypoint service_lifecycle.startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
+// @formal entrypoint service_lifecycle.startup_wiring_is_exact_for_every_service_role
+// @formal entrypoint service_lifecycle.startup_wiring_requires_every_role_owned_component
+// @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
+// @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
 //! Canonical process lifecycle shared by the product launcher and thin service binaries.
 
 use std::process::ExitCode;

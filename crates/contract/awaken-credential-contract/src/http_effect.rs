@@ -1,3 +1,6 @@
+// @formal entrypoint credential.http_effect_usage_binds_exact_fields_and_placements
+// @formal entrypoint credential.platform_relay_requires_exact_holder_workspace_usage_and_target
+// @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize};

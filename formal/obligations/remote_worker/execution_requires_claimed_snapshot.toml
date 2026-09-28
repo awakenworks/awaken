@@ -8,21 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/server/awaken-dispatch/src/recovery_projection.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-  "crates/server/awaken-dispatch/src/worker/tests.rs",
-  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/dispatch.rs",
-  "crates/server/awaken-dispatch/src/recovery_projection.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The Worker now obtains one private process-local authority only after selecting the committed reader or successfully installing the exact Run/Thread recovery snapshot. Every physical model, tool and Sandbox call site must pass that value, and the production admission rechecks its Run, Thread and epoch before entering the existing physical-attempt boundary. The named Kani harness exhausts all identity-match combinations.'''

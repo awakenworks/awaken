@@ -1,3 +1,4 @@
+// @formal entrypoint session_execution.activity_receipts_are_unique_durable_and_exactly_settled
 //! The Session root's one activity/execution reducer, borrowing its persisted fields.
 //!
 //! No receipt map or parallel state is stored here. SQL CAS, operation receipts,

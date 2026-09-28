@@ -1,3 +1,8 @@
+// @formal evidence data_subject.stale_writer_never_applies
+// @formal evidence erasure.accountability_stamp_follows_all_targets
+// @formal evidence erasure.checkpoint_never_forgets_completed_targets
+// @formal evidence erasure.completion_requires_accountability_stamp
+// @formal evidence erasure.each_target_is_counted_once
 use super::*;
 use std::sync::Mutex;
 

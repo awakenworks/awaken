@@ -3,14 +3,10 @@ proof_grade = "production_kernel_proved"
 status = "model_linked"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/ToolSchedule.tla",
   "formal/tla/ToolSchedule.cfg",
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+  "formal/tla/ToolSchedule.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-tool-contract/src/tool.rs",
-  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

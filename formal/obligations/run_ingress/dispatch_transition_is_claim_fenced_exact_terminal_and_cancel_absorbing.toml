@@ -4,25 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/RunIngress.tla",
-  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
-  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''
