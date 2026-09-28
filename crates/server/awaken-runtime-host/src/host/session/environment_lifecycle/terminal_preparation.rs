@@ -183,6 +183,90 @@ impl SharedHost {
                 }
             },
         };
+        // Revocation closes the old Hand permanently, not the aggregate's exact
+        // physical source. Terminal Repository publication already holds its
+        // current effect authority and a Ready observation. Reuse the ordinary
+        // fresh-wrapper mechanism, but retire its Candidate immediately under
+        // the existing Store identity: never publish a Resident or an Adopt
+        // receipt merely to finish this terminal command.
+        if mode == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
+            && let Some(retiring) = self
+                .session_slots
+                .read(thread, |slot| match &slot.environment_owner {
+                    SessionEnvironmentOwner::Retiring(retiring)
+                        if retiring.cause
+                            == SessionEnvironmentRetirementCause::RealizationRevocation
+                            && matches!(&retiring.owned,
+                                RetiringEnvironmentOwner::Bound(owned)
+                                    if matches!(&owned.identity,
+                                        BoundSessionEnvironmentIdentity::Durable { .. })
+                                    && binding == Some(owned.binding.as_str())
+                                    && Arc::ptr_eq(&owned.environment, &environment)) =>
+                    {
+                        Some(retiring.clone())
+                    }
+                    _ => None,
+                })
+                .flatten()
+        {
+            let admit = || {
+                awaken_provisioning_contract::with_current_sandbox_effect(
+                    effect_fence,
+                    &authority,
+                    |_| Ok(()),
+                )
+                .map_err(|error| {
+                    HostError::unavailable_classified(
+                        "session_terminal_repository_rebind_authority_lost",
+                        error.to_string(),
+                    )
+                })
+            };
+            admit()?;
+            let fresh = Arc::new(
+                provider
+                    .rebind_retained(
+                        spec,
+                        &environment.handle(),
+                        &environment,
+                        crate::session_environment::ProviderEffect::Fenced {
+                            fence: effect_fence,
+                            authority: &authority,
+                        },
+                    )
+                    .await
+                    .map_err(|error| {
+                        HostError::unavailable_classified(
+                            "session_terminal_repository_source_rebind_indeterminate",
+                            error.to_string(),
+                        )
+                    })?,
+            );
+            admit()?;
+            self.session_slots.update(thread, |slot| {
+                slot.environment_owner
+                    .prepare_retiring_realization_adoption(&retiring, fresh.clone())?;
+                let SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
+                    candidate,
+                )) = &slot.environment_owner
+                else {
+                    return Err(HostError::internal(
+                        "terminal source rebind lost its Candidate",
+                    ));
+                };
+                let candidate = candidate.clone();
+                slot.environment_owner
+                    .begin_retirement_with_committed_candidate(
+                        &candidate,
+                        SessionEnvironmentRetirementCause::Terminal {
+                            effect_id: effect_fence.operation_id.clone(),
+                        },
+                    )?;
+                Ok::<_, HostError>(())
+            })?;
+            environment = fresh;
+            adopted = false;
+        }
         if adopted
             && !mode.requires_live_source()
             && let Some(retiring) = self

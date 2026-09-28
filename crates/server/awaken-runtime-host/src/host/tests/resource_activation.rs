@@ -1130,8 +1130,11 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "P5 ordinary execution remains closed"
         );
         // P6: the generic live/checkpoint source path remains denied, even with
-        // an exact handle and current lease. P7: nonterminal retirement cannot be
-        // relabelled as a terminal publication source by this new role projection.
+        // an exact handle and current lease. P7: exact Durable revocation with
+        // Ready physical source + a current terminal effect must replace the
+        // closed wrapper through existing rebind/Candidate retirement. It must
+        // preserve identity/data and stay invisible to ordinary execution;
+        // simply allowing the old Arc or publishing a Resident fails P7.
         let binding = terminal_projection.environment.binding().unwrap();
         let publication_fence = lease
             .sandbox_effect_fence(command.effect_id.clone())
@@ -1159,24 +1162,49 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                 panic!("P7 retained owner");
             }
         });
+        let before = host
+            .session_slots
+            .read(session_id, |slot| {
+                slot.environment_owner.terminal_bound_environment().unwrap()
+            })
+            .unwrap();
+        managed
+            .terminal_cleanup()
+            .unwrap()
+            .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
+            .await
+            .expect("P7 fresh wrapper resumes exact terminal publication");
+        let after = host
+            .session_slots
+            .read(session_id, |slot| {
+                assert!(
+                    matches!(
+                        slot.environment_owner,
+                        crate::session_slot::SessionEnvironmentOwner::Retiring(_)
+                    ),
+                    "P7 not Resident"
+                );
+                slot.environment_owner.terminal_bound_environment().unwrap()
+            })
+            .unwrap();
         assert!(
-            managed
-                .terminal_cleanup()
-                .unwrap()
-                .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
-                .await
-                .is_err(),
-            "P7 revoked owner remains closed"
+            !Arc::ptr_eq(&before.environment, &after.environment),
+            "P7 no old wrapper reuse"
         );
-        host.session_slots.update(session_id, |slot| {
-            if let crate::session_slot::SessionEnvironmentOwner::Retiring(retiring) =
-                &mut slot.environment_owner
-            {
-                retiring.cause = crate::session_slot::SessionEnvironmentRetirementCause::Terminal {
-                    effect_id: "terminal-source-preparation".into(),
-                };
-            }
-        });
+        assert_eq!(before.binding, after.binding, "P7 exact durable binding");
+        assert_eq!(
+            before.identity, after.identity,
+            "P7 original Store identity"
+        );
+        assert_eq!(
+            before.environment.handle(),
+            after.environment.handle(),
+            "P7 exact physical target"
+        );
+        assert!(
+            host.session_environment(session_id).await.is_none(),
+            "P7 ordinary execution stays closed"
+        );
     }
     let first = managed
         .terminal_cleanup()
