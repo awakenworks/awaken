@@ -7,39 +7,26 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use awaken_lease_contract::UtcTime;
+use awaken_lease_testkit::ManualClock;
 use awaken_provisioning_contract as pc;
 
 use super::WarmContainerPool;
-use super::lease::{
-    ClaimOutcome, Hold, RecordKind, WarmCapacityLeasePolicy, WarmCapacityLeases, WarmLeaseClock,
-};
+use super::lease::{ClaimOutcome, Hold, RecordKind, WarmCapacityLeasePolicy, WarmCapacityLeases};
 use super::tests::spec;
 use crate::{ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime, RuntimeError};
 
 const T0: u64 = 1_700_000_000_000;
 const TTL: u64 = 60_000;
 
-struct ManualClock(AtomicU64);
-
-impl ManualClock {
-    fn at(ms: u64) -> Arc<Self> {
-        Arc::new(Self(AtomicU64::new(ms)))
-    }
-
-    fn set(&self, ms: u64) {
-        self.0.store(ms, Ordering::SeqCst);
-    }
-}
-
-impl WarmLeaseClock for ManualClock {
-    fn now_ms(&self) -> u64 {
-        self.0.load(Ordering::SeqCst)
-    }
+/// The shared hand-driven clock, started at `ms`.
+fn manual_clock(ms: u64) -> Arc<ManualClock> {
+    Arc::new(ManualClock::new(ms))
 }
 
 /// One container daemon shared by every pool of a test. Containers are keyed
@@ -297,7 +284,7 @@ fn policy() -> WarmCapacityLeasePolicy {
 }
 
 fn leases(daemon: &FakeDaemon, clock: &Arc<ManualClock>) -> WarmCapacityLeases {
-    WarmCapacityLeases::new(daemon.lease_root.path(), policy()).with_clock(clock.clone())
+    WarmCapacityLeases::new(daemon.lease_root.path(), policy(), clock.clone())
 }
 
 /// A Worker incarnation over the shared daemon. Maintenance is off so every
@@ -354,7 +341,7 @@ fn container_id(environment: &Arc<dyn crate::ContainerEnvironment>) -> String {
 #[tokio::test]
 async fn l1_a_live_peers_lease_is_never_reclaimed() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let owner = worker(&daemon, &clock, 1).await;
     assert_eq!(owner.prewarm(&spec("l1", &[]), 1).await.unwrap(), 1);
     let scope = ready_scopes(&owner).into_iter().next().unwrap();
@@ -401,7 +388,7 @@ async fn l1_a_live_peers_lease_is_never_reclaimed() {
 #[tokio::test]
 async fn l1_a_lease_renewed_exactly_at_its_deadline_is_not_reclaimed() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let owner = worker(&daemon, &clock, 1).await;
     owner.prewarm(&spec("boundary", &[]), 1).await.unwrap();
     let peer = worker(&daemon, &clock, 1).await;
@@ -423,7 +410,7 @@ async fn l1_a_lease_renewed_exactly_at_its_deadline_is_not_reclaimed() {
 #[tokio::test]
 async fn l2_an_unrenewed_lease_is_reclaimed_at_exactly_its_deadline_and_only_once() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let dead = worker(&daemon, &clock, 1).await;
     dead.prewarm(&spec("expiry", &[]), 1).await.unwrap();
     let scope = ready_scopes(&dead).into_iter().next().unwrap();
@@ -461,7 +448,7 @@ async fn l2_an_unrenewed_lease_is_reclaimed_at_exactly_its_deadline_and_only_onc
 #[tokio::test]
 async fn l2_two_racing_reclaimers_remove_expired_capacity_exactly_once() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let dead = worker(&daemon, &clock, 1).await;
     dead.prewarm(&spec("race", &[]), 1).await.unwrap();
     let scope = ready_scopes(&dead).into_iter().next().unwrap();
@@ -502,7 +489,7 @@ async fn l2_two_racing_reclaimers_remove_expired_capacity_exactly_once() {
 #[tokio::test]
 async fn l2_a_reclaimer_that_loses_the_rename_removes_nothing() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let dead = worker(&daemon, &clock, 1).await;
     dead.prewarm(&spec("rename", &[]), 1).await.unwrap();
     kill(dead);
@@ -542,7 +529,7 @@ async fn l2_a_reclaimer_that_loses_the_rename_removes_nothing() {
 #[tokio::test]
 async fn l1_a_renewal_that_lands_between_observation_and_claim_keeps_the_lease() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let owner = worker(&daemon, &clock, 1).await;
     owner.prewarm(&spec("renew-race", &[]), 1).await.unwrap();
     let scope = ready_scopes(&owner).into_iter().next().unwrap();
@@ -551,7 +538,12 @@ async fn l1_a_renewal_that_lands_between_observation_and_claim_keeps_the_lease()
     clock.set(T0 + TTL);
     let seen = reclaimer.lease_ledger_for_test().store().observe().unwrap();
     assert_eq!(seen[0].kind, RecordKind::Lease);
-    assert!(seen[0].deadline_ms <= T0 + TTL, "observed as expired");
+    assert!(
+        seen[0]
+            .deadline
+            .is_expired_at(UtcTime::from_epoch_ms(T0 + TTL)),
+        "observed as expired"
+    );
     owner.renew_capacity_leases().await.unwrap();
     assert_eq!(
         reclaimer
@@ -587,7 +579,7 @@ async fn l1_a_renewal_that_lands_between_observation_and_claim_keeps_the_lease()
 #[tokio::test]
 async fn l2_a_renewal_after_the_claim_is_lost_and_the_owner_forgets_the_container() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let stalled = worker(&daemon, &clock, 1).await;
     stalled.prewarm(&spec("stalled", &[]), 1).await.unwrap();
     let scope = ready_scopes(&stalled).into_iter().next().unwrap();
@@ -635,7 +627,7 @@ async fn l2_a_renewal_after_the_claim_is_lost_and_the_owner_forgets_the_containe
 #[tokio::test]
 async fn l2c_a_crashed_reclaimers_claim_is_finished_by_the_next_reclaimer() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let dead = worker(&daemon, &clock, 1).await;
     dead.prewarm(&spec("crashed-claim", &[]), 1).await.unwrap();
     let scope = ready_scopes(&dead).into_iter().next().unwrap();
@@ -678,7 +670,7 @@ async fn l2c_a_crashed_reclaimers_claim_is_finished_by_the_next_reclaimer() {
 #[tokio::test]
 async fn l3_a_checked_out_container_is_never_reclaimed_whatever_its_lease() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let dead = worker(&daemon, &clock, 2).await;
     dead.prewarm(&spec("checkout", &[]), 2).await.unwrap();
     let environment = dead
@@ -722,7 +714,7 @@ async fn l3_a_checked_out_container_is_never_reclaimed_whatever_its_lease() {
 #[tokio::test]
 async fn l3_a_candidate_whose_record_was_claimed_is_never_handed_out() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let stalled = worker(&daemon, &clock, 1).await;
     stalled.prewarm(&spec("claimed", &[]), 1).await.unwrap();
     let candidate = ready_scopes(&stalled).into_iter().next().unwrap();
@@ -783,7 +775,7 @@ async fn l3_a_candidate_whose_record_was_claimed_is_never_handed_out() {
 #[tokio::test]
 async fn l4_the_record_exists_before_the_runtime_sees_the_create() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let pool = worker(&daemon, &clock, 2).await;
     pool.prewarm(&spec("ordering", &[]), 2).await.unwrap();
     let _environment = pool
@@ -810,7 +802,7 @@ async fn l4_the_record_exists_before_the_runtime_sees_the_create() {
 async fn l4_a_failed_mint_creates_nothing() {
     use std::os::unix::fs::PermissionsExt as _;
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let pool = worker(&daemon, &clock, 1).await;
     let domain = pool.lease_ledger_for_test().store().directory().to_owned();
     std::fs::set_permissions(&domain, std::fs::Permissions::from_mode(0o500)).unwrap();
@@ -827,7 +819,7 @@ async fn l4_a_failed_mint_creates_nothing() {
 #[tokio::test]
 async fn an_empty_domain_directory_is_retired_and_re_established() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let peer = worker(&daemon, &clock, 1).await;
     let pool = worker(&daemon, &clock, 1).await;
     let domain = pool.lease_ledger_for_test().store().directory().to_owned();
@@ -845,7 +837,7 @@ async fn an_empty_domain_directory_is_retired_and_re_established() {
 #[tokio::test]
 async fn l4_a_create_in_flight_when_its_worker_died_is_reclaimed_from_its_record() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let dying = Arc::new(worker(&daemon, &clock, 1).await);
     daemon.hold_create.store(true, Ordering::SeqCst);
     let started = daemon.create_started.notified();
@@ -904,7 +896,7 @@ fn l5_the_policy_refuses_a_renew_interval_above_a_third_of_the_ttl() {
 #[tokio::test(start_paused = true)]
 async fn l5_the_maintenance_loop_renews_every_held_record() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let owner = WarmContainerPool::new(
         Arc::new(ContainerProvider::new(daemon.clone(), "agent:test")),
         1,
@@ -941,7 +933,7 @@ async fn l5_the_maintenance_loop_renews_every_held_record() {
 #[tokio::test]
 async fn l5_shutdown_releases_only_the_records_of_capacity_it_disposed() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let pool = worker(&daemon, &clock, 2).await;
     pool.prewarm(&spec("drain", &[]), 2).await.unwrap();
     let scopes = ready_scopes(&pool).into_iter().collect::<Vec<_>>();
@@ -982,7 +974,7 @@ async fn l5_shutdown_releases_only_the_records_of_capacity_it_disposed() {
 #[tokio::test]
 async fn l6_a_record_whose_container_is_gone_is_collected() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let dead = worker(&daemon, &clock, 1).await;
     dead.prewarm(&spec("orphan", &[]), 1).await.unwrap();
     let scope = ready_scopes(&dead).into_iter().next().unwrap();
@@ -1010,7 +1002,7 @@ async fn l6_a_record_whose_container_is_gone_is_collected() {
 #[tokio::test]
 async fn l6_a_live_pool_drops_a_ready_container_that_vanished() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let pool = worker(&daemon, &clock, 1).await;
     pool.prewarm(&spec("vanished", &[]), 1).await.unwrap();
     let scope = ready_scopes(&pool).into_iter().next().unwrap();
@@ -1037,7 +1029,7 @@ async fn l6_a_live_pool_drops_a_ready_container_that_vanished() {
 #[tokio::test]
 async fn l6_a_stale_staged_mint_is_collected() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let pool = worker(&daemon, &clock, 1).await;
     let staged: PathBuf = pool
         .lease_ledger_for_test()
@@ -1067,7 +1059,7 @@ async fn l6_a_stale_staged_mint_is_collected() {
 #[tokio::test]
 async fn l1_l2_a_restarted_worker_waits_out_its_predecessors_lease_then_reclaims_it() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let predecessor = worker(&daemon, &clock, 2).await;
     predecessor.prewarm(&spec("restart", &[]), 2).await.unwrap();
     let old = ready_scopes(&predecessor);
@@ -1110,7 +1102,7 @@ async fn l1_l2_a_restarted_worker_waits_out_its_predecessors_lease_then_reclaims
 /// per-user directory beside the retained host staging.
 #[test]
 fn l7_the_host_default_is_maintained_and_per_user() {
-    let leases = WarmCapacityLeases::host_default().unwrap();
+    let leases = WarmCapacityLeases::host_default(awaken_lease_contract::system_clock()).unwrap();
     assert!(leases.maintained(), "L7 production leases are maintained");
     assert_eq!(leases.policy(), WarmCapacityLeasePolicy::default());
     let name = leases
@@ -1136,7 +1128,7 @@ fn l7_the_host_default_is_maintained_and_per_user() {
 #[tokio::test]
 async fn l2_an_owner_and_a_reclaimer_never_both_remove_one_container() {
     let daemon = FakeDaemon::new();
-    let clock = ManualClock::at(T0);
+    let clock = manual_clock(T0);
     let stalled = worker(&daemon, &clock, 1).await;
     let shape = spec("both-remove", &[]);
     stalled.prewarm(&shape, 1).await.unwrap();

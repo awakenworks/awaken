@@ -13,6 +13,7 @@ layer = "infrastructure"
 authority = "sandbox-container"
 
 [dependencies]
+awaken-lease-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-outbound-http = { workspace = true, optional = true }
 awaken-local-process.workspace = true
@@ -61,6 +62,7 @@ unrecorded-exec = []
 podman = ["connection", "tokio/process"]
 
 [dev-dependencies]
+awaken-lease-testkit.workspace = true
 axum.workspace = true
 # Self dev-dependency so the integration suites — which drive the runtime port
 # directly and own their containers — can admit an exec no environment ledger

@@ -34,10 +34,7 @@ use crate::{
 
 pub mod lease;
 use lease::{LeaseStore, WARM_LEASE_RECONCILER, WarmLeaseLedger};
-pub use lease::{
-    SystemWarmLeaseClock, WarmCapacityLeasePolicy, WarmCapacityLeases, WarmCapacityReclamation,
-    WarmLeaseClock,
-};
+pub use lease::{WarmCapacityLeasePolicy, WarmCapacityLeases, WarmCapacityReclamation};
 
 /// A process-global sequence for warm container scopes, so names are unique across
 /// every pool in this process (a per-pool counter would collide when two pools warm

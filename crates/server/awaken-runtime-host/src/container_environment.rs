@@ -96,8 +96,11 @@ async fn wrap<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     // expired, and keeps this pool's own records renewed. A runtime that names
     // no lease domain (Kubernetes) keeps process-local warm capacity.
     if leased {
-        let leases = awaken_sandbox_container::pool::WarmCapacityLeases::host_default()
-            .map_err(|error| format!("warm capacity leases: {error}"))?;
+        // The host lease records are judged on the host's wall clock.
+        let leases = awaken_sandbox_container::pool::WarmCapacityLeases::host_default(
+            awaken_lease_contract::system_clock(),
+        )
+        .map_err(|error| format!("warm capacity leases: {error}"))?;
         pool = pool
             .with_capacity_leases(leases)
             .await
@@ -568,10 +571,12 @@ mod tests {
         .expect("production Podman composition");
         let capacity = components.capacity.expect("warm capacity is configured");
         let records = || {
-            let root = awaken_sandbox_container::pool::WarmCapacityLeases::host_default()
-                .unwrap()
-                .root()
-                .to_path_buf();
+            let root = awaken_sandbox_container::pool::WarmCapacityLeases::host_default(
+                awaken_lease_contract::system_clock(),
+            )
+            .unwrap()
+            .root()
+            .to_path_buf();
             std::fs::read_dir(root)
                 .into_iter()
                 .flatten()
