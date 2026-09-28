@@ -91,17 +91,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     awaken_credential_vault::repo::CredentialRepo::put(credentials.as_ref(), credential.clone())
         .await
         .unwrap();
-    let generation = |session: &str| awaken_session_mcp_contract::McpGenerationRef {
-        session_id: session.into(),
-        generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-            awaken_session_mcp_contract::McpAttachmentId("mcp-docs".into()),
-            1,
-            &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                .unwrap(),
-        ),
-        runtime_incarnation: "runtime-1".into(),
-        lease_epoch: 1,
-        lease_expires_at_unix_ms: u64::MAX - 1,
+    let generation = |session: &str| {
+        crate::test_mcp::mcp_fence(session, "mcp-docs", 1, "runtime-1", 1, u64::MAX - 1)
     };
     let request = |session: &str, workspace: &str, revision: u64| {
         awaken_session_mcp_contract::StageMcpAttachment {
@@ -263,7 +254,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
 
     let mut conflicting_renewal = request("mcp-exact", "workspace-a", 1);
-    conflicting_renewal.generation.lease_expires_at_unix_ms = u64::MAX;
+    conflicting_renewal.generation = conflicting_renewal.generation.expiring_at(u64::MAX);
     conflicting_renewal.stage_idempotency_key = "renew-conflicting".into();
     conflicting_renewal.target =
         awaken_session_mcp_contract::McpTarget::parse_http("https://other.example.test/mcp")
@@ -289,7 +280,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H16"
     );
     let mut renewal = request("mcp-exact", "workspace-a", 1);
-    renewal.generation.lease_expires_at_unix_ms = u64::MAX;
+    renewal.generation = renewal.generation.expiring_at(u64::MAX);
     renewal.stage_idempotency_key = "renew-exact".into();
     let renewed_generation = renewal.generation.clone();
     let renewed = managed
@@ -368,7 +359,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .await
         .unwrap();
     let mut renewed_removed = old_removed.clone();
-    renewed_removed.generation.lease_expires_at_unix_ms = u64::MAX;
+    renewed_removed.generation = renewed_removed.generation.expiring_at(u64::MAX);
     renewed_removed.stage_idempotency_key = "retry-after-heartbeat".into();
     // H29: any changed immutable coordinate OR a non-increasing expiry with
     // changed attempt key => retain the removed owner. Only H28's strictly
@@ -388,24 +379,22 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "older-expiry",
     ] {
         let mut rejected = renewed_removed.clone();
+        let mut w = rejected.generation.to_wire();
         match changed {
             "workspace" => rejected.workspace_id.push_str("-other"),
             "attachment" => {
-                rejected.generation.generation = awaken_session_mcp_contract::McpGeneration::new(
+                w.generation = awaken_session_mcp_contract::McpGeneration::new(
                     awaken_session_mcp_contract::McpAttachmentId(format!(
                         "{}-other",
-                        rejected.generation.attachment_id().0
+                        w.generation.attachment_id().0
                     )),
-                    rejected.generation.generation.version(),
-                    rejected.generation.generation.digest().clone(),
+                    w.generation.version(),
+                    w.generation.digest().clone(),
                 );
             }
-            "generation" => {
-                let next = rejected.generation.generation.version() + 1;
-                rejected.generation.generation = rejected.generation.generation.at_version(next);
-            }
-            "incarnation" => rejected.generation.runtime_incarnation.push_str("-other"),
-            "epoch" => rejected.generation.lease_epoch += 1,
+            "generation" => w.generation = w.generation.at_version(w.generation.version() + 1),
+            "incarnation" => w.runtime_incarnation.push_str("-other"),
+            "epoch" => w.lease_epoch += 1,
             "realization" => rejected.realization_id.push_str("-other"),
             "name" => rejected.name.push_str("-other"),
             "target" => {
@@ -416,10 +405,11 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             }
             "credential" => rejected.credential = None,
             "holder" => rejected.selected_plaintext_holder = None,
-            "same-expiry" => rejected.generation.lease_expires_at_unix_ms -= 1,
-            "older-expiry" => rejected.generation.lease_expires_at_unix_ms -= 2,
+            "same-expiry" => w.lease_expires_at_unix_ms -= 1,
+            "older-expiry" => w.lease_expires_at_unix_ms -= 2,
             _ => unreachable!(),
         }
+        rejected.generation = w.try_into().unwrap();
         assert!(
             !host.forget_replayable_removed_mcp_projection(&rejected),
             "H29 {changed}"
@@ -469,7 +459,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         slot.mcp[0].staging = None;
     });
     let mut expired = request("mcp-expired", "workspace-a", 1);
-    expired.generation.lease_expires_at_unix_ms = 0;
+    expired.generation = expired.generation.expiring_at(0);
     assert_eq!(
         managed
             .stage_mcp_attachment(expired)
@@ -481,7 +471,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert!(host.mcp_projection(&generation("mcp-expired")).is_none());
     let mut admitted_before_renewal = request("mcp-renewed-authority", "workspace-a", 1);
-    admitted_before_renewal.generation.lease_expires_at_unix_ms = 0;
+    admitted_before_renewal.generation = admitted_before_renewal.generation.expiring_at(0);
     host.install_session_realization_lease(
         "mcp-renewed-authority",
         awaken_session_resource_contract::SessionRealizationLease {
@@ -898,12 +888,12 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let default_generation = generation("mcp-acp-default-relay");
     default_relay_host
         .install_session_realization_lease(
-            default_generation.session_id.as_str(),
+            default_generation.session_id().as_str(),
             awaken_session_resource_contract::SessionRealizationLease {
                 owner: "worker-a".into(),
-                runtime_incarnation: default_generation.runtime_incarnation.clone(),
-                epoch: default_generation.lease_epoch,
-                expires_at_unix_ms: default_generation.lease_expires_at_unix_ms,
+                runtime_incarnation: default_generation.runtime_incarnation().to_owned(),
+                epoch: default_generation.lease_epoch().get(),
+                expires_at_unix_ms: default_generation.lease_expires_at_unix_ms(),
             },
         )
         .unwrap();
@@ -1063,12 +1053,12 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // opaque external route. H31 owns the retained real relay/upstream call.
     secure_acp_host
         .install_session_realization_lease(
-            secure_generation.session_id.as_str(),
+            secure_generation.session_id().as_str(),
             awaken_session_resource_contract::SessionRealizationLease {
                 owner: "worker-a".into(),
-                runtime_incarnation: secure_generation.runtime_incarnation.clone(),
-                epoch: secure_generation.lease_epoch,
-                expires_at_unix_ms: secure_generation.lease_expires_at_unix_ms,
+                runtime_incarnation: secure_generation.runtime_incarnation().to_owned(),
+                epoch: secure_generation.lease_epoch().get(),
+                expires_at_unix_ms: secure_generation.lease_expires_at_unix_ms(),
             },
         )
         .unwrap();
@@ -1314,18 +1304,14 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
     managed
         .stage_mcp_attachment(awaken_session_mcp_contract::StageMcpAttachment {
             workspace_id: workspace.into(),
-            generation: awaken_session_mcp_contract::McpGenerationRef {
-                session_id: "session-a".into(),
-                generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                    awaken_session_mcp_contract::McpAttachmentId("flow".into()),
-                    1,
-                    &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                        .unwrap(),
-                ),
-                runtime_incarnation: "runtime-a".into(),
-                lease_epoch: 1,
-                lease_expires_at_unix_ms: u64::MAX,
-            },
+            generation: crate::test_mcp::mcp_fence(
+                "session-a",
+                "flow",
+                1,
+                "runtime-a",
+                1,
+                u64::MAX,
+            ),
             realization_id: "realize-flow".into(),
             stage_idempotency_key: "stage-flow".into(),
             name: "display-name-not-in-binding".into(),
@@ -1368,8 +1354,7 @@ fn dispatch_session_runtime_requires_explicit_installation() {
 #[tokio::test]
 async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
     use awaken_session_mcp_contract::{
-        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, McpTarget,
-        StageMcpAttachment,
+        McpGenerationRef, McpRealizationReceipt, McpTarget, StageMcpAttachment,
     };
     use awaken_session_execution_contract::McpAttachmentRealizer;
 
@@ -1424,17 +1409,8 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
     let _managed = crate::ManagedHost::new(host.clone())
         .with_mcp_attachment_realizer(external.clone())
         .install_dispatch_session_runtime();
-    let generation = McpGenerationRef {
-        session_id: "external-mcp".into(),
-        generation: McpGeneration::of_bare_target(
-            McpAttachmentId("docs".into()),
-            1,
-            &McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
-        ),
-        runtime_incarnation: "runtime-1".into(),
-        lease_epoch: 1,
-        lease_expires_at_unix_ms: u64::MAX,
-    };
+    let generation =
+        crate::test_mcp::mcp_fence("external-mcp", "docs", 1, "runtime-1", 1, u64::MAX);
     let request = StageMcpAttachment {
         workspace_id: "workspace-a".into(),
         generation: generation.clone(),

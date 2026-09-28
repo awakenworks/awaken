@@ -1,11 +1,3 @@
-// @formal surface requirement=protocol.mcp.mcp_protocol
-// @formal reason: Static owner: MCP application notifications entering the Session through the existing
-// @formal reason: Run admission port. Dynamic path: a selected server notification becomes one admitted
-// @formal reason: Session message under the configured policy and its generation reference, with no HTTP
-// @formal reason: loopback, second dialogue loop, or notification store of its own; a notification whose
-// @formal reason: generation is superseded or whose host is gone is dropped rather than admitted.
-// @formal reason: Evidence: protocol.mcp.mcp_protocol plus the MCP notification admission tests; this is a
-// @formal reason: product-requirement classification, not a direct proof claim.
 //! MCP application notifications enter the existing Session Run admission port.
 //! No HTTP loopback, second dialogue loop, or notification persistence owner.
 
@@ -37,15 +29,6 @@ fn operation_id(session: &str, server: &str, method: &str, event: &str) -> Strin
     )
 }
 
-fn notification_generation_matches(bound: &McpGenerationRef, current: &McpGenerationRef) -> bool {
-    // The canonical realization owner may extend the same lease without
-    // reconnecting this stream. Only the proved monotonic expiry can differ;
-    // every identity/content/version/owner coordinate remains exact.
-    let mut renewed = bound.clone();
-    renewed.lease_expires_at_unix_ms = current.lease_expires_at_unix_ms;
-    current == &renewed && current.lease_expires_at_unix_ms >= bound.lease_expires_at_unix_ms
-}
-
 #[async_trait::async_trait]
 impl McpNotificationHandler for SessionMcpInput {
     async fn receive(&self, method: &str, params: Value) {
@@ -62,12 +45,18 @@ impl McpNotificationHandler for SessionMcpInput {
         // by the notification payload. Existing root authority and transport
         // drain fences both apply to this incoming effect.
         let admitted = host
-            .active_mcp_projections(self.generation.session_id.as_str())
+            .active_mcp_projections(self.generation.session_id().as_str())
             .iter()
             .any(|projection| {
                 let current = &projection.request.generation;
-                notification_generation_matches(&self.generation, current)
-                    && host.mcp_generation_root_authority(current) == Some(true)
+                // The canonical realization owner may extend the same lease
+                // without reconnecting this stream: only a renewal of the bound
+                // fence (same Session, generation, owner and epoch; expiry never
+                // shortened) keeps it.
+                awaken_session_realization_contract::realization_generation_authorizes(
+                    current,
+                    &self.generation,
+                ) && host.mcp_generation_root_authority(current) == Some(true)
             });
         if !admitted {
             return;
@@ -79,17 +68,17 @@ impl McpNotificationHandler for SessionMcpInput {
                 input_event_id,
             } => {
                 let operation = operation_id(
-                    self.generation.session_id.as_str(),
+                    self.generation.session_id().as_str(),
                     &self.server,
                     &input_method,
                     &input_event_id,
                 );
                 let target = awaken_session_execution_contract::session_run_id(
-                    &self.generation.session_id,
+                    self.generation.session_id(),
                     &operation,
                 );
                 if host
-                    .cancel_durable(self.generation.session_id.as_str(), &target.0)
+                    .cancel_durable(self.generation.session_id().as_str(), &target.0)
                     .await
                     .is_err()
                 {
@@ -102,7 +91,7 @@ impl McpNotificationHandler for SessionMcpInput {
             }
         };
         let operation = operation_id(
-            self.generation.session_id.as_str(),
+            self.generation.session_id().as_str(),
             &self.server,
             method,
             &event_id,
@@ -116,7 +105,7 @@ impl McpNotificationHandler for SessionMcpInput {
             match application
                 .submit_session_run_background(
                     &operation,
-                    self.generation.session_id.as_str(),
+                    self.generation.session_id().as_str(),
                     None,
                     vec![message.clone()],
                     None,
@@ -237,10 +226,16 @@ mod tests {
 
     #[test]
     fn input_subscription_survives_only_same_owner_monotonic_renewal() {
-        // L1 identical/longer same-epoch lease -> retain the input stream;
-        // L2 shorter lease, L3 different Session, L4 owner/epoch changed,
-        // L5 content/version/attachment changed -> reject. Root liveness is
-        // independently checked at delivery, never inferred from this match.
+        // The retain predicate of a bound input stream, as a decision table.
+        // | Rule | current fence vs bound (s1, phone v1, worker-1, epoch 1, exp 100) | retain |
+        // | L1   | identical                                                      | yes    |
+        // | L1   | same tenure, expiry 200                                        | yes    |
+        // | L2   | same tenure, expiry 99                                         | no     |
+        // | L3   | Session s2                                                     | no     |
+        // | L4   | incarnation worker-2 / epoch 2                                 | no     |
+        // | L5   | version / attachment / content changed                         | no     |
+        // Root liveness is independently checked at delivery, never inferred
+        // from this match.
         use awaken_session_mcp_contract::{McpAttachmentId, McpGeneration, McpTarget};
         let generation = |name: &str, version: u64, url: &str| {
             McpGeneration::of_bare_target(
@@ -249,37 +244,66 @@ mod tests {
                 &McpTarget::parse_http(url).unwrap(),
             )
         };
-        let bound = McpGenerationRef {
-            session_id: "s1".into(),
-            generation: generation("phone", 1, "https://phone.test/mcp"),
-            runtime_incarnation: "worker-1".into(),
-            lease_epoch: 1,
-            lease_expires_at_unix_ms: 100,
+        let fence = |session: &str, generation: McpGeneration, incarnation: &str, epoch, expiry| {
+            McpGenerationRef::from_persisted(
+                session.into(),
+                generation,
+                incarnation.into(),
+                epoch,
+                expiry,
+            )
+            .expect("nonzero epoch")
         };
-        assert!(notification_generation_matches(&bound, &bound));
-        let mut current = bound.clone();
-        current.lease_expires_at_unix_ms = 200;
-        assert!(notification_generation_matches(&bound, &current));
-        let mut bad = current.clone();
-        bad.lease_expires_at_unix_ms = 99;
-        assert!(!notification_generation_matches(&bound, &bad));
-        let mut bad = current.clone();
-        bad.session_id = "s2".into();
-        assert!(!notification_generation_matches(&bound, &bad));
-        let mut bad = current.clone();
-        bad.runtime_incarnation = "worker-2".into();
-        assert!(!notification_generation_matches(&bound, &bad));
-        let mut bad = current.clone();
-        bad.lease_epoch = 2;
-        assert!(!notification_generation_matches(&bound, &bad));
-        for changed in [
-            generation("phone", 2, "https://phone.test/mcp"),
-            generation("other", 1, "https://phone.test/mcp"),
-            generation("phone", 1, "https://other.test/mcp"),
+        let phone = || generation("phone", 1, "https://phone.test/mcp");
+        let bound = fence("s1", phone(), "worker-1", 1, 100);
+        for (rule, current, retain) in [
+            ("L1", bound.clone(), true),
+            ("L1", fence("s1", phone(), "worker-1", 1, 200), true),
+            ("L2", fence("s1", phone(), "worker-1", 1, 99), false),
+            ("L3", fence("s2", phone(), "worker-1", 1, 200), false),
+            ("L4", fence("s1", phone(), "worker-2", 1, 200), false),
+            ("L4", fence("s1", phone(), "worker-1", 2, 200), false),
+            (
+                "L5",
+                fence(
+                    "s1",
+                    generation("phone", 2, "https://phone.test/mcp"),
+                    "worker-1",
+                    1,
+                    200,
+                ),
+                false,
+            ),
+            (
+                "L5",
+                fence(
+                    "s1",
+                    generation("other", 1, "https://phone.test/mcp"),
+                    "worker-1",
+                    1,
+                    200,
+                ),
+                false,
+            ),
+            (
+                "L5",
+                fence(
+                    "s1",
+                    generation("phone", 1, "https://other.test/mcp"),
+                    "worker-1",
+                    1,
+                    200,
+                ),
+                false,
+            ),
         ] {
-            let mut bad = current.clone();
-            bad.generation = changed;
-            assert!(!notification_generation_matches(&bound, &bad));
+            assert_eq!(
+                awaken_session_realization_contract::realization_generation_authorizes(
+                    &current, &bound
+                ),
+                retain,
+                "{rule}"
+            );
         }
     }
 

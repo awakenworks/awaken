@@ -16,6 +16,7 @@ test-support = []
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-lease-contract.workspace = true
 # `resilience::Classify` is the one neutral retry/terminal projection; SandboxError opts in.
 awaken-sandbox-control.workspace = true
 # Typed File/Memory/Repository input identity. Dependency direction is one-way:

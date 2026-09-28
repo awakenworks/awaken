@@ -17,6 +17,8 @@
 //!   [`NotBefore`] is its dual: due from `now >= not_before` on.
 //! * [`mono`] is the single monotonic read point for timeouts and elapsed
 //!   durations. It reads tokio's clock, so a paused test runtime controls it.
+//! * [`fence`] is the one ownership-fence kernel: the successor law every
+//!   holder-and-epoch lease and every effect fence projected from one obeys.
 //!
 //! **Pre-epoch readings saturate to the Unix epoch.** That is the one strategy
 //! for time before 1970: a host clock set earlier reads as
@@ -37,6 +39,7 @@
 
 mod clock;
 mod expiry;
+pub mod fence;
 pub mod mono;
 mod time;
 pub mod utc;

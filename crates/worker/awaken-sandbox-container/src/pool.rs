@@ -1148,7 +1148,9 @@ mod tests {
                 .push(RealizationPhase {
                     scope: context.scope.to_owned(),
                     adoption: context.adoption_fingerprint.to_string(),
-                    effect_operation: context.effect_fence.map(|fence| fence.operation_id.clone()),
+                    effect_operation: context
+                        .effect_fence
+                        .map(|fence| fence.operation_id().to_owned()),
                     attempt: context.attempt.as_str().to_owned(),
                     has_physical_fingerprint: realization_fingerprint.is_some(),
                 });
@@ -1167,7 +1169,9 @@ mod tests {
                 .push(RealizationPhase {
                     scope: context.scope.to_owned(),
                     adoption: context.adoption_fingerprint.to_string(),
-                    effect_operation: context.effect_fence.map(|fence| fence.operation_id.clone()),
+                    effect_operation: context
+                        .effect_fence
+                        .map(|fence| fence.operation_id().to_owned()),
                     attempt: context.attempt.as_str().to_owned(),
                     has_physical_fingerprint: true,
                 });

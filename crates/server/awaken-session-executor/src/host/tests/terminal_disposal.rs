@@ -94,10 +94,10 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "terminal-test-environment",
         "terminal-test-image",
     );
-    let environment_effect_id = create_fence.operation_id.clone();
+    let environment_effect_id = create_fence.operation_id();
     let environment_state = awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding: binding.clone(),
-        effect_id: Some(environment_effect_id.clone()),
+        effect_id: Some(environment_effect_id.to_owned()),
         generation: Some(environment_generation.clone()),
         idle_since_unix_ms: None,
     };
@@ -111,7 +111,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     )
     .expect("project the terminal-test durable Environment identity");
     let identity = crate::session_slot::BoundSessionEnvironmentIdentity::Durable {
-        effect_id: environment_effect_id,
+        effect_id: environment_effect_id.to_owned(),
         generation: environment_generation,
     };
     match initial {

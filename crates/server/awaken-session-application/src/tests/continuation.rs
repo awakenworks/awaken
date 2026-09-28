@@ -834,13 +834,14 @@ fn add_acknowledged_active_mcp(
             attempts: 1,
             last_error: None,
         });
-    awaken_session_mcp_contract::McpGenerationRef {
-        session_id: session.session_id.clone(),
-        generation: witness,
-        runtime_incarnation: lease.runtime_incarnation,
-        lease_epoch: lease.epoch,
-        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
-    }
+    awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+        session.session_id.clone(),
+        witness,
+        lease.runtime_incarnation,
+        lease.epoch,
+        lease.expires_at_unix_ms,
+    )
+    .expect("MCP generation fence epoch is nonzero")
 }
 
 fn externally_placed(mut session: PersistedSession) -> PersistedSession {
@@ -1398,7 +1399,9 @@ async fn inexact_quiescence_receipts_leave_the_complete_root_unchanged() {
             "X1" => expected[..1].to_vec(),
             "X2" => {
                 let mut foreign = expected.clone();
-                foreign[0].session_id = "foreign-session".into();
+                foreign[0] = foreign[0]
+                    .with_persisted(|w| w.session_id = "foreign-session".into())
+                    .unwrap();
                 foreign
             }
             "X3" => vec![expected[0].clone(), expected[0].clone()],
@@ -1668,12 +1671,12 @@ async fn disposal_failure_retries_without_recheckpointing() {
         "C4 immutable preparation",
     );
     assert_eq!(
-        authorizations[0].effect_fence().operation_id,
-        authorizations[1].effect_fence().operation_id,
+        authorizations[0].effect_fence().operation_id(),
+        authorizations[1].effect_fence().operation_id(),
         "C4 one physical operation",
     );
-    assert_eq!(authorizations[0].effect_fence().epoch, 4, "C4 A delivery");
-    assert_eq!(authorizations[1].effect_fence().epoch, 5, "C4 B takeover");
+    assert_eq!(authorizations[0].effect_fence().epoch(), 4, "C4 A delivery");
+    assert_eq!(authorizations[1].effect_fence().epoch(), 5, "C4 B takeover");
 }
 
 #[tokio::test]
@@ -1775,11 +1778,13 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
     let authorizations = runtime.disposal_authorizations.lock().unwrap();
     assert_eq!(authorizations.len(), 1, "P2");
     assert_eq!(
-        authorizations[0].prepared_effect_fence().expires_at_unix_ms,
+        authorizations[0]
+            .prepared_effect_fence()
+            .expires_at_unix_ms(),
         200_000,
         "P2 persisted A",
     );
-    assert_eq!(authorizations[0].effect_fence().epoch, 5, "P2 current B");
+    assert_eq!(authorizations[0].effect_fence().epoch(), 5, "P2 current B");
 }
 
 #[tokio::test]

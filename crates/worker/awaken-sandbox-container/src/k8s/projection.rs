@@ -11,14 +11,14 @@ pub(super) fn projection_fence_value(effect_fence: &ContainerEffectFence) -> Str
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"awaken-k8s-projection-fence/v1\0");
     for value in [
-        effect_fence.operation_id.as_str(),
-        effect_fence.owner.as_str(),
-        effect_fence.runtime_incarnation.as_str(),
+        effect_fence.operation_id(),
+        effect_fence.owner(),
+        effect_fence.runtime_incarnation(),
     ] {
         hasher.update(&(value.len() as u64).to_be_bytes());
         hasher.update(value.as_bytes());
     }
-    hasher.update(&effect_fence.epoch.to_be_bytes());
+    hasher.update(&effect_fence.epoch().to_be_bytes());
     hasher.finalize().to_hex().to_string()
 }
 

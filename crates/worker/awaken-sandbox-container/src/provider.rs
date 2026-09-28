@@ -39,7 +39,7 @@ fn refresh_effect_fence(
     })?;
     let current = source.current_effect_fence(asserted)?;
     if !asserted.same_effect_identity(&current)
-        || current.expires_at_unix_ms <= asserted.expires_at_unix_ms
+        || current.expires_at_unix_ms() <= asserted.expires_at_unix_ms()
     {
         return Err(pc::SandboxError::fence_rejected(
             "renewed container effect fence is not a strict successor of the admitted effect",
@@ -1038,9 +1038,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         effect_fence: Option<&pc::SandboxEffectFence>,
         purpose: ContainerObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        if let Some(fence) = effect_fence {
-            fence.validate_identity()?;
-        }
         if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
             let (plan, expected) = self.adoption_plan(adoption.spec)?;
             let historical_match = if stored != expected

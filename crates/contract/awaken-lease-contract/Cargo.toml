@@ -15,10 +15,12 @@ authority = "time-bounded-ownership"
 # crate documentation for why the clock, the expiry law and the fence kernel
 # share this one crate).
 [dependencies]
+serde.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
 
 [lints]

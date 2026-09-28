@@ -2,6 +2,7 @@
 //! Real kube HTTP boundaries, with one deterministic API response-loss scheduler
 //! shared by cleanup and checkpoint participant tests.
 use super::*;
+use awaken_provisioning_contract::test_support::FenceTamper as _;
 use pc::test_support::EffectAuthority;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -555,9 +556,9 @@ async fn checkpoint_current_authority_is_reentered_after_each_http_response() {
                 } else {
                     let mut current = authority.current.lock().unwrap();
                     match change {
-                        'r' => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                        'r' => current.as_mut().unwrap().0.renew(),
                         'v' => *current = None,
-                        'g' => current.as_mut().unwrap().0.epoch += 1,
+                        'g' => current.as_mut().unwrap().0.reassign(),
                         'e' => current.as_mut().unwrap().1 = Duration::ZERO,
                         _ => unreachable!(),
                     }
@@ -579,7 +580,7 @@ async fn checkpoint_current_authority_is_reentered_after_each_http_response() {
                     assert_eq!(state.writes, writes, "KA2 retains committed prefix");
                 }
                 let mut successor = evidence.source.clone();
-                successor.epoch += 1;
+                successor.reassign();
                 let fresh = EffectAuthority::new(&successor);
                 evidence
                     .apply(&runtime, &successor, &fresh, step)
@@ -715,7 +716,7 @@ async fn checkpoint_identity_and_source_state_denials_have_zero_writes() {
                 }
                 "fence-newer" => {
                     let mut newer = evidence.source.clone();
-                    newer.epoch += 1;
+                    newer.reassign();
                     stamp_effect_fence(state.pod.as_mut().unwrap(), &newer);
                 }
                 "pod-deleting" => {
@@ -910,9 +911,9 @@ async fn current_authority_is_required_after_every_kubernetes_cleanup_response()
                     } else {
                         let mut current = authority.current.lock().unwrap();
                         match change {
-                            'r' => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                            'r' => current.as_mut().unwrap().0.renew(),
                             'v' => *current = None,
-                            'g' => current.as_mut().unwrap().0.epoch += 1,
+                            'g' => current.as_mut().unwrap().0.reassign(),
                             'e' => current.as_mut().unwrap().1 = Duration::ZERO,
                             _ => unreachable!(),
                         }
@@ -959,7 +960,7 @@ async fn current_authority_is_required_after_every_kubernetes_cleanup_response()
                 }
                 if cut > 0 && *change != 'r' {
                     let mut successor = authorization.effect_fence().clone();
-                    successor.epoch += 1;
+                    successor.reassign();
                     let retry = authorization.preparation().authorize(successor).unwrap();
                     let fresh = EffectAuthority::new(retry.effect_fence());
                     tokio::time::timeout(

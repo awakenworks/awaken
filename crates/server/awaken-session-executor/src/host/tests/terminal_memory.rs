@@ -688,7 +688,7 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
     assert_eq!(
         host.terminal_cleanup_effect_fence(&effect)
             .expect("R1/E1 preparation fence")
-            .expires_at_unix_ms,
+            .expires_at_unix_ms(),
         renewed_lease.expires_at_unix_ms,
         "R1/E1 preparation projects current expiry"
     );
@@ -696,7 +696,7 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
         host.terminal_cleanup_disposal_authorization(&disposal)
             .expect("R1/E1 disposal fence")
             .effect_fence()
-            .expires_at_unix_ms,
+            .expires_at_unix_ms(),
         renewed_lease.expires_at_unix_ms,
         "R1/E1 disposal projects current expiry"
     );
@@ -977,15 +977,17 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     ]) {
         assert_eq!(boundary, &expected_boundary, "R1-R3 boundary order");
         assert_eq!(
-            fence.expires_at_unix_ms, expected_lease.expires_at_unix_ms,
+            fence.expires_at_unix_ms(),
+            expected_lease.expires_at_unix_ms,
             "{expected_boundary} receives the latest current fence",
         );
-        assert_eq!(fence.owner, expected_lease.owner, "same owner generation");
+        assert_eq!(fence.owner(), expected_lease.owner, "same owner generation");
         assert_eq!(
-            fence.runtime_incarnation, expected_lease.runtime_incarnation,
+            fence.runtime_incarnation(),
+            expected_lease.runtime_incarnation,
             "same runtime generation",
         );
-        assert_eq!(fence.epoch, expected_lease.epoch, "same epoch generation");
+        assert_eq!(fence.epoch(), expected_lease.epoch, "same epoch generation");
     }
 }
 

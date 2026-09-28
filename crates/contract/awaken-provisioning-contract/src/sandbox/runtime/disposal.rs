@@ -11,7 +11,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::{SandboxEffectFence, SandboxError};
-use crate::FenceToken;
 
 /// Immutable half of an aggregate-derived Sandbox disposal authorization.
 ///
@@ -61,7 +60,6 @@ impl SandboxDisposalPreparation {
     /// excluded so renewal, reassignment, and cross-lifecycle takeover all
     /// resume the same provider operation instead of minting another gate.
     pub fn operation_id(&self) -> Result<String, SandboxError> {
-        self.prepared_effect_fence.validate_identity()?;
         if self.preparation_fingerprint.trim().is_empty() {
             return Err(SandboxError::invalid(
                 "Sandbox disposal preparation requires a fingerprint",
@@ -69,11 +67,11 @@ impl SandboxDisposalPreparation {
         }
         Ok(awaken_agent_contract::stable_fingerprint(&(
             "sandbox-disposal-authorization-v1",
-            self.prepared_effect_fence.operation_id.as_str(),
-            self.prepared_effect_fence.owner.as_str(),
-            self.prepared_effect_fence.runtime_incarnation.as_str(),
-            self.prepared_effect_fence.epoch,
-            self.prepared_effect_fence.expires_at_unix_ms,
+            self.prepared_effect_fence.operation_id(),
+            self.prepared_effect_fence.owner(),
+            self.prepared_effect_fence.runtime_incarnation(),
+            self.prepared_effect_fence.epoch(),
+            self.prepared_effect_fence.expires_at_unix_ms(),
             self.preparation_fingerprint.as_str(),
         )))
     }
@@ -164,8 +162,7 @@ impl SandboxDisposalAuthorization {
             self.preparation_fingerprint.clone(),
         )?;
         let expected_operation_id = preparation.operation_id()?;
-        self.effect_fence.validate_identity()?;
-        if self.effect_fence.operation_id != expected_operation_id {
+        if self.effect_fence.operation_id() != expected_operation_id {
             return Err(SandboxError::invalid(
                 "Sandbox physical disposal operation does not bind its durable preparation",
             ));

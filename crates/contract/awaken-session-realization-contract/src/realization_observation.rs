@@ -38,11 +38,11 @@ pub fn generation_observation_key(generation: &McpGeneration) -> String {
 #[must_use]
 pub fn observed_generation(reference: &McpGenerationRef) -> serde_json::Value {
     serde_json::json!({
-        "key": generation_observation_key(&reference.generation),
-        "session_id": reference.session_id,
-        "runtime_incarnation": reference.runtime_incarnation,
-        "lease_epoch": reference.lease_epoch,
-        "lease_expires_at_unix_ms": reference.lease_expires_at_unix_ms,
+        "key": generation_observation_key(reference.generation()),
+        "session_id": reference.session_id(),
+        "runtime_incarnation": reference.runtime_incarnation(),
+        "lease_epoch": reference.lease_epoch(),
+        "lease_expires_at_unix_ms": reference.lease_expires_at_unix_ms(),
     })
 }
 
@@ -117,13 +117,14 @@ mod tests {
         // record is exactly the canonical key plus Session/incarnation/epoch/
         // expiry; E2 no structured generation record rides along for a consumer
         // to re-derive a second, disagreeing key from. Rule: C1=>E1+E2.
-        let reference = McpGenerationRef {
-            session_id: "session-a".into(),
-            generation: generation("mcp_a", 2, "fnv1a64:1"),
-            runtime_incarnation: "incarnation-a".into(),
-            lease_epoch: 7,
-            lease_expires_at_unix_ms: 9,
-        };
+        let reference = McpGenerationRef::from_persisted(
+            "session-a".into(),
+            generation("mcp_a", 2, "fnv1a64:1"),
+            "incarnation-a".into(),
+            7,
+            9,
+        )
+        .expect("MCP generation fence epoch is nonzero");
         assert_eq!(
             observed_generation(&reference),
             serde_json::json!({

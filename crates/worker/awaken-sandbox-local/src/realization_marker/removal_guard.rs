@@ -83,7 +83,6 @@ impl RemovalGuard {
                 "filesystem realization already entered aggregate-authorized physical authorization",
             ));
         }
-        effect_fence.validate_identity()?;
         if !self.marker.effect_fence.authorizes_successor(effect_fence) {
             return Err(pc::SandboxError::fence_rejected(
                 "terminal disposal fence is stale, foreign, or regresses lease expiry",
@@ -107,7 +106,6 @@ impl RemovalGuard {
         &self,
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<(), pc::SandboxError> {
-        effect_fence.validate_identity()?;
         let authority = self
             .marker
             .disposal_authorization
@@ -154,7 +152,6 @@ impl RemovalGuard {
                 "filesystem realization already entered aggregate-authorized physical authorization",
             ));
         }
-        effect_fence.validate_identity()?;
 
         if self
             .marker
@@ -248,7 +245,6 @@ impl RemovalGuard {
         &mut self,
         expected_effect_fence: &pc::SandboxEffectFence,
     ) -> Result<(), pc::SandboxError> {
-        expected_effect_fence.validate_identity()?;
         let source = self.marker.terminal_source.as_ref().ok_or_else(|| {
             pc::SandboxError::not_found(
                 "Removing checkpoint participant has no terminal source evidence",
@@ -288,7 +284,6 @@ impl RemovalGuard {
                     "terminal checkpoint cleanup has no bound expected effect",
                 )
             })?;
-        self.marker.effect_fence.validate_identity()?;
         let marker = read_marker_locked(&self.root, &self.lock)?.ok_or_else(|| {
             pc::SandboxError::gone("terminal checkpoint cleanup lost its realization marker")
         })?;

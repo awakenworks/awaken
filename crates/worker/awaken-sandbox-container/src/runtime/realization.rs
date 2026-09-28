@@ -8,7 +8,6 @@ use super::{
     ExistingRealizationRecovery, RebuildContinuityEvidence, RuntimeError,
 };
 use awaken_provisioning_contract as pc;
-use pc::FenceToken as _;
 
 const fn observation_admitted(
     exact_continuation: bool,
@@ -104,7 +103,7 @@ pub(crate) fn existing_realization_decision(
         )));
     }
     if !observed_fence.authorizes_successor(expected_fence)
-        || (observed_fence.epoch == expected_fence.epoch
+        || (observed_fence.epoch() == expected_fence.epoch()
             && matches!(context.intent, crate::ContainerRealizationIntent::Create)
             && !observed_fence.same_effect_identity(expected_fence))
     {
@@ -113,7 +112,9 @@ pub(crate) fn existing_realization_decision(
             observed.locator
         )));
     }
-    if observed_fence.succession(expected_fence) == Some(pc::FenceSuccession::Reassignment) {
+    if observed_fence.succession(expected_fence)
+        == Some(awaken_lease_contract::fence::FenceSuccession::Reassignment)
+    {
         if observed.phase == ExistingRealizationPhase::Indeterminate {
             return Err(RuntimeError::Backend(format!(
                 "existing Sandbox realization `{}` cannot be replaced by this effect",

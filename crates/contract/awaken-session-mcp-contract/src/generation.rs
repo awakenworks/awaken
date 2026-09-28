@@ -1,3 +1,4 @@
+// @formal evidence session_realization.generation_authority_requires_every_immutable_axis
 //! The complete optimistic-concurrency witness for one MCP attachment
 //! generation, and the exact ownership fence carrying it.
 //!
@@ -8,6 +9,8 @@
 use super::{
     CredentialAccess, McpAttachmentDraft, McpAttachmentId, McpAttachmentOrigin, McpTarget,
 };
+use awaken_lease_contract::Expiry;
+use awaken_lease_contract::fence::{Epoch, FenceSuccession, Lease, Tenure, TenureScope, ZeroEpoch};
 use serde::{Deserialize, Serialize};
 
 /// The digest of one attachment generation's exact desired content.
@@ -183,15 +186,48 @@ impl awaken_resource_contract::CompleteGeneration for McpGeneration {
     }
 }
 
+/// The lease family of one Runtime MCP projection.
+///
+/// The subject is the Session together with the complete generation witness:
+/// a projection realized for one attachment generation never fences another
+/// generation, another attachment or another Session, whatever its epoch. The
+/// holder is the runtime incarnation that realizes it. Consumer:
+/// [`McpGenerationRef`].
+#[derive(Debug)]
+pub struct McpRealization;
+
+impl TenureScope for McpRealization {
+    type Subject = (crate::SessionId, McpGeneration);
+    type Holder = String;
+}
+
 /// Exact identity and continuing ownership fence for one Runtime projection.
-/// Runtime adapters must compare the complete value; a logical name is never a
+/// Runtime adapters must compare the complete tenure; a logical name is never a
 /// sufficient route or cleanup identity.
 ///
-/// The attachment identity lives inside [`McpGeneration`] rather than beside
-/// it: a fence whose identity and witness are separate fields can disagree,
-/// and the disagreement is exactly the stale write the fence exists to stop.
+/// The value *is* a [`Lease`] over [`McpRealization`]: the Session and the
+/// generation witness are its subject, so they cannot disagree with the lease
+/// coordinates, and every comparison that ignores the renewable expiry goes
+/// through [`McpGenerationRef::tenure`] or [`McpGenerationRef::succession`].
+/// The persisted wire is unchanged (see [`McpGenerationRefWire`]), and it is
+/// the only door: [`McpGenerationRef::from_persisted`] is the admission both
+/// the decoder and every constructor use.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "McpGenerationRefWire", into = "McpGenerationRefWire")]
 pub struct McpGenerationRef {
+    lease: Lease<McpRealization>,
+}
+
+/// The persisted coordinates of [`McpGenerationRef`], byte-for-byte the shape
+/// the value had while its coordinates were public fields.
+///
+/// Converting back into the fence validates exactly as decoding does (a zero
+/// epoch, which no realization lease grants, is refused). Consumers: the serde
+/// codec of [`McpGenerationRef`], and adapters and tests that must name one
+/// persisted coordinate (a tampered epoch, a foreign Session) rather than a
+/// successor the kernel mints.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpGenerationRefWire {
     pub session_id: crate::SessionId,
     pub generation: McpGeneration,
     pub runtime_incarnation: String,
@@ -199,10 +235,177 @@ pub struct McpGenerationRef {
     pub lease_expires_at_unix_ms: u64,
 }
 
+impl TryFrom<McpGenerationRefWire> for McpGenerationRef {
+    type Error = ZeroEpoch;
+
+    fn try_from(wire: McpGenerationRefWire) -> Result<Self, Self::Error> {
+        Self::from_persisted(
+            wire.session_id,
+            wire.generation,
+            wire.runtime_incarnation,
+            wire.lease_epoch,
+            wire.lease_expires_at_unix_ms,
+        )
+        .ok_or(ZeroEpoch)
+    }
+}
+
+impl From<McpGenerationRef> for McpGenerationRefWire {
+    fn from(reference: McpGenerationRef) -> Self {
+        let lease_epoch = reference.lease_epoch().get();
+        let lease_expires_at_unix_ms = reference.lease_expires_at_unix_ms();
+        let tenure = reference.lease.tenure();
+        let (session_id, generation) = tenure.subject().clone();
+        Self {
+            session_id,
+            generation,
+            runtime_incarnation: tenure.holder().clone(),
+            lease_epoch,
+            lease_expires_at_unix_ms,
+        }
+    }
+}
+
 impl McpGenerationRef {
+    /// The projection a durable realization claim authorizes for `generation`
+    /// in `session_id`. `None` when the claim's persisted epoch is zero, which
+    /// no realization lease grants. This is the only claim-to-fence mapping.
     #[must_use]
-    pub const fn attachment_id(&self) -> &McpAttachmentId {
-        self.generation.attachment_id()
+    pub fn from_claim(
+        session_id: &crate::SessionId,
+        generation: &McpGeneration,
+        claim: &crate::McpRealizationClaim,
+    ) -> Option<Self> {
+        Self::from_persisted(
+            session_id.clone(),
+            generation.clone(),
+            claim.runtime_incarnation.clone(),
+            claim.lease_epoch,
+            claim.lease_expires_at_unix_ms,
+        )
+    }
+
+    /// The one admission of this fence, shared by the wire decoder and every
+    /// constructor: the projection of `generation` in `session_id`, held by
+    /// `runtime_incarnation` under realization lease `lease_epoch` until
+    /// `lease_expires_at_unix_ms`. `None` for a zero epoch, which no
+    /// realization lease grants.
+    #[must_use]
+    pub fn from_persisted(
+        session_id: crate::SessionId,
+        generation: McpGeneration,
+        runtime_incarnation: String,
+        lease_epoch: u64,
+        lease_expires_at_unix_ms: u64,
+    ) -> Option<Self> {
+        Some(Self {
+            lease: Lease::new(
+                Tenure::granted(
+                    (session_id, generation),
+                    runtime_incarnation,
+                    Epoch::from_persisted(lease_epoch)?,
+                ),
+                Expiry::from_unix_ms(lease_expires_at_unix_ms),
+            ),
+        })
+    }
+
+    /// The persisted coordinates of this fence.
+    #[must_use]
+    pub fn to_wire(&self) -> McpGenerationRefWire {
+        self.clone().into()
+    }
+
+    /// The same tenure asserted until another persisted expiry, later (a
+    /// renewal) or earlier (a regression the fence law refuses as a
+    /// successor). The tenure is unchanged, so no admission is repeated.
+    #[must_use]
+    pub fn expiring_at(&self, lease_expires_at_unix_ms: u64) -> Self {
+        Self {
+            lease: Lease::new(
+                self.lease.tenure().clone(),
+                Expiry::from_unix_ms(lease_expires_at_unix_ms),
+            ),
+        }
+    }
+
+    /// This fence with persisted coordinates edited, re-admitted through
+    /// [`McpGenerationRef::from_persisted`]; `None` when the edit leaves a zero
+    /// epoch. Consumers: decision tables that name the one coordinate they
+    /// tamper with, rather than a successor the kernel would mint.
+    #[must_use]
+    pub fn with_persisted(&self, edit: impl FnOnce(&mut McpGenerationRefWire)) -> Option<Self> {
+        let mut wire = self.to_wire();
+        edit(&mut wire);
+        Self::try_from(wire).ok()
+    }
+
+    #[must_use]
+    pub const fn lease(&self) -> &Lease<McpRealization> {
+        &self.lease
+    }
+
+    /// The complete identity of this projection, ignoring the renewable
+    /// expiry: Session, generation, runtime incarnation and epoch.
+    #[must_use]
+    pub const fn tenure(&self) -> &Tenure<McpRealization> {
+        self.lease.tenure()
+    }
+
+    /// How `successor` takes over this projection under the one fence law.
+    #[must_use]
+    pub fn succession(&self, successor: &Self) -> Option<FenceSuccession> {
+        self.lease.succession(&successor.lease)
+    }
+
+    /// The same projection granted to `runtime_incarnation` at the next
+    /// epoch, keeping the expiry: every fence minted under this one is
+    /// superseded. `None` once the epoch is exhausted.
+    #[must_use]
+    pub fn reassigned(&self, runtime_incarnation: impl Into<String>) -> Option<Self> {
+        Some(Self {
+            lease: Lease::new(
+                self.lease.tenure().reassigned(runtime_incarnation.into())?,
+                self.lease.expires(),
+            ),
+        })
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> &crate::SessionId {
+        &self.lease.tenure().subject().0
+    }
+
+    #[must_use]
+    pub fn generation(&self) -> &McpGeneration {
+        &self.lease.tenure().subject().1
+    }
+
+    #[must_use]
+    pub fn attachment_id(&self) -> &McpAttachmentId {
+        self.generation().attachment_id()
+    }
+
+    #[must_use]
+    pub fn runtime_incarnation(&self) -> &str {
+        self.lease.tenure().holder()
+    }
+
+    #[must_use]
+    pub const fn lease_epoch(&self) -> Epoch {
+        self.lease.tenure().epoch()
+    }
+
+    #[must_use]
+    pub const fn lease_expires(&self) -> Expiry {
+        self.lease.expires()
+    }
+
+    /// The persisted expiry millisecond, for the wire and for predicates that
+    /// still judge realization leases in persisted coordinates.
+    #[must_use]
+    pub fn lease_expires_at_unix_ms(&self) -> u64 {
+        self.lease.expires().to_unix_ms()
     }
 }
 

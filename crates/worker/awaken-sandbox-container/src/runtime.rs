@@ -53,16 +53,16 @@ pub(crate) fn container_effect_label_values(
 ) -> Vec<(&'static str, String)> {
     fence.map_or_else(Vec::new, |fence| {
         vec![
-            (SANDBOX_EFFECT_LABEL, fence.operation_id.clone()),
-            (SANDBOX_EFFECT_OWNER_LABEL, fence.owner.clone()),
+            (SANDBOX_EFFECT_LABEL, fence.operation_id().to_owned()),
+            (SANDBOX_EFFECT_OWNER_LABEL, fence.owner().to_owned()),
             (
                 SANDBOX_EFFECT_RUNTIME_LABEL,
-                fence.runtime_incarnation.clone(),
+                fence.runtime_incarnation().to_owned(),
             ),
-            (SANDBOX_EFFECT_EPOCH_LABEL, fence.epoch.to_string()),
+            (SANDBOX_EFFECT_EPOCH_LABEL, fence.epoch().to_string()),
             (
                 SANDBOX_EFFECT_EXPIRY_LABEL,
-                fence.expires_at_unix_ms.to_string(),
+                fence.expires_at_unix_ms().to_string(),
             ),
         ]
     })
@@ -349,9 +349,6 @@ pub(crate) fn validate_runtime_effect_fence(
     effect_fence: &pc::SandboxEffectFence,
     clock: Option<&std::sync::Arc<dyn awaken_lease_contract::WallClock>>,
 ) -> Result<(), RuntimeError> {
-    effect_fence
-        .validate_identity()
-        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
     let now =
         effect_clock_reading_ms(clock).map_err(|error| RuntimeError::Backend(error.to_string()))?;
     if effect_fence.expired_at(now) {
@@ -722,11 +719,15 @@ mod realization_tests {
             );
         }
         let mut renewed_observed = observed(Some(exact.clone()), ExistingRealizationPhase::Ready);
-        renewed_observed
-            .fence
-            .as_mut()
-            .expect("test realization fence")
-            .expires_at_unix_ms = 123;
+        {
+            let fence = renewed_observed
+                .fence
+                .as_mut()
+                .expect("test realization fence");
+            *fence = fence
+                .with_persisted(|w| w.expires_at_unix_ms = 123)
+                .unwrap();
+        };
         assert!(
             matches!(
                 realization_decision_for_test(
@@ -748,11 +749,15 @@ mod realization_tests {
                 .unwrap();
         let mut observed_with_newer_expiry =
             observed(Some(exact.clone()), ExistingRealizationPhase::Ready);
-        observed_with_newer_expiry
-            .fence
-            .as_mut()
-            .expect("test realization fence")
-            .expires_at_unix_ms = 123;
+        {
+            let fence = observed_with_newer_expiry
+                .fence
+                .as_mut()
+                .expect("test realization fence");
+            *fence = fence
+                .with_persisted(|w| w.expires_at_unix_ms = 123)
+                .unwrap();
+        };
         assert!(
             realization_decision_for_test(
                 Some(&exact),
@@ -785,18 +790,15 @@ mod realization_tests {
                 "R5 process-local participant evidence cannot be recreated"
             );
         }
-        let mut older_process_local =
-            observed(Some(exact.clone()), ExistingRealizationPhase::Terminal);
-        older_process_local
-            .fence
-            .as_mut()
-            .expect("test realization fence")
-            .epoch = 0;
+        let older_process_local = observed(Some(exact.clone()), ExistingRealizationPhase::Terminal);
+        // The observed participant was realized under epoch 1; the current
+        // effect holds the newer lease at epoch 2 (no lease grants epoch 0).
+        let newer_fence = fence.with_persisted(|w| w.epoch = 2).unwrap();
         assert!(
             realization_decision_for_test(
                 Some(&exact),
                 Some(&exact),
-                Some(&fence),
+                Some(&newer_fence),
                 &crate::ContainerRealizationIntent::Create,
                 &replacement_attempt,
                 RebuildContinuityEvidence::Unavailable,

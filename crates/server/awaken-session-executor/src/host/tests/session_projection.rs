@@ -1892,17 +1892,18 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
     let audience = awaken_session_mcp_contract::McpTarget::identity(upstream)
         .unwrap()
         .canonical_url();
-    let generation = awaken_session_mcp_contract::McpGenerationRef {
-        session_id: "mcp-platform".into(),
-        generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
+    let generation = awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+        "mcp-platform".into(),
+        awaken_session_mcp_contract::McpGeneration::of_bare_target(
             awaken_session_mcp_contract::McpAttachmentId("mcp-docs".into()),
             1,
             &awaken_session_mcp_contract::McpTarget::parse_http(upstream).unwrap(),
         ),
-        runtime_incarnation: "runtime-1".into(),
-        lease_epoch: 1,
-        lease_expires_at_unix_ms: u64::MAX - 1,
-    };
+        "runtime-1".into(),
+        1,
+        u64::MAX - 1,
+    )
+    .expect("MCP generation fence epoch is nonzero");
     let request = awaken_session_mcp_contract::StageMcpAttachment {
         workspace_id: "workspace-a".into(),
         generation: generation.clone(),

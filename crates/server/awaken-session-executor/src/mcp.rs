@@ -190,7 +190,7 @@ pub(crate) fn project_mcp_session_transport(
                 HostError::internal(format!(
                     "authenticated MCP generation {}:{} requires the Worker relay",
                     generation.attachment_id().0,
-                    generation.generation.version()
+                    generation.generation().version()
                 ))
             })?;
             (
@@ -198,7 +198,7 @@ pub(crate) fn project_mcp_session_transport(
                     HostError::internal(format!(
                         "authenticated MCP generation {}:{} has no staged relay capability",
                         generation.attachment_id().0,
-                        generation.generation.version()
+                        generation.generation().version()
                     ))
                 })?,
                 None,
@@ -212,7 +212,7 @@ pub(crate) fn project_mcp_session_transport(
             return Err(HostError::internal(format!(
                 "authenticated MCP generation {}:{} has no admitted delivery",
                 generation.attachment_id().0,
-                generation.generation.version()
+                generation.generation().version()
             )));
         }
         // A Platform-mediated generation already dials the mediator: staging
@@ -369,7 +369,7 @@ impl crate::SharedHost {
         generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Option<crate::session_slot::McpGenerationProjection> {
         self.session_slots
-            .read(generation.session_id.as_str(), |slot| {
+            .read(generation.session_id().as_str(), |slot| {
                 slot.mcp
                     .iter()
                     .find(|projection| projection.request.generation == *generation)
@@ -382,7 +382,7 @@ impl crate::SharedHost {
         &self,
         projection: crate::session_slot::McpGenerationProjection,
     ) -> Result<(), HostError> {
-        let thread = projection.request.generation.session_id.clone();
+        let thread = projection.request.generation.session_id().clone();
         self.session_slots.update(thread.as_str(), |slot| {
             if slot.mcp_quiescence_fence.is_some() {
                 return Err(HostError::unavailable_classified(
@@ -412,7 +412,7 @@ impl crate::SharedHost {
         process: Arc<dyn awaken_provisioning_contract::ProcessHandle>,
     ) -> Result<bool, HostError> {
         self.session_slots
-            .modify(generation.session_id.as_str(), |slot| {
+            .modify(generation.session_id().as_str(), |slot| {
                 let admitted = slot.mcp_quiescence_fence.is_none();
                 let projection = slot
                     .mcp
@@ -446,7 +446,7 @@ impl crate::SharedHost {
         wiring: crate::mcp::McpWiring,
     ) -> Result<(), HostError> {
         self.session_slots
-            .modify(generation.session_id.as_str(), |slot| {
+            .modify(generation.session_id().as_str(), |slot| {
                 if slot.mcp_quiescence_fence.is_some() {
                     return Err(HostError::unavailable_classified(
                         "session_environment_quiescing",
@@ -484,7 +484,7 @@ impl crate::SharedHost {
     ) -> Result<Option<awaken_session_mcp_contract::McpRealizationReceipt>, HostError> {
         let binding = request.renewal_binding_fingerprint();
         self.session_slots
-            .update(request.generation.session_id.as_str(), |slot| {
+            .update(request.generation.session_id().as_str(), |slot| {
                 if slot.mcp_quiescence_fence.is_some() {
                     return Err(HostError::unavailable_classified(
                         "session_environment_quiescing",
@@ -492,14 +492,15 @@ impl crate::SharedHost {
                     ));
                 }
                 let Some(projection) = slot.mcp.iter_mut().find(|projection| {
-                    projection.request.generation.session_id == request.generation.session_id
+                    projection.request.generation.session_id() == request.generation.session_id()
                         && projection.request.generation.attachment_id()
                             == request.generation.attachment_id()
-                        && projection.request.generation.generation == request.generation.generation
-                        && projection.request.generation.runtime_incarnation
-                            == request.generation.runtime_incarnation
-                        && projection.request.generation.lease_epoch
-                            == request.generation.lease_epoch
+                        && projection.request.generation.generation()
+                            == request.generation.generation()
+                        && projection.request.generation.runtime_incarnation()
+                            == request.generation.runtime_incarnation()
+                        && projection.request.generation.lease_epoch()
+                            == request.generation.lease_epoch()
                 }) else {
                     return Ok(None);
                 };
@@ -509,8 +510,8 @@ impl crate::SharedHost {
                         | crate::session_slot::McpProjectionState::Active
                 ) || projection.request.realization_id != request.realization_id
                     || projection.request.renewal_binding_fingerprint() != binding
-                    || request.generation.lease_expires_at_unix_ms
-                        <= projection.request.generation.lease_expires_at_unix_ms
+                    || request.generation.lease_expires_at_unix_ms()
+                        <= projection.request.generation.lease_expires_at_unix_ms()
                 {
                     return Err(HostError::internal(
                         "MCP lease renewal conflicts with the staged realization",
@@ -543,7 +544,7 @@ impl crate::SharedHost {
         let request_fingerprint = request.fingerprint();
         let renewal_binding = request.renewal_binding_fingerprint();
         self.session_slots
-            .modify(request.generation.session_id.as_str(), |slot| {
+            .modify(request.generation.session_id().as_str(), |slot| {
                 if slot.mcp_quiescence_fence.is_some() {
                     return false;
                 }
@@ -553,8 +554,8 @@ impl crate::SharedHost {
                             && projection.receipt.receipt_fingerprint == request_fingerprint)
                             || (projection.request.renewal_binding_fingerprint()
                                 == renewal_binding
-                                && request.generation.lease_expires_at_unix_ms
-                                    > projection.request.generation.lease_expires_at_unix_ms))
+                                && request.generation.lease_expires_at_unix_ms()
+                                    > projection.request.generation.lease_expires_at_unix_ms()))
                 }) else {
                     return false;
                 };
@@ -570,7 +571,7 @@ impl crate::SharedHost {
     ) -> Result<(), HostError> {
         if !self
             .session_slots
-            .mcp_realization_admitted(generation.session_id.as_str())
+            .mcp_realization_admitted(generation.session_id().as_str())
         {
             return Err(HostError::unavailable_classified(
                 "session_environment_quiescing",
@@ -620,7 +621,7 @@ impl crate::SharedHost {
         }
         let changed = self
             .session_slots
-            .modify(generation.session_id.as_str(), |slot| {
+            .modify(generation.session_id().as_str(), |slot| {
                 if slot.mcp_quiescence_fence.is_some() {
                     return Err(HostError::unavailable_classified(
                         "session_environment_quiescing",
@@ -675,7 +676,7 @@ impl crate::SharedHost {
     ) -> Result<(), HostError> {
         let Some(drain) = self
             .session_slots
-            .read(generation.session_id.as_str(), |slot| {
+            .read(generation.session_id().as_str(), |slot| {
                 slot.mcp
                     .iter()
                     .find(|projection| projection.request.generation == *generation)
@@ -691,7 +692,7 @@ impl crate::SharedHost {
         let _drain = drain.lock().await;
         let projected = self
             .session_slots
-            .modify(generation.session_id.as_str(), |slot| {
+            .modify(generation.session_id().as_str(), |slot| {
                 let Some(projection) = slot
                     .mcp
                     .iter_mut()
@@ -769,7 +770,7 @@ impl crate::SharedHost {
         // can be erased as an unowned handle.
         let process = if process.is_none() && had_staging {
             self.session_slots
-                .read(generation.session_id.as_str(), |slot| {
+                .read(generation.session_id().as_str(), |slot| {
                     slot.mcp
                         .iter()
                         .find(|projection| projection.request.generation == *generation)
@@ -835,7 +836,7 @@ impl crate::SharedHost {
 
         match self
             .session_slots
-            .modify(generation.session_id.as_str(), |slot| {
+            .modify(generation.session_id().as_str(), |slot| {
                 let Some(projection) = slot
                     .mcp
                     .iter_mut()
@@ -874,7 +875,7 @@ impl crate::SharedHost {
     ) -> Result<McpQuiescenceProof, HostError> {
         let mut targets = Vec::with_capacity(expected.len());
         for generation in expected {
-            if generation.session_id != thread {
+            if generation.session_id() != thread {
                 return Err(HostError::internal(
                     "MCP quiescence generation belongs to another Session",
                 ));
@@ -1110,18 +1111,7 @@ mod acp_projection_tests {
     }
 
     fn generation() -> awaken_session_mcp_contract::McpGenerationRef {
-        awaken_session_mcp_contract::McpGenerationRef {
-            session_id: "t1".into(),
-            generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                awaken_session_mcp_contract::McpAttachmentId("mcp-gh".into()),
-                3,
-                &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                    .unwrap(),
-            ),
-            runtime_incarnation: "runtime-1".into(),
-            lease_epoch: 2,
-            lease_expires_at_unix_ms: u64::MAX,
-        }
+        crate::test_mcp::mcp_fence("t1", "mcp-gh", 3, "runtime-1", 2, u64::MAX)
     }
 
     fn request(

@@ -38,6 +38,7 @@ impl awaken_provisioning_contract::SandboxCheckpointStore for PendingUploadStore
 async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_and_store_waits() {
     use crate::session_slot::SessionRealizationAuthority as Authority;
     use awaken_provisioning_contract as pc;
+    use awaken_provisioning_contract::test_support::FenceTamper as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     // Host-to-real-Local decision table H: direct/registered topology; lifecycle
@@ -171,14 +172,10 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                                 .observed(awaken_authority_clock::authority_proof_started().unwrap()),
                             )
                         });
-                        worker
-                            .current
-                            .lock()
-                            .unwrap()
-                            .as_mut()
-                            .unwrap()
-                            .0
-                            .expires_at_unix_ms += 1;
+                        {
+                            let mut guard = worker.current.lock().unwrap();
+                            guard.as_mut().unwrap().0.renew();
+                        };
                     }
                     _ => {}
                 }

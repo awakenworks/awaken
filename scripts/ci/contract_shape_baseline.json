@@ -44,10 +44,10 @@
     },
     "awaken-provisioning-contract": {
       "depth": 1,
-      "production_lines": 4422,
+      "production_lines": 4464,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "single-source the realization-lease laws: SandboxEffectFence::for_operation and fence_is_live_at join the fence kernel in provisioning (+23); session-contract lease/generation rules now call that kernel instead of repeating the field comparison (+12 at three call sites, -6 projection)",
+        "production_lines": "SandboxEffectFence becomes the kernel EffectFence over the SandboxRealization tenure: one admission shared by new() and the flat-wire decoder (nonzero epoch, non-blank identity), typed accessors replacing public fields, and the FenceTamper fixture for provider decision tables (+42); validate_identity() callers are gone because the invariant is structural",
         "catch_all_errors": "Classify/Disposition vocabulary moved down into agent-contract so sandbox failures classify without a provisioning->runtime edge; provisioning-contract gains the typed SandboxError classes and the neutral handle-evidence codec that replaced its backend payload enums (backend nouns 10->0); SandboxError Transport/Invalid are classified failure classes carrying detail, replacing the former untyped SandboxError(String)"
       }
     },

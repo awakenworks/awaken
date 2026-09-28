@@ -15,7 +15,7 @@ mod runtime;
 
 pub use checkpoint_upload::SandboxCheckpointUpload;
 pub use fence::{
-    FenceSuccession, FenceToken, SandboxEffectFence, fence_is_live_at, fence_succession,
+    RealizationHolder, SandboxEffectFence, SandboxEffectFenceWire, SandboxRealization,
 };
 pub use foundation::*;
 pub use handle::*;
@@ -1606,7 +1606,7 @@ mod tests {
         // predicate is the sole provider successor authority.
         let fence =
             SandboxEffectFence::new("effect-1", "owner-1", "runtime-1", 7, 100).expect("R1");
-        assert_eq!(fence.epoch, 7, "R1");
+        assert_eq!(fence.epoch(), 7, "R1");
         assert!(!fence.expired_at(99), "R3 before");
         assert!(fence.expired_at(100), "R3 at");
         assert!(fence.expired_at(101), "R3 after");
@@ -1735,17 +1735,9 @@ mod tests {
             SecretWritebackEffect::new(" ", "pod-uid-a", successor.clone()).is_err(),
             "S5 blank reference",
         );
-        let invalid_authorization = SandboxEffectFence {
-            operation_id: " ".into(),
-            owner: successor.owner.clone(),
-            runtime_incarnation: successor.runtime_incarnation.clone(),
-            epoch: successor.epoch,
-            expires_at_unix_ms: successor.expires_at_unix_ms,
-        };
         assert!(
-            SecretWritebackEffect::new("credential-source@3", "pod-uid-a", invalid_authorization,)
-                .is_err(),
-            "S5 invalid authorization identity",
+            SandboxEffectFence::for_operation(" ", &successor).is_err(),
+            "S5 an authorization with a blank identity never exists to hand a write-back",
         );
         assert!(
             SecretWritebackEffect::new("credential-source@3", "\n", successor).is_err(),

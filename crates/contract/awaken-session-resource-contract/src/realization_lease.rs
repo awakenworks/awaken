@@ -15,7 +15,7 @@ pub struct SessionRealizationLease {
 /// The aggregate's realization lease carries exactly the coordinates of the
 /// neutral fence algebra, so it states its succession through the one law
 /// instead of restating the field comparisons.
-impl awaken_provisioning_contract::FenceToken for SessionRealizationLease {
+impl awaken_lease_contract::fence::FenceToken for SessionRealizationLease {
     fn owner(&self) -> &str {
         &self.owner
     }
@@ -53,11 +53,11 @@ impl SessionRealizationLease {
 /// live strictly before its expiry and stale at the exact expiry millisecond.
 #[must_use]
 pub const fn realization_lease_is_live_at(expires_at_unix_ms: u64, now_unix_ms: u64) -> bool {
-    awaken_provisioning_contract::fence_is_live_at(expires_at_unix_ms, now_unix_ms)
+    awaken_lease_contract::fence::fence_is_live_at(expires_at_unix_ms, now_unix_ms)
 }
 
 #[must_use]
-const fn realization_lease_facts_authorize(
+fn realization_lease_facts_authorize(
     same_owner: bool,
     same_runtime_incarnation: bool,
     same_epoch: bool,
@@ -71,14 +71,15 @@ const fn realization_lease_facts_authorize(
         && same_runtime_incarnation
         && same_epoch
         && matches!(
-            awaken_provisioning_contract::fence_succession(
+            awaken_lease_contract::fence::fence_succession(
+                true,
                 0,
                 asserted_expires_at_unix_ms,
                 0,
                 current_expires_at_unix_ms,
                 true,
             ),
-            Some(awaken_provisioning_contract::FenceSuccession::Renewal)
+            Some(awaken_lease_contract::fence::FenceSuccession::Renewal)
         )
         && realization_lease_is_live_at(current_expires_at_unix_ms, now_unix_ms)
 }
@@ -108,7 +109,7 @@ pub fn realization_lease_generation_authorizes(
     current: &SessionRealizationLease,
     asserted: &SessionRealizationLease,
 ) -> bool {
-    use awaken_provisioning_contract::{FenceSuccession, FenceToken};
+    use awaken_lease_contract::fence::{FenceSuccession, FenceToken};
     // The current generation must be a renewal of the asserted one: the exact
     // lease, expiry never shortened. A reassignment (higher epoch) is a
     // different owner generation and does not authorize the assertion.

@@ -21,9 +21,9 @@ pub(crate) fn disposal_authorization(
 ) -> pc::SandboxDisposalAuthorization {
     disposal_authorization_successor(
         prepared,
-        &prepared.owner,
-        &prepared.runtime_incarnation,
-        prepared.epoch,
+        prepared.owner(),
+        prepared.runtime_incarnation(),
+        prepared.epoch(),
     )
 }
 
@@ -33,7 +33,7 @@ pub(crate) fn disposal_authorization_successor(
     runtime_incarnation: &str,
     epoch: u64,
 ) -> pc::SandboxDisposalAuthorization {
-    let preparation_fingerprint = format!("k8s-fixture-preparation:{}", prepared.operation_id);
+    let preparation_fingerprint = format!("k8s-fixture-preparation:{}", prepared.operation_id());
     let preparation =
         pc::SandboxDisposalPreparation::new(prepared.clone(), preparation_fingerprint)
             .expect("live fixture preparation is complete");
@@ -45,7 +45,7 @@ pub(crate) fn disposal_authorization_successor(
         owner,
         runtime_incarnation,
         epoch,
-        prepared.expires_at_unix_ms,
+        prepared.expires_at_unix_ms(),
     )
     .expect("live fixture authorization successor is valid");
     preparation

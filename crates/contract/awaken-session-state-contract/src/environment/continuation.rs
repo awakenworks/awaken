@@ -8,8 +8,6 @@
 //! every public transition method remain owned by `SessionEnvironmentState`;
 //! providers still advance them solely through exact receipts.
 
-use awaken_provisioning_contract::FenceToken;
-
 use super::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef, SandboxGeneration,
     SessionEnvironmentOperation, SessionEnvironmentReceiptError, SessionEnvironmentState,
@@ -233,9 +231,6 @@ impl SourceReleasePreparedReceipt {
         let asserted_effect_fence = preparation
             .sandbox_effect_fence()
             .map_err(|_| SessionEnvironmentReceiptError::RealizationStale)?;
-        provider_prepared_effect_fence
-            .validate_identity()
-            .map_err(|_| SessionEnvironmentReceiptError::Mismatch)?;
         if !asserted_effect_fence.same_realization_lease(&provider_prepared_effect_fence)
             || !(asserted_effect_fence.authorizes_effect_successor(&provider_prepared_effect_fence)
                 || provider_prepared_effect_fence
@@ -303,9 +298,6 @@ impl SourceReleasePreparedReceipt {
         let asserted_effect_fence = self
             .preparation
             .sandbox_effect_fence()
-            .map_err(|_| SessionEnvironmentTransitionError::ReceiptMismatch)?;
-        self.provider_prepared_effect_fence
-            .validate_identity()
             .map_err(|_| SessionEnvironmentTransitionError::ReceiptMismatch)?;
         if !asserted_effect_fence.same_realization_lease(&self.provider_prepared_effect_fence)
             || !(asserted_effect_fence

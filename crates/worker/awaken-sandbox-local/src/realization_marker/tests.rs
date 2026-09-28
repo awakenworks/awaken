@@ -404,7 +404,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     let base = tempfile::tempdir().unwrap();
     let root = base.path().join("terminal");
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("terminal"));
-    let create = fence("create", 1);
+    let create = fence("create", 2);
     let mut guard = begin(&root, &fingerprint, &create, None, None).unwrap();
     guard
         .recorded_admission(|held, admitted| held.prepare_root(admitted))
@@ -412,14 +412,14 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     let evidence = guard
         .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
         .unwrap();
-    let terminal = fence("terminal", 1);
+    let terminal = fence("terminal", 2);
 
     assert!(
         begin_terminal_takeover(
             &root,
             &fingerprint,
             Some(source(&fingerprint, &evidence)),
-            Some(&fence("same-lease-other-operation", 1)),
+            Some(&fence("same-lease-other-operation", 2)),
             &terminal,
             None,
         )
@@ -437,7 +437,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     .expect("T1")
     .expect("T1 participant");
     drop(removal); // aggregate successor after an interrupted finalizer
-    let successor = fence("terminal-successor", 1);
+    let successor = fence("terminal-successor", 2);
     let (_, mut removal) = begin_terminal_takeover(
         &root,
         &fingerprint,
@@ -448,7 +448,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     )
     .expect("T6 restart takeover")
     .expect("T6 participant");
-    let final_effect = fence("terminal-final", 1);
+    let final_effect = fence("terminal-final", 2);
     pc::with_current_sandbox_effect(
         &final_effect,
         &pc::test_support::EffectAuthority::new(&final_effect),
@@ -461,7 +461,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
             "terminal-final-preparation",
             "owner",
             "runtime",
-            1,
+            2,
         );
         pc::with_current_sandbox_effect(
             authorization.effect_fence(),
@@ -479,7 +479,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
             observe_adoption(
                 &root,
                 Some(&fingerprint),
-                Some(&fence("forged-create", 1)),
+                Some(&fence("forged-create", 2)),
                 Some(evidence.physical_incarnation()),
                 Some(&final_effect),
             )
@@ -521,7 +521,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
             &fingerprint,
             Some(source(&fingerprint, &evidence)),
             Some(&create),
-            &fence("foreign", 0),
+            &fence("foreign", 1),
             None,
         )
         .is_err(),
@@ -531,7 +531,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     let partial_root = base.path().join("partial-restore");
     let partial_fingerprint =
         pc::SandboxRealizationFingerprint::from_spec(&spec("partial-restore"));
-    let restore = fence("restore", 3);
+    let restore = fence("restore", 4);
     let mut marker = marker_for_new_attempt(
         &partial_root,
         &partial_fingerprint,
@@ -557,14 +557,14 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
             &partial_root,
             &partial_fingerprint,
             None,
-            Some(&fence("wrong-restore", 3)),
-            &fence("terminal-restore", 3),
+            Some(&fence("wrong-restore", 4)),
+            &fence("terminal-restore", 4),
             None,
         )
         .is_err(),
         "T5 drifted restore evidence"
     );
-    let partial_preparation = fence("terminal-restore", 3);
+    let partial_preparation = fence("terminal-restore", 4);
     let (_, mut partial) = begin_terminal_takeover(
         &partial_root,
         &partial_fingerprint,
@@ -582,7 +582,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
             "partial-restore-preparation",
             "owner",
             "runtime",
-            3,
+            4,
         );
         pc::with_current_sandbox_effect(
             authorization.effect_fence(),
@@ -988,7 +988,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
     let fingerprint =
         pc::SandboxRealizationFingerprint::from_spec(&spec("prepared-reconstruction"));
     let create =
-        pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX - 30).unwrap();
+        pc::SandboxEffectFence::new("create", "owner", "runtime", 2, u64::MAX - 30).unwrap();
     let mut creation = begin(&root, &fingerprint, &create, None, None).unwrap();
     creation
         .recorded_admission(|held, admitted| held.prepare_root(admitted))
@@ -1000,7 +1000,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         "continuation-preparation-a",
         "owner",
         "runtime",
-        1,
+        2,
         u64::MAX - 20,
     )
     .unwrap();
@@ -1019,15 +1019,15 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
     assert_eq!(durable_a.effect_fence, prepared_a, "T7 setup A");
 
     let lower =
-        pc::SandboxEffectFence::new("terminal-lower", "owner", "runtime", 0, u64::MAX).unwrap();
+        pc::SandboxEffectFence::new("terminal-lower", "owner", "runtime", 1, u64::MAX).unwrap();
     let shorter =
-        pc::SandboxEffectFence::new("terminal-shorter", "owner", "runtime", 1, u64::MAX - 21)
+        pc::SandboxEffectFence::new("terminal-shorter", "owner", "runtime", 2, u64::MAX - 21)
             .unwrap();
     let foreign = pc::SandboxEffectFence::new(
         "terminal-foreign",
         "foreign-owner",
         "foreign-runtime",
-        1,
+        2,
         u64::MAX,
     )
     .unwrap();
@@ -1060,7 +1060,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         "terminal-reconstruction-t",
         "owner",
         "runtime",
-        1,
+        2,
         u64::MAX - 10,
     )
     .unwrap();
@@ -1085,7 +1085,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         preparation_fingerprint,
         "successor-owner",
         "successor-runtime",
-        2,
+        3,
     );
     {
         let authorization = &authorization_c;
@@ -1112,7 +1112,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         "different-preparation-fingerprint",
         "later-owner",
         "later-runtime",
-        3,
+        4,
     );
     assert!(
         {
@@ -1142,7 +1142,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
         .recorded_admission(|held, admitted| held.complete(&empty_receipt(), admitted))
         .unwrap();
     let ordinary_t =
-        pc::SandboxEffectFence::new("ordinary-terminal-t", "owner", "runtime", 1, u64::MAX - 20)
+        pc::SandboxEffectFence::new("ordinary-terminal-t", "owner", "runtime", 2, u64::MAX - 20)
             .unwrap();
     let (_, ordinary) = begin_terminal_takeover(
         &ordinary_root,
@@ -1157,7 +1157,7 @@ fn removing_reconstruction_preserves_preparation_until_the_canonical_mutation_ed
     assert_eq!(ordinary.marker.effect_fence, ordinary_t, "T7e initial T");
     drop(ordinary);
     let ordinary_t2 =
-        pc::SandboxEffectFence::new("ordinary-terminal-t2", "owner", "runtime", 1, u64::MAX - 10)
+        pc::SandboxEffectFence::new("ordinary-terminal-t2", "owner", "runtime", 2, u64::MAX - 10)
             .unwrap();
     let (_, mut ordinary_reconstruction) = begin_terminal_takeover(
         &ordinary_root,

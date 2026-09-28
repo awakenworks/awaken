@@ -5576,6 +5576,13 @@ pub(super) fn publication_fixture(
         ),
     );
     session.realization = Some(lease.clone());
+    let claim = awaken_session_mcp_contract::McpRealizationClaim {
+        realization_id: "realize-browser-1".into(),
+        runtime_incarnation: lease.runtime_incarnation.clone(),
+        lease_epoch: lease.epoch,
+        lease_expires_at_unix_ms: (u64::MAX - 1_024),
+        stage_idempotency_key: "renew-browser-1".into(),
+    };
     session
         .mcp
         .attachments
@@ -5590,24 +5597,13 @@ pub(super) fn publication_fixture(
             selected_plaintext_holder: None,
             state: awaken_session_mcp_contract::McpAttachmentState::Active,
             publication_acknowledged: false,
-            realization: Some(awaken_session_mcp_contract::McpRealizationClaim {
-                realization_id: "realize-browser-1".into(),
-                runtime_incarnation: lease.runtime_incarnation.clone(),
-                lease_epoch: lease.epoch,
-                lease_expires_at_unix_ms: (u64::MAX - 1_024),
-                stage_idempotency_key: "renew-browser-1".into(),
-            }),
+            realization: Some(claim.clone()),
             attempts: 1,
             last_error: None,
         });
-    let generation_ref = awaken_session_mcp_contract::McpGenerationRef {
-        session_id: id.into(),
-        generation,
-        runtime_incarnation: lease.runtime_incarnation.clone(),
-        lease_epoch: lease.epoch,
-        lease_expires_at_unix_ms: (u64::MAX - 1_024),
-    };
-    (session, lease, generation_ref)
+    let generation_ref =
+        awaken_session_mcp_contract::McpGenerationRef::from_claim(&id.into(), &generation, &claim);
+    (session, lease, generation_ref.unwrap())
 }
 
 #[tokio::test]
@@ -5696,7 +5692,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
                 }
                 let key = |g: &awaken_session_mcp_contract::McpGenerationRef| {
-                    format!("{}:{}", g.attachment_id().0, g.generation.version())
+                    format!("{}:{}", g.attachment_id().0, g.generation().version())
                 };
                 let staged = receipts
                     .iter()
@@ -5750,7 +5746,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                 publication_traces.push(serde_json::json!({"rule": format!("count-{count}-predecessor-{predecessor}-renewed-{renewed}"), "cause": {"expiry_before": expiry_before, "expiry_after": durable.realization.as_ref().unwrap().expires_at_unix_ms}, "staged": staged, "active": active, "published": publish.iter().map(key).collect::<Vec<_>>(), "drained": drain.iter().map(key).collect::<Vec<_>>() }));
                 assert_eq!(publish.len(), count, "A7 {id}");
                 assert!(
-                    publish.iter().all(|g| g.generation.version() == 2),
+                    publish.iter().all(|g| g.generation().version() == 2),
                     "A7 no retired publication"
                 );
                 assert_eq!(drain.len(), if predecessor { count } else { 0 }, "A7 {id}");
@@ -5935,7 +5931,8 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             &original.mcp.attachments[0],
         )
         .unwrap();
-        request.generation.lease_expires_at_unix_ms -= 1;
+        let mut w = request.generation.to_wire();
+        w.lease_expires_at_unix_ms -= 1;
         match fault {
             "workspace" => request.workspace_id = "foreign".into(),
             "target" => {
@@ -5975,24 +5972,23 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     ),
                 ));
             }
-            "session" => request.generation.session_id = "foreign".into(),
+            "session" => w.session_id = "foreign".into(),
             "attachment" => {
-                request.generation.generation = awaken_session_mcp_contract::McpGeneration::new(
+                w.generation = awaken_session_mcp_contract::McpGeneration::new(
                     awaken_session_mcp_contract::McpAttachmentId("foreign".into()),
-                    request.generation.generation.version(),
-                    request.generation.generation.digest().clone(),
+                    w.generation.version(),
+                    w.generation.digest().clone(),
                 );
             }
-            "generation" => {
-                request.generation.generation = request.generation.generation.at_version(2)
-            }
-            "incarnation" => request.generation.runtime_incarnation = "replacement".into(),
-            "epoch" => request.generation.lease_epoch += 1,
-            "future-expiry" => request.generation.lease_expires_at_unix_ms = current_expiry + 1,
+            "generation" => w.generation = w.generation.at_version(2),
+            "incarnation" => w.runtime_incarnation = "replacement".into(),
+            "epoch" => w.lease_epoch += 1,
+            "future-expiry" => w.lease_expires_at_unix_ms = current_expiry + 1,
             "owner" => lease.owner = "foreign".into(),
             "expired-root" => original.realization.as_mut().unwrap().expires_at_unix_ms = 1,
             _ => {}
         }
+        request.generation = w.clone().try_into().unwrap();
         let mut receipt = NoopMcpRealizer
             .stage_mcp_attachment(request.clone())
             .await
@@ -6002,7 +5998,8 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         }
         let mut receipts = vec![receipt];
         if fault == "duplicate-expiry" {
-            request.generation.lease_expires_at_unix_ms -= 1;
+            w.lease_expires_at_unix_ms -= 1;
+            request.generation = w.try_into().unwrap();
             receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
         }
         create(repo.as_ref(), original).await;
@@ -6042,21 +6039,22 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         "duplicate-expiry",
     ] {
         let id = format!("ack-reject-{fault}");
-        let (mut original, mut lease, mut generation) = fixture(&id);
-        generation.lease_expires_at_unix_ms -= 1;
+        let (mut original, mut lease, generation) = fixture(&id);
+        let mut w = generation.to_wire();
+        w.lease_expires_at_unix_ms -= 1;
         match fault {
-            "session" => generation.session_id = "foreign".into(),
+            "session" => w.session_id = "foreign".into(),
             "attachment" => {
-                generation.generation = awaken_session_mcp_contract::McpGeneration::new(
+                w.generation = awaken_session_mcp_contract::McpGeneration::new(
                     awaken_session_mcp_contract::McpAttachmentId("foreign".into()),
-                    generation.generation.version(),
-                    generation.generation.digest().clone(),
+                    w.generation.version(),
+                    w.generation.digest().clone(),
                 );
             }
-            "generation" => generation.generation = generation.generation.at_version(2),
-            "incarnation" => generation.runtime_incarnation = "replacement".into(),
-            "epoch" => generation.lease_epoch += 1,
-            "future-expiry" => generation.lease_expires_at_unix_ms = current_expiry + 1,
+            "generation" => w.generation = w.generation.at_version(2),
+            "incarnation" => w.runtime_incarnation = "replacement".into(),
+            "epoch" => w.lease_epoch += 1,
+            "future-expiry" => w.lease_expires_at_unix_ms = current_expiry + 1,
             "owner" => lease.owner = "foreign".into(),
             "duplicate-expiry" => {
                 let mut other = original.mcp.attachments[0].clone();
@@ -6066,10 +6064,10 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             }
             _ => unreachable!(),
         }
+        let generation: awaken_session_mcp_contract::McpGenerationRef = w.try_into().unwrap();
         let mut published = vec![generation.clone()];
         if fault == "duplicate-expiry" {
-            generation.lease_expires_at_unix_ms -= 1;
-            published.push(generation);
+            published.push(generation.expiring_at(generation.lease_expires_at_unix_ms() - 1));
         }
         create(repo.as_ref(), original).await;
         let before = repo.get(&SessionId::from(&id)).await.unwrap();
@@ -6108,7 +6106,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         };
         original.mcp.attachments[0].publication_acknowledged = true;
         lease.expires_at_unix_ms = 1;
-        generation.lease_expires_at_unix_ms = 1;
+        generation = generation.expiring_at(1);
         create(repo.as_ref(), original).await;
         let before = repo.get(&SessionId::from(&id)).await.unwrap();
         let command = awaken_session_realization_contract::AcknowledgeSessionRealization {
@@ -6131,7 +6129,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             "A8 no duplicate write or activity transition"
         );
         let mut duplicate = command;
-        generation.lease_expires_at_unix_ms = 2;
+        generation = generation.expiring_at(2);
         duplicate.published.push(generation);
         assert!(
             application
@@ -6178,9 +6176,9 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         "A1/E1"
     );
 
-    let (renewed, renewed_lease, mut predecessor) = fixture("ack-renewed");
+    let (renewed, renewed_lease, predecessor) = fixture("ack-renewed");
     create(repo.as_ref(), renewed).await;
-    predecessor.lease_expires_at_unix_ms -= 1;
+    let predecessor = predecessor.expiring_at(predecessor.lease_expires_at_unix_ms() - 1);
     let mut predecessor_lease = renewed_lease.clone();
     predecessor_lease.expires_at_unix_ms -= 1;
     let renewed_result =
@@ -6209,13 +6207,15 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         "A2/E2"
     );
 
-    let (replacement, replacement_lease, mut wrong_generation) = fixture("ack-replaced");
+    let (replacement, replacement_lease, wrong_generation) = fixture("ack-replaced");
     create(repo.as_ref(), replacement).await;
-    wrong_generation.generation = awaken_session_mcp_contract::McpGeneration::new(
+    let mut w = wrong_generation.to_wire();
+    w.generation = awaken_session_mcp_contract::McpGeneration::new(
         awaken_session_mcp_contract::McpAttachmentId("other".into()),
-        wrong_generation.generation.version(),
-        wrong_generation.generation.digest().clone(),
+        w.generation.version(),
+        w.generation.digest().clone(),
     );
+    let wrong_generation: awaken_session_mcp_contract::McpGenerationRef = w.try_into().unwrap();
     let error =
         awaken_session_realization_contract::SessionRealizationControl::acknowledge_session_realization(
             &application,

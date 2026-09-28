@@ -495,10 +495,10 @@ impl SharedHost {
                     .current_effect_fence(initial)
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 let lease = awaken_session_resource_contract::SessionRealizationLease {
-                    owner: current.owner,
-                    runtime_incarnation: current.runtime_incarnation,
-                    epoch: current.epoch,
-                    expires_at_unix_ms: current.expires_at_unix_ms,
+                    owner: current.owner().to_owned(),
+                    runtime_incarnation: current.runtime_incarnation().to_owned(),
+                    epoch: current.epoch(),
+                    expires_at_unix_ms: current.expires_at_unix_ms(),
                 };
                 let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
                     effect.intent.session_id().clone(),

@@ -48,18 +48,18 @@ impl CurrentExecutionAuthority for SessionExecutionAuthority {
             SessionEffectTarget::Execution(_) => return Err(denied()),
         };
         if !initial.same_effect_identity(asserted)
-            || asserted.expires_at_unix_ms < initial.expires_at_unix_ms
+            || asserted.expires_at_unix_ms() < initial.expires_at_unix_ms()
         {
             return Err(denied());
         }
         let mut invoked = false;
         self.with_current_session(&mut |lease, remaining| {
             let current = lease
-                .sandbox_effect_fence(initial.operation_id.clone())
+                .sandbox_effect_fence(initial.operation_id())
                 .map_err(io::Error::other)?;
             if invoked
                 || !asserted.same_effect_identity(&current)
-                || current.expires_at_unix_ms < asserted.expires_at_unix_ms
+                || current.expires_at_unix_ms() < asserted.expires_at_unix_ms()
             {
                 return Err(denied());
             }
@@ -165,18 +165,15 @@ impl SessionRuntimeSlots {
         initial: &SandboxEffectFence,
         worker: Option<&Arc<dyn CurrentExecutionAuthority>>,
     ) -> Result<impl CurrentExecutionAuthority + use<>, crate::HostError> {
-        initial
-            .validate_identity()
-            .map_err(|error| crate::HostError::internal(error.to_string()))?;
         self.read(session, |slot| {
             let lease = slot.realization_authority.lease().ok_or_else(|| {
                 crate::HostError::internal("Session realization proof is no longer live")
             })?;
             let current = lease
-                .sandbox_effect_fence(initial.operation_id.clone())
+                .sandbox_effect_fence(initial.operation_id())
                 .map_err(|error| crate::HostError::internal(error.to_string()))?;
             if !initial.same_effect_identity(&current)
-                || current.expires_at_unix_ms < initial.expires_at_unix_ms
+                || current.expires_at_unix_ms() < initial.expires_at_unix_ms()
             {
                 return Err(crate::HostError::internal(
                     "Session realization generation changed",

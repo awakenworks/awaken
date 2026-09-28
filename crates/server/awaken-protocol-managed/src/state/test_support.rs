@@ -1949,7 +1949,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RehydrateFake 
             .lock()
             .unwrap()
             .iter_mut()
-            .find(|restored| restored.0 == request.generation.session_id)
+            .find(|restored| restored.0 == request.generation.session_id())
         {
             restored.2 += 1;
         }

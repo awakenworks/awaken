@@ -259,7 +259,7 @@ impl SharedHost {
                     .begin_retirement_with_committed_candidate(
                         &candidate,
                         SessionEnvironmentRetirementCause::Terminal {
-                            effect_id: effect_fence.operation_id.clone(),
+                            effect_id: effect_fence.operation_id().to_owned(),
                         },
                     )?;
                 Ok::<_, HostError>(())
@@ -342,7 +342,7 @@ impl SharedHost {
             BoundEnvironmentPreparationMode::Terminal
             | BoundEnvironmentPreparationMode::TerminalDisposal => {
                 let cause = SessionEnvironmentRetirementCause::Terminal {
-                    effect_id: effect_fence.operation_id.clone(),
+                    effect_id: effect_fence.operation_id().to_owned(),
                 };
                 if let Some(candidate) = committed_candidate {
                     if !Arc::ptr_eq(&candidate.environment, &environment)
@@ -558,7 +558,7 @@ impl SharedHost {
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 if let Some(environment) = resident {
                     let cause = SessionEnvironmentRetirementCause::Terminal {
-                        effect_id: effect_fence.operation_id.clone(),
+                        effect_id: effect_fence.operation_id().to_owned(),
                     };
                     if let Some(candidate) = committed_candidate.as_ref() {
                         self.session_slots.update(thread, |slot| {

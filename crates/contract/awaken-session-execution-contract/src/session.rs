@@ -633,17 +633,14 @@ mod tests {
             }
         }
         let runtime = UnsupportedRealizer;
-        let generation = McpGenerationRef {
-            session_id: "session-1".into(),
-            generation: crate::mcp_attachment::test_generation(
-                "mcp-1",
-                1,
-                "https://mcp.example.test",
-            ),
-            runtime_incarnation: "runtime-1".into(),
-            lease_epoch: 7,
-            lease_expires_at_unix_ms: u64::MAX,
-        };
+        let generation = McpGenerationRef::from_persisted(
+            "session-1".into(),
+            crate::mcp_attachment::test_generation("mcp-1", 1, "https://mcp.example.test"),
+            "runtime-1".into(),
+            7,
+            u64::MAX,
+        )
+        .expect("MCP generation fence epoch is nonzero");
         let stage = StageMcpAttachment {
             workspace_id: "workspace-1".into(),
             generation: generation.clone(),
