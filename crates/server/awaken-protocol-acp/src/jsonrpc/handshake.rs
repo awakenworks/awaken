@@ -215,6 +215,142 @@ pub(super) async fn open_new_session(
 
 /// Pinned Claude adapter extension. Disable builtin objects as well as redirecting
 /// model-emitted names; this does not grant authority or convert tool arguments.
+/// Open or restore the external Session through the one shared handshake owner.
+/// Historical replay stays discarded; new/load/recovery use identical metadata.
+pub(super) async fn open_or_restore_session(
+    wire: &mut Wire<'_>,
+    sink: &mut dyn RunFactAppender,
+    seq: &mut u64,
+    config: &crate::TurnConfig<'_>,
+    init: InitializeResponse,
+    launch_sink: Option<super::LaunchSink<'_>>,
+) -> Result<(SessionId, NegotiatedAcpCapabilities, bool), AcpError> {
+    use super::{RpcResponse, is_missing_session_error, pump_response};
+    use crate::{AcpLaunchEvent, AcpLaunchStage, notify_launch};
+    use agent_client_protocol::{LoadSessionRequest, LoadSessionResponse};
+    let cwd = config
+        .session_cwd
+        .clone()
+        .unwrap_or_else(|| "/".to_string());
+    let can_load = init.agent_capabilities.load_session;
+    let resolver = config.resolver;
+    // 2. session/load (resume the CLI's own session across the relaunch) when we
+    //    hold a prior id and the agent supports it; else session/new. Fail-safe:
+    //    an agent that does not advertise `loadSession` falls back to a fresh
+    //    session (the neutral thread history is the authority — never lost).
+    let (session_id, negotiated, supports_session_model): (
+        SessionId,
+        NegotiatedAcpCapabilities,
+        bool,
+    ) = match config.session_id.clone() {
+        Some(prior) if can_load => {
+            notify_launch(
+                launch_sink,
+                AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/load"),
+            );
+            // `session/load` may replay the external Agent's entire historical
+            // notification stream. Those facts were committed by earlier Runs;
+            // the neutral Thread log is their sole owner, so recovery must not
+            // append them again under the current Run's ids.
+            let mut replay = crate::DiscardRunFacts;
+            let load = handshake_step(config.handshake_step_deadline, "session/load", async {
+                wire.send_request(
+                    ID_NEW_SESSION,
+                    AGENT_METHOD_NAMES.session_load,
+                    LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str())
+                        .mcp_servers(to_acp_mcp_servers(&config.mcp_servers))
+                        .meta(claude_session_meta(
+                            &config.tool_aliases,
+                            config.max_turn_requests,
+                        )),
+                )
+                .await?;
+                pump_response(wire, ID_NEW_SESSION, &mut replay, seq, resolver).await
+            })
+            .await?;
+            match load {
+                RpcResponse::Result(result) => {
+                    let resp: LoadSessionResponse = parse(result)?;
+                    let supports_session_model = resp.models.is_some();
+                    let negotiated = crate::capabilities::project_parts(
+                        init.clone(),
+                        resp.modes,
+                        resp.config_options,
+                    );
+                    (
+                        SessionId::new(prior.as_str()),
+                        negotiated,
+                        supports_session_model,
+                    )
+                }
+                RpcResponse::Error(error) if is_missing_session_error(&error) => {
+                    // Some agents advertise loadSession but retain ids only for the
+                    // lifetime of one ACP process (Kimi Code is one example). No
+                    // prompt has been sent yet, so opening a fresh session is a safe
+                    // compatibility fallback and cannot replay agent work.
+                    notify_launch(
+                        launch_sink,
+                        AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/new"),
+                    );
+                    let new_session = handshake_step(
+                        config.handshake_step_deadline,
+                        "session/new",
+                        open_new_session(
+                            wire,
+                            sink,
+                            seq,
+                            resolver,
+                            NewSessionConfig {
+                                cwd: &cwd,
+                                mcp_servers: &config.mcp_servers,
+                                meta: claude_session_meta(
+                                    &config.tool_aliases,
+                                    config.max_turn_requests,
+                                ),
+                            },
+                        ),
+                    )
+                    .await?;
+                    let session_id = new_session.session_id.clone();
+                    let supports_session_model = new_session.models.is_some();
+                    let negotiated = crate::capabilities::project(init.clone(), new_session);
+                    (session_id, negotiated, supports_session_model)
+                }
+                RpcResponse::Error(error) => {
+                    return Err(AcpError::Frame(error.to_string()));
+                }
+            }
+        }
+        _ => {
+            notify_launch(
+                launch_sink,
+                AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/new"),
+            );
+            let new_session = handshake_step(
+                config.handshake_step_deadline,
+                "session/new",
+                open_new_session(
+                    wire,
+                    sink,
+                    seq,
+                    resolver,
+                    NewSessionConfig {
+                        cwd: &cwd,
+                        mcp_servers: &config.mcp_servers,
+                        meta: claude_session_meta(&config.tool_aliases, config.max_turn_requests),
+                    },
+                ),
+            )
+            .await?;
+            let session_id = new_session.session_id.clone();
+            let supports_session_model = new_session.models.is_some();
+            let negotiated = crate::capabilities::project(init.clone(), new_session);
+            (session_id, negotiated, supports_session_model)
+        }
+    };
+    Ok((session_id, negotiated, supports_session_model))
+}
+
 pub(super) fn claude_session_meta(
     aliases: &std::collections::BTreeMap<String, String>,
     max_turns: Option<usize>,
@@ -421,4 +557,113 @@ pub(super) async fn configure_session(
     }
 
     progress.configured()?.into_prompt_ready()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{AgentIo, RecordingResolver, RecordingSink, channel};
+    use super::super::{AcpProjectedEvent, run_turn_with_config};
+    #[tokio::test]
+    async fn alias_metadata_survives_new_load_and_missing_session_recovery() {
+        // Cause graph: aliases x prior Session x advertised load x missing id
+        // + max-turn budget -> new/load/recovery request -> identical constrained
+        // SDK metadata -> prompt.
+        // R1 absent aliases => no extension; R2 new; R3 load; R4 load missing => new;
+        // R5 load unavailable => new. Metadata carries no credential or arbitrary options.
+        // A1 declared alias + explicit pinned adapter toolName -> one identical
+        // identity in projected facts and permission; A2 absent alias or A3
+        // undeclared toolName -> retain the raw title. These rules apply on new,
+        // load and missing-session recovery, with complete permission arguments.
+        for (enabled, prior, can_load, missing, reported_name) in [
+            (false, false, false, false, "Bash"),
+            (true, false, false, false, "Bash"),
+            (true, true, true, false, "Bash"),
+            (true, true, true, true, "Bash"),
+            (true, true, false, false, "Bash"),
+            (true, false, false, false, "Undeclared"),
+        ] {
+            let (mut ours, theirs) = channel();
+            let agent = tokio::spawn(async move {
+                let mut io = AgentIo::new(theirs);
+                io.read().await;
+                io.write_line(&serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":can_load}}}).to_string()).await;
+                let attempts = if prior && can_load && missing { 2 } else { 1 };
+                for attempt in 0..attempts {
+                    let request: serde_json::Value = io.read().await.unwrap();
+                    let load = prior && can_load && attempt == 0;
+                    assert_eq!(
+                        request["method"],
+                        if load { "session/load" } else { "session/new" }
+                    );
+                    let meta = &request["params"]["_meta"];
+                    if enabled {
+                        assert_eq!(
+                            meta["claudeCode"]["options"],
+                            serde_json::json!({"toolAliases":{"Bash":"mcp__awaken_session__bash"},"tools":[],"disallowedTools":["Bash"],"maxTurns":8})
+                        );
+                    } else {
+                        assert!(meta.is_null());
+                    }
+                    let reply = if load && missing {
+                        serde_json::json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Session not found"}})
+                    } else {
+                        serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}})
+                    };
+                    io.write_line(&reply.to_string()).await;
+                }
+                let prompt: serde_json::Value = io.read().await.unwrap();
+                assert_eq!(prompt["method"], "session/prompt");
+                io.write_line(&serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{
+                    "sessionId":"sess-1","update":{"sessionUpdate":"tool_call","toolCallId":"shell-1",
+                    "title":"Terminal","kind":"execute","rawInput":{},"_meta":{"claudeCode":{"toolName":reported_name}}}
+                }}).to_string()).await;
+                io.write_line(&serde_json::json!({"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{
+                    "sessionId":"sess-1","toolCall":{"toolCallId":"shell-1","title":"Terminal","kind":"execute","rawInput":{"command":"pwd"}},
+                    "options":[{"optionId":"allow","kind":"allow_once","name":"Allow"}]
+                }}).to_string()).await;
+                let permission: serde_json::Value = io.read().await.unwrap();
+                assert_eq!(permission["result"]["outcome"]["optionId"], "allow");
+                io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                    .await;
+            });
+            let mut sink = RecordingSink::default();
+            let resolver = RecordingResolver::default();
+            let mut config = crate::TurnConfig::new(&resolver);
+            if enabled {
+                config
+                    .tool_aliases
+                    .insert("Bash".into(), "mcp__awaken_session__bash".into());
+                config.max_turn_requests = Some(8);
+            }
+            if prior {
+                config.session_id = Some("sess-1".into());
+            }
+            run_turn_with_config(ours.as_mut(), "task", &mut sink, &mut config, None)
+                .await
+                .unwrap();
+            agent.await.unwrap();
+            let expected = if enabled && reported_name == "Bash" {
+                "mcp__awaken_session__bash"
+            } else {
+                "Terminal"
+            };
+            let seen = resolver.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].tool, expected, "A1/A2/A3 exact identity");
+            assert_eq!(seen[0].arguments, serde_json::json!({"command":"pwd"}));
+            assert!(
+                sink.events
+                    .iter()
+                    .filter_map(|(_, event)| {
+                        if let AcpProjectedEvent::ToolCall { name, .. } = event {
+                            Some(name.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .all(|name| name == expected),
+                "projection and permission share one identity"
+            );
+        }
+    }
 }

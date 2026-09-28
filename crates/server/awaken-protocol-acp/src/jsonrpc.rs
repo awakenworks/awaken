@@ -20,10 +20,11 @@
 //! `method_not_found` — tool execution is the hand's job, never proxied over ACP.
 
 use agent_client_protocol::{
-    AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, LoadSessionRequest, LoadSessionResponse,
-    PermissionOptionKind, PromptResponse, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
+    AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, PermissionOptionKind, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionId, SessionNotification,
 };
+#[cfg(test)]
 use awaken_acp_contract::NegotiatedAcpCapabilities;
 use awaken_agent_channel::AgentChannel;
 use serde::Serialize;
@@ -34,7 +35,7 @@ mod permission;
 mod response;
 mod wire;
 pub use handshake::negotiate_capabilities;
-use handshake::{HandshakeProgress, handshake_step, initialize_agent, open_new_session};
+use handshake::{HandshakeProgress, handshake_step, initialize_agent};
 use wire::{JSONRPC, Wire};
 
 use mcp::to_acp_mcp_servers;
@@ -43,7 +44,7 @@ use response::{RpcResponse, is_missing_session_error, pump_response, pump_to_res
 
 #[cfg(test)]
 use crate::AppendError;
-use crate::real_acp::{project_update, termination_from_stop_reason};
+use crate::real_acp::termination_from_stop_reason;
 use crate::{
     AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent, AllowAll, LaunchSink,
     PermissionAsk, PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason,
@@ -115,12 +116,6 @@ pub async fn run_turn_with_config(
     launch_sink: Option<LaunchSink<'_>>,
 ) -> Result<TerminationReason, AcpError> {
     let resolver = config.resolver;
-    // The interior cwd the session runs under — stable per thread so a cwd-keyed CLI
-    // finds its session on `session/load` across directories (default `/`).
-    let cwd = config
-        .session_cwd
-        .clone()
-        .unwrap_or_else(|| "/".to_string());
     let mut wire = Wire::new(channel);
     let mut seq = 0u64;
     let progress = HandshakeProgress::started();
@@ -148,125 +143,10 @@ pub async fn run_turn_with_config(
     )
     .await?;
     let progress = progress.initialized()?;
-    let can_load = init.agent_capabilities.load_session;
 
-    // 2. session/load (resume the CLI's own session across the relaunch) when we
-    //    hold a prior id and the agent supports it; else session/new. Fail-safe:
-    //    an agent that does not advertise `loadSession` falls back to a fresh
-    //    session (the neutral thread history is the authority — never lost).
-    let (session_id, negotiated, supports_session_model): (
-        SessionId,
-        NegotiatedAcpCapabilities,
-        bool,
-    ) = match config.session_id.clone() {
-        Some(prior) if can_load => {
-            notify_launch(
-                launch_sink,
-                AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/load"),
-            );
-            // `session/load` may replay the external Agent's entire historical
-            // notification stream. Those facts were committed by earlier Runs;
-            // the neutral Thread log is their sole owner, so recovery must not
-            // append them again under the current Run's ids.
-            let mut replay = crate::DiscardRunFacts;
-            let load = handshake_step(config.handshake_step_deadline, "session/load", async {
-                wire.send_request(
-                    ID_NEW_SESSION,
-                    AGENT_METHOD_NAMES.session_load,
-                    LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str())
-                        .mcp_servers(to_acp_mcp_servers(&config.mcp_servers))
-                        .meta(handshake::claude_session_meta(
-                            &config.tool_aliases,
-                            config.max_turn_requests,
-                        )),
-                )
-                .await?;
-                pump_response(&mut wire, ID_NEW_SESSION, &mut replay, &mut seq, resolver).await
-            })
+    let (session_id, negotiated, supports_session_model) =
+        handshake::open_or_restore_session(&mut wire, sink, &mut seq, config, init, launch_sink)
             .await?;
-            match load {
-                RpcResponse::Result(result) => {
-                    let resp: LoadSessionResponse = parse(result)?;
-                    let supports_session_model = resp.models.is_some();
-                    let negotiated = crate::capabilities::project_parts(
-                        init.clone(),
-                        resp.modes,
-                        resp.config_options,
-                    );
-                    (
-                        SessionId::new(prior.as_str()),
-                        negotiated,
-                        supports_session_model,
-                    )
-                }
-                RpcResponse::Error(error) if is_missing_session_error(&error) => {
-                    // Some agents advertise loadSession but retain ids only for the
-                    // lifetime of one ACP process (Kimi Code is one example). No
-                    // prompt has been sent yet, so opening a fresh session is a safe
-                    // compatibility fallback and cannot replay agent work.
-                    notify_launch(
-                        launch_sink,
-                        AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/new"),
-                    );
-                    let new_session = handshake_step(
-                        config.handshake_step_deadline,
-                        "session/new",
-                        open_new_session(
-                            &mut wire,
-                            sink,
-                            &mut seq,
-                            resolver,
-                            handshake::NewSessionConfig {
-                                cwd: &cwd,
-                                mcp_servers: &config.mcp_servers,
-                                meta: handshake::claude_session_meta(
-                                    &config.tool_aliases,
-                                    config.max_turn_requests,
-                                ),
-                            },
-                        ),
-                    )
-                    .await?;
-                    let session_id = new_session.session_id.clone();
-                    let supports_session_model = new_session.models.is_some();
-                    let negotiated = crate::capabilities::project(init.clone(), new_session);
-                    (session_id, negotiated, supports_session_model)
-                }
-                RpcResponse::Error(error) => {
-                    return Err(AcpError::Frame(error.to_string()));
-                }
-            }
-        }
-        _ => {
-            notify_launch(
-                launch_sink,
-                AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/new"),
-            );
-            let new_session = handshake_step(
-                config.handshake_step_deadline,
-                "session/new",
-                open_new_session(
-                    &mut wire,
-                    sink,
-                    &mut seq,
-                    resolver,
-                    handshake::NewSessionConfig {
-                        cwd: &cwd,
-                        mcp_servers: &config.mcp_servers,
-                        meta: handshake::claude_session_meta(
-                            &config.tool_aliases,
-                            config.max_turn_requests,
-                        ),
-                    },
-                ),
-            )
-            .await?;
-            let session_id = new_session.session_id.clone();
-            let supports_session_model = new_session.models.is_some();
-            let negotiated = crate::capabilities::project(init.clone(), new_session);
-            (session_id, negotiated, supports_session_model)
-        }
-    };
     let progress = progress.session_opened(supports_session_model)?;
     let prompt_ready = handshake::configure_session(
         &mut wire,
@@ -298,6 +178,7 @@ pub async fn run_turn_with_config(
         sink,
         &mut seq,
         resolver,
+        &config.tool_aliases,
         config.permission_settle_deadline,
     )
     .await?;
@@ -340,9 +221,9 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
     #[derive(Default)]
-    struct RecordingSink {
+    pub(super) struct RecordingSink {
         last: u64,
-        events: Vec<(u64, AcpProjectedEvent)>,
+        pub(super) events: Vec<(u64, AcpProjectedEvent)>,
     }
 
     #[async_trait]
@@ -363,8 +244,8 @@ mod tests {
     /// A resolver that records the ask it saw, then allows — proves the driver
     /// projects the agent's request into a neutral [`PermissionAsk`].
     #[derive(Default)]
-    struct RecordingResolver {
-        seen: Mutex<Vec<PermissionAsk>>,
+    pub(super) struct RecordingResolver {
+        pub(super) seen: Mutex<Vec<PermissionAsk>>,
     }
     #[async_trait]
     impl PermissionResolver for RecordingResolver {
@@ -376,13 +257,13 @@ mod tests {
 
     /// A read/write half over one side of the duplex — reads request lines and
     /// writes reply lines through the same buffered stream (no split-borrow).
-    struct AgentIo {
+    pub(super) struct AgentIo {
         reader: BufReader<DuplexStream>,
         line: String,
     }
 
     impl AgentIo {
-        fn new(side: DuplexStream) -> Self {
+        pub(super) fn new(side: DuplexStream) -> Self {
             Self {
                 reader: BufReader::new(side),
                 line: String::new(),
@@ -390,13 +271,13 @@ mod tests {
         }
 
         /// Read one JSON line, or `None` at EOF.
-        async fn read(&mut self) -> Option<serde_json::Value> {
+        pub(super) async fn read(&mut self) -> Option<serde_json::Value> {
             self.line.clear();
             let n = self.reader.read_line(&mut self.line).await.unwrap();
             (n != 0).then(|| serde_json::from_str(self.line.trim()).unwrap())
         }
 
-        async fn write_line(&mut self, line: &str) {
+        pub(super) async fn write_line(&mut self, line: &str) {
             let stream = self.reader.get_mut();
             stream.write_all(line.as_bytes()).await.unwrap();
             stream.write_all(b"\n").await.unwrap();
@@ -680,7 +561,7 @@ mod tests {
         }
     }
 
-    fn channel() -> (Box<dyn AgentChannel>, DuplexStream) {
+    pub(super) fn channel() -> (Box<dyn AgentChannel>, DuplexStream) {
         let (ours, theirs) = tokio::io::duplex(8192);
         (Box::new(ours), theirs)
     }
@@ -1931,71 +1812,5 @@ mod tests {
             sink.events
         );
         agent.abort();
-    }
-    #[tokio::test]
-    async fn alias_metadata_survives_new_load_and_missing_session_recovery() {
-        // Cause graph: aliases x prior Session x advertised load x missing id
-        // + max-turn budget -> new/load/recovery request -> identical constrained
-        // SDK metadata -> prompt.
-        // R1 absent aliases => no extension; R2 new; R3 load; R4 load missing => new;
-        // R5 load unavailable => new. Metadata carries no credential or arbitrary options.
-        for (enabled, prior, can_load, missing) in [
-            (false, false, false, false),
-            (true, false, false, false),
-            (true, true, true, false),
-            (true, true, true, true),
-            (true, true, false, false),
-        ] {
-            let (mut ours, theirs) = channel();
-            let agent = tokio::spawn(async move {
-                let mut io = AgentIo::new(theirs);
-                io.read().await;
-                io.write_line(&serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":can_load}}}).to_string()).await;
-                let attempts = if prior && can_load && missing { 2 } else { 1 };
-                for attempt in 0..attempts {
-                    let request: serde_json::Value = io.read().await.unwrap();
-                    let load = prior && can_load && attempt == 0;
-                    assert_eq!(
-                        request["method"],
-                        if load { "session/load" } else { "session/new" }
-                    );
-                    let meta = &request["params"]["_meta"];
-                    if enabled {
-                        assert_eq!(
-                            meta["claudeCode"]["options"],
-                            serde_json::json!({"toolAliases":{"Bash":"mcp__awaken_session__bash"},"tools":[],"disallowedTools":["Bash"],"maxTurns":8})
-                        );
-                    } else {
-                        assert!(meta.is_null());
-                    }
-                    let reply = if load && missing {
-                        serde_json::json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Session not found"}})
-                    } else {
-                        serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}})
-                    };
-                    io.write_line(&reply.to_string()).await;
-                }
-                let prompt: serde_json::Value = io.read().await.unwrap();
-                assert_eq!(prompt["method"], "session/prompt");
-                io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
-                    .await;
-            });
-            let mut sink = RecordingSink::default();
-            let resolver = RecordingResolver::default();
-            let mut config = crate::TurnConfig::new(&resolver);
-            if enabled {
-                config
-                    .tool_aliases
-                    .insert("Bash".into(), "mcp__awaken_session__bash".into());
-                config.max_turn_requests = Some(8);
-            }
-            if prior {
-                config.session_id = Some("sess-1".into());
-            }
-            run_turn_with_config(ours.as_mut(), "task", &mut sink, &mut config, None)
-                .await
-                .unwrap();
-            agent.await.unwrap();
-        }
     }
 }
