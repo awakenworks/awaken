@@ -903,6 +903,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-lease-contract",
  "awaken-reliability-testkit",
  "schemars 1.2.1",
  "serde",
@@ -988,6 +989,7 @@ name = "awaken-dream-application"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-lease-contract",
  "awaken-session-application-contract",
  "awaken-session-dream-contract",
  "awaken-session-types",
@@ -1556,6 +1558,7 @@ name = "awaken-mcp-wire"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "awaken-lease-contract",
  "serde",
  "serde_json",
  "thiserror",
@@ -2530,6 +2533,7 @@ name = "awaken-sandbox-memoryd"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-lease-contract",
  "awaken-memory-store",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
@@ -2671,6 +2675,7 @@ dependencies = [
 name = "awaken-service-lifecycle"
 version = "1.0.0"
 dependencies = [
+ "awaken-lease-contract",
  "tokio",
  "tokio-util",
 ]

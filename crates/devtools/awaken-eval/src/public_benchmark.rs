@@ -5,7 +5,7 @@
 //! not have interchangeable labels even though they share the ACP runner.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, SUMMARIZE_PROMPT};
 use serde::{Deserialize, Serialize};
@@ -725,7 +725,7 @@ async fn run_one(
     input: String,
     case_id: &str,
 ) -> BenchmarkObservation {
-    let started = Instant::now();
+    let started = awaken_lease_contract::mono::Stopwatch::start();
     let result = tokio::time::timeout(
         TIMEOUT,
         runner.run(namespace, sequence, instructions, input, 2),

@@ -144,7 +144,7 @@ fn listener_owner_cleanup_covers_exit_and_disposal_decision_table() {
                 if exit != "polling" {
                     // Force the early-exit-before-owner-cleanup ordering; a
                     // closed bus alone would still race the owner's stop flag.
-                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
                     while !handle
                         .listener
                         .as_ref()
@@ -154,7 +154,10 @@ fn listener_owner_cleanup_covers_exit_and_disposal_decision_table() {
                         .unwrap()
                         .is_finished()
                     {
-                        assert!(Instant::now() < deadline, "{exit} worker did not exit");
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "{exit} worker did not exit"
+                        );
                         std::thread::yield_now();
                     }
                     assert!(!stop.load(Ordering::SeqCst));
@@ -923,7 +926,7 @@ fn unmount_drain_timeout_elapses_with_lingering_open_fds() {
         drain_timeout: Duration::from_millis(30),
         listener: None,
     };
-    let start = Instant::now();
+    let start = std::time::Instant::now();
     handle.unmount();
     let elapsed = start.elapsed();
     assert!(

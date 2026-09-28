@@ -10,6 +10,7 @@ layer = "application"
 authority = "credential-vault"
 
 [dependencies]
+awaken-lease-contract.workspace = true
 tracing = "0.1"
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true

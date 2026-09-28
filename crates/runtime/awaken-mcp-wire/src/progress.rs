@@ -5,7 +5,9 @@
 //! the per-call channel; these helpers let a consumer normalize and throttle
 //! them for display.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use awaken_lease_contract::mono::{self, Instant};
 
 /// Progress update from an MCP tool call.
 #[derive(Debug, Clone, PartialEq)]
@@ -48,7 +50,7 @@ pub fn should_emit_progress(
     progress: f64,
     message: Option<&str>,
 ) -> bool {
-    let now = Instant::now();
+    let now = mono::now();
     let interval_elapsed = gate
         .last_emit_at
         .is_none_or(|last| now.duration_since(last) >= MCP_PROGRESS_MIN_INTERVAL);
@@ -207,7 +209,7 @@ mod tests {
         // carry the emission. (Constructed in the past via a synthetic Instant so
         // the test needs no sleep.)
         let mut gate = ProgressEmitGate {
-            last_emit_at: Some(Instant::now() - MCP_PROGRESS_MIN_INTERVAL * 2),
+            last_emit_at: Some(mono::now() - MCP_PROGRESS_MIN_INTERVAL * 2),
             last_progress: Some(0.5),
             last_message: None,
         };

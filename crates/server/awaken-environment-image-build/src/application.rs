@@ -184,7 +184,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
         self.store
             .ensure(demand.clone(), crate::now_unix_ms())
             .await?;
-        let deadline = tokio::time::Instant::now() + self.policy.wait_timeout;
+        let deadline = awaken_lease_contract::mono::MonoDeadline::after(self.policy.wait_timeout);
         loop {
             if let Some(record) = self.store.get(&demand.build_key).await?
                 && let EnvironmentImageBuildState::Ready { image, .. } = record.state
@@ -196,7 +196,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
                     .invalidate_ready(&demand.build_key, crate::now_unix_ms())
                     .await?;
             }
-            if tokio::time::Instant::now() >= deadline {
+            if deadline.has_passed() {
                 return Err(EnvironmentImageBuildError::Timeout(format!(
                     "Environment `{}` revision {}",
                     demand.environment_id, demand.source_revision.0

@@ -496,14 +496,14 @@ impl ServiceLifecycle {
         if let ShutdownAdmission::Lead(tasks) = admission {
             let inner = self.inner.clone();
             tokio::spawn(async move {
-                let deadline = tokio::time::Instant::now() + timeout;
+                let deadline = awaken_lease_contract::mono::MonoDeadline::after(timeout);
                 let mut timed_out = Vec::new();
                 for mut task in tasks {
                     if task.watcher.is_finished() {
                         let _ = task.watcher.await;
                         continue;
                     }
-                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    let remaining = deadline.remaining();
                     if remaining.is_zero()
                         || tokio::time::timeout(remaining, &mut task.watcher)
                             .await

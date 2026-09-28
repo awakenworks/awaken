@@ -5,7 +5,7 @@
 //! Run before it becomes a release gate.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use awaken_ext_goal::outcome::GradeDecision;
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,7 @@ pub async fn run_dataset(
         batches: Vec::new(),
     };
     for (batch_index, cases) in dataset.cases.chunks(batch_size).enumerate() {
-        let started = Instant::now();
+        let started = awaken_lease_contract::mono::Stopwatch::start();
         let result =
             tokio::time::timeout(DEFAULT_TIMEOUT, run_batch(&runner, cases, batch_index)).await;
         let latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;

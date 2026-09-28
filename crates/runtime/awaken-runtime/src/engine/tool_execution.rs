@@ -534,7 +534,7 @@ async fn execute_tool_action(
     if !context.physical_quiescence.permits_execution() {
         return Err(Error::Indeterminate);
     }
-    let started = std::time::Instant::now();
+    let started = awaken_lease_contract::mono::Stopwatch::start();
     use futures_util::FutureExt;
     let state_bound = env.and_then(|env| env.dynamic_tool_state_bound(&call.tool_id));
     let executor_state = match state_bound {

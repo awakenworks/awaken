@@ -889,7 +889,7 @@ impl DreamApplication {
                 return;
             }
         };
-        let running_started = tokio::time::Instant::now();
+        let running_started = awaken_lease_contract::mono::Stopwatch::start();
         let request = running_job.request();
         let preparation = match tokio::time::timeout(
             self.runtime_budget,

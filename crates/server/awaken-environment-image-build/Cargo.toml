@@ -10,6 +10,7 @@ layer = "infrastructure"
 authority = "environment-image"
 
 [dependencies]
+awaken-lease-contract.workspace = true
 async-trait.workspace = true
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
@@ -23,7 +24,6 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
-awaken-lease-contract.workspace = true
 awaken-reliability-testkit.workspace = true
 awaken-env-store = { workspace = true, features = ["test-support"] }
 awaken-environment-application.workspace = true

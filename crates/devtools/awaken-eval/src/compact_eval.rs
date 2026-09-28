@@ -1,7 +1,7 @@
 //! Gold-corpus scoring and live ACP evaluation for the compactor Agent.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, SUMMARIZE_PROMPT};
 use serde::{Deserialize, Serialize};
@@ -163,7 +163,7 @@ pub async fn run_acp(
     let mut observations = Vec::with_capacity(dataset.cases.len());
     for (sequence, case) in dataset.cases.iter().enumerate() {
         let input = format!("{}\n\n{}", case.transcript, SUMMARIZE_PROMPT);
-        let started = Instant::now();
+        let started = awaken_lease_contract::mono::Stopwatch::start();
         let result = tokio::time::timeout(
             TIMEOUT,
             runner.run(
