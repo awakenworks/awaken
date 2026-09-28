@@ -501,6 +501,7 @@ pub(super) async fn prepare_runtime_routers(
             resource_application.file_content_source(),
             resource_authorities.memory_repository(),
             memory_extractions,
+            platform_workspace.clone(),
             deployment,
         ),
         #[cfg(any(test, feature = "test-support"))]
@@ -509,7 +510,8 @@ pub(super) async fn prepare_runtime_routers(
                 model_wiring.executor,
                 model_wiring.model_ref,
                 resource_authorities.clone(),
-            );
+            )
+            .with_local_workspace(platform_workspace.clone());
             host.install_memory_extraction_repository(memory_extractions);
             host
         }
@@ -544,7 +546,6 @@ pub(super) async fn prepare_runtime_routers(
         .with_artifact_publisher(artifact_publisher)
         .with_skill_bundle_source(resource_application.skill_bundle_source())
         .with_skill_catalog_application(resource_application.skill_catalog_application())
-        .with_local_workspace(platform_workspace.clone())
         .with_web_search_provider_registry(web_search_providers)
         .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
         .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(

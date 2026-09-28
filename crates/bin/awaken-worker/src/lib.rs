@@ -205,9 +205,10 @@ fn worker_realization_namespace(
                         .into(),
                 )
             })?;
-            std::borrow::Cow::Owned(
-                awaken_runtime_host::SharedHost::provision_local_workspace_at(installation_root),
-            )
+            std::borrow::Cow::Owned(awaken_installation_workspace::provision_at(
+                installation_root,
+                awaken_runtime_host::SharedHost::mint_local_workspace,
+            ))
         }
     };
     awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
@@ -1226,11 +1227,22 @@ impl WorkerNode {
         let remote_repositories = Arc::new(
             awaken_resource_worker_http::HttpRepositoryBindingVerifier::new(upstream.clone()),
         );
+        // A durable Worker installation keeps one platform Workspace across
+        // restarts (the same marker its container realization namespace reads);
+        // a storage-less Worker mints a volatile one.
+        let local_workspace = match deployment.storage_dir.as_deref() {
+            Some(root) => awaken_installation_workspace::provision_at(
+                root,
+                SharedHost::mint_local_workspace,
+            ),
+            None => SharedHost::mint_local_workspace(),
+        };
         let mut host = SharedHost::new_worker_with_deployment(
             Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             "worker",
             remote_files,
             remote_memory,
+            local_workspace,
             deployment.clone(),
         )
         .with_artifact_publisher(remote_artifacts)

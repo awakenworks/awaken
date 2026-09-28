@@ -1,0 +1,24 @@
+[package]
+name = "awaken-installation-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+# The installation-level platform Workspace marker that both process
+# bootstraps (the CLI/Coordinator and the Worker) read or publish under their
+# storage root. It sits below both binaries, beside the no-replace publication
+# primitive it uses, so the Runtime Host receives the coordinate as a value
+# instead of reaching into the installation filesystem.
+context = "worker"
+layer = "infrastructure"
+authority = "installation-workspace"
+
+[dependencies]
+awaken-sandbox-fs.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

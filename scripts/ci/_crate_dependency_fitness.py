@@ -87,7 +87,6 @@ KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
             "awaken-run-executor-acp",
             "awaken-sandbox-container",
             "awaken-sandbox-control-transport",
-            "awaken-sandbox-fs",
             "awaken-sandbox-local",
             "awaken-worker-runtime",
         )

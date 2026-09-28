@@ -1859,11 +1859,10 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
         }
     }
 
-    // Cause/effect decision table: R1 production Runtime constructor + exact
-    // File content port -> that same port serves immutable bytes; R2 no
-    // post-construction override -> the default-feature CLI remains compilable
-    // without exposing the volatile fixture mutator. Unavailable-source failure
-    // semantics are owned by awaken-resource-contract and tested there.
+    // Cause/effect decision table: R1 production Runtime constructor + exact File content port ->
+    // that same port serves immutable bytes; R2 no post-construction override -> the
+    // default-feature CLI remains compilable without exposing the volatile fixture mutator.
+    // Unavailable-source failure semantics are owned by awaken-resource-contract and tested there.
     let host = SharedHost::new_with_runtime_resources_and_deployment(
         Arc::new(MemoryHostModel),
         "stub",
@@ -1873,6 +1872,7 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
                 .expect("open test Memory repository"),
         ),
         SharedHost::test_memory_extraction_repository(None),
+        SharedHost::mint_local_workspace(),
         crate::DeploymentConfig::ephemeral(),
     );
     let resolved = host

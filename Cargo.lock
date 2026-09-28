@@ -460,6 +460,7 @@ dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
  "awaken-iam-core",
+ "awaken-installation-workspace",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
@@ -1430,6 +1431,14 @@ dependencies = [
  "time",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "awaken-installation-workspace"
+version = "1.0.0"
+dependencies = [
+ "awaken-sandbox-fs",
+ "tempfile",
 ]
 
 [[package]]
@@ -2452,6 +2461,7 @@ dependencies = [
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
+ "awaken-installation-workspace",
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
@@ -3081,6 +3091,7 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-ext-builtin-tools",
  "awaken-ext-mcp",
+ "awaken-installation-workspace",
  "awaken-observability",
  "awaken-protocol-acp",
  "awaken-protocol-mcp",
