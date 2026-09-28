@@ -11,8 +11,9 @@
 use super::candidate_evidence::{BudgetReachProjection, CandidateEvidence};
 use super::*;
 use awaken_session_projection::{
-    FactKey, FactProvenance, FactRole, TranscriptRole, interval_close_cursor,
-    interval_lifecycle_open_event, is_opening, running_interval_lifecycle_open_event,
+    FactKey, FactKind, FactProvenance, FactRole, TimelineFact, TranscriptRole,
+    interval_close_cursor, interval_lifecycle_open_event, is_opening,
+    running_interval_lifecycle_open_event,
 };
 
 /// What the root reduction decided that the aggregate close reuses.
@@ -71,19 +72,27 @@ impl ManagedState {
         if outcome_owns_failure {
             return Ok(());
         }
-        let Some(error) = SessionError::from_committed_lifecycle(terminal, snapshot)
-            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
+        let Some(fault) =
+            awaken_session_projection::run_fault(terminal, snapshot).map_err(projection_error)?
         else {
             return Ok(());
         };
-        let key = FactKey::new(
-            record.session.id.clone(),
-            FactRole::RootLifecycleError,
-            FactProvenance::Lifecycle {
-                cursor: terminal.cursor.0,
-            },
-        );
-        record.append_fact_once(key, OutboundKind::SessionError { error });
+        record.publish_fact_once(
+            &TimelineFact::new(
+                FactKey::new(
+                    record.session.id.clone(),
+                    FactRole::RootLifecycleError,
+                    FactProvenance::Lifecycle {
+                        cursor: terminal.cursor.0,
+                    },
+                ),
+                FactKind::RunError {
+                    fault,
+                    advisor: false,
+                },
+            ),
+            None,
+        )?;
         Ok(())
     }
 
@@ -289,34 +298,31 @@ impl ManagedState {
                         },
                     )
                 };
-                match lifecycle.kind {
-                    RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => {
-                        push_primary_thread_status(
-                            record,
-                            at(FactRole::RootLifecycleStatusRunning),
-                            PrimaryThreadStatusProjection::Running,
-                        );
-                        projected_root_opening = true;
-                    }
-                    RunLifecycleEventKind::Rescheduled => {
-                        record.push_fact(
-                            at(FactRole::RootLifecycleSessionStatusRescheduled),
-                            OutboundKind::SessionStatusRescheduled {},
-                        );
-                        push_primary_thread_status(
-                            record,
-                            at(FactRole::RootLifecycleStatusRescheduled),
-                            PrimaryThreadStatusProjection::Rescheduled,
-                        );
-                        push_primary_thread_status(
-                            record,
-                            at(FactRole::RootRescheduledLifecycleStatusRunning),
-                            PrimaryThreadStatusProjection::Running,
-                        );
-                        projected_root_opening = true;
-                    }
+                let transitions: &[(FactRole, FactKind)] = match lifecycle.kind {
+                    RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => &[(
+                        FactRole::RootLifecycleStatusRunning,
+                        FactKind::ThreadRunning,
+                    )],
+                    RunLifecycleEventKind::Rescheduled => &[
+                        (
+                            FactRole::RootLifecycleSessionStatusRescheduled,
+                            FactKind::SessionRescheduled,
+                        ),
+                        (
+                            FactRole::RootLifecycleStatusRescheduled,
+                            FactKind::ThreadRescheduled,
+                        ),
+                        (
+                            FactRole::RootRescheduledLifecycleStatusRunning,
+                            FactKind::ThreadRunning,
+                        ),
+                    ],
                     _ => unreachable!("filtered root lifecycle transition"),
+                };
+                for (role, kind) in transitions {
+                    record.publish_fact(&TimelineFact::new(at(*role), kind.clone()), None)?;
                 }
+                projected_root_opening = true;
             }
         }
         if !projected_root_opening

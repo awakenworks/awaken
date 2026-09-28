@@ -503,16 +503,6 @@ fn primary_thread_status_kind(
     }
 }
 
-/// Append one primary-Thread lifecycle projection as a timeline fact.
-fn push_primary_thread_status(
-    record: &mut SessionRecord,
-    key: FactKey,
-    status: PrimaryThreadStatusProjection,
-) -> String {
-    let kind = primary_thread_status_kind(record, status);
-    record.push_fact(key, kind)
-}
-
 /// Canonical deterministic id shared by root/child live previews and their
 /// warm/cold committed transcript projector. The event role is kept in the
 /// outer `role` coordinate, so thinking/message ids remain distinct without
@@ -721,6 +711,7 @@ pub(crate) use delivery::{CommittedDeliveryPage, CommittedEventDelivery, session
 mod lifecycle_projection;
 mod recovery;
 mod stream;
+mod timeline_encoding;
 mod transcript_projection;
 
 #[cfg(test)]

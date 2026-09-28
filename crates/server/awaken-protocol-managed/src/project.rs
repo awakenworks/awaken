@@ -943,25 +943,17 @@ pub(crate) fn terminal_stop_reason(
     await_reason: Option<&awaken_agent_contract::agent::awaiting::AwaitReason>,
     aggregate_budget_reached: bool,
 ) -> StopReason {
-    use awaken_agent_contract::agent::run::{EndCause, RunState};
-    match state {
-        RunState::Awaiting
-            if await_reason
-                == Some(&awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached) =>
-        {
-            StopReason::BudgetReached
-        }
-        RunState::Awaiting => StopReason::RequiresAction {
-            event_ids: pending
-                .map(|pending| vec![pending.tool_use_id.clone()])
-                .unwrap_or_default(),
-        },
-        RunState::Ended(EndCause::MaxSteps | EndCause::Error(_)) => StopReason::RetriesExhausted,
-        RunState::Ended(EndCause::NaturalEnd) if aggregate_budget_reached => {
-            StopReason::BudgetReached
-        }
-        RunState::Ended(_) => StopReason::EndTurn,
-        RunState::Running => unreachable!("StepOutcome cannot contain Running"),
+    use awaken_session_projection::StopFact;
+    match awaken_session_projection::terminal_stop(
+        state,
+        pending,
+        await_reason,
+        aggregate_budget_reached,
+    ) {
+        StopFact::EndTurn => StopReason::EndTurn,
+        StopFact::RetriesExhausted => StopReason::RetriesExhausted,
+        StopFact::BudgetReached => StopReason::BudgetReached,
+        StopFact::RequiresAction { calls } => StopReason::RequiresAction { event_ids: calls },
     }
 }
 
