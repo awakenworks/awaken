@@ -66,7 +66,7 @@ esac
 cleanup_mutation_artifacts() {
   cargo clean -p awaken-mcp-wire >/dev/null 2>&1 || true
   cargo clean -p awaken-runtime-contract >/dev/null 2>&1 || true
-  cargo clean -p awaken-tool-contract -p awaken-agent-contract >/dev/null 2>&1 || true
+  cargo clean -p awaken-tool-contract -p awaken-agent-contract -p awaken-lease-contract >/dev/null 2>&1 || true
   cargo clean -p awaken-session-application-contract -p awaken-session-configuration-contract \
     -p awaken-session-error-contract -p awaken-session-event-contract -p awaken-session-realization-contract \
     -p awaken-session-repository-contract -p awaken-session-execution-contract \
@@ -176,10 +176,10 @@ cargo mutants --package awaken-session-realization-contract \
   --re 'realization_generation_authorizes' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-realization-observations/mutants.out"
-cargo mutants --package awaken-agent-contract \
-  --test-package awaken-agent-contract --test-package awaken-session-work-contract \
+cargo mutants --package awaken-lease-contract \
+  --test-package awaken-lease-contract --test-package awaken-session-work-contract \
   --output "$mutation_evidence/session-work-observations" \
-  --file crates/contract/awaken-agent-contract/src/clock/utc.rs \
+  --file crates/contract/awaken-lease-contract/src/utc.rs \
   --re 'bounded_rfc3339_nanos' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-work-observations/mutants.out"
