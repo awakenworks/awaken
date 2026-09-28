@@ -1,4 +1,5 @@
 pub mod awaken_runtime
+pub use awaken_runtime::RetryPolicy
 pub use awaken_runtime::fresh_process_id
 pub enum awaken_runtime::DetachedToolError
 pub awaken_runtime::DetachedToolError::Execution(alloc::string::String)
@@ -27,13 +28,6 @@ pub fn awaken_runtime::DirectAttemptDriver::new(alloc::sync::Arc<awaken_runtime:
 pub async fn awaken_runtime::DirectAttemptDriver::resume(&self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>
 pub async fn awaken_runtime::DirectAttemptDriver::start(&self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>
 pub fn awaken_runtime::DirectAttemptDriver::with_attempt_executor(alloc::sync::Arc<awaken_runtime::Runtime>, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> Self
-pub struct awaken_runtime::LlmRetryPolicy
-pub awaken_runtime::LlmRetryPolicy::attempt_timeout: core::time::Duration
-pub awaken_runtime::LlmRetryPolicy::backoff_base_ms: u64
-pub awaken_runtime::LlmRetryPolicy::max_retries: usize
-pub awaken_runtime::LlmRetryPolicy::overloaded_backoff_base_ms: u64
-impl core::default::Default for awaken_runtime::LlmRetryPolicy
-pub fn awaken_runtime::LlmRetryPolicy::default() -> Self
 pub struct awaken_runtime::PermissionGate
 impl awaken_runtime::PermissionGate
 pub fn awaken_runtime::PermissionGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
@@ -89,7 +83,7 @@ pub fn awaken_runtime::Runtime::with_max_consecutive_inference_failures(self, us
 pub fn awaken_runtime::Runtime::with_max_continuation_retries(self, usize) -> Self
 pub fn awaken_runtime::Runtime::with_metrics(self, alloc::sync::Arc<dyn awaken_runtime_contract::metrics::MetricsRecorder>) -> Self
 pub fn awaken_runtime::Runtime::with_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::plugin::contributions::Plugin>) -> Self
-pub fn awaken_runtime::Runtime::with_retry_policy(self, awaken_runtime::LlmRetryPolicy) -> Self
+pub fn awaken_runtime::Runtime::with_retry_policy(self, awaken_runtime_contract::resilience::RetryPolicy) -> Self
 pub fn awaken_runtime::Runtime::with_run_delegation(self, alloc::sync::Arc<dyn awaken_runtime_contract::delegation::RunDelegationService>) -> Self
 pub fn awaken_runtime::Runtime::with_tool(self, alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>) -> Self
 impl awaken_runtime::Runtime

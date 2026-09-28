@@ -206,7 +206,7 @@ async fn retained_cancelled_call_expires_at_its_original_deadline_without_reentr
     let physical = context.physical_quiescence.clone();
     let runtime = Runtime::new()
         .with_llm(model.clone())
-        .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+        .with_retry_policy(awaken_runtime::RetryPolicy {
             max_retries: 3,
             attempt_timeout: std::time::Duration::from_secs(1),
             ..Default::default()

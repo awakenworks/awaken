@@ -1262,8 +1262,8 @@ fn one_step_request() -> ChatRequest {
         tools: Vec::new(),
     }
 }
-fn policy(max_retries: usize) -> crate::retry::LlmRetryPolicy {
-    crate::retry::LlmRetryPolicy {
+fn policy(max_retries: usize) -> awaken_runtime_contract::resilience::RetryPolicy {
+    awaken_runtime_contract::resilience::RetryPolicy {
         max_retries,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,
@@ -1353,7 +1353,7 @@ async fn an_actual_runtime_attempt_accepts_fifteen_minute_success_and_rejects_ze
     let response = infer_with_retry(
         &llm,
         one_step_request(),
-        &crate::retry::LlmRetryPolicy::default(),
+        &awaken_runtime_contract::resilience::RetryPolicy::default(),
         &crate::circuit_breaker::CircuitBreaker::default(),
         &recording(),
         None,

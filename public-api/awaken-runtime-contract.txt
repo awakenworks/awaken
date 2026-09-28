@@ -671,6 +671,8 @@ pub awaken_runtime_contract::llm::Error::UsageLimit
 pub awaken_runtime_contract::llm::Error::UsageLimit::message: alloc::string::String
 pub awaken_runtime_contract::llm::Error::UsageLimit::reset_after: core::option::Option<core::time::Duration>
 impl awaken_runtime_contract::llm::Error
+pub fn awaken_runtime_contract::llm::Error::class(&self) -> awaken_runtime_contract::resilience::FailureClass
+impl awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::classification(&self) -> &Self
 pub fn awaken_runtime_contract::llm::Error::code(&self) -> &'static str
 pub fn awaken_runtime_contract::llm::Error::execution_evidence(&self) -> awaken_runtime_contract::model_operation::ModelExecutionEvidence
@@ -1196,9 +1198,40 @@ pub const fn awaken_runtime_contract::plugin::plugin_activation_decision(bool, b
 pub mod awaken_runtime_contract::resilience
 pub use awaken_runtime_contract::resilience::Classify
 pub use awaken_runtime_contract::resilience::Disposition
+pub enum awaken_runtime_contract::resilience::FailureClass
+pub awaken_runtime_contract::resilience::FailureClass::Overloaded
+pub awaken_runtime_contract::resilience::FailureClass::Overloaded::retry_after: core::option::Option<core::time::Duration>
+pub awaken_runtime_contract::resilience::FailureClass::Permanent
+pub awaken_runtime_contract::resilience::FailureClass::RateLimited
+pub awaken_runtime_contract::resilience::FailureClass::RateLimited::retry_after: core::option::Option<core::time::Duration>
+pub awaken_runtime_contract::resilience::FailureClass::Transient
+pub awaken_runtime_contract::resilience::FailureClass::UsageLimit
+pub awaken_runtime_contract::resilience::FailureClass::UsageLimit::reset_after: core::option::Option<core::time::Duration>
+impl awaken_runtime_contract::resilience::FailureClass
+pub const fn awaken_runtime_contract::resilience::FailureClass::disposition(self) -> awaken_agent_contract::resilience::Disposition
+pub const fn awaken_runtime_contract::resilience::FailureClass::is_retryable(self) -> bool
+pub const fn awaken_runtime_contract::resilience::FailureClass::reset_after(self) -> core::option::Option<core::time::Duration>
+pub const fn awaken_runtime_contract::resilience::FailureClass::retry_after(self) -> core::option::Option<core::time::Duration>
 pub enum awaken_runtime_contract::resilience::RetryDecision
 pub awaken_runtime_contract::resilience::RetryDecision::Retry
 pub awaken_runtime_contract::resilience::RetryDecision::Terminal
+pub enum awaken_runtime_contract::resilience::RetryStop
+pub awaken_runtime_contract::resilience::RetryStop::AttemptsExhausted
+pub awaken_runtime_contract::resilience::RetryStop::ExecutionUncertain
+pub awaken_runtime_contract::resilience::RetryStop::NotRetryable
+pub enum awaken_runtime_contract::resilience::RetryVerdict
+pub awaken_runtime_contract::resilience::RetryVerdict::Retry
+pub awaken_runtime_contract::resilience::RetryVerdict::Retry::after: core::time::Duration
+pub awaken_runtime_contract::resilience::RetryVerdict::Stop(awaken_runtime_contract::resilience::RetryStop)
+pub struct awaken_runtime_contract::resilience::RetryPolicy
+pub awaken_runtime_contract::resilience::RetryPolicy::attempt_timeout: core::time::Duration
+pub awaken_runtime_contract::resilience::RetryPolicy::backoff_base_ms: u64
+pub awaken_runtime_contract::resilience::RetryPolicy::max_retries: usize
+pub awaken_runtime_contract::resilience::RetryPolicy::overloaded_backoff_base_ms: u64
+impl awaken_runtime_contract::resilience::RetryPolicy
+pub fn awaken_runtime_contract::resilience::RetryPolicy::decide(&self, awaken_runtime_contract::resilience::FailureClass, awaken_runtime_contract::model_operation::ModelExecutionEvidence, u32, u64) -> awaken_runtime_contract::resilience::RetryVerdict
+impl core::default::Default for awaken_runtime_contract::resilience::RetryPolicy
+pub fn awaken_runtime_contract::resilience::RetryPolicy::default() -> Self
 pub const awaken_runtime_contract::resilience::RETRY_ACTIVE_STATE: u8
 pub const awaken_runtime_contract::resilience::RETRY_TERMINAL_STATE: u8
 pub const fn awaken_runtime_contract::resilience::bounded_retry_decision(u8, bool, u32, u32) -> awaken_runtime_contract::resilience::RetryDecision

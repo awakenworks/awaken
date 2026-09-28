@@ -16,10 +16,12 @@ mod snapshot_file;
 mod tool_discovery;
 
 pub use awaken_agent_contract::fresh_process_id;
+/// The retry pacing a host composes into [`Runtime::with_retry_policy`]; the
+/// decision that reads it lives with the classification in the runtime contract.
+pub use awaken_runtime_contract::resilience::RetryPolicy;
 pub use circuit_breaker::CircuitBreakerConfig;
 pub use detached_tool::{DetachedToolError, PreparedToolExecutor, ResolvedToolExecution};
 pub use ingress::DirectAttemptDriver;
 pub use permission::PermissionGate;
-pub use retry::LlmRetryPolicy;
 pub use run::RunInput;
 pub use runtime::{ActiveAttemptScope, Runtime};

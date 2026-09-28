@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_runtime::{LlmRetryPolicy, Runtime};
+use awaken_runtime::{RetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -125,8 +125,8 @@ fn activation() -> RunActivation {
     }
 }
 
-fn no_retries() -> LlmRetryPolicy {
-    LlmRetryPolicy {
+fn no_retries() -> RetryPolicy {
+    RetryPolicy {
         max_retries: 0,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,

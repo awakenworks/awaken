@@ -30,17 +30,13 @@ pub enum Disposition {
     Permanent,
 }
 
+/// A disposition answers the routing question only. Whether the *same* call
+/// may be retried is owned by the failing source's own retry decision (for
+/// inference, `awaken_runtime_contract::resilience::RetryPolicy::decide`): a
+/// quota signal can both cool this identity and clear in place after the
+/// provider's pause, so a second in-place retry predicate here could only
+/// disagree with that decision.
 impl Disposition {
-    /// Whether retrying the *same* binding is worthwhile. Only [`Transient`] is —
-    /// a quota signal wants a different identity, a permanent error wants a
-    /// different request.
-    ///
-    /// [`Transient`]: Self::Transient
-    #[must_use]
-    pub fn is_retryable(self) -> bool {
-        matches!(self, Disposition::Transient)
-    }
-
     /// Whether a router should prefer failing over to another candidate rather
     /// than retrying in place. True for a quota signal (cool this identity) and a
     /// permanent error (this binding cannot serve the request).

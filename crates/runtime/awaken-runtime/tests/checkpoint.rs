@@ -140,7 +140,7 @@ fn runtime_with(llm: Arc<dyn LlmExecutor>) -> Runtime {
     // A single retry with no backoff keeps the in-process recovery instant.
     Runtime::new()
         .with_llm(llm)
-        .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+        .with_retry_policy(awaken_runtime::RetryPolicy {
             max_retries: 1,
             backoff_base_ms: 0,
             overloaded_backoff_base_ms: 0,

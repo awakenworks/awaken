@@ -119,7 +119,7 @@ async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: b
         Runtime::new()
             .with_llm(model.clone())
             .with_max_consecutive_inference_failures(3)
-            .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+            .with_retry_policy(awaken_runtime::RetryPolicy {
                 attempt_timeout: Duration::from_millis(30),
                 max_retries: 3,
                 ..Default::default()

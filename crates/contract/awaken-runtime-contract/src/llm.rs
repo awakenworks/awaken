@@ -581,17 +581,13 @@ impl Error {
         }
     }
 
-    /// Whether policy considers retry worthwhile. This is not proof that a new
-    /// invocation is safe: Runtime must also require execution evidence.
+    /// Whether retrying the identical call can succeed at all — the
+    /// projection [`FailureClass::is_retryable`](crate::resilience::FailureClass::is_retryable)
+    /// of [`class`](Self::class). This is not permission to retry: only
+    /// [`RetryPolicy::decide`](crate::resilience::RetryPolicy::decide), which
+    /// also requires execution evidence and budget, grants that.
     pub fn is_retryable(&self) -> bool {
-        matches!(
-            self.classification(),
-            Error::Provider(_)
-                | Error::InvalidResponse(_)
-                | Error::RateLimited { .. }
-                | Error::Overloaded { .. }
-                | Error::Timeout(_)
-        )
+        self.class().is_retryable()
     }
 
     /// Whether a retry may continue from text/tool fragments streamed by the
@@ -604,24 +600,14 @@ impl Error {
 
     /// The server's `Retry-After` hint, when the provider sent one.
     pub fn retry_after(&self) -> Option<Duration> {
-        match self {
-            Error::Observed { source, .. } => source.retry_after(),
-            Error::RateLimited { retry_after, .. } | Error::Overloaded { retry_after, .. } => {
-                *retry_after
-            }
-            _ => None,
-        }
+        self.class().retry_after()
     }
 
     /// The provider's reset window for a [`UsageLimit`](Self::UsageLimit), when one
     /// was sent. Purely informational — recognised and surfaced, never scheduled
     /// on. `None` for every other classification.
     pub fn reset_hint(&self) -> Option<Duration> {
-        match self {
-            Error::Observed { source, .. } => source.reset_hint(),
-            Error::UsageLimit { reset_after, .. } => *reset_after,
-            _ => None,
-        }
+        self.class().reset_after()
     }
 
     /// The stable snake_case code classifying this error. A run that cannot
