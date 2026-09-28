@@ -9,8 +9,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId,
     BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundWait, TaskClaim, TaskExecutionPolicy,
-    TaskFence,
 };
+use awaken_lease_contract::fence::{Epoch, Tenure};
 use awaken_runtime_contract::tool::{
     ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle,
 };
@@ -99,7 +99,7 @@ fn execution_admission_is_phase_monotone_and_lease_bounded() {
     let expected = execution_task(2);
     let mut renewed = expected.clone();
     renewed
-        .heartbeat(&expected.attempt().unwrap().fence(), 9, 10)
+        .heartbeat(&expected.tenure().unwrap(), 9, 10)
         .unwrap();
     assert!(renewed.admits_execution_of(&expected, 10));
 }
@@ -139,7 +139,7 @@ fn execution_admission_preserves_frozen_identity_and_remote_target() {
                     };
                     match axis {
                         7 => attempt.worker_id = "other".into(),
-                        8 => attempt.epoch = 2,
+                        8 => attempt.epoch = Epoch::from_persisted(2).unwrap(),
                         9 => attempt.policy.recovery = ToolRecoveryPolicy::default(),
                         10 => attempt.policy.concurrency = ToolConcurrency::Serial,
                         11 => handle.owner = "other".into(),
@@ -192,10 +192,11 @@ fn cancellation_preserves_unknown_outcomes_and_rejected_finishes_are_atomic() {
                         task.request_cancel().unwrap();
                     }
                     if mismatch == 1 {
-                        fence.worker_id = "other".into();
+                        fence =
+                            Tenure::granted(fence.subject().clone(), "other".into(), fence.epoch());
                     }
                     if mismatch == 2 {
-                        fence.epoch += 1;
+                        fence = fence.reassigned(fence.holder().clone()).unwrap();
                     }
                     if exhausted {
                         task.revision = u64::MAX;
@@ -300,7 +301,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                 BackgroundTaskLifecycle::Running { attempt }
                                 | BackgroundTaskLifecycle::Waiting { attempt, .. }
                                 | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
-                                    attempt.epoch = epoch
+                                    attempt.epoch = Epoch::from_persisted(epoch).unwrap()
                                 }
                                 _ => unreachable!(),
                             }
@@ -346,10 +347,11 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                 } else {
                                     assert_eq!(
                                         result,
-                                        Ok(TaskClaim::Acquired(TaskFence {
-                                            worker_id: "b".into(),
-                                            epoch: epoch + 1
-                                        })),
+                                        Ok(TaskClaim::Acquired(Tenure::granted(
+                                            task.id.clone(),
+                                            "b".into(),
+                                            Epoch::from_persisted(epoch + 1).unwrap(),
+                                        ))),
                                         "R8"
                                     );
                                     let mut expected = before;
@@ -359,7 +361,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                         | BackgroundTaskLifecycle::Waiting { attempt, .. }
                                         | BackgroundTaskLifecycle::Cancelling { attempt, .. } => {
                                             attempt.worker_id = "b".into();
-                                            attempt.epoch += 1;
+                                            attempt.epoch = attempt.epoch.next().unwrap();
                                             attempt.lease_expires_at_ms = now + lease;
                                         }
                                         _ => unreachable!(),
@@ -406,7 +408,7 @@ fn claim_lease_recovery_and_fence_form_one_monotone_authority() {
     let first = task
         .start("worker-a", 10, 20, replay_policy())
         .expect("fresh task is claimable");
-    assert_eq!(first.epoch, 1, "C1");
+    assert_eq!(first.epoch().get(), 1, "C1");
     assert_eq!(
         task.reclaim("worker-b", 20, 20),
         Err(BackgroundTaskError::Busy),
@@ -425,7 +427,7 @@ fn claim_lease_recovery_and_fence_form_one_monotone_authority() {
     else {
         panic!("C4 must reclaim the task")
     };
-    assert_eq!(second.epoch, 2, "C4");
+    assert_eq!(second.epoch().get(), 2, "C4");
     assert_eq!(
         task.finish(
             &first,
@@ -568,7 +570,7 @@ fn never_replay_crash_window_changes_only_after_remote_identity_is_durable() {
     else {
         panic!("C4 must acquire a replacement fence")
     };
-    assert_eq!(recovered.epoch, 2, "C4");
+    assert_eq!(recovered.epoch().get(), 2, "C4");
     assert!(matches!(
         remote.lifecycle,
         BackgroundTaskLifecycle::Waiting { .. }
@@ -590,14 +592,11 @@ fn persisted_recovery_policy_is_the_only_reclaim_authority() {
     assert_eq!(
         task.start("worker-1", 0, 10, policy)
             .expect("fresh task starts"),
-        TaskFence {
-            worker_id: "worker-1".into(),
-            epoch: 1
-        }
+        Tenure::granted(task.id.clone(), "worker-1".into(), Epoch::FIRST)
     );
     assert!(matches!(
         task.reclaim("worker-2", 10, 10),
-        Ok(TaskClaim::Acquired(TaskFence { epoch: 2, .. }))
+        Ok(TaskClaim::Acquired(tenure)) if tenure.epoch().get() == 2
     ));
     assert_eq!(
         task.reclaim("worker-3", 20, 10),
@@ -719,10 +718,7 @@ fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
     assert_eq!(active, before, "C3/E1");
     assert_eq!(
         active.finish(
-            &TaskFence {
-                worker_id: "other".into(),
-                epoch: fence.epoch,
-            },
+            &Tenure::granted(fence.subject().clone(), "other".into(), fence.epoch()),
             BackgroundTaskEnd::Completed {
                 content: Vec::new(),
                 is_error: false,
@@ -756,10 +752,11 @@ fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
         "C5/R2"
     );
     assert_eq!(active, before, "C5/R3");
-    let stale = TaskFence {
-        worker_id: "other".into(),
-        epoch: fence.epoch.wrapping_add(1),
-    };
+    let stale = Tenure::granted(
+        fence.subject().clone(),
+        "other".into(),
+        fence.epoch().next().unwrap_or(Epoch::FIRST),
+    );
     assert_eq!(
         active.heartbeat(&stale, u64::MAX, 0),
         Err(BackgroundTaskError::StaleFence),
@@ -868,13 +865,13 @@ fn remote_wait_reclaim_preserves_coordinates_and_fences_stale_observers() {
     else {
         panic!("R4 must acquire a replacement fence")
     };
-    assert_eq!(second.epoch, 2, "R4");
+    assert_eq!(second.epoch().get(), 2, "R4");
     assert!(matches!(
         &remote.lifecycle,
         BackgroundTaskLifecycle::Waiting {
             attempt,
             wait: BackgroundWait::Remote(continuation),
-        } if attempt.owns(&second) && continuation == &refreshed
+        } if attempt.tenure(second.subject()) == second && continuation == &refreshed
     ));
 
     let before = remote.clone();
@@ -941,7 +938,7 @@ fn remote_cancel_and_reclaim_retain_the_single_remote_request() {
         BackgroundTaskLifecycle::Cancelling {
             attempt,
             wait: Some(BackgroundWait::Remote(actual)),
-        } if attempt.owns(&first) && actual == &continuation
+        } if attempt.tenure(first.subject()) == first && actual == &continuation
     ));
 
     let before = remote.clone();
@@ -963,7 +960,7 @@ fn remote_cancel_and_reclaim_retain_the_single_remote_request() {
         BackgroundTaskLifecycle::Cancelling {
             attempt,
             wait: Some(BackgroundWait::Remote(actual)),
-        } if attempt.owns(&second) && actual == &continuation
+        } if attempt.tenure(second.subject()) == second && actual == &continuation
     ));
 
     let before = remote.clone();
@@ -1046,10 +1043,7 @@ fn remote_start_candidate_attaches_after_cancel_without_losing_cancel_intent() {
     let before = remote.clone();
     assert_eq!(
         remote.wait(
-            &TaskFence {
-                worker_id: "worker-2".into(),
-                epoch: fence.epoch,
-            },
+            &Tenure::granted(fence.subject().clone(), "worker-2".into(), fence.epoch()),
             BackgroundWait::Remote(continuation.clone()),
         ),
         Err(BackgroundTaskError::StaleFence),
@@ -1154,4 +1148,39 @@ fn legacy_cancelling_wire_without_wait_remains_compatible() {
         "poll_interval_ms": 100
     });
     assert!(serde_json::from_value::<BackgroundTask>(malformed).is_err());
+}
+
+/// A task fence names its task: the same worker at the same epoch of another
+/// task is a stale fence, not the owner.
+///
+/// | Rule | presented tenure                         | heartbeat / wait / finish |
+/// | T1   | this task, worker, epoch 1               | accepted                  |
+/// | T2   | another task, same worker, same epoch    | StaleFence, unchanged     |
+#[test]
+fn a_fence_minted_for_another_task_never_owns_this_one() {
+    let mut task = task();
+    let fence = task.start("worker", 0, 10, replay_policy()).unwrap();
+    let foreign = Tenure::granted(
+        BackgroundTaskId::new("task-2").unwrap(),
+        fence.holder().clone(),
+        fence.epoch(),
+    );
+    let before = task.clone();
+    assert_eq!(
+        task.heartbeat(&foreign, 1, 10),
+        Err(BackgroundTaskError::StaleFence),
+        "T2"
+    );
+    assert_eq!(
+        task.wait(&foreign, BackgroundWait::Resource),
+        Err(BackgroundTaskError::StaleFence),
+        "T2"
+    );
+    assert_eq!(
+        task.finish(&foreign, BackgroundTaskEnd::Cancelled),
+        Err(BackgroundTaskError::StaleFence),
+        "T2"
+    );
+    assert_eq!(task, before, "T2 unchanged");
+    task.heartbeat(&fence, 1, 10).expect("T1");
 }

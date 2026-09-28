@@ -37,7 +37,7 @@ impl AttemptOwnershipVerifier for BackgroundTaskOwnership {
         if current.admits_execution_of(&self.expected, BackgroundTaskSupervisor::now_ms())
             && self
                 .supervisor
-                .is_active(&self.expected.id, &expected.fence())
+                .is_active(&self.expected.id, &expected.tenure(&self.expected.id))
         {
             Ok(())
         } else {
@@ -172,7 +172,7 @@ mod tests {
             }
             assert!(background.drain(Duration::from_secs(2)).await);
             let completion = supervisor.completion(&task.id).expect("terminal candidate");
-            assert_eq!(completion.fence, task.attempt().unwrap().fence());
+            assert_eq!(completion.fence, task.tenure().unwrap());
             assert!(matches!(
                 completion.end,
                 BackgroundTaskEnd::Indeterminate { .. }
@@ -335,7 +335,7 @@ mod tests {
                 );
                 let mut task = task(boundary);
                 persist(&commit, &task, "initial").await;
-                let fence = task.attempt().unwrap().fence();
+                let fence = task.tenure().unwrap();
                 let token = supervisor.register(&task.id, &fence).unwrap();
                 let prepared = PreparedToolExecutor::new(
                     runtime,
@@ -398,8 +398,7 @@ mod tests {
                         _ => unreachable!(),
                     },
                     4 => {
-                        let mut replacement = fence.clone();
-                        replacement.epoch += 1;
+                        let replacement = fence.reassigned(fence.holder().clone()).unwrap();
                         supervisor.register(&task.id, &replacement).unwrap();
                     }
                     _ => {}
@@ -476,7 +475,7 @@ mod tests {
                 let mut current = task(boundary);
                 persist(&commit, &current, "before-effect").await;
                 let old = current.clone();
-                let fence = old.attempt().unwrap().fence();
+                let fence = old.tenure().unwrap();
                 let token = supervisor.register(&old.id, &fence).unwrap();
                 let prepared = Arc::new(
                     PreparedToolExecutor::new(
@@ -575,7 +574,7 @@ mod tests {
         let expected = task(0);
         let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
         supervisor
-            .register(&expected.id, &expected.attempt().unwrap().fence())
+            .register(&expected.id, &expected.tenure().unwrap())
             .unwrap();
         let commit = local_commit();
         let authority = BackgroundTaskOwnership {
