@@ -26,6 +26,12 @@ checker added tomorrow inherits it:
   A3  a lane may only pass a flag its target declares. A1 turns a misspelled
       call site into a red gate at run time; A3 names it in seconds, statically,
       which is where `--selftest` should have been caught.
+  A4  a refusal leaves no trace. Probing the corpus once wrote a 1.7 MB
+      `awaken-sandbox` build to `./--awaken-gate-argument-probe`, and the next
+      `git add -A` committed it: an entry point had used the flag as an output
+      path before exiting non-zero, so A1 saw a refusal and nothing looked at
+      the working tree. Every path the probes create or rewrite is now an error
+      naming the entry point that wrote it.
 
 The declared flag set is read back from the entry point's own refusal output, so
 this file holds no second copy of anybody's argument list to go stale.
@@ -218,6 +224,79 @@ def probe(root: Path, relative: str, flag: str = PROBE_FLAG) -> Probe:
     return Probe(relative, result.returncode, result.stdout + result.stderr)
 
 
+Footprint = dict[str, tuple[int, int]]
+
+
+def working_tree_footprint(root: Path) -> Footprint:
+    """Every untracked-and-unignored or modified path, with its mtime and size.
+
+    Ignored paths (bytecode caches, build output) are outside the rule: writing
+    them is not a trace a commit can pick up.
+    """
+
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--others", "--modified", "--exclude-standard"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+    if listed.returncode != 0:
+        # Not a repository (the self-test fixture root): fall back to a walk.
+        names = [
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        ]
+    else:
+        names = [name for name in listed.stdout.decode("utf-8", "replace").split("\0") if name]
+    footprint: Footprint = {}
+    for name in names:
+        try:
+            stat = (root / name).stat()
+        except FileNotFoundError:
+            continue
+        footprint[name] = (stat.st_mtime_ns, stat.st_size)
+    return footprint
+
+
+def traces(before: Footprint, after: Footprint) -> list[str]:
+    return sorted(name for name, identity in after.items() if before.get(name) != identity)
+
+
+def trace_errors(root: Path, before: Footprint, probed: list[tuple[str, str]]) -> list[str]:
+    """A4: attribute every new or rewritten path to the entry point that wrote it.
+
+    The corpus is probed in parallel, so one footprint after the whole batch
+    only says that *something* wrote. Attribution re-probes sequentially and
+    compares the footprint around each call; a path the first pass created is
+    rewritten by the second, which changes its mtime.
+    """
+
+    left = traces(before, working_tree_footprint(root))
+    if not left:
+        return []
+    errors: list[str] = []
+    attributed: set[str] = set()
+    for relative, flag in probed:
+        ahead = working_tree_footprint(root)
+        probe(root, relative, flag)
+        written = traces(ahead, working_tree_footprint(root))
+        if written:
+            attributed.update(written)
+            errors.append(
+                f"{relative}: given {flag}, which it does not implement, it wrote "
+                f"{', '.join(written)} before refusing; an unimplemented flag must be refused "
+                "before any effect, or the flag becomes a path a later `git add` commits"
+            )
+    unattributed = [name for name in left if name not in attributed]
+    if unattributed:
+        errors.append(
+            f"the gate-argument probes left {', '.join(unattributed)} in the working tree and no "
+            "single entry point reproduced it when re-probed alone; remove it and probe again"
+        )
+    return errors
+
+
 def probe_all(root: Path, relatives: list[str]) -> dict[str, Probe]:
     with ThreadPoolExecutor(max_workers=12) as pool:
         results = list(pool.map(lambda relative: probe(root, relative), relatives))
@@ -259,9 +338,7 @@ def abbreviation_construction_errors(sources: dict[str, str]) -> list[str]:
     return errors
 
 
-def abbreviation_behaviour_errors(root: Path, probes: dict[str, Probe]) -> list[str]:
-    """A2, dynamically: one truncation per entry point is actually refused."""
-
+def abbreviation_truncations(probes: dict[str, Probe]) -> list[tuple[str, str]]:
     truncations: list[tuple[str, str]] = []
     for relative, result in sorted(probes.items()):
         declared = result.declared_flags
@@ -274,6 +351,13 @@ def abbreviation_behaviour_errors(root: Path, probes: dict[str, Probe]) -> list[
         if truncated in declared:
             continue
         truncations.append((relative, truncated))
+    return truncations
+
+
+def abbreviation_behaviour_errors(root: Path, probes: dict[str, Probe]) -> list[str]:
+    """A2, dynamically: one truncation per entry point is actually refused."""
+
+    truncations = abbreviation_truncations(probes)
     with ThreadPoolExecutor(max_workers=12) as pool:
         outcomes = list(pool.map(lambda pair: probe(root, pair[0], pair[1]), truncations))
     errors = []
@@ -339,6 +423,7 @@ def validate(root: Path) -> list[str]:
             f"gate argument corpus collapsed to {len(relatives)} entry points; a rule over the "
             "set is worthless when the set is empty, so discovery failing is itself a failure"
         ]
+    before = working_tree_footprint(root)
     probes = probe_all(root, relatives)
     declared = {relative: result.declared_flags for relative, result in probes.items()}
     lanes = {
@@ -350,6 +435,8 @@ def validate(root: Path) -> list[str]:
     errors += abbreviation_construction_errors(python_sources(root))
     errors += abbreviation_behaviour_errors(root, probes)
     errors += lane_call_site_errors(lanes, declared)
+    probed = [(relative, PROBE_FLAG) for relative in relatives] + abbreviation_truncations(probes)
+    errors += trace_errors(root, before, probed)
     for relative, reason in sorted(ENTRY_POINT_EXEMPTIONS.items()):
         if not (root / relative).exists():
             errors.append(
@@ -377,10 +464,14 @@ def self_test() -> None:
       C10 a lane passes a flag the target declares
       C11 a lane passes a flag the target does not declare
       C12 a lane passes no flag at all
+    Causes, over the working tree:
+      C13 a refusal writes nothing
+      C14 a refusal first writes the flag as a path
     Effects: E1 admitted, E2 rejected by name.
     Rules: A1 = C1|C5 => E1; C2|C3|C4 => E2.
            A2 = C6|C8 => E1; C7|C9 => E2.
            A3 = C10|C12 => E1; C11 => E2.
+           A4 = C13 => E1; C14 => E2 naming the writer.
     """
 
     import tempfile  # noqa: PLC0415 - only the self-test writes fixtures
@@ -471,6 +562,29 @@ def self_test() -> None:
         assert not lane_call_site_errors(
             {"lane.sh": "# scripts/ci/strict.sh --selftest\n"}, declared
         ), "C12/E1 a comment is documentation, not a call site"
+
+        # C13/C14: the committed-binary defect. `writes_flag.sh` treats its
+        # argument as an output path and then refuses; A1 alone admits it.
+        writes_flag = (
+            "#!/usr/bin/env bash\n"
+            'cd "$(dirname "$0")/../.."\n'
+            'printf binary > "./$1"\n'
+            'echo "usage: writes_flag.sh" >&2; exit 2\n'
+        )
+        (directory / "writes_flag.sh").write_text(writes_flag, encoding="utf-8")
+        before = working_tree_footprint(root)
+        pair = probe_all(root, ["scripts/ci/strict.sh", "scripts/ci/writes_flag.sh"])
+        assert not refusal_errors(pair), "C14 is invisible to A1: that is the defect"
+        found = trace_errors(
+            root,
+            before,
+            [("scripts/ci/strict.sh", PROBE_FLAG), ("scripts/ci/writes_flag.sh", PROBE_FLAG)],
+        )
+        assert [e for e in found if e.startswith("scripts/ci/writes_flag.sh:")], "C14/E2 names the writer"
+        assert not [e for e in found if e.startswith("scripts/ci/strict.sh:")], "C13/E1"
+        (root / PROBE_FLAG).unlink()
+        clean = working_tree_footprint(root)
+        assert not trace_errors(root, clean, [("scripts/ci/strict.sh", PROBE_FLAG)]), "C13/E1 alone"
 
     print("check_gate_arguments self-test: the decision table holds")
 

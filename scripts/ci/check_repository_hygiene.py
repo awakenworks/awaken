@@ -86,6 +86,21 @@ LICENSE_TEXT_RE = re.compile(
 )
 HIDDEN_UNICODE_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 CONFLICT_MARKER_RE = re.compile(r"^(<<<<<<<|=======|>>>>>>>)")
+# A path component that begins with `-` is read as an option by every tool that
+# is later handed the path, and in practice it is the footprint of an argument
+# that some command wrote to instead of refusing (a 1.7 MB `awaken-sandbox`
+# build was committed as `--awaken-gate-argument-probe` exactly this way).
+OPTION_SHAPED_PART_RE = re.compile(r"^-")
+# Compiled executables and objects are build output wherever they sit. Detected
+# by content, not name, because the committed artifact had no suffix at all.
+EXECUTABLE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x7fELF", "ELF"),
+    (b"\xfe\xed\xfa\xce", "Mach-O"),
+    (b"\xfe\xed\xfa\xcf", "Mach-O"),
+    (b"\xce\xfa\xed\xfe", "Mach-O"),
+    (b"\xcf\xfa\xed\xfe", "Mach-O"),
+    (b"\xca\xfe\xba\xbe", "Mach-O universal"),
+)
 
 
 def git_lines(args: list[str]) -> list[str]:
@@ -127,6 +142,48 @@ def read_content(rel: str, staged: bool) -> str | None:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def read_head(rel: str, staged: bool, size: int = 512) -> bytes | None:
+    if staged:
+        try:
+            return subprocess.check_output(
+                ["git", "cat-file", "blob", f":{rel}"],
+                cwd=REPO_ROOT,
+                stderr=subprocess.DEVNULL,
+            )[:size]
+        except subprocess.CalledProcessError:
+            return None
+    path = REPO_ROOT / rel
+    if not path.is_file():
+        return None
+    with path.open("rb") as handle:
+        return handle.read(size)
+
+
+def executable_format(head: bytes) -> str | None:
+    for magic, name in EXECUTABLE_MAGIC:
+        if head.startswith(magic):
+            return name
+    # PE: an MZ stub whose e_lfanew points at a `PE\0\0` signature. The stub
+    # alone is two printable bytes and would misfire on ordinary text.
+    if head.startswith(b"MZ") and len(head) >= 0x40:
+        offset = int.from_bytes(head[0x3C:0x40], "little")
+        if head[offset : offset + 4] == b"PE\0\0":
+            return "PE"
+    return None
+
+
+def check_executable_content(files: list[str], staged: bool) -> list[str]:
+    violations: list[str] = []
+    for rel in sorted(files):
+        head = read_head(rel, staged)
+        if head is None:
+            continue
+        kind = executable_format(head)
+        if kind is not None:
+            violations.append(f"{rel}: tracked {kind} binary; compiled output must not be committed")
+    return violations
+
+
 def is_text_file(rel: str) -> bool:
     path = Path(rel)
     return path.name in {"lefthook.yml"} or path.suffix in TEXT_SUFFIXES
@@ -142,6 +199,11 @@ def check_path_shape(files: list[str], added_files: list[str]) -> list[str]:
             violations.append(f"{rel}: root ad-hoc test scripts belong under scripts/ or tests/")
         if FORBIDDEN_ROOT_DIR_RE.search(rel):
             violations.append(f"{rel}: root fixture/profile data belongs under tests/fixtures/ or config examples")
+        if any(OPTION_SHAPED_PART_RE.search(part) for part in path.parts):
+            violations.append(
+                f"{rel}: a path component beginning with `-` is parsed as an option by the next "
+                "tool handed this path; it is usually a flag some command wrote to instead of refusing"
+            )
         parts = set(path.parts)
         if (
             (parts & GENERATED_PARTS)
@@ -194,6 +256,8 @@ def self_test() -> int:
             "web/vendor/awaken-ui/dist/index.js",
             "web/vendor/other-ui/dist/index.js",
             "web/vendor/awaken-ui-0.4.0.tgz",
+            "--awaken-gate-argument-probe",
+            "crates/x/-o",
         ],
         ["docs/new-progress.md"],
     )
@@ -204,6 +268,8 @@ def self_test() -> int:
         "new-progress.md",
         "web/vendor/other-ui/dist/index.js",
         "web/vendor/awaken-ui/dist/index.js",
+        "--awaken-gate-argument-probe",
+        "crates/x/-o",
     ]
     for fragment in expected_fragments:
         if not any(fragment in hit for hit in shape_hits):
@@ -211,6 +277,21 @@ def self_test() -> int:
 
     if any("awaken-ui-0.4.0.tgz" in hit for hit in shape_hits):
         failures.append("immutable dependency archive must be accepted")
+    # Cause/effect table: X1 ELF/Mach-O/PE header -> reject by content; X2 a
+    # text file that merely starts with `MZ` -> accept; X3 PNG -> accept.
+    pe = bytearray(0x80)
+    pe[0:2] = b"MZ"
+    pe[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    pe[0x40:0x44] = b"PE\0\0"
+    for head, expected in (
+        (b"\x7fELF\x02\x01\x01", "ELF"),
+        (b"\xcf\xfa\xed\xfe\x07", "Mach-O"),
+        (bytes(pe), "PE"),
+        (b"MZ is a note, not a program" + b" " * 80, None),
+        (b"\x89PNG\r\n\x1a\n", None),
+    ):
+        if executable_format(head) != expected:
+            failures.append(f"executable_format({head[:8]!r}) != {expected!r}")
     content = "ok\nbad\u200b\n<<<<<<< HEAD\nPermission is hereby granted, free of charge\n"
     hits: list[str] = []
     for lineno, line in enumerate(content.splitlines(), 1):
@@ -248,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
 
     violations = check_path_shape(files, added)
     violations.extend(check_text_content(files, args.staged))
+    violations.extend(check_executable_content(files, args.staged))
     if violations:
         print("Repository hygiene failed:", file=sys.stderr)
         for violation in violations:
