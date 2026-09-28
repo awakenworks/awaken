@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/CheckpointRecovery.tla",
+  "crates/runtime/awaken-runtime/src/engine/progress.rs",
+  "crates/runtime/awaken-runtime/src/engine/tests.rs",
+  "crates/runtime/awaken-runtime/tests/per_step_commit.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "durable_watermark_successor_is_exact_or_rejected_without_rollback",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-runtime/src/engine/progress.rs",
+]
+
+[[bounds]]
+text = '''StepLedger::commit_delta is the sole process-local owner of the message, state and audit durable-prefix watermarks. Its production successor kernel accepts an arbitrary staged usize exactly when it is at least the arbitrary current usize, returns that exact staged value, and otherwise rejects the regression. The direct Kani harness exhausts the full usize pair domain with no assumptions, stubs or narrowed input bounds.'''
+
+[[bounds]]
+text = '''Production validates all three candidate lengths before indexing their tails, awaits the existing CommitCoordinator result, and publishes the three local watermarks only after Ok. The native cause/effect table covers below, equal and above candidates plus zero and usize::MAX; a real rejecting coordinator proves Commit error leaves every exact message/state/audit tail pending. Existing per-step integration tests cross-check accepted progress. Exact source mutants qualify both regression admission and pre-commit local publication.'''
+
+[[bounds]]
+text = '''The direct result is limited to the process-local StepLedger successor and failure stutter. CommitCoordinator success, adapter atomicity, SQL transactions and ordering, filesystem fsync, crash durability/recovery, asynchronous cancellation and scheduling, and universal Rust-to-TLA refinement remain executable evidence or TCB boundaries.'''

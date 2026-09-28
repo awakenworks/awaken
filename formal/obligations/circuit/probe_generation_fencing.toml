@@ -1,0 +1,22 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.performance_and_long_run_stability",
+]
+evidence = [
+  "formal/tla/CircuitBreaker.tla",
+  "crates/runtime/awaken-runtime/src/circuit_breaker.rs",
+  "crates/runtime/awaken-runtime/src/circuit_breaker/kernel.rs",
+]
+proof_harnesses = [
+  "circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters",
+  "circuit_completion_requires_exact_phase_and_generation_for_every_outcome",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-runtime/src/circuit_breaker.rs",
+  "crates/runtime/awaken-runtime/src/circuit_breaker/kernel.rs",
+]
+
+[[bounds]]
+text = '''Production reducer over every u32 probe budget/failure count and u64 generation; closed and probe permit phase/epoch fencing. TLC explores three permits, generations 0..3, probe budgets 0/1/2. Clock accuracy, mutex/runtime scheduling and provider behavior are not proved.'''

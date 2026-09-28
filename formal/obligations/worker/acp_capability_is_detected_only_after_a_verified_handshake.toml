@@ -1,0 +1,34 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "crates/contract/awaken-acp-contract/src/lib.rs",
+  "crates/contract/awaken-worker-contract/src/capability_agreement.rs",
+  "crates/contract/awaken-worker-contract/src/observation.rs",
+  "crates/bin/awaken-cli/src/live_runtime_capabilities.rs",
+  "crates/server/awaken-session-executor/src/acp_backend.rs",
+  "crates/server/awaken-session-executor/src/acp_provision.rs",
+]
+proof_harnesses = [
+  "acp_capability_is_detected_exactly_after_a_verified_observation",
+  "incompatible_capability_evidence_never_recovers_to_available",
+]
+production_entrypoints = [
+  "crates/contract/awaken-acp-contract/src/lib.rs",
+  "crates/contract/awaken-worker-contract/src/capability_agreement.rs",
+  "crates/contract/awaken-worker-contract/src/observation.rs",
+  "crates/bin/awaken-cli/src/live_runtime_capabilities.rs",
+  "crates/server/awaken-session-executor/src/acp_backend.rs",
+  "crates/server/awaken-session-executor/src/acp_provision.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''
+
+[[bounds]]
+text = '''The standalone production agreement kernel exhausts empty, one-profile and conflicting-profile states with both equal and unequal next evidence. Once conflicting evidence is observed it cannot recover to Available by iteration order. Concrete multi-Worker tests compose this kernel with Ready state, half-open Worker and observation leases, exact same-Worker credential revision, backend identity, and input permutations. Collection traversal, String and negotiated JSON equality, registry consistency, clock correctness and external Worker observations remain executable or TCB evidence.'''

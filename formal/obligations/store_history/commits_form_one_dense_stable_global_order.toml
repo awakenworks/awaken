@@ -1,0 +1,36 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/StoreHistory.tla",
+  "formal/tla/StoreHistory.cfg",
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/migrations/V0002__transactional_dense_commit_order.sql",
+  "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
+]
+proof_harnesses = [
+  "dense_commit_sequence_is_exact_nonnegative_and_nonwrapping",
+]
+production_entrypoints = [
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''All backends allocate the next commit as the exact checked successor of the current durable tail. PostgreSQL now holds the existing commit table's transaction lock across MAX(sequence), insert and every dependent write; a failed transaction releases the uncommitted candidate for reuse rather than advancing a separate sequence. Its V2 compatibility migration compacts historical commit, message, state, event and receipt keys in one locked transaction before dropping the retired sequence. Kani proves the production PostgreSQL successor over every i64 tail; shared conformance and the real-PostgreSQL later-write fault table cover ordering and rollback reuse.'''
+
+[[bounds]]
+text = '''Mutex, SQLite/PostgreSQL transaction and lock linearizability, migration execution, filesystem durability and database integrity remain TCB or executable evidence. Event cursor encoding retains its separately proved stable commit-times-1000 representation.'''

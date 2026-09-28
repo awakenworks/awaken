@@ -1,0 +1,27 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/AcpObservationRefresh.tla",
+  "formal/tla/AcpObservationRefresh.cfg",
+  "crates/server/awaken-acp-application/src/lib.rs",
+  "crates/server/awaken-run-executor-acp/src/host/mod.rs",
+  "scripts/ci/formal_credential_mutations.py",
+]
+proof_harnesses = [
+  "host_observation_projection_is_exactly_backend_scoped",
+]
+production_entrypoints = [
+  "crates/server/awaken-acp-application/src/lib.rs",
+  "crates/server/awaken-run-executor-acp/src/host/mod.rs",
+]
+
+[[bounds]]
+text = '''One selected/unselected backend, two Workspace credential references and two serialized refreshes; installation, login, binding state and returned-backend identity may change between all steps. One probe serves the current batch's active references without lending availability to disabled references; protocol cardinality is backend-scoped and cannot reuse earlier-generation host evidence. Seven semantic mutants and seven positive witnesses check the boundaries, including backend identity at credential, cached-capability and direct fallback projections. The Worker cache supplies serialization; per-use probes, externally concurrent consumers, remote source revocation, OS behavior, instantaneous freshness and Rust refinement are not proved. Portable Rust rows separately cover two backends, all eight three-binding status combinations, negotiation failures, allowlists and consecutive refreshes. The existing matrix now crosses foreign-backend loss/recovery with all status combinations and no bindings (36 configurations, 72 refreshes); the shared discovery boundary also scopes the default catalog walk. Six isolated native production mutants qualify backend checks, all three consumers and both post-probe fences; these are finite test evidence, not Rust refinement.'''
+
+[[bounds]]
+text = '''One selected/unselected backend, two Workspace credential references and two serialized refreshes; installation, login and binding state may change between all steps. One probe serves the current batch's active references without lending availability to disabled references; protocol cardinality is backend-scoped and cannot reuse earlier-generation host evidence. Four semantic mutants and four positive witnesses check the boundaries. The Worker cache supplies serialization; per-use probes, externally concurrent consumers, remote source revocation, OS behavior, instantaneous freshness and Rust refinement are not proved. Portable Rust rows separately cover two backends, all eight three-binding status combinations, negotiation failures, allowlists and consecutive refreshes.'''
+
+[[bounds]]
+text = '''Kani exhausts the production backend-selection/detection/login/capability quotient used by routable projection. Cache locking, discovery honesty, and async probe delivery remain executable or external evidence.'''

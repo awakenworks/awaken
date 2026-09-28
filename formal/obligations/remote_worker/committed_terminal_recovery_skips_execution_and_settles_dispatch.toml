@@ -1,0 +1,35 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteWorkerProtocol.tla",
+  "crates/contract/awaken-runtime-contract/src/terminal.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
+  "crates/server/awaken-dispatch/src/worker/tests.rs",
+  "crates/server/awaken-dispatch/tests/durable_memory.rs",
+  "crates/server/awaken-dispatch/tests/lease_semantics.rs",
+  "e2e/durable_worker_cancel_e2e.mjs",
+  "formal/tla/SessionRunProtocol.tla",
+  "formal/tla/SessionRunProtocolResolution.cfg",
+  "crates/server/awaken-dispatch/tests/any_store/resolution_failure.rs",
+]
+proof_harnesses = [
+  "committed_terminal_projection_admits_only_exact_ended_identity",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/terminal.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
+]
+
+[[bounds]]
+text = '''The Runtime-contract production kernel classifies every Boolean combination of record presence, exact Run identity, exact Thread identity and Ended state. Kani proves that only all four facts admit the exact committed terminal projection, any present identity disagreement fails closed, and absent or exact nonterminal truth cannot enter terminal settlement. Ordinary reclaim, lost-commit races and the dedicated terminal scanner consume that same projection and converge on one Worker helper whose only mutation is the existing observer plus claim-fenced Done settlement; it accepts no executor dependency.'''
+
+[[bounds]]
+text = '''Memory and SQLite decision-table tests cover ordinary and dedicated terminal claims, cancellation and opaque ACP recovery, occupied predecessor slots, exact physical acknowledgement and zero repeated executor calls. The production-kernel proof does not establish CommittedThreadView or backend snapshot correctness, async scheduling, database isolation or durability, observer idempotency, physical quiescence, network delivery, or unconditional progress during a permanent outage.'''

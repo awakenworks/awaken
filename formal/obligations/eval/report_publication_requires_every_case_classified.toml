@@ -1,0 +1,21 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.llm_semantics",
+]
+evidence = [
+  "formal/tla/EvalEvidence.tla",
+  "formal/tla/EvalEvidence.cfg",
+  "crates/devtools/awaken-eval/src/observation_index.rs",
+  "crates/devtools/awaken-eval/src/outcome_judge.rs",
+  "scripts/ci/formal_eval_mutations.py",
+  "scripts/ci/check_formal.sh",
+]
+production_entrypoints = []
+
+[[bounds]]
+text = '''The two-case linked TLA+ model permits Publish only after every case is scored. A semantic mutant changing the universal guard to an existential guard violates the exact completeness invariant, and a reachability witness proves publication is possible.'''
+
+[[bounds]]
+text = '''The production Outcome Judge iterates the immutable dataset once and constructs the report only after emitting one ordered CaseResult for every case. The 32-rule decision table asserts exact result cardinality and case order for every missing/valid/invalid/duplicate cross-product. Serialization and CLI output are exercised by workspace tests but are not a universal atomic-publication or Rust-to-TLA proof.'''

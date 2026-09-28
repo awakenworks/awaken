@@ -1,0 +1,30 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/MemoryCAS.tla",
+  "formal/tla/MemoryCASCopy.cfg",
+  "crates/worker/awaken-sandbox-memoryd/src/copy.rs",
+  "crates/worker/awaken-sandbox-memoryd/src/mounter.rs",
+  "crates/worker/awaken-sandbox-memoryd/tests/copy_lifecycle.rs",
+  "crates/contract/awaken-resource-contract/src/lib.rs",
+  "crates/resources/awaken-memory-store/src/repository.rs",
+  "crates/resources/awaken-memory-store/src/sqlite.rs",
+  "crates/resources/awaken-memory-store/src/postgres.rs",
+  "crates/resources/awaken-memory-store/tests/conformance.rs",
+]
+proof_harnesses = [
+  "memory_conditional_delete_admission_is_exact",
+]
+production_entrypoints = [
+  "crates/contract/awaken-resource-contract/src/lib.rs",
+  "crates/resources/awaken-memory-store/src/repository.rs",
+  "crates/resources/awaken-memory-store/src/sqlite.rs",
+  "crates/resources/awaken-memory-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts absence and all eight id/version/hash match classes through the single production conditional-delete owner used by the volatile, SQLite and PostgreSQL adapters. Any present id, version or hash mismatch returns Conflict before delete/history effects; only an exact token authorizes Delete. Path selection, identity/version/hash decoding, lock and transaction correctness, SQL execution, asynchronous cancellation and durable database effects remain implementation or external TCB; this is an admission-kernel proof rather than universal backend refinement.'''

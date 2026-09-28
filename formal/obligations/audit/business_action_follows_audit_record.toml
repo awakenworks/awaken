@@ -1,0 +1,42 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/AuditCommit.tla",
+  "crates/control/awaken-admin-assistant/src/lib.rs",
+  "crates/control/awaken-control/src/lib.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/control/awaken-agent-config/src/store.rs",
+  "formal/tla/AuditCommit.cfg",
+  "crates/control/awaken-config-store/src/schema.rs",
+  "crates/control/awaken-config-store/tests/support/audit_identity.rs",
+  "crates/control/awaken-config-store/tests/integration.rs",
+  "crates/control/awaken-config-store/tests/postgres.rs",
+]
+proof_harnesses = [
+  "management_audit_admission_requires_exact_intent_and_closed_state",
+]
+production_entrypoints = [
+  "crates/control/awaken-admin-assistant/src/lib.rs",
+  "crates/control/awaken-control/src/lib.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/control/awaken-agent-config/src/store.rs",
+]
+
+[[bounds]]
+text = '''The config-domain ManagementAuditRecord admission and AuditedConfigWrite effect admission remain the single production owners. Kani exhausts durable-row presence, record equality, every i64 stored state, every begin-result class and business success: an absent, changed, corrupt, replayed or conflicting intent cannot authorize a new business write; only exact pending/Applied admits it.'''
+
+[[bounds]]
+text = '''Fixed Kani 0.67.0 with the qualified patched CBMC/CaDiCaL backend completes the one existing combined harness with 126 checks, zero failures and 0.061794713 solver seconds in 1.339 guarded seconds, under one job, empty RUSTC_WRAPPER, a 600-second deadline and 12-GiB cgroup memory ceiling, without solver assumptions or stubs.'''
+
+[[bounds]]
+text = '''SQLite and PostgreSQL call the same record admission while holding their existing transaction, and both Admin Assistant and the protected management HTTP edge consume permits_business_write before entering business behavior. The native domain table crosses every begin result and success value; backend identity tables exercise missing, changed, pending and committed rows, while the HTTP fault test observes zero handler calls after durable-record failure.'''
+
+[[bounds]]
+text = '''String/heap equality, SQL tuple selection and locking, database isolation/durability, async scheduling and arbitrary external business effects remain executable evidence or TCB. The proof establishes the production pre-effect admission decision, not universal Rust-to-SQL or HTTP refinement.'''

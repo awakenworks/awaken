@@ -1,0 +1,52 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/OutcomeLifecycle.tla",
+  "formal/tla/OutcomeLifecycle.cfg",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+  "crates/runtime/awaken-ext-goal/src/state.rs",
+  "crates/runtime/awaken-ext-goal/src/controller.rs",
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/tests/conformance.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-fs/tests/conformance.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/tests/checkpoint_reader.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
+  "crates/server/awaken-session-executor/tests/outcome_state.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/check-reliability.sh",
+  "scripts/ci/pg_tests.sh",
+  "docs/adr/0064-runtime-owned-outcome-orchestration.md",
+  "formal/README.md",
+]
+production_entrypoints = [
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+  "crates/runtime/awaken-ext-goal/src/state.rs",
+  "crates/runtime/awaken-ext-goal/src/controller.rs",
+]
+
+[[bounds]]
+text = '''OutcomeLifecycle checks MaxIterations=3 with finite phase/result/grade domains. StableRunIdentity constrains abstract Worker, Grader and evaluated iteration sets, while AcknowledgmentExactlyOnce constrains the capped acknowledgment phase and count to zero before acknowledgment and one at max_iterations_reached. ReplayOrStaleVersion is an abstract stutter. The model does not contain Rust identifiers, commit payloads, stores, executor responses or a Rust-to-model refinement.'''
+
+[[bounds]]
+text = '''awaken-ext-goal::Controller is the sole Outcome lifecycle and acknowledgment owner. ThreadOutcomeState projects the aggregate from one committed Thread prefix and writes through the existing CommitOperationCoordinator with Thread-version CAS. Its production worker_run_id, grader_thread_id, grader_run_id and acknowledgment_run_id functions derive the only role-separated logical identities; Runtime Host supplies locks, Run execution composition and projection without a second Outcome state machine or repository.'''
+
+[[bounds]]
+text = '''The existing Runtime Host outcome-state test executes the production identity functions twice for the same Outcome/role/iteration and across different Outcomes, iterations and Worker/Grader/acknowledgment roles, requiring byte-stable equality only in the exact partition and distinct identities in every changed partition.'''
+
+[[bounds]]
+text = '''The extension controller's deterministic native decision table drives the capped Grade into Acknowledging, commits the exact acknowledgment Run and its transcript, then loses the executor response before the Outcome head commit. A replacement controller must observe that same terminal Run, complete without a second execution or transcript pair, return the original preparation coordinate for an exact command replay, reject a changed definition without a commit, and make a duplicate completed continuation inert.'''
+
+[[bounds]]
+text = '''Outcome state commits reuse the contract-owned canonical payload hash, operation identity and replay/CAS decisions. The existing operation_identity_replays_only_the_same_run_and_payload Kani harness exhausts the scalar new/replay/run-mismatch/receipt-mismatch/payload-mismatch classes. The sole shared commit_operation_is_idempotent_and_cas conformance rule exercises exact receipt replay, changed payload rejection and stale-version stuttering through Memory, filesystem, SQLite and configured live PostgreSQL bindings; Outcome adds no adapter-specific copy.'''
+
+[[bounds]]
+text = '''The native acknowledgment schedule and backend conformance executions do not prove every crash point, arbitrary concurrent controller schedule, CommittedThreadView/RunRecoverySource freshness, executor or provider exactly-once behavior, filesystem or database durability, process termination, network delivery, or a universal implementation refinement. Exactly once here means one committed logical acknowledgment Run/transcript and one terminal Outcome transition under the named stable identities and commit fences; a physical provider call can remain indeterminate until committed Run truth is observable.'''

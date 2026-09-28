@@ -1,0 +1,84 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ToolResultProtocol.tla",
+  "formal/tla/ToolResultProtocol.cfg",
+  "crates/contract/awaken-session-event-contract/src/lib.rs",
+  "crates/server/awaken-session-application/src/event_batches.rs",
+  "crates/server/awaken-session-application/src/tests/event_batches.rs",
+  "crates/server/awaken-protocol-managed/tests/adapter.rs",
+  "crates/contract/awaken-session-event-contract/src/admission.rs",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+  "crates/contract/awaken-session-application-contract/src/event_admission.rs",
+  "scripts/ci/formal_kani_options.py",
+  "scripts/ci/test_formal_profile.py",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "session_event_batch_admission_resolution_is_total_closed_and_append_once",
+  "deleted_admission_resolver_preserves_empty",
+  "deleted_admission_resolver_preserves_legacy_error_and_frame",
+  "deleted_admission_one_retained_closed_none_07",
+  "deleted_admission_one_retained_absent_none_00",
+  "deleted_admission_one_retained_conflict_none_01",
+  "deleted_admission_one_retained_absent_none_02",
+  "deleted_admission_one_retained_accepted_none_03",
+  "deleted_admission_one_retained_absent_none_04",
+  "deleted_admission_one_retained_conflict_none_05",
+  "deleted_admission_one_retained_absent_none_06",
+  "deleted_admission_one_retained_absent_empty_08",
+  "deleted_admission_one_retained_conflict_empty_09",
+  "deleted_admission_one_retained_absent_empty_10",
+  "deleted_admission_one_retained_accepted_empty_11",
+  "deleted_admission_one_retained_absent_empty_12",
+  "deleted_admission_one_retained_conflict_empty_13",
+  "deleted_admission_one_retained_absent_empty_14",
+  "deleted_admission_one_retained_closed_empty_15",
+  "deleted_admission_one_retained_absent_one_16",
+  "deleted_admission_one_retained_conflict_one_17",
+  "deleted_admission_one_retained_absent_one_18",
+  "deleted_admission_one_retained_accepted_one_19",
+  "deleted_admission_one_retained_absent_one_20",
+  "deleted_admission_one_retained_conflict_one_21",
+  "deleted_admission_one_retained_absent_one_22",
+  "deleted_admission_one_retained_closed_one_23",
+  "deleted_admission_one_retained_closed_two_31",
+  "deleted_admission_one_retained_absent_two_24",
+  "deleted_admission_one_retained_absent_two_28",
+  "deleted_admission_one_retained_absent_two_30",
+  "deleted_admission_one_retained_absent_two_26",
+  "deleted_admission_one_retained_conflict_two_25",
+  "deleted_admission_one_retained_conflict_two_29",
+  "deleted_admission_one_retained_accepted_two_27",
+  "deleted_admission_one_retained_accepted_two_initial_27",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/event_batches.rs",
+  "crates/contract/awaken-session-event-contract/src/admission.rs",
+  "crates/contract/awaken-session-application-contract/src/event_admission.rs",
+]
+
+[[bounds]]
+text = '''Two retry keys and fingerprints, atomic Session root CAS; acceptance and final close are absorbing alternatives. SQLite and HTTP tests exercise implementation boundaries but no universal Rust/SQL or transport refinement is claimed.'''
+
+[[bounds]]
+text = '''Kani exhausts all sixteen existence/fingerprint/closed/action combinations of the production admission plan. Only an absent identity authorizes an append; an exact closed identity rejects Accept and replays Close, while an accepted identity replays for either action and a changed fingerprint conflicts. The sole production resolver consumes this plan before constructing its Session-root replacement, and Rust decision-table, restart, late-delivery, concurrent-race, and lost-CAS-ack tests exercise the adapter boundaries. Snapshot lookup honesty, Vec semantics, root-CAS/transaction atomicity and durability, async cancellation, and HTTP delivery remain executable or database/transport TCB rather than claims of the pure kernel.'''
+
+[[bounds]]
+text = '''Shared SQLite/PostgreSQL conformance executes accepted, closed, empty and mixed inventories through the actual deletion CAS and scoped tombstone read. The mixed root contains a closed first key, accepted second key with twelve ordered operations and an unkeyed batch; the independent frozen-command oracle checks exact content-free retention, key/fingerprint isolation and full proof equality after read/error/delete replay. Real encoder mutants dropping later keys or sorting operation identities are rejected. These finite adapter checks do not prove SQL refinement, all concurrent deletion histories or external quota settlement.'''
+
+[[bounds]]
+text = '''The deleted resolver now consumes the same production admission classifier as live-root lookup; it retains sole ownership of legacy-inventory handling, first-key lookup and full retained payload projection. A 3174-case native table checks None and actual inventories of length 0..2, first matching key including duplicates, independent fingerprints and closed flags, independent absent/empty/one/two ordered operation identities, exact error kind/code/message, full source equality and owned-output mutation followed by replay. Eight actual production mutants are rejected.'''
+
+[[bounds]]
+text = '''The additional Kani harness calls the actual deleted resolver only for Some(empty), over every u64 deletion revision and independent query strings in {empty,a,b,ab,ba}. It proves exact Deleted revision, full source frame and a second resolve with real Vec/Result/Drop and default safety/unwinding checks (global unwind 4; existing strict memcmp.0:64 override). This empty partition excludes legacy None, nonempty retained inventories, arbitrary strings, codec validation, owner-scoped SQL reads and transaction histories.'''
+
+[[bounds]]
+text = '''A separate production Kani harness proves one actual legacy None resolve over every u64 deletion revision and independent borrowed query strings in {empty,a,b,ab,ba}: exact Unavailable kind, code and full message, complete source equality before and after actual owned-error Drop. It reuses the same native result oracle and all default safety/unwinding checks with global unwind 4 and the existing strict memcmp.0:64 override. The native table still exercises two coexisting outputs and additionally invokes the single-call/Drop oracle; no production resolver or error factory is replaced. This is a single-call boundary proof, not legacy replay or a whole resolver proof. Earlier coexisting-output probes, a two-call early-Drop probe and an array-representation comparison hit time/RSS limits without proof verdicts; sequential/coexisting error allocation, nonempty retained inventories and SQL/application composition remain unproved by these harnesses. No new solver option or proof-grade promotion is registered.'''
+
+[[bounds]]
+text = '''Thirty-two nonempty deleted-resolver Kani literal harnesses enumerate every key-equality, fingerprint-equality and closed combination for one retained receipt with operation_ids=None, Some(empty), Some([x]) or Some([x,y]): sixteen absent, eight conflict, four closed and four accepted cases. Fixed one-byte key/fingerprint/batch strings and every u64 deletion revision are retained. Each calls the actual resolver twice with both owned outputs alive, checks every exact result field and the complete source frame, and mutates returned payloads before replay to prove output isolation. Independent construction from the same Copy inputs avoids only the test oracle inventory Clone; production return Clone and every real Drop remain. Accepted27 attempts to prove that the real returned two-ID Vec<String> can be reversed and its first ID cleared while retained [x,y] and a second coexisting output remain exact and ordered. The real-resolver first-result lemma completed with all safety and unwinding checks; the owned-mutation/two-live-output replay partition still has no completed Kani result. Global unwind 2 covers None/empty/one-ID partitions; global unwind 3 covers all eight two-ID partitions. Strict memcmp.0:2 applies to nonerrors and memcmp.0:65 to the complete 64-byte conflict message including its loop-exit check. The sole retained-accepted-two-replay-v1 checked profile binds Accepted27 to Z3, memcmp.0:2 and the exact String swap chunk loop at bound 4: three 8-byte chunks plus loop exit for the pinned 24-byte String layout. All default safety and unwinding assertions remain enabled. Accepted27 is not qualified on the pinned CBMC backend: Z3 returned ERROR for all checks, while bounded SAT runs exhausted the local proof memory limit. A static ledger entry is not a successful Kani execution receipt. The same 32 literal fixtures are natively cross-checked at revisions 0/1/MAX (96 rows), alongside the broader 3174-case first-key/fingerprint/closed/identity table and eight rejected actual production mutants. Those native tests cover additional finite strings and duplicate-key/two-receipt cases without promoting them to Kani proof. Arbitrary strings, all two-receipt inventories, legacy error replay with coexisting outputs, codec validation, owner-scoped SQL reads and SQL/application transaction composition remain outside these proofs; the production-kernel grade records independently qualified kernels, while Accepted27 remains an explicit unproved gap until a successful Kani execution receipt exists.'''

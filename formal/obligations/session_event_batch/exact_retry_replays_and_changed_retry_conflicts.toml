@@ -1,0 +1,43 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ToolResultProtocol.tla",
+  "crates/server/awaken-protocol-managed/src/routes/sessions.rs",
+  "crates/server/awaken-protocol-managed/tests/adapter.rs",
+  "formal/tla/ToolResultProtocol.cfg",
+  "crates/server/awaken-session-application/src/event_batches.rs",
+  "crates/server/awaken-session-application/src/tests/event_batches.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+  "formal/runtime-refinement-manifest.json",
+  "scripts/ci/render_runtime_refinement_traces.py",
+  "scripts/ci/formal_event_batch_mutations.py",
+  "scripts/ci/check_formal_mutations.py",
+  "scripts/ci/check_formal.sh",
+  "crates/contract/awaken-session-event-contract/src/admission.rs",
+]
+proof_harnesses = [
+  "session_event_batch_admission_resolution_is_total_closed_and_append_once",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-managed/src/routes/sessions.rs",
+  "crates/server/awaken-session-application/src/event_batches.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
+  "crates/contract/awaken-session-event-contract/src/admission.rs",
+]
+
+[[bounds]]
+text = '''ToolResultProtocol exhausts the finite domains in its configuration, including an action property that a retained key fingerprint never changes. Three semantic model mutants and two accepted/closed reachability witnesses qualify append-at-most-once, replay retention and conflict stutter.'''
+
+[[bounds]]
+text = '''The existing actual Managed replay table also controls five SQLite schedules: initial key lookup Absent, Runtime recovery read already in flight, another replica commits exact/changed-body/changed-data-subject/closed identity or no winner, then that read returns Unavailable. The sole admission error reclassification returns the complete original wire receipt, idempotency conflict, closed-admission error, or original typed dependency error respectively. Full durable root and lifecycle outbox equality, canonical complete cache-content plus publication-revision equality, and no additional Runtime recovery reads are checked after the winner. Pre-win recovery I/O is explicitly permitted.'''
+
+[[bounds]]
+text = '''The five measured observations are checked against the same model retry decision and complete observed effect frames, with ten semantic trace mutants and twenty rule-coverage mutants. Existing application restart and root-CAS competition tests remain the actual at-most-once cross-check. This bounded trace relation is not a universal Rust/SQL/async refinement or a proof of fingerprint collision resistance; both obligations retain model_linked and abstract_model_checked.'''
+
+[[bounds]]
+text = '''Kani exhausts the production existence/fingerprint/closed/action decision over all sixteen Boolean combinations. An existing equal fingerprint replays the retained accepted or closed receipt according to the requested action; an existing changed fingerprint always conflicts. Session-root lookup/CAS atomicity, cloning and HTTP error mapping remain executable and database/transport TCB rather than claims of the pure kernel.'''

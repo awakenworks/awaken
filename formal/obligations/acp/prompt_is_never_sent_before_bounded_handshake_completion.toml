@@ -1,0 +1,34 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/AcpBoundary.tla",
+  "formal/tla/AcpBoundary.cfg",
+  "crates/server/awaken-protocol-acp/src/jsonrpc.rs",
+  "crates/server/awaken-protocol-acp/src/jsonrpc/handshake.rs",
+  "formal/verification-boundaries/acp-handshake-and-wire.md",
+  "crates/server/awaken-protocol-acp/src/lib.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/check_formal_mutations.py",
+  "docs/adr/0069-acp-capability-configuration-lifecycle.md",
+]
+proof_harnesses = [
+  "acp_prompt_admission_requires_exact_completed_handshake",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc.rs",
+  "crates/server/awaken-protocol-acp/src/jsonrpc/handshake.rs",
+  "crates/server/awaken-protocol-acp/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts all four production handshake phases and every initialize, open-session, and configure completion edge without assumptions. The exact reducer's admission predicate is true only for Configured; every skipped, repeated, or reordered edge rejects. The private Rust type boundary, rather than Kani, constructs PromptReady from that predicate. run_turn_with_config advances the same private HandshakeProgress only after the corresponding bounded future succeeds, and the only production PromptRequest construction consumes that witness.'''
+
+[[bounds]]
+text = '''The existing native cause/effect table executes the production driver across initialize, optional authentication, new, load, missing-load fallback, mode, model, and two ordered configuration options. Explicit error and silent-open timeout rows observe a terminal error, no session/prompt request, no Ready event, and no prompt-side fact; success rows retain the exact handshake then prompt order.'''
+
+[[bounds]]
+text = '''This direct proof covers the local prompt-admission typestate and its production call site. It does not prove Tokio timer accuracy or scheduling, remote-agent progress or effects, arbitrary option counts, process termination, operating-system transport, or universal Rust-to-TLA refinement. Authentication remains inside the initialize-stage deadline, and a local timeout is not evidence that an opaque provider performed no external work.'''

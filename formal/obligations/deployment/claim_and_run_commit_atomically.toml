@@ -1,0 +1,41 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/DeploymentCAS.tla",
+  "formal/tla/DeploymentCAS.cfg",
+  "formal/tla/DeploymentExecutionWorkflow.tla",
+  "formal/tla/DeploymentExecutionWorkflow.cfg",
+  "crates/contract/awaken-deployment-contract/src/lib.rs",
+  "crates/stores/awaken-session-store/src/deployments.rs",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+  "crates/server/awaken-deployment-application/src/lib.rs",
+  "crates/server/awaken-deployment-application/src/scheduler.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/pg_tests.sh",
+  "docs/design/managed-deployments.md",
+]
+production_entrypoints = [
+  "crates/stores/awaken-session-store/src/deployments.rs",
+  "crates/server/awaken-deployment-application/src/lib.rs",
+  "crates/server/awaken-deployment-application/src/scheduler.rs",
+]
+
+[[bounds]]
+text = '''DeploymentCAS checks two Deployments, two replicas and one representative scheduled occurrence through revision three; ClaimAndRunCommitAtomically requires the abstract claim and run sets to remain equal. DeploymentExecutionWorkflow separately checks one bounded occurrence from due scheduling through claim, run creation, launch and terminal state. Neither model implies a universal Rust-to-model refinement.'''
+
+[[bounds]]
+text = '''DeploymentApplication is the sole scheduling owner and DeploymentRepository::claim_scheduled_run is the sole durable claim port. The scheduler submits one stable deployment/instant claim identity, observed revision, complete successor Deployment, first DeploymentRun and lifecycle fact. It publishes and launches only after Claimed; AlreadyClaimed and StaleDeployment discard the speculative run and refresh from durable authority.'''
+
+[[bounds]]
+text = '''Both SQL adapters hold one database transaction across exact revision fencing, unique claim insertion, run insertion, complete Deployment revision update and lifecycle fact insertion. Any statement error rolls back the whole unit; a claim-id conflict returns AlreadyClaimed without publishing a successor. SQLite uses BEGIN IMMEDIATE and PostgreSQL locks the Deployment row FOR UPDATE.'''
+
+[[bounds]]
+text = '''The canonical cross-backend decision table first forces run insertion failure with a duplicate durable run id. It requires the complete Deployment and lifecycle outbox to remain unchanged, then reuses the same claim identity with a distinct run and requires Claimed plus the exact successor Deployment/run/fact tuple. It also rejects a stale replica's distinguishable Deployment/run/fact and proves that rejected claim identity remains reusable. SQLite executes through independent file connections and verifies the committed tuple plus failed-fact absence after every handle closes and a fresh connection reopens; configured PostgreSQL executes the identical table in pg_tests.sh.'''
+
+[[bounds]]
+text = '''These executions sample concrete failure points and adapter schedules; they do not prove arbitrary SQL errors, process crashes, response loss, all client counts or Tokio schedules. SQLite/PostgreSQL transaction, lock, uniqueness, rollback and durability semantics remain database TCB. A PostgreSQL test skipped because no endpoint is configured is not live PostgreSQL evidence.'''

@@ -1,0 +1,44 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/SessionRunProtocol.tla",
+  "formal/tla/SessionRunProtocol.cfg",
+  "docs/adr/0040-server-durable-ingress-integration.md",
+  "docs/adr/0075-unified-managed-session-worker-execution.md",
+  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
+  "crates/server/awaken-session-application/src/run_admission.rs",
+  "crates/server/awaken-session-application/src/tests/run_admission.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
+  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/pg_tests.sh",
+  "e2e/remote_worker_recovery_e2e.ts",
+]
+proof_harnesses = [
+  "session_run_reservation_binds_exactly_one_nonzero_activity_receipt",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
+  "crates/server/awaken-session-application/src/run_admission.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the production reservation-to-activity plan over all five SessionRunReservation variants, optional prior receipt presence and every u64 receipt value. A fresh or replayed durable reservation with no receipt is the only class that requests one activity commit; a nonzero receipt is reused exactly, zero fails closed, and RecoveryClaimed or Completed never opens an activity. The application calls this reducer only after DispatchQueue::reserve_session_run returns.'''
+
+[[bounds]]
+text = '''SessionRunProtocol.cfg checks three Runs, two Workers and epochs through 3. OpenActivity requires Reserved, while ActivityBeforeExecutableDispatch requires a positive activity epoch for every Pending, Leased, Awaiting or Removed row and ReservationCannotExecute excludes Reserved and ReservationLeased. This finite composition does not imply Rust-to-TLA refinement.'''
+
+[[bounds]]
+text = '''The existing application decision tables exercise fresh, replayed and cold-replica receipt paths through the sole SessionApplication admission owner. The shared SR0-SR10 conformance table rejects every ordinary pre-receipt admission surface and runs the same reservation/activation behavior through Memory, SQLite and PostgreSQL; check_formal.sh owns the exact Memory/SQLite bindings and the required PostgreSQL gate owns the live third binding.'''
+
+[[bounds]]
+text = '''The Kani harness proves the closed receipt plan, not asynchronous call ordering, Session repository CAS atomicity, SQL transaction isolation, process-crash schedules, or eventual activation. Those boundaries remain executable evidence or TCB.'''

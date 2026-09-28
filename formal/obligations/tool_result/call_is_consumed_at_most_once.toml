@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.exactly_once_side_effects",
+]
+evidence = [
+  "formal/tla/ToolResultProtocol.tla",
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+  "crates/runtime/awaken-runtime/src/engine/resume.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "a_tool_call_completion_is_applied_at_most_once",
+]
+production_entrypoints = [
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+  "crates/runtime/awaken-runtime/src/engine/resume.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
+]
+
+[[bounds]]
+text = '''The finite ToolResultProtocol model remains independent transition evidence; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''ToolBatch is the canonical persisted call aggregate consumed by every Runtime dispatch, resume and interruption completion path. Both executor/wait and immediate completion methods call one completion_disposition owner before changing a call phase. Exact Completed replay stutters, changed Completed replay rejects without mutation, and no Completed or Indeterminate predecessor can apply another output.'''
+
+[[bounds]]
+text = '''Kani exhausts every production call-phase class, both completion sources and exact/changed terminal replay without assumptions. The single harness completed 95 checks with zero failures under fixed Kani 0.67.0 and patched CBMC 6.8.0/CaDiCaL, -j1 and empty RUSTC_WRAPPER; the guarded run observed 29368 KiB maximum aggregate RSS and 48657916 KiB minimum available memory under 600-second and 12582912-KiB guards. The native cause/effect table cross-checks real ToolOutput equality, exact replay stutter and changed replay rejection; deleting the exact-output guard makes that table fail and the source was restored byte-for-byte.'''
+
+[[bounds]]
+text = '''This direct proof covers only the canonical ToolBatch completion transition. Runtime claim ownership, ThreadCommit and repository atomicity, process races, crash durability, async scheduling and external tool exactly-once effects remain executable evidence or database/async/external-effect TCB; the proof does not establish cross-process exactly-once delivery.'''

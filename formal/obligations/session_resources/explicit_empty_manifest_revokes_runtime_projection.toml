@@ -1,0 +1,27 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/ResourceDispatch.tla",
+  "formal/tla/ResourceDispatch.cfg",
+  "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
+  "crates/server/awaken-session-executor/src/managed_resource_projection/transition.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/tests.rs",
+  "crates/server/awaken-session-executor/src/host/tests.rs",
+]
+proof_harnesses = [
+  "explicit_empty_resource_manifest_revokes_without_activation",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
+  "crates/server/awaken-session-executor/src/managed_resource_projection/transition.rs",
+]
+
+[[bounds]]
+text = '''Kani exhaustively checks the production live-projection classifier across generation equality and every input/Skill presence combination. A changed explicit empty manifest selects revocation, removes the previous projection, and selects no desired activation; unchanged generations retain and changed nonempty generations replace.'''
+
+[[bounds]]
+text = '''Runtime Host decision-table and Linux namespace integration tests exercise the canonical aggregate transition through logical mount, prompt, binding, Repository, Memory, Skill and cached-context replacement plus physical File and delivered-Skill removal. The scalar proof does not establish arbitrary Vec/String equality, Environment transaction correctness, filesystem/provider deletion, manifest publication atomicity, asynchronous cancellation, or crash recovery.'''

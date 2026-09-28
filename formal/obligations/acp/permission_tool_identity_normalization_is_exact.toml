@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.mcp_busy_acp_revocation_propagation_and_process_termination",
+]
+evidence = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
+  "crates/server/awaken-run-executor-acp/src/lib.rs",
+  "crates/server/awaken-run-executor-acp/src/tests.rs",
+]
+proof_harnesses = [
+  "acp_permission_tool_identity_normalization_is_exact",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
+  "crates/server/awaken-run-executor-acp/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts present/absent and equal/unequal requested and observed scalar identities without assumptions. The production-generic selector admits Observed only for one exact nonempty match and otherwise retains Raw.'''
+
+[[bounds]]
+text = '''PermissionContext and permission_ask consume that selector. Native tables cross String identities, complete or absent JSON rawInput, explicit MCP names, alias titles and mismatched envelopes. Kani does not prove serde_json allocation, arbitrary String implementation, external peer honesty or executor effects.'''

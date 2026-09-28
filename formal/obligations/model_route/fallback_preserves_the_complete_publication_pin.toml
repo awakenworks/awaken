@@ -1,0 +1,28 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/InferenceAccessPublication.tla",
+  "crates/contract/awaken-runtime-contract/src/model_routing.rs",
+  "crates/contract/awaken-runtime-contract/src/resolved.rs",
+  "crates/server/awaken-credential-materializer/src/inference.rs",
+  "crates/server/awaken-session-executor/src/host/completion.rs",
+]
+proof_harnesses = [
+  "fallback_selection_preserves_the_complete_publication_pin",
+  "every_route_pin_axis_participates_in_exact_identity",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/model_routing.rs",
+  "crates/contract/awaken-runtime-contract/src/resolved.rs",
+  "crates/server/awaken-credential-materializer/src/inference.rs",
+  "crates/server/awaken-session-executor/src/host/completion.rs",
+]
+
+[[bounds]]
+text = '''The linked bounded TLA+ model checks publication immutability across route updates. The named Kani harnesses prove that the production selector returns only an address-identical primary or fallback and that all four complete route identity axes are mandatory. Publication construction, collection memory safety, asynchronous materialization, and host execution remain runtime TCB.'''

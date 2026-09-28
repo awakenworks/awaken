@@ -1,0 +1,40 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteWorkerProtocol.tla",
+  "crates/contract/awaken-runtime-contract/src/terminal.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
+  "crates/server/awaken-dispatch/src/worker/tests.rs",
+  "crates/server/awaken-dispatch/src/recovery_projection.rs",
+  "crates/server/awaken-dispatch/tests/crash_before_settle.rs",
+  "crates/server/awaken-dispatch/tests/worker_edge_cases.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+]
+proof_harnesses = [
+  "pending_signal_is_deliverable_only_without_consuming_commit",
+  "committed_terminal_projection_admits_only_exact_ended_identity",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/terminal.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
+  "crates/server/awaken-dispatch/src/recovery_projection.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+]
+
+[[bounds]]
+text = '''One production classifier now owns fresh, awaiting and recovered input admission. Kani exhausts terminal truth, ticket presence, correlation equality and unbound-input classes: terminal truth, stale correlations and orphan bound signals cannot be delivered again; only an exact current ticket or a fresh unbound input remains executable. The existing terminal projection kernel separately proves that only exact Ended Run/Thread truth enters terminal repair.'''
+
+[[bounds]]
+text = '''Consumption is logical at the committed Run/ticket boundary, as specified by ADR-0010: physical pending-row deletion remains in the existing exact-epoch settlement transaction rather than a cross-store two-phase commit. Crash-before-settle, stale-correlation and committed-transcript tests establish redelivery/no-loss behavior. Reader correctness, backend isolation/durability, async scheduling and network delivery remain executable or external TCB evidence; this is not a universal Rust-to-TLA refinement.'''

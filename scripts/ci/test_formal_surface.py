@@ -92,7 +92,7 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
             policy = "crates/runtime/example/src/policy.rs"
             (root / policy).write_text("fn authorize() {}")
             MODULE.formal_ledger.write(root, {"obligations": [{
-                "id": "example", "status": "model_linked", "evidence": [policy],
+                "id": "example.policy", "status": "model_linked", "evidence": [policy],
             }]})
             features = root / "features.json"
             features.write_text('{"features":[]}')
@@ -111,7 +111,7 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
                 MODULE.main()
                 classifications = root / "classifications.json"
                 classifications.write_text(json.dumps({"version": 1, "classifications": [{
-                    "path": policy, "obligation_ids": ["example"], "reason": "redundant owner",
+                    "path": policy, "obligation_ids": ["example.policy"], "reason": "redundant owner",
                 }]}))
                 message = io.StringIO()
                 with contextlib.redirect_stderr(message), self.assertRaises(SystemExit) as error:

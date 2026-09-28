@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionEnvironmentProjection.tla",
+  "formal/tla/SessionEnvironmentProjection.cfg",
+  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle.rs",
+  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",
+  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/tests.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/projection_synchronizer.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization.rs",
+  "scripts/ci/check_formal_mutations.py",
+]
+proof_harnesses = [
+  "closed_environment_recovery_consumes_only_rebuildable_owner_classes",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle.rs",
+  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/projection_synchronizer.rs",
+]
+
+[[bounds]]
+text = '''Finite projection model exhausts exact-owner, closed-observation, rebuild-policy and retirement-cause decisions. Provider observation truth, Rust Arc identity, lifecycle locking and aggregate Rebuild remain outside this model proof.'''
+
+[[bounds]]
+text = '''Resident synchronization independently quantifies closed/ready physical evidence and continuity/rebuild policy and must invoke the existing owner recovery transition. The actual driver test cold_worker_adopts_the_frozen_environment_before_recovering_stdio_mcp R9/R10 crosses cached/evicted Runtime, removes the exact physical root, and checks policy rejection, new binding and Ready Arc reuse. The negative TLC control restores the resident bypass. This is a model link plus executed integration tests, not a full asynchronous Rust refinement or a guarantee against failure after observation.'''
+
+[[bounds]]
+text = '''Current production recovery validates closed provider evidence, captures RealizationRevocation separately, and later consumes the owner through confirm_terminated; protected Terminal/Checkpoint rejection and exact Arc/identity checks are distributed across adoption validation and the lifecycle state machine. Existing Kani identity harnesses do not call that composed path. Direct qualification requires one typed production recovery plan that jointly carries closed observation, rebuild policy, retirement cause and exact owner fence into Consume/Retain, with a harness over every owner class; a Boolean proxy would not prove the obligation.'''
+
+[[bounds]]
+text = '''The sole production lifecycle writer mints a typed recovery plan only after the provider validates the exact closed observation. The plan carries the exact captured Revocation, RecoveryDiscard, Resident, pending-adoption, or Vacant owner through Consume; Reject policy and protected or stale owners produce Retain. Kani exhausts both policies and every owner class, while production exact_matches, Arc identity plus handle, and pending identity plus binding checks prevent an ABA or protected Terminal/Checkpoint retirement from entering Consume.'''
+
+[[bounds]]
+text = '''Provider observation truth, lifecycle-lock correctness, aggregate Rebuild persistence, and asynchronous cancellation after the exact local consumption remain executable or external evidence rather than universal Rust refinement.'''

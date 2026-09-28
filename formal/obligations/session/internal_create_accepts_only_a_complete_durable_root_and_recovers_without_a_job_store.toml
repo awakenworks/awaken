@@ -1,0 +1,61 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/SessionStartProtocol.tla",
+  "formal/tla/SessionStartProtocol.cfg",
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/server/awaken-session-application/src/realization.rs",
+  "crates/server/awaken-protocol-awaken/src/profiled_sessions.rs",
+  "crates/server/awaken-protocol-managed/src/types/session.rs",
+  "formal/tla/SessionStartRootProof.tla",
+  "formal/tla/SessionStartProtocolReachability.cfg",
+  "crates/server/awaken-session-application/src/tests/creation.rs",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/execution_state.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+  "crates/server/awaken-session-application/src/mutation.rs",
+  "crates/stores/awaken-session-store/src/sqlite.rs",
+  "crates/stores/awaken-session-store/src/postgres.rs",
+]
+proof_harnesses = [
+  "only_an_applied_awaited_create_may_enter_post_create_effects",
+  "nonterminal_control_failures_only_replay_the_durable_create_root",
+  "initial_realization_recovery_is_exact_for_every_execution_state",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/server/awaken-session-application/src/realization.rs",
+  "crates/server/awaken-protocol-awaken/src/profiled_sessions.rs",
+  "crates/server/awaken-protocol-managed/src/types/session.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/execution_state.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+  "crates/server/awaken-session-application/src/mutation.rs",
+  "crates/stores/awaken-session-store/src/sqlite.rs",
+  "crates/stores/awaken-session-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''SessionStartRootProof reuses the exact canonical SessionRootProof instance and proves acceptance implies a complete durable root, accepted activation failure remains queryable, complete root precedes projections, and Work row/root authority agree over unbounded abstract traces. It does not prove all Event/Work safety or recovery liveness.'''
+
+[[bounds]]
+text = '''The original SessionStartProtocol safety configuration checks two workers, MaxRevision 4, MaxEpoch 3, MaxHeartbeat 1 and MaxTime 2; the original fault-free reachability configuration checks eventual settlement under its weak-fairness assumption. Four semantic mutants and four positive witnesses qualify the root-authority invariants without narrowing these configurations.'''
+
+[[bounds]]
+text = '''The application test executes four file-SQLite cold-reopen histories: initial batch absent/present crossed with first recovery scan success/failure. It checks complete durable root/owner/create receipt, original ordered events and wake, supervisor-only local recovery, exact replay and root/outbox/runtime frames. The existing process-crash time-assurance test remains separate evidence. Arbitrary SQL histories, external realization schedules and universal Rust-to-model refinement remain outside the proof.'''
+
+[[bounds]]
+text = '''Existing production Kani exhausts the repository receipt/completion-mode gate and realization failure disposition: only Applied+Await enters post-create effects, exact replay returns durable truth, AcceptDurableRoot returns immediately, and nonterminal control failures replay the durable root and wake the lifecycle supervisor.'''
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The sole production compiler now consumes SessionCreationIntent, Resource/MCP inputs and the optional initial Event plan into a private CompleteSessionRoot before the root-insert method can be called. That typed method alone timestamps and submits the root; Applied and Replayed repository receipts are revalidated as Frozen durable truth before either acceptance classifier can return them. The lifecycle reconciler reloads each candidate through the same durable-root completeness check before any realization effect, so an unconsumed Preparing baseline cannot enter either create acceptance or recovery.'''
+
+[[bounds]]
+text = '''The production PersistedSession reconciliation union directly consumes SessionExecutionState::requires_initial_realization_recovery. Kani exhausts all seven execution variants and proves exactly Preparing/Activating retain this cause; the existing receipt harnesses exhaust Applied/Replayed x await/accept and failure disposition. SQLite/PostgreSQL synchronize the same reconciliation index inside the root/receipt transaction, and a cause/effect application test restarts with a local accepted root carrying no Resource, MCP, Event or Work cause and recovers it through the sole scan. Database durability/isolation and asynchronous scheduling/fairness remain explicit TCB rather than properties inferred from the value proofs.'''

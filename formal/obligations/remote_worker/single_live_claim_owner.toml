@@ -1,0 +1,50 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteWorkerProtocol.tla",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/claim.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+  "crates/server/awaken-dispatch/src/commit_fence.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+  "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
+  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+]
+proof_harnesses = [
+  "dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows",
+  "commit_epoch_guard_admits_only_complete_exact_claim",
+  "physical_attempt_slot_installs_and_clears_only_exact_authority",
+  "physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/claim.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+  "crates/server/awaken-dispatch/src/commit_fence.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+]
+
+[[bounds]]
+text = '''The existing dispatch transition kernel is the sole executable lease transition and Kani exhausts every durable state and u64 epoch: each runnable claim advances exactly once to Leased, exhaustion fails closed, and reserved or terminal rows cannot reopen. The existing commit and physical-attempt kernels exhaust complete owner/epoch presence and equality, reject torn authority, and prevent another owner from installing or clearing the exact physical slot.'''
+
+[[bounds]]
+text = '''Memory, SQLite and PostgreSQL claim adapters already apply that same transition while holding their one row or aggregate lock and atomically persist one owner with the returned epoch; backend conformance covers competing claimers and stale epochs. Kani proves the shared production decisions, not database/mutex isolation, owner String equality, HTTP delivery, crash durability, or universal async scheduling; those remain executable evidence or TCB.'''

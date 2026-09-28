@@ -1,0 +1,53 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionStartProtocol.tla",
+  "formal/tla/SessionStartProtocolReachability.cfg",
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/server/awaken-session-application/src/event_batches.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+  "crates/server/awaken-session-application/src/activity.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/contract/awaken-session-event-contract/src/lib.rs",
+  "crates/contract/awaken-session-event-contract/src/dispatch_settlement.rs",
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/server/awaken-session-application/src/tests/event_batches.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+]
+proof_harnesses = [
+  "initial_event_plan_is_installed_only_on_the_complete_fresh_root",
+  "session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed",
+  "exact_dispatch_settlement_is_terminal_or_awaiting_only",
+  "user_event_processing_requires_exact_applied_dispatch_and_activity_settlement",
+  "retained_input_idling_is_exactly_settled_or_only_blocked_users",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/server/awaken-session-application/src/event_batches.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+  "crates/server/awaken-session-application/src/activity.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/contract/awaken-session-event-contract/src/lib.rs",
+  "crates/contract/awaken-session-event-contract/src/dispatch_settlement.rs",
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''Production kernels prove the initial batch and wake epoch share the first root coordinate, only the final exact active epoch can select Idle, and Dispatch settlement requires the exact leased claim plus an empty physical slot. The bounded SessionStartProtocol composes the intended create-to-processed path.'''
+
+[[bounds]]
+text = '''The initial-plan kernel keeps the batch and wake activity in the fresh root. The extended production settlement kernel proves Running can close only when the exact post-Dispatch User receipt applies, its activity was removed, it was the final active epoch and every retained Event is processed. The aggregate consumes those facts after atomically marking the exact User plus its paired System input; multi-User tests prove an intermediate settled Run remains Running and the final fully settled root becomes Idle.'''
+
+[[bounds]]
+text = '''Kani proves the finite production decisions, not a universal Tokio or database refinement. Dispatch CAS/durability, Session CAS/serialization, Thread recovery consistency, wake delivery, process crash between stores, clocks and runtime scheduling remain TCB. Interrupted post-Dispatch publication fails safe by retaining Running/pending state; eventual retry/reconciliation remains a liveness obligation outside this repository-safety grade.'''
+
+[[bounds]]
+text = '''The input-actionability fact that gates closure is now a named production kernel (session_inputs_allow_idle) whose per-Event rule and command classification are proved by retained_input_idling_is_exactly_settled_or_only_blocked_users: any processed Event is inert; a pending ordinary User is inert in every position; a pending System is inert exactly while the User whose reservation froze it is still pending; every other pending kind blocks. All five command variants are checked against the class each maps to, over values of the real type. What stays outside: the fold that applies the rule -- Iterator::all over one batch's entries and over a Session's batches, disjoined with all_events_processed -- because a non-empty Vec<SessionEventEntry> does not complete under Kani in this crate (one bare command verifies in 0.15s; the same command inside one Vec does not finish in 400s), the same wall terminal_batch_resolution_empty documents. The fold is covered by the executable decision tables in the module and in crate::tests::event_batches.'''

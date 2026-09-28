@@ -1,0 +1,26 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/BackgroundTask.tla",
+  "formal/tla/BackgroundTask.cfg",
+  "crates/runtime/awaken-ext-background-task/src/model.rs",
+  "crates/runtime/awaken-ext-background-task/src/supervisor.rs",
+  "crates/server/awaken-session-executor/src/background_task/ownership.rs",
+  "crates/runtime/awaken-ext-background-task/tests/state_machine.rs",
+]
+proof_harnesses = [
+  "background_execution_admission_is_exact_fenced_live_and_phase_monotone",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-ext-background-task/src/model.rs",
+  "crates/runtime/awaken-ext-background-task/src/supervisor.rs",
+  "crates/server/awaken-session-executor/src/background_task/ownership.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The production execution-admission decision is Kani-checked for all phase pairs, identity/remote predicates and u64 times/deadlines. Host rechecks live local committed state after concurrency admission; read-to-network atomicity, in-flight revocation and whole-driver refinement remain unproved, so the aggregate obligation stays abstract-model grade.'''

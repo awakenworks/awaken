@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/AgentMessageProtocol.tla",
+  "formal/tla/AgentMessageProtocol.cfg",
+  "formal/tla/AgentMessageProtocolEarlyReceipt.cfg",
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/server/awaken-session-application/src/tests/authority.rs",
+  "crates/contract/awaken-session-execution-contract/src/coordination.rs",
+]
+proof_harnesses = [
+  "session_agent_boundary_requires_a_visible_committed_target",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/contract/awaken-session-execution-contract/src/coordination.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''Production settlement classifies the exact committed target Run boundary and retains the activity through report continuation; application tests cover early source receipt and target completion orderings.'''
+
+[[bounds]]
+text = '''The claim requires async lifecycle observation, usage reconciliation, continuation Dispatch and Session-root activity settlement across owners. The local RunState classifier cannot prove those effects, so no scalar Kani extraction is treated as system atomicity.'''
+
+[[bounds]]
+text = '''Kani exhausts the five settlement classes produced by the canonical RunState classifier together with target visibility, child/primary role, cancellation and committed-report presence; grouped EndCause payloads share one exhaustive Rust match arm. It proves only a visible committed target boundary selects settle, interrupt-then-settle or report continuation; source receipt is deliberately not an input. SessionApplication calls this plan before usage reconciliation, continuation admission or the root activity CAS.'''
+
+[[bounds]]
+text = '''Lifecycle-feed and recovery-snapshot extraction, usage reconciliation, continuation Dispatch, repository CAS, SQL atomicity and async ordering remain TCB/executable evidence. The production plan proves which target fact authorizes the effects; it does not claim those cross-owner effects are one database transaction.'''

@@ -1,0 +1,31 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/StoreHistory.tla",
+  "formal/tla/StoreHistory.cfg",
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+]
+proof_harnesses = [
+  "operation_append_requires_exact_prefix_and_nonwrapping_version",
+]
+production_entrypoints = [
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The contract-owned append admission used by every store accepts exactly the current Thread version and returns its single checked successor. Kani proves the full u64 version and run-ordinal domain. Concurrent contenders are serialized by the in-memory mutex, SQLite Immediate transaction, or PostgreSQL per-Thread advisory transaction lock, so after one accepted successor the other contender's same expected version is rejected. Lock and transaction linearizability, database behavior and process failure remain TCB; the conformance race executes the two-contender effect table.'''

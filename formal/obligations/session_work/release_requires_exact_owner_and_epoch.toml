@@ -1,0 +1,45 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/WorkQueueProof.tla",
+  "formal/tla/SessionRunProtocol.tla",
+  "formal/tla/SessionStartProtocol.tla",
+  "crates/contract/awaken-session-work-contract/src/lib.rs",
+  "crates/stores/awaken-work-store/src/lib.rs",
+  "crates/stores/awaken-work-store/src/inmem.rs",
+  "crates/stores/awaken-work-store/tests/work_queue_conformance.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+  "crates/stores/awaken-work-store/src/inmem/loom_tests.rs",
+  "scripts/ci/check_formal.sh",
+  "formal/tla/WorkQueue.tla",
+  "formal/tla/WorkQueue.cfg",
+  "scripts/ci/check_formal_mutations.py",
+]
+proof_harnesses = [
+  "session_work_release_requires_exact_owner_and_epoch",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-work-contract/src/lib.rs",
+  "crates/stores/awaken-work-store/src/lib.rs",
+  "crates/stores/awaken-work-store/src/inmem.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+]
+
+[[bounds]]
+text = '''Parameterized abstract TLAPS lemmas prove that every existing WorkQueueKernel Stop effect binds the exact request owner and epoch, mismatched owner/epoch allows only unchanged authority, and an exact Stop clears only the addressed row while retaining its epoch. TLC checks the original 3-item/2-worker/MaxEpoch=3/MaxHeartbeat=2/MaxTime=4 model; deleting either request guard is killed by the precise action property. A reachable legal Stop and enabled unlabeled Stopped stutter prevent vacuous boundary claims. The model has no accepted replay request or bool response, so it does not prove the production Stopped/same-epoch replay result or Rust/SQL refinement.'''
+
+[[bounds]]
+text = '''The test-support in-memory WorkQueue now holds its existing Work rows, token digests and LeaseBook inside one aggregate mutex for complete commands and snapshots. Four real-port Loom scenarios with two competing threads and at most two preemptions cover release/wake/reacquire, token authentication/reclaim, owner teardown/reclaim and renewal/reclaim. The prior implementation fails both release and token-authentication scenarios. This is bounded reference-adapter concurrency evidence, not proof of SQL isolation, arbitrary schedules, token entropy or whole-queue implementation refinement; the abstract theorem grade is unchanged.'''
+
+[[bounds]]
+text = '''The existing trait-generic conformance suite runs against in-memory, SQLite and PostgreSQL: independently altering owner, epoch, Work id, Environment id or Session id rejects release without changing the complete Work projection or current lease; exact release clears authority; same-epoch Stopped replay, including a different owner, returns true without effects. These executed adapter cases cross-check the abstract owner/epoch boundary but are not a proof over arbitrary SQL histories or all production inputs.'''
+
+[[bounds]]
+text = '''All three WorkQueue adapters call the same production release admission over exact Work/Environment/Session identity, Active/Stopped state, owner, epoch, and cleared-authority facts. Kani exhausts the valid state partition and proves Apply requires exact active owner plus epoch; idempotent success requires the exact stopped epoch and cleared authority. SQLite uses one Immediate transaction, PostgreSQL uses SELECT FOR UPDATE plus mutation in one transaction, and the reference adapter obtains owner, epoch and lease presence from one LeaseBook snapshot.'''
+
+[[bounds]]
+text = '''Database and mutex linearizability, caller authentication, and universal async refinement remain outside the kernel proof.'''

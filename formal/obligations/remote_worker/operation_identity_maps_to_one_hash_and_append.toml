@@ -1,0 +1,41 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteWorkerProtocol.tla",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/server/awaken-session-executor/src/commit_ingest.rs",
+  "crates/contract/awaken-agent-contract/src/fingerprint.rs",
+  "scripts/ci/formal_kani_options.py",
+  "scripts/ci/test_formal_profile.py",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "operation_identity_replays_only_the_same_run_and_payload",
+  "operation_append_requires_exact_prefix_and_nonwrapping_version",
+  "sha256_hex_output_preserves_every_digest_byte",
+]
+production_entrypoints = [
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/server/awaken-session-executor/src/commit_ingest.rs",
+]
+
+[[bounds]]
+text = '''The contract-owned production admission kernel used by every commit-store adapter accepts replay only for the same Run identity and payload hash, and admits a new append only at the exact Thread version and Run ordinal with a nonwrapping successor version. Kani proves the complete scalar decision domains. Canonical serialization and hashing are executable contract evidence; backend locks, transaction durability, sequence allocation, transition validation, and readback remain executable backend evidence.'''
+
+[[bounds]]
+text = '''An auxiliary Kani proof checks the final SHA digest encoding used by commit_payload_hash -> canonical_json_sha256: every unconstrained [u8;32] becomes the exact sha256: prefix and sixty-four lowercase digits, decoded independently back to all original bytes. The actual safe byte buffer, encode_to_slice length check, String UTF-8 check and normal allocation/Drop remain in the proof. The checked fingerprint-sha256-hex-v1 profile fixes independently qualified CaDiCaL, global unwind 66 and UTF-8/align bounds 5/17/9/5; all default safety and unwinding assertions stay enabled. Native historical formatting and independent framed SHA vectors cross-check wire compatibility and retain serialization failure behavior. This proves only fixed-width digest encoding, not SHA-256, canonical JSON/framing over arbitrary values, collision resistance, complete commit identity or backend transaction refinement; the row grade is unchanged.'''

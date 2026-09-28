@@ -1,0 +1,26 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.performance_and_long_run_stability",
+]
+evidence = [
+  "formal/tla/AggregateCAS.tla",
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
+  "crates/stores/awaken-data-subject-store/src/postgres.rs",
+]
+proof_harnesses = [
+  "revision_advance_is_strict_or_explicitly_exhausted",
+]
+production_entrypoints = [
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
+  "crates/stores/awaken-data-subject-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''The existing production revision successor is the sole arithmetic owner used before DataSubject aggregate compare-and-swap. Kani exhausts every u64 current revision: a successor exists only as current + 1 and is strictly greater, while u64::MAX returns explicit exhaustion instead of wrapping or saturating. The harness already owns the narrower strict-or-exhausted obligation and is reused here rather than duplicating the kernel or proof.'''
+
+[[bounds]]
+text = '''This scalar production-kernel proof establishes monotonic candidate revision arithmetic only. It does not prove repository current-row comparison, SQL predicate evaluation, serialization, transaction isolation, durability, retry scheduling, or that a stale writer cannot apply; those remain covered by the linked AggregateCAS model, backend conformance tests, and external database assumptions, and the stale-writer obligation retains its abstract grade.'''

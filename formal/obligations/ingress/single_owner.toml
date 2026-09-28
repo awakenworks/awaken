@@ -1,0 +1,46 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/RunIngressKernel.tla",
+  "formal/tla/RunIngress.tla",
+  "formal/tla/RunIngress.cfg",
+  "docs/adr/0009-durable-run-ingress-slice.md",
+  "docs/adr/0019-distributed-dispatch-and-wake-signal.md",
+  "docs/adr/0022-epoch-supersession.md",
+  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/claim.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-dispatch-testkit/src/conformance/operations_claims.rs",
+  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/pg_tests.sh",
+]
+proof_harnesses = [
+  "dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
+  "crates/server/awaken-dispatch/src/postgres/claim.rs",
+]
+
+[[bounds]]
+text = '''The assumption-free Kani harness exhausts every production DispatchState, cancellation bit and u64 epoch in the canonical DispatchTransition::claim reducer. An ordinary runnable row produces exactly one Leased transition at epoch+1; excluded reservation and closed states produce no claim, and u64::MAX fails closed. The proof covers this pure transition kernel, not adapter serialization or a universal Rust-to-TLA refinement.'''
+
+[[bounds]]
+text = '''RunIngress.cfg finitely checks the same one-row ownership invariants with two owners and MaxEpoch=4. The shared conformance table executes fresh, live-boundary and strictly expired claims through Memory, SQLite and live PostgreSQL; a separate PostgreSQL cross-connection race requires one winner for same-Thread pending work, and the required PostgreSQL gate runs the complete ingress suite.'''
+
+[[bounds]]
+text = '''The Memory mutex, SQLite immediate transaction, PostgreSQL row/advisory locks, SKIP LOCKED selection and unique constraints atomically install the owner, epoch, expiry and frozen bindings. Their database isolation, driver decoding, async scheduling and arbitrary cross-process interleavings remain TCB or executable evidence rather than production-kernel proof.'''

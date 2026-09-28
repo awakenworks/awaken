@@ -1,0 +1,28 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionResourceActivation.tla",
+  "formal/tla/SessionResourceActivation.cfg",
+  "crates/server/awaken-session-application/src/realization/control.rs",
+  "crates/server/awaken-session-application/src/tests/realization.rs",
+  "crates/server/awaken-session-executor/src/application.rs",
+  "crates/server/awaken-session-application/src/projection.rs",
+  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
+]
+proof_harnesses = [
+  "terminal_resource_projection_retains_the_exact_desired_generation",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/realization/control.rs",
+  "crates/server/awaken-session-executor/src/application.rs",
+  "crates/server/awaken-session-application/src/projection.rs",
+  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
+]
+
+[[bounds]]
+text = '''Three issued revisions, active and pending staging, rollback, termination, complete terminal projection, and receipt-gated release. Fifteen SQLite close/reopen adapter cases cover the original six active/pending combinations plus committed File, Skill-only and empty generations after two rollbacks crossed with absent, unattempted and attempted pending replacement. Histories use real aggregate commands while Idle, then the terminal transition and one durable write/reopen; earlier rollbacks are not individually SQL-committed. Independent historical revision/manifest expectations and complete-root noninterference checks qualify the real terminal adapter; actual active-only and attempted-watermark Rust mutations are rejected. The existing warm/cold Host decision table remains complementary evidence, not universal Rust-to-model refinement. Physical receipts, manifest byte equality, leases, and provider late-create closure are outside this bounded model; conditional liveness assumes fair recovery and eventual verified receipt.'''
+
+[[bounds]]
+text = '''Kani exhausts the production active-versus-pending desired-generation selector used by frozen_session_projection and therefore terminal_cleanup_assignment_from_snapshot. Manifest equality, async resolution, lease issuance, and physical receipts remain outside this scalar proof.'''

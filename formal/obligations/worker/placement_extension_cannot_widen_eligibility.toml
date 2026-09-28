@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/WorkerReplacement.tla",
+  "crates/contract/awaken-worker-contract/src/placement.rs",
+  "crates/contract/awaken-worker-contract/src/lib.rs",
+  "crates/server/awaken-dispatch/tests/any_store.rs",
+]
+proof_harnesses = [
+  "placement_extension_admits_only_allowed_unique_identity",
+]
+production_entrypoints = [
+  "crates/contract/awaken-worker-contract/src/placement.rs",
+]
+
+[[bounds]]
+text = '''The closed production ranking-result admission domain over allowed-set membership and per-ranking-call uniqueness; HashSet membership, identity equality and the extension implementation remain runtime TCB, while every returned identity crosses this kernel before selection.'''

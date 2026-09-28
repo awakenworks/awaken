@@ -1,0 +1,42 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "e2e/managed_memory_extraction_crash_e2e.mjs",
+  "formal/tla/MemoryExtraction.tla",
+  "formal/tla/MemoryExtraction.cfg",
+  "scripts/ci/formal_memory_mutations.py",
+  "crates/runtime/awaken-ext-memory/src/extraction.rs",
+  "crates/runtime/awaken-ext-memory/src/extraction/types.rs",
+  "crates/runtime/awaken-ext-memory/src/extraction/controller.rs",
+  "crates/server/awaken-session-executor/src/memory.rs",
+  "crates/stores/awaken-session-store/src/extraction.rs",
+]
+proof_harnesses = [
+  "memory_extraction_unknown_is_terminal_and_never_retryable",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-ext-memory/src/extraction.rs",
+  "crates/runtime/awaken-ext-memory/src/extraction/types.rs",
+  "crates/runtime/awaken-ext-memory/src/extraction/controller.rs",
+  "crates/server/awaken-session-executor/src/memory.rs",
+  "crates/stores/awaken-session-store/src/extraction.rs",
+]
+
+[[bounds]]
+text = '''One stable auxiliary Run and at most two extraction claims. Five semantic mutants and two reachability witnesses check that crash recovery re-observes the same Run and that a typed unknown becomes a non-recoverable terminal without fabricated mutations, receipts, Run replacement or later invocation.'''
+
+[[bounds]]
+text = '''The controller consumes one production failure-action owner before changing the intent: every typed execution-indeterminate failure selects the distinct attention terminal for every u32 attempt and maximum pair, while only an in-budget Retryable selects Retry. MemoryExtractionStatus is the sole terminal/recoverable and storage-name owner; claim admission and both SQLite/PostgreSQL recovery queries consume its fail-closed positive recoverable set.'''
+
+[[bounds]]
+text = '''Kani exhausts all three failure classes, every u32 attempts/max pair and all seven closed statuses with no user assumptions or stubs. The fixed Kani 0.67/CBMC CaDiCaL run completes one harness with 202 checks, 200 successful, two library/compiler unreachable and zero failures in 24.42 seconds at 561792 KiB peak RSS under the 600-second, 12-GiB RSS and 12-GiB available-memory guards with -j1 and RUSTC_WRAPPER empty.'''
+
+[[bounds]]
+text = '''Native controller and SQLite-reopen decision tables cover exact terminal diagnostics, one extractor call, durable stable Run identity and exclusion from recovery. Exact source mutants that route indeterminate to Retry or bind it into the SQL recoverable set fail those tests and are restored byte-for-byte.'''
+
+[[bounds]]
+text = '''Runtime observation honesty, controller Future scheduling, repository CAS/lease and SQL interpretation, transaction isolation, durability/crash behavior, provider effects, operator resolution and unconditional liveness remain outside the direct kernel proof.'''

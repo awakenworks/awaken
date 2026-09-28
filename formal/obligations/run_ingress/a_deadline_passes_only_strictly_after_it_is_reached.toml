@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/clock.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/model.rs",
+]
+proof_harnesses = [
+  "a_deadline_passes_only_strictly_after_it_is_reached",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/clock.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the production deadline_has_passed kernel over every Option<u64> deadline and u64 now. The comparison is exclusive, so a lease minted for a non-zero duration is never already expired, and an absent deadline never passes. The SQL query predicates that select expired rows in bulk restate this rule in SQL and are covered by the executable conformance suite, not by this proof.'''

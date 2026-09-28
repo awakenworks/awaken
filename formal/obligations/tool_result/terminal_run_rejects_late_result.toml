@@ -1,0 +1,51 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/ToolResultProtocol.tla",
+  "formal/tla/ToolResultProtocol.cfg",
+  "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/recovery/selection_tests.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
+  "crates/contract/awaken-runtime-contract/src/terminal.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
+  "crates/contract/awaken-agent-contract/src/agent/run.rs",
+  "scripts/ci/formal_event_batch_mutations.py",
+]
+proof_harnesses = [
+  "managed_ticket_admission_preserves_terminal_and_identity_priority",
+  "pending_signal_is_deliverable_only_without_consuming_commit",
+  "committed_terminal_projection_admits_only_exact_ended_identity",
+  "ended_is_absorbing_for_every_next_state",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
+  "crates/contract/awaken-runtime-contract/src/terminal.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
+  "crates/contract/awaken-agent-contract/src/agent/run.rs",
+]
+
+[[bounds]]
+text = '''The sole private production pending_ticket_admission consumes the current RunState, real expected Run/Thread identities and the existing snapshot lookup observation. It reuses validate_resume_ticket_owner, prioritizes explicit Running/Ended over absent/duplicate/corrupt tickets, preserves exact-ticket admission for unknown legacy state, and returns typed decisions to the original repair/error/Pending paths.'''
+
+[[bounds]]
+text = '''Direct Kani exhausts 132 classes: eleven lifecycle/failure/unknown classes (Running, Awaiting, all eight closed EndCause/Failure classes, and unknown legacy) x absent/multiple/one ticket x exact/foreign Run and Thread identities. Total modulo maps cover every u8 input without user assumptions. Canonical Kani 0.67/nightly-2026-05-01, fixed CaDiCaL, global unwind16, zero loop overrides and all safety/unwinding checks pass 993 checks: 982 SUCCESS, 11 UNREACHABLE, zero failures.'''
+
+[[bounds]]
+text = '''The bounded identity alphabet uses real owned one-byte exact/foreign Strings and a real borrowed ResumeTicket with ClientExecution target, Null arguments and empty terminal-detail Strings; allocation and Drop remain in the proof. Arbitrary-length identity strings, nonempty payloads, other target decoding and the whole recovery snapshot are not inferred from this kernel.'''
+
+[[bounds]]
+text = '''Native cross-checks preserve the separate 160-row current/old snapshot decision table (all closed states, latest/claimed selection, Run order and ticket presence), plus legacy missing-ticket/audit and error-priority cases. Sixteen actual send_events cases cross all eight terminal/failure classes with absent/residual ticket: a new key rejects without root/transcript/Runtime-delivery mutation; the exact retained key/body replays the original receipt with no recovery read. Removing the production Ended guard is killed by the 132-class kernel table, the 160-row snapshot table and the actual send_events frame test.'''
+
+[[bounds]]
+text = '''The same ToolResultProtocol complete finite CFG passes terminal ticket-coordinate clearing, post-terminal consumption/receipt action frames and exact-receipt replay enablement: 841181 generated states, 55096 distinct states, depth14. The sole mutation runner qualifies seven model mutants and four reachable witnesses, including terminal clearing, post-terminal consumption and a retained receipt after End. This is independent model evidence, not a Rust-to-model transition refinement.'''
+
+[[bounds]]
+text = '''Existing Worker pending-signal/terminal-projection and RunState absorption kernels remain their original authorities. Runtime ticket acquisition, arbitrary recovery histories, SQL snapshot/commit atomicity, asynchronous settlement, concurrency between admission and terminal commit, external execution effects and distributed delivery remain outside this local kernel proof. Native protocol fixtures establish the stated finite effect frames, not universal backend refinement.'''

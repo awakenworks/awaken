@@ -1,0 +1,60 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/Delegation.tla",
+  "formal/tla/Delegation.cfg",
+  "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
+  "crates/server/awaken-dispatch/src/postgres/claim.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-session-executor/src/agent_runner.rs",
+  "crates/server/awaken-session-executor/src/agent_runner/child_execution.rs",
+  "crates/server/awaken-session-executor/src/agent_runner/child_attempt.rs",
+  "crates/server/awaken-session-executor/src/agent_runner/child_dispatch.rs",
+  "crates/server/awaken-session-executor/src/coordination.rs",
+  "crates/server/awaken-dispatch-testkit/src/conformance/operations_claims.rs",
+  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
+  "scripts/ci/check_formal.sh",
+  "formal/VERIFICATION_BOUNDARIES.md",
+]
+proof_harnesses = [
+  "dispatch_admission_shape_keeps_child_affinity_independent",
+  "dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows",
+  "dispatch_claim_preserves_every_frozen_binding",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
+  "crates/server/awaken-dispatch/src/postgres/claim.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-session-executor/src/agent_runner/child_execution.rs",
+  "crates/server/awaken-session-executor/src/agent_runner/child_attempt.rs",
+  "crates/server/awaken-session-executor/src/agent_runner/child_dispatch.rs",
+]
+
+[[bounds]]
+text = '''The assumption-free admission Kani harness exhausts absent, same-Thread and distinct-parent Session affinity against absent, positive and zero activity coordinates over the full u64 domain. A distinct parent affinity is always classified as SessionChild unless an explicit zero activity coordinate fails closed; the reducer is the sole production implementation behind RunDispatch::admission_shape and authors no lifecycle state.'''
+
+[[bounds]]
+text = '''The existing claim Kani harness exhausts every production DispatchState, cancellation bit and u64 lease epoch. Every incrementable Pending, Awaiting or Leased row becomes Leased at exactly epoch+1; excluded reservation and closed states return no claim, while u64::MAX fails closed. The generic production claim_with_frozen harness additionally exhausts all four claim modes and an arbitrary four-axis payload, proving a successful claim returns the exact frozen value with cancellation unchanged.'''
+
+[[bounds]]
+text = '''The three final-source proofs completed under fixed Kani 0.67.0 and patched CBMC/CaDiCaL with no assumptions or stubs: admission classification passed 55 checks, claim transition passed 122 checks, and frozen-binding preservation passed 206 checks, all with zero failures. Each guarded run used one solver, -j1, an empty RUSTC_WRAPPER, a /tmp target, a 600-second limit, a 12-GiB aggregate RSS ceiling and a 12-GiB MemAvailable floor; the two runs completed in 31.163 and 50.126 seconds with peak aggregate RSS 693524 and 712088 KiB and minimum available memory 47447996 and 47145088 KiB.'''
+
+[[bounds]]
+text = '''The Host child boundary constructs one ordinary RunActivation with the stable child Run/Thread and DelegationOrigin, attaches the distinct parent Session through RunDispatch::for_session, then calls DispatchWorker::start_run. That path invokes the existing atomic claim_new_run port, whose Memory, SQLite and PostgreSQL implementations all apply claim_with_frozen under their existing authority lock or transaction. No child-specific queue, lease, state machine or recovery policy is introduced.'''
+
+[[bounds]]
+text = '''The canonical cross-backend conformance table now uses an actual SessionChild carrying durable origin and distinct parent affinity. It checks atomic parent-mediated creation, pool exclusion, exact input-and-resume claim, live-lease exclusion, strict-expiry reclaim, exact epoch advance, stale-owner fencing and preservation of the complete frozen child request through Memory, SQLite and provisioned PostgreSQL. Database/mutex isolation and durability, Rust String/serde behavior, wall-clock truth, arbitrary crashes, async scheduling, executor behavior and eventual Worker progress remain executable evidence or TCB; no universal Rust-to-TLA refinement or physical exactly-once execution is claimed.'''

@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteTool.tla",
+  "crates/worker/awaken-tool-relay/src/ledger.rs",
+  "crates/worker/awaken-tool-relay/src/executor.rs",
+  "crates/worker/awaken-tool-relay/tests/relay.rs",
+]
+proof_harnesses = [
+  "hand_result_disposition_allows_only_explicit_success",
+]
+production_entrypoints = [
+  "crates/worker/awaken-tool-relay/src/executor.rs",
+]
+
+[[bounds]]
+text = '''The no-allocation branch selector used by the sole HandResult-to-ToolExecutor mapper. Kani exhausts the valid success/error/indeterminate branch partitions and additionally checks the production Indeterminate adapter arm with a fixed diagnostic tool id under unwind 16: it remains typed ToolError::Indeterminate, never ordinary Execution or success. General success/error payload projection, diagnostic formatting, channel delivery, ledger durability, tool semantics, and external orchestration remain executable or external evidence.'''

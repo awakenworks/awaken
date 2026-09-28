@@ -1,0 +1,52 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionRoot.tla",
+  "formal/tla/SessionRoot.cfg",
+  "crates/server/awaken-session-application/src/mutation.rs",
+  "crates/server/awaken-session-application/src/tests/creation/time_assurance.rs",
+  "formal/runtime-refinement-manifest.json",
+  "scripts/ci/render_runtime_refinement_traces.py",
+  "scripts/ci/check_formal_mutations.py",
+  "crates/server/awaken-session-application/src/application.rs",
+  "crates/server/awaken-session-application/src/tests/authority.rs",
+  "crates/server/awaken-session-application/src/mutation/observation_proofs.rs",
+  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
+  "crates/stores/awaken-session-store/src/lib.rs",
+  "crates/stores/awaken-session-store/src/sqlite.rs",
+  "crates/stores/awaken-session-store/src/postgres.rs",
+  "crates/stores/awaken-session-store/src/tests.rs",
+  "crates/server/awaken-session-application/src/tests/observed_commit.rs",
+]
+proof_harnesses = [
+  "session_root_observation_is_total_monotonic_and_idempotent",
+  "session_root_receipt_selects_candidate_only_for_applied_revision",
+  "session_root_replacement_preserves_creation_and_monotonic_update_observations",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/mutation.rs",
+  "crates/server/awaken-session-application/src/application.rs",
+  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
+  "crates/stores/awaken-session-store/src/lib.rs",
+  "crates/stores/awaken-session-store/src/sqlite.rs",
+  "crates/stores/awaken-session-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''Existing SessionRoot kernel with two nonmonotonic observation values, four revisions and two realization epochs. Temporal creation/update invariants are bounded TLC evidence, not Rust refinement.'''
+
+[[bounds]]
+text = '''Executed production observations are checked against the same model relations; mandatory decision-rule coverage and independent real-trace mutations gate this evidence. This is finite trace correspondence, not universal Rust refinement.'''
+
+[[bounds]]
+text = '''The actual commit_observed_snapshot Future is cross-checked natively in 528 cause-effect cases: absent/zero/nonzero/MAX previous time x zero/nonzero/MAX clock x zero/one lifecycle fact x immediate/one-Pending repository response x four receipts/seven typed errors. A test-only repository port witness asserts one call, exact owner/revision/idempotency/full replacement/facts and unchanged result; it is not a CAS model. The existing SQLite mutation table additionally replays an old receipt after a later durable root update and propagates reload NotFound without candidate fallback or row/outbox changes. These tests run through the existing check-reliability.sh --session-observations application suite. A direct no-stub Kani Future probe initially hit the pinned e43ae2c compiler niche_start u128-to-u64 PosOverflow at rvalue.rs:980. An isolated wide-niche compiler correction passed code generation; the complete existing fixture preparation then exceeded serde_json escaping unwind 16, and unwind 128 reached a 300-second deadline under a 16-GiB address-space cap without a verification result. No failing probe is shipped or new async Kani harness claimed. SQL isolation and universal async refinement remain unproved.'''
+
+[[bounds]]
+text = '''Three existing Kani harnesses jointly call the production root-observation reducer, mutation-receipt selector and replacement-admission kernel. They exhaust all Option<u64> observation pairs, all four mutation-result variants with arbitrary u64 revisions, and all creation/update replacement combinations. This proves immutable known creation, nondecreasing known update, idempotent replay and Applied-only candidate revision binding.'''
+
+[[bounds]]
+text = '''Fresh Replace invokes the canonical current-root admission inside each SQLite/Postgres transaction after receipt replay and owner/revision comparison. SQL isolation, codec correctness, async durable reload, exact clock sampling, create stamping and universal Rust-to-SessionRoot refinement remain executable/store TCB and are not widened by the production-kernel grade.'''

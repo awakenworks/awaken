@@ -1,0 +1,20 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/AgentInputRevision.tla",
+  "crates/control/awaken-config-resolver/src/stores.rs",
+  "formal/tla/AgentInputRevision.cfg",
+]
+proof_harnesses = [
+  "agent_input_revision_decision_is_exact_non_wrapping_and_replay_first",
+]
+production_entrypoints = [
+  "crates/control/awaken-config-resolver/src/stores.rs",
+]
+
+[[bounds]]
+text = '''Kani directly checks the private production revision decision over all Option<i64>, i64 and aggregate-equality equivalence classes, including invalid durable revisions and exhaustion. The sole public write-plan admission derives equality with structural PartialEq; arbitrary aggregate equality, SQL/JSON, locking and commit execution are not implementation-refined.'''

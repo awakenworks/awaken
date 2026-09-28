@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/ToolPermissionPolicy.tla",
+  "formal/tla/ToolPermissionPolicy.cfg",
+  "crates/contract/awaken-agent-contract/src/toolset.rs",
+  "crates/contract/awaken-session-configuration-contract/src/agent_config.rs",
+  "crates/server/awaken-session-executor/src/config.rs",
+]
+proof_harnesses = [
+  "managed_toolset_default_resolution_is_source_exact_and_configurable",
+  "toolset_policy_exact_override_replaces_only_the_matching_default",
+]
+production_entrypoints = [
+  "crates/contract/awaken-agent-contract/src/toolset.rs",
+  "crates/contract/awaken-session-configuration-contract/src/agent_config.rs",
+  "crates/server/awaken-session-executor/src/config.rs",
+]
+
+[[bounds]]
+text = '''The production Managed wire resolver is exhaustively checked over both source classes and all presence/value combinations for the enabled and permission default axes. The neutral policy lookup is checked for one exact named override and one distinct fallback name over every enabled/permission value. Existing native tests cover the 18 semantic source/default rules, Managed normalization, the 32-rule MCP default/override/server matrix, and shared Native/ACP verdicts. Arbitrary strings and override counts, wire admission and serde, runtime assembly, async scheduling, external effects, and universal Rust-to-TLA refinement remain outside these scalar kernels.'''

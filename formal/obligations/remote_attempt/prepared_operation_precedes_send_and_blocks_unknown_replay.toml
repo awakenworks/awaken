@@ -1,0 +1,38 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteAttempt.tla",
+  "formal/tla/RemoteAttempt.cfg",
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
+  "crates/server/awaken-run-executor-a2a/src/lib.rs",
+  "crates/server/awaken-run-executor-a2a/src/tests/send_windows.rs",
+  "scripts/ci/formal_execution_replacement_mutations.py",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "remote_operation_sequence_admits_only_prepared_before_send_and_accept_commit",
+  "remote_operation_route_is_total_and_fail_closed",
+]
+production_entrypoints = [
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
+]
+
+[[bounds]]
+text = '''One initial and one resume operation, one predecessor and two remote tasks. The model checks that Prepared precedes each send, both sides of the send/Accepted-commit crash window retain an unconfirmed operation with no addressable task, and neither resend nor predecessor-task cancellation is reachable. Rust decision-table tests exercise the production ThreadCommit/send order, response loss, Prepared recovery, fail-closed flat or unknown-version state and exact Accepted binding. ThreadCommit durability and read order, async Rust-to-TLA refinement, hash collision resistance, peer idempotency/query semantics, transport delivery and remote task honesty remain executable or external TCB.'''
+
+[[bounds]]
+text = '''The same model now checks send event cardinality (one event per operation identity), exact pre-send Prepared authority and an absorbing unknown-recovery boundary with no outbound IO. Seven semantic mutants and seven positive witnesses cover both fresh/resume crash windows, Accepted GET recovery and distinct-operation progress. Twelve actual executor rows cross fresh/resume with Prepared rejection/lost reply, send response loss, Accepted rejection/lost reply and delivery; the existing Rec/ScriptedTransport observe exact committed operation and wire identity before every send, repeated unknown recovery remains inert, and successive new Resume tickets remain executable. Commit return faults delegate all recorded state to the existing Rec; no second production state machine is added. These finite traces and model checks do not prove asynchronous Rust refinement, durable store behavior, unbounded operation histories, peer idempotency or transport delivery.'''
+
+[[bounds]]
+text = '''Kani exhausts the only production command plan: Fresh permits only CommitPrepared, PreparedCommitted permits only Send, and SendReturned permits only CommitAccepted. Both initial and resume execution call the same helper; ThreadCommit and transport honesty remain outside the kernel.'''
+
+[[bounds]]
+text = '''Kani exhausts the only production command plan: Fresh permits only CommitPrepared, PreparedCommitted permits only Send, and SendReturned permits only CommitAccepted. Both initial and resume execution call the same helper; the existing total route harness rejects Prepared, malformed and endpoint-mismatched recovery instead of resending. ThreadCommit and transport honesty remain outside the kernels.'''

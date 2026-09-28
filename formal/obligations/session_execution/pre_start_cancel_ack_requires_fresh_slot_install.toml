@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+  "crates/server/awaken-dispatch/tests/lease_semantics.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/model.rs",
+]
+proof_harnesses = [
+  "pre_start_no_effect_ack_requires_fresh_install_admission",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+]
+
+[[bounds]]
+text = '''The production predicate and Kani harness exhaust every AttemptAdmission variant. Durable store serialization, asynchronous cancellation timing and external executor quiescence remain executable or external evidence.'''

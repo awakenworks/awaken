@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/WorkerDrain.tla",
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/server/awaken-dispatch/tests/pool_memory.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+  "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs",
+]
+proof_harnesses = [
+  "pool_draining_state_is_absorbing_and_claim_closed",
+]
+production_entrypoints = [
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+]
+
+[[bounds]]
+text = '''DispatchPool holds the admission read guard across the actual store claim, while begin_drain takes the write guard, installs the canonical absorbing Draining transition and only then returns PoolDrainFence. Kani exhausts the transition and proves the fenced state never admits or resumes a claim. WorkerSupervisor requires that token before sending the Registry request; native tests keep a post-drain Run Pending and show no new real claim request while the remote response is blocked. Tokio RwLock fairness/linearization, the remote Registry state/transaction and process crash are executable or TCB boundaries rather than Kani claims.'''

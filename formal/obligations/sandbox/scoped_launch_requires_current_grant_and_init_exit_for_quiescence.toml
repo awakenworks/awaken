@@ -1,0 +1,66 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/LocalProcessLifecycle.tla",
+  "formal/tla/LocalProcessScope.cfg",
+  "formal/tla/LocalProcessBoundary.cfg",
+  "formal/tla/LocalProcessRenewal.cfg",
+  "crates/worker/awaken-local-process/src/scoped.rs",
+  "crates/worker/awaken-local-process/src/scoped/grant.rs",
+  "crates/worker/awaken-local-process/src/scoped/renewal.rs",
+  "crates/bin/awaken-sandbox/tests/linux_scoped.rs",
+  "crates/bin/awaken-sandbox/src/main.rs",
+  "formal/tla/LocalProcessRecovery.tla",
+  "formal/tla/LocalProcessRecovery.cfg",
+  "formal/tla/LocalProcessRefresh.tla",
+  "formal/tla/LocalProcessRefresh.cfg",
+  "crates/worker/awaken-local-process/src/execution_identity.rs",
+  "crates/worker/awaken-local-process/src/scoped/process_io.rs",
+  "crates/worker/awaken-sandbox-local/src/provider/execution.rs",
+  "crates/worker/awaken-sandbox-local/src/realization_marker/execution_participant.rs",
+  "crates/bin/awaken-sandbox/tests/linux_scoped/provider.rs",
+  "crates/bin/awaken-sandbox/tests/linux_scoped/memory.rs",
+  "crates/server/awaken-session-executor/src/session_environment/lifecycle.rs",
+  "crates/server/awaken-session-executor/src/session_environment/session_hand/scoped_tests.rs",
+  "formal/tla/LocalProcessDeadline.tla",
+  "formal/tla/LocalProcessDeadline.cfg",
+  "formal/tla/LocalRepositoryEffect.tla",
+  "formal/tla/LocalRepositoryEffect.cfg",
+  "crates/worker/awaken-sandbox-local/src/repository_effect.rs",
+  "crates/bin/awaken-sandbox/tests/linux_scoped/repository.rs",
+  "crates/worker/awaken-sandbox-local/src/lib.rs",
+  "crates/worker/awaken-sandbox-local/src/provider/terminal_disposal.rs",
+  "crates/worker/awaken-sandbox-local/src/provider/terminal_disposal/tests.rs",
+  "crates/worker/awaken-sandbox-local/src/provider/workdir_helper_tests.rs",
+  "crates/worker/awaken-sandbox-local/src/realization_marker/tests.rs",
+]
+production_entrypoints = [
+  "crates/worker/awaken-local-process/src/scoped.rs",
+  "crates/bin/awaken-sandbox/src/main.rs",
+  "crates/worker/awaken-sandbox-local/src/provider/execution.rs",
+  "crates/worker/awaken-sandbox-local/src/realization_marker/execution_participant.rs",
+  "crates/server/awaken-session-executor/src/session_environment/lifecycle.rs",
+  "crates/worker/awaken-sandbox-local/src/repository_effect.rs",
+  "crates/worker/awaken-sandbox-local/src/lib.rs",
+  "crates/worker/awaken-sandbox-local/src/provider/terminal_disposal.rs",
+]
+
+[[bounds]]
+text = '''One admitted execution and one Linux namespace compose the existing GO/close model with live/stopping/exited init observations. Renewal additionally bounds absolute cutoffs to 1..3, clock to 0..4, one queued frame and a stalled proper prefix. Clock and kernel progress require explicit weak fairness. Business lease renewal, Session-wide production wiring, kernel correctness, hostile-host escape and real elapsed-time bounds are not proved. Ordinary LocalProcess crash semantics remain unchanged.'''
+
+[[bounds]]
+text = '''Recovery composes the same single-execution boundary with one durable Ready/Removing/Removed marker lock, two competing recovery entrances, and known/unknown OS observation. It checks pre-GO persistence, crash retention and quiescence before resource/deletion effects. Exact filesystem CAS, procfs identity truth, multi-execution refinement, reboot liveness and current Session adapter installation are outside this abstract proof. Linux provider tests exercise two participants and actual owner SIGKILL. Session stop composition adds independent Hand quiescence and a receipt requiring both Hand and execution evidence; unknown Hand cannot justify resource effects or a Session receipt. Runtime-host Linux tests exercise stop, quiesce and disposal with two scopes and injected uncertain Hand/observer receipts. Refresh classification composes the same exact kernel boundary with one failed delivery and live/exited/unknown re-observation; it checks that only confirmed tree exit makes renewal failure benign. Real provider barriers cover preflight/delivery exit races, unchanged participant/resource evidence and live denial/broken-channel negative controls; poll evidence truth remains assumed.'''
+
+[[bounds]]
+text = '''Relative-budget conversion is composed with the same bounded OS clock/renewal model: one fixed proof expiry at time 3, one earlier anchor, one sampled remaining duration and conversion after arbitrary bounded clock ticks. It checks no authority-wait time is minted and expired conversion has no effect, with two semantic mutants and two reachability witnesses. Rust arithmetic/rounding tests and real launch/refresh barriers cover the production constructor seam; OS clock truth, arbitrary callback behavior, Rust refinement and complete Session scope installation remain outside this proof.'''
+
+[[bounds]]
+text = '''Repository helper result acceptance composes the same one-execution kernel boundary with one valid/invalid reply, one successful/failed exact-exit observation and caller cancellation. Six mutants and three reachability witnesses cover early reply, leader-only exit, malformed reply, failure status, cancellation and Worker crash. Linux tests exercise actual Git clone/publication/replay/CAS and controlled reply/EOF schedules. Pipe implementation refinement, Git server semantics, Namespace/Container host Git and production deployment activation are not proved.'''
+
+[[bounds]]
+text = '''The same recovery model adds two asynchronous cleanup callers borrowing one retained RemovalGuard, cancellation/queued checkpoint retry, repeated per-mount admission, and separate physical removal, Removed publication and acknowledgement. Sequential mounts are abstracted by a repeatable next-mount state, not an unbounded resource inventory. Production decision tables cover two mounts, expiry during the Memory-list lock and each teardown, complete guard retention, real marker replay and checkpoint response loss. The fresh-fence Boolean assumes truthful Provider authorization; independent Provider wall clocks, in-flight backend commit fencing, OS termination, Rust refinement and deployment qualification remain outside this proof.'''
+
+[[bounds]]
+text = '''Terminal checkpoint current-authority wiring extends that same retained cleanup borrow with put-response, receipt-WAL, delete-response and acknowledgement cuts. Local Ready/Removing x slot/put/delete waits x revoke/replace/expire/renew/cancel decision tables check 30 actual Pending schedules, original WAL identity and exact retry; six Host schedules separately cover committed-object deletion under Worker/Session authority. The combined model kills 25 semantic mutants and reaches ten witnesses, including expired backend responses, successful checkpoint completion, post-crash resource recovery and unknown-identity rejection. Resource effects require exclusive Ready ownership as well as known tree/Hand quiescence. The strict G7 Linux fixture composes actual owner SIGKILL, three detached tree observations, original handle/marker adoption, a busy disconnected FUSE mount and independent SQLite fsync evidence; the successor scoped execution reads the prior durable bytes and commits new bytes before exact terminal unmount/root removal. This is Provider process-death evidence, not complete distributed Worker/Control restart or real credential qualification. Its fresh-authority Boolean assumes the existing operation-bound Session/Worker port; exact journal identity, Ready-phase Rust wiring, provider UTC, arbitrary store commits/cancellation, restored targets, FUSE compensation and platform correctness remain outside the abstract proof.'''

@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.performance_and_long_run_stability",
+]
+evidence = [
+  "crates/contract/awaken-runtime-contract/src/resilience.rs",
+  "crates/runtime/awaken-runtime/src/engine/inference.rs",
+]
+proof_harnesses = [
+  "retry_is_authorized_only_inside_the_exact_bounded_budget",
+  "non_retryable_failure_is_immediately_terminal",
+  "terminal_retry_state_never_reopens",
+  "unknown_retry_state_fails_closed",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/resilience.rs",
+  "crates/runtime/awaken-runtime/src/engine/inference.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

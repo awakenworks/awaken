@@ -1,0 +1,60 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.eventual_network_delivery",
+]
+evidence = [
+  "formal/tla/SessionRunProtocol.tla",
+  "formal/tla/SessionRunProtocol.cfg",
+  "formal/tla/SessionRunCommitObservation.cfg",
+  "formal/tla/SessionStartProtocol.tla",
+  "formal/tla/SessionStartProtocol.cfg",
+  "scripts/ci/formal_model_mutation_runner.py",
+  "scripts/ci/formal_dispatch_mutations.py",
+  "scripts/ci/check_formal.sh",
+  "docs/adr/0075-unified-managed-session-worker-execution.md",
+  "crates/contract/awaken-session-work-contract/src/lib.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
+  "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
+  "crates/server/awaken-dispatch/src/commit_fence.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch/session_realization.rs",
+  "crates/server/awaken-dispatch-http/src/claimed_commit_http.rs",
+  "crates/server/awaken-dispatch-http/tests/dispatch_transport_http.rs",
+  "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http.rs",
+  "crates/server/awaken-dispatch-http/tests/commit_ingest_http.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
+]
+proof_harnesses = [
+  "exact_session_work_receipt_rejects_every_changed_coordinate",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-work-contract/src/lib.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
+  "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch/session_realization.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
+]
+
+[[bounds]]
+text = '''The canonical SessionRunProtocol retains its existing full three-Run, two-Worker, three-epoch model-checking evidence. A dedicated local action wrapper keeps that same constant domain and reuses ObserveCommittedRun verbatim over complete current commit-ready and stale-reclaimed Work source-state cuts. Its action property requires every first committed observation to use the exact current Dispatch owner/epoch and Work realization; removing only the observation's CurrentRealization guard must fail, while the stale cut must be reachable.'''
+
+[[bounds]]
+text = '''Pinned TLC 2.19 checked the dedicated baseline with 6 generated and 6 distinct states at depth 2, killed the exact realization-guard mutant through only CommittedObservationUsesExactCurrentRealization after 6 generated and 6 distinct states at depth 2, and reached the stale-cut witness in the initial states. Each case finished in under one second with 139460, 138660, and 133292 KiB maximum RSS respectively; the guarded sequence used 159188 KiB peak aggregate RSS and retained at least 46381348 KiB MemAvailable.'''
+
+[[bounds]]
+text = '''The production Session Work receipt is minted only from the canonical SessionWorkLeaseAuthority acquisition and carries Session, registered-Worker incarnation, Work, Environment, and epoch coordinates. Claim transports that opaque assertion through realization and recovery. Each endpoint holds the exact Dispatch guard, re-reads canonical Work with RealizationRenewal, checks every stable coordinate, and rejects before Session realization or RunRecoverySource committed-Thread access. The HTTP decision table obtains the receipt through the real claim endpoint and observes zero recovery reads for missing authority, authority outage, foreign Session or incarnation, wrong Work or Environment, and same-owner epoch ABA.'''
+
+[[bounds]]
+text = '''Kani proves the production receipt comparison itself, not only the scalar combinator it ends in. A receipt is minted through the sole production door from a bounded representative acquisition and compared with a fresh observation whose Session, owner, Work id, Environment, epoch and expiry each independently carry an identical or a distinguishable one-byte spelling: it matches exactly when the five stable coordinates agree, and a renewed expiry never matters. The minting door is proved in the same harness (unowned Work mints nothing; a foreign Session or owner mints nothing). The three cross-kind rows (leased against Work-free and unowned, and a Work-free receipt against each kind) are concrete witnesses rather than a symbolic variant, because a symbolic SessionWorkOwnership carries its String-bearing Leased payload through every branch and does not complete. Strings are one-byte representatives, so this claims the comparison the code performs, not Unicode or length behaviour, which the executable tests cover with real identifiers.'''
+
+[[bounds]]
+text = '''This grade is limited to registered-Session recovery observation and realization admission. Work and Thread persistence do not share a transaction: database row-lock and transaction correctness, lease expiry and explicit revocation after validation, Tokio scheduling, the recovery source's committed snapshot consistency, authentication, and network delivery remain TCB. The model is bounded and there is no universal Rust-to-TLA or SQL refinement proof; eventual progress after external failure is outside this safety claim.'''

@@ -45,7 +45,8 @@ import formal_ledger
 # executables it accounts for.
 INPUT_GLOBS: tuple[str, ...] = (
     "lefthook.yml",
-    "formal/coverage.json",
+    "formal/coverage.toml",
+    "formal/obligations/**/*",
     "scripts/**/*",
     "e2e/**/*",
     "deploy/**/*",

@@ -1,0 +1,38 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.exactly_once_side_effects",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ToolBatch.tla",
+  "formal/tla/ThreadCommitProjection.tla",
+  "formal/runtime-refinement-manifest.json",
+  "crates/contract/awaken-tool-contract/src/tool.rs",
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
+  "crates/runtime/awaken-runtime/tests/permission.rs",
+  "crates/runtime/awaken-runtime/tests/tools.rs",
+]
+proof_harnesses = [
+  "recovery_reentry_requires_policy_capability_and_remaining_budget",
+]
+production_entrypoints = [
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+]
+
+[[bounds]]
+text = '''ToolBatch::recover_execution is the sole production recovery admission and attempt-phase owner for Requested or Executing ordinary calls. It combines the pinned ToolRecoveryPolicy, ToolRecoveryMode::is_supported_by trusted capability rule, and the existing next_execution_attempt budget kernel; dispatch::recover_tool_batch now consumes that one aggregate action instead of independently deciding NeverReplay, capability mismatch, and exhaustion.'''
+
+[[bounds]]
+text = '''Kani covers all four policy modes, all four capability modes, both recoverable durable phases, every u16 current attempt, every non-zero u16 budget, and rejection of Awaiting and terminal phases. The final-source single harness completed 418 checks with zero failures and two unreachable checks using fixed Kani 0.67 and patched CBMC/CaDiCaL, -j1 and RUSTC_WRAPPER empty in 5.260 guarded seconds at 780892 KiB peak aggregate RSS and 51624912 KiB minimum available memory under 600-second, 12-GiB RSS and available-memory guards, without assumptions, stubs, or domain reduction.'''
+
+[[bounds]]
+text = '''The native cause/effect table cross-checks Requested first entry, exact supported reentry, NeverReplay, every supported and unsupported capability pairing, attempt exhaustion, and illegal-phase stutter. Existing Runtime response-loss, replay-safe, NeverReplay, permission-handoff, and unknown-outcome tests execute the production dispatch owner. Exact source mutants that remove the NeverReplay guard, capability guard, exhaustion decision, or bypass the aggregate owner from dispatch are each rejected and restored byte-for-byte.'''
+
+[[bounds]]
+text = '''This direct proof establishes only the local recovery admission and exact attempt/phase action over a policy already pinned in the canonical ToolBatch. It does not prove that a tool's declared capability is honest, an external effect is idempotent or reconnectable, ThreadCommit succeeds or is durable, a crashed process is physically quiescent, database truth, async scheduling, or universal Rust-to-TLA refinement.'''

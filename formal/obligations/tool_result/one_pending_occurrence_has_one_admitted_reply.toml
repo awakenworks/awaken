@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ToolResultProtocol.tla",
+  "formal/tla/ToolResultProtocol.cfg",
+  "scripts/ci/formal_event_batch_mutations.py",
+  "crates/contract/awaken-session-event-contract/src/lib.rs",
+  "crates/server/awaken-session-application/src/event_batches.rs",
+  "crates/server/awaken-session-application/src/tests/event_batches.rs",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-event-contract/src/lib.rs",
+  "crates/server/awaken-session-application/src/event_batches.rs",
+]
+
+[[bounds]]
+text = '''Session root CAS atomically occupies a pending call/commit before Runtime consumption. Different HTTP keys cannot admit two replies for that occurrence; exact retained-key replay precedes occupancy validation. A removed occupancy guard is rejected and pre-delivery admission is reachable in the bounded existing ToolResultProtocol model.'''
+
+[[bounds]]
+text = '''Native domain tests vary owner, Run, correlation, call, pending commit, missing legacy commit, public spelling, payload, Thread version and processed state. A barrier forces two real SQLite or PostgreSQL application replicas past the same root read; equal and changed payloads select one receipt and one rejection while exact-key retry preserves root/outbox. Legacy missing pending commit fails closed for otherwise equal neutral identity. These finite executable checks do not prove arbitrary Rust collection, SQL, crash or transport refinement.'''

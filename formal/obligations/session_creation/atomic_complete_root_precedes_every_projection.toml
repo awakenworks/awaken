@@ -1,0 +1,36 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/SessionRootProof.tla",
+  "formal/tla/SessionStartProtocol.tla",
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+  "formal/tla/SessionStartRootProof.tla",
+  "formal/tla/SessionStartProtocolReachability.cfg",
+  "crates/server/awaken-session-application/src/tests/creation.rs",
+]
+proof_harnesses = [
+  "only_an_applied_awaited_create_may_enter_post_create_effects",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/creation.rs",
+]
+
+[[bounds]]
+text = '''SessionStartRootProof reuses the exact canonical SessionRootProof instance and proves acceptance implies a complete durable root, accepted activation failure remains queryable, complete root precedes projections, and Work row/root authority agree over unbounded abstract traces. It does not prove all Event/Work safety or recovery liveness.'''
+
+[[bounds]]
+text = '''The original SessionStartProtocol safety configuration checks two workers, MaxRevision 4, MaxEpoch 3, MaxHeartbeat 1 and MaxTime 2; the original fault-free reachability configuration checks eventual settlement under its weak-fairness assumption. Four semantic mutants and four positive witnesses qualify the root-authority invariants without narrowing these configurations.'''
+
+[[bounds]]
+text = '''The application test executes four file-SQLite cold-reopen histories: initial batch absent/present crossed with first recovery scan success/failure. It checks complete durable root/owner/create receipt, original ordered events and wake, supervisor-only local recovery, exact replay and root/outbox/runtime frames. The existing process-crash time-assurance test remains separate evidence. Arbitrary SQL histories, external realization schedules and universal Rust-to-model refinement remain outside the proof.'''
+
+[[bounds]]
+text = '''The production create driver finalizes the complete baseline, Resource/MCP state and optional initial Event plan before its sole create_session_root await. Kani exhausts the typed Applied/Replayed receipt x AwaitRealization/AcceptDurableRoot gate and proves that only Applied+Await can continue into realization, activation or Work projection; every replay returns durable repository truth.'''
+
+[[bounds]]
+text = '''SQLite/PostgreSQL conformance checks the complete root and receipt transaction while TLAPS proves the unbounded abstract ordering. Rust async scheduling, repository transaction durability, external realization and database-engine correctness remain executable or deployment TCB, not additional authority inferred by the kernel.'''

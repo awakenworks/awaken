@@ -1,0 +1,47 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/RunIngressKernel.tla",
+  "formal/tla/RunIngress.tla",
+  "formal/tla/RunIngress.cfg",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/server/awaken-dispatch/src/clock.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/memory/store.rs",
+  "crates/server/awaken-dispatch/src/sqlite.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
+  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/pg_tests.sh",
+  "e2e/remote_worker_recovery_e2e.ts",
+]
+proof_harnesses = [
+  "store_deadline_is_monotonic_saturating_and_never_wraps",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/server/awaken-dispatch/src/clock.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/memory/store.rs",
+  "crates/server/awaken-dispatch/src/sqlite.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the production deadline_millis kernel over every u64 store-now and relative-TTL pair. The result is bounded by the signed SQL millisecond domain, never precedes normalized store time, equals the mathematical sum whenever representable, and saturates instead of wrapping.'''
+
+[[bounds]]
+text = '''The public reservation port accepts only a relative TTL. Memory and SQLite read their adapter-owned Clock and PostgreSQL reads database time inside the reservation or retry transaction before calling the same deadline kernel; no reservation command accepts a caller-authored absolute deadline.'''
+
+[[bounds]]
+text = '''The shared SR1, SR7 and SR8 rules set deterministic Memory/SQLite authority clocks independently of claim command timestamps, cover both initial and retry TTL conversion, the exact live boundary and the next-millisecond recovery boundary, and repeat recovery through every claim surface. PostgreSQL exercises the moving database-clock path in the required complete ingress gate when configured; an unavailable local database is environmental skip rather than PostgreSQL evidence.'''
+
+[[bounds]]
+text = '''RunIngress.cfg checks reservation phase transitions for two owners through epoch 4, but its abstract state omits reservation timestamps and clock arithmetic. The Kani proof covers arithmetic only: adapter clock-source wiring, database time accuracy, transaction isolation, host SystemClock behavior, arbitrary crash schedules and Rust-to-TLA refinement remain outside the direct proof.'''

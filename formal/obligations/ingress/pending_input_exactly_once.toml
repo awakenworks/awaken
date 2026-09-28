@@ -1,0 +1,49 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/RunIngressKernel.tla",
+  "formal/tla/RunIngress.tla",
+  "formal/tla/RunIngress.cfg",
+  "docs/adr/0010-idempotent-pending-consumption.md",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/pending_settlement.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/memory/settlement.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
+  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "crates/server/awaken-dispatch/tests/crash_before_settle.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/pg_tests.sh",
+]
+proof_harnesses = [
+  "pending_settlement_plan_is_the_exact_dispatch_projection",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/pending_settlement.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/memory/settlement.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+]
+
+[[bounds]]
+text = '''RunIngress.cfg finitely model-checks the canonical RunIngressKernel with two owners and MaxEpoch=4. PendingInputIsDurable excludes pending input from Removed and Superseded abstract rows, but the Boolean model does not encode message identities, SQL transactions, asynchronous Worker execution, or a Rust-to-model refinement.'''
+
+[[bounds]]
+text = '''The production settlement path now has one decision owner: pending_input_settlement_plan calls the canonical DispatchTransition::settle reducer and projects its Fenced, Awaiting or Done result into the exact plan consumed by Memory, SQLite and PostgreSQL. The named assumption-free Kani harness exhausts all seven DispatchState values, all four PhysicalAttemptSlot values, both outcomes, both cancellation values and the full stored/claim u64 epoch domain. It completed 125 checks with zero failures and two expected unreachable branches. The proof covers plan admission and projection only; fixed empty identities deliberately keep String equality and deletion-set membership outside this SAT problem.'''
+
+[[bounds]]
+text = '''The native cause/effect decision table crosses every finite state, exact/stale epoch representative, slot, outcome and same/different Run/message identity representative through the same production planner and predicate. Shared conformance histories execute crash-without-settle, lease reclaim, stale/current epoch and omitted/named message ids through Memory, SQLite and live PostgreSQL adapters. A separate test kills a child after an acknowledged file-backed SQLite claim, then uses two fresh production adapters to prove exact replay, stale-settle preservation, current-settle consumption and no third wake. Identity equality remains native representative-class evidence rather than arbitrary String or allocator proof.'''
+
+[[bounds]]
+text = '''The Kani projection does not prove database transaction atomicity, isolation, WAL/fsync or power-loss durability, driver row decoding, Rust String allocation/equality, arbitrary process/crash schedules, cross-process mutual exclusion, committed Thread truth authenticity, or eventual Worker scheduling. Those remain executable evidence or external TCB. PostgreSQL reachability outside its required gate and universal exactly-once external effects remain outside the claim, so the status stays model_linked and the grade stays abstract_model_checked.'''

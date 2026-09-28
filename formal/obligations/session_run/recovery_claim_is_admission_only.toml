@@ -1,0 +1,56 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/RunIngressKernel.tla",
+  "formal/tla/RunIngress.tla",
+  "formal/tla/RunIngress.cfg",
+  "formal/tla/SessionRunProtocol.tla",
+  "formal/tla/SessionRunProtocol.cfg",
+  "docs/adr/0075-unified-managed-session-worker-execution.md",
+  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
+  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/pg_tests.sh",
+]
+proof_harnesses = [
+  "session_run_reservation_binds_exactly_one_nonzero_activity_receipt",
+  "dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows",
+  "dispatch_claim_preserves_every_frozen_binding",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the shared production claim phase over all seven Dispatch states, the full u64 epoch domain, every claim mode and arbitrary frozen binding witnesses. Ordinary claim excludes Reserved and ReservationLeased; reservation recovery alone changes Reserved or ReservationLeased to ReservationLeased at exactly epoch+1. The reservation receipt planner independently proves RecoveryClaimed cannot create or reuse a Session activity receipt.'''
+
+[[bounds]]
+text = '''RunIngress.cfg checks ClaimReservation and exact owner/epoch ResolveReservation transitions for two owners through epoch 4. SessionRunProtocol.cfg checks three Runs and two Workers through epoch 3 and proves ReservationCannotExecute for both Reserved and ReservationLeased. These finite models do not encode the Rust Claimed payload, database transactions or a Rust refinement.'''
+
+[[bounds]]
+text = '''The shared SR4, SR5 and SR8 rules execute current/stale repair claims, admit/retry/reject resolutions, expired-owner fencing, exact expiry, epoch advance and every local/compatible/delivery/broad/placed claim surface through Memory, SQLite and live PostgreSQL. Every recovery claim is observed with session_activity_admission_required=true, no assignment, no credential binding and a fenced Sandbox bind; only a resolved Admitted row is later claimed through the ordinary compatible path. The Worker returns from the existing Session-CAS branch before metrics, executor or settlement entry, and the Pool excludes the repair from execution capacity.'''
+
+[[bounds]]
+text = '''The direct proof establishes the closed phase and receipt decisions, not adapter construction of every Claimed field, Worker asynchronous branch execution, observer correctness, SQL row-lock linearizability, database durability, arbitrary cross-process races, Session CAS authenticity or eventual scheduling. Those remain shared executable evidence or TCB.'''

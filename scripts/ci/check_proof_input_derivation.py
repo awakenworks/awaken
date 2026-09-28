@@ -51,8 +51,10 @@ import formal_ledger
 # files are production entrypoints, and the exception registry itself.
 INPUT_GLOBS: tuple[str, ...] = (
     "crates/**/*.rs",
-    "formal/coverage.json",
+    "formal/coverage.toml",
+    "formal/obligations/**/*",
     "formal/proof-input-exceptions.json",
+    "scripts/ci/formal_ledger.py",
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -613,7 +615,8 @@ def main() -> None:
         paths = [ROOT / candidate for candidate in options.staged]
         interesting = [path for path in paths if path.suffix == ".rs"]
         registry_touched = any(
-            candidate.endswith(("proof-input-exceptions.json", "coverage.json"))
+            candidate.endswith(("proof-input-exceptions.json", "formal/coverage.toml"))
+            or candidate.startswith("formal/obligations/")
             for candidate in options.staged
         )
         if not interesting and not registry_touched:

@@ -1,0 +1,34 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/ExecutableProjectionRefreshProof.tla",
+  "crates/server/awaken-durable-projection/src/lib.rs",
+  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
+  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "projection_install_reconciliation_preserves_cursor_and_monotonic_authority",
+]
+production_entrypoints = [
+  "crates/server/awaken-durable-projection/src/lib.rs",
+  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
+  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''The sole load_full/load_refresh owner creates an opaque ProjectionTarget only from the exact high-water returned by ProjectionLog after the selected command range validates through that coordinate. ProjectionBatch carries that target instead of a free u64, both production registrar types must consume it in ProjectionCursor::install_then_reconcile, and hydration initializes its cursor from the same target after successful replay. No external constructor or parallel install coordinate exists.'''
+
+[[bounds]]
+text = '''The shared direct Kani harness uses no assumptions or stubs and exhausts every prior and captured-target u64 pair with both installer outcomes. Whenever captured authority is monotonic relative to the prior installed coordinate, entry, successful publication and every returned outcome keep installed at most the captured authority; success publishes the exact target and failure retains the already-covered prior projection. The same harness also covers authority-rollback success and failure for the separate cursor-behind-installed obligation. Fixed Kani 0.67.0 with the qualified patched CBMC/CaDiCaL backend verified 119 checks, zero failures and one compiler/library unreachable in 0.24571018 seconds of verification and 3.77 guarded seconds, at 290020 KiB peak process RSS; the guarded run remained below the 600-second and 12-GiB aggregate limits, with -j1, CARGO_BUILD_BUILD_DIR aligned to the isolated Kani target, and RUSTC_WRAPPER empty.'''
+
+[[bounds]]
+text = '''The production Agent and Environment decision tables capture sequence 2, commit sequence 4 before the bounded load, require the first refresh to install only the exact sequence-2 projection, then require the next refresh to load after 2 through 4 and install the exact later projection. Native crate suites additionally cover incomplete-range fallback, install failure, concurrent serialization and rollback recovery through the canonical state machines.'''
+
+[[bounds]]
+text = '''The proof covers the allocation-free captured-target installation kernel and its enforced production input type under monotonic command-log authority. ProjectionLog high-water and range truth, command replay semantics, PostgreSQL statement snapshots and transaction visibility, database durability, cross-process replicas, Tokio/RwLock behavior, panic or abort during installation, and universal Rust-to-TLA refinement remain executable evidence or external TCB. Database restore can lower authority below the installed projection before a successful full replay; that recovery interval is explicitly outside the monotonic-authority obligation.'''

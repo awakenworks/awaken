@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/WorkerDrain.tla",
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/server/awaken-dispatch/tests/pool_memory.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "pool_draining_state_is_absorbing_and_claim_closed",
+]
+production_entrypoints = [
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The sole process-local production transition exhausts the closed Open/Suspended/Draining state domain, Suspend/Resume/Drain commands and both shutdown observations. Direct Kani proves every transition from Draining remains Draining, an explicit Drain always reaches Draining, and that state neither admits a claim nor permits resume. The obsolete write-only numeric generation was removed; the obligation's legacy generation name denotes this pool incarnation's absorbing lifecycle phase.'''
+
+[[bounds]]
+text = '''All three asynchronous admission commands call this transition under the existing pool-wide Tokio RwLock, and claim_and_drive consults its exact accepts_claim projection while holding the read lock across the store claim. Native decision-table and queued-Run tests cross-check all eighteen scalar rules and the real async boundary. Tokio lock semantics and scheduling remain TCB; Registry publication/acknowledgement, in-flight completion, process termination and cleanup liveness are separate obligations and are not proved by this harness.'''

@@ -1,0 +1,33 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ErasureSaga.tla",
+  "formal/tla/ErasureSaga.cfg",
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+  "crates/stores/awaken-data-subject-store/src/memory.rs",
+  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
+  "crates/stores/awaken-data-subject-store/src/postgres.rs",
+  "crates/stores/awaken-data-subject-store/tests/repo_conformance.rs",
+  "docs/adr/0050-telemetry-content-capture-consent-and-gdpr-erasure.md",
+]
+production_entrypoints = [
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
+  "crates/stores/awaken-data-subject-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''ErasureSaga checks a finite two-replica/two-eraser transition system in which only a replica holding the current base revision can checkpoint. This proves one abstract revision transition per base; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The canonical ErasureJobRepo adapters retain two fences rather than a parallel winner mechanism: InMemory holds one Mutex across admission and replacement; SQLite uses BEGIN IMMEDIATE plus an indexed-revision UPDATE or insert-only primary key; PostgreSQL uses SELECT FOR UPDATE for present rows plus the indexed-revision UPDATE or insert-only primary key. All call the same ErasureProgress::follows successor relation against the row read under that lock or transaction.'''
+
+[[bounds]]
+text = '''The shared native decision table runs three concurrent candidates with distinguishable full frames against one absent base and three successive present generations. It requires exactly one success, two typed Conflict results, and exact ErasureProgress winner equality from every replica. The SQLite rule uses three independent file connections and verifies the final winner after close/reopen; the Postgres rule uses three pool-backed repositories when the live test endpoint is available; the same schedule is cross-checked against the Mutex adapter.'''
+
+[[bounds]]
+text = '''These are executable samples of real adapter/executor contention, not a universal database proof. Kani proves the production successor relation separately but does not execute database locks, unique constraints, transaction isolation, async scheduling, process failure, or arbitrary replica counts. A skipped PostgreSQL test is not counted as a live PostgreSQL pass.'''

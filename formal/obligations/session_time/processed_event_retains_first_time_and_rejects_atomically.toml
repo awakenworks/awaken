@@ -1,0 +1,33 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionEventProtocol.tla",
+  "formal/tla/SessionEventProtocol.cfg",
+  "crates/contract/awaken-session-event-contract/src/lib.rs",
+  "formal/runtime-refinement-manifest.json",
+  "scripts/ci/render_runtime_refinement_traces.py",
+  "scripts/ci/check_formal_mutations.py",
+  "crates/contract/awaken-session-event-contract/src/terminal_resolution_proofs.rs",
+  "crates/contract/awaken-session-event-contract/src/observation_proofs.rs",
+]
+proof_harnesses = [
+  "processed_event_time_is_first_observation_or_atomic_rejection",
+  "terminal_batch_resolution_empty",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-event-contract/src/lib.rs",
+]
+
+[[bounds]]
+text = '''All u64 clock/cursor inputs and optional legacy metadata of the production processed-marker reducer. Batch lookup and repository atomicity remain executable adapter evidence.'''
+
+[[bounds]]
+text = '''The Session Event model and required runtime refinement traces exercise the same first-observation or atomic-rejection transition; these finite traces complement but do not widen the production-kernel proof.'''
+
+[[bounds]]
+text = '''The actual SessionEventBatch::resolve_terminally empty-Vec boundary is proved with full u64 numeric header metadata and optional anchor/wake metadata, zero processed count, the complete immutable frame, and an independent second replay. Fixed string header fixtures, real Vec/Clone/Eq/Drop and default Kani checks with unwind 4 remain in scope; this empty-only proof does not establish collection traversal or widen the existing processed-marker scalar proof.'''
+
+[[bounds]]
+text = '''The shared native collection decision table executes 38,886 combinations over lengths 0..2, five real command variants with fixed nonempty payload fixtures, processed/time/anchor/dispatch-receipt presence, terminal anchor and clock boundaries; six actual production mutants qualify count, first observation, anchor priority, traversal and immutable-frame assertions. The 30 nonempty Kani command/length partitions remain unproved: one-Interrupt and two-Interrupt probes reached their time guards, and the other 28 partitions were not run. Native qualification is not a universal Rust/SQL or recursive-payload proof.'''

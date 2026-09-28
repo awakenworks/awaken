@@ -1,0 +1,33 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+]
+evidence = [
+  "crates/bin/awaken-worker/src/credential_liveness/observation_budget.rs",
+  "crates/bin/awaken-worker/src/credential_liveness.rs",
+  "crates/bin/awaken-worker/tests/worker_node_lifecycle.rs",
+  "crates/bin/awaken-worker/src/bootstrap.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+]
+proof_harnesses = [
+  "observation_publication_budget_is_strict_and_overflow_safe",
+]
+production_entrypoints = [
+  "crates/bin/awaken-worker/src/credential_liveness/observation_budget.rs",
+  "crates/bin/awaken-worker/src/bootstrap.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+]
+
+[[bounds]]
+text = '''Standalone Kani verifies the actual production Duration kernel over all u64 seconds and all valid nanoseconds, using an independent wide normalized-sum oracle. Admission requires positive probe and TTL strictly greater than probe plus heartbeat plus request budget; overflow denies.'''
+
+[[bounds]]
+text = '''The same Worker validator is called by bootstrap/builder and initial/subsequent registry lease receipt handling. Integration tests cover initial withdrawal without claims and later absorbing drain. This scalar proof does not establish continuous availability through slow/failed probes, transport retries, clock skew or scheduler delays.'''
+
+[[bounds]]
+text = '''Direct standalone verification avoids cargo-kani 0.67 artifact discovery incompatibility with a separate global Cargo build-dir without any build-directory override.'''

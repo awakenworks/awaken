@@ -1,0 +1,30 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "crates/server/awaken-dispatch/src/inbox_mutation.rs",
+  "crates/server/awaken-dispatch/src/memory/inbox.rs",
+  "crates/server/awaken-dispatch/src/sqlite/message_ports.rs",
+  "crates/server/awaken-dispatch/src/postgres/message_ports.rs",
+  "crates/server/awaken-dispatch/tests/harness/mod.rs",
+  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
+]
+proof_harnesses = [
+  "pending_input_mutation_plan_is_exact_revision_fenced_and_nonwrapping",
+]
+production_entrypoints = [
+  "crates/server/awaken-dispatch/src/inbox_mutation.rs",
+  "crates/server/awaken-dispatch/src/memory/inbox.rs",
+  "crates/server/awaken-dispatch/src/sqlite/message_ports.rs",
+  "crates/server/awaken-dispatch/src/postgres/message_ports.rs",
+]
+
+[[bounds]]
+text = '''Kani calls the actual shared mutation planner over all Option/u64 current revisions, all expected revisions and ceilings, and Edit/Retract. Successful edits have exactly one larger representable revision; retract needs the exact present revision; absent/stale inputs stutter. Positive acceptance is proved as well as rejection. Default checks retained; 0 of 235 failed.'''
+
+[[bounds]]
+text = '''Memory invokes the planner under its state mutex; SQLite under BEGIN IMMEDIATE; PostgreSQL after its exact pending-row SELECT FOR UPDATE in the same transaction as UPDATE/DELETE. Concrete domain-boundary and shared race tests bind planner output to retained bytes and revision. The PostgreSQL fault case uses two independently observed blocked backend pids to force the old read/write window. These adapter schedules do not prove SQL/Tokio/driver refinement or arbitrary database isolation.'''

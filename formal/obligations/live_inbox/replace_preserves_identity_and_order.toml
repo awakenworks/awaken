@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/LiveInbox.tla",
+  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "live_inbox_replace_preserves_identity_and_order",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''LiveInbox::replace_payload_exactly is the sole production queue mutation used by replace while the existing State mutex is held. Kani checks a three-entry queue with distinct keys, symbolic provenance and payloads, all three hit positions and every u8 miss: a hit changes only the target payload, while identity, position, provenance, peers and length remain; a miss exactly stutters.'''
+
+[[bounds]]
+text = '''The native cause/effect table cross-checks the same helper with real Message values, including first and last peers, External provenance, version advancement on a hit and complete queue/version stutter on a miss. Closed admission is covered by the shared absorbing-lifecycle proof and table.'''
+
+[[bounds]]
+text = '''The direct proof bounds queue length to three and uses u8 key/provenance/payload witnesses. It does not prove Mutex poisoning or scheduling, VecDeque allocation, arbitrary Message internals, notification delivery, durable delivery, process replacement, or the linked TLA model as a Rust refinement.'''

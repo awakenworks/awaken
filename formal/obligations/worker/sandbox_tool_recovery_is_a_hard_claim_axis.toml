@@ -1,0 +1,28 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "crates/contract/awaken-worker-contract/src/lib.rs",
+  "crates/contract/awaken-worker-contract/src/manifest.rs",
+  "crates/server/awaken-session-executor/src/deployment_config.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+]
+proof_harnesses = [
+  "sandbox_tool_recovery_claim_axis_is_exact_and_non_widening",
+  "manifest_recovery_mapping_accepts_only_the_exact_installed_capability",
+  "container_hand_residency_recovery_mapping_is_total_exact_and_non_widening",
+]
+production_entrypoints = [
+  "crates/contract/awaken-worker-contract/src/lib.rs",
+  "crates/contract/awaken-worker-contract/src/manifest.rs",
+  "crates/server/awaken-session-executor/src/deployment_config.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

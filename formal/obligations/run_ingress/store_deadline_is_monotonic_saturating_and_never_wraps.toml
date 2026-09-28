@@ -1,0 +1,18 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "crates/server/awaken-dispatch/src/clock.rs",
+]
+proof_harnesses = [
+  "store_deadline_is_monotonic_saturating_and_never_wraps",
+]
+production_entrypoints = [
+  "crates/server/awaken-dispatch/src/clock.rs",
+]
+
+[[bounds]]
+text = '''All u64 now and lease inputs; the production reducer clamps to the signed SQL millisecond domain.'''

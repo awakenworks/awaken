@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.eventual_network_delivery",
+]
+evidence = [
+  "formal/tla/ManagementAuditIntent.tla",
+  "crates/control/awaken-agent-config/src/store.rs",
+  "crates/control/awaken-control/src/lib.rs",
+  "crates/control/awaken-control/src/audit_tests.rs",
+  "crates/bin/awaken-cli/tests/management_persistence.rs",
+  "crates/server/awaken-coordinator/src/control_service_boundary.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "management_audit_admission_requires_exact_intent_and_closed_state",
+]
+production_entrypoints = [
+  "crates/control/awaken-agent-config/src/store.rs",
+  "crates/control/awaken-control/src/lib.rs",
+  "crates/server/awaken-coordinator/src/control_service_boundary.rs",
+]
+
+[[bounds]]
+text = '''AuditedConfigWrite is the common durable-begin result and owns permits_business_write. Kani exhausts Applied, Replayed and Conflict with both business-success values and proves only Applied authorizes entry; the canonical durable_management_audit middleware consumes that exact predicate before next.run, while every repository error, replay and conflict returns first.'''
+
+[[bounds]]
+text = '''Fixed Kani 0.67.0 with the qualified patched CBMC/CaDiCaL backend completes the one existing combined harness with 126 checks, zero failures and 0.061794713 solver seconds in 1.339 guarded seconds, under one job, empty RUSTC_WRAPPER, a 600-second deadline and 12-GiB cgroup memory ceiling, without solver assumptions or stubs.'''
+
+[[bounds]]
+text = '''The real protected Axum router decision table injects durable record failure and observes one record attempt, a 500 response, zero handler calls and zero completion calls. Adjacent tests exercise Applied, replay, conflict, authenticated scope and body bounds; the split Coordinator client implements the same ManagementAuditRepository port rather than a second admission path.'''
+
+[[bounds]]
+text = '''Kani proves the local production pre-handler decision. Request parsing/body hashing, repository durability and honesty, HTTP/Tokio execution, every composed route, remote transport, crashes and universal Rust-to-model refinement remain executable evidence or database/async/network TCB.'''

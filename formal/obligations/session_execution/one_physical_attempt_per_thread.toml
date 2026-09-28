@@ -1,0 +1,95 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionRunProtocolCancellation.cfg",
+  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
+  "formal/tla/SessionRunProtocol.tla",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/sqlite/physical_attempt.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/tests/pool_memory.rs",
+  "crates/server/awaken-dispatch/tests/harness/mod.rs",
+  "formal/tla/AcpBoundary.tla",
+  "crates/contract/awaken-runtime-contract/src/runtime_context.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
+  "crates/server/awaken-run-executor-acp/src/lib.rs",
+  "crates/server/awaken-run-executor-acp/src/tests.rs",
+  "crates/server/awaken-dispatch/tests/lease_semantics.rs",
+  "crates/server/awaken-protocol-acp/src/tests/cleanup.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s/process.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s/tests.rs",
+  "formal/tla/SessionRunProtocolRetirement.cfg",
+  "crates/server/awaken-dispatch/src/migrations/V0004__retired_attempt_epoch.sql",
+  "crates/server/awaken-dispatch/tests/harness/attempt_retirement.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/attempt_binding.rs",
+  "crates/server/awaken-dispatch/tests/harness/attempt_binding.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch/run_dispatch_endpoints.rs",
+  "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http/attempt_binding.rs",
+  "crates/contract/awaken-tool-contract/src/tool.rs",
+  "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
+  "crates/runtime/awaken-runtime/tests/tools.rs",
+  "crates/server/awaken-session-executor/src/background_task/ownership.rs",
+  "formal/tla/SessionRunStopEvidence.tla",
+  "formal/tla/SessionRunStopEvidence.cfg",
+  "scripts/ci/formal_dispatch_mutations.py",
+  "crates/server/awaken-dispatch/src/application.rs",
+  "crates/server/awaken-dispatch-http/tests/predecessor_stop_http.rs",
+  "crates/runtime/awaken-runtime/tests/plugins.rs",
+  "crates/contract/awaken-runtime-contract/src/runtime_context/attempt_quiescence.rs",
+  "crates/runtime/awaken-runtime/src/ingress.rs",
+  "crates/runtime/awaken-runtime/tests/run_end_guard.rs",
+]
+proof_harnesses = [
+  "thread_physical_peer_vetoes_begin_and_handoff",
+  "physical_attempt_slot_installs_and_clears_only_exact_authority",
+  "physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair",
+  "retired_epoch_cannot_admit_another_execution",
+  "physical_binding_cannot_change_on_admission_retry",
+  "created_tool_handle_validation_never_invents_termination",
+  "quarantine_admission_never_widens_settlement_or_execution",
+  "quarantined_cancelled_row_can_never_re_enter_execution",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/attempt_binding.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/contract/awaken-tool-contract/src/tool.rs",
+  "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
+  "crates/contract/awaken-runtime-contract/src/runtime_context/attempt_quiescence.rs",
+  "crates/runtime/awaken-runtime/src/ingress.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
+]
+
+[[bounds]]
+text = '''Kani proves the production exact owner/epoch slot transitions and the mandatory same-Thread peer veto for begin and handoff across every slot and peer-occupancy class. These kernels are called by all durable adapters and directly prevent a second physical admission on the same Thread. The cancellation composition slice checks two Workers and two epochs with a fixed root and store clock; the database unique index and transaction wiring require executable conformance and PostgreSQL race tests. Async observation retention, Native dropped-tool uncertainty and ACP cleanup failure require the linked Rust regressions. An executor return is insufficient when its attempt-local evidence latch vetoes acknowledgement; Native model Future cancellation, task abort and watchdog timeout veto the ACK and further inference retries. Direct ingress retains an in-process blocking marker, not a cross-process guarantee. Returned transport errors and SDK-internal retries still lack exact remote-terminal evidence. SessionRunProtocol additionally represents independent Run/Worker/Epoch external invocation tuples; receipt authenticity remains an assumption. No cross-worker terminal-receipt API or unconditional opaque-tool recovery is proved.'''
+
+[[bounds]]
+text = '''ACP cleanup drains trailing output without inferring exit from channel EOF. Kubernetes missing or unrecognized exit status stays an error; adapter tests, not the scalar proof, establish this mapping.'''
+
+[[bounds]]
+text = '''An ACK atomically retires the admitted epoch; ordinary admission and durable handoff cannot resurrect it. The Kani scalar guard covers all u64 epochs. The existing SessionRunProtocol retirement slice explores two Workers and three epochs, with two ABA mutants and a reachable retired execution. Migration and SQL CHECK enforcement are executable evidence, not provider-stop or complete Native crash-recovery proof.'''
+
+[[bounds]]
+text = '''The optional execution coordinate is frozen in the existing slot transaction. Its Kani guard exhausts same-slot and binding-equality Boolean partitions only. Structured Worker identity, JSON validation, transaction races and persistence/reopen are executable tests; no provider provenance, independent stop command or complete Native hard-crash recovery is proved.'''
+
+[[bounds]]
+text = '''Coordinator-selected binding lookup now precedes both HTTP admission verbs under one handler sequence. Signed socket decision tables cover lookup failure/deadline, stale or replaced registry/claim observations, independent renewal and binding-source rollout. The unchanged slot/epoch kernels remain authoritative; these new asynchronous transport seams are executable evidence, not a new formal provider-provenance or full crash-recovery proof.'''
+
+[[bounds]]
+text = '''Created-task validation calls the production post-creation validator for 27 empty/space/present coordinate partitions and arbitrary Option<u64> delay, with unwind 4 and all default checks. Runtime decision rows additionally cover Unicode whitespace and ACK/reentry veto; Host background start/poll/cancel and malformed-handle rows retain one exact-fence Indeterminate candidate without repeated start or invented wait. These tests do not prove remote termination, SDK honesty, arbitrary Unicode refinement, cross-process evidence persistence or provider-driven Dispatch retirement.'''
+
+[[bounds]]
+text = '''The participant-evidence extension imports the existing SessionRunProtocol transitions: one Run, two Workers, three epochs and independent local/model/tool/hook participants. Eight safety mutants and seven witnesses qualify exact all-participant receipt composition, partial stop, delayed local launch, stale evidence and logical terminal with outstanding work. A separate one-epoch liveness slice assumes fair receipt delivery and exact retirement only after complete physical stop; removing delivery fairness must fail. Complete pre-effect enrollment, authenticated provider truth and remote no-restart semantics are trusted assumptions. Complete assertion delivery is distinct from application, including a foreign-assertion mutant. The application consumes exact trusted assertions through the original finish_attempt transaction; executable HTTP/Memory/SQLite/PostgreSQL tests qualify that wiring, not provider honesty. Production Kubernetes/Native qualification and its residual limits are owned once by sandbox.k8s_process_observation_requires_complete_exit; this Thread invariant reuses that evidence only for the original exact Dispatch finish composition. All five Native phase points, including fresh and resumed AfterTool, reuse the existing AttemptQuiescence observer. The participant model remains bounded design evidence for those transitions, not universal Rust refinement or arbitrary child/SDK operation coverage, and it introduces no new recovery authority.'''
+
+[[bounds]]
+text = '''The existing attempt-local observer now counts first-poll participants and closes enrollment under one mutex before Dispatch ACK. TaskTracker owns counting and drain. The new asynchronous barrier is covered by actual Future/Worker decision tables, not direct Kani proof. The existing Dispatch slot predicates retain their separate kernel proofs. Thirty native return/drop/unknown partitions and the delayed-entry/drain rows exercise actual owned futures; Memory and SQLite Worker rows withhold physical retirement and Session callbacks while an inline child remains active, then permit exact retirement without changing an Indeterminate outcome after every child returns. A child drop preserves Unknown. Gate, materialization, model-admission, phase and run-end callbacks reuse this barrier. These checks do not prove Mutex/Notify implementation, arbitrary schedules, complete pre-effect durable enrollment, detached/unobserved adapter work, remote termination, Worker hard-crash recovery or unconditional progress. Historical missing evidence remains Unknown.'''

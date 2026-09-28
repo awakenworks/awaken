@@ -1,0 +1,21 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.orchestrator_correctness",
+]
+evidence = [
+  "crates/bin/awaken-worker/src/lib.rs",
+  "crates/bin/awaken-worker/src/tests.rs",
+  "deploy/k3d/distributed-control/resources.yaml",
+  "e2e/k3d/distributed_control_contract_test.sh",
+]
+proof_harnesses = [
+  "worker_realization_scope_source_is_total_and_exact",
+]
+production_entrypoints = [
+  "crates/bin/awaken-worker/src/lib.rs",
+]
+
+[[bounds]]
+text = '''All five production SandboxTier variants; stable coordinate bytes and orchestrator namespace truth remain outside the selector proof.'''

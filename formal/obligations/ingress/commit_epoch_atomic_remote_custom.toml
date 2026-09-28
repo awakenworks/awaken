@@ -1,0 +1,38 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.eventual_network_delivery",
+]
+evidence = [
+  "formal/tla/CommitEpochGuard.tla",
+  "formal/tla/CommitEpochGuard.cfg",
+  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
+  "crates/server/awaken-dispatch/src/application.rs",
+  "crates/server/awaken-dispatch/src/commit_fence.rs",
+  "crates/server/awaken-dispatch-http/src/claimed_commit_http.rs",
+  "crates/server/awaken-dispatch-http/tests/commit_ingest_http.rs",
+  "crates/server/awaken-session-executor/src/commit_ingest.rs",
+]
+proof_harnesses = [
+  "commit_epoch_guard_admits_only_complete_exact_claim",
+  "commit_epoch_completion_requires_observed_release",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
+  "crates/server/awaken-dispatch/src/application.rs",
+  "crates/server/awaken-dispatch/src/commit_fence.rs",
+  "crates/server/awaken-dispatch-http/src/claimed_commit_http.rs",
+  "crates/server/awaken-session-executor/src/commit_ingest.rs",
+]
+
+[[bounds]]
+text = '''The remote and embedded commit paths consume the same production CommitEpochGuard admission and release-completion kernels. Kani exhausts complete exact-claim admission and the Boolean release-completion decision; the production async release_after state machine is checked by its pending, success, and failure native decision table, not by Kani.'''
+
+[[bounds]]
+text = '''The real HTTP decision table covers missing Worker identity, a stale Dispatch epoch after same-incarnation reclaim, a current fresh commit, and exact replay. The existing Runtime Host child-commit table separately covers Run, Thread, operation, payload, and physical-parent partition binding.'''
+
+[[bounds]]
+text = '''The proof is limited to the shared repository-owned admission/release kernels. Database row/advisory-lock isolation and durability, async executor and driver behavior, HTTP authentication and delivery, and OperationCoordinator atomicity remain executable evidence or TCB; no universal whole-process refinement or exactly-once external effect is claimed.'''

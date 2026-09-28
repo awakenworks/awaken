@@ -1,0 +1,21 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.llm_semantics",
+]
+evidence = [
+  "formal/tla/EvalEvidence.tla",
+  "formal/tla/EvalEvidence.cfg",
+  "crates/devtools/awaken-eval/src/observation_index.rs",
+  "crates/devtools/awaken-eval/src/outcome_judge.rs",
+  "scripts/ci/formal_eval_mutations.py",
+  "scripts/ci/check_formal.sh",
+]
+production_entrypoints = []
+
+[[bounds]]
+text = '''The two-case linked TLA+ model keeps the dataset version unchanged through Record, Score, and Publish; a semantic mutant that changes the version is rejected by the exact frozen-ground-truth invariant.'''
+
+[[bounds]]
+text = '''The production Outcome Judge decision table exhausts 32 combinations of missing, unique-valid, unique-invalid, duplicate, and unexpected observations across two real cases. Every case asserts value equality for the immutable dataset and input observations before and after scoring. Rust borrowing and this finite table are executable cross-checks, not universal Rust-to-model refinement.'''

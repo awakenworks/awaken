@@ -1,0 +1,33 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ResourceReclamation.tla",
+  "formal/tla/ResourceLifecycleWorkflow.tla",
+  "crates/server/awaken-resource-reclaimer/src/lib.rs",
+  "crates/stores/awaken-resource-store/src/lib.rs",
+  "crates/stores/awaken-resource-store/src/sqlite_lifecycle.rs",
+  "crates/stores/awaken-resource-store/src/postgres.rs",
+  "crates/resources/awaken-resource-application/src/files/deletion.rs",
+  "crates/bin/awaken-cli/src/runtime_process_router.rs",
+  "e2e/resource_reclamation_faults_e2e.mjs",
+]
+proof_harnesses = [
+  "reclamation_fence_admission_requires_absent_owner_and_zero_references",
+  "physical_purge_requires_zero_references_leases_and_fence",
+]
+production_entrypoints = [
+  "crates/server/awaken-resource-reclaimer/src/lib.rs",
+  "crates/stores/awaken-resource-store/src/lib.rs",
+  "crates/stores/awaken-resource-store/src/sqlite_lifecycle.rs",
+  "crates/stores/awaken-resource-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''Kani exhaustively checks the production store decision over all fence-owner/reference predicates and the production pre-purge decision over all fence, indexed-reference and final guard-result predicates. It does not verify database transaction implementation, guard-source completeness, async scheduling or physical backend behavior; focused adapter/reclaimer tests cover the concrete call placement.'''
+
+[[bounds]]
+text = '''The existing finite reclamation model separates File intent, tombstone and ownership removal with one source File, two other references, two leases and three generations. Two premature-removal/fencing mutants fail, and three witnesses reach both crashed commit prefixes and completion. Sixteen SQLite fault/reopen cases share foreground and automatic recovery; fourteen command-identity cases reject drift and retain another same-Workspace File. This is bounded model/adapter evidence, not a Kani proof of the new preparation, SQL refinement, arbitrary concurrent schedules or deployed liveness. The original production fault E2E additionally crosses failed intent/tombstone/reference commits with actual SIGKILL and normal restart: only committed commands resume, another File preserves exact shared bytes, and independent final-owner deletion permits physical GC and stable receipts. This is one-host SQLite process recovery, not power-loss or cross-host storage proof.'''

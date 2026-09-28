@@ -1,0 +1,33 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/CheckpointRecovery.tla",
+  "crates/runtime/awaken-runtime/src/engine/inference.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
+  "crates/runtime/awaken-runtime/src/engine/tests.rs",
+  "crates/runtime/awaken-runtime/tests/checkpoint.rs",
+  "crates/runtime/awaken-store-inmem/tests/inmem_units.rs",
+  "crates/server/awaken-dispatch/tests/checkpoint_fence.rs",
+  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
+]
+proof_harnesses = [
+  "checkpoint_clear_requires_unvetoed_terminal_completion",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-runtime/src/engine/inference.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
+]
+
+[[bounds]]
+text = '''The direct Kani harness exhausts all eight combinations of cancellation, model-journal failure and physical-quiescence acknowledgement by calling the sole production checkpoint-retirement admission kernel. It proves that retirement is admitted exactly for an unvetoed local return; it does not execute the asynchronous store delete.'''
+
+[[bounds]]
+text = '''The production inference owner awaits StreamCheckpointStore::delete for the exact current Run id before releasing its result. A delete error enters the existing InferStepOutcome::EvidenceUnavailable to Error::Commit path, bypassing model failover, inference-failure tolerance and terminal finish. The full Runtime failure-injection test cross-checks exact Run-id deletion, propagated storage error, retained checkpoint and absence of committed assistant output; two exact source mutants qualify both await-error propagation and the fail-closed mapping.'''
+
+[[bounds]]
+text = '''Existing Memory, fenced and PostgreSQL adapter tests provide executable delete/idempotency and fencing evidence. Kani does not prove async polling, store implementation truth, filesystem or database durability, crash timing, or universal Rust-to-TLA refinement. The scoped direct guarantee is that explicit delete failure cannot publish this terminal Runtime result; successful physical deletion and its persistence remain adapter/TCB boundaries.'''

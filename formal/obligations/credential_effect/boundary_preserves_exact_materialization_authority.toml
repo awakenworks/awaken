@@ -1,0 +1,64 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.provider_revocation_propagation",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/CredentialEffectBoundary.tla",
+  "crates/contract/awaken-credential-contract/src/http_effect.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/credential_admission.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "formal/tla/CredentialEffectBoundary.cfg",
+  "scripts/ci/formal_credential_mutations.py",
+  "crates/contract/awaken-runtime-contract/src/credential.rs",
+  "crates/contract/awaken-runtime-contract/src/execution.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-credential-materializer/src/claimed_materialization.rs",
+  "crates/server/awaken-credential-materializer/src/lib.rs",
+  "crates/server/awaken-dispatch-testkit/src/conformance/recovery_credentials.rs",
+]
+proof_harnesses = [
+  "claim_credential_operation_is_total_and_terminal_dominates",
+  "claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire",
+  "credential_realization_receipt_requires_every_exact_binding_coordinate",
+  "claim_bound_external_effect_admits_only_current_ownership",
+  "new_materialization_admits_only_active_credential_status",
+]
+production_entrypoints = [
+  "crates/contract/awaken-credential-contract/src/http_effect.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/credential_admission.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/contract/awaken-runtime-contract/src/credential.rs",
+  "crates/contract/awaken-runtime-contract/src/execution.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-credential-materializer/src/claimed_materialization.rs",
+  "crates/server/awaken-credential-materializer/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Twelve opaque binding coordinates with two identities each (all 4096 initial match/mismatch combinations), independent one-step revision/generation/epoch advancement, three clock values with exact expiry at two, withdrawal and crash/restart. Observations retain effect-time authority; receipt negatives vary each coordinate independently. Thirty-three semantic mutants and six useful/rejection/history witnesses qualify the abstract relation, not universal Rust refinement or cryptographic/provider correctness.'''
+
+[[bounds]]
+text = '''The production classifier is exhaustively Kani-checked over terminal-repair and cancellation booleans: terminal repair dominates, cancellation selects the narrow cancel purpose, and ordinary execution is the only remaining class.'''
+
+[[bounds]]
+text = '''The Worker reuses the canonical compiler and requires complete ordered binding equality at the current claim epoch before model materialization; transport integrity, async scheduling, compiler internals and the remaining effect boundary stay outside this scalar proof.'''
+
+[[bounds]]
+text = '''The finite TLA+ model still supplies only abstract state exploration; it is not counted as Rust refinement. The production proof chain is instead composed from the named kernels used on the live path: operation classification; complete ordered claim-wire equality; current ownership; current Vault lifecycle; and exact realization receipt/persistence identity.'''
+
+[[bounds]]
+text = '''The claim revalidation harness calls the production slice comparator over a distinct two-binding set and rejects missing, widened, reordered and stale-epoch wire projections. Native compiler tests exercise the real candidate compiler and Worker invokes this same comparator immediately before model materialization. Arbitrary candidate counts and compiler fingerprint internals remain bounded/executable rather than universally proved.'''
+
+[[bounds]]
+text = '''The receipt harness crosses all 256 match/mismatch combinations of candidate fingerprint, credential id/revision, holder boundary/trust domain, mechanism, claim epoch and receipt fingerprint using actual production binding/receipt structs. It also proves the shared Insert/ExactReplay/Collision decision now consumed by all three Dispatch stores. SHA-256 correctness, arbitrary strings and database linearization remain outside the harness.'''
+
+[[bounds]]
+text = '''The existing ownership and Active-status kernels are called before Vault/external material access; the materializer then constructs the receipt from that exact binding and the claim-fenced stores verify it before persistence. Async scheduling, the interval after an ownership observation, SecretStore/external resolver truth, transport integrity, database-engine behavior and provider-side revocation propagation are explicit implementation or external boundaries, not consequences of these pure proofs.'''

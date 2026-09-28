@@ -1,0 +1,17 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/contract/awaken-provisioning-contract/src/claimed_effect.rs",
+  "crates/worker/awaken-sandbox-local/src/abandoned_realization.rs",
+]
+proof_harnesses = [
+  "claim_retention_runs_once_only_for_an_unsettled_drop",
+]
+production_entrypoints = [
+  "crates/contract/awaken-provisioning-contract/src/claimed_effect.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the settle/drop state machine of ClaimedEffect: over every reachable combination of settled-ness and drop order, retention runs exactly once for an unsettled drop, never for a completed effect (Ok or Err), and never for an abandoned one. Because the claim is minted by a synchronous constructor that takes it by value, no polling can precede it, so every cancellation point is covered by this one property rather than by inspecting each call site. What the proof does not establish: that a given claim's retention actually writes a record a reader recovers - that is the registered recorder set in scripts/ci/_cancel_safety_fitness.py and each tier's own cancellation tests - nor anything about the async runtime's scheduling.'''

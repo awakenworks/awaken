@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/ObservationReconcileProof.tla",
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/bin/awaken-cli/src/observation_reconcile.rs",
+]
+proof_harnesses = [
+  "observation_publication_fence_is_success_owned_exact_and_failure_stable",
+]
+production_entrypoints = [
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/bin/awaken-cli/src/observation_reconcile.rs",
+]
+
+[[bounds]]
+text = '''The opaque production fence owns the completion transition and Kani exhausts both completion outcomes over arbitrary u8 fingerprints. Failure retains the exact prior admission relation; only success installs the attempted fingerprint. Publication result integrity and the gate mutex remain runtime TCB.'''
