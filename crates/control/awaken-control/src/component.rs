@@ -133,6 +133,9 @@ pub struct ControlDependencies {
     pub local_browser_auth: Option<awaken_iam_host::LocalBrowserAuth>,
     pub remote_iam: Option<Arc<RemoteManagementAuthz>>,
     pub cloud_login: Option<Arc<dyn awaken_admin_config_api::CloudLoginApplication>>,
+    /// The process's one wall clock. Every Control-owned aggregate that stamps
+    /// time (Data Subjects and their erasure) reads this handle.
+    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 /// The complete Control application component exported to a process assembly.
@@ -207,6 +210,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         local_browser_auth,
         remote_iam,
         cloud_login,
+        clock,
     } = dependencies;
     let request_scoped_execution_workspace = remote_iam.is_some();
     let managed_credentials = credentials.clone();
@@ -335,10 +339,14 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
             )
         });
     let data_subject_application = Arc::new(
-        DataSubjectApplication::new(data_subjects.clone(), enrollment_signing_key.to_vec())
-            .expect("a derived 32-byte enrollment signing key is valid"),
+        DataSubjectApplication::new(
+            data_subjects.clone(),
+            enrollment_signing_key.to_vec(),
+            clock.clone(),
+        )
+        .expect("a derived 32-byte enrollment signing key is valid"),
     );
-    let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs)
+    let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs, clock)
         .with_target(ErasureTarget::Coordinator, coordinator_content_eraser);
     let resolver = match resource_content_eraser {
         Some(eraser) => resolver.with_target(ErasureTarget::Resources, eraser),

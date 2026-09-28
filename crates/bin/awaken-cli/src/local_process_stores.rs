@@ -88,6 +88,7 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) 
         awaken_data_subject_application::RepoDataSubjectResolver::new(
             control.data_subjects,
             control.erasure_jobs,
+            stores.clock.clone(),
         ),
     );
     (

@@ -930,6 +930,8 @@ name = "awaken-data-subject-application"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-runtime-contract",
  "base64 0.22.1",
  "hmac 0.12.1",

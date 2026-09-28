@@ -41,7 +41,6 @@
         "crates/control/awaken-credential-vault/src/lib.rs": 1,
         "crates/control/awaken-credential-vault/src/oauth.rs": 1,
         "crates/control/awaken-credential-vault/src/repo/material_mutation.rs": 1,
-        "crates/control/awaken-data-subject-application/src/lib.rs": 1,
         "crates/devtools/awaken-eval/src/compact_eval.rs": 1,
         "crates/devtools/awaken-eval/src/memory_eval.rs": 1,
         "crates/devtools/awaken-eval/src/outcome_acp.rs": 1,
@@ -131,7 +130,6 @@
       "reason": "Each context declared its own wall-clock port before awaken-lease-contract owned one: agent-contract Clock, WorkerClock, RegistryClock, DataSubjectClock, WarmLeaseClock and the runtime ModelInferenceClock. Each is retired by taking awaken_lease_contract::WallClock; the count may only fall.",
       "files": {
         "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs": 1,
-        "crates/control/awaken-data-subject-application/src/lib.rs": 1,
         "crates/resources/awaken-resource-application/src/registry.rs": 1,
         "crates/worker/awaken-sandbox-container/src/pool/lease.rs": 1
       }
@@ -141,7 +139,6 @@
       "expires": "2026-12-31",
       "reason": "Constructors that pick the real clock themselves (Arc::new(System*Clock), system_clock() below the root). Each is retired by making the clock a required constructor argument that the composition root supplies once; the count may only fall. The Worker transport now requires its clock: that removed eight defaults (worker-transport-security, run-ingress-http, awaken-cli lib.rs) and moved three to the test-support Scenario compositions that have no process clock yet (coordinator lib.rs scenario mounts, scenario-host main); the process compositions that choose the one clock are registered roots.",
       "files": {
-        "crates/control/awaken-data-subject-application/src/lib.rs": 1,
         "crates/devtools/awaken-scenario-host/src/main.rs": 1,
         "crates/resources/awaken-resource-application/src/registry.rs": 1,
         "crates/server/awaken-coordinator/src/lib.rs": 2,
@@ -171,7 +168,6 @@
         "crates/control/awaken-admin-config-api/src/router.rs": 1,
         "crates/control/awaken-authz-enforce/src/lib.rs": 1,
         "crates/control/awaken-control/src/authz/clock.rs": 2,
-        "crates/control/awaken-data-subject-application/src/lib.rs": 3,
         "crates/resources/awaken-memory-store/src/repository.rs": 1,
         "crates/resources/awaken-resource-application/src/files.rs": 1,
         "crates/resources/awaken-resource-application/src/lib.rs": 1,
