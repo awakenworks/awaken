@@ -221,10 +221,13 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
     resource_application = runtime_manifest.get("dependencies", {}).get(
         "awaken-resource-application"
     )
-    if not isinstance(resource_application, dict) or not resource_application.get("optional"):
+    # Not even optionally: the Host consumes Resources through ports, and a test
+    # composition builds them in awaken-runtime-host-testkit.
+    if resource_application is not None:
         errors.append(
-            "crates/server/awaken-session-executor/Cargo.toml: Resources application must be "
-            "test-support-only; product Runtime Host accepts exact execution capabilities"
+            "crates/server/awaken-session-executor/Cargo.toml: Resources application must not be "
+            "linked; product Runtime Host accepts exact execution capabilities and test "
+            "compositions supply ports through awaken-runtime-host-testkit"
         )
     # The Host's Resources-context ports are its `ResourcePorts` capability group.
     host_resources = "crates/server/awaken-session-executor/src/host/capability/resources.rs"

@@ -510,19 +510,17 @@ pub(super) async fn prepare_runtime_routers(
             clock.clone(),
         ),
         #[cfg(any(test, feature = "test-support"))]
-        None => {
-            let host = SharedHost::new_with_resources(
-                model_wiring.executor,
-                model_wiring.model_ref,
-                resource_authorities.clone(),
-            )
-            .with_local_workspace(platform_workspace.clone());
-            host.install_memory_extraction_repository(memory_extractions);
-            host
-        }
+        None => SharedHost::new_with_resources(
+            model_wiring.executor,
+            model_wiring.model_ref,
+            awaken_runtime_host_testkit::local_resource_ports(&resource_authorities),
+            memory_extractions,
+        )
+        .with_local_workspace(platform_workspace.clone()),
         #[cfg(not(any(test, feature = "test-support")))]
         None => unreachable!("product runtime process requires a resolved deployment"),
-    };
+    }
+    .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
     let local_dispatch = runtime_authority
         .as_ref()
         .map(|authority| authority.dispatch_store());

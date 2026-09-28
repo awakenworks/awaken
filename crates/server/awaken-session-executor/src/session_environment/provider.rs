@@ -37,6 +37,9 @@ pub(crate) enum SessionEnvironmentProvider {
         hand_bin: String,
         hand_idle_after: std::time::Duration,
         hand_residency: ContainerHandResidency,
+        /// The Host's process clock; container Repository credentials are
+        /// stamped and judged on it.
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     },
 }
 
@@ -273,9 +276,13 @@ impl SessionEnvironmentProvider {
             hand_bin,
             hand_idle_after,
             ContainerHandResidency::AttachedExec,
+            awaken_lease_contract::system_clock(),
         )
     }
 
+    // Every argument is one independently configured part of the one container
+    // Session provider the startup composition installs.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn container_with_capacity_hand_idle_and_residency(
         provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
         capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
@@ -284,6 +291,7 @@ impl SessionEnvironmentProvider {
         hand_bin: impl Into<String>,
         hand_idle_after: std::time::Duration,
         hand_residency: ContainerHandResidency,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self::Container {
             provider,
@@ -293,6 +301,7 @@ impl SessionEnvironmentProvider {
             hand_bin: hand_bin.into(),
             hand_idle_after,
             hand_residency,
+            clock,
         }
     }
 
@@ -346,6 +355,7 @@ impl SessionEnvironmentProvider {
                 hand_bin,
                 hand_idle_after,
                 hand_residency,
+                clock,
             } => Self::Container {
                 provider: provider.clone(),
                 capacity: capacity.clone(),
@@ -354,6 +364,7 @@ impl SessionEnvironmentProvider {
                 hand_bin: hand_bin.clone(),
                 hand_idle_after: *hand_idle_after,
                 hand_residency: *hand_residency,
+                clock: clock.clone(),
             },
         }
     }
@@ -498,6 +509,7 @@ impl SessionEnvironmentProvider {
                 hand_bin,
                 hand_idle_after,
                 hand_residency,
+                clock,
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
@@ -526,6 +538,7 @@ impl SessionEnvironmentProvider {
                     *hand_idle_after,
                     *hand_residency,
                     capabilities,
+                    clock.clone(),
                 )
                 .await
             }
@@ -811,6 +824,7 @@ impl SessionEnvironmentProvider {
                     hand_bin,
                     hand_idle_after,
                     hand_residency,
+                    clock,
                     ..
                 },
                 SessionEnvironment::Container {
@@ -826,6 +840,7 @@ impl SessionEnvironmentProvider {
                     *hand_idle_after,
                     *hand_residency,
                     capabilities.clone(),
+                    clock.clone(),
                 )
                 .await
             }
@@ -892,6 +907,7 @@ impl SessionEnvironmentProvider {
                 hand_bin,
                 hand_idle_after,
                 hand_residency,
+                clock,
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
@@ -917,6 +933,7 @@ impl SessionEnvironmentProvider {
                     *hand_idle_after,
                     *hand_residency,
                     capabilities,
+                    clock.clone(),
                 )
                 .await
             }
@@ -1027,6 +1044,7 @@ impl SessionEnvironmentProvider {
                 hand_bin,
                 hand_idle_after,
                 hand_residency,
+                clock,
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
@@ -1049,6 +1067,7 @@ impl SessionEnvironmentProvider {
                     *hand_idle_after,
                     *hand_residency,
                     capabilities,
+                    clock.clone(),
                 )
                 .await
                 .map(Some)

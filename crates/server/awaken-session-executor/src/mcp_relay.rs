@@ -63,6 +63,8 @@ const RELAY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 struct RelayState {
     routes: Routes,
     authority: GenerationAuthority,
+    /// The clock route admission reads: the owning Host's process clock.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     /// One upstream client for the life of the relay. Building one inside the
     /// handler discarded the connection pool on every forwarded call.
     client: reqwest::Client,
@@ -73,7 +75,7 @@ impl RelayState {
         route.capability == capability
             && (self.authority)(
                 &route.generation,
-                crate::terminal_repository_publication::runtime_unix_now_ms(),
+                awaken_lease_contract::WallClockExt::now_ms(self.clock.as_ref()),
             )
     }
 }
@@ -104,13 +106,12 @@ impl McpRelay {
     pub(crate) async fn for_host(
         host: std::sync::Weak<crate::SharedHost>,
     ) -> std::io::Result<Self> {
-        let exposure = host
+        let owner = host
             .upgrade()
-            .ok_or_else(|| std::io::Error::other("MCP relay Host authority is unavailable"))?
-            .deployment
-            .sandbox
-            .container_mcp_relay
-            .clone();
+            .ok_or_else(|| std::io::Error::other("MCP relay Host authority is unavailable"))?;
+        let exposure = owner.deployment.sandbox.container_mcp_relay.clone();
+        let clock = owner.clock.clone();
+        drop(owner);
         Self::start_with_authority_and_exposure(
             Arc::new(move |generation, _now| {
                 host.upgrade().is_some_and(|host| {
@@ -119,6 +120,7 @@ impl McpRelay {
                 })
             }),
             exposure.as_ref(),
+            clock,
         )
         .await
     }
@@ -148,6 +150,7 @@ impl McpRelay {
                 )
             }),
             None,
+            awaken_lease_contract::system_clock(),
         )
         .await
     }
@@ -155,6 +158,7 @@ impl McpRelay {
     async fn start_with_authority_and_exposure(
         authority: GenerationAuthority,
         exposure: Option<&crate::ContainerMcpRelayExposure>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> std::io::Result<Self> {
         let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
         let bind = exposure.map_or_else(
@@ -176,6 +180,7 @@ impl McpRelay {
         let state = RelayState {
             routes: routes.clone(),
             authority,
+            clock,
             client: awaken_outbound_http::rustls_client_builder(
                 awaken_outbound_http::TransportDeadline::Streaming {
                     connect: RELAY_CONNECT_TIMEOUT,
@@ -621,10 +626,13 @@ mod tests {
             "http://awaken-worker.awaken-cloud.svc:8081",
         )
         .unwrap();
-        let relay =
-            McpRelay::start_with_authority_and_exposure(Arc::new(|_, _| true), Some(&exposure))
-                .await
-                .unwrap();
+        let relay = McpRelay::start_with_authority_and_exposure(
+            Arc::new(|_, _| true),
+            Some(&exposure),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         let generation = generation("session-external", "docs", 3);
         relay.set_route(
             &generation,

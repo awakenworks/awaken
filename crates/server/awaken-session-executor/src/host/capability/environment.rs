@@ -26,7 +26,11 @@ pub struct ContainerEnvironmentComponents {
 /// Sandbox-provider wiring. Consumer: Session environment realization and
 /// lifecycle, ACP backend selection, warm capacity, and helper sub-agents.
 pub(crate) struct EnvironmentProviders {
-    pub(crate) provider: LocalProvider,
+    /// Deliberately fresh sandboxes for auxiliary Agent Runs (compactor, Memory
+    /// selection/extraction, isolated Skill forks), injected by the process
+    /// composition. They never share the Session-owned environment.
+    pub(crate) auxiliary_sandboxes:
+        Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory>,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
     pub(crate) session_provider: crate::session_environment::SessionEnvironmentProvider,
@@ -55,9 +59,12 @@ pub(crate) struct EnvironmentProviders {
 impl EnvironmentProviders {
     /// Workdir-tier providers rooted at `sandbox_root` until startup installs
     /// an explicit Session provider.
-    pub(in crate::host) fn new(sandbox_root: PathBuf) -> Self {
+    pub(in crate::host) fn new(
+        sandbox_root: PathBuf,
+        auxiliary_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory>,
+    ) -> Self {
         Self {
-            provider: LocalProvider::new(sandbox_root.clone()),
+            auxiliary_sandboxes,
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root,
             ),
@@ -137,6 +144,7 @@ impl SharedHost {
                 hand_bin,
                 std::time::Duration::from_secs(self.deployment.sandbox.container_hand_idle_secs),
                 self.deployment.sandbox.container_hand_residency,
+                self.clock.clone(),
             );
         self.env.session_provider_explicit = true;
         if let Some(mounter) = self.memory_mounter() {
@@ -167,6 +175,7 @@ impl SharedHost {
                     self.deployment.sandbox.container_hand_idle_secs,
                 ),
                 self.deployment.sandbox.container_hand_residency,
+                self.clock.clone(),
             );
         if let Some(initializer) = components.cache_volume_initializer {
             self.env.cache_volume_prewarmer =
@@ -176,6 +185,22 @@ impl SharedHost {
         if let Some(mounter) = self.memory_mounter() {
             self.env.session_provider.install_memory_mounter(mounter);
         }
+        self
+    }
+
+    /// Install the process composition's auxiliary-run sandbox factory. Every
+    /// auxiliary Agent Run (compactor, Memory selection/extraction, isolated
+    /// Skill fork) realizes its fresh sandbox through it; a Host without one
+    /// refuses those Runs instead of choosing a sandbox implementation itself.
+    #[must_use]
+    pub fn with_auxiliary_sandboxes(
+        mut self,
+        factory: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory>,
+    ) -> Self {
+        self.resources
+            .memory
+            .set_auxiliary_sandbox_provider(factory.provider("mem"));
+        self.env.auxiliary_sandboxes = factory;
         self
     }
 

@@ -9,7 +9,6 @@ use awaken_ext_builtin_tools::{AuxiliaryAgentInput, invoke_auxiliary_agent};
 use awaken_ext_memory::{RecallSelector, parse_indices, select_input};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::RawTool;
-use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::judge::AuxAgentTool;
@@ -30,16 +29,14 @@ impl AgentSelector {
         llm: Arc<dyn LlmExecutor>,
         snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
         execution: Arc<HostCommit>,
+        sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     ) -> Self {
         let agent_id = snapshot.root_agent_id.0.clone();
         let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
-        let base = std::env::temp_dir()
-            .join("awaken-coordinator")
-            .join(format!("{}-mem-select", std::process::id()));
         Self {
             agent_tool: Arc::new(AuxAgentTool {
                 llm,
-                provider: LocalProvider::new(base),
+                provider: sandboxes,
                 catalog,
                 execution,
             }),

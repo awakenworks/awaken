@@ -850,3 +850,20 @@ impl awaken_dispatch_contract::ClaimedSessionRealizationControl
         Ok(None)
     }
 }
+
+impl SharedHost {
+    /// The Workdir provider rooted where this Host's Session provider realizes
+    /// sandboxes, carrying the installed Memory mounter: the fixture a test
+    /// uses to pre-create a physical Session sandbox.
+    pub(crate) fn test_local_provider(&self) -> awaken_sandbox_local::LocalProvider {
+        let root = match &self.store_dir {
+            Some(dir) => dir.join("sandboxes"),
+            None => crate::acp_backend::session_sandbox_base(&self.deployment),
+        };
+        let provider = awaken_sandbox_local::LocalProvider::new(root);
+        if let Some(mounter) = self.memory_mounter() {
+            provider.install_memory_mounter(mounter);
+        }
+        provider
+    }
+}

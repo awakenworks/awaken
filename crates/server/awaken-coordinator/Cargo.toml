@@ -150,6 +150,7 @@ test-support = [
     "dep:awaken-store-inmem",
     "dep:awaken-resource-persistence",
     "dep:awaken-credential-vault",
+    "awaken-credential-materializer/authority",
     "awaken-resource-persistence/test-support",
     "awaken-deployment-application/test-support",
     "awaken-captured-content-store/test-support",
@@ -173,6 +174,7 @@ nats = ["awaken-dispatch/nats"]
 
 [dev-dependencies]
 awaken-protocol-managed-testkit.workspace = true
+awaken-runtime-host-testkit.workspace = true
 awaken-runtime.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }

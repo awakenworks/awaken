@@ -16,7 +16,7 @@ SESSION_REPOSITORY_PUBLICATION = (
     "terminal_cleanup/repository_publication.rs"
 )
 SESSION_CLEANUP_DRIVER = (
-    "crates/server/awaken-session-application/src/terminal_cleanup_driver.rs"
+    "crates/server/awaken-session-realization-driver/src/terminal_cleanup_driver.rs"
 )
 SESSION_CLEANUP_EFFECTS = (
     "crates/contract/awaken-session-state-contract/src/terminal_cleanup/effects.rs"
@@ -42,7 +42,7 @@ SESSION_DELETE_DISPOSITION = (
 SESSION_ROW_CODEC = "crates/stores/awaken-session-store/src/row_codec.rs"
 SESSION_REALIZATION = "crates/contract/awaken-session-realization-contract/src/session_realization.rs"
 SESSION_REALIZATION_DRIVER = (
-    "crates/server/awaken-session-application/src/session_realization_driver.rs"
+    "crates/server/awaken-session-realization-driver/src/session_realization_driver.rs"
 )
 SESSION_TERMINAL_AUTHORIZATION = (
     "crates/contract/awaken-session-realization-contract/src/"

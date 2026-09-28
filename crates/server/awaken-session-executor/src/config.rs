@@ -30,6 +30,7 @@ use awaken_runtime_contract::resolved::{
 };
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
+#[cfg(test)]
 use awaken_sandbox_local::LocalSandbox;
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant working in a local repository.";
@@ -664,6 +665,13 @@ impl ToolExecutor for FilesystemFreeAgentToolExecutor {
     }
 }
 
+impl RuntimeToolSource for Box<dyn awaken_session_environment_contract::RootedToolSandbox> {
+    fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+        self.rooted_tools()
+    }
+}
+
+#[cfg(test)]
 impl RuntimeToolSource for LocalSandbox {
     fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
         self.rooted_tools()

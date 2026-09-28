@@ -9,7 +9,7 @@
 //! only content backends; it does not own an authorization policy or a second identity
 //! registry.
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -28,9 +28,9 @@ impl MemoryStores {
         Self { fs }
     }
 
-    /// Test-support opener under one storage-dir durability rule (`Some` → durable
-    /// under the dir, `None` → ephemeral per-process).
-    #[cfg(any(test, feature = "test-support"))]
+    /// Opener for this crate's own unit tests under one storage-dir durability
+    /// rule (`Some` → durable under the dir, `None` → ephemeral per-process).
+    #[cfg(test)]
     pub(crate) fn open(store_dir: Option<&Path>) -> Self {
         // ADR-0053 path-addressed memory files persist alongside, under the same
         // durability rule. Backed by the SQLite store so rename-replace and CAS are

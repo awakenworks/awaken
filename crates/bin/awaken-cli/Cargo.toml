@@ -48,6 +48,8 @@ awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the startup opens.
 awaken-session-executor.workspace = true
+# Local Resource ports for the test-support runtime process without a Deployment.
+awaken-runtime-host-testkit = { workspace = true, optional = true }
 # The installation platform Workspace marker this startup reads or publishes.
 awaken-installation-workspace.workspace = true
 awaken-resource-worker-http.workspace = true
@@ -164,6 +166,7 @@ test-support = [
     "awaken-protocol-managed/test-support",
     "awaken-coordinator/test-support",
     "awaken-session-executor/test-support",
+    "dep:awaken-runtime-host-testkit",
     "awaken-resource-persistence/test-support",
 ]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
@@ -214,6 +217,7 @@ awaken-ext-mcp = { workspace = true }
 awaken-iam-contract = { workspace = true }
 awaken-iam-core = { workspace = true }
 awaken-lease-testkit.workspace = true
+awaken-runtime-host-testkit.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 http-body-util = "0.1"

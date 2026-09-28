@@ -262,7 +262,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
     let created = match &sandbox {
         AgentRunSandbox::Fresh(provider) => Some(
             provider
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec(&thread))
+                .create_rooted_sandbox(&crate::provisioning::agent_run_sandbox_spec(&thread))
                 .await
                 .map_err(|error| AgentRunError::Provisioning(error.to_string()))?,
         ),

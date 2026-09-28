@@ -455,29 +455,7 @@ impl NamespaceProvider {
     /// Static capability evidence shared by provider admission and owners of an
     /// already-created namespace environment.
     pub fn capabilities() -> pc::SandboxCapabilities {
-        pc::SandboxCapabilities {
-            process_tree_supervision: false,
-            isolation: pc::IsolationClass::Namespace,
-            tool_transparent: true,
-            // Seatbelt is a policy boundary, not a mount namespace: it cannot make
-            // host paths appear at Linux-style /workspace or /mnt paths. The launcher
-            // translates cwd/known argv paths and exports real host paths instead.
-            path_fidelity: cfg!(target_os = "linux"),
-            enforced_readonly: true,
-            network_isolation: true,
-            enforced_network_allowlist: false,
-            secret_egress_substitution: false,
-            resource_limits: false,
-            custom_rootfs: false,
-            package_provisioning: false,
-            control_services: if cfg!(target_os = "linux") {
-                std::collections::BTreeSet::from([
-                    SandboxControlServiceKind::RepositoryGitCredential,
-                ])
-            } else {
-                Default::default()
-            },
-        }
+        awaken_session_environment_contract::namespace_capabilities()
     }
 
     /// Realize the mounts under `root`, all-or-nothing: any failure reaps the tree.

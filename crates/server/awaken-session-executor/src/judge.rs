@@ -13,7 +13,6 @@ use awaken_ext_goal::state::grader_thread_id;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
-use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::host::SharedHost;
@@ -83,7 +82,7 @@ impl Grader for HostAgentGrader<'_> {
 /// no subagent-specific Runtime contract exists.
 pub(crate) struct AuxAgentTool {
     pub(crate) llm: Arc<dyn LlmExecutor>,
-    pub(crate) provider: LocalProvider,
+    pub(crate) provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     /// Compactor and memory agents are resolved by id from here, so their
     /// model/instructions/window are configured per-agent.
     pub(crate) catalog: Arc<AgentCatalog>,
@@ -107,7 +106,7 @@ impl RawTool for AuxAgentTool {
         let thread = format!("aux/{}", call.call_id);
         let (text, _usage) = crate::agent_runner::run_configured_agent_with_id(
             &self.catalog,
-            crate::agent_runner::AgentRunSandbox::Fresh(&self.provider),
+            crate::agent_runner::AgentRunSandbox::Fresh(self.provider.as_ref()),
             self.llm.clone(),
             &request.agent_id,
             &thread,

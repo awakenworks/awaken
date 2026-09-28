@@ -30,7 +30,7 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_session_executor::{ManagedHost, SharedHost};
+use awaken_session_executor::ManagedHost;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -116,7 +116,10 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(any));
+    let host = Arc::new(
+        awaken_runtime_host_testkit::volatile_host(Arc::new(OkModel), "stub")
+            .with_dispatch_store(any),
+    );
     let _managed = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     let router = durable_ops_router(host);
     let thread = "t-dur";
@@ -266,7 +269,10 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(any));
+    let host = Arc::new(
+        awaken_runtime_host_testkit::volatile_host(Arc::new(OkModel), "stub")
+            .with_dispatch_store(any),
+    );
     let thread = "cold-monitor";
     mem.enqueue(RunDispatch::new(activation("run-dead", thread)))
         .await
@@ -325,7 +331,10 @@ async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability
      * is covered by the lifecycle test above. D2 C1=F,C2=read=>E2; D3
      * C1=F,C2=repair=>E2. This prevents monitoring from becoming a parallel
      * authority/capability path. */
-    let router = durable_ops_router(Arc::new(SharedHost::new(Arc::new(OkModel), "stub")));
+    let router = durable_ops_router(Arc::new(awaken_runtime_host_testkit::volatile_host(
+        Arc::new(OkModel),
+        "stub",
+    )));
     for (method, path) in [
         ("GET", "/v1/durable/threads/direct/dispatches"),
         ("GET", "/v1/durable/threads/direct/superseded"),

@@ -1572,8 +1572,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .sandbox_effect_fence("session-artifacts-create")
         .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        host.env
-            .provider
+        host.test_local_provider()
             .create_sandbox_for_effect(
                 &spec,
                 &create_fence,
@@ -1732,8 +1731,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .sandbox_effect_fence("artifact-response-loss-create")
         .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        host.env
-            .provider
+        host.test_local_provider()
             .create_sandbox_for_effect(
                 &spec,
                 &create_fence,
@@ -2288,8 +2286,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         .sandbox_effect_fence("session-harvest-failure-create")
         .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        host.env
-            .provider
+        host.test_local_provider()
             .create_sandbox_for_effect(
                 &spec,
                 &create_fence,

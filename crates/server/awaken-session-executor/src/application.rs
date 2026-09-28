@@ -991,7 +991,7 @@ impl crate::SharedHost {
                     .dispatch_session_runtime()
                     .and_then(|runtime| runtime.managed())
                     .map_err(crate::managed_adapter_error::from_run_error)?;
-                awaken_session_application::drive_session_terminal_cleanup(
+                awaken_session_realization_driver::drive_session_terminal_cleanup(
                     session_id, lease, control, &runtime,
                 )
                 .await

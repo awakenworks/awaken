@@ -8,7 +8,6 @@
 //! `awaken-ext-skills`; this module builds one registry projection and, only for
 //! legacy/direct callers, adapts that same registry to the two semantic tools.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use awaken_ext_builtin_tools::{AUXILIARY_AGENT, AuxiliaryAgentInput};
@@ -22,6 +21,7 @@ use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+#[cfg(test)]
 use awaken_sandbox_local::LocalProvider;
 
 /// The default workspace subdir the agent authors skills under, scanned live so a
@@ -272,7 +272,7 @@ impl SkillSource for SnapshotSkillSource {
 struct ForkAgentTool {
     llm: Arc<dyn LlmExecutor>,
     model_ref: String,
-    provider: LocalProvider,
+    provider: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     /// The parent agent's sandbox, shared with the fork by default.
     sandbox: Arc<crate::session_environment::SessionEnvironment>,
     placement: SkillForkPlacement,
@@ -297,7 +297,7 @@ impl RawTool for ForkAgentTool {
                 crate::agent_runner::AgentRunSandbox::Shared(self.sandbox.as_ref())
             }
             SkillForkPlacement::FreshIsolation => {
-                crate::agent_runner::AgentRunSandbox::Fresh(&self.provider)
+                crate::agent_runner::AgentRunSandbox::Fresh(self.provider.as_ref())
             }
         };
         let delegates = std::collections::HashSet::new();
@@ -499,7 +499,8 @@ pub(crate) async fn build_skill_registry(
 
 /// Adapt one canonical registry to the legacy/direct semantic tool contract.
 /// `base_gate` is wrapped so conditional (`paths`) Skills surface on file touch;
-/// `fork_base` is the sub-agent sandbox base for `context: fork` Skills.
+/// `fork_sandboxes` realizes the fresh sandbox of an isolated `context: fork`
+/// Skill.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn semantic_skill_adapter(
     registry: Arc<dyn SkillRegistry>,
@@ -508,7 +509,7 @@ pub(crate) fn semantic_skill_adapter(
     model_ref: &str,
     session_id: &str,
     base_gate: Arc<dyn ToolGateHook>,
-    fork_base: PathBuf,
+    fork_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     placement: SkillForkPlacement,
     execution: Arc<crate::store::HostCommit>,
 ) -> SemanticSkillAdapter {
@@ -527,7 +528,7 @@ pub(crate) fn semantic_skill_adapter(
         let agent_tool: Arc<dyn RawTool> = Arc::new(ForkAgentTool {
             llm,
             model_ref: model_ref.to_string(),
-            provider: LocalProvider::new(fork_base),
+            provider: fork_sandboxes,
             sandbox: env,
             placement,
             execution,

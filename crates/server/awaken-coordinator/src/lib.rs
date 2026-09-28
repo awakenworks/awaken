@@ -501,7 +501,9 @@ fn local_managed_state_over(
     let runtime = ManagedHost::new(host)
         .with_resource_validator(catalog.clone())
         .with_repository_binding_verifier(repository_bindings)
-        .with_credentials(credentials, secrets);
+        .with_credential_materializer(
+            awaken_credential_materializer::PinnedCredentialMaterializer::new(credentials, secrets),
+        );
     let runtime = runtime.install_dispatch_session_runtime();
     let runtime = Arc::new(runtime);
     let mut application = awaken_session_application::SessionApplication::new_with_configuration(

@@ -487,6 +487,7 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "awaken-runtime-host-testkit",
  "awaken-sandbox-container",
  "awaken-sandbox-policy-store",
  "awaken-scenario-host",
@@ -765,6 +766,7 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "awaken-runtime-host-testkit",
  "awaken-sandbox-local",
  "awaken-sandbox-memoryd",
  "awaken-scenario-host",
@@ -1089,6 +1091,7 @@ dependencies = [
  "awaken-resource-store",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "awaken-runtime-host-testkit",
  "awaken-session-application-contract",
  "awaken-session-configuration-contract",
  "awaken-session-error-contract",
@@ -1364,6 +1367,8 @@ dependencies = [
  "awaken-lease-contract",
  "awaken-provisioning-contract",
  "awaken-sandbox-container",
+ "awaken-sandbox-local",
+ "awaken-session-environment-contract",
  "awaken-session-executor",
  "tokio",
 ]
@@ -2320,6 +2325,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-runtime-host-testkit"
+version = "1.0.0"
+dependencies = [
+ "awaken-ext-memory",
+ "awaken-file-store",
+ "awaken-lease-contract",
+ "awaken-memory-store",
+ "awaken-resource-application",
+ "awaken-resource-contract",
+ "awaken-resource-persistence",
+ "awaken-runtime-contract",
+ "awaken-session-executor",
+ "awaken-session-store",
+ "tempfile",
+]
+
+[[package]]
 name = "awaken-sandbox"
 version = "1.0.0"
 dependencies = [
@@ -2438,6 +2460,7 @@ dependencies = [
  "awaken-sandbox-control-transport",
  "awaken-sandbox-fs",
  "awaken-sandbox-memoryd",
+ "awaken-session-environment-contract",
  "awaken-session-state-contract",
  "awaken-session-types",
  "blake3",
@@ -2548,6 +2571,7 @@ dependencies = [
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
+ "awaken-runtime-host-testkit",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",
  "awaken-session-budget-contract",
@@ -2629,6 +2653,7 @@ dependencies = [
  "awaken-session-execution-contract",
  "awaken-session-mcp-contract",
  "awaken-session-realization-contract",
+ "awaken-session-realization-driver",
  "awaken-session-repository-contract",
  "awaken-session-resource-contract",
  "awaken-session-state-contract",
@@ -2705,6 +2730,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "awaken-session-environment-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-provisioning-contract",
+ "awaken-tool-contract",
 ]
 
 [[package]]
@@ -2799,15 +2833,16 @@ dependencies = [
  "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",
- "awaken-session-application",
  "awaken-session-application-contract",
  "awaken-session-budget-contract",
  "awaken-session-configuration-contract",
+ "awaken-session-environment-contract",
  "awaken-session-error-contract",
  "awaken-session-event-contract",
  "awaken-session-execution-contract",
  "awaken-session-mcp-contract",
  "awaken-session-realization-contract",
+ "awaken-session-realization-driver",
  "awaken-session-resource-contract",
  "awaken-session-state-contract",
  "awaken-session-store",
@@ -2870,6 +2905,29 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-session-realization-driver"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-environment-contract",
+ "awaken-provisioning-contract",
+ "awaken-runtime-contract",
+ "awaken-session-application-contract",
+ "awaken-session-configuration-contract",
+ "awaken-session-error-contract",
+ "awaken-session-execution-contract",
+ "awaken-session-mcp-contract",
+ "awaken-session-realization-contract",
+ "awaken-session-resource-contract",
+ "awaken-session-state-contract",
+ "awaken-session-types",
+ "serde_json",
  "tokio",
 ]
 
@@ -3264,6 +3322,7 @@ dependencies = [
  "awaken-resource-worker-http",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
+ "awaken-runtime-host-testkit",
  "awaken-sandbox-container",
  "awaken-sandbox-memoryd",
  "awaken-service-lifecycle",
