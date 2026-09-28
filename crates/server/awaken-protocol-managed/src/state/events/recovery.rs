@@ -292,15 +292,19 @@ impl ManagedState {
         // externally answerable until the current ticket is consumed and the
         // Runtime advances the batch. Never pick arbitrarily if a malformed or
         // future producer publishes two tickets for the same current Run.
-        let mut tickets = snapshot
-            .resume_tickets
-            .iter()
-            .filter(|ticket| &ticket.run_id == run_id);
-        let ticket = tickets.next();
-        let observation = match ticket {
-            None => PendingTicketObservation::Absent,
-            Some(_) if tickets.next().is_some() => PendingTicketObservation::Multiple,
-            Some(ticket) => PendingTicketObservation::One(&ticket.ticket),
+        // The neutral selector owns the one multiplicity rule; this kernel
+        // adds only the Run-truth and identity priority of strict admission.
+        let selection = snapshot.ticket_for_run(run_id);
+        let observation = match selection {
+            awaken_agent_contract::thread::read::recovery::RunTicketSelection::Absent => {
+                PendingTicketObservation::Absent
+            }
+            awaken_agent_contract::thread::read::recovery::RunTicketSelection::Multiple => {
+                PendingTicketObservation::Multiple
+            }
+            awaken_agent_contract::thread::read::recovery::RunTicketSelection::One(ticket) => {
+                PendingTicketObservation::One(&ticket.ticket)
+            }
         };
         let admission =
             pending_ticket_admission(current_state, run_id, &snapshot.thread_id, observation);
@@ -342,7 +346,11 @@ impl ManagedState {
             }
             PendingTicketAdmission::Admit => {}
         }
-        let ticket = ticket.expect("admission requires the selected unique ticket");
+        let awaken_agent_contract::thread::read::recovery::RunTicketSelection::One(ticket) =
+            selection
+        else {
+            unreachable!("admission requires the selected unique ticket")
+        };
         let pending = Pending::from_resume_ticket(&ticket.ticket);
         Ok(pending.map(|pending| {
             (

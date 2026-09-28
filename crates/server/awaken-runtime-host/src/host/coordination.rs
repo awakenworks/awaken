@@ -406,20 +406,16 @@ impl SharedHost {
         }) {
             return Err(HostError::bad_request("Session Thread has no awaiting Run"));
         }
-        let mut tickets = snapshot.resume_tickets.iter().filter(|entry| {
-            entry.run_id == command.expected_run_id
-                && entry.ticket.thread_id == thread_id
-                && entry.ticket.correlation_id == command.expected_correlation_id
-        });
-        let ticket = tickets.next().ok_or_else(|| {
-            HostError::bad_request("Session Thread awaiting ticket changed after Event admission")
-        })?;
-        if tickets.next().is_some() {
-            return Err(HostError::internal(
-                "Session Thread has multiple matching committed resume tickets",
-            ));
-        }
-        let ticket = ticket.ticket.clone();
+        let ticket = snapshot
+            .answerable_ticket(&command.expected_run_id)
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .filter(|ticket| ticket.correlation_id == command.expected_correlation_id)
+            .ok_or_else(|| {
+                HostError::bad_request(
+                    "Session Thread awaiting ticket changed after Event admission",
+                )
+            })?
+            .clone();
         match ticket.target() {
             AwaitTarget::ToolCall { .. } => {
                 validate_awaiting_tool_authority(&thread_id, &ticket, &snapshot.state)?

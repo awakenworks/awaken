@@ -10,10 +10,10 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4949,
+      "production_lines": 4997,
       "catch_all_errors": 5,
       "growth_reasons": {
-        "production_lines": "RunRecoverySnapshot::current_run replaces seven divergent current-Run resolutions in protocol-managed, session-application and runtime-host with one contract rule"
+        "production_lines": "RunRecoverySnapshot::current_run and answerable_ticket replace seven current-Run resolutions and four ticket selectors with disagreeing multiplicity rules across protocol-managed, session-application and runtime-host"
       }
     },
     "awaken-credential-contract": {

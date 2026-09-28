@@ -428,13 +428,11 @@ impl SessionApplication {
             ));
         }
         let ticket = snapshot
-            .resume_tickets
-            .iter()
-            .find(|ticket| {
-                ticket.ticket.run_id == run_id && ticket.ticket.call_id() == Some(tool_use_id)
-            })
+            .answerable_ticket(&run_id)
+            .map_err(|error| RunError::internal(error.to_string()))?
+            .filter(|ticket| ticket.call_id() == Some(tool_use_id))
             .ok_or_else(|| RunError::bad_request("tool_use_id does not name the active ticket"))?;
-        let pending = Pending::from_resume_ticket(&ticket.ticket)
+        let pending = Pending::from_resume_ticket(ticket)
             .ok_or_else(|| RunError::bad_request("active ticket is not externally answerable"))?;
         let reply = match resume {
             RunResume::Permission(decision) if !pending.client_executed => {
@@ -460,7 +458,7 @@ impl SessionApplication {
             expected_thread_version: Some(snapshot.thread_version),
             target: SessionThreadTarget::Primary,
             expected_run_id: run_id,
-            expected_correlation_id: ticket.ticket.correlation_id.clone(),
+            expected_correlation_id: ticket.correlation_id.clone(),
             tool_use_id: tool_use_id.to_string(),
             reply,
             accompanying_system: None,

@@ -119,7 +119,7 @@ impl SharedHost {
                 .recovery_snapshot(&thread_id, &latest.id)
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;
-            if let Some(ticket) = recovery_ticket(&snapshot, &latest.id)
+            if let Some(ticket) = recovery_ticket(&snapshot, &latest.id)?
                 && ticket.reason() == AwaitReason::BudgetReached
             {
                 tickets.push(
@@ -1037,7 +1037,7 @@ impl SharedHost {
             .recovery_snapshot(&delivery.thread_id, &delivery.run_id)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        let Some(ticket) = recovery_ticket(&snapshot, &delivery.run_id) else {
+        let Some(ticket) = recovery_ticket(&snapshot, &delivery.run_id)? else {
             return Ok(awaken_session_application_contract::SessionBudgetResumeDisposition::Stale);
         };
         if ticket.reason() != AwaitReason::BudgetReached
@@ -1413,7 +1413,7 @@ impl SharedHost {
             .recovery_snapshot(&child_thread_id, &child_run_id)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        Ok(recovery_ticket(&committed, &child_run_id))
+        recovery_ticket(&committed, &child_run_id)
     }
 
     /// Project the one externally answerable tool from a committed ticket. A
@@ -1467,7 +1467,7 @@ impl SharedHost {
         let delegation_registry = delegation_registry_from_snapshot(&committed, &run_id)?;
         let (pending, awaiting, await_reason) = match &state {
             RunState::Awaiting => {
-                let ticket = recovery_ticket(&committed, &run_id);
+                let ticket = recovery_ticket(&committed, &run_id)?;
                 let await_reason = ticket.as_ref().map(ResumeTicket::reason);
                 let pending = if let Some(ticket) = ticket {
                     // A parent waiting on a child exposes the CHILD's ordinary
