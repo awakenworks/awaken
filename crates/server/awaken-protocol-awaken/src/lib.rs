@@ -10,6 +10,7 @@ mod event_admissions;
 mod execution_evidence;
 mod live_inbox;
 mod memory_copy_conflicts;
+mod profiled_run_events;
 mod profiled_sessions;
 mod repositories;
 mod resource_manifests;
@@ -26,6 +27,10 @@ pub use execution_evidence::{
 };
 pub use live_inbox::live_inbox_router;
 pub use memory_copy_conflicts::memory_copy_conflicts_router;
+pub use profiled_run_events::{
+    ProfiledSessionRunEventsQuery, ProfiledSessionRunResume, profiled_session_run_events_router,
+    profiled_session_run_resume_router,
+};
 pub use profiled_sessions::{
     ProfiledSessionCreate, ProfiledSessionCreated, ProfiledSessionMcpAttachment,
     ProfiledSessionMode, ProfiledSessionRelease, ProfiledSessionReleased,

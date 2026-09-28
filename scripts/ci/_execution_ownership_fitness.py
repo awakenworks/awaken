@@ -82,6 +82,7 @@ ROUTE_OWNER_FILES = (
     "crates/server/awaken-protocol-awaken/src/live_inbox.rs",
     "crates/server/awaken-protocol-awaken/src/memory_copy_conflicts.rs",
     "crates/server/awaken-protocol-awaken/src/profiled_sessions.rs",
+    "crates/server/awaken-protocol-awaken/src/profiled_run_events.rs",
     "crates/server/awaken-protocol-awaken/src/repositories.rs",
     "crates/server/awaken-protocol-awaken/src/resource_manifests.rs",
     "crates/server/awaken-protocol-awaken/src/sandbox_policies.rs",

@@ -247,6 +247,7 @@ mod realization;
 mod resource_reconciliation;
 mod roles;
 mod run_admission;
+mod run_events;
 mod runtime_commands;
 pub use awaken_session_realization_driver::{
     SessionTerminalCleanupDriveOutcome, drive_session_realization, drive_session_terminal_cleanup,

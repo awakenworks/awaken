@@ -6,6 +6,18 @@
 use super::*;
 
 impl ManagedHost {
+    /// Read side of this Host's sole durable dispatch authority. Composition
+    /// supplies it to the Session application without exposing a second queue.
+    pub fn dispatch_observation_source(
+        &self,
+    ) -> Result<Arc<dyn awaken_dispatch::DispatchOperationalFeed>, AgentCoordinationInstallError>
+    {
+        self.host
+            .dispatch_store()
+            .map(|source| source as Arc<dyn awaken_dispatch::DispatchOperationalFeed>)
+            .map_err(|_| AgentCoordinationInstallError::DispatchObservationUnavailable)
+    }
+
     pub fn new(host: Arc<SharedHost>) -> Self {
         Self {
             host,

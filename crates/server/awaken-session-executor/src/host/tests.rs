@@ -3,6 +3,202 @@
 use super::*;
 use crate::session_environment::SandboxEnvironmentAccess;
 use awaken_lease_contract::system_clock;
+
+#[tokio::test]
+async fn native_free_input_reuses_session_continuation_and_committed_reply_receipt() {
+    // Causes: C1 exact primary Awaiting/manual-pause ticket; C2 current version;
+    // C3 fresh/exact/changed operation; C4 a permission ticket instead of input;
+    // C5 ticket was consumed with ResumeApplied. Effects: E1 one canonical Inbox
+    // input and activity rotation; E2 exact retries are inert before/after C5;
+    // E3 changed text, stale version or wrong kind produces zero new input.
+    // R1=C1+C2+fresh=>E1; R2=exact=>E2; R3=changed|!C2|C4=>E3;
+    // R4=C5+exact=>E2. Real SQLite commit/dispatch owners are used, no receipt map.
+    use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason};
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+    use awaken_dispatch::{DispatchOutcome, Outbox as _};
+    let clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch = Arc::new(
+        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
+    );
+    let (host, _managed) = dispatch_test_host(
+        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone()),
+    );
+    let thread = ThreadId("native-input-session".into());
+    let run = RunId("native-input-run".into());
+    let ctx = host.ctx_for(&thread.0, None).await.unwrap();
+    let commit = host.commit_for_read(&thread.0).await.unwrap();
+    commit
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::running(run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let ticket = ResumeTicket::new(
+        "native-input-correlation",
+        run.clone(),
+        thread.clone(),
+        "snapshot",
+        "catalog",
+        AwaitTarget::Pause(PauseReason::Manual),
+    );
+    commit
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::awaiting(ticket.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let version = commit
+        .recovery_snapshot(&thread, &run)
+        .await
+        .unwrap()
+        .thread_version;
+    dispatch
+        .enqueue(
+            RunDispatch::new(RunActivation::new(
+                run.clone(),
+                thread.clone(),
+                ctx.config.clone(),
+                Vec::new(),
+            ))
+            .for_session(thread.clone())
+            .with_session_activity_epoch(10),
+        )
+        .await
+        .unwrap();
+    let claimed = dispatch
+        .claim_run(
+            &run,
+            "native-input-owner",
+            DEFAULT_LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    dispatch
+        .settle(&run, claimed.lease.epoch, DispatchOutcome::Awaiting, &[])
+        .await
+        .unwrap();
+    let command = awaken_session_execution_contract::SessionThreadToolReplyCommand {
+        session_id: SessionId::from(&thread.0),
+        tool_request_event_id: Some("native-response-1".into()),
+        expected_thread_version: Some(version),
+        target: awaken_session_execution_contract::SessionThreadTarget::Primary,
+        expected_run_id: run.clone(),
+        expected_correlation_id: ticket.correlation_id.clone(),
+        tool_use_id: String::new(),
+        reply: awaken_session_execution_contract::SessionThreadToolReply::Input("answer".into()),
+        accompanying_system: None,
+    };
+    let mut stale = command.clone();
+    stale.expected_thread_version = Some(version + 1);
+    assert!(
+        host.session_thread_tool_reply_fence(&stale).await.is_err(),
+        "R3 stale version"
+    );
+    let mut wrong_kind = command.clone();
+    wrong_kind.reply = awaken_session_execution_contract::SessionThreadToolReply::Confirm(
+        PermissionDecision::Allow { note: None },
+    );
+    assert!(
+        host.session_thread_tool_reply_fence(&wrong_kind)
+            .await
+            .is_err(),
+        "R3 manual pause is not permission"
+    );
+    let fence = host
+        .session_thread_tool_reply_fence(&command)
+        .await
+        .unwrap();
+    let delivery = awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+        command: command.clone(),
+        fence: fence.clone(),
+        session_activity_epoch: Some(11),
+    };
+    host.reply_session_thread_tool(delivery.clone())
+        .await
+        .unwrap();
+    host.reply_session_thread_tool(delivery).await.unwrap();
+    let pending = dispatch.list(&thread).await.unwrap();
+    assert_eq!(pending.len(), 1, "R1/R2");
+    assert_eq!(
+        pending[0].input.result,
+        ResumeResult::Input("answer".into())
+    );
+    assert_eq!(pending[0].input.message_id, command.delivery_operation_id());
+    let resumed = dispatch
+        .claim_run(
+            &run,
+            "native-input-owner",
+            DEFAULT_LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resumed.request.session_activity_epoch,
+        Some(11),
+        "R1 atomic rotation"
+    );
+    commit
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
+            true,
+            Vec::new(),
+            Vec::new(),
+            vec![
+                awaken_agent_contract::audit::run_event::RunEvent::ResumeApplied {
+                    correlation_id: ticket.correlation_id.clone(),
+                    operation_id: command.delivery_operation_id(),
+                }
+                .into(),
+            ],
+        ))
+        .await
+        .unwrap();
+    let replay = host
+        .session_thread_tool_reply_fence(&command)
+        .await
+        .unwrap();
+    assert!(replay.already_applied, "R4");
+    host.reply_session_thread_tool(
+        awaken_session_execution_contract::SessionThreadToolReplyDelivery {
+            command: command.clone(),
+            fence: replay,
+            session_activity_epoch: None,
+        },
+    )
+    .await
+    .unwrap();
+    let mut changed = command;
+    changed.reply =
+        awaken_session_execution_contract::SessionThreadToolReply::Input("changed answer".into());
+    assert!(
+        host.session_thread_tool_reply_fence(&changed)
+            .await
+            .is_err(),
+        "R3 changed payload cannot reuse the consumed correlation"
+    );
+    assert_eq!(dispatch.relay().await.unwrap(), 0, "R4 no second delivery");
+    assert_eq!(
+        dispatch.list(&thread).await.unwrap().len(),
+        1,
+        "R4 receipt leaves Inbox unchanged"
+    );
+}
 use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_execution_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
