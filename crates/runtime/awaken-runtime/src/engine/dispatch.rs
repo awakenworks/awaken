@@ -275,90 +275,96 @@ pub(super) async fn run_tool_calls(
                     if let Err(error) = policy.validate(capability) {
                         ToolOutput::error(&call.call_id, error.to_string())
                     } else {
-                        batch
-                            .mark_executing_in_domain(
-                                &call.call_id,
-                                Some(
-                                    super::tool_execution::prepare_tool_domain(
-                                        runtime, env, context, &call,
-                                    )
-                                    .await?,
-                                ),
-                            )
-                            .map_err(|error| Error::Execution(error.to_string()))?;
-                        persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
-                        entered_executor = true;
-                        match run_delegation(
-                            runtime,
-                            resolved,
-                            DelegationParent {
-                                context,
-                                origin: delegation_origin,
-                                agent_id: &resolved.agent_id.0,
-                                run_id,
-                                thread_id,
-                            },
-                            &call,
-                            store,
+                        match super::tool_execution::prepare_tool_domain(
+                            runtime, env, context, &call,
                         )
-                        .await
+                        .await?
                         {
-                            Some(Ok(DelegationStep::Ended { text, usage })) => {
-                                // Fold the delegate's token spend into this thread's running
-                                // tally, so a session's usage counts delegated work (the
-                                // child Run has already committed its own usage).
-                                merge_thread_usage(store, &mut ledger.staged_state, &usage);
-                                ToolOutput::ok(&call.call_id, text)
-                            }
-                            // The child needs input: await the parent on a Delegation ticket;
-                            // its opaque execution reference stays in the relationship and
-                            // is resumed through the delegation executor.
-                            Some(Ok(DelegationStep::Awaiting { continuation })) => {
-                                stage_delegation_awaiting(
-                                    runtime,
-                                    run_id,
-                                    &call,
-                                    &continuation,
-                                    store,
-                                    &mut ledger.staged_state,
-                                )?;
-                                let ticket = resume_ticket(
-                                    context,
-                                    resolved,
-                                    run_id,
-                                    delegation_origin,
-                                    &call.call_id,
-                                    &call,
-                                    ToolAwaitReason::Delegation,
-                                );
-                                emit(
-                                    context,
-                                    run_id,
-                                    AgentEvent::Fact(Fact::Awaiting {
-                                        pending_tool_use_id: ticket.call_id().map(str::to_owned),
-                                    }),
-                                )
-                                .await;
+                            Err(output) => output,
+                            Ok(domain) => {
                                 batch
-                                    .mark_awaiting(
-                                        &call.call_id,
-                                        ToolWaitKind::Delegation,
-                                        ticket.correlation_id.clone(),
-                                    )
+                                    .mark_executing_in_domain(&call.call_id, Some(domain))
                                     .map_err(|error| Error::Execution(error.to_string()))?;
-                                stage_batch(&batch, ledger, store);
-                                return Ok(Some(RunDisposition::awaiting(ticket)));
-                            }
-                            Some(Err(error)) => delegation_error_output(resolved, &call, error)?,
-                            None => {
-                                let admission = batch
-                                    .execution_admission(&call.call_id)
-                                    .map_err(|error| Error::Execution(error.to_string()))?;
-                                execute_regular_or_unavailable_advisor(
-                                    runtime, resolved, env, &call, context, run_id, thread_id,
-                                    admission, store,
+                                persist_batch(&batch, ledger, store, context, thread_id, run_id)
+                                    .await?;
+                                entered_executor = true;
+                                match run_delegation(
+                                    runtime,
+                                    resolved,
+                                    DelegationParent {
+                                        context,
+                                        origin: delegation_origin,
+                                        agent_id: &resolved.agent_id.0,
+                                        run_id,
+                                        thread_id,
+                                    },
+                                    &call,
+                                    store,
                                 )
-                                .await?
+                                .await
+                                {
+                                    Some(Ok(DelegationStep::Ended { text, usage })) => {
+                                        // Fold the delegate's token spend into this thread's running
+                                        // tally, so a session's usage counts delegated work (the
+                                        // child Run has already committed its own usage).
+                                        merge_thread_usage(store, &mut ledger.staged_state, &usage);
+                                        ToolOutput::ok(&call.call_id, text)
+                                    }
+                                    // The child needs input: await the parent on a Delegation ticket;
+                                    // its opaque execution reference stays in the relationship and
+                                    // is resumed through the delegation executor.
+                                    Some(Ok(DelegationStep::Awaiting { continuation })) => {
+                                        stage_delegation_awaiting(
+                                            runtime,
+                                            run_id,
+                                            &call,
+                                            &continuation,
+                                            store,
+                                            &mut ledger.staged_state,
+                                        )?;
+                                        let ticket = resume_ticket(
+                                            context,
+                                            resolved,
+                                            run_id,
+                                            delegation_origin,
+                                            &call.call_id,
+                                            &call,
+                                            ToolAwaitReason::Delegation,
+                                        );
+                                        emit(
+                                            context,
+                                            run_id,
+                                            AgentEvent::Fact(Fact::Awaiting {
+                                                pending_tool_use_id: ticket
+                                                    .call_id()
+                                                    .map(str::to_owned),
+                                            }),
+                                        )
+                                        .await;
+                                        batch
+                                            .mark_awaiting(
+                                                &call.call_id,
+                                                ToolWaitKind::Delegation,
+                                                ticket.correlation_id.clone(),
+                                            )
+                                            .map_err(|error| Error::Execution(error.to_string()))?;
+                                        stage_batch(&batch, ledger, store);
+                                        return Ok(Some(RunDisposition::awaiting(ticket)));
+                                    }
+                                    Some(Err(error)) => {
+                                        delegation_error_output(resolved, &call, error)?
+                                    }
+                                    None => {
+                                        let admission = batch
+                                            .execution_admission(&call.call_id)
+                                            .map_err(|error| Error::Execution(error.to_string()))?;
+                                        execute_regular_or_unavailable_advisor(
+                                            runtime, resolved, env, &call, context, run_id,
+                                            thread_id, admission, store,
+                                        )
+                                        .await?
+                                    }
+                                }
                             }
                         }
                     }
@@ -621,14 +627,18 @@ async fn run_concurrent_tool_calls(
                 store,
                 &mut ledger.staged_state,
             )?;
+            let domain =
+                match super::tool_execution::prepare_tool_domain(runtime, env, context, call)
+                    .await?
+                {
+                    Ok(domain) => domain,
+                    Err(output) => {
+                        immediate_outputs[position] = Some(output);
+                        continue;
+                    }
+                };
             batch
-                .mark_executing_in_domain(
-                    &call.call_id,
-                    Some(
-                        super::tool_execution::prepare_tool_domain(runtime, env, context, call)
-                            .await?,
-                    ),
-                )
+                .mark_executing_in_domain(&call.call_id, Some(domain))
                 .map_err(|error| Error::Execution(error.to_string()))?;
             entered_executor[position] = true;
         }
