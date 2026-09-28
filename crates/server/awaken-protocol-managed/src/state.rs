@@ -70,6 +70,7 @@ pub(crate) mod work_session_access;
 
 pub use error::StateError;
 pub use managed_state::ManagedState;
+pub(crate) use managed_state::SessionApplicationRoles;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use constants::COMMITTED_PREFIX_READ_CONFLICT;

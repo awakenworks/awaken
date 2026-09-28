@@ -6,9 +6,10 @@
 use super::*;
 
 impl ManagedState {
-    /// MCP projection recovery entry point. It consumes the same canonical
-    /// repository recovery index as Resource activation, then drives only the
-    /// MCP aggregate state machine through the application owner.
+    /// Fixture driver for one MCP realization sweep followed by the wire
+    /// refresh of every settled Session. Product composition runs the same
+    /// sweep in the Session application's lifecycle supervisor.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn reconcile_session_realizations(&self) -> usize {
         let report = self.application.reconcile_session_realizations().await;
         for session in &report.settled {
@@ -142,7 +143,8 @@ impl ManagedState {
         command: awaken_session_application::SessionUpdateCommand,
     ) -> Result<(Session, awaken_session_types::SessionRevision), StateError> {
         let outcome = match self
-            .application
+            .roles
+            .updates
             .update_session(&awaken_session_types::SessionId::from(id), command)
             .await
         {

@@ -116,7 +116,8 @@ impl ManagedState {
             payload_hash: request_fingerprint,
         };
         if let Some(persisted) = self
-            .application
+            .roles
+            .creation
             .replay_session_create(
                 &owner_scope,
                 &awaken_session_types::SessionId::from(&session_id),

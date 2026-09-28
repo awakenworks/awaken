@@ -51,7 +51,9 @@ fn validate_environment_continuation_topology(
 
 #[cfg(kani)]
 mod environment_owner_kani_proof {
-    use super::{SessionExecutionPlacement, SessionRuntimePlacement, runtime_placement_for_topology};
+    use super::{
+        SessionExecutionPlacement, SessionRuntimePlacement, runtime_placement_for_topology,
+    };
     use awaken_session_state_contract::SessionPlacementClass;
 
     /// @obligation runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
@@ -185,6 +187,13 @@ impl SessionApplication {
 
     pub fn now_unix_ms(&self) -> u64 {
         self.clock.now_ms()
+    }
+
+    /// The injected clock port, for an adapter that stamps observations on the
+    /// same time line as this application's commands.
+    #[must_use]
+    pub fn clock(&self) -> Arc<dyn awaken_lease_contract::WallClock> {
+        self.clock.clone()
     }
 
     pub(crate) fn realization_retry_budget(&self) -> u32 {

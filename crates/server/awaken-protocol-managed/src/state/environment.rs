@@ -10,13 +10,15 @@ impl ManagedState {
         Option<crate::env_registry::EnvItem>,
         awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
     > {
-        self.application
+        self.roles
+            .deployments
             .deployment_environment(environment_id)
             .await
     }
 
     pub(crate) fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
-        self.application
+        self.roles
+            .deployments
             .deployment_agent_unavailable(workspace_id, agent_id)
     }
 
@@ -25,7 +27,8 @@ impl ManagedState {
         workspace_id: &str,
         agent_id: &str,
     ) -> Option<String> {
-        self.application
+        self.roles
+            .deployments
             .deployment_unavailable_delegate(workspace_id, agent_id)
     }
 }

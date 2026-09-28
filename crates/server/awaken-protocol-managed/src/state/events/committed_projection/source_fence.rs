@@ -72,7 +72,8 @@ impl ManagedState {
         }
 
         let final_persisted = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;

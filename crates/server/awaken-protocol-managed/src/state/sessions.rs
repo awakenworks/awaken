@@ -4,6 +4,7 @@
 //! update, delete, and archive.
 
 use super::*;
+use awaken_lease_contract::WallClockExt as _;
 
 use super::session_mcp_projection::typed_mcp_servers;
 
@@ -107,14 +108,15 @@ impl ManagedState {
             let resolved = delegate
                 .source_revision
                 .and_then(|revision| {
-                    self.application.session_profile_at_revision(
+                    self.roles.projection.session_profile_at_revision(
                         workspace_id,
                         &delegate.agent_id,
                         revision,
                     )
                 })
                 .or_else(|| {
-                    self.application
+                    self.roles
+                        .projection
                         .session_profile(workspace_id, &delegate.agent_id)
                 });
             let child = match resolved {
@@ -305,7 +307,8 @@ impl ManagedState {
         req: &SessionCreateParams,
     ) -> Result<(), StateError> {
         if let Some(vault_id) = self
-            .application
+            .roles
+            .creation
             .missing_vault(workspace_id, &req.vault_ids)
             .await
             .map_err(StateError::Run)?
@@ -442,7 +445,8 @@ impl ManagedState {
             initial_events: &initial_events,
         };
         let created = Box::pin(
-            self.application
+            self.roles
+                .creation
                 .create_requested_session(request, &protocol),
         )
         .await
@@ -596,7 +600,8 @@ impl ManagedState {
             return Ok(Some(scope));
         }
         match self
-            .application
+            .roles
+            .roots
             .owner(&awaken_session_types::SessionId::from(session_id))
             .await
         {
@@ -627,7 +632,7 @@ impl ManagedState {
     ) -> Result<Session, StateError> {
         let created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
         let updated_at = super::constants::persisted_time(persisted.updated_at_unix_ms);
-        let caps = self.application.capabilities_for(id);
+        let caps = self.roles.projection.capabilities_for(id);
         let projected_budget = persisted
             .budget
             .max_list_cost_minor()
@@ -696,13 +701,18 @@ impl ManagedState {
         let deployment_id = metadata.get("awaken.deployment_id").cloned();
         let profile = agent_revision
             .and_then(|revision| {
-                self.application
+                self.roles
+                    .projection
                     .session_profile_at_revision(owner_scope, &agent_id, revision)
             })
             .or_else(|| {
                 agent_revision
                     .is_none()
-                    .then(|| self.application.session_profile(owner_scope, &agent_id))
+                    .then(|| {
+                        self.roles
+                            .projection
+                            .session_profile(owner_scope, &agent_id)
+                    })
                     .flatten()
             });
         let publication_decision =
@@ -854,7 +864,8 @@ impl ManagedState {
         scope: &str,
     ) -> Result<Vec<Session>, StateError> {
         let persisted = self
-            .application
+            .roles
+            .roots
             .sessions_by_owner(scope)
             .await
             .map_err(StateError::from)?;
@@ -894,7 +905,9 @@ impl ManagedState {
         // stored the terminal fence and outbox fact. Child cleanup targets are
         // frozen later from durable Runtime delegation authority.
         let transition = self
-            .application
+            .roles
+            .termination
+            .clone()
             .delete_session(awaken_session_application::SessionDeleteCommand::new(id))
             .await
             .map_err(Self::map_preparation_error)?;
@@ -937,7 +950,7 @@ impl ManagedState {
     ) -> Result<Session, StateError> {
         self.ensure_session_for_frozen_control(id).await?;
         let owner = self.resolve_owner(id).await?;
-        let observed_at = self.application.now_unix_ms();
+        let observed_at = self.roles.clock.now_ms();
         let terminated_fact = lifecycle_fact(
             format!("session:{id}:terminated"),
             id,
@@ -950,25 +963,28 @@ impl ManagedState {
             // This read selects a safe command, not a second status authority.
             // Both application commands reload and recheck the durable root.
             let terminal = self
-                .application
-                .session_repository_handle()
-                .get(&awaken_session_types::SessionId::from(id))
+                .roles
+                .roots
+                .session(&awaken_session_types::SessionId::from(id))
                 .await
                 .map_err(StateError::from)?
                 .execution
                 .is_terminal();
             if !terminal {
-                self.application
+                self.roles
+                    .termination
                     .terminate_session(id, &archived_at, terminated_fact.clone())
                     .await
                     .map_err(Self::map_preparation_error)?;
             }
-            self.application
+            self.roles
+                .termination
                 .release_terminal_session(id, &archived_at, terminated_fact)
                 .await
                 .map_err(Self::map_preparation_error)?;
         } else {
-            self.application
+            self.roles
+                .termination
                 .terminate_session(id, &archived_at, terminated_fact)
                 .await
                 .map_err(Self::map_preparation_error)?;
@@ -991,7 +1007,7 @@ struct ManagedCreateProtocol<'a> {
 }
 
 /// The Managed projection the adapter finishes before the durable insert.
-struct ManagedCreateProjection {
+pub(crate) struct ManagedCreateProjection {
     tools: Vec<awaken_session_configuration_contract::AgentTool>,
     multiagent: Option<crate::types::SessionMultiagentCoordinator>,
 }
@@ -1015,7 +1031,7 @@ impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol
             "sesn_{}",
             awaken_agent_contract::stable_fingerprint(&(
                 "managed-session",
-                &self.state.application.runtime_incarnation(),
+                self.state.roles.creation.runtime_incarnation(),
                 sequence,
             ))
         )

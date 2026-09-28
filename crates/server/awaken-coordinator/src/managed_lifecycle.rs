@@ -17,6 +17,7 @@
 use std::sync::Arc;
 
 use awaken_protocol_managed::{ManagedLifecycleFactDelivery, ManagedState};
+use awaken_session_application::SessionApplication;
 use awaken_session_application_contract::{
     CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
 };
@@ -31,15 +32,17 @@ pub enum ManagedLifecycleCompositionError {
 
 /// Install the one lifecycle delivery chain before the Managed router is served.
 ///
-/// Product passes its Control webhook delivery; scenario/local composition
-/// passes `None`. Both modes share this exact outbox consumer and Managed refresh
+/// `sessions` is the Session application the composition root built and
+/// narrowed into `state`; the notifier binds to it directly. Product passes its
+/// Control webhook delivery; scenario/local composition passes `None`. Both modes share this exact outbox consumer and Managed refresh
 /// receiver rather than wiring parallel notification paths.
 pub fn install_managed_lifecycle_delivery(
     state: &Arc<ManagedState>,
+    sessions: &SessionApplication,
     webhook: Option<Arc<dyn LifecycleFactDelivery>>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> Result<Arc<ManagedLifecycleFactDelivery>, ManagedLifecycleCompositionError> {
-    install_managed_lifecycle_delivery_inner(state, webhook, None, service_lifecycle)
+    install_managed_lifecycle_delivery_inner(state, sessions, webhook, None, service_lifecycle)
 }
 
 /// Install the same lifecycle delivery chain and bind Deployment wake-ups to it.
@@ -49,15 +52,23 @@ pub fn install_managed_lifecycle_delivery(
 /// durable outbox consumer.
 pub fn install_managed_lifecycle_delivery_with_deployments(
     state: &Arc<ManagedState>,
+    sessions: &SessionApplication,
     webhook: Option<Arc<dyn LifecycleFactDelivery>>,
     deployments: &awaken_deployment_application::DeploymentApplication,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> Result<Arc<ManagedLifecycleFactDelivery>, ManagedLifecycleCompositionError> {
-    install_managed_lifecycle_delivery_inner(state, webhook, Some(deployments), service_lifecycle)
+    install_managed_lifecycle_delivery_inner(
+        state,
+        sessions,
+        webhook,
+        Some(deployments),
+        service_lifecycle,
+    )
 }
 
 fn install_managed_lifecycle_delivery_inner(
     state: &Arc<ManagedState>,
+    application: &SessionApplication,
     webhook: Option<Arc<dyn LifecycleFactDelivery>>,
     deployments: Option<&awaken_deployment_application::DeploymentApplication>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
@@ -72,7 +83,6 @@ fn install_managed_lifecycle_delivery_inner(
         ])),
         None => managed_delivery,
     };
-    let application = state.session_application();
     let notifier = Arc::new(awaken_webhook_managed::WebhookOutboxNotifier::deferred(
         delivery,
         application.lifecycle_outbox_handle(),
@@ -175,9 +185,13 @@ mod tests {
         let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
         let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
         let webhook = Arc::new(RecordingWebhook::default());
-        let delivery =
-            install_managed_lifecycle_delivery(&state, Some(webhook.clone()), &lifecycle)
-                .expect("L1 bind before traffic");
+        let delivery = install_managed_lifecycle_delivery(
+            &state,
+            &state.session_application(),
+            Some(webhook.clone()),
+            &lifecycle,
+        )
+        .expect("L1 bind before traffic");
 
         let unknown = ManagedLifecycleFact {
             id: "fact-unknown-object".into(),
@@ -321,7 +335,12 @@ mod tests {
 
         assert!(
             matches!(
-                install_managed_lifecycle_delivery(&state, None, &lifecycle),
+                install_managed_lifecycle_delivery(
+                    &state,
+                    &state.session_application(),
+                    None,
+                    &lifecycle
+                ),
                 Err(ManagedLifecycleCompositionError::Notifier(_))
             ),
             "L4/E5 application rejects a second outbox owner before it starts"

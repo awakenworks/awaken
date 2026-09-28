@@ -14,9 +14,11 @@
 use super::*;
 
 impl ManagedState {
-    /// ResourceReclaimer entry point. Session owners call this after durable
-    /// stores and the Runtime Host are wired. It scans only Session application
-    /// state; authorization principals and policy objects never cross this seam.
+    /// Fixture driver for one Resource activation sweep followed by the wire
+    /// refresh of every settled Session. Product composition runs the same
+    /// sweep in the Session application's lifecycle supervisor, whose committed
+    /// facts reach this adapter through lifecycle delivery.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn reconcile_resource_activations(&self) -> usize {
         let report = self.application.reconcile_resource_activations().await;
         for session in &report.settled {
@@ -69,7 +71,8 @@ impl ManagedState {
             replaces: None,
         };
         let (mut inputs, _) = self
-            .application
+            .roles
+            .resources
             .resolve_session_inputs(owner_scope, &[], &[attachment])
             .await
             .map_err(StateError::Run)?
@@ -119,7 +122,8 @@ impl ManagedState {
                     unreachable!("only MemoryStore inputs derive a Managed mount path")
                 };
                 let definition = self
-                    .application
+                    .roles
+                    .resources
                     .session_memory_store(owner_scope, memory_store_id.as_str())
                     .await
                     .map_err(StateError::Run)?;
@@ -152,7 +156,8 @@ impl ManagedState {
                 &[],
             )
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.application
+        self.roles
+            .resources
             .validate_persisted_session_resource_layout(owner_scope, session, effective_bindings)
             .map_err(StateError::Run)?;
 
@@ -250,7 +255,8 @@ impl ManagedState {
                         ))
                     );
                     let configured = match self
-                        .application
+                        .roles
+                        .resources
                         .configure_session_repository(
                             awaken_session_application::SessionRepositoryResourceInput {
                                 id,
@@ -272,7 +278,8 @@ impl ManagedState {
                         Ok(configured) => configured,
                         Err(first) => {
                             if !self
-                                .application
+                                .roles
+                                .resources
                                 .abort_unadopted_session_repositories(&repository_configurations)
                                 .await
                             {
@@ -299,14 +306,16 @@ impl ManagedState {
                 replaces: None,
             };
             let (mut resolved, _) = match self
-                .application
+                .roles
+                .resources
                 .resolve_session_inputs(owner_scope, &[], &[attachment])
                 .await
             {
                 Ok(resources) => resources.into_parts(),
                 Err(first) => {
                     if !self
-                        .application
+                        .roles
+                        .resources
                         .abort_unadopted_session_repositories(&repository_configurations)
                         .await
                     {
@@ -323,7 +332,8 @@ impl ManagedState {
                     "resolved resource manifest input is empty",
                 ));
                 if !self
-                    .application
+                    .roles
+                    .resources
                     .abort_unadopted_session_repositories(&repository_configurations)
                     .await
                 {
@@ -344,7 +354,8 @@ impl ManagedState {
             Err(error) => {
                 let first = StateError::Run(RunError::bad_request(error.to_string()));
                 if !self
-                    .application
+                    .roles
+                    .resources
                     .abort_unadopted_session_repositories(&repository_configurations)
                     .await
                 {
@@ -370,7 +381,8 @@ impl ManagedState {
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         if let Some(key) = idempotency_key.as_deref()
             && let Some(outcome) = self
-                .application
+                .roles
+                .resources
                 .replay_session_resource_manifest(
                     &awaken_session_types::SessionId::from(id),
                     key,
@@ -383,7 +395,8 @@ impl ManagedState {
             return Ok(Self::resource_manifest_view(&outcome.session));
         }
         let persisted = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
@@ -467,7 +480,7 @@ impl ManagedState {
         command: awaken_session_application::ReplaceSessionResourceManifest,
         repository_configurations: &[awaken_session_application::ConfiguredSessionRepository],
     ) -> Result<awaken_session_application::SessionResourceManifestOutcome, StateError> {
-        match Box::pin(self.application.replace_session_resource_manifest(
+        match Box::pin(self.roles.resources.replace_session_resource_manifest(
             &awaken_session_types::SessionId::from(session_id),
             command,
         ))
@@ -489,7 +502,8 @@ impl ManagedState {
             Err(error) => {
                 let first = Self::map_resource_manifest_error(error);
                 if !self
-                    .application
+                    .roles
+                    .resources
                     .abort_unadopted_session_repositories(repository_configurations)
                     .await
                 {
@@ -546,7 +560,8 @@ impl ManagedState {
         let parsed = body.into_resource_input().to_input_request();
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let persisted = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
@@ -629,7 +644,8 @@ impl ManagedState {
         let desired = current
             .attach(input.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.application
+        self.roles
+            .resources
             .validate_persisted_session_resource_layout(
                 &owner_scope,
                 &persisted,
@@ -679,7 +695,8 @@ impl ManagedState {
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
-            .application
+            .roles
+            .resources
             .rotate_repository_credential(
                 &awaken_session_types::SessionId::from(id),
                 &owner_scope,
@@ -703,7 +720,8 @@ impl ManagedState {
         self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;

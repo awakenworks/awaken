@@ -245,6 +245,7 @@ pub use credentials::SessionPreparationError;
 mod mcp;
 mod realization;
 mod resource_reconciliation;
+mod roles;
 mod run_admission;
 mod runtime_commands;
 mod session_realization_driver;
@@ -256,6 +257,11 @@ pub use realization::{
 pub use resource_reconciliation::{
     ReplaceSessionResourceManifest, SessionResourceManifestError, SessionResourceManifestOutcome,
     SessionResourcePurgeGuard,
+};
+pub use roles::{
+    DeploymentSessionEnvironment, ProfiledSessionCommands, SessionCreation, SessionEventBatches,
+    SessionObservation, SessionProjectionReads, SessionResourceCommands, SessionRootReads,
+    SessionTermination, SessionUpdates,
 };
 pub use run_admission::{
     CreateProfiledSessionCommand, ProfiledSessionRepositoryInput, RecoveredSessionProjection,

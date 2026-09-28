@@ -39,16 +39,10 @@ impl ManagedState {
         event: &ManagedCredentialRollout,
     ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
         let sessions = self
-            .application
-            .session_repository_handle()
-            .scan(
-                awaken_session_state_contract::SessionScanQuery::CredentialSourceReferences {
-                    workspace_id: &event.workspace_id,
-                    source_id: &event.source_id,
-                },
-            )
+            .roles
+            .roots
+            .sessions_referencing_credential_source(&event.workspace_id, &event.source_id)
             .await
-            .map(awaken_session_state_contract::SessionScan::into_sessions)
             .map_err(|error| ManagedCredentialAdoptionError::Unavailable(error.to_string()))?;
         let mut pending = false;
         for session in sessions {
@@ -129,7 +123,8 @@ impl ManagedState {
                 event.credential_revision,
             ));
             let result = self
-                .application
+                .roles
+                .updates
                 .update_session(
                     &session.session_id,
                     SessionUpdateCommand {

@@ -76,7 +76,8 @@ impl ManagedState {
         let (links, child_snapshots) = self.coordinated_projection_prefix(session_id, None).await?;
         let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
         let persisted_session = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
@@ -330,7 +331,8 @@ impl ManagedState {
                 }
                 InboundEvent::SystemMessage { .. }
                     if !self
-                        .application
+                        .roles
+                        .events
                         .supports_mid_conversation_system(session_id)
                         .await =>
                 {
@@ -482,7 +484,8 @@ impl ManagedState {
                 return Ok(None);
             };
             match self
-                .application
+                .roles
+                .events
                 .session_event_batch_idempotency(
                     &awaken_session_types::SessionId::from(session_id),
                     key,
@@ -564,7 +567,7 @@ impl ManagedState {
                 // owner as an unknown session rather than admitting the event
                 // against a compiled-in tenant's Agent availability.
                 let owner_scope = self.owner_scope(session_id).ok_or(StateError::NotFound)?;
-                if self.application.agent_unavailable(&owner_scope, &agent_id) {
+                if self.roles.events.agent_unavailable(&owner_scope, &agent_id) {
                     return Err(StateError::Run(RunError::bad_request(format!(
                         "agent_unavailable: agent `{agent_id}` cannot admit a new event"
                     ))));
@@ -595,7 +598,8 @@ impl ManagedState {
                 }
                 let drive = validated.drive;
                 let append = if drive == ValidatedEventBatchDrive::PreferredBatch {
-                    self.application
+                    self.roles
+                        .events
                         .append_and_drive_session_event_batch_idempotent(
                             &awaken_session_types::SessionId::from(session_id),
                             validated.inputs,
@@ -605,7 +609,8 @@ impl ManagedState {
                         )
                         .await
                 } else {
-                    self.application
+                    self.roles
+                        .events
                         .append_session_event_batch_idempotent(
                             &awaken_session_types::SessionId::from(session_id),
                             validated.inputs,
@@ -650,7 +655,8 @@ impl ManagedState {
             );
         }
         let persisted = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;

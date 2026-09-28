@@ -119,8 +119,13 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         ManagedState::new(ManagedHost::new(host).install_dispatch_session_runtime())
             .with_session_repo(sessions),
     );
-    install_managed_lifecycle_delivery(&managed, Some(delivery), &service_lifecycle)
-        .expect("L1 bind the sole lifecycle notifier before traffic");
+    install_managed_lifecycle_delivery(
+        &managed,
+        &managed.session_application(),
+        Some(delivery),
+        &service_lifecycle,
+    )
+    .expect("L1 bind the sole lifecycle notifier before traffic");
     let engine = Arc::new(EnforceEngine::seeded());
     let token = engine
         .mint(TokenSpec {

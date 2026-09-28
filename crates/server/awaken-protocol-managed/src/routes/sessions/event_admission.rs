@@ -41,7 +41,8 @@ pub async fn close_event_admission(
     let fingerprint =
         awaken_agent_contract::stable_fingerprint(&(&req, &event_data_subject(&headers)?));
     let admission = state
-        .session_application()
+        .roles
+        .events
         .close_session_event_admission(
             &owner_scope,
             &awaken_session_types::SessionId::from(&id),

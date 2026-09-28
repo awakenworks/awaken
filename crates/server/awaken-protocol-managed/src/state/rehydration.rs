@@ -29,7 +29,8 @@ impl ManagedState {
         workspace_id: &str,
         idempotency: &awaken_session_state_contract::IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, StateError> {
-        self.application
+        self.roles
+            .creation
             .replay_accepted_session_create(
                 workspace_id,
                 &awaken_session_types::SessionId::from(session_id),
@@ -47,7 +48,8 @@ impl ManagedState {
         id: &str,
     ) -> Result<awaken_session_application::RecoveredSessionProjection, StateError> {
         let recovered = self
-            .application
+            .roles
+            .projection
             .read_session_projection(id, None)
             .await
             .map_err(|error| match error {
@@ -104,7 +106,8 @@ impl ManagedState {
         let session = match purpose {
             RehydrationPurpose::Interactive => {
                 let admission = self
-                    .application
+                    .roles
+                    .projection
                     .refresh_executable_projections()
                     .await
                     .map_err(|error| {

@@ -188,7 +188,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
         resource_registry(),
         catalog,
     );
-    let launcher = ManagedDeploymentSessionLauncher::new(managed.clone());
+    let launcher = ManagedDeploymentSessionLauncher::new(managed.managed.clone());
     let request = DeploymentLaunch {
         deployment_id: "depl_failed_initial".into(),
         deployment_run_id: "drun_failed_initial".into(),
@@ -236,7 +236,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
         .store(false, Ordering::Release);
     let error = Box::pin(
         managed
-            .session_application()
+            .sessions
             .drive_session_event_batches(&awaken_session_types::SessionId::from(&session_id), None),
     )
     .await
@@ -246,7 +246,7 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
         "D2 expected publication failure: {error}"
     );
     assert_eq!(
-        managed.get_session(&session_id).unwrap().id,
+        managed.managed.get_session(&session_id).unwrap().id,
         session_id,
         "D2/E2"
     );
@@ -316,7 +316,7 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
         resources,
     )
     .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
-    let launcher = ManagedDeploymentSessionLauncher::new(managed.clone());
+    let launcher = ManagedDeploymentSessionLauncher::new(managed.managed.clone());
     let request = DeploymentLaunch {
         deployment_id: "depl_retry".into(),
         deployment_run_id: "drun_retry".into(),
@@ -367,7 +367,11 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
         ),
         "R3"
     );
-    assert_eq!(managed.get_session(&first_id).unwrap().id, first_id, "R3");
+    assert_eq!(
+        managed.managed.get_session(&first_id).unwrap().id,
+        first_id,
+        "R3"
+    );
 }
 
 #[tokio::test]
@@ -413,7 +417,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     );
     let deployments = Arc::new(DeploymentApplication::new());
     deployments.bind_launcher(Arc::new(ManagedDeploymentSessionLauncher::new(
-        managed.clone(),
+        managed.managed.clone(),
     )));
     let deployment_api = deployments_router(deployments.clone())
         .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));

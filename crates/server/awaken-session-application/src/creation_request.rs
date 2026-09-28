@@ -235,7 +235,7 @@ impl SessionApplication {
     /// compensated. A coordinator-realized placement accepts the root as soon
     /// as it is durable; every other placement awaits realization.
     #[allow(clippy::too_many_lines)]
-    pub async fn create_requested_session<P: SessionCreateProtocol>(
+    pub async fn create_requested_session<P: SessionCreateProtocol + ?Sized>(
         &self,
         request: SessionCreateRequest,
         protocol: &P,
