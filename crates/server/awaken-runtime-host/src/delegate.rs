@@ -1168,6 +1168,7 @@ mod durable_cancel_tests {
             awaken_lease_contract::system_clock(),
         ));
         let scheduler = RunScheduler {
+            clock: awaken_lease_contract::system_clock(),
             store: store.clone(),
             commit: commit.clone(),
             reader: commit.clone(),
@@ -1421,6 +1422,7 @@ mod durable_cancel_tests {
             awaken_lease_contract::system_clock(),
         ));
         let scheduler = RunScheduler {
+            clock: awaken_lease_contract::system_clock(),
             store: store.clone(),
             commit: commit.clone(),
             reader: commit.clone(),

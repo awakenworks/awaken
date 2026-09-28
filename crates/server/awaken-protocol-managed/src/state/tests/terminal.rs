@@ -182,6 +182,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
                 awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        awaken_lease_contract::system_clock(),
     );
     let state = ManagedState::from_application(Arc::new(application), environments);
     let created = state

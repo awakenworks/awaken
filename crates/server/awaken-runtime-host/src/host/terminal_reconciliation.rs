@@ -156,7 +156,7 @@ impl SharedHost {
             .unwrap_or_else(|| Arc::new(awaken_run_ingress::LocalWakeSignal::new()));
         let reconciler = awaken_run_ingress::DispatchReconciler::spawn(
             store,
-            awaken_lease_contract::system_clock(),
+            self.clock.clone(),
             wake,
             self.deployment.dispatch_service_config(),
             resolver,

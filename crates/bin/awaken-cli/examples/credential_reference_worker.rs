@@ -224,6 +224,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resource = std::env::var("AWAKEN_TEST_RESOURCE_DATABASE_URL").ok();
     let admin = std::env::var("AWAKEN_TEST_ADMIN_DATABASE_URL").ok();
     let storage = std::env::var("AWAKEN_TEST_WORKER_STORAGE_DIR").ok();
+    // This example process's one wall clock.
+    let clock = awaken_lease_contract::system_clock();
     match (resource, admin, storage) {
         (None, None, None) => {
             let deployment = fixture_deployment()?;
@@ -233,6 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 );
             let mut builder = awaken_worker::WorkerNodeBuilder::new(
                 awaken_worker_transport_security::WorkerUpstream::new(upstream),
+                clock,
             )
             .with_deployment_config(deployment)
             .with_standard_manifest_config(
@@ -269,7 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if let Ok(worker_id) = std::env::var("AWAKEN_WORKER_ID") {
                 upstream = upstream.with_worker_id(worker_id);
             }
-            let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream)
+            let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream, clock)
                 .with_deployment_config(deployment)
                 .with_standard_manifest_config(
                     awaken_worker::StandardManifestConfig::default().with_max_concurrent(3),

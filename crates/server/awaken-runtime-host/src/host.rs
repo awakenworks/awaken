@@ -311,6 +311,11 @@ pub struct SharedHost {
     /// Coordinator-owned durable capability. Runtime and Worker builds contain
     /// no concrete Store acquisition; a database-less Worker leaves this absent.
     pub(crate) authority: Option<Arc<dyn crate::RuntimeAuthority>>,
+    /// The process's one wall clock, chosen by the composition that builds this
+    /// Host. The dispatch pool, the reconciler, recovery drives and child
+    /// schedulers all drive their Workers on it, so every time the attempt
+    /// itself judges shares one timeline.
+    pub(crate) clock: Arc<dyn awaken_lease_contract::WallClock>,
     /// When set, an ACP CLI's session is harvested/restored under this store's
     /// durable root (keyed by thread+adapter) so it survives a move to another
     /// directory or worker. Point it at a **shared** location for cross-machine

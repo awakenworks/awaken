@@ -2483,6 +2483,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        awaken_lease_contract::system_clock(),
     );
 
     let pending_force = application
@@ -2692,6 +2693,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
+        awaken_lease_contract::system_clock(),
     );
     application
         .release_terminal_resources("workspace", session_id)
@@ -4858,12 +4860,10 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
 
     let runtime = Arc::new(RecordingCleanupRuntime::default());
     runtime.fail_once.store(true, Ordering::SeqCst);
-    let application = SessionApplication::new_with_configuration(
+    let application = application_with_runtime(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration::default(),
     );
 
     application
@@ -4950,12 +4950,10 @@ async fn terminal_cleanup_rebases_after_competing_root_writer() {
     repo.commit_then_conflict_once("terminal-cleanup-fence");
 
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    let application = SessionApplication::new_with_configuration(
+    let application = application_with_runtime(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration::default(),
     );
 
     let completed = application
@@ -5003,12 +5001,10 @@ async fn terminal_cleanup_acknowledges_a_committed_completion_after_response_los
     repo.commit_then_conflict_once("terminal-cleanup-disposal");
 
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    let application = SessionApplication::new_with_configuration(
+    let application = application_with_runtime(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
         repo,
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration::default(),
     );
 
     let completed = application
@@ -5064,12 +5060,10 @@ async fn terminal_cleanup_stale_loser_accepts_the_winners_tombstone() {
     )
     .await;
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    let application = SessionApplication::new_with_configuration(
+    let application = application_with_runtime(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration::default(),
     );
     let transition = application
         .commit_delete_intent(SessionDeleteCommand::new("cleanup-tombstone-race"))
@@ -5121,12 +5115,10 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
     create(repo.as_ref(), session).await;
 
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    let application = SessionApplication::new_with_configuration(
+    let application = application_with_runtime(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration::default(),
     );
 
     let f0 = repo
@@ -5282,12 +5274,10 @@ async fn terminal_fence_quiesces_before_freezing_concurrent_child() {
     .await;
     let runtime = Arc::new(RecordingCleanupRuntime::default());
     runtime.block_quiesce.store(true, Ordering::SeqCst);
-    let application = Arc::new(SessionApplication::new_with_configuration(
+    let application = Arc::new(application_with_runtime(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration::default(),
     ));
 
     let cleanup = {
@@ -5405,12 +5395,10 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
                 watermark: iteration + 1,
                 runtime_commit_cursor: iteration + 11,
             };
-        let application = SessionApplication::new_with_configuration(
+        let application = application_with_runtime(
             runtime.clone(),
-            Arc::new(NoopMcpRealizer),
             repo,
             Arc::new(RecordingEnvironmentSource::default()),
-            SessionApplicationConfiguration::default(),
         );
         let completed = application
             .release_terminal_resources("workspace", &session_id)
@@ -5430,12 +5418,10 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
                 .expect("restart Session authority"),
         );
         let replay_runtime = Arc::new(RecordingCleanupRuntime::default());
-        let replay_application = SessionApplication::new_with_configuration(
+        let replay_application = application_with_runtime(
             replay_runtime.clone(),
-            Arc::new(NoopMcpRealizer),
             reopened.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
-            SessionApplicationConfiguration::default(),
         );
         replay_application
             .release_terminal_resources("workspace", &session_id)

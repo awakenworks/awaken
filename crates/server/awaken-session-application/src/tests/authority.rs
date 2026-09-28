@@ -1749,6 +1749,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration::default(),
+        awaken_lease_contract::system_clock(),
     );
     let fact = awaken_session_state_contract::ManagedLifecycleFact {
         id: "profiled-publication:terminated".into(),
@@ -1874,6 +1875,7 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
         faulting_repo,
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration::default(),
+        awaken_lease_contract::system_clock(),
     );
     let effects_before_foreign = runtime.terminal_effect_order.lock().unwrap().len();
     assert!(
@@ -6391,6 +6393,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
         realizer.clone(),
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
+        awaken_lease_contract::system_clock(),
     );
     let idempotency_key = "mixed-update-key";
     let command = SessionUpdateCommand {

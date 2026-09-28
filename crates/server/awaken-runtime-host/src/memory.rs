@@ -1927,6 +1927,7 @@ mod tests {
                 content.clone(),
                 SharedHost::mint_local_workspace(),
                 crate::DeploymentConfig::ephemeral(),
+                awaken_lease_contract::system_clock(),
             )
             .with_worker_upstream(
                 awaken_worker_transport_security::WorkerUpstream::new("http://coordinator.invalid"),

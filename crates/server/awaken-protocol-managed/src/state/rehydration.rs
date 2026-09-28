@@ -419,6 +419,7 @@ mod tests {
                     awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
                 ..Default::default()
             },
+            awaken_lease_contract::system_clock(),
         );
         let restarted = ManagedState::from_application(Arc::new(application), environments);
 

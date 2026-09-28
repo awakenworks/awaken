@@ -213,13 +213,16 @@ mod tests {
             awaken_lease_contract::system_clock(),
         ));
         let queries = crate::authority::ScriptedStateQueries::new(Ok(Vec::new()));
-        let authority = Arc::new(crate::EphemeralRuntimeAuthority::new().with_commit(
-            session,
-            Arc::new(crate::LocalCommitAdapter::with_queries(
-                store.clone(),
-                queries.clone(),
-            )),
-        ));
+        let authority = Arc::new(
+            crate::EphemeralRuntimeAuthority::new(awaken_lease_contract::system_clock())
+                .with_commit(
+                    session,
+                    Arc::new(crate::LocalCommitAdapter::with_queries(
+                        store.clone(),
+                        queries.clone(),
+                    )),
+                ),
+        );
         let host = Arc::new(
             SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
                 .with_runtime_authority(authority),
@@ -415,13 +418,16 @@ mod tests {
             ));
             let queries =
                 crate::authority::ScriptedStateQueries::new(Err("usage State unavailable".into()));
-            let authority = Arc::new(crate::EphemeralRuntimeAuthority::new().with_commit(
-                session_id,
-                Arc::new(crate::LocalCommitAdapter::with_queries(
-                    store.clone(),
-                    queries.clone(),
-                )),
-            ));
+            let authority = Arc::new(
+                crate::EphemeralRuntimeAuthority::new(awaken_lease_contract::system_clock())
+                    .with_commit(
+                        session_id,
+                        Arc::new(crate::LocalCommitAdapter::with_queries(
+                            store.clone(),
+                            queries.clone(),
+                        )),
+                    ),
+            );
             let make_host = || {
                 Arc::new(
                     SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")

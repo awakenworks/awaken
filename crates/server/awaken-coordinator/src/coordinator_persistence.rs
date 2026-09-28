@@ -99,7 +99,7 @@ pub async fn init_scenario_runtime(
         && deployment.dispatch_backend == awaken_runtime_host::DispatchBackend::Sqlite
     {
         return Ok(std::sync::Arc::new(
-            awaken_runtime_host::EphemeralRuntimeAuthority::new(),
+            awaken_runtime_host::EphemeralRuntimeAuthority::new(clock),
         ));
     }
     super::runtime_authority::DurableRuntimeAuthority::open(

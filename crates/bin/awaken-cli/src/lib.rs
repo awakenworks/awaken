@@ -194,6 +194,9 @@ pub struct PreparedProcess {
     /// Consumers must reuse these handles and must not reopen the same stores.
     pub coordinator_authorities: Option<CoordinatorAuthorityHandles>,
     pub admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
+    /// The process's one wall clock. The embedded Worker an AllInOne process
+    /// supervises is built on it, so it and the Coordinator share one timeline.
+    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 struct ProcessRouters {

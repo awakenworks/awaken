@@ -5,6 +5,8 @@
 
 use super::*;
 
+#[path = "environment_capacity.rs"]
+mod environment_capacity;
 #[path = "session_control.rs"]
 mod session_control;
 
@@ -128,13 +130,9 @@ impl SharedHost {
     /// Volatile test/scenario host over `llm`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn new(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> Self {
-        Self::build(
+        Self::new_with_deployment(
             llm,
-            model_ref.into(),
-            None,
-            None,
-            None,
-            Self::mint_local_workspace(),
+            model_ref,
             crate::deployment_config::DeploymentConfig::ephemeral(),
         )
     }
@@ -149,6 +147,8 @@ impl SharedHost {
         model_ref: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
+        // A test or Scenario fixture is its own composition: it chooses the
+        // host clock here.
         Self::build(
             llm,
             model_ref.into(),
@@ -157,6 +157,7 @@ impl SharedHost {
             None,
             Self::mint_local_workspace(),
             deployment,
+            awaken_lease_contract::system_clock(),
         )
     }
 
@@ -207,6 +208,12 @@ impl SharedHost {
         self.deployment.durable = true;
         self.deployment.disable_local_pool = true;
         self
+    }
+
+    /// The process wall clock this Host drives its Workers on.
+    #[must_use]
+    pub fn clock(&self) -> Arc<dyn awaken_lease_contract::WallClock> {
+        self.clock.clone()
     }
 
     /// Install the Coordinator-owned durable capability before the Host serves.
@@ -266,6 +273,7 @@ impl SharedHost {
         model_ref: impl Into<String>,
         resources: awaken_resource_application::ResourceAuthorities,
     ) -> Self {
+        let clock = resources.clock();
         Self::build(
             llm,
             model_ref.into(),
@@ -274,6 +282,7 @@ impl SharedHost {
             None,
             Self::mint_local_workspace(),
             crate::deployment_config::DeploymentConfig::ephemeral(),
+            clock,
         )
     }
 
@@ -289,6 +298,7 @@ impl SharedHost {
         local_workspace: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
+        let clock = resources.clock();
         Self::build(
             llm,
             model_ref.into(),
@@ -297,6 +307,7 @@ impl SharedHost {
             Some(extraction_repository),
             local_workspace.into(),
             deployment,
+            clock,
         )
     }
 
@@ -314,6 +325,7 @@ impl SharedHost {
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         local_workspace: impl Into<String>,
         deployment: crate::DeploymentConfig,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self::build(
             llm,
@@ -326,6 +338,7 @@ impl SharedHost {
             None,
             local_workspace.into(),
             deployment,
+            clock,
         )
     }
 
@@ -343,6 +356,7 @@ impl SharedHost {
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         local_workspace: impl Into<String>,
         deployment: crate::DeploymentConfig,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self::build(
             llm,
@@ -355,6 +369,7 @@ impl SharedHost {
             Some(extraction_repository),
             local_workspace.into(),
             deployment,
+            clock,
         )
     }
 
@@ -366,6 +381,7 @@ impl SharedHost {
         extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
         local_workspace: String,
         deployment: crate::DeploymentConfig,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         assert!(
             !local_workspace.trim().is_empty(),
@@ -467,7 +483,7 @@ impl SharedHost {
                 file_store.clone(),
                 file_catalog.clone(),
                 reclamation.clone(),
-                awaken_lease_contract::system_clock(),
+                clock.clone(),
             )) as Arc<dyn awaken_resource_contract::FileApplicationService>
         });
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
@@ -583,13 +599,16 @@ impl SharedHost {
             authority: {
                 #[cfg(any(test, feature = "test-support"))]
                 {
-                    Some(Arc::new(crate::EphemeralRuntimeAuthority::new()))
+                    Some(Arc::new(crate::EphemeralRuntimeAuthority::new(
+                        clock.clone(),
+                    )))
                 }
                 #[cfg(not(any(test, feature = "test-support")))]
                 {
                     None
                 }
             },
+            clock,
             completion: Arc::new(CompletionRegistry::new(hub)),
             worker_stream_publisher: None,
             environment_binding_sink: std::sync::RwLock::new(None),
@@ -748,7 +767,7 @@ impl SharedHost {
                 self.file_store.clone(),
                 self.file_catalog.clone(),
                 repository.clone(),
-                awaken_lease_contract::system_clock(),
+                self.clock.clone(),
             ))
                 as Arc<dyn awaken_resource_contract::FileApplicationService>;
             self.file_content_source = Arc::new(
@@ -1380,164 +1399,6 @@ impl SharedHost {
         self
     }
 
-    /// Eagerly prepare one caller-owned CacheVolume. The same `(key, location)`
-    /// is a no-op when Session realization later requests it. `location` remains
-    /// exact for HostPath, Docker/Podman bind mounts, and Kubernetes PVCs.
-    pub async fn prewarm_cache_volume(
-        &self,
-        volume: crate::CacheVolumeWarmup,
-    ) -> Result<(), String> {
-        self.cache_volume_prewarmer.prewarm(volume).await
-    }
-
-    /// Reuse current Environment demand for node-image preparation, independently
-    /// of physical warm capacity (which cannot transfer retained filesystems).
-    pub async fn prewarm_environment_images(
-        &self,
-        environments: &[awaken_session_configuration_contract::EnvironmentSnapshot],
-    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
-        let mut specs = vec![crate::provisioning::default_session_sandbox_spec(
-            "image-warmup",
-        )];
-        specs.extend(
-            environments
-                .iter()
-                .filter(|environment| !environment.self_hosted)
-                .map(|environment| {
-                    crate::provisioning::environment_capacity_projection(
-                        environment,
-                        self.session_provider.capabilities().network_isolation,
-                    )
-                    .spec
-                }),
-        );
-        self.session_provider.prewarm_images(&specs).await
-    }
-
-    /// Warm the deployment's canonical empty Session shape to the target selected
-    /// by the Worker's one global capacity plan.
-    pub async fn prewarm_default_environment_capacity(
-        &self,
-        target: usize,
-    ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
-        if self.deployment.disable_local_pool
-            || self.deployment.sandbox.warm_pool_size == 0
-            || target == 0
-        {
-            return Ok(0);
-        }
-        self.session_provider
-            .prewarm(
-                &crate::provisioning::default_session_sandbox_spec("environment-warmup"),
-                target,
-            )
-            .await
-    }
-
-    #[must_use]
-    pub fn default_environment_capacity_shape(
-        &self,
-    ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
-        awaken_provisioning_contract::SandboxCapacityShapeId::from_spec(
-            &crate::provisioning::default_session_sandbox_spec("environment-warmup"),
-        )
-        .expect("default Environment capacity spec is mount-less")
-    }
-
-    pub async fn discard_default_environment_capacity(&self) {
-        self.session_provider
-            .discard_capacity(&crate::provisioning::default_session_sandbox_spec(
-                "environment-warmup",
-            ))
-            .await;
-    }
-
-    /// Reconcile one current executable Environment into the exact mount-less
-    /// shape ordinary Session creation requests. Docker, Podman and Kubernetes
-    /// all enter through the installed provider/capacity pair.
-    pub async fn prewarm_environment_snapshot(
-        &self,
-        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-        target: usize,
-    ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
-        if self.deployment.disable_local_pool
-            || self.deployment.sandbox.warm_pool_size == 0
-            || target == 0
-            || environment.self_hosted
-        {
-            return Ok(0);
-        }
-        let projection = crate::provisioning::environment_capacity_projection(
-            environment,
-            self.session_provider.capabilities().network_isolation,
-        );
-        self.session_provider
-            .prewarm(&projection.spec, target)
-            .await
-    }
-
-    /// Per-shape target and the global ready-capacity budget across both the
-    /// default Session shape and current Environment shapes.
-    #[must_use]
-    pub fn environment_warmup_limits(&self) -> (usize, usize) {
-        if self.deployment.disable_local_pool || self.deployment.sandbox.warm_pool_size == 0 {
-            return (0, 0);
-        }
-        (
-            self.deployment.sandbox.warm_pool_size,
-            self.deployment.sandbox.warm_pool_total_size,
-        )
-    }
-
-    /// Observe actual ready capacity instead of trusting the last reconciliation
-    /// result; checkout and global eviction may change it between heartbeats.
-    #[must_use]
-    pub fn ready_environment_snapshot_capacity(
-        &self,
-        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    ) -> usize {
-        let projection = crate::provisioning::environment_capacity_projection(
-            environment,
-            self.session_provider.capabilities().network_isolation,
-        );
-        self.session_provider.ready_capacity(&projection.spec)
-    }
-
-    /// Exact identity published in Worker receipts for the same canonical spec
-    /// consumed by the installed capacity provider.
-    #[must_use]
-    pub fn environment_snapshot_capacity_shape(
-        &self,
-        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
-        crate::provisioning::environment_capacity_projection(
-            environment,
-            self.session_provider.capabilities().network_isolation,
-        )
-        .shape_id
-    }
-
-    /// Drop unused capacity for an Environment shape removed from current
-    /// desired state. Active Sessions are unaffected.
-    pub async fn discard_environment_snapshot_capacity(
-        &self,
-        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    ) {
-        let projection = crate::provisioning::environment_capacity_projection(
-            environment,
-            self.session_provider.capabilities().network_isolation,
-        );
-        self.session_provider
-            .discard_capacity(&projection.spec)
-            .await;
-    }
-
-    /// Dispose never-used warm capacity after claim admission and in-flight work
-    /// have drained. Active Session environments remain owned by their slots.
-    pub async fn shutdown_environment_capacity(&self) {
-        self.session_provider.shutdown_capacity().await;
-    }
-
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first Run.
     pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
         self.inference_routing.register(thread, model_ref);
@@ -1604,6 +1465,7 @@ impl SharedHost {
             let recovery_projection = commit.recovery_projection();
             let claimed_commit = self.worker_claimed_commit()?;
             Some(crate::agent_runner::RunScheduler {
+                clock: self.clock.clone(),
                 store: self.dispatch_store()?,
                 commit: commit.clone(),
                 reader: commit,
@@ -1663,7 +1525,7 @@ impl SharedHost {
         let pool = match shared_wake {
             Some(wake) => DispatchPool::spawn_with_wake_and_completion(
                 store,
-                awaken_lease_contract::system_clock(),
+                self.clock.clone(),
                 self.deployment.dispatch_owner.clone(),
                 DEFAULT_LEASE_MS,
                 config,
@@ -1674,7 +1536,7 @@ impl SharedHost {
             ),
             None => DispatchPool::spawn_with_completion(
                 store,
-                awaken_lease_contract::system_clock(),
+                self.clock.clone(),
                 self.deployment.dispatch_owner.clone(),
                 DEFAULT_LEASE_MS,
                 config,
@@ -1795,6 +1657,7 @@ mod startup_tests {
             Some(expected.clone()),
             SharedHost::mint_local_workspace(),
             crate::DeploymentConfig::ephemeral(),
+            awaken_lease_contract::system_clock(),
         );
 
         assert!(

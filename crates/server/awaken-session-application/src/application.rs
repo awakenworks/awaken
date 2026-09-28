@@ -191,12 +191,15 @@ impl SessionApplication {
         self.configuration.realization_retry_budget.max(1)
     }
 
+    /// `clock` is the process's one wall clock, chosen by the composition that
+    /// builds this application.
     #[must_use]
     pub fn new(
         runtime: Arc<dyn CompleteSessionRuntime>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
         sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self::new_with_configuration(
             runtime,
@@ -204,9 +207,12 @@ impl SessionApplication {
             sessions_repo,
             environments,
             SessionApplicationConfiguration::default(),
+            clock,
         )
     }
 
+    /// `clock` stamps every Session fact this application writes and judges
+    /// every lease it holds; the composition passes the process's one clock.
     #[must_use]
     pub fn new_with_configuration(
         runtime: Arc<dyn CompleteSessionRuntime>,
@@ -214,12 +220,14 @@ impl SessionApplication {
         sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
         environments: Arc<dyn SessionEnvironmentSource>,
         configuration: SessionApplicationConfiguration,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         let lifecycle_outbox: Arc<dyn awaken_session_repository_contract::LifecycleOutbox> =
             sessions_repo.clone();
         let sessions_repo: Arc<dyn SessionRepository> = sessions_repo;
         runtime.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
             sessions_repo.clone(),
+            clock.clone(),
         )));
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -231,7 +239,7 @@ impl SessionApplication {
             "local Session realization owner must not be empty"
         );
         Self {
-            clock: awaken_lease_contract::system_clock(),
+            clock,
             configuration,
             runtime,
             mcp_realizer,
@@ -533,10 +541,10 @@ impl SessionApplication {
     }
 
     pub fn environment_binding_sink(&self) -> Arc<dyn SessionEnvironmentBindingSink> {
-        Arc::new(
-            RepositoryEnvironmentBindingSink::new(self.sessions_repo.clone())
-                .with_clock(self.clock.clone()),
-        )
+        Arc::new(RepositoryEnvironmentBindingSink::new(
+            self.sessions_repo.clone(),
+            self.clock.clone(),
+        ))
     }
 
     pub fn replace_repository(
@@ -1051,18 +1059,13 @@ pub struct RepositoryEnvironmentBindingSink {
 }
 
 impl RepositoryEnvironmentBindingSink {
+    /// `clock` stamps each binding receipt; the owning application passes its own.
     #[must_use]
-    pub fn new(repo: Arc<dyn SessionRepository>) -> Self {
-        Self {
-            repo,
-            clock: awaken_lease_contract::system_clock(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
-        self.clock = clock;
-        self
+    pub fn new(
+        repo: Arc<dyn SessionRepository>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Self {
+        Self { repo, clock }
     }
 
     fn receipt_error(

@@ -87,13 +87,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let admin_listen = std::env::var("AWAKEN_WORKER_ADMIN_LISTEN")
             .ok()
             .filter(|address| !address.trim().is_empty());
+        // The echo Worker process's one wall clock: its request assertions and
+        // the Host it builds share it.
+        let clock = awaken_lease_contract::system_clock();
         let request_authorizer = std::env::var("AWAKEN_WORKER_REQUEST_CREDENTIAL_FILE")
             .ok()
             .map(|path| {
                 awaken_worker_transport_security::load_projected_request_authorizer(
                     std::path::Path::new(&path),
                     &worker_id,
-                    awaken_lease_contract::system_clock(),
+                    clock.clone(),
                 )
             })
             .transpose()?;
@@ -104,6 +107,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             &worker_id,
             admin_listen.as_deref(),
             request_authorizer,
+            clock,
         )
         .await;
     }

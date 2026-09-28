@@ -136,12 +136,15 @@ impl ManagedState {
             awaken_environment_execution_application::EnvironmentExecutionApplication,
         >,
     ) -> Self {
+        // A volatile ManagedState fixture is its own composition: it chooses
+        // the host clock for its Session application here.
         Self::from_application(
             Arc::new(SessionApplication::new(
                 runtime,
                 mcp_realizer.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
                 sessions_repo,
                 environments.clone(),
+                awaken_lease_contract::system_clock(),
             )),
             environments,
         )
