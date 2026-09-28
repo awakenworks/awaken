@@ -162,7 +162,6 @@ impl SharedHost {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_deployment_config(mut self, deployment: crate::DeploymentConfig) -> Self {
-        self.session_blob_root = deployment.acp_session_blob_root.clone();
         self.deployment = deployment;
         self
     }
@@ -531,7 +530,6 @@ impl SharedHost {
             store_dir: store_dir.clone(),
             // A shared root (e.g. a networked mount) enables cross-machine ACP
             // session recovery; unset means single-machine (stable config home).
-            session_blob_root: deployment.acp_session_blob_root.clone(),
             session_blob_store: deployment
                 .acp_session_blob_root
                 .clone()
@@ -1197,11 +1195,9 @@ impl SharedHost {
     /// on a single machine, where the per-thread config home is already stable.
     #[must_use]
     pub fn with_session_blob_root(mut self, dir: impl Into<PathBuf>) -> Self {
-        let dir = dir.into();
         self.session_blob_store = Some(Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(
-            dir.clone(),
+            dir.into(),
         )));
-        self.session_blob_root = Some(dir);
         self
     }
 
