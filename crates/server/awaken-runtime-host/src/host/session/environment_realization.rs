@@ -1211,11 +1211,11 @@ impl SharedHost {
             &spec,
             historical_owned_paths,
         )
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        .map_err(|error| HostError::bad_request(error.to_string()))?;
         let capabilities = provider.capabilities();
         if provider.supports_host_identity() {
             awaken_provisioning_contract::prepare_trusted_host_environment(&spec, &capabilities)
-                .map_err(|error| HostError::internal(error.to_string()))?;
+                .map_err(|error| HostError::bad_request(error.to_string()))?;
             return Ok(spec);
         }
         let base = awaken_provisioning_contract::SandboxRequirements::from_spec(&spec, false);
@@ -1239,12 +1239,12 @@ impl SharedHost {
         if capabilities.satisfies_requirements(&base)
             && !capabilities.satisfies_requirements(&required)
         {
-            return Err(HostError::internal(format!(
+            return Err(HostError::bad_request(format!(
                 "Session environment cannot preserve one sandbox-absolute workspace path across Hand, Bash, Git, and Agent processes: required={required:?}, provider={capabilities:?}",
             )));
         }
         awaken_provisioning_contract::prepare_environment(&spec, &capabilities)
-            .map_err(|error| HostError::internal(error.to_string()))?;
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
         Ok(spec)
     }
 
