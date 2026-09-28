@@ -100,11 +100,7 @@ impl SharedHost {
         &self,
         command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<(ThreadId, ResumeTicket), HostError> {
-        if command.session_id.as_str().trim().is_empty()
-            || command.expected_run_id.0.trim().is_empty()
-            || command.expected_correlation_id.trim().is_empty()
-            || command.tool_use_id.trim().is_empty()
-        {
+        if !command.has_complete_coordinates() {
             return Err(HostError::bad_request(
                 "Session Thread tool reply is incomplete",
             ));
@@ -150,6 +146,36 @@ impl SharedHost {
                 )
             })?
             .clone();
+        if matches!(
+            command.reply,
+            awaken_session_execution_contract::SessionThreadToolReply::Input(_)
+        ) {
+            if ticket.call_id().unwrap_or_default() != command.tool_use_id {
+                return Err(HostError::bad_request(
+                    "Session input call identity differs from its ticket",
+                ));
+            }
+            if matches!(ticket.target(), AwaitTarget::ToolCall { .. }) {
+                validate_awaiting_tool_authority(&thread_id, &ticket, &snapshot.state)?;
+            }
+            let result = super::run::session_thread_reply_result(
+                &ticket,
+                &command.tool_use_id,
+                &command.reply,
+            );
+            awaken_runtime_contract::resume::validate_resume(
+                &ticket,
+                &awaken_runtime_contract::resume::ResumeCommand::from_ticket(
+                    &ticket,
+                    result,
+                    awaken_agent_contract::clock::Clock::now_ms(
+                        &awaken_agent_contract::clock::SystemClock,
+                    ),
+                ),
+            )
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            return Ok((thread_id, ticket));
+        }
         match ticket.target() {
             AwaitTarget::ToolCall { .. } => {
                 validate_awaiting_tool_authority(&thread_id, &ticket, &snapshot.state)?

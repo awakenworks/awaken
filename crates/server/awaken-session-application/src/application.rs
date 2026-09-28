@@ -163,6 +163,9 @@ pub struct SessionApplication {
     /// request, while this application-owned read prevents direct callers or a
     /// stale adapter snapshot from assigning an incompatible Worker.
     worker_observations: OnceLock<Arc<dyn awaken_worker_contract::WorkerObservationSource>>,
+    /// Read side of the existing dispatch authority, bound once at composition.
+    /// It grants no execution, claim, resume or persistence authority.
+    dispatch_observations: OnceLock<Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>>,
     local_realization_owner: String,
     runtime_incarnation: String,
     mutation_sequence: AtomicU64,
@@ -261,6 +264,7 @@ impl SessionApplication {
             executable_projection_refresh: None,
             lifecycle_notifier: OnceLock::new(),
             worker_observations: OnceLock::new(),
+            dispatch_observations: OnceLock::new(),
             local_realization_owner,
             runtime_incarnation: format!(
                 "session:{}:{started_at}:{}",
@@ -592,6 +596,17 @@ impl SessionApplication {
         self.worker_observations
             .set(source)
             .map_err(|_| "Worker observation source is already installed")
+    }
+
+    /// Bind the same dispatch feed used by the Runtime. A second source cannot
+    /// replace the cursor partition after Run observation has begun.
+    pub fn set_dispatch_observation_source(
+        &self,
+        source: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>,
+    ) -> Result<(), &'static str> {
+        self.dispatch_observations
+            .set(source)
+            .map_err(|_| "Session dispatch observation source is already installed")
     }
 
     pub(crate) fn worker_observation_source(

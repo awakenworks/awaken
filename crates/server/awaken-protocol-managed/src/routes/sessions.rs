@@ -123,7 +123,9 @@ fn session_time_v2(
         ],
     )
 }
-pub use profiled_run::submit_profiled_session_run;
+pub use profiled_run::{
+    get_profiled_session_run_events, resume_profiled_session_run, submit_profiled_session_run,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionListOrder {

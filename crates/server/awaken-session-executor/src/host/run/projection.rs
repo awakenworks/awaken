@@ -68,6 +68,9 @@ pub(in crate::host) fn session_thread_reply_result(
     reply: &awaken_session_execution_contract::SessionThreadToolReply,
 ) -> ResumeResult {
     match reply {
+        awaken_session_execution_contract::SessionThreadToolReply::Input(text) => {
+            ResumeResult::Input(text.clone())
+        }
         awaken_session_execution_contract::SessionThreadToolReply::Confirm(decision) => {
             ResumeResult::Permission(decision.clone())
         }

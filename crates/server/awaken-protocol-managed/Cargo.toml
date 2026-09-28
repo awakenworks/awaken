@@ -59,6 +59,7 @@ awaken-credential-contract.workspace = true
 # Typed resource ids/bindings plus the Resource Catalog port used by the Managed
 # ACL to lower wire resources before Session resolution. No IAM policy lives here.
 awaken-resource-contract.workspace = true
+awaken-dispatch-contract.workspace = true
 awaken-resource-application.workspace = true
 # Tenancy as an edge aspect (ADR-0051): the opaque `ScopeId` the `ScopedRepo`
 # decorator binds so session persistence is tenant-isolable while the core stays

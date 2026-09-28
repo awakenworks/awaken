@@ -796,3 +796,10 @@
   the synchronous view remains process-local execution state.
 - Reused Coordinator single-flight initialization with bounded idle-slot
   pruning, retaining live view identity while historical Sessions release memory.
+
+## 2026-09-28 — Complete the profiled Run boundary
+
+- Amended [ADR-0075](../adr/0075-unified-managed-session-worker-execution.md)
+  to connect profiled reads/replies to existing native execution authorities.
+- Session ownership, Run truth, dispatch settlement and reply receipts retain
+  their existing owners.

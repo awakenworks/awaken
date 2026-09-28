@@ -38,6 +38,450 @@ fn observed_session(id: &str) -> PersistedSession {
     session
 }
 
+fn profiled_observed_session(id: &str) -> PersistedSession {
+    use awaken_session_configuration_contract::{
+        ControlSessionCreationInputs, SessionCreationIntent,
+    };
+    let mut session = observed_session(id);
+    let source = session.frozen_baseline().unwrap().clone();
+    let compiled = SessionCreationIntent {
+        control: ControlSessionCreationInputs {
+            mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+            environment: source.environment,
+            runtime_placement: source.runtime_placement,
+            agent_id: source.agent_id,
+            agent_revision: source.agent_revision,
+            model: source.model,
+            execution_model_ref: source.execution_model_ref,
+            model_override: source.model_override,
+            system_prompt: *source.system_prompt,
+            runtime: source.runtime,
+            mcp_authoring: source.mcp_authoring,
+            delegate_ids: source.delegate_ids,
+            toolsets: source.toolsets,
+            mounts: source.mounts,
+            env: source.env,
+            prompts: source.prompts,
+            transcript_prefix: source.transcript_prefix,
+            resources: Default::default(),
+            initial_mcp: Vec::new(),
+        },
+    }
+    .finalize()
+    .unwrap();
+    session.baseline =
+        awaken_session_configuration_contract::SessionBaselineState::Frozen(compiled.baseline);
+    session
+}
+
+struct ObservedDispatchFeed {
+    events: Vec<awaken_dispatch_contract::DispatchOperationalEvent>,
+    calls: std::sync::atomic::AtomicUsize,
+    unavailable: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchOperationalFeed for ObservedDispatchFeed {
+    async fn events_after(
+        &self,
+        after: awaken_dispatch_contract::DispatchCursor,
+        limit: usize,
+    ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.unavailable.load(Ordering::SeqCst) {
+            return Err(awaken_dispatch_contract::DispatchError::Unavailable(
+                "test source outage".into(),
+            ));
+        }
+        let events = self
+            .events
+            .iter()
+            .filter(|event| event.cursor.0 > after.0)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let next_cursor = events.last().map_or(after, |event| event.cursor);
+        Ok(awaken_dispatch_contract::DispatchPage {
+            events,
+            next_cursor,
+        })
+    }
+}
+
+#[tokio::test]
+async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_cursors() {
+    // Causes: C1 profiled owner/Run match; C2 Session has NO Managed input batch;
+    // C3 another Run interleaves facts/output; C4 page limit/cursors; C5 Ended
+    // truth is visible before the dispatch Done row. Effects: E1 exact Run data
+    // is readable despite C2; E2 other Run facts/output never leak; E3 cursors
+    // advance across inspected foreign facts; E4 separate pages preserve the
+    // original Done cursor; E5 zero limit preserves cursors without reading the
+    // feed; E6 the query performs no Session write. Terminal projection belongs
+    // to the Flow consumer and must wait for that Done fact.
+    // R1=C1+C2+C3+limit2 => E1/E2/E3/E6; R2=R1+next => E4;
+    // R3=R1+limit0 => E5/E6; R4=exact replay => byte-identical page.
+    use awaken_dispatch_contract::{
+        DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOutcome, RunClaim,
+    };
+    let repository =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let session = profiled_observed_session("native-observed");
+    assert!(
+        session.event_batches.is_empty(),
+        "C2 is the native admission gap"
+    );
+    create(repository.as_ref(), session).await;
+    let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+    let run = RunId("native-a".into());
+    let other = RunId("native-b".into());
+    let ended = RunState::Ended(EndCause::Indeterminate);
+    runtime.set_recovery_snapshot(
+        "native-observed",
+        &ThreadId("native-observed".into()),
+        recovery_snapshot(
+            "native-observed",
+            vec![
+                RunRecord {
+                    id: run.clone(),
+                    thread_id: ThreadId("native-observed".into()),
+                    state: ended.clone(),
+                },
+                RunRecord {
+                    id: other.clone(),
+                    thread_id: ThreadId("native-observed".into()),
+                    state: RunState::Ended(EndCause::NaturalEnd),
+                },
+            ],
+            vec![
+                Message::text(
+                    MessageId::assistant(&run, 0),
+                    Role::Assistant,
+                    "exact native output",
+                ),
+                Message::text(
+                    MessageId::assistant(&other, 0),
+                    Role::Assistant,
+                    "foreign later output",
+                ),
+            ],
+            vec![
+                AuditRecord {
+                    sequence: 1_000,
+                    run_id: run.clone(),
+                    kind: AuditKind::RunStateChanged,
+                    payload: serde_json::json!({"state":ended}),
+                },
+                AuditRecord {
+                    sequence: 2_000,
+                    run_id: other.clone(),
+                    kind: AuditKind::RunStateChanged,
+                    payload: serde_json::json!({"state":RunState::Ended(EndCause::NaturalEnd)}),
+                },
+            ],
+        ),
+    );
+    let claim = |id: &RunId| RunClaim {
+        run_id: id.clone(),
+        owner: "worker".into(),
+        epoch: 3,
+    };
+    let feed = Arc::new(ObservedDispatchFeed {
+        events: vec![
+            DispatchOperationalEvent {
+                cursor: DispatchCursor(7),
+                recorded_at_ms: None,
+                operation: DispatchOperation::Claimed { claim: claim(&run) },
+            },
+            DispatchOperationalEvent {
+                cursor: DispatchCursor(8),
+                recorded_at_ms: None,
+                operation: DispatchOperation::Claimed {
+                    claim: claim(&other),
+                },
+            },
+            DispatchOperationalEvent {
+                cursor: DispatchCursor(9),
+                recorded_at_ms: None,
+                operation: DispatchOperation::Settled {
+                    claim: claim(&run),
+                    outcome: DispatchOutcome::Done,
+                },
+            },
+        ],
+        calls: 0.into(),
+        unavailable: false.into(),
+    });
+    let application = application_with_runtime(
+        runtime,
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    application
+        .set_dispatch_observation_source(feed.clone())
+        .unwrap();
+    assert!(
+        application
+            .set_dispatch_observation_source(feed.clone())
+            .is_err(),
+        "one source, no replacement"
+    );
+    let id = SessionId::from("native-observed");
+    let before = repository.get(&id).await.unwrap();
+    let page = application
+        .session_run_events_after(
+            "workspace",
+            &id,
+            &run,
+            DispatchCursor(0),
+            awaken_agent_contract::RunLifecycleCursor(0),
+            2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.state, Some(ended), "E1/C5");
+    assert_eq!(page.response, "exact native output", "E2");
+    assert_eq!(page.dispatch.events.len(), 1, "E2");
+    assert_eq!(page.dispatch.events[0].cursor.0, 7);
+    assert_eq!(page.dispatch.next_cursor.0, 8, "E3");
+    assert_eq!(page.lifecycle.events.len(), 1, "E2");
+    assert_eq!(page.lifecycle.events[0].cursor.0, 1_000);
+    assert_eq!(page.lifecycle.next_cursor.0, 2_000, "E3");
+    let replay = application
+        .session_run_events_after(
+            "workspace",
+            &id,
+            &run,
+            DispatchCursor(0),
+            awaken_agent_contract::RunLifecycleCursor(0),
+            2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay, page, "R4");
+    let next = application
+        .session_run_events_after(
+            "workspace",
+            &id,
+            &run,
+            page.dispatch.next_cursor,
+            page.lifecycle.next_cursor,
+            2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(next.dispatch.events[0].cursor.0, 9, "E4");
+    assert!(next.lifecycle.events.is_empty());
+    let calls = feed.calls.load(Ordering::SeqCst);
+    let empty = application
+        .session_run_events_after(
+            "workspace",
+            &id,
+            &run,
+            next.dispatch.next_cursor,
+            next.lifecycle.next_cursor,
+            0,
+        )
+        .await
+        .unwrap();
+    assert!(
+        empty.dispatch.events.is_empty() && empty.lifecycle.events.is_empty(),
+        "E5"
+    );
+    assert_eq!(empty.dispatch.next_cursor, next.dispatch.next_cursor);
+    assert_eq!(empty.lifecycle.next_cursor, next.lifecycle.next_cursor);
+    assert_eq!(feed.calls.load(Ordering::SeqCst), calls, "E5");
+    assert_eq!(repository.get(&id).await.unwrap(), before, "E6");
+}
+
+#[tokio::test]
+async fn native_run_observation_refuses_foreign_scope_missing_source_and_invalid_page() {
+    // R1 foreign owner => NotFound before feed/read effects; R2 Managed policy
+    // => NotFound before feed; R3 profiled owner + missing feed => Unavailable;
+    // R4 limit>1024 => Rejected before feed; R5 exact source outage => Unavailable;
+    // R6 unknown Run => NotFound, never reuse the latest Run. These cover scope,
+    // mode, dependency, input and membership causes; all leave root unchanged.
+    use awaken_dispatch_contract::DispatchCursor;
+    let repository =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(
+        repository.as_ref(),
+        profiled_observed_session("native-refusals"),
+    )
+    .await;
+    create(repository.as_ref(), observed_session("managed-refusals")).await;
+    let application = application_with_runtime(
+        Arc::new(RecordingAgentAdmissionRuntime::new([])),
+        repository,
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let id = SessionId::from("native-refusals");
+    let run = RunId("missing".into());
+    let read = |scope: &'static str, session: SessionId, limit| {
+        let application = &application;
+        let run = &run;
+        async move {
+            application
+                .session_run_events_after(
+                    scope,
+                    &session,
+                    run,
+                    DispatchCursor(0),
+                    awaken_agent_contract::RunLifecycleCursor(0),
+                    limit,
+                )
+                .await
+        }
+    };
+    assert!(
+        matches!(
+            read("foreign", id.clone(), 1).await,
+            Err(crate::SessionProjectionRecoveryError::NotFound)
+        ),
+        "R1"
+    );
+    assert!(
+        matches!(
+            read("workspace", SessionId::from("managed-refusals"), 1).await,
+            Err(crate::SessionProjectionRecoveryError::NotFound)
+        ),
+        "R2"
+    );
+    assert!(
+        matches!(
+            read("workspace", id.clone(), 1).await,
+            Err(crate::SessionProjectionRecoveryError::Unavailable(_))
+        ),
+        "R3"
+    );
+    assert!(
+        matches!(
+            read("workspace", id.clone(), 1_025).await,
+            Err(crate::SessionProjectionRecoveryError::Rejected(_))
+        ),
+        "R4"
+    );
+    let feed = Arc::new(ObservedDispatchFeed {
+        events: Vec::new(),
+        calls: 0.into(),
+        unavailable: true.into(),
+    });
+    application
+        .set_dispatch_observation_source(feed.clone())
+        .unwrap();
+    assert!(
+        matches!(
+            read("workspace", id.clone(), 1).await,
+            Err(crate::SessionProjectionRecoveryError::Unavailable(_))
+        ),
+        "R5"
+    );
+    feed.unavailable.store(false, Ordering::SeqCst);
+    assert!(
+        matches!(
+            read("workspace", id, 1).await,
+            Err(crate::SessionProjectionRecoveryError::NotFound)
+        ),
+        "R6"
+    );
+}
+
+#[tokio::test]
+async fn native_run_reply_rejects_foreign_owner_mode_and_nonprimary_or_unfenced_input() {
+    // The authorization/admission graph is serial: owner -> profiled mode ->
+    // primary target -> positive original version -> stable operation -> Runtime
+    // ticket owner. R1 foreign owner and R2 Managed mode stop before Runtime;
+    // R3 child, absent/zero version, empty operation or adjacent System reject
+    // before activity transfer. E1 no root mutation or delivery on every row.
+    use awaken_session_execution_contract::{
+        SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
+    };
+    let repository =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(
+        repository.as_ref(),
+        profiled_observed_session("native-reply-owner"),
+    )
+    .await;
+    create(repository.as_ref(), observed_session("managed-reply-owner")).await;
+    let application = application_with_runtime(
+        Arc::new(RecordingAgentAdmissionRuntime::new([])),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let id = SessionId::from("native-reply-owner");
+    let before = repository.get(&id).await.unwrap();
+    let command = SessionThreadToolReplyCommand {
+        session_id: id.clone(),
+        tool_request_event_id: Some("reply-1".into()),
+        expected_thread_version: Some(17),
+        target: SessionThreadTarget::Primary,
+        expected_run_id: RunId("run-1".into()),
+        expected_correlation_id: "await-1".into(),
+        tool_use_id: String::new(),
+        reply: SessionThreadToolReply::Input("answer".into()),
+        accompanying_system: None,
+    };
+    assert!(
+        matches!(
+            application
+                .reply_profiled_session_run_for_owner("foreign", command.clone())
+                .await,
+            Err(crate::SessionProjectionRecoveryError::NotFound)
+        ),
+        "R1"
+    );
+    let mut managed = command.clone();
+    managed.session_id = SessionId::from("managed-reply-owner");
+    assert!(
+        matches!(
+            application
+                .reply_profiled_session_run_for_owner("workspace", managed)
+                .await,
+            Err(crate::SessionProjectionRecoveryError::NotFound)
+        ),
+        "R2"
+    );
+    for invalid in [
+        SessionThreadToolReplyCommand {
+            target: SessionThreadTarget::Child(ThreadId("child".into())),
+            ..command.clone()
+        },
+        SessionThreadToolReplyCommand {
+            expected_thread_version: None,
+            ..command.clone()
+        },
+        SessionThreadToolReplyCommand {
+            expected_thread_version: Some(0),
+            ..command.clone()
+        },
+        SessionThreadToolReplyCommand {
+            tool_request_event_id: Some(" ".into()),
+            ..command.clone()
+        },
+        SessionThreadToolReplyCommand {
+            accompanying_system: Some(awaken_session_event_contract::SessionUserRunSystemInput {
+                operation_id: "system".into(),
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "extra",
+                )],
+            }),
+            ..command
+        },
+    ] {
+        assert!(
+            matches!(
+                application
+                    .reply_profiled_session_run_for_owner("workspace", invalid)
+                    .await,
+                Err(crate::SessionProjectionRecoveryError::Rejected(_))
+            ),
+            "R3"
+        );
+    }
+    assert_eq!(repository.get(&id).await.unwrap(), before, "E1");
+}
+
 fn bind_user_command(session: &mut PersistedSession, idempotency_key: &str) -> RunId {
     let mut batch = awaken_session_event_contract::SessionEventBatch::compile(
         &session.session_id,
@@ -66,6 +510,116 @@ fn bind_user_command(session: &mut PersistedSession, idempotency_key: &str) -> R
         })
         .expect("install Event batch");
     run_id
+}
+
+#[tokio::test]
+async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_admission_receipt() {
+    // Causes: C1 no committed Thread prefix; C2 exact native admission/activity
+    // receipt exists; C3 dispatch claim is visible; C4 another Run is requested.
+    // Effects: E1 C1+C2+C3 returns that original claim with state/version NONE,
+    // unchanged lifecycle cursor and no ticket/output/usage; E2 !C2 or C4 is
+    // NotFound; E3 read/replay performs no Session write. This tests the existing
+    // receipt owner; native reservation/admission tests own receipt creation.
+    use awaken_dispatch_contract::{
+        DispatchCursor, DispatchOperation, DispatchOperationalEvent, RunClaim,
+    };
+    let repository =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    create(
+        repository.as_ref(),
+        profiled_observed_session("native-precommit"),
+    )
+    .await;
+    let app = application_with_runtime(
+        Arc::new(RecordingAgentAdmissionRuntime::new([])),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let id = SessionId::from("native-precommit");
+    let run = RunId("native-claimed".into());
+    let feed = Arc::new(ObservedDispatchFeed {
+        events: vec![DispatchOperationalEvent {
+            cursor: DispatchCursor(7),
+            recorded_at_ms: None,
+            operation: DispatchOperation::Claimed {
+                claim: RunClaim {
+                    run_id: run.clone(),
+                    owner: "worker".into(),
+                    epoch: 3,
+                },
+            },
+        }],
+        calls: 0.into(),
+        unavailable: false.into(),
+    });
+    app.set_dispatch_observation_source(feed).unwrap();
+    assert!(
+        matches!(
+            app.session_run_events_after(
+                "workspace",
+                &id,
+                &run,
+                DispatchCursor(0),
+                awaken_agent_contract::RunLifecycleCursor(11),
+                2
+            )
+            .await,
+            Err(crate::SessionProjectionRecoveryError::NotFound)
+        ),
+        "E2 no receipt"
+    );
+    app.begin_activity_for_operation(
+        &id,
+        &awaken_session_execution_contract::session_run_activity_operation_id(&id, &run),
+    )
+    .await
+    .unwrap();
+    let before = repository.get(&id).await.unwrap();
+    let page = app
+        .session_run_events_after(
+            "workspace",
+            &id,
+            &run,
+            DispatchCursor(0),
+            awaken_agent_contract::RunLifecycleCursor(11),
+            2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.dispatch.events[0].cursor.0, 7, "E1 original claim");
+    assert_eq!(page.state, None, "E1 no fabricated Running truth");
+    assert_eq!(page.thread_version, None);
+    assert_eq!(page.lifecycle.next_cursor.0, 11);
+    assert!(page.lifecycle.events.is_empty());
+    assert!(page.resume_ticket.is_none() && page.usage.is_none() && page.response.is_empty());
+    let replay = app
+        .session_run_events_after(
+            "workspace",
+            &id,
+            &run,
+            DispatchCursor(0),
+            awaken_agent_contract::RunLifecycleCursor(11),
+            2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page, replay, "E3 exact read replay");
+    assert!(
+        matches!(
+            app.session_run_events_after(
+                "workspace",
+                &id,
+                &RunId("foreign".into()),
+                DispatchCursor(0),
+                awaken_agent_contract::RunLifecycleCursor(11),
+                2
+            )
+            .await,
+            Err(crate::SessionProjectionRecoveryError::NotFound)
+        ),
+        "E2 foreign Run"
+    );
+    assert_eq!(repository.get(&id).await.unwrap(), before, "E3");
 }
 
 fn model_audit(sequence: u64, run_id: &RunId, is_error: bool, retry_count: u32) -> AuditRecord {

@@ -12,6 +12,9 @@ pub fn install_managed_agent_coordination(
     runtime: &Arc<ManagedHost>,
     application: &Arc<SessionApplication>,
 ) -> Result<(), AgentCoordinationInstallError> {
+    application
+        .set_dispatch_observation_source(runtime.dispatch_observation_source()?)
+        .map_err(|_| AgentCoordinationInstallError::DispatchObservationAlreadyInstalled)?;
     let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         application.clone();
     runtime.install_agent_coordination_application(Arc::downgrade(&coordination))

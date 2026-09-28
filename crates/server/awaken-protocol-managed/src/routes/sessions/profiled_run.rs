@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 
 use super::{WireErr, error_response, session_projection_error};
 use crate::state::{ManagedState, RunError, StateError};
@@ -24,6 +24,61 @@ fn exact_receipt(
         session_id: session_id.to_string(),
         run_id: run_id.clone(),
     })
+}
+
+/// Read the exact admitted native Run without consulting Managed input Events.
+pub async fn get_profiled_session_run_events(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, run_id)): Path<(String, String)>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
+    Query(query): Query<awaken_protocol_awaken::ProfiledSessionRunEventsQuery>,
+) -> Result<Json<awaken_dispatch_contract::SessionRunEventPage>, WireErr> {
+    state
+        .session_application()
+        .session_run_events_after(
+            &owner_scope,
+            &awaken_session_types::SessionId::from(id),
+            &awaken_agent_contract::agent::run::Id(run_id),
+            awaken_dispatch_contract::DispatchCursor(query.dispatch_after),
+            awaken_agent_contract::RunLifecycleCursor(query.lifecycle_after),
+            query.limit,
+        )
+        .await
+        .map(Json)
+        .map_err(session_projection_error)
+}
+
+/// Reuse Session reply admission, native ticket validation and durable receipt.
+pub async fn resume_profiled_session_run(
+    State(state): State<Arc<ManagedState>>,
+    Path((id, run_id)): Path<(String, String)>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
+    body: Result<Json<awaken_protocol_awaken::ProfiledSessionRunResume>, JsonRejection>,
+) -> Result<Json<awaken_protocol_awaken::ProfiledSessionRunReceipt>, WireErr> {
+    let Json(body) = body.map_err(|rejection| {
+        error_response(StateError::Run(RunError::bad_request(
+            crate::routes::extractors::managed_json_message(rejection.body_text()),
+        )))
+    })?;
+    if body.call_id.as_ref().is_some_and(|id| id.trim().is_empty()) {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "native reply call id is empty",
+        ))));
+    }
+    let receipt = awaken_protocol_awaken::ProfiledSessionRunReceipt {
+        session_id: id.clone(),
+        run_id: awaken_agent_contract::agent::run::Id(run_id),
+    };
+    let command = body.into_command(
+        awaken_session_types::SessionId::from(id),
+        receipt.run_id.clone(),
+    );
+    state
+        .session_application()
+        .reply_profiled_session_run_for_owner(&owner_scope, command)
+        .await
+        .map_err(session_projection_error)?;
+    Ok(Json(receipt))
 }
 
 /// Lower one private product-authored Run into the canonical Session Run

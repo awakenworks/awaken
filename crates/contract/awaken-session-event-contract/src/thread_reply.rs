@@ -46,6 +46,10 @@ impl SessionThreadTarget {
 /// Typed reply to a client/permission tool blocking a Session Thread.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SessionThreadToolReply {
+    /// Native free-form input. The committed ticket and native resume
+    /// validator determine whether this wait accepts input; no tool id is
+    /// invented for a manual pause.
+    Input(String),
     Confirm(PermissionDecision),
     Custom {
         content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
@@ -86,6 +90,17 @@ pub struct SessionThreadToolReplyCommand {
 }
 
 impl SessionThreadToolReplyCommand {
+    /// Shared boundary shape check; ticket kind and identity remain Runtime
+    /// authority and are revalidated before durable delivery.
+    #[must_use]
+    pub fn has_complete_coordinates(&self) -> bool {
+        !self.session_id.as_str().trim().is_empty()
+            && !self.expected_run_id.0.trim().is_empty()
+            && !self.expected_correlation_id.trim().is_empty()
+            && (matches!(self.reply, SessionThreadToolReply::Input(_))
+                || !self.tool_use_id.trim().is_empty())
+    }
+
     /// Stable Session mutation identity for this exact committed await and
     /// reply payload. The fence is read from Runtime truth, never accepted from
     /// the public/claimed command, so reuse of a provider call id in a later Run
