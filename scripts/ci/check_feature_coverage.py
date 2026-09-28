@@ -15,6 +15,7 @@ import pathlib
 import re
 import sys
 
+import formal_ledger
 from formal_profile import resolve_obligations
 
 # An obligation may cite any repository path and this checker asserts that each
@@ -27,7 +28,6 @@ INPUT_GLOBS: tuple[str, ...] = ("**/*",)
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FEATURES = ROOT / "formal" / "features.json"
 ASSUMPTIONS = ROOT / "formal" / "assumptions.json"
-COVERAGE = ROOT / "formal" / "coverage.json"
 CRITICALITIES = {"P0", "P1", "P2"}
 REQUIREMENT_KINDS = {"functional", "safety", "liveness", "environment"}
 ASSUMPTION_KINDS = {
@@ -144,7 +144,10 @@ def main() -> None:
 
     feature_data = load_json(FEATURES)
     assumption_data = load_json(ASSUMPTIONS)
-    coverage_data = load_json(COVERAGE)
+    try:
+        coverage_data = formal_ledger.load(ROOT)
+    except formal_ledger.LedgerError as error:
+        fail(str(error))
 
     if feature_data.get("version") != 1:
         fail("formal/features.json version must be 1")
@@ -155,10 +158,10 @@ def main() -> None:
 
     obligations = coverage_data.get("obligations")
     if not isinstance(obligations, list) or not obligations:
-        fail("formal/coverage.json has no obligations")
+        fail("the obligation ledger has no obligations")
     obligations_by_id = {str(item["id"]): item for item in obligations}
     if len(obligations_by_id) != len(obligations):
-        fail("formal/coverage.json contains duplicate obligation ids")
+        fail("the obligation ledger contains duplicate obligation ids")
 
     raw_assumptions = assumption_data.get("assumptions")
     if not isinstance(raw_assumptions, list):
