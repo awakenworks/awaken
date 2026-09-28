@@ -10,12 +10,46 @@
 
 use crate::role::phase;
 
+/// Where a fact sits among the same-phase facts of one commit: the position
+/// of its source (a Message in its Thread, a batch among the retained ones,
+/// an audit row, an Outcome), then its position inside that source (a block,
+/// a fold ordinal, a batch entry, an iteration).
+///
+/// Both axes come from the fact's own coordinates. The single ordinal they
+/// replace scaled the source position by a stride read from whatever else the
+/// reader held (its event count, its largest batch, a Message's own length),
+/// so one fact's ordinal changed with the refresh schedule and a long Message
+/// could sort its last blocks after the next Message.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+pub struct Ordinal {
+    pub source: usize,
+    pub within: usize,
+}
+
+impl Ordinal {
+    /// The first position of a commit's phase.
+    pub const FIRST: Self = Self::at(0);
+
+    /// The position of a source that contributes one fact.
+    #[must_use]
+    pub const fn at(source: usize) -> Self {
+        Self { source, within: 0 }
+    }
+
+    /// The position of one fact inside its source.
+    #[must_use]
+    pub const fn within(source: usize, within: usize) -> Self {
+        Self { source, within }
+    }
+}
+
 /// One immutable timeline coordinate.
 #[derive(Clone, Copy, Debug)]
 pub struct CanonicalOrder {
     pub source_commit_cursor: u64,
     pub phase: u16,
-    pub ordinal: usize,
+    pub ordinal: Ordinal,
     /// Commit wall time of the source, when the prefix retained it.
     pub processed_at_unix_ms: Option<u64>,
 }
@@ -60,7 +94,7 @@ pub fn historical_pending_projection_order(
     Some(CanonicalOrder {
         source_commit_cursor: awaiting_source_commit_cursor,
         phase: phase::TRANSCRIPT,
-        ordinal: 0,
+        ordinal: Ordinal::FIRST,
         processed_at_unix_ms,
     })
 }
@@ -131,7 +165,7 @@ fn historical_pending_order_precedes_every_admitted_terminal() {
         let terminal = CanonicalOrder {
             source_commit_cursor: terminal,
             phase: phase::THREAD_TERMINAL,
-            ordinal: 0,
+            ordinal: Ordinal::FIRST,
             processed_at_unix_ms: kani::any::<bool>().then(kani::any::<u64>),
         };
         assert!(pending < terminal);
@@ -154,13 +188,13 @@ mod tests {
                         let left = CanonicalOrder {
                             source_commit_cursor: left_key.0,
                             phase: left_key.1,
-                            ordinal: left_key.2,
+                            ordinal: Ordinal::at(left_key.2),
                             processed_at_unix_ms: left_time,
                         };
                         let right = CanonicalOrder {
                             source_commit_cursor: right_key.0,
                             phase: right_key.1,
-                            ordinal: right_key.2,
+                            ordinal: Ordinal::at(right_key.2),
                             processed_at_unix_ms: right_time,
                         };
                         assert_eq!(left.cmp(&right), left_key.cmp(&right_key));
@@ -189,7 +223,7 @@ mod tests {
                 let terminal = CanonicalOrder {
                     source_commit_cursor: terminal,
                     phase: phase::THREAD_TERMINAL,
-                    ordinal: 0,
+                    ordinal: Ordinal::FIRST,
                     processed_at_unix_ms: Some(0),
                 };
                 assert!(pending < terminal, "{rule}");

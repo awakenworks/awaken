@@ -529,13 +529,13 @@ mod tests {
         let source_order = CanonicalOrder {
             source_commit_cursor: 2,
             phase: 50,
-            ordinal: 0,
+            ordinal: crate::Ordinal::FIRST,
             processed_at_unix_ms: Some(200),
         };
         let result_order = CanonicalOrder {
             source_commit_cursor: 7,
             phase: 50,
-            ordinal: 1,
+            ordinal: crate::Ordinal::at(1),
             processed_at_unix_ms: Some(100),
         };
         let orders = HashMap::from([("source", source_order)]);
