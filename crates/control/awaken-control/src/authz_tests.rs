@@ -476,10 +476,10 @@ fn fresh_token_ids_are_tok_prefixed_hex() {
 
 #[test]
 fn timestamps_render_canonical_rfc3339_utc() {
-    assert_eq!(civil_from_days(0), (1970, 1, 1));
-    assert_eq!(civil_from_days(19_723), (2024, 1, 1)); // leap-year boundary
-    assert_eq!(civil_from_days(20_513), (2026, 3, 1)); // day after 2026-02-28
+    // The calendar itself is the wall-clock port's codec (tested there); this
+    // pins the IAM shape: fixed width, whole seconds, `Z`.
     let now = now_rfc3339();
+    assert!(canonical_timestamp_shape(&now), "{now}");
     assert_eq!(now.len(), 20);
     assert!(now.ends_with('Z'));
     assert!(now.starts_with("20"));

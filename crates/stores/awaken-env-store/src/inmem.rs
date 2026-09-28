@@ -20,7 +20,8 @@ use awaken_environment_contract::{
     EnvironmentRevision, EnvironmentStoreError,
 };
 
-use awaken_agent_contract::clock::{Clock, SystemClock};
+use awaken_lease_contract::WallClock;
+use awaken_lease_contract::WallClockExt;
 
 pub struct InMemoryEnvRegistry {
     state: Mutex<InMemoryEnvRegistryState>,
@@ -28,7 +29,7 @@ pub struct InMemoryEnvRegistry {
     intent_filters: Mutex<Vec<EnvironmentRegistrationIntentFilter>>,
     /// The one source of every observation timestamp this reference registry
     /// writes — the same seam the durable siblings carry.
-    clock: Arc<dyn Clock>,
+    clock: Arc<dyn WallClock>,
 }
 
 #[derive(Default)]
@@ -49,12 +50,12 @@ impl Default for InMemoryEnvRegistry {
 impl InMemoryEnvRegistry {
     #[must_use]
     pub fn new() -> Self {
-        Self::with_clock(Arc::new(SystemClock))
+        Self::with_clock(awaken_lease_contract::system_clock())
     }
 
     /// The reference registry reading a caller-supplied clock.
     #[must_use]
-    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+    pub fn with_clock(clock: Arc<dyn WallClock>) -> Self {
         Self {
             state: Mutex::new(InMemoryEnvRegistryState::default()),
             fail_acknowledgements: AtomicUsize::new(0),

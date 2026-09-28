@@ -136,9 +136,9 @@ async fn interrupt_with_admission_suspended(
 ) -> InterruptedManagedRun {
     let run_id = RunId(format!("{thread}-run"));
     let dispatch = Arc::new(
-        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-            awaken_run_ingress::SystemClock,
-        ))
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(
+            awaken_lease_contract::system_clock(),
+        )
         .expect("dispatch store"),
     );
     let attempt = Arc::new(BlockingManagedAttempt {

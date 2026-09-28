@@ -44,7 +44,6 @@ use crate::control::vault_acl::{
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
 use awaken_agent_contract::RedactedString;
-use awaken_agent_contract::clock::{Clock, SystemClock};
 use awaken_credential_contract::{
     CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
     CredentialTarget, CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
@@ -68,6 +67,7 @@ use awaken_credential_vault::{
     CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
 };
+use awaken_lease_contract::WallClock;
 use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -201,6 +201,7 @@ fn create_injection_location(
 /// The vault surface's state: the neutral credential domain stores plus the
 /// durable, secret-free Managed projection.
 mod mcp_inspection;
+use awaken_lease_contract::WallClockExt;
 pub use mcp_inspection::{McpCredentialChoice, McpInspectionView};
 use mcp_inspection::{oauth_refresh_access, validate_credential};
 
@@ -222,7 +223,7 @@ pub struct VaultState {
     /// The one wall clock this owner samples: object creation/update/archive
     /// and deletion-request instants, validation instants, and the `now` of
     /// exact credential access. Tests install a fixed clock.
-    clock: Arc<dyn Clock>,
+    clock: Arc<dyn WallClock>,
 }
 
 impl VaultState {
@@ -238,13 +239,13 @@ impl VaultState {
             refresh_exchange: None,
             material_delivery: None,
             rollout_target: RwLock::new(None),
-            clock: Arc::new(SystemClock),
+            clock: awaken_lease_contract::system_clock(),
         }
     }
 
     /// Replace the system wall clock, e.g. with a fixed clock under test.
     #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+    pub fn with_clock(mut self, clock: Arc<dyn WallClock>) -> Self {
         self.clock = clock;
         self
     }

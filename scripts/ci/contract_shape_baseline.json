@@ -10,7 +10,7 @@
     },
     "awaken-agent-contract": {
       "depth": 0,
-      "production_lines": 4997,
+      "production_lines": 4817,
       "catch_all_errors": 5,
       "growth_reasons": {
         "production_lines": "RunRecoverySnapshot::current_run and answerable_ticket replace seven current-Run resolutions and four ticket selectors with disagreeing multiplicity rules across protocol-managed, session-application and runtime-host"
@@ -38,6 +38,9 @@
       "growth_reasons": {
         "catch_all_errors": "merged awaken-environment-realization-contract; its 2 instances moved here, workspace total unchanged"
       }
+    },
+    "awaken-lease-contract": {
+      "depth": 0
     },
     "awaken-provisioning-contract": {
       "depth": 1,

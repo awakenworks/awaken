@@ -650,15 +650,23 @@ def findings_by_rule(
     }
 
 
-def _scan(root: Path) -> dict[str, dict[str, list[str]]]:
+def _scan(root: Path) -> tuple[frozenset[str], dict[str, dict[str, list[str]]]]:
     sources = _sources(root)
-    return findings_by_rule(sources, clock_port_files(root, sources))
+    port_files = clock_port_files(root, sources)
+    return port_files, findings_by_rule(sources, port_files)
 
 
 def main() -> int:
     baseline = load_baseline(BASELINE_PATH)
-    findings = _scan(ROOT)
+    port_files, findings = _scan(ROOT)
     problems: list[str] = []
+    if not port_files:
+        # The exemption is fail-closed (nothing is exempt), but a missing port
+        # crate means every clock read has nowhere legitimate to move to.
+        problems.append(
+            f"{CLOCK_PORT_CRATE}: the crate that owns the one wall-clock port is missing "
+            "from the workspace; R2..R5 name it as the only place the real clock is read"
+        )
     for key, label in RULES:
         if key not in baseline:
             problems.append(f"{key}: no baseline record; every rule carries an owner and an expiry")
@@ -693,7 +701,7 @@ if __name__ == "__main__":
         selftest()
         raise SystemExit(0)
     if arguments.report:
-        scanned = _scan(ROOT)
+        _port_files, scanned = _scan(ROOT)
         for key, _label in RULES:
             for relpath, hits in sorted(scanned[key].items()):
                 print(f"{key}\t{relpath}\t{len(hits)}")

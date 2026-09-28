@@ -236,16 +236,21 @@ impl MemoryCommitCoordinator {
 #[async_trait]
 impl CommitCoordinator for MemoryCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
-        use awaken_agent_contract::clock::{Clock, SystemClock};
-        self.commit_at(commit, Some(SystemClock.now_ms())).await
+        self.commit_at(
+            commit,
+            Some(awaken_lease_contract::system_clock().now().as_epoch_ms()),
+        )
+        .await
     }
 }
 #[async_trait]
 impl OperationCoordinator for MemoryCommitCoordinator {
     async fn commit_operation(&self, operation: CommitOperation) -> Result<CommitReceipt, Error> {
-        use awaken_agent_contract::clock::{Clock, SystemClock};
-        self.commit_operation_at(operation, Some(SystemClock.now_ms()))
-            .await
+        self.commit_operation_at(
+            operation,
+            Some(awaken_lease_contract::system_clock().now().as_epoch_ms()),
+        )
+        .await
     }
 }
 

@@ -1661,7 +1661,7 @@ impl SharedHost {
         let pool = match shared_wake {
             Some(wake) => DispatchPool::spawn_with_wake_and_completion(
                 store,
-                Arc::new(SystemClock),
+                awaken_lease_contract::system_clock(),
                 self.deployment.dispatch_owner.clone(),
                 DEFAULT_LEASE_MS,
                 config,
@@ -1672,7 +1672,7 @@ impl SharedHost {
             ),
             None => DispatchPool::spawn_with_completion(
                 store,
-                Arc::new(SystemClock),
+                awaken_lease_contract::system_clock(),
                 self.deployment.dispatch_owner.clone(),
                 DEFAULT_LEASE_MS,
                 config,

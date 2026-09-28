@@ -16,10 +16,10 @@ mod support;
 
 use std::sync::Arc;
 
-use awaken_agent_contract::clock::ManualClock;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::catalog::{ManagedCredentialLifecycle, ManagedVaultRepo};
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
+use awaken_lease_testkit::ManualClock;
 use awaken_protocol_managed::{VaultState, vault_router};
 use axum::Router;
 use axum::body::Body;

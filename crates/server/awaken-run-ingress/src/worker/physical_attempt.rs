@@ -18,11 +18,12 @@ use std::sync::Arc;
 
 use super::{ClaimedSnapshotAuthority, DispatchWorker};
 use crate::Error;
-use crate::clock::Clock;
 use crate::dispatch::{AttemptAdmission, Claimed, DispatchError, RunClaim, SettleOutcome};
 use crate::execution_capacity::ExecutionCapacity;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::RunState;
+use awaken_lease_contract::WallClock;
+use awaken_lease_contract::WallClockExt;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -41,7 +42,7 @@ pub(super) struct PhysicalAttemptRequest<'a> {
     pub context: &'a RuntimeRunContext,
     pub live_input: LiveInput,
     pub recovery_mode: AttemptRecoveryMode,
-    pub clock: Arc<dyn Clock>,
+    pub clock: Arc<dyn WallClock>,
     pub execution_capacity: Option<&'a ExecutionCapacity>,
 }
 

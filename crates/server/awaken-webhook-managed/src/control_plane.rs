@@ -128,23 +128,14 @@ pub fn loopback_lifecycle_delivery(
     )
 }
 
-/// RFC-3339 UTC from unix seconds, allocation-free of any date crate (Howard
-/// Hinnant's public-domain `civil_from_days`), matching `awaken-authz-enforce`.
+/// RFC-3339 UTC from unix seconds, spelled by the wall-clock port's one codec. A
+/// negative (pre-epoch) second saturates to the epoch, the port's one pre-epoch
+/// rule.
 fn rfc3339(secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if month <= 2 { y + 1 } else { y };
-    format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+    awaken_lease_contract::UtcTime::from_duration_since_epoch(std::time::Duration::from_secs(
+        u64::try_from(secs).unwrap_or(0),
+    ))
+    .to_rfc3339_secs()
 }
 
 /// The dispatcher's read/lifecycle port over the config plane: enumerate a
@@ -697,11 +688,11 @@ async fn delete_subscription(
 mod rfc3339_tests {
     use super::rfc3339;
 
-    /// The hand-rolled `civil_from_days` date math stamps `created_at` on every
-    /// delivered event, so pin it against authoritative unix→RFC-3339 UTC vectors
-    /// covering the boundaries that break naive implementations: day rollovers,
-    /// a leap day, a century-leap year (2000), a non-leap century (2100), and a
-    /// negative (pre-epoch) instant (the `div_euclid`/`rem_euclid` path).
+    /// The codec stamps `created_at` on every delivered event, so pin it
+    /// against authoritative unix→RFC-3339 UTC vectors covering the boundaries
+    /// that break naive implementations: day rollovers, a leap day, a
+    /// century-leap year (2000), a non-leap century (2100), and a negative
+    /// (pre-epoch) instant, which saturates to the epoch.
     #[test]
     fn matches_known_unix_to_rfc3339_vectors() {
         let cases = [
@@ -713,7 +704,7 @@ mod rfc3339_tests {
             (1_583_020_800, "2020-03-01T00:00:00Z"), // day after the 2020 leap day
             (951_825_600, "2000-02-29T12:00:00Z"),   // 2000 is a leap year (÷400)
             (4_102_444_800, "2100-01-01T00:00:00Z"), // 2100 is NOT a leap year (÷100)
-            (-1, "1969-12-31T23:59:59Z"),            // pre-epoch, negative seconds
+            (-1, "1970-01-01T00:00:00Z"),            // pre-epoch saturates to the epoch
         ];
         for (secs, expected) in cases {
             assert_eq!(rfc3339(secs), expected, "rfc3339({secs})");

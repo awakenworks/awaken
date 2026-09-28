@@ -2654,7 +2654,7 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
     // The 3 cleanup paths x 3 CAS outcomes reuse the existing SQLite decorator,
     // application clock, aggregate constructor and supervisor. Expected frames
     // are explicit field deltas, never computed with resolve_terminally itself.
-    use awaken_agent_contract::clock::ManualClock;
+    use awaken_lease_testkit::ManualClock;
     use awaken_session_event_contract::SessionEventProjectionAnchor;
     for cleanup in ["requested", "legacy", "fenced"] {
         for fault in ["none", "unavailable", "lost_ack"] {

@@ -5101,7 +5101,7 @@ fn complete_runtime_composition_does_not_require_optional_role_discovery() {
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     )
-    .with_clock(Arc::new(awaken_agent_contract::clock::SystemClock));
+    .with_clock(awaken_lease_contract::system_clock());
     app.replace_repository(repository);
 }
 

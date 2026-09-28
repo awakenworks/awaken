@@ -414,7 +414,7 @@ impl EphemeralRuntimeAuthority {
         // continuation role when erasing the concrete Memory store; the
         // Worker-only constructor intentionally omits that role.
         let dispatch = awaken_run_ingress::AnyDispatchStore::from_durable_dispatch(Arc::new(
-            awaken_run_ingress::MemoryDispatchStore::new(Arc::new(awaken_run_ingress::SystemClock)),
+            awaken_run_ingress::MemoryDispatchStore::new(awaken_lease_contract::system_clock()),
         ));
         Self {
             commits: std::sync::Mutex::new(std::collections::HashMap::new()),

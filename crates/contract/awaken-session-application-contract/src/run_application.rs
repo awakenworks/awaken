@@ -214,12 +214,12 @@ impl StreamSink for EventForwardingSink {
     }
 }
 
-/// Millisecond value represented by the public UTC projection. Consumers that
-/// filter projected timestamps use this same normalization as the formatter.
-#[must_use]
-pub fn project_epoch_millis(epoch_millis: u128) -> u64 {
-    epoch_millis.min((crate::work_queue::MAX_RFC3339_NANOS / 1_000_000) as u128) as u64
-}
+/// The public UTC projection is the wall-clock port's one codec: the filter's
+/// numeric normalization and the formatter are the same functions every other
+/// durable record uses, not a copy kept here.
+pub use awaken_lease_contract::utc::{
+    epoch_millis_to_rfc3339, project_epoch_millis, rfc3339_to_epoch_millis,
+};
 
 #[cfg(kani)]
 /// @obligation session_time.utc_projection_domain_is_total_exact_and_idempotent
@@ -238,35 +238,6 @@ fn public_millisecond_projection_is_exact_bounded_and_nonwrapping() {
     } else {
         assert_eq!(projected, 253_402_300_799_999);
     }
-}
-
-/// Format epoch milliseconds without losing subsecond precision. Whole seconds
-/// retain their historical spelling. Calendar arithmetic is owned by the same
-/// UTC codec as Work receipts. Values after year 9999 saturate only in this
-/// display projection; persisted milliseconds and lease arithmetic are unchanged.
-#[must_use]
-pub fn epoch_millis_to_rfc3339(epoch_millis: u64) -> String {
-    let nanos = i128::from(project_epoch_millis(epoch_millis.into())) * 1_000_000;
-    let text = crate::work_queue::format_rfc3339_utc_nanos(nanos);
-    let (whole, fraction) = text
-        .strip_suffix('Z')
-        .expect("UTC codec")
-        .split_once('.')
-        .expect("fraction codec");
-    let fraction = fraction.trim_end_matches('0');
-    if fraction.is_empty() {
-        format!("{whole}Z")
-    } else {
-        format!("{whole}.{fraction}Z")
-    }
-}
-
-/// Decode the same persisted UTC vocabulary; malformed/unknown times remain absent.
-#[must_use]
-pub fn rfc3339_to_epoch_millis(value: &str) -> Option<u64> {
-    crate::work_queue::parse_rfc3339_utc_nanos(value)
-        .filter(|nanos| *nanos >= 0)
-        .and_then(|nanos| u64::try_from(nanos / 1_000_000).ok())
 }
 
 #[cfg(test)]
@@ -339,83 +310,6 @@ mod tests {
                     if code == "indeterminate"
             ),
             "R5"
-        );
-    }
-
-    proptest::proptest! {
-        // D1 every legal millisecond round-trips; D2 every larger u64 saturates
-        // to the last representable millisecond. A fixed regression below also
-        // checks known dates independently of the round-trip oracle.
-        #[test]
-        fn timestamp_projection_round_trips_its_declared_domain(millis in proptest::prelude::any::<u64>()) {
-            // The filter's shared numeric projection and the wire codec must
-            // represent the same instant for legal and saturated input classes.
-            let wire = epoch_millis_to_rfc3339(millis);
-            proptest::prop_assert_eq!(project_epoch_millis(millis.into()), millis.min(253_402_300_799_999));
-            proptest::prop_assert_eq!(rfc3339_to_epoch_millis(&wire), Some(project_epoch_millis(millis.into())));
-        }
-    }
-
-    #[test]
-    fn timestamp_input_and_calendar_boundary_decision_table() {
-        // D3 invalid syntax/date -> absent; D4 calendar boundaries -> exact
-        // independent golden value; D5 formatter output always remains in the
-        // declared four-digit UTC vocabulary, including u64/SQL extremes.
-        for invalid in [
-            "2026-09-06T00:00:00.Z",
-            "2026-09-06T00:00:00..1Z",
-            "2026-02-29T00:00:00Z",
-            "2100-02-29T00:00:00Z",
-            "2026-04-31T00:00:00Z",
-            "2026-00-01T00:00:00Z",
-            "2026-01-00T00:00:00Z",
-            "2026-01-01T24:00:00Z",
-            "2026-01-01T00:60:00Z",
-            "2026-01-01T00:00:60Z",
-            "2026-01-01T00:00:00.1234567890Z",
-            "2026-01-01T00:00:00+00:00",
-            "２０２６-01-01T00:00:00Z",
-        ] {
-            assert_eq!(rfc3339_to_epoch_millis(invalid), None, "D3 {invalid}");
-        }
-        for (millis, expected) in [
-            (946_684_800_000, "2000-01-01T00:00:00Z"),
-            (951_782_400_000, "2000-02-29T00:00:00Z"),
-            (4_107_542_400_000, "2100-03-01T00:00:00Z"),
-            (253_402_300_799_999, "9999-12-31T23:59:59.999Z"),
-        ] {
-            assert_eq!(epoch_millis_to_rfc3339(millis), expected, "D4");
-            assert_eq!(rfc3339_to_epoch_millis(expected), Some(millis), "D4");
-        }
-        for millis in [253_402_300_800_000, i64::MAX as u64, u64::MAX] {
-            assert_eq!(
-                epoch_millis_to_rfc3339(millis),
-                "9999-12-31T23:59:59.999Z",
-                "D5"
-            );
-        }
-    }
-
-    #[test]
-    fn epoch_milliseconds_have_one_canonical_projection() {
-        // Cause/effect table: zero -> epoch; subsecond -> exact fraction;
-        // leap-day boundary -> exact Gregorian date; fractional trailing zeros
-        // normalize and round-trip; malformed/pre-epoch input -> no observation.
-        for millis in [0, 1, 10, 100, 999, 1_800_000_000_123] {
-            assert_eq!(
-                rfc3339_to_epoch_millis(&epoch_millis_to_rfc3339(millis)),
-                Some(millis)
-            );
-        }
-        assert_eq!(epoch_millis_to_rfc3339(100), "1970-01-01T00:00:00.1Z");
-        assert_eq!(rfc3339_to_epoch_millis("invalid"), None);
-        assert_eq!(rfc3339_to_epoch_millis("1969-12-31T23:59:59Z"), None);
-        assert_eq!(rfc3339_to_epoch_millis("1969-12-31T23:59:59.9995Z"), None);
-        assert_eq!(epoch_millis_to_rfc3339(0), "1970-01-01T00:00:00Z");
-        assert_eq!(epoch_millis_to_rfc3339(999), "1970-01-01T00:00:00.999Z");
-        assert_eq!(
-            epoch_millis_to_rfc3339(1_709_164_800_000),
-            "2024-02-29T00:00:00Z"
         );
     }
 }

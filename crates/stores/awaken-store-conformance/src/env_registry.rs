@@ -10,8 +10,6 @@
 //! table, registration-intent delivery and injected-clock observation are the
 //! port's contract, so a divergence is a parity bug in the backend that shows it.
 
-use awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339;
-use awaken_agent_contract::clock::{Clock, ManualClock, system_clock};
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvRegistry,
     EnvUpdate, EnvironmentConfig, EnvironmentConfigMutation, EnvironmentFieldUpdate,
@@ -19,6 +17,10 @@ use awaken_environment_contract::{
     EnvironmentPackagesMutation, EnvironmentRegistrationIntentFilter, EnvironmentRevision,
     EnvironmentSandboxPolicyRef, EnvironmentStoreError, InvalidEnvironmentConfig,
 };
+use awaken_lease_contract::WallClock;
+use awaken_lease_contract::system_clock;
+use awaken_lease_contract::utc::epoch_millis_to_rfc3339;
+use awaken_lease_testkit::ManualClock;
 use std::sync::Arc;
 
 pub async fn make<R: EnvRegistry>(r: &R, name: &str) -> String {
@@ -772,7 +774,7 @@ pub async fn environment_instants_are_the_injected_clock<R: EnvRegistry>(
     );
 }
 
-pub async fn run_suite<R: EnvRegistry>(fresh_with: impl Fn(Arc<dyn Clock>) -> R) {
+pub async fn run_suite<R: EnvRegistry>(fresh_with: impl Fn(Arc<dyn WallClock>) -> R) {
     let fresh = || fresh_with(system_clock());
     unique_ids(&fresh()).await;
     archive_preserves_authoritative_history(&fresh()).await;

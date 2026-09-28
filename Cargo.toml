@@ -41,6 +41,8 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 awaken-agent-contract = { path = "crates/contract/awaken-agent-contract" }
+awaken-lease-contract = { path = "crates/contract/awaken-lease-contract" }
+awaken-lease-testkit = { path = "crates/devtools/awaken-lease-testkit" }
 awaken-credential-contract = { path = "crates/contract/awaken-credential-contract" }
 awaken-runtime-contract = { path = "crates/contract/awaken-runtime-contract" }
 awaken-tool-contract = { path = "crates/contract/awaken-tool-contract" }

@@ -15,6 +15,7 @@
 // @formal entrypoint worker.durable_dispatch_contains_no_plaintext_secret
 // @formal evidence ingress.epoch_reclaim
 // @formal evidence ingress.single_owner
+use awaken_lease_contract::WallClockExt;
 // SQLite realization of the one neutral DispatchQueue contract. Included by
 // `sqlite.rs` so the public adapter and trait implementation paths do not move.
 #[async_trait]

@@ -33,6 +33,7 @@ awaken-session-types.workspace = true
 awaken-session-work-contract.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
+awaken-lease-contract.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 thiserror.workspace = true
 serde.workspace = true
@@ -44,6 +45,7 @@ tracing = "0.1"
 test-support = ["awaken-session-realization-contract/test-support"]
 
 [dev-dependencies]
+awaken-lease-testkit.workspace = true
 awaken-worker-registry.workspace = true
 awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 awaken-reliability-testkit.workspace = true

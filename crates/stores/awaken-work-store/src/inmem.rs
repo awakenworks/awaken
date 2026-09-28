@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_agent_contract::clock::{Clock, SystemClock};
+use awaken_lease_contract::WallClock;
 use awaken_session_work_contract::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
     SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkLeaseMutationAdmission,
@@ -24,6 +24,7 @@ use awaken_session_work_contract::{
 };
 
 use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at};
+use awaken_lease_contract::WallClockExt;
 
 /// The lease TTL a heartbeat reports (seconds).
 const HEARTBEAT_TTL_SECONDS: u64 = 60;
@@ -35,8 +36,8 @@ pub struct InMemoryWorkQueue {
     seq: AtomicU64,
     /// The one source of every observation timestamp this reference backend
     /// writes — the same seam the durable siblings carry, so a conformance test
-    /// can drive all three from one [`ManualClock`](awaken_agent_contract::clock::ManualClock).
-    clock: std::sync::Arc<dyn Clock>,
+    /// can drive all three from one [`ManualClock`](awaken_lease_testkit::ManualClock).
+    clock: std::sync::Arc<dyn WallClock>,
 }
 
 /// All queue state, lease and token accesses share this one commit boundary.
@@ -86,12 +87,12 @@ impl Default for InMemoryWorkQueue {
 impl InMemoryWorkQueue {
     #[must_use]
     pub fn new() -> Self {
-        Self::with_clock(std::sync::Arc::new(SystemClock))
+        Self::with_clock(awaken_lease_contract::system_clock())
     }
 
     /// The reference queue reading a caller-supplied clock.
     #[must_use]
-    pub fn with_clock(clock: std::sync::Arc<dyn Clock>) -> Self {
+    pub fn with_clock(clock: std::sync::Arc<dyn WallClock>) -> Self {
         Self {
             authority: Mutex::new(InMemoryQueueAuthority::default()),
             seq: AtomicU64::new(0),
@@ -223,9 +224,7 @@ impl InMemoryWorkQueue {
             .map_err(|error| WorkQueueError::Storage(error.into()))?;
         let work = works.get_mut(&wid).expect("just found");
         work.state = WorkState::Active;
-        work.started_at = Some(awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(
-            now_ms,
-        ));
+        work.started_at = Some(awaken_lease_contract::utc::epoch_millis_to_rfc3339(now_ms));
         work.latest_heartbeat_at = None;
         let session_access = session_access
             .filter(|_| matches!(work.data, WorkPayload::Session { .. }))
@@ -765,9 +764,7 @@ impl WorkQueue for InMemoryWorkQueue {
             book.claim_for(&work_id, worker_owner, now_ms, LEASE_TTL_MS)
                 .map_err(|error| WorkQueueError::Storage(error.into()))?;
             work.state = WorkState::Active;
-            work.started_at = Some(awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339(
-                now_ms,
-            ));
+            work.started_at = Some(awaken_lease_contract::utc::epoch_millis_to_rfc3339(now_ms));
             work.latest_heartbeat_at = None;
         }
         Ok(authority.current_session_lease(env_id, session_id, now_ms))

@@ -4,7 +4,6 @@
 pub mod acp;
 pub mod agent;
 pub mod audit;
-pub mod clock;
 pub mod event;
 pub mod fingerprint;
 pub mod id;

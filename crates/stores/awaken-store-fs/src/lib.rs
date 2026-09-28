@@ -413,8 +413,7 @@ impl Coordinator for FsCommitCoordinator {
         }
         // Durable first: append + fsync the record before it is acknowledged, so a
         // crash after ack cannot lose it and a crash before ack replays nothing.
-        use awaken_agent_contract::clock::{Clock, SystemClock};
-        let committed_at_unix_ms = Some(SystemClock.now_ms());
+        let committed_at_unix_ms = Some(awaken_lease_contract::system_clock().now().as_epoch_ms());
         self.append(&StoredCommitLogEntry {
             committed_at_unix_ms,
             entry: CommitLogEntry::Commit(commit.clone()),
@@ -431,8 +430,7 @@ impl OperationCoordinator for FsCommitCoordinator {
         if let Some(duplicate) = self.inner.inspect_operation(&operation)? {
             return Ok(duplicate);
         }
-        use awaken_agent_contract::clock::{Clock, SystemClock};
-        let committed_at_unix_ms = Some(SystemClock.now_ms());
+        let committed_at_unix_ms = Some(awaken_lease_contract::system_clock().now().as_epoch_ms());
         self.append(&StoredCommitLogEntry {
             committed_at_unix_ms,
             entry: CommitLogEntry::Operation(operation.clone()),

@@ -1,0 +1,18 @@
+[package]
+name = "awaken-lease-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.awaken]
+context = "shared"
+layer = "tooling"
+authority = "time-bounded-ownership-test-evidence"
+description = "Deterministic WallClock doubles, reachable only from test and conformance code, never from a shipped binary"
+
+[dependencies]
+awaken-lease-contract.workspace = true
+
+[lints]
+workspace = true
