@@ -114,7 +114,6 @@
         "crates/worker/awaken-sandbox-container/src/k8s/realization.rs": 2,
         "crates/worker/awaken-sandbox-container/src/k8s_package_image.rs": 4,
         "crates/worker/awaken-sandbox-container/src/pool.rs": 5,
-        "crates/worker/awaken-sandbox-container/src/pool/lease.rs": 1,
         "crates/worker/awaken-sandbox-container/src/runtime.rs": 2,
         "crates/worker/awaken-sandbox-memoryd/src/fuse.rs": 4,
         "crates/worker/awaken-tool-relay/src/serve.rs": 2
@@ -125,8 +124,7 @@
       "expires": "2026-12-31",
       "reason": "Each context declared its own wall-clock port before awaken-lease-contract owned one: agent-contract Clock, WorkerClock, RegistryClock, DataSubjectClock, WarmLeaseClock and the runtime ModelInferenceClock. Each is retired by taking awaken_lease_contract::WallClock; the count may only fall.",
       "files": {
-        "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs": 1,
-        "crates/worker/awaken-sandbox-container/src/pool/lease.rs": 1
+        "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs": 1
       }
     },
     "defaulted_system_clock": {
@@ -143,6 +141,7 @@
         "crates/server/awaken-dispatch/src/live_control.rs": 1,
         "crates/server/awaken-session-executor/src/agent_runner/child_execution.rs": 1,
         "crates/server/awaken-session-executor/src/authority.rs": 1,
+        "crates/server/awaken-session-executor/src/container_environment.rs": 1,
         "crates/server/awaken-session-executor/src/host/build.rs": 2,
         "crates/server/awaken-session-executor/src/host/run.rs": 1,
         "crates/server/awaken-session-executor/src/host/terminal_reconciliation.rs": 1,
@@ -150,8 +149,7 @@
         "crates/stores/awaken-env-store/src/inmem.rs": 1,
         "crates/stores/awaken-store-conformance/src/env_registry.rs": 1,
         "crates/stores/awaken-store-conformance/src/work_queue.rs": 1,
-        "crates/stores/awaken-work-store/src/inmem.rs": 1,
-        "crates/worker/awaken-sandbox-container/src/pool/lease.rs": 1
+        "crates/stores/awaken-work-store/src/inmem.rs": 1
       }
     },
     "shadow_clock_helper": {
@@ -181,7 +179,6 @@
         "crates/stores/awaken-captured-content-store/src/capture_store.rs": 1,
         "crates/stores/awaken-captured-content-store/src/postgres.rs": 1,
         "crates/stores/awaken-captured-content-store/src/sqlite.rs": 1,
-        "crates/worker/awaken-sandbox-container/src/pool/lease.rs": 3,
         "crates/worker/awaken-sandbox-memoryd/src/fuse.rs": 1
       }
     }

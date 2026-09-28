@@ -36,7 +36,8 @@
 //! directory defaults to the same temp dir ([`WarmCapacityLeases::host_default`]).
 //!
 //! * **Durable**: the lease file. Its *modification time* is the lease deadline
-//!   (epoch milliseconds from the injected [`WarmLeaseClock`]); its content
+//!   (an [`Expiry`] minted from the injected [`WallClock`], judged by the one
+//!   expiry law: live while `now < deadline`); its content
 //!   names scope, holder incarnation and lease domain for attribution and is
 //!   never rewritten. The mtime is used because it is the one attribute that can
 //!   be changed on an *existing inode* without creating anything: renewal can
@@ -126,6 +127,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use awaken_lease_contract::{Expiry, UtcTime, WallClock};
+
 use awaken_provisioning_contract as pc;
 use serde::{Deserialize, Serialize};
 
@@ -139,26 +142,6 @@ const LEASE_SCHEMA: u8 = 1;
 const LEASE_SUFFIX: &str = "lease";
 const MINT_SUFFIX: &str = "mint";
 const CLAIM_PREFIX: &str = "claim.";
-
-/// Wall-clock source for lease deadlines, in epoch milliseconds. Injected so
-/// tests drive expiry with a manual clock instead of waiting.
-pub trait WarmLeaseClock: Send + Sync {
-    fn now_ms(&self) -> u64;
-}
-
-/// The host's real clock.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemWarmLeaseClock;
-
-impl WarmLeaseClock for SystemWarmLeaseClock {
-    fn now_ms(&self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-            })
-    }
-}
 
 /// Validated lease timing. Validation is the shared
 /// [`pc::LeaseTimingPolicy`]: renewal gets at least three opportunities per
@@ -223,18 +206,25 @@ fn duration_ms(duration: Duration) -> u64 {
 pub struct WarmCapacityLeases {
     root: PathBuf,
     policy: WarmCapacityLeasePolicy,
-    clock: Arc<dyn WarmLeaseClock>,
+    /// Mints and judges every lease deadline. Required: the Worker composition
+    /// that owns the pool chooses it, so a test drives expiry with a manual
+    /// clock instead of waiting and production never defaults silently.
+    clock: Arc<dyn WallClock>,
     maintained: bool,
 }
 
 impl WarmCapacityLeases {
-    /// Records under `root`, on the system clock, maintained by the pool.
+    /// Records under `root`, on `clock`, maintained by the pool.
     #[must_use]
-    pub fn new(root: impl Into<PathBuf>, policy: WarmCapacityLeasePolicy) -> Self {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        policy: WarmCapacityLeasePolicy,
+        clock: Arc<dyn WallClock>,
+    ) -> Self {
         Self {
             root: root.into(),
             policy,
-            clock: Arc::new(SystemWarmLeaseClock),
+            clock,
             maintained: true,
         }
     }
@@ -242,19 +232,14 @@ impl WarmCapacityLeases {
     /// The per-user host default: `<temp dir>/awaken-warm-capacity-leases-<uid>`,
     /// beside the retained host staging this crate already trusts across Worker
     /// replacement.
-    pub fn host_default() -> Result<Self, pc::SandboxError> {
+    pub fn host_default(clock: Arc<dyn WallClock>) -> Result<Self, pc::SandboxError> {
         let temp = std::env::temp_dir();
         let uid = effective_uid(&temp).map_err(|error| lease_error("host_default", error))?;
         Ok(Self::new(
             temp.join(format!("awaken-warm-capacity-leases-{uid}")),
             WarmCapacityLeasePolicy::default(),
+            clock,
         ))
-    }
-
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn WarmLeaseClock>) -> Self {
-        self.clock = clock;
-        self
     }
 
     /// Do not spawn the renewal/reclamation loop. The caller then owns calling
@@ -318,7 +303,7 @@ pub(crate) struct Observed {
     path: PathBuf,
     pub(crate) scope: String,
     pub(crate) kind: RecordKind,
-    pub(crate) deadline_ms: u64,
+    pub(crate) deadline: Expiry,
 }
 
 /// The owner's view of its own record after a renew or release.
@@ -355,13 +340,15 @@ fn valid_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
-fn to_system_time(ms: u64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_millis(ms)
+/// The mtime that persists `deadline`.
+fn to_system_time(deadline: Expiry) -> SystemTime {
+    UNIX_EPOCH + deadline.deadline().duration_since_epoch()
 }
 
-fn deadline_of(metadata: &fs::Metadata) -> io::Result<u64> {
-    let modified = metadata.modified()?;
-    Ok(modified.duration_since(UNIX_EPOCH).map_or(0, duration_ms))
+/// The deadline a record's mtime persists. A pre-epoch mtime reads as the
+/// epoch, so such a record is already expired.
+fn deadline_of(metadata: &fs::Metadata) -> io::Result<Expiry> {
+    Ok(Expiry::at(UtcTime::from_system_time(metadata.modified()?)))
 }
 
 fn same_inode(left: &fs::Metadata, right: &fs::Metadata) -> bool {
@@ -418,8 +405,8 @@ pub(crate) struct LeaseStore {
     uid: u32,
     domain: String,
     holder: String,
-    ttl_ms: u64,
-    clock: Arc<dyn WarmLeaseClock>,
+    ttl: Duration,
+    clock: Arc<dyn WallClock>,
 }
 
 impl LeaseStore {
@@ -456,7 +443,7 @@ impl LeaseStore {
             uid,
             domain: domain.to_owned(),
             holder: holder.to_owned(),
-            ttl_ms: config.policy.timing.lease_ttl_ms(),
+            ttl: config.policy.ttl(),
             clock: config.clock.clone(),
         })
     }
@@ -466,12 +453,14 @@ impl LeaseStore {
         &self.dir
     }
 
-    pub(crate) fn now_ms(&self) -> u64 {
-        self.clock.now_ms()
+    /// This store's reading of the lease clock: every deadline it mints and
+    /// every expiry it judges comes from the same handle.
+    pub(crate) fn reading(&self) -> UtcTime {
+        self.clock.now()
     }
 
-    fn deadline(&self) -> u64 {
-        self.now_ms().saturating_add(self.ttl_ms)
+    fn deadline(&self) -> Expiry {
+        Expiry::after(self.reading(), self.ttl)
     }
 
     fn lease_path(&self, scope: &str) -> PathBuf {
@@ -594,7 +583,7 @@ impl LeaseStore {
                 path: entry.path(),
                 scope: scope.to_owned(),
                 kind,
-                deadline_ms: deadline_of(&metadata)?,
+                deadline: deadline_of(&metadata)?,
             });
         }
         observed.sort_by(|left, right| left.path.cmp(&right.path));
@@ -619,7 +608,7 @@ impl LeaseStore {
             Err(error) => return Err(error),
         }
         let taken = fs::symlink_metadata(&claim)?;
-        if deadline_of(&taken)? > self.now_ms() {
+        if deadline_of(&taken)?.is_live_at(self.reading()) {
             fs::rename(&claim, &observed.path)?;
             return Ok(ClaimOutcome::Live);
         }
@@ -688,9 +677,9 @@ impl LeaseStore {
     /// A staged mint left by a creator that died before publishing it. No
     /// container can exist for it (the create starts only after the link), so
     /// it is removed once one TTL past its own deadline.
-    fn stale_mint(&self, observed: &Observed, now_ms: u64) -> bool {
+    fn stale_mint(&self, observed: &Observed, now: UtcTime) -> bool {
         observed.kind == RecordKind::Mint
-            && observed.deadline_ms.saturating_add(self.ttl_ms) <= now_ms
+            && Expiry::after(observed.deadline.deadline(), self.ttl).is_expired_at(now)
     }
 }
 
@@ -795,7 +784,7 @@ impl WarmLeaseLedger {
         inner: &ContainerProvider<R>,
     ) -> Result<WarmCapacityReclamation, pc::SandboxError> {
         let _pass = self.reclaiming.lock().await;
-        let now = self.store.now_ms();
+        let now = self.store.reading();
         let mut report = WarmCapacityReclamation::default();
         let observed = self
             .store
@@ -806,10 +795,7 @@ impl WarmLeaseLedger {
                 let _ = fs::remove_file(&record.path);
                 continue;
             }
-            if record.kind == RecordKind::Mint
-                || pc::LeaseGrant::until(record.deadline_ms).liveness(now, 0)
-                    != pc::LeaseLiveness::Expired
-            {
+            if record.kind == RecordKind::Mint || record.deadline.is_live_at(now) {
                 continue;
             }
             let claim = match self.store.claim(&record) {
