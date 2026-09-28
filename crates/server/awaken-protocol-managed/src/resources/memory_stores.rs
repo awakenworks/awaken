@@ -292,6 +292,26 @@ impl MemoryPrecondition {
     }
 }
 
+/// The single owner of the SDK's already-current answer (R6): the stored state
+/// already equals the requested content and path, so the mutation has nothing to
+/// add and the contract answers 200 rather than a conflict.
+///
+/// Both origins of a conflict consult this one rule. The precondition compares
+/// it against the head *this request* loaded; the store's stale-generation
+/// refusal compares it against the head the store observed inside its own
+/// transaction. Deciding it in only the first place made the public outcome
+/// depend on which caller loaded the head first.
+///
+/// An absent content projection compares unequal, so the answer fails closed to
+/// a conflict rather than inventing an already-current head.
+fn already_at_requested_state(
+    head: &awaken_resource_contract::Memory,
+    new_content: &str,
+    target_path: Option<&str>,
+) -> bool {
+    head.content.as_deref() == Some(new_content) && target_path.is_none_or(|path| path == head.path)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct MemoryUpdateParams {
@@ -931,11 +951,7 @@ async fn update_memory(
             );
         }
         Some(Err(PreconditionRefusal::Stale)) => {
-            let same_content = current.content.as_deref().unwrap_or_default() == new_content;
-            let same_path = target_path
-                .as_deref()
-                .is_none_or(|path| path == current.path);
-            if same_content && same_path {
+            if already_at_requested_state(&current, &new_content, target_path.as_deref()) {
                 return match project_current_memory(&state, &current, &id, view).await {
                     Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
                     Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -960,7 +976,20 @@ async fn update_memory(
             Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
             Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         },
-        Err(MemErr::Conflict { .. }) => memory_conflict(),
+        Err(MemErr::Conflict { current }) => {
+            // The store fences on generation staleness to keep a same-content
+            // ABA a conflict rather than a retry, so it cannot answer R6 itself.
+            // It does carry the head it observed inside its transaction, which
+            // is the linearized state this rule needs.
+            if already_at_requested_state(&current, &new_content, target_path.as_deref()) {
+                match project_current_memory(&state, &current, &id, view).await {
+                    Ok(projected) => (StatusCode::OK, Json(projected)).into_response(),
+                    Err(error) => err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+                }
+            } else {
+                memory_conflict()
+            }
+        }
         Err(MemErr::TooLarge) => err(StatusCode::BAD_REQUEST, "memory content too large"),
         Err(error @ MemErr::AtCapacity) => err(StatusCode::BAD_REQUEST, error.to_string()),
         Err(MemErr::InvalidPath(_)) => err(StatusCode::BAD_REQUEST, "invalid memory path"),
