@@ -758,7 +758,7 @@ impl DeploymentConfig {
         &self,
     ) -> Option<awaken_provisioning_contract::SandboxCapabilities> {
         self.trusted_host_enabled()
-            .then(awaken_sandbox_local::LocalProvider::capabilities)
+            .then(awaken_session_environment_contract::workdir_capabilities)
     }
 
     /// Project the configured Sandbox adapter into the exact secret-free support
@@ -780,7 +780,7 @@ impl DeploymentConfig {
             self.sandbox.package_image_builder.is_some(),
         );
         let capabilities = match self.sandbox_tier {
-            SandboxTier::Local => awaken_sandbox_local::LocalProvider::capabilities(),
+            SandboxTier::Local => awaken_session_environment_contract::workdir_capabilities(),
             SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => {
                 SandboxCapabilities {
                     process_tree_supervision: false,
@@ -804,7 +804,7 @@ impl DeploymentConfig {
                     control_services: Default::default(),
                 }
             }
-            SandboxTier::Namespace => awaken_sandbox_local::NamespaceProvider::capabilities(),
+            SandboxTier::Namespace => awaken_session_environment_contract::namespace_capabilities(),
         };
         (capabilities, projection.backend.name())
     }

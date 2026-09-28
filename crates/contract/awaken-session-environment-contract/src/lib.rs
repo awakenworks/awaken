@@ -40,3 +40,41 @@ pub trait AuxiliarySandboxFactory: Send + Sync {
     /// `compact`, `mem-select`, `mem`, `skill-fork`).
     fn provider(&self, purpose: &str) -> Arc<dyn AuxiliarySandboxProvider>;
 }
+
+/// What the Workdir tier enforces: nothing beyond a lexical root, so the
+/// neutral default. One source for the provider that realizes the tier and
+/// for the Worker manifest projected before any provider exists.
+#[must_use]
+pub fn workdir_capabilities() -> pc::SandboxCapabilities {
+    pc::SandboxCapabilities::default()
+}
+
+/// What the local Namespace tier enforces (bubblewrap on Linux, Seatbelt on
+/// macOS). One source for the provider that realizes the tier and for the
+/// Worker manifest projected before any provider exists.
+#[must_use]
+pub fn namespace_capabilities() -> pc::SandboxCapabilities {
+    pc::SandboxCapabilities {
+        process_tree_supervision: false,
+        isolation: pc::IsolationClass::Namespace,
+        tool_transparent: true,
+        // Seatbelt is a policy boundary, not a mount namespace: it cannot make
+        // host paths appear at Linux-style /workspace or /mnt paths. The launcher
+        // translates cwd/known argv paths and exports real host paths instead.
+        path_fidelity: cfg!(target_os = "linux"),
+        enforced_readonly: true,
+        network_isolation: true,
+        enforced_network_allowlist: false,
+        secret_egress_substitution: false,
+        resource_limits: false,
+        custom_rootfs: false,
+        package_provisioning: false,
+        control_services: if cfg!(target_os = "linux") {
+            std::collections::BTreeSet::from([
+                pc::SandboxControlServiceKind::RepositoryGitCredential,
+            ])
+        } else {
+            Default::default()
+        },
+    }
+}

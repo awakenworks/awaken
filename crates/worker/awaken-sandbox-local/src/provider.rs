@@ -876,7 +876,7 @@ impl LocalProvider {
     /// Static capability evidence shared by provider admission and owners of an
     /// already-created local environment.
     pub fn capabilities() -> pc::SandboxCapabilities {
-        pc::SandboxCapabilities::default()
+        awaken_session_environment_contract::workdir_capabilities()
     }
 
     async fn realize_mount(
