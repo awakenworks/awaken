@@ -179,3 +179,52 @@ implementation correctness, kernel isolation, collector retention, and cloud
 control planes can only increase empirical confidence. They cannot be promoted to
 formal guarantees without replacing the external component with a modeled,
 transaction-participating capability.
+
+## Verified profile: the 31 direct-proof gaps
+
+`check_formal_coverage.py --require-verified-profile` reports every P0
+repository-safety obligation that lacks a *direct* grade. At the time of writing
+that is 31 of 445; `formal/coverage.json` remains the authority for the current
+count. This section records why those 31 sit where they do, so the number is read
+as a claim boundary rather than as a backlog of unwritten proofs.
+
+Only two grades are direct. `implementation_refined` is rejected outright by
+`validate_proof_grade` in `scripts/ci/formal_profile.py`, because no universal
+Rust-to-model verifier is wired into this repository; captured traces cannot
+manufacture that missing capability. `production_kernel_proved` requires a Kani
+harness over a production kernel plus a production entrypoint. So an obligation
+is promotable exactly when the decisive authority for its property is
+repository-controlled Rust that Kani can reach.
+
+For these 31 it is not. Five of them (`ingress.pending_input_exactly_once`,
+`memory.cas_has_one_winner_per_generation`, `background_task.single_fenced_attempt`,
+`background_task.remote_continuation_survives_wait_cancel_and_reclaim`,
+`sandbox.k8s_process_observation_requires_complete_exit`) already carry production
+Kani harnesses over their scalar admission decisions and are still graded abstract
+on purpose: the harness settles the decision, not the linearization, durability or
+process fact the obligation names. Several rows state the consequence directly in
+their own `bounds` — direct Kani over `is_exact_revision_step`, over a capacity
+count, or over revision arithmetic would prove candidate arithmetic *after* a
+write has already been linearized, and a separate Boolean or typed mirror of the
+persistence composition would prove nothing the model does not already state.
+
+| Proof family | Rows | Authority that actually decides the property | Capability required to promote |
+| --- | ---: | --- | --- |
+| commit/transaction, pending input, audit/management, webhook/outbox | 10 | SQLite `BEGIN IMMEDIATE` and PostgreSQL transaction isolation, rollback and WAL durability; kernel `fsync`/rename semantics; storage hardware; crash instruction coordinates | a transaction-participating, modeled storage engine, or a checked Rust-to-model refinement over the adapter composition |
+| Deployment CAS/claim/capacity/scheduler | 4 | the conditional SQL mutation itself — `BEGIN IMMEDIATE`, `SELECT FOR UPDATE`, advisory locks, unique-key rejection and rollback | same as above; the repository owns the candidate frame, the engine owns linearization |
+| ACP, process/sandbox, Service/Worker drain | 8 | OS process exit and signal delivery, descendant quiescence, Tokio `AbortHandle`/`JoinHandle` and timer delivery, orchestrator (Kubernetes) controller behavior | a modeled OS/orchestrator termination oracle; an unreachable-by-Kani boundary today |
+| background/delegation, tool composition, attempt inbox | 6 | RAII `Drop` ordering, `Mutex<HashMap>` registries, asynchronous ownership verification, executor capability wiring, peer/network delivery | refinement over the RAII + async composition; a Boolean kernel would only mirror it |
+| Memory CAS, erasure checkpoint, pending reply occurrence | 3 | volatile mutex exclusion, SQLite connection/transaction serialization, PostgreSQL row locks — the one-winner authorities | same transaction-participating capability as the commit family |
+
+The evidence these rows do carry is executable and cross-backend: shared
+conformance decision tables driven through independent Memory, file-backed SQLite
+and configured PostgreSQL clients, real child-process kills at named commit
+boundaries, and reopen-after-close verification. A PostgreSQL rule skipped for a
+missing endpoint is recorded as a skip, never as a live pass.
+
+Two consequences follow, and both are deliberate. Promoting any of these 31 by
+declaring the external authority out of scope would move the headline ratio
+without adding verification, which is why the grade validator also rejects a
+direct grade whose bounds still contain an obsolete abstract-row claim. And the
+Verified profile therefore stays blocked until one of the two capabilities above
+exists — not until more harnesses are written.

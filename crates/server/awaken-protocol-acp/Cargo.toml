@@ -38,4 +38,4 @@ real-acp = [
 ]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync", "test-util"] }
