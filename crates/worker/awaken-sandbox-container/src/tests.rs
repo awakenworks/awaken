@@ -1874,6 +1874,115 @@ async fn disposal_preparation_rechecks_current_authority_after_each_credential_w
 }
 
 #[tokio::test]
+async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
+    // Control reconstruction table TC1: exact frozen spec/handle/fence plus a
+    // Terminal or Disposing observation -> preserve the recorded control
+    // incarnation for exact physical cleanup, with zero live binding calls.
+    // TC2 Ready still needs a real binding; a missing binding rejects. TC3
+    // ordinary adoption of Terminal remains refused. This provider fixture
+    // asserts routing/identity/absence of live control, not a real Pod receipt.
+    for disposing in [false, true] {
+        let runtime = Arc::new(
+            FakeRuntime::default()
+                .with_sandbox_control()
+                .with_live_input_projection()
+                .with_native_memory_archive(Vec::new()),
+        );
+        let provider = provider(runtime.clone());
+        let mut desired = spec(if disposing {
+            "closed-control-disposing"
+        } else {
+            "closed-control-terminal"
+        });
+        desired.mounts.clear();
+        desired
+            .control_services
+            .insert(SandboxControlServiceKind::RepositoryGitCredential);
+        let original = provider.create_container(&desired).await.unwrap();
+        let handle = pc::Sandbox::handle(&original);
+        let original_control = handle
+            .container_payload()
+            .unwrap()
+            .sandbox_control_incarnation
+            .clone();
+        let incarnation = handle.container_physical_incarnation().unwrap().to_owned();
+        drop(original);
+        let fence = pc::SandboxEffectFence::new(
+            "terminal-control-cleanup",
+            "owner",
+            "runtime",
+            2,
+            u64::MAX,
+        )
+        .unwrap();
+        let authority = pc::test_support::EffectAuthority::new(&fence);
+        {
+            let mut state = runtime.st.lock().unwrap();
+            state.control_binding_missing = true;
+            state.control_binding_calls.clear();
+        }
+        runtime.set_observation(if disposing {
+            pc::SandboxObservation::Disposing {
+                physical_incarnation: incarnation,
+            }
+        } else {
+            pc::SandboxObservation::Terminal {
+                physical_incarnation: incarnation,
+            }
+        });
+        assert!(
+            ContainerEnvironmentProvider::adopt_environment_for_effect(
+                &provider,
+                ContainerEnvironmentAdoption::new(&desired, &handle),
+                &fence,
+                &authority,
+            )
+            .await
+            .is_err(),
+            "TC3 ordinary execution is refused"
+        );
+        let cleanup = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+            &provider,
+            &desired,
+            Some(&handle),
+            None,
+            &fence,
+            &authority,
+        )
+        .await
+        .expect("TC1 exact terminal owner survives unavailable live control")
+        .expect("TC1 physical participant remains");
+        assert_eq!(
+            cleanup
+                .handle()
+                .container_payload()
+                .unwrap()
+                .sandbox_control_incarnation,
+            original_control,
+            "TC1 unchanged immutable control identity"
+        );
+        assert!(
+            runtime.st.lock().unwrap().control_binding_calls.is_empty(),
+            "TC1 zero live control bind"
+        );
+        runtime.set_observation(pc::SandboxObservation::Ready);
+        assert!(
+            ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+                &provider,
+                &desired,
+                Some(&handle),
+                None,
+                &fence,
+                &authority,
+            )
+            .await
+            .is_err(),
+            "TC2 Ready cannot fake a missing live binding"
+        );
+    }
+}
+
+#[tokio::test]
 async fn cold_native_adoption_reconstructs_terminal_secret_and_memory_participants() {
     /* Cold terminal-participant cause/effect decision table — CN1:
      * Causes: C1 the durable V2 handle carries one canonical copy-head set that
@@ -2528,7 +2637,7 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
         }
     }
     // Cause/effect table: C1 Ready observation/staging/control response, exact
-    // absence response, or Disposing control response; C2 revoke/replace/expire/
+    // absence response, or Disposing observation response; C2 revoke/replace/expire/
     // renew/cancel while the REAL future is Pending. R1 stale authority admits
     // no NEXT staging/control effect or success (including None); R2 renewal
     // completes; R3 cancellation retains original host bytes. R4 explicit
@@ -2547,7 +2656,7 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
             ("ready", "staging"),
             ("ready", "control"),
             ("absent", "observation"),
-            ("disposing", "control"),
+            ("disposing", "observation"),
         ] {
             for change in ["revoke", "replace", "expire", "renew", "cancel"] {
                 let runtime = Arc::new(FakeRuntime::default().with_sandbox_control());
@@ -2672,7 +2781,8 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
                     assert_eq!(
                         state.control_binding_calls.len() - bindings,
                         usize::from(
-                            boundary == "control" || (change == "renew" && phase != "absent")
+                            boundary == "control"
+                                || (change == "renew" && matches!(phase, "ready" | "live"))
                         )
                     );
                     assert!(state.removals.is_empty());

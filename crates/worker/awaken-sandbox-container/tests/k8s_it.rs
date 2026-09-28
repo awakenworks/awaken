@@ -839,6 +839,130 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
 }
 
 #[tokio::test]
+async fn terminal_control_pod_is_cleaned_without_reopening_live_control() {
+    // Live table KC1: a real marker-ready Pod records demanded control identity;
+    // its agent PID1 terminates -> ordinary control binding is unavailable;
+    // exact handle + current effect fence -> terminal preparation retains that
+    // identity without opening control; authorized disposal removes the same
+    // Pod UID. This is backend lifecycle evidence, not business publication or
+    // proof of arbitrary external effects. Foreign/stale rows remain in the
+    // provider/HTTP decision tables; no name-only deletion is used here.
+    let Some(runtime) = live_runtime().await else {
+        return;
+    };
+    let image = fixture_image();
+    let runtime = runtime.with_sandbox_control_forwarder(
+        awaken_sandbox_container::k8s::K8sSandboxControlForwarder::new(
+            image.clone(),
+            "/usr/local/bin/awaken-sandbox",
+            awaken_sandbox_container::k8s::DEFAULT_REPOSITORY_GIT_CONTROL_PORT,
+        )
+        .unwrap(),
+    );
+    let provider = ContainerProvider::new(Arc::new(runtime), image.clone());
+    let scope = format!("terminal-control-{}", std::process::id());
+    let mut desired = spec_with_command(&scope, image, command(&["sleep", "300"]));
+    desired
+        .control_services
+        .insert(pc::SandboxControlServiceKind::RepositoryGitCredential);
+    let create = effect_fence(&scope, "create", "control-owner", 1);
+    let original = ContainerEnvironmentProvider::create_environment_for_effect(
+        &provider,
+        &desired,
+        &create,
+        &EffectAuthority::new(&create),
+        ContainerRealizationIntent::Create,
+    )
+    .await
+    .expect("KC1 create real control Pod");
+    let handle = original.handle();
+    let pod = container_id(&handle);
+    let recorded_control = handle
+        .container_payload()
+        .unwrap()
+        .sandbox_control_incarnation
+        .clone();
+    assert!(recorded_control.is_some(), "KC1 exact control identity");
+    let process = pc::Sandbox::spawn(
+        original.as_ref(),
+        pc::Command::new(["sh", "-c", "kill -TERM 1"]),
+    )
+    .await
+    .expect("KC1 terminate only owned fixture PID1");
+    let _ = process.wait().await;
+    let cleanup = effect_fence(&scope, "cleanup", "control-owner", 2);
+    // Kubernetes owns the wait for its exact stored status value. No private
+    // poll loop, elapsed-time success, or higher-layer Managed test dependency.
+    // The provider then verifies the original physical UID under our fence.
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let waited = std::process::Command::new("kubectl")
+        .args([
+            "-n", &namespace, "wait", &format!("pod/{pod}"),
+            "--for=jsonpath={.status.containerStatuses[?(@.name==\"agent\")].state.terminated.finishedAt}",
+            "--timeout=30s",
+        ])
+        .output().expect("KC1 Kubernetes status-value waiter");
+    assert!(
+        waited.status.success(),
+        "KC1 status value not observed: {}",
+        String::from_utf8_lossy(&waited.stderr)
+    );
+    let mut adoption =
+        awaken_sandbox_container::ContainerEnvironmentAdoption::new(&desired, &handle);
+    adoption.observation_purpose =
+        awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup;
+    assert!(
+        matches!(
+            provider
+                .observe_environment(adoption, adoption.effect_basis(&cleanup))
+                .await
+                .unwrap(),
+            pc::SandboxObservation::Terminal { .. }
+        ),
+        "KC1 exact provider Terminal receipt"
+    );
+    drop(original);
+    let terminal = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
+        &provider,
+        &desired,
+        Some(&handle),
+        None,
+        &cleanup,
+        &EffectAuthority::new(&cleanup),
+    )
+    .await
+    .expect("KC1 no Ready-only control binding")
+    .expect("KC1 existing physical cleanup participant");
+    assert_eq!(
+        terminal
+            .handle()
+            .container_payload()
+            .unwrap()
+            .sandbox_control_incarnation,
+        recorded_control,
+        "KC1 original control evidence retained"
+    );
+    terminal
+        .prepare_disposal_for_effect(&cleanup, &EffectAuthority::new(&cleanup))
+        .await
+        .expect("KC1 data preparation with no writable participants");
+    let authorization = disposal_authorization(&cleanup);
+    terminal
+        .dispose_for_effect(
+            &authorization,
+            &EffectAuthority::new(authorization.effect_fence()),
+        )
+        .await
+        .expect("KC1 exact physical disposal");
+    let client = kube::Client::try_default().await.unwrap();
+    let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client, &namespace);
+    assert!(
+        pods.get_opt(&pod).await.unwrap().is_none(),
+        "KC1 observed Pod absence"
+    );
+}
+
+#[tokio::test]
 async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
     /* PVC-disposal decision table KPV1. C1 an old durable handle binds PVC UID A;
      * C2 authorized disposal removes A; C3 the same Session realization name is
