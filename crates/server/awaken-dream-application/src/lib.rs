@@ -57,12 +57,15 @@ type StoredDreamPolicy = DreamPolicyRecord;
 
 #[async_trait]
 pub trait DreamSessionSource: Send + Sync {
+    /// Scan the Workspace's durable Sessions for Dream input. `Err` is "the
+    /// store could not tell me": it must not read as "nothing new", or an
+    /// unreadable store would silently postpone every policy.
     async fn eligible_sessions(
         &self,
         workspace_id: &str,
         updated_after_ms: u64,
         limit: usize,
-    ) -> Vec<awaken_session_types::SessionId>;
+    ) -> Result<Vec<awaken_session_types::SessionId>, String>;
 
     /// Read the ordinary auxiliary Session's cumulative committed usage. Dream
     /// never persists a second copy of these execution facts.
@@ -654,7 +657,13 @@ impl DreamApplication {
                     policy.last_completed_cutoff_ms,
                     policy.config.max_sessions,
                 )
-                .await;
+                .await
+                .map_err(|error| {
+                    // The policy is left due, so the next tick retries the scan.
+                    DreamApiError::Unavailable(format!(
+                        "Dream policy Session scan is unreadable: {error}"
+                    ))
+                })?;
             if sessions.len() < policy.config.min_new_sessions {
                 self.persist_policy(Some(&previous), &policy)?;
                 continue;
@@ -1440,8 +1449,8 @@ mod tests {
                 _workspace_id: &str,
                 _updated_after_ms: u64,
                 _limit: usize,
-            ) -> Vec<awaken_session_types::SessionId> {
-                Vec::new()
+            ) -> Result<Vec<awaken_session_types::SessionId>, String> {
+                Ok(Vec::new())
             }
 
             async fn session_usage(

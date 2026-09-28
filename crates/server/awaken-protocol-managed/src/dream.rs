@@ -6,7 +6,6 @@
 use async_trait::async_trait;
 use awaken_dream_application::DreamSessionSource;
 use awaken_session_dream_contract::DreamUsage;
-use chrono::DateTime;
 
 #[async_trait]
 impl DreamSessionSource for crate::ManagedState {
@@ -15,31 +14,16 @@ impl DreamSessionSource for crate::ManagedState {
         workspace_id: &str,
         updated_after_ms: u64,
         limit: usize,
-    ) -> Vec<awaken_session_types::SessionId> {
-        let mut sessions = self
-            .list_sessions_scoped(workspace_id)
-            .into_iter()
-            .filter(|session| session.status != crate::types::SessionStatus::Running)
-            .filter(|session| {
-                session
-                    .metadata
-                    .get("awaken.session.origin")
-                    .is_none_or(|origin| origin != "dream")
-            })
-            .filter_map(|session| {
-                let updated = DateTime::parse_from_rfc3339(&session.updated_at)
-                    .ok()?
-                    .timestamp_millis()
-                    .max(0) as u64;
-                (updated > updated_after_ms).then_some((updated, session.id))
-            })
-            .collect::<Vec<_>>();
-        sessions.sort_by(|left, right| right.cmp(left));
-        sessions
-            .into_iter()
-            .take(limit)
-            .map(|(_, id)| awaken_session_types::SessionId::from(id))
-            .collect()
+    ) -> Result<Vec<awaken_session_types::SessionId>, String> {
+        // Scan the durable Workspace roots, never this replica's disposable
+        // wire cache: a Session warm only on another replica is still Dream
+        // input, and the neutral root status is the same one GET projects.
+        let persisted = self
+            .session_application()
+            .sessions_by_owner(workspace_id)
+            .await
+            .map_err(|error| format!("Workspace Sessions are unreadable: {error}"))?;
+        Ok(dream_eligible_sessions(persisted, updated_after_ms, limit))
     }
 
     async fn session_usage(
@@ -69,4 +53,33 @@ impl DreamSessionSource for crate::ManagedState {
             output_tokens: usage.output_tokens,
         }))
     }
+}
+
+/// Select Dream input from durable roots: visible, not Running, not itself a
+/// Dream Session, and updated after the policy cutoff; newest first.
+fn dream_eligible_sessions(
+    persisted: Vec<awaken_session_state_contract::PersistedSession>,
+    updated_after_ms: u64,
+    limit: usize,
+) -> Vec<awaken_session_types::SessionId> {
+    let mut sessions = persisted
+        .into_iter()
+        .filter(|session| !session.is_hidden())
+        .filter(|session| {
+            session.public_status() != awaken_session_state_contract::SessionPublicStatus::Running
+        })
+        .filter(|session| {
+            session
+                .metadata
+                .get("awaken.session.origin")
+                .is_none_or(|origin| origin != "dream")
+        })
+        .filter_map(|session| {
+            // An unrecorded update time is historical unknown, never "new".
+            let updated = session.updated_at_unix_ms?;
+            (updated > updated_after_ms).then_some((updated, session.session_id))
+        })
+        .collect::<Vec<_>>();
+    sessions.sort_by(|left, right| right.cmp(left));
+    sessions.into_iter().take(limit).map(|(_, id)| id).collect()
 }

@@ -146,42 +146,17 @@ impl ManagedState {
         }))
     }
 
-    const fn is_local_cloud_session(
-        placement: awaken_session_configuration_contract::SessionRuntimePlacement,
-        self_hosted: bool,
-    ) -> bool {
-        matches!(
-            placement,
-            awaken_session_configuration_contract::SessionRuntimePlacement::Local
-        ) && !self_hosted
-    }
-
+    /// Map the one neutral public status law onto the Managed wire vocabulary.
     pub(super) fn wire_session_status(persisted: &PersistedSession) -> SessionStatus {
-        match persisted.execution {
-            SessionExecutionState::Preparing | SessionExecutionState::Activating => {
-                // A cloud Session has already accepted its complete durable
-                // root. Its active Event epoch, rather than Sandbox readiness,
-                // determines the compatible logical status. Registered Worker
-                // placement retains the conservative pre-realization boundary.
-                let local_cloud = persisted.frozen_baseline().is_some_and(|baseline| {
-                    Self::is_local_cloud_session(
-                        baseline.runtime_placement,
-                        baseline.environment.self_hosted,
-                    )
-                });
-                if !local_cloud {
-                    SessionStatus::Rescheduling
-                } else if persisted.active_activity_epochs.is_empty() {
-                    SessionStatus::Idle
-                } else {
-                    SessionStatus::Running
-                }
+        match persisted.public_status() {
+            awaken_session_state_contract::SessionPublicStatus::Idle => SessionStatus::Idle,
+            awaken_session_state_contract::SessionPublicStatus::Running => SessionStatus::Running,
+            awaken_session_state_contract::SessionPublicStatus::Rescheduling => {
+                SessionStatus::Rescheduling
             }
-            SessionExecutionState::ActivationFailed => SessionStatus::Terminated,
-            SessionExecutionState::Running => SessionStatus::Running,
-            SessionExecutionState::Rescheduling => SessionStatus::Rescheduling,
-            SessionExecutionState::Idle => SessionStatus::Idle,
-            SessionExecutionState::Terminated => SessionStatus::Terminated,
+            awaken_session_state_contract::SessionPublicStatus::Terminated => {
+                SessionStatus::Terminated
+            }
         }
     }
 
@@ -692,10 +667,11 @@ impl ManagedState {
                 &mcp_targets,
             )
             .await?;
-        let local_cloud = Self::is_local_cloud_session(
+        let local_cloud = awaken_session_state_contract::SessionPlacementClass::new(
             self.application.runtime_placement(),
             environment.self_hosted,
-        );
+        )
+        .realized_by_coordinator();
         // Cause/effect layout gate: C1 the complete effective typed bindings,
         // frozen Environment, and exact publication-selected provider produce a
         // non-overlapping final Sandbox layout -> continue; C2 any projected
