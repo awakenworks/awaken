@@ -638,10 +638,6 @@ impl ToolBatch {
         self.calls.iter().all(|call| call.phase.is_terminal())
     }
 
-    pub fn mark_executing(&mut self, call_id: &str) -> Result<u16, ToolBatchError> {
-        self.mark_executing_in_domain(call_id, None)
-    }
-
     /// Apply the complete recovery policy to one unfinished durable call.
     ///
     /// A never-entered `Requested` call may make its first attempt even under
