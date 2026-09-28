@@ -12,19 +12,19 @@ use std::sync::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::{BackgroundTaskEnd, BackgroundTaskId, BackgroundWait, TaskFence};
+use crate::{BackgroundTaskEnd, BackgroundTaskId, BackgroundWait, TaskTenure};
 
 pub const BACKGROUND_TASK_LEASE: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct BackgroundTaskCompletion {
-    pub fence: TaskFence,
+    pub fence: TaskTenure,
     pub end: BackgroundTaskEnd,
 }
 
 #[derive(Debug, Clone)]
 pub struct BackgroundTaskWaitCandidate {
-    pub fence: TaskFence,
+    pub fence: TaskTenure,
     pub wait: BackgroundWait,
     /// True only for a poll watchdog checkpoint that must extend the same
     /// durable attempt lease before resuming observation.
@@ -45,15 +45,15 @@ enum CompletionFoldPlan {
 /// ordinary durable fold. The supervisor applies retirement under its one slot
 /// lock; a matching candidate is deliberately read without being consumed.
 fn completion_fold_plan(
-    candidate: &TaskFence,
-    committed: Option<&TaskFence>,
+    candidate: &TaskTenure,
+    committed: Option<&TaskTenure>,
 ) -> CompletionFoldPlan {
     let Some(committed) = committed else {
         return CompletionFoldPlan::Preserve;
     };
     if candidate == committed {
         CompletionFoldPlan::StageRetainingCandidate
-    } else if candidate.epoch < committed.epoch {
+    } else if candidate.epoch() < committed.epoch() {
         CompletionFoldPlan::RetireStale
     } else {
         CompletionFoldPlan::Preserve
@@ -62,7 +62,7 @@ fn completion_fold_plan(
 
 enum SupervisorEntry {
     Active {
-        fence: TaskFence,
+        fence: TaskTenure,
         token: CancellationToken,
     },
     Waiting(BackgroundTaskWaitCandidate),
@@ -72,7 +72,7 @@ enum SupervisorEntry {
 impl SupervisorEntry {
     /// Both initial launch and committed wait resumption mint exactly this
     /// fence/token pair; there is no unfenced Active construction path.
-    fn active(fence: &TaskFence) -> (Self, CancellationToken) {
+    fn active(fence: &TaskTenure) -> (Self, CancellationToken) {
         let token = CancellationToken::new();
         (
             Self::Active {
@@ -83,7 +83,7 @@ impl SupervisorEntry {
         )
     }
 
-    fn fence(&self) -> &TaskFence {
+    fn fence(&self) -> &TaskTenure {
         match self {
             Self::Active { fence, .. } => fence,
             Self::Waiting(candidate) => &candidate.fence,
@@ -151,13 +151,13 @@ impl BackgroundTaskSupervisor {
     /// Claim process-local launch ownership for a committed attempt. Same/older
     /// epochs cannot relaunch; a strictly newer committed epoch supersedes the
     /// old projection, including an Active executor that never returned.
-    pub fn register(&self, id: &BackgroundTaskId, fence: &TaskFence) -> Option<CancellationToken> {
+    pub fn register(&self, id: &BackgroundTaskId, fence: &TaskTenure) -> Option<CancellationToken> {
         let mut entries = self
             .entries
             .lock()
             .expect("background supervisor mutex poisoned");
         if let Some(entry) = entries.get(id)
-            && fence.epoch <= entry.fence().epoch
+            && fence.epoch() <= entry.fence().epoch()
         {
             return None;
         }
@@ -170,7 +170,7 @@ impl BackgroundTaskSupervisor {
     }
 
     #[must_use]
-    pub fn is_active(&self, id: &BackgroundTaskId, fence: &TaskFence) -> bool {
+    pub fn is_active(&self, id: &BackgroundTaskId, fence: &TaskTenure) -> bool {
         matches!(
             self.entries
                 .lock()
@@ -180,7 +180,7 @@ impl BackgroundTaskSupervisor {
         )
     }
 
-    pub fn cancel(&self, id: &BackgroundTaskId, fence: &TaskFence) {
+    pub fn cancel(&self, id: &BackgroundTaskId, fence: &TaskTenure) {
         if let Some(SupervisorEntry::Active {
             fence: active,
             token,
@@ -229,7 +229,7 @@ impl BackgroundTaskSupervisor {
     pub fn resume_wait(
         &self,
         id: &BackgroundTaskId,
-        fence: &TaskFence,
+        fence: &TaskTenure,
     ) -> Option<CancellationToken> {
         let mut entries = self
             .entries
@@ -289,7 +289,7 @@ impl BackgroundTaskSupervisor {
     pub(crate) fn completion_for_fold(
         &self,
         id: &BackgroundTaskId,
-        committed: Option<&TaskFence>,
+        committed: Option<&TaskTenure>,
     ) -> Option<BackgroundTaskCompletion> {
         let mut entries = self
             .entries
@@ -311,12 +311,12 @@ impl BackgroundTaskSupervisor {
     /// Retire an observed projection only when committed truth has a strictly
     /// newer epoch. An older durable snapshot cannot evict a newer completion;
     /// a replacement between observation and locking must remain untouched.
-    pub fn retire(&self, id: &BackgroundTaskId, fence: &TaskFence, committed: &TaskFence) {
+    pub fn retire(&self, id: &BackgroundTaskId, fence: &TaskTenure, committed: &TaskTenure) {
         let mut entries = self
             .entries
             .lock()
             .expect("background supervisor mutex poisoned");
-        if fence.epoch < committed.epoch
+        if fence.epoch() < committed.epoch()
             && entries.get(id).is_some_and(|entry| entry.fence() == fence)
         {
             entries.remove(id);
@@ -342,22 +342,24 @@ mod fixtures {
         BackgroundTaskId::new("task").expect("fixture id")
     }
 
+    pub(super) fn tenure(worker: &str, epoch: u64) -> TaskTenure {
+        awaken_lease_contract::fence::Tenure::granted(
+            id(),
+            worker.into(),
+            awaken_lease_contract::fence::Epoch::from_persisted(epoch).expect("nonzero epoch"),
+        )
+    }
+
     pub(super) fn completion(epoch: u64) -> BackgroundTaskCompletion {
         BackgroundTaskCompletion {
-            fence: TaskFence {
-                worker_id: "worker".into(),
-                epoch,
-            },
+            fence: fixtures::tenure("worker", epoch),
             end: BackgroundTaskEnd::Cancelled,
         }
     }
 
     pub(super) fn wait_candidate(epoch: u64) -> BackgroundTaskWaitCandidate {
         BackgroundTaskWaitCandidate {
-            fence: TaskFence {
-                worker_id: "worker".into(),
-                epoch,
-            },
+            fence: fixtures::tenure("worker", epoch),
             wait: BackgroundWait::Remote(awaken_runtime_contract::tool::ToolTaskHandle {
                 owner: "mcp".into(),
                 binding: "mcp-generation".into(),
@@ -393,10 +395,7 @@ mod tests {
                     if phase == 2 {
                         supervisor.complete(id(), completion(2));
                     }
-                    let fence = TaskFence {
-                        worker_id: owner.into(),
-                        epoch,
-                    };
+                    let fence = fixtures::tenure(owner, epoch);
                     assert_eq!(supervisor.register(&id(), &fence).is_some(), epoch > 2);
                     assert!(!token.is_cancelled());
                     let entries = supervisor.entries.lock().unwrap();
@@ -437,10 +436,7 @@ mod tests {
                 supervisor.retire(
                     &id(),
                     &completion(2).fence,
-                    &TaskFence {
-                        worker_id: "other".into(),
-                        epoch,
-                    },
+                    &fixtures::tenure("other", epoch),
                 );
                 assert_eq!(
                     supervisor.entries.lock().unwrap().contains_key(&id()),
@@ -473,10 +469,10 @@ mod tests {
                         if phase == 2 {
                             supervisor.complete(id.clone(), completion(2));
                         }
-                        let fence = TaskFence {
-                            worker_id: if same_owner { "worker" } else { "other" }.into(),
-                            epoch: if same_epoch { 2 } else { 1 },
-                        };
+                        let fence = fixtures::tenure(
+                            if same_owner { "worker" } else { "other" },
+                            if same_epoch { 2 } else { 1 },
+                        );
                         match command {
                             0 => supervisor.wait(
                                 id.clone(),
@@ -568,13 +564,21 @@ mod tests {
         assert!(supervisor.is_active(&id, &completion(1).fence), "C1/E1");
         supervisor.complete(id.clone(), completion(1));
         assert!(!supervisor.is_active(&id, &completion(1).fence), "C2/E2");
-        assert_eq!(supervisor.completion(&id).unwrap().fence.epoch, 1, "C2/E2");
+        assert_eq!(
+            supervisor.completion(&id).unwrap().fence.epoch().get(),
+            1,
+            "C2/E2"
+        );
         assert!(
             supervisor.register(&id, &completion(1).fence).is_none(),
             "C3/E3"
         );
         supervisor.complete(id.clone(), completion(2));
-        assert_eq!(supervisor.completion(&id).unwrap().fence.epoch, 1, "C3/E3");
+        assert_eq!(
+            supervisor.completion(&id).unwrap().fence.epoch().get(),
+            1,
+            "C3/E3"
+        );
         supervisor.retire_terminal(&id);
         assert!(
             supervisor.register(&id, &completion(1).fence).is_some(),
@@ -617,10 +621,7 @@ mod tests {
             let id = id();
             supervisor.register(&id, &completion(2).fence).unwrap();
             supervisor.complete(id.clone(), completion(2));
-            let committed = committed.map(|(worker_id, epoch)| TaskFence {
-                worker_id: worker_id.into(),
-                epoch,
-            });
+            let committed = committed.map(|(worker_id, epoch)| fixtures::tenure(worker_id, epoch));
             let first = supervisor.completion_for_fold(&id, committed.as_ref());
             assert_eq!(first.is_some(), expected_first);
             let second = supervisor.completion_for_fold(&id, committed.as_ref());
@@ -683,7 +684,11 @@ mod tests {
         assert!(supervisor.completion(&id).is_some(), "R2");
         supervisor.wait(id.clone(), wait_candidate(1));
         supervisor.complete(id.clone(), completion(2));
-        assert_eq!(supervisor.completion(&id).unwrap().fence.epoch, 1, "R3");
+        assert_eq!(
+            supervisor.completion(&id).unwrap().fence.epoch().get(),
+            1,
+            "R3"
+        );
     }
 }
 
@@ -742,7 +747,7 @@ mod loom_tests {
             let stale = supervisor.clone();
             let callbacks = thread::spawn(move || {
                 let mut wrong_owner = completion(2);
-                wrong_owner.fence.worker_id = "other".into();
+                wrong_owner.fence = fixtures::tenure("other", 2);
                 stale.complete(id(), wrong_owner);
                 stale.complete(id(), completion(1));
                 stale.wait(id(), wait_candidate(1));
@@ -850,19 +855,15 @@ fn process_completion_fold_retries_exact_candidate_and_stale_is_inert() {
     let committed_epoch: u64 = kani::any();
     let has_committed_attempt: bool = kani::any();
     let same_owner: bool = kani::any();
-    let candidate = TaskFence {
-        worker_id: "candidate-worker".into(),
-        epoch: candidate_epoch,
-    };
-    let committed = TaskFence {
-        worker_id: if same_owner {
+    let candidate = fixtures::tenure("candidate-worker", candidate_epoch);
+    let committed = fixtures::tenure(
+        if same_owner {
             "candidate-worker"
         } else {
             "other-worker"
-        }
-        .into(),
-        epoch: committed_epoch,
-    };
+        },
+        committed_epoch,
+    );
     let plan = completion_fold_plan(&candidate, has_committed_attempt.then_some(&committed));
     let exact = has_committed_attempt && same_owner && candidate_epoch == committed_epoch;
     let strictly_stale = has_committed_attempt && candidate_epoch < committed_epoch;

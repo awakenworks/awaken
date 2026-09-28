@@ -163,7 +163,7 @@ impl PhaseHook for ReconcileBackgroundTasks {
                 }
                 continue;
             }
-            let committed_fence = task.attempt().map(|attempt| attempt.fence());
+            let committed_fence = task.tenure();
             if let Some(completion) = self
                 .supervisor
                 .completion_for_fold(&task.id, committed_fence.as_ref())
@@ -198,8 +198,11 @@ impl PhaseHook for ReconcileBackgroundTasks {
                     }
                     Err(BackgroundTaskError::StaleFence) => {
                         if let Some(attempt) = task.attempt() {
-                            self.supervisor
-                                .retire(&task.id, &candidate.fence, &attempt.fence());
+                            self.supervisor.retire(
+                                &task.id,
+                                &candidate.fence,
+                                &attempt.tenure(&task.id),
+                            );
                         }
                     }
                     Err(_) => continue,
@@ -209,10 +212,12 @@ impl PhaseHook for ReconcileBackgroundTasks {
                 continue;
             };
             if matches!(task.lifecycle, BackgroundTaskLifecycle::Cancelling { .. }) {
-                self.supervisor.cancel(&task.id, &attempt.fence());
+                self.supervisor.cancel(&task.id, &attempt.tenure(&task.id));
             }
             if attempt.worker_id == self.supervisor.worker_id()
-                && self.supervisor.is_active(&task.id, &attempt.fence())
+                && self
+                    .supervisor
+                    .is_active(&task.id, &attempt.tenure(&task.id))
             {
                 continue;
             }

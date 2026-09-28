@@ -139,7 +139,7 @@ async fn terminal_notification_reaches_inference_and_commits_without_result_look
         awaken_ext_background_task::tasks_from_state(&Store::rebuild(&commits.committed().state))
             .unwrap();
     let task = &tasks[0];
-    let fence = task.attempt().unwrap().fence();
+    let fence = task.tenure().unwrap();
     assert!(supervisor.register(&task.id, &fence).is_some());
     supervisor.complete(
         task.id.clone(),

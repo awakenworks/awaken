@@ -15,6 +15,7 @@ loom = []
 [dependencies]
 async-trait.workspace = true
 awaken-agent-contract.workspace = true
+awaken-lease-contract.workspace = true
 awaken-runtime-contract.workspace = true
 schemars = "1"
 serde.workspace = true

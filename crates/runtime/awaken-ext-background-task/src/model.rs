@@ -7,6 +7,7 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_lease_contract::fence::{Epoch, Tenure, TenureScope};
 use awaken_runtime_contract::tool::{
     ToolCall, ToolConcurrency, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle,
 };
@@ -74,38 +75,42 @@ pub struct TaskExecutionPolicy {
 /// task is a committed domain transition, not an error that callers may drop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskClaim {
-    Acquired(TaskFence),
+    Acquired(TaskTenure),
     EndedIndeterminate,
     EndedAttemptsExhausted,
 }
+
+/// The lease family of a background task: the task (subject) held by one
+/// worker. Consumer: [`TaskTenure`].
+#[derive(Debug)]
+pub struct BackgroundTaskScope;
+
+impl TenureScope for BackgroundTaskScope {
+    type Subject = BackgroundTaskId;
+    type Holder = String;
+}
+
+/// The exact authority a worker presents for a fenced task mutation: the
+/// task, the worker and the attempt epoch. It replaces a worker/epoch pair
+/// that named no task, so a fence minted for one task could pass for another
+/// task's attempt at the same epoch.
+pub type TaskTenure = Tenure<BackgroundTaskScope>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskAttempt {
     pub worker_id: String,
-    pub epoch: u64,
+    /// The attempt generation (never zero: the first attempt is epoch 1).
+    pub epoch: Epoch,
     pub lease_expires_at_ms: u64,
     pub policy: TaskExecutionPolicy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TaskFence {
-    pub worker_id: String,
-    pub epoch: u64,
-}
-
 impl TaskAttempt {
+    /// This attempt's complete tenure over `task`.
     #[must_use]
-    pub fn fence(&self) -> TaskFence {
-        TaskFence {
-            worker_id: self.worker_id.clone(),
-            epoch: self.epoch,
-        }
-    }
-    #[must_use]
-    pub fn owns(&self, fence: &TaskFence) -> bool {
-        self.worker_id == fence.worker_id && self.epoch == fence.epoch
+    pub fn tenure(&self, task: &BackgroundTaskId) -> TaskTenure {
+        Tenure::granted(task.clone(), self.worker_id.clone(), self.epoch)
     }
 }
 
@@ -250,12 +255,13 @@ enum FencedMutationPlan {
 fn fenced_mutation_plan(
     phase: TaskPhase,
     attempt: Option<&TaskAttempt>,
-    fence: &TaskFence,
+    task: &BackgroundTaskId,
+    fence: &TaskTenure,
     revision: u64,
     request: FencedMutationRequest,
 ) -> Result<FencedMutationPlan, BackgroundTaskError> {
     let attempt = attempt
-        .filter(|attempt| attempt.owns(fence))
+        .filter(|attempt| attempt.tenure(task) == *fence)
         .ok_or(BackgroundTaskError::StaleFence)?;
     match request {
         FencedMutationRequest::Heartbeat { now_ms, lease_ms } => {
@@ -477,6 +483,12 @@ impl BackgroundTask {
         self.lifecycle.attempt()
     }
 
+    /// The complete tenure of the current attempt over this task.
+    #[must_use]
+    pub fn tenure(&self) -> Option<TaskTenure> {
+        self.attempt().map(|attempt| attempt.tenure(&self.id))
+    }
+
     /// Stable request identity, excluding worker-owned lifecycle facts.
     #[must_use]
     pub fn same_request_as(&self, other: &Self) -> bool {
@@ -502,7 +514,7 @@ impl BackgroundTask {
             self.lifecycle.phase(),
             expected.lifecycle.phase(),
             self.same_request_as(expected)
-                && current.owns(&claim.fence())
+                && current.tenure(&self.id) == claim.tenure(&expected.id)
                 && current.policy == claim.policy,
             current.lease_expires_at_ms,
             now_ms,
@@ -516,7 +528,7 @@ impl BackgroundTask {
         now_ms: u64,
         lease_ms: u64,
         policy: TaskExecutionPolicy,
-    ) -> Result<TaskFence, BackgroundTaskError> {
+    ) -> Result<TaskTenure, BackgroundTaskError> {
         let worker_id = worker_id.into();
         if worker_id.trim().is_empty() || lease_ms == 0 {
             return Err(BackgroundTaskError::InvalidClaim);
@@ -531,11 +543,11 @@ impl BackgroundTask {
         }
         let attempt = TaskAttempt {
             worker_id,
-            epoch: 1,
+            epoch: Epoch::FIRST,
             lease_expires_at_ms: expires,
             policy,
         };
-        let fence = attempt.fence();
+        let fence = attempt.tenure(&self.id);
         self.replace_lifecycle(BackgroundTaskLifecycle::Running { attempt })?;
         Ok(fence)
     }
@@ -563,7 +575,7 @@ impl BackgroundTask {
                 mode: attempt.policy.recovery.mode(),
                 remote: remote_reconnectable,
                 cancelling,
-                epoch: attempt.epoch,
+                epoch: attempt.epoch.get(),
                 maximum: attempt.policy.recovery.max_attempts().get(),
             });
         let plan = reclaim_mutation_plan(
@@ -615,11 +627,13 @@ impl BackgroundTask {
             .clone();
         let attempt = TaskAttempt {
             worker_id,
-            epoch,
+            // The plan's successor of a nonzero epoch is never zero.
+            epoch: Epoch::from_persisted(epoch)
+                .ok_or(BackgroundTaskError::InvalidPersistedState)?,
             lease_expires_at_ms,
             policy,
         };
-        let fence = attempt.fence();
+        let fence = attempt.tenure(&self.id);
         let lifecycle = match &self.lifecycle {
             BackgroundTaskLifecycle::Running { .. } => BackgroundTaskLifecycle::Running { attempt },
             BackgroundTaskLifecycle::Waiting { wait, .. } => BackgroundTaskLifecycle::Waiting {
@@ -642,7 +656,7 @@ impl BackgroundTask {
 
     pub fn heartbeat(
         &mut self,
-        fence: &TaskFence,
+        fence: &TaskTenure,
         now_ms: u64,
         lease_ms: u64,
     ) -> Result<(), BackgroundTaskError> {
@@ -652,6 +666,7 @@ impl BackgroundTask {
         } = fenced_mutation_plan(
             self.lifecycle.phase(),
             self.lifecycle.attempt(),
+            &self.id,
             fence,
             self.revision,
             FencedMutationRequest::Heartbeat { now_ms, lease_ms },
@@ -691,7 +706,7 @@ impl BackgroundTask {
 
     pub fn wait(
         &mut self,
-        fence: &TaskFence,
+        fence: &TaskTenure,
         wait: BackgroundWait,
     ) -> Result<(), BackgroundTaskError> {
         if let BackgroundWait::Remote(handle) = &wait {
@@ -752,7 +767,7 @@ impl BackgroundTask {
 
     pub fn finish(
         &mut self,
-        fence: &TaskFence,
+        fence: &TaskTenure,
         end: BackgroundTaskEnd,
     ) -> Result<(), BackgroundTaskError> {
         let FencedMutationPlan::Finish {
@@ -761,6 +776,7 @@ impl BackgroundTask {
         } = fenced_mutation_plan(
             self.lifecycle.phase(),
             self.lifecycle.attempt(),
+            &self.id,
             fence,
             self.revision,
             FencedMutationRequest::Finish {
@@ -781,10 +797,10 @@ impl BackgroundTask {
 
     /// Resolve the one current worker/epoch authority before a fenced command
     /// performs command-specific validation or constructs a successor state.
-    fn owned_attempt(&self, fence: &TaskFence) -> Result<&TaskAttempt, BackgroundTaskError> {
+    fn owned_attempt(&self, fence: &TaskTenure) -> Result<&TaskAttempt, BackgroundTaskError> {
         self.lifecycle
             .attempt()
-            .filter(|attempt| attempt.owns(fence))
+            .filter(|attempt| attempt.tenure(&self.id) == *fence)
             .ok_or(BackgroundTaskError::StaleFence)
     }
 
@@ -871,8 +887,8 @@ fn cancelling_accepts_wait(current: Option<&BackgroundWait>, next: &BackgroundWa
 }
 
 fn validate_attempt(attempt: &TaskAttempt) -> Result<(), BackgroundTaskError> {
-    if attempt.worker_id.trim().is_empty() || attempt.epoch == 0 || attempt.lease_expires_at_ms == 0
-    {
+    // The epoch is nonzero by type: a persisted zero never decodes.
+    if attempt.worker_id.trim().is_empty() || attempt.lease_expires_at_ms == 0 {
         Err(BackgroundTaskError::InvalidPersistedState)
     } else {
         Ok(())
@@ -972,7 +988,10 @@ fn stale_fenced_heartbeat_and_finish_have_no_mutation_plan() {
         3 => TaskPhase::Cancelling,
         _ => TaskPhase::Ended,
     };
-    let epoch: u64 = kani::any();
+    let epoch = Epoch::from_persisted(kani::any());
+    kani::assume(epoch.is_some());
+    let epoch = epoch.unwrap();
+    let task = BackgroundTaskId::new("task").unwrap();
     let attempt = TaskAttempt {
         worker_id: "current-worker".into(),
         epoch,
@@ -993,18 +1012,21 @@ fn stale_fenced_heartbeat_and_finish_have_no_mutation_plan() {
         }
     };
     let revision: u64 = kani::any();
-    let owner_mismatch = TaskFence {
-        worker_id: "stale-worker".into(),
+    let owner_mismatch = Tenure::granted(task.clone(), "stale-worker".into(), epoch);
+    let epoch_mismatch = Tenure::granted(
+        task.clone(),
+        "current-worker".into(),
+        epoch.next().unwrap_or(Epoch::FIRST),
+    );
+    let task_mismatch = Tenure::granted(
+        BackgroundTaskId::new("other-task").unwrap(),
+        "current-worker".into(),
         epoch,
-    };
-    let epoch_mismatch = TaskFence {
-        worker_id: "current-worker".into(),
-        epoch: epoch ^ 1,
-    };
+    );
 
-    for stale in [&owner_mismatch, &epoch_mismatch] {
+    for stale in [&owner_mismatch, &epoch_mismatch, &task_mismatch] {
         assert_eq!(
-            fenced_mutation_plan(phase, Some(&attempt), stale, revision, request),
+            fenced_mutation_plan(phase, Some(&attempt), &task, stale, revision, request),
             Err(BackgroundTaskError::StaleFence)
         );
     }
