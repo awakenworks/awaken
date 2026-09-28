@@ -684,9 +684,12 @@ async fn managed_begin_rejects_every_forged_fresh_material_owner_shape() {
     let mut forged_ready = canonical.clone();
     forged_ready.material_fence.phase = CredentialMaterialMutationPhase::Ready;
     let mut forged_epoch = canonical.clone();
-    forged_epoch.material_fence.writer_epoch += 1;
+    forged_epoch.material_fence.writer_epoch = forged_epoch
+        .material_fence
+        .writer_epoch
+        .and_then(awaken_lease_contract::fence::Epoch::next);
     let mut forged_owner = canonical;
-    forged_owner.material_fence.writer_token = "foreign-owner".into(); // awaken-allow: secret -- writer identity, not material
+    forged_owner.material_fence.writer_token = Some("foreign-owner".into()); // awaken-allow: secret -- writer identity, not material
 
     for forged in [forged_ready, forged_epoch, forged_owner] {
         assert!(matches!(
@@ -856,8 +859,8 @@ async fn legacy_writing_json_without_attempt_or_writer_fields_is_claimed_and_abo
     let legacy: PendingManagedCredentialMutation = serde_json::from_value(fixture).unwrap();
     assert_eq!(legacy.material_fence.format_version, 0);
     assert!(legacy.material_fence.attempt_id.is_empty());
-    assert!(legacy.material_fence.writer_token.is_empty());
-    assert_eq!(legacy.material_fence.writer_epoch, 0);
+    assert!(legacy.material_fence.writer_token.is_none());
+    assert_eq!(legacy.material_fence.writer_epoch, None);
     assert_eq!(legacy.material_fence.writer_lease_expires_at_unix_ms, 0);
     assert!(legacy.validate().is_ok());
 
@@ -1209,13 +1212,16 @@ fn legacy_writing_json_defaults_to_an_expired_unowned_lease() {
     object.remove("writer_lease_expires_at_unix_ms");
 
     let decoded: PendingManagedCredentialMutation = serde_json::from_value(legacy).unwrap();
-    assert!(decoded.material_fence.writer_token.is_empty());
-    assert_eq!(decoded.material_fence.writer_epoch, 0);
+    assert!(decoded.material_fence.writer_token.is_none());
+    assert_eq!(decoded.material_fence.writer_epoch, None);
     assert_eq!(decoded.material_fence.writer_lease_expires_at_unix_ms, 0);
     let claimed = decoded.claim_after_expiry(0, 1).unwrap().unwrap();
     // Legacy zero is unowned, never a route back to the reserved original
     // writer epoch. Deserialization/recovery must enter abort-only epoch two.
-    assert_eq!(claimed.material_fence.writer_epoch, 2);
+    assert_eq!(
+        claimed.material_fence.writer_epoch,
+        awaken_lease_contract::fence::Epoch::from_persisted(2)
+    );
     claimed.validate().unwrap();
     assert!(claimed.with_material_ready().is_err());
     assert!(claimed.with_material_reclaiming().is_err());

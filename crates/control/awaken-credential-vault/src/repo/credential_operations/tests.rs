@@ -398,9 +398,12 @@ async fn source_begin_rejects_every_forged_fresh_material_owner_shape() {
     let mut forged_ready = canonical.clone();
     forged_ready.material_fence.phase = CredentialMaterialMutationPhase::Ready;
     let mut forged_epoch = canonical.clone();
-    forged_epoch.material_fence.writer_epoch += 1;
+    forged_epoch.material_fence.writer_epoch = forged_epoch
+        .material_fence
+        .writer_epoch
+        .and_then(awaken_lease_contract::fence::Epoch::next);
     let mut forged_owner = canonical;
-    forged_owner.material_fence.writer_token = "foreign-owner".into(); // awaken-allow: secret -- writer identity, not material
+    forged_owner.material_fence.writer_token = Some("foreign-owner".into()); // awaken-allow: secret -- writer identity, not material
 
     for forged in [forged_ready, forged_epoch, forged_owner] {
         assert!(matches!(

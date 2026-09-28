@@ -23,6 +23,10 @@
 //! R3 C2|C3+C4+C5 -> E3; R4 C1|C2|C3+C6 -> E4. Shared helpers keep the
 //! behavior contract authoritative while concrete storage lives in this crate.
 
+fn epoch(value: u64) -> Option<awaken_lease_contract::fence::Epoch> {
+    awaken_lease_contract::fence::Epoch::from_persisted(value)
+}
+
 #[path = "support/cleanup.rs"]
 mod cleanup;
 
@@ -308,7 +312,7 @@ async fn mutation_wal_publish_and_completion_are_idempotent(repo: &dyn Credentia
         "R0 forged Ready"
     );
     let mut forged_epoch = intent.clone();
-    forged_epoch.material_fence.writer_epoch = 2;
+    forged_epoch.material_fence.writer_epoch = epoch(2);
     assert!(
         matches!(
             repo.begin_mutation(forged_epoch).await,
@@ -317,7 +321,7 @@ async fn mutation_wal_publish_and_completion_are_idempotent(repo: &dyn Credentia
         "R0 forged epoch"
     );
     let mut forged_owner = intent.clone();
-    forged_owner.material_fence.writer_token = "forged-owner".into(); // awaken-allow: secret -- writer identity, not material
+    forged_owner.material_fence.writer_token = Some("forged-owner".into()); // awaken-allow: secret -- writer identity, not material
     assert!(
         matches!(
             repo.begin_mutation(forged_owner).await,
@@ -652,8 +656,8 @@ async fn rotation_publication_is_revision_cas_and_idempotent(repo: &dyn Credenti
         for coordinate in 0..8 {
             let mut stale = ready.clone();
             match coordinate {
-                0 => stale.material_fence.writer_token.push('x'),
-                1 => stale.material_fence.writer_epoch += 1,
+                0 => stale.material_fence.writer_token = Some("x".repeat(33)),
+                1 => stale.material_fence.writer_epoch = epoch(2),
                 2 => stale.material_fence.writer_lease_expires_at_unix_ms -= 1,
                 3 => stale.before.as_mut().unwrap().env_key = Some("OTHER_BEFORE".into()),
                 4 => stale.after.env_key = Some("OTHER_AFTER".into()),
@@ -1124,9 +1128,9 @@ async fn legacy_mutation_recovery_conforms(
             assert_eq!(rows.len(), 1);
             let original = &rows[0];
             original.validate().unwrap();
-            assert_eq!(original.material_fence.writer_epoch, 0);
+            assert_eq!(original.material_fence.writer_epoch, None);
             assert_eq!(original.material_fence.writer_lease_expires_at_unix_ms, 0);
-            assert!(original.material_fence.writer_token.is_empty());
+            assert!(original.material_fence.writer_token.is_none());
             assert_eq!(
                 !original.material_fence.attempt_id().is_empty(),
                 retain_attempt
@@ -1137,12 +1141,12 @@ async fn legacy_mutation_recovery_conforms(
             );
             if original.material_fence.phase == CredentialMaterialMutationPhase::Writing {
                 let claimed = repo.$claim(original, 0, 10).await.unwrap().unwrap();
-                assert_eq!(claimed.material_fence.writer_epoch, 2);
+                assert_eq!(claimed.material_fence.writer_epoch, epoch(2));
                 assert_eq!(claimed.material_fence.writer_lease_expires_at_unix_ms, 10);
                 let mut normalized = claimed.clone();
                 normalized.material_fence.writer_token =
                     original.material_fence.writer_token.clone();
-                normalized.material_fence.writer_epoch = 0;
+                normalized.material_fence.writer_epoch = None;
                 normalized.material_fence.writer_lease_expires_at_unix_ms = 0;
                 assert_eq!(&normalized, original);
                 assert!(
@@ -1156,7 +1160,8 @@ async fn legacy_mutation_recovery_conforms(
                 assert_eq!(repo.$pending().await.unwrap(), vec![claimed.clone()]);
                 let next = repo.$claim(&claimed, 10, 20).await.unwrap().unwrap();
                 assert_eq!(
-                    next.material_fence.writer_epoch, 3,
+                    next.material_fence.writer_epoch,
+                    epoch(3),
                     "recovery lease can itself expire"
                 );
                 assert!(repo.$ready(&next).await.is_err());
@@ -1405,8 +1410,8 @@ async fn expired_writer_claims_are_exact_snapshot_cas(repo: &dyn ManagedCredenti
             for coordinate in 0..4 {
                 let mut stale = writing.clone();
                 match coordinate {
-                    0 => stale.material_fence.writer_token.push('x'),
-                    1 => stale.material_fence.writer_epoch += 1,
+                    0 => stale.material_fence.writer_token = Some("x".repeat(33)),
+                    1 => stale.material_fence.writer_epoch = epoch(2),
                     2 => stale.material_fence.writer_lease_expires_at_unix_ms -= 1,
                     _ => ($changed_payload)(&mut stale),
                 }
@@ -1432,8 +1437,8 @@ async fn expired_writer_claims_are_exact_snapshot_cas(repo: &dyn ManagedCredenti
                 "T4"
             );
             let mut claimed = claims.into_iter().flatten().next().unwrap();
-            for (expected_epoch, claim_time) in [(2, now), (3, deadline)] {
-                if expected_epoch == 3 {
+            for (expected_epoch, claim_time) in [(epoch(2), now), (epoch(3), deadline)] {
+                if expected_epoch == epoch(3) {
                     claimed = repo
                         .$claim(&claimed, claim_time, deadline + 10_000)
                         .await
@@ -1445,14 +1450,9 @@ async fn expired_writer_claims_are_exact_snapshot_cas(repo: &dyn ManagedCredenti
                     claimed.material_fence.writer_token, writing.material_fence.writer_token,
                     "UUID wrapper smoke witness; Kani also allows collisions"
                 );
-                assert_eq!(claimed.material_fence.writer_token.len(), 32);
-                assert!(
-                    claimed
-                        .material_fence
-                        .writer_token
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit())
-                );
+                let token = claimed.material_fence.writer_token.as_deref().unwrap();
+                assert_eq!(token.len(), 32);
+                assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
                 assert_eq!(
                     claimed.material_fence.writer_lease_expires_at_unix_ms,
                     claim_time + 10_000
@@ -1693,7 +1693,7 @@ async fn managed_material_mutation_begin_and_phases_conform(
         "M1 forged Ready"
     );
     let mut forged_epoch = owner.clone();
-    forged_epoch.material_fence.writer_epoch = 2;
+    forged_epoch.material_fence.writer_epoch = epoch(2);
     assert!(
         matches!(
             repo.begin_managed_mutation(forged_epoch).await,
@@ -1702,7 +1702,7 @@ async fn managed_material_mutation_begin_and_phases_conform(
         "M1 forged epoch"
     );
     let mut forged_owner = owner.clone();
-    forged_owner.material_fence.writer_token = "forged-owner".into(); // awaken-allow: secret -- writer identity, not material
+    forged_owner.material_fence.writer_token = Some("forged-owner".into()); // awaken-allow: secret -- writer identity, not material
     assert!(
         matches!(
             repo.begin_managed_mutation(forged_owner).await,

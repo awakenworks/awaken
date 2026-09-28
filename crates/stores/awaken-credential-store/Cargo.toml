@@ -31,6 +31,7 @@ awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-reliability-testkit.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support", "oauth-command"] }
+awaken-lease-contract.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] }
 tempfile = "3"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }

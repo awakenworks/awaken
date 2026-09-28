@@ -8,6 +8,9 @@
 use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use awaken_lease_contract::fence::Epoch;
+use awaken_lease_contract::{Expiry, UtcTime};
+
 use crate::{CredentialError, CredentialSource};
 
 /// Durable process phase around the external SecretStore participant. This is
@@ -72,10 +75,15 @@ pub struct CredentialMaterialMutationFence {
     pub phase: CredentialMaterialMutationPhase,
     #[serde(default)]
     pub(super) attempt_id: String,
-    #[serde(default)]
-    pub writer_token: String,
-    #[serde(default)]
-    pub writer_epoch: u64,
+    /// The writer's token; `None` when no writer holds the fence (a Ready or
+    /// material-free fence, or a row written before the writer fence).
+    #[serde(default, with = "persisted_writer_token")]
+    pub writer_token: Option<String>,
+    /// The writer lease generation; `None` for the same no-writer states. A
+    /// persisted `0` (or a missing field in a legacy row) decodes explicitly
+    /// to `None` instead of posing as a granted epoch.
+    #[serde(default, with = "persisted_writer_epoch")]
+    pub writer_epoch: Option<Epoch>,
     #[serde(default)]
     pub writer_lease_expires_at_unix_ms: u64,
 }
@@ -86,8 +94,8 @@ impl Default for CredentialMaterialMutationFence {
             format_version: 0,
             phase: CredentialMaterialMutationPhase::Writing,
             attempt_id: String::new(),
-            writer_token: String::new(),
-            writer_epoch: 0,
+            writer_token: None,
+            writer_epoch: None,
             writer_lease_expires_at_unix_ms: 0,
         }
     }
@@ -108,8 +116,8 @@ impl CredentialMaterialMutationFence {
             format_version: CREDENTIAL_MATERIAL_MUTATION_FORMAT_VERSION,
             phase: CredentialMaterialMutationPhase::Writing,
             attempt_id: writer_token.clone(),
-            writer_token,
-            writer_epoch: 1,
+            writer_token: Some(writer_token),
+            writer_epoch: Some(Epoch::FIRST),
             writer_lease_expires_at_unix_ms: now_unix_ms
                 .checked_add(CREDENTIAL_MATERIAL_WRITER_LEASE_MS)
                 .ok_or_else(|| {
@@ -132,9 +140,17 @@ impl CredentialMaterialMutationFence {
 
     #[must_use]
     fn has_valid_writer_owner(&self) -> bool {
-        !self.writer_token.is_empty()
-            && self.writer_epoch > 0
+        self.writer_token.is_some()
+            && self.writer_epoch.is_some()
             && self.writer_lease_expires_at_unix_ms > 0
+    }
+
+    /// Whether this is the original writer's own fence: epoch one, held by
+    /// the token the attempt was minted with.
+    #[must_use]
+    fn is_original_writer(&self) -> bool {
+        self.writer_epoch == Some(Epoch::FIRST)
+            && self.writer_token.as_deref() == Some(self.attempt_id.as_str())
     }
 
     pub fn claim_after_expiry(
@@ -156,25 +172,32 @@ impl CredentialMaterialMutationFence {
         lease_expires_at_unix_ms: u64,
         new_writer_token: impl FnOnce() -> String,
     ) -> Result<Option<Self>, CredentialError> {
+        let now = UtcTime::from_epoch_ms(now_unix_ms);
         if self.phase != CredentialMaterialMutationPhase::Writing
-            || self.writer_lease_expires_at_unix_ms > now_unix_ms
+            || Expiry::from_unix_ms(self.writer_lease_expires_at_unix_ms).is_live_at(now)
         {
             return Ok(None);
         }
-        if lease_expires_at_unix_ms <= now_unix_ms {
+        if Expiry::from_unix_ms(lease_expires_at_unix_ms).is_expired_at(now) {
             return Err(CredentialError::MutationConflict(
                 "credential material recovery lease must expire after claim time".into(),
             ));
         }
         let mut claimed = self.clone();
-        claimed.writer_token = new_writer_token();
-        // Epoch one is reserved for the original writer. A legacy zero epoch
-        // must skip it; recovery safety cannot depend on UUID non-collision.
-        claimed.writer_epoch = self.writer_epoch.max(1).checked_add(1).ok_or_else(|| {
-            CredentialError::MutationConflict(
-                "credential material writer epoch is exhausted".into(),
-            )
-        })?;
+        claimed.writer_token = Some(new_writer_token()).filter(|token| !token.is_empty());
+        // Epoch one is reserved for the original writer. A legacy fence with
+        // no epoch must skip it; recovery safety cannot depend on UUID
+        // non-collision. The kernel's `Epoch::next` refuses to wrap.
+        claimed.writer_epoch = Some(
+            self.writer_epoch
+                .unwrap_or(Epoch::FIRST)
+                .next()
+                .ok_or_else(|| {
+                    CredentialError::MutationConflict(
+                        "credential material writer epoch is exhausted".into(),
+                    )
+                })?,
+        );
         claimed.writer_lease_expires_at_unix_ms = lease_expires_at_unix_ms;
         Ok(Some(claimed))
     }
@@ -242,14 +265,14 @@ impl CredentialMaterialMutationFence {
         let fresh_shape = if writes_new_material {
             self.phase == CredentialMaterialMutationPhase::Writing
                 && !self.attempt_id.is_empty()
-                && self.writer_token == self.attempt_id
-                && self.writer_epoch == 1
-                && self.writer_lease_expires_at_unix_ms > credential_material_now_unix_ms()?
+                && self.is_original_writer()
+                && Expiry::from_unix_ms(self.writer_lease_expires_at_unix_ms)
+                    .is_live_at(UtcTime::from_epoch_ms(credential_material_now_unix_ms()?))
         } else {
             self.phase == CredentialMaterialMutationPhase::Ready
                 && self.attempt_id.is_empty()
-                && self.writer_token.is_empty()
-                && self.writer_epoch == 0
+                && self.writer_token.is_none()
+                && self.writer_epoch.is_none()
                 && self.writer_lease_expires_at_unix_ms == 0
         };
         if self.is_current_format() && fresh_shape {
@@ -264,8 +287,7 @@ impl CredentialMaterialMutationFence {
     pub(super) fn ready(&self) -> Result<Self, CredentialError> {
         if self.phase != CredentialMaterialMutationPhase::Writing
             || !self.has_valid_writer_owner()
-            || self.writer_epoch != 1
-            || self.writer_token != self.attempt_id
+            || !self.is_original_writer()
         {
             return Err(CredentialError::MutationConflict(
                 "credential material mutation is not the original owned Writing work".into(),
@@ -306,7 +328,7 @@ impl CredentialMaterialMutationFence {
 }
 
 #[must_use]
-pub(super) const fn credential_material_recovery_plan(
+pub(super) fn credential_material_recovery_plan(
     fence: &CredentialMaterialMutationFence,
     now_unix_ms: u64,
     signal: CredentialMaterialRecoverySignal,
@@ -317,7 +339,10 @@ pub(super) const fn credential_material_recovery_plan(
         CredentialMaterialMutationPhase::Writing => match signal {
             OwnerWritesComplete => MarkReady,
             OwnerWriteFailed | UnpublishedConflict => AbortUnpublished,
-            SupervisorTick if fence.writer_lease_expires_at_unix_ms <= now_unix_ms => {
+            SupervisorTick
+                if Expiry::from_unix_ms(fence.writer_lease_expires_at_unix_ms)
+                    .is_expired_at(UtcTime::from_epoch_ms(now_unix_ms)) =>
+            {
                 ClaimExpiredWriterForAbort
             }
             _ => RetainResponsibility,
@@ -683,6 +708,46 @@ mod material_input_proofs {
     }
 }
 
+/// Persisted spelling of the writer token: `""` is "no writer" and decodes to
+/// `None`; `None` encodes back as `""`, so the envelope rows keep their shape.
+mod persisted_writer_token {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        token: &Option<String>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(token.as_deref().unwrap_or(""))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<String>, D::Error> {
+        let token = String::deserialize(deserializer)?;
+        Ok((!token.is_empty()).then_some(token))
+    }
+}
+
+/// Persisted spelling of the writer epoch: `0` is "no writer" and decodes to
+/// `None`; `None` encodes back as `0`, so the envelope rows keep their shape.
+mod persisted_writer_epoch {
+    use awaken_lease_contract::fence::Epoch;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        epoch: &Option<Epoch>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(epoch.map_or(0, Epoch::get))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Epoch>, D::Error> {
+        Ok(Epoch::from_persisted(u64::deserialize(deserializer)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,8 +760,8 @@ mod tests {
             format_version: CREDENTIAL_MATERIAL_MUTATION_FORMAT_VERSION,
             phase,
             attempt_id: "attempt".into(),
-            writer_token: "writer".into(),
-            writer_epoch: 1,
+            writer_token: Some("writer".into()),
+            writer_epoch: Some(Epoch::FIRST),
             writer_lease_expires_at_unix_ms,
         }
     }
@@ -779,11 +844,11 @@ mod tests {
         // Ready/publish. The original attempt namespace survives takeover;
         // repository CAS, not this value operation, retires the old authority.
         let mut original = fence(CredentialMaterialMutationPhase::Writing, 10);
-        original.writer_token = original.attempt_id.clone();
+        original.writer_token = Some(original.attempt_id.clone());
         assert!(original.claim_after_expiry(9, 20).unwrap().is_none());
         assert!(original.claim_after_expiry(10, 10).is_err());
         let claimed = original.claim_after_expiry(10, 20).unwrap().unwrap();
-        assert_eq!(claimed.writer_epoch, 2);
+        assert_eq!(claimed.writer_epoch.map(Epoch::get), Some(2));
         assert_eq!(claimed.attempt_id, original.attempt_id);
         assert_eq!(claimed.writer_lease_expires_at_unix_ms, 20);
         assert!(claimed.ready().is_err());
@@ -794,7 +859,7 @@ mod tests {
         assert!(aborted.reclaiming().is_err());
         let published = original.ready().unwrap().reclaiming().unwrap();
         assert!(published.reclaiming_abort().is_err());
-        original.writer_epoch = u64::MAX;
+        original.writer_epoch = Epoch::from_persisted(u64::MAX);
         assert!(original.claim_after_expiry(10, 20).is_err());
 
         // R4: a valid legacy epoch-zero fence may retain its attempt ID.
@@ -816,9 +881,9 @@ mod tests {
             claimed.ready().is_err(),
             "R4 legacy takeover cannot become the original writer"
         );
-        assert_eq!(claimed.writer_epoch, 2);
+        assert_eq!(claimed.writer_epoch.map(Epoch::get), Some(2));
         assert_eq!(claimed.attempt_id, legacy.attempt_id);
-        assert_eq!(claimed.writer_token, legacy.attempt_id);
+        assert_eq!(claimed.writer_token.as_ref(), Some(&legacy.attempt_id));
         claimed.validate(true, true).unwrap();
         assert!(claimed.reclaiming().is_err());
         assert_eq!(
@@ -893,15 +958,17 @@ mod phase_proofs {
             format_version: kani::any(),
             phase: phase(),
             attempt_id: identity(),
-            writer_token: identity(),
-            writer_epoch: kani::any(),
+            writer_token: Some(identity()).filter(|token| !token.is_empty()),
+            writer_epoch: Epoch::from_persisted(kani::any()),
             writer_lease_expires_at_unix_ms: kani::any(),
         };
         let snapshot = input.clone();
         let ready = input.ready();
-        let original_writer = input.writer_epoch == 1
-            && !input.writer_token.is_empty()
-            && input.writer_token == input.attempt_id
+        let original_writer = input.writer_epoch.map(Epoch::get) == Some(1)
+            && input
+                .writer_token
+                .as_ref()
+                .is_some_and(|token| *token == input.attempt_id)
             && input.writer_lease_expires_at_unix_ms != 0;
         assert_eq!(ready.is_ok(), input.phase == Writing && original_writer);
         let published = input.reclaiming();
@@ -950,8 +1017,8 @@ mod phase_proofs {
             format_version: kani::any(),
             phase: phase(),
             attempt_id: identity(),
-            writer_token: identity(),
-            writer_epoch: kani::any(),
+            writer_token: Some(identity()).filter(|token| !token.is_empty()),
+            writer_epoch: Epoch::from_persisted(kani::any()),
             writer_lease_expires_at_unix_ms: kani::any(),
         };
         let snapshot = original.clone();
@@ -970,18 +1037,24 @@ mod phase_proofs {
         } else if deadline <= now {
             assert!(result.is_err());
             assert_eq!(calls, 0);
-        } else if original.writer_epoch == u64::MAX {
+        } else if original.writer_epoch.map(Epoch::get) == Some(u64::MAX) {
             assert!(result.is_err());
             assert_eq!(calls, 1);
         } else {
             let mut claimed = result.unwrap().unwrap();
             assert_eq!(calls, 1);
             assert_eq!(claimed.phase, Writing);
-            assert_eq!(claimed.writer_epoch, original.writer_epoch.max(1) + 1);
-            assert_eq!(claimed.writer_token, token);
+            assert_eq!(
+                claimed.writer_epoch.map(Epoch::get),
+                Some(original.writer_epoch.map_or(1, Epoch::get) + 1)
+            );
+            assert_eq!(
+                claimed.writer_token.as_deref().unwrap_or(""),
+                token.as_str()
+            );
             assert_eq!(claimed.writer_lease_expires_at_unix_ms, deadline);
             assert!(claimed.reclaiming().is_err());
-            assert!(claimed.writer_epoch >= 2);
+            assert!(claimed.writer_epoch.map_or(0, Epoch::get) >= 2);
             assert!(claimed.ready().is_err());
             assert_eq!(claimed.reclaiming_abort().unwrap().phase, ReclaimingAbort);
             claimed.writer_epoch = original.writer_epoch;
@@ -1065,8 +1138,8 @@ mod phase_proofs {
             format_version: CREDENTIAL_MATERIAL_MUTATION_FORMAT_VERSION,
             phase,
             attempt_id: "a".into(),
-            writer_token: "a".into(),
-            writer_epoch: 1,
+            writer_token: Some("a".into()),
+            writer_epoch: Some(Epoch::FIRST),
             writer_lease_expires_at_unix_ms: now,
         };
         let action = credential_material_recovery_plan(&input, now, SupervisorTick);
