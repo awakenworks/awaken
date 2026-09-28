@@ -600,8 +600,14 @@ mod mcp_wiring_tests {
         )
         .expect("declared ACP Session auth adapter");
         assert_eq!(admitted.as_slice(), std::slice::from_ref(&authenticated));
+        let codex = admit_mcp_session_servers(
+            crate::acp_cli("codex").unwrap(),
+            std::slice::from_ref(&authenticated),
+        )
+        .expect("witnessed Codex official HTTP auth projection");
+        assert_eq!(codex.as_slice(), std::slice::from_ref(&authenticated));
 
-        let unsupported = *crate::acp_cli("codex").expect("codex fixture");
+        let unsupported = *crate::acp_cli("opencode").expect("undeclared fixture");
         assert!(
             admit_mcp_session_servers(&unsupported, std::slice::from_ref(&authenticated)).is_err()
         );

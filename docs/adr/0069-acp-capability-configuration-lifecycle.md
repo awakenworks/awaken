@@ -1125,3 +1125,22 @@ HOME with its Session directory. Namespace and Container inherit no host
 identity and continue through the existing Vault/Broker and control-transport
 contracts. This is a launch-policy refinement of the existing BackendOwned
 variant, not a second credential materializer or local credential database.
+
+
+## 2026-09-28 amendment: witnessed Codex HTTP MCP credential delivery
+
+The pinned Codex ACP 1.10.0 adapter accepts official ACP HTTP headers and
+projects them into per-thread configuration. The existing Catalog declaration
+now records that witnessed capability. RuntimeHost credential admission and the
+neutral ACP Session projection remain the sole consumers; no model-policy branch,
+config writer, relay, or credential store is added. BackendOwned and Managed
+execution keep their existing independent model credential rules.
+
+The existing image verifier's `--authenticated-mcp codex` mode drives the real
+pinned adapter with an ephemeral credential, observes authenticated MCP
+initialize/tools-list, rejects absent/wrong credentials, stops the adapter and
+scans its created files, databases and logs for persistence. It reuses the
+verifier's original wire requests, deadline and process-group cleanup. This
+qualifies the pinned HTTP channel, not other adapter versions, stdio injection,
+model inference, arbitrary MCP tools or complete product delivery. Existing
+HTTP/delivery admission tests retain every refusal partition.
