@@ -261,7 +261,7 @@ async fn infer_step(
         // A completed MODEL receipt cannot clear an inline child's veto. Check
         // before materialization/admission too: neither another provider request
         // nor a quota pause may hide outstanding work from this same attempt.
-        if !context.physical_quiescence.can_acknowledge_return() {
+        if !context.physical_quiescence.permits_execution() {
             break Ok(InferStepOutcome::Indeterminate);
         }
         let mut request = build_chat_request_checked(
@@ -303,7 +303,9 @@ async fn infer_step(
         if let Some(materializer) = &context.model_content_materializer {
             request = inference::model_read(
                 context.cancellation.as_ref(),
-                materializer.materialize(request),
+                context
+                    .physical_quiescence
+                    .observe_return(materializer.materialize(request)),
             )
             .await
             .ok_or_else(|| {
@@ -311,17 +313,19 @@ async fn infer_step(
                     "model preparation cancelled".into(),
                 )
             })??;
-            if !context.physical_quiescence.can_acknowledge_return() {
+            if !context.physical_quiescence.permits_execution() {
                 break Ok(InferStepOutcome::Indeterminate);
             }
         }
         if let Some(gate) = &context.model_request_gate {
             let admission = inference::model_read(
                 context.cancellation.as_ref(),
-                gate.admit_model_request(ModelRequestAdmissionRequest {
-                    run_id: run_id.clone(),
-                    thread_id: thread_id.clone(),
-                }),
+                context
+                    .physical_quiescence
+                    .observe_return(gate.admit_model_request(ModelRequestAdmissionRequest {
+                        run_id: run_id.clone(),
+                        thread_id: thread_id.clone(),
+                    })),
             )
             .await
             .ok_or_else(|| {
@@ -336,7 +340,7 @@ async fn infer_step(
             })?;
             // Admission can pause, but cannot upgrade another participant's
             // unknown stop into an ordinary resumable budget boundary.
-            if !context.physical_quiescence.can_acknowledge_return() {
+            if !context.physical_quiescence.permits_execution() {
                 break Ok(InferStepOutcome::Indeterminate);
             }
             match admission {
@@ -405,7 +409,7 @@ async fn infer_step(
         ledger
             .audit
             .push(RunEvent::ModelRequestCompleted(observed.observation).into());
-        if !context.physical_quiescence.can_acknowledge_return() {
+        if !context.physical_quiescence.permits_execution() {
             // A timeout is a local observation, not a terminal provider receipt.
             // Bypass both model-pool failover and outer failure tolerance.
             break Ok(InferStepOutcome::Indeterminate);
@@ -904,7 +908,7 @@ pub(super) async fn drive(
                 run_id,
                 &ledger.transcript,
                 forced_continuations,
-                context.cancellation.as_ref(),
+                context,
                 &store,
             )
             .await
@@ -1098,7 +1102,7 @@ async fn consult_run_end(
     run_id: &RunId,
     conversation: &[Message],
     forced_continuations: usize,
-    cancellation: Option<&tokio_util::sync::CancellationToken>,
+    context: &RuntimeRunContext,
     state: &Store,
 ) -> RunEndOutcome {
     let guards = env.run_end_guards();
@@ -1111,10 +1115,14 @@ async fn consult_run_end(
             run_id: run_id.clone(),
             conversation,
             forced_continuations,
-            cancellation,
+            cancellation: context.cancellation.as_ref(),
             state,
         };
-        match guard.evaluate(&ctx).await {
+        match context
+            .physical_quiescence
+            .observe_return(guard.evaluate(&ctx))
+            .await
+        {
             RunEndDecision::Steer { feedback, detail } => {
                 return RunEndOutcome::Steer { feedback, detail };
             }

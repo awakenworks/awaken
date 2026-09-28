@@ -981,7 +981,7 @@ impl AcpRunExecutor {
                 Err(err)
                     if !handshake_retry_used
                         && cleanup.complete
-                        && context.physical_quiescence.can_acknowledge_return()
+                        && context.physical_quiescence.permits_execution()
                         && retryable_handshake_failure(
                             session.codec,
                             config.session_id.as_deref(),
@@ -1212,12 +1212,11 @@ impl AcpRunExecutor {
             // A failed reap must not overlap another per-Step process inside
             // this same physical attempt. Preserve the fixed terminal outcome
             // and leave queued input untouched for its durable owner.
-            let boundary =
-                if cleanup.complete && context.physical_quiescence.can_acknowledge_return() {
-                    evaluate_boundary(context, &run_id, &committed)
-                } else {
-                    BoundaryOutcome::Idle
-                };
+            let boundary = if cleanup.complete && context.physical_quiescence.permits_execution() {
+                evaluate_boundary(context, &run_id, &committed)
+            } else {
+                BoundaryOutcome::Idle
+            };
             match boundary {
                 BoundaryOutcome::Continue { fold } => {
                     prompt = prompt_of(&fold);

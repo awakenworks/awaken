@@ -95,17 +95,21 @@ struct ScriptedGuardPlugin {
     seen_fc: Arc<Mutex<Vec<usize>>>,
 }
 
+fn scripted_guard_manifest() -> PluginManifest {
+    PluginManifest {
+        id: "scripted".to_string(),
+        requires: Vec::new(),
+        config_sections: Vec::new(),
+        bound: CapabilityBound {
+            run_end_guards: IdBound::Exact(vec!["scripted".to_string()]),
+            ..Default::default()
+        },
+    }
+}
+
 impl Plugin for ScriptedGuardPlugin {
     fn manifest(&self) -> PluginManifest {
-        PluginManifest {
-            id: "scripted".to_string(),
-            requires: Vec::new(),
-            config_sections: Vec::new(),
-            bound: CapabilityBound {
-                run_end_guards: IdBound::Exact(vec!["scripted".to_string()]),
-                ..Default::default()
-            },
-        }
+        scripted_guard_manifest()
     }
     fn resolve(&self) -> Contributions {
         let mut c = Contributions::new("scripted");
@@ -546,4 +550,81 @@ async fn no_step_ceiling_allows_long_work_and_still_finishes_naturally() {
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(*seen_fc.lock().unwrap(), (0..=24).collect::<Vec<_>>());
     assert_eq!(count_user_text(&commit, "revise"), 24);
+}
+
+#[tokio::test]
+async fn run_end_guard_uses_the_same_participant_barrier_for_return_drop_and_unwind() {
+    struct Probe {
+        entered: Arc<tokio::sync::Notify>,
+        mode: u8,
+    }
+    #[async_trait::async_trait]
+    impl RunEndGuard for Probe {
+        fn id(&self) -> &str {
+            "scripted"
+        }
+        async fn evaluate(&self, _: &RunEndContext<'_>) -> RunEndDecision {
+            self.entered.notify_one();
+            match self.mode {
+                0 => RunEndDecision::Complete {
+                    detail: serde_json::json!({}),
+                },
+                1 => std::future::pending().await,
+                _ => panic!("guard failure after entry"),
+            }
+        }
+    }
+    struct ProbePlugin(Arc<Probe>);
+    impl Plugin for ProbePlugin {
+        fn manifest(&self) -> PluginManifest {
+            scripted_guard_manifest()
+        }
+        fn resolve(&self) -> Contributions {
+            let mut contributions = Contributions::new("scripted");
+            contributions.run_end_guards.push(self.0.clone());
+            contributions
+        }
+    }
+    // C1 terminal consultation returns/pends/unwinds after model completion;
+    // C2 an independent model receipt exists. R1 returned guard => all local
+    // participants return. R2 pending guard => model completion cannot ACK its
+    // outstanding participant. R3 drop/unwind => sticky Unknown; no closure
+    // may replace it with a proof of stop. This covers the real Native loop.
+    for mode in 0..3 {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(EchoLlm))
+            .with_plugin(Arc::new(ProbePlugin(Arc::new(Probe {
+                entered: entered.clone(),
+                mode,
+            }))));
+        let context = RuntimeRunContext::new();
+        let evidence = context.physical_quiescence.clone();
+        let task = tokio::spawn(async move {
+            runtime
+                .execute(activation(vec!["scripted".into()], 3), context)
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        if mode == 1 {
+            assert!(!evidence.can_acknowledge_return(), "R2 guard still active");
+            task.abort();
+        }
+        let result = task.await;
+        match mode {
+            0 => assert_eq!(
+                result.unwrap().unwrap(),
+                RunState::Ended(EndCause::NaturalEnd)
+            ),
+            1 => assert!(result.unwrap_err().is_cancelled()),
+            _ => assert!(result.unwrap_err().is_panic()),
+        }
+        assert_eq!(
+            evidence.close_and_wait().await,
+            mode == 0,
+            "R1/R3 guard return"
+        );
+    }
 }

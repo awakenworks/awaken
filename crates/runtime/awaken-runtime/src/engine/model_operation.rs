@@ -24,7 +24,7 @@ fn verify_reentry(
             "model operation evidence unavailable: {error}"
         ))
     })?;
-    if !context.physical_quiescence.can_acknowledge_return()
+    if !context.physical_quiescence.permits_execution()
         || !ModelOperation::permits_reentry(previous.as_ref(), recovering_checkpoint)
     {
         context.physical_quiescence.mark_uncertain();

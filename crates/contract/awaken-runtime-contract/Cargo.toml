@@ -24,7 +24,7 @@ sha2 = "0.10"
 thiserror.workspace = true
 url.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 schemars = "1"
 
 [features]

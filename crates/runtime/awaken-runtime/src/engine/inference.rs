@@ -229,7 +229,7 @@ pub(super) async fn infer_with_retry_observed(
             .as_ref()
             .is_some_and(|token| token.is_cancelled()),
         journal.as_deref().is_some_and(|journal| journal.failed()),
-        quiescence.can_acknowledge_return(),
+        quiescence.permits_execution(),
     ) && let Some(ctx) = checkpoint
     {
         // Terminal inference truth must not outrun retirement of its resumable
@@ -408,7 +408,7 @@ async fn infer_with_retry_inner(
         // Journal persistence and ownership verification both await. A sibling
         // may have vetoed this attempt during either wait; its old model receipt
         // is not proof that every participant stopped. Recheck at actual entry.
-        if !quiescence.can_acknowledge_return() {
+        if !quiescence.permits_execution() {
             return Err(awaken_runtime_contract::llm::Error::Provider(
                 "attempt participant termination remains unconfirmed".into(),
             ));
@@ -496,7 +496,7 @@ async fn infer_with_retry_inner(
                 policy.attempt_timeout.as_millis()
             )))
         });
-        if !quiescence.can_acknowledge_return() {
+        if !quiescence.permits_execution() {
             // The watchdog abandoned an in-flight executor. Neither a retry,
             // continuation, nor synthesized tool call may cross this boundary.
             if let Err(error) = &attempt_result {

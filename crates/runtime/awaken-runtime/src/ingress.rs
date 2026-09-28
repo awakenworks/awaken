@@ -80,7 +80,7 @@ impl DirectAttemptDriver {
             context,
             self.executor.capabilities().live_input,
         );
-        quiescence
+        let result = quiescence
             .observe_return(async {
                 match command {
                     Some(command) => {
@@ -95,7 +95,9 @@ impl DirectAttemptDriver {
                     }
                 }
             })
-            .await
+            .await;
+        let _ = quiescence.close_and_wait().await;
+        result
     }
 
     pub async fn cancel(&self, run_id: &RunId) -> std::result::Result<(), ControlError> {
