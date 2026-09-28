@@ -15,7 +15,7 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 }
 
 fn reg() -> InMemoryEnvRegistry {
-    InMemoryEnvRegistry::new()
+    InMemoryEnvRegistry::new(awaken_lease_contract::system_clock())
 }
 
 async fn make(r: &InMemoryEnvRegistry, name: &str) -> String {

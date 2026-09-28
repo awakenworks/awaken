@@ -757,8 +757,9 @@ mod tests {
                 Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
                 builds.clone(),
             ));
-        let definitions: Arc<dyn EnvRegistry> =
-            Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let definitions: Arc<dyn EnvRegistry> = Arc::new(
+            awaken_env_store::InMemoryEnvRegistry::new(awaken_lease_contract::system_clock()),
+        );
         let control = awaken_environment_application::EnvironmentApplication::new(
             definitions,
             registrar,
@@ -797,7 +798,9 @@ mod tests {
         );
         let execution =
             awaken_environment_execution_application::EnvironmentExecutionApplication::new(
-                Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
+                Arc::new(awaken_work_store::InMemoryWorkQueue::new(
+                    awaken_lease_contract::system_clock(),
+                )),
                 catalog.clone(),
             )
             .with_image_readiness(builds.clone());

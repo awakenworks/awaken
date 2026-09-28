@@ -168,6 +168,16 @@ COMPOSITION_ROOTS: frozenset[str] = frozenset(
         # process and chooses the clock its Host and request assertions share.
         "crates/bin/awaken-cli/examples/credential_reference_worker.rs",
         "crates/bin/awaken-cli/examples/hand_brain_lazy_worker.rs",
+        # Harness processes. Each is the root of its own process graph: the
+        # Scenario host's main and the modules that compose its platform, the
+        # evaluation runners that compose one runtime per case, and the coding
+        # example that composes one embedded agent.
+        "crates/devtools/awaken-scenario-host/src/main.rs",
+        "crates/devtools/awaken-scenario-host/src/deployment.rs",
+        "crates/devtools/awaken-scenario-host/src/lib.rs",
+        "crates/devtools/awaken-eval/src/acp_runner.rs",
+        "crates/devtools/awaken-eval/src/replay.rs",
+        "crates/devtools/awaken-runtime-examples/src/coding_agent/mod.rs",
     }
 )
 

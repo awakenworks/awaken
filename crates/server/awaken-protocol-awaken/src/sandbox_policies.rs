@@ -436,7 +436,9 @@ mod tests {
             })
             .await
             .unwrap();
-        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let envs = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let application = Arc::new(EnvironmentApplication::new(
             envs.clone(),
@@ -528,7 +530,9 @@ mod tests {
         // failure or treating absence as an authorization problem.
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let application = Arc::new(EnvironmentApplication::new(
-            Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
+            Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+                awaken_lease_contract::system_clock(),
+            )),
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog)),
             Some(Arc::new(
                 awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
@@ -622,7 +626,9 @@ mod tests {
         second.config.requests.cpu_millis = Some(750);
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let application = Arc::new(EnvironmentApplication::new(
-            Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
+            Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+                awaken_lease_contract::system_clock(),
+            )),
             Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog)),
             Some(store.clone()),
         ));
@@ -711,7 +717,9 @@ mod tests {
 
         let unavailable = environment_extensions_router(
             Arc::new(EnvironmentApplication::new(
-                Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
+                Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+                    awaken_lease_contract::system_clock(),
+                )),
                 Arc::new(LocalExecutableEnvironmentRegistrar::new(Arc::new(
                     ExecutableEnvironmentCatalog::new(),
                 ))),

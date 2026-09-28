@@ -239,8 +239,10 @@ pub(crate) async fn migrate(deployment: &ResolvedDeployment) -> Result<(), Strin
 
 #[cfg(test)]
 pub(crate) fn local_test_wiring() -> ExecutableEnvironmentWiring {
-    ExecutableEnvironmentWiring::local(Arc::new(awaken_work_store::InMemoryWorkQueue::new()))
-        .expect("configure test executable Environment wiring")
+    ExecutableEnvironmentWiring::local(Arc::new(awaken_work_store::InMemoryWorkQueue::new(
+        awaken_lease_contract::system_clock(),
+    )))
+    .expect("configure test executable Environment wiring")
 }
 
 /// Require the process-selected Environment boundary. Local AllInOne remains
@@ -334,7 +336,7 @@ mod startup_tests {
         // | C1 | None | yes | catalog registers; no image service/demand |
         // | C2 | Some | yes | same catalog path + exactly one Pending demand |
         let without = super::ExecutableEnvironmentWiring::local(Arc::new(
-            awaken_work_store::InMemoryWorkQueue::new(),
+            awaken_work_store::InMemoryWorkQueue::new(awaken_lease_contract::system_clock()),
         ))
         .unwrap();
         assert!(without.image_builds.is_none(), "C1");
@@ -357,7 +359,9 @@ mod startup_tests {
             .unwrap(),
         );
         let with = super::ExecutableEnvironmentWiring::local_with_image_builds(
-            Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
+            Arc::new(awaken_work_store::InMemoryWorkQueue::new(
+                awaken_lease_contract::system_clock(),
+            )),
             Some(builds),
         )
         .unwrap();

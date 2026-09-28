@@ -1257,7 +1257,7 @@ fn hot_harness_with_repo(
 fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let vaults = Arc::new(VaultState::new(secrets, credentials));
+    let vaults = Arc::new(support::vault(secrets, credentials));
     let captured = Arc::new(Mutex::new(Vec::new()));
     let staged = Arc::new(Mutex::new(Vec::new()));
     let observed_durable = Arc::new(Mutex::new(Vec::new()));
@@ -1293,7 +1293,7 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
 async fn check_bind_is_fail_closed_on_unknown_vault() {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let vaults = Arc::new(VaultState::new(secrets, credentials));
+    let vaults = Arc::new(support::vault(secrets, credentials));
     let state = support::state_with_mcp(PreparingFake {
         captured: Arc::new(Mutex::new(Vec::new())),
         staged: Arc::new(Mutex::new(Vec::new())),

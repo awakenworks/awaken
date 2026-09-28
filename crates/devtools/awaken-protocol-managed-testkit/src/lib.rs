@@ -42,8 +42,12 @@ pub struct EnvironmentFixture {
 
 /// Build the Environment owners with the built-in local Environment seeded.
 #[must_use]
-pub fn environment_fixture() -> EnvironmentFixture {
-    let work: Arc<dyn WorkQueue> = Arc::new(awaken_work_store::InMemoryWorkQueue::new());
+///
+/// `clock` is the test's wall clock; the Work queue and the Environment
+/// registry both stamp with it.
+pub fn environment_fixture(clock: Arc<dyn awaken_lease_contract::WallClock>) -> EnvironmentFixture {
+    let work: Arc<dyn WorkQueue> =
+        Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock.clone()));
     let catalog =
         Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
     catalog
@@ -61,7 +65,7 @@ pub fn environment_fixture() -> EnvironmentFixture {
     let sandbox_policies: Arc<dyn SandboxExecutionPolicyStore> =
         Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default());
     let application = Arc::new(EnvironmentApplication::new(
-        Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
+        Arc::new(awaken_env_store::InMemoryEnvRegistry::new(clock)),
         registrar,
         Some(sandbox_policies.clone()),
     ));
@@ -74,11 +78,13 @@ pub fn environment_fixture() -> EnvironmentFixture {
 
 /// The Managed Environment authoring surface and execution projection.
 #[must_use]
-pub fn environment_components() -> (
+pub fn environment_components(
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> (
     Arc<EnvironmentAuthoringState>,
     Arc<EnvironmentExecutionApplication>,
 ) {
-    let fixture = environment_fixture();
+    let fixture = environment_fixture(clock);
     (
         Arc::new(EnvironmentAuthoringState::new(
             fixture.application,
@@ -104,11 +110,14 @@ pub trait ManagedStateFixture: Sized {
 
 impl ManagedStateFixture for ManagedState {
     fn new(runtime: impl CompleteSessionRuntime + 'static) -> Self {
+        // A test's fixture graph: it runs on the host clock throughout.
+        let clock = awaken_lease_contract::system_clock();
         ManagedState::from_fixture_parts(
             Arc::new(runtime),
             None,
             ephemeral_session_repository(),
-            environment_fixture().execution,
+            environment_fixture(clock.clone()).execution,
+            clock,
         )
     }
 
@@ -117,11 +126,13 @@ impl ManagedStateFixture for ManagedState {
         R: CompleteSessionRuntime + McpAttachmentRealizer + 'static,
     {
         let runtime = Arc::new(runtime);
+        let clock = awaken_lease_contract::system_clock();
         ManagedState::from_fixture_parts(
             runtime.clone(),
             Some(runtime),
             ephemeral_session_repository(),
-            environment_fixture().execution,
+            environment_fixture(clock.clone()).execution,
+            clock,
         )
     }
 }

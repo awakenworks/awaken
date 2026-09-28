@@ -78,21 +78,11 @@ impl InMemoryQueueAuthority {
     }
 }
 
-impl Default for InMemoryWorkQueue {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl InMemoryWorkQueue {
+    /// The reference queue stamping and judging with `clock`, the composing
+    /// process's (or test's) one wall clock.
     #[must_use]
-    pub fn new() -> Self {
-        Self::with_clock(awaken_lease_contract::system_clock())
-    }
-
-    /// The reference queue reading a caller-supplied clock.
-    #[must_use]
-    pub fn with_clock(clock: std::sync::Arc<dyn WallClock>) -> Self {
+    pub fn new(clock: std::sync::Arc<dyn WallClock>) -> Self {
         Self {
             authority: Mutex::new(InMemoryQueueAuthority::default()),
             seq: AtomicU64::new(0),
@@ -872,7 +862,7 @@ mod tests {
     use crate::{LEASE_TTL_MS, POLLER_WINDOW_MS, test_session_access_digest};
 
     fn q() -> InMemoryWorkQueue {
-        InMemoryWorkQueue::new()
+        InMemoryWorkQueue::new(awaken_lease_contract::system_clock())
     }
 
     // Pin the Anthropic wire vocabulary each `WorkState` renders to. This is the

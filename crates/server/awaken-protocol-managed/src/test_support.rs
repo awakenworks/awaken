@@ -235,7 +235,8 @@ pub(crate) fn environment_components() -> (
     std::sync::Arc<crate::EnvironmentAuthoringState>,
     std::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
 ) {
-    let fixture = awaken_protocol_managed_testkit::environment_fixture();
+    let fixture =
+        awaken_protocol_managed_testkit::environment_fixture(awaken_lease_contract::system_clock());
     (
         std::sync::Arc::new(crate::EnvironmentAuthoringState::new(
             fixture.application,

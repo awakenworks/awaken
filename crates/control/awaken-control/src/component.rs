@@ -216,7 +216,8 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     let managed_credentials = credentials.clone();
     let credentials: Arc<dyn CredentialRepo> = credentials;
 
-    let mut vault_state = VaultState::new(secrets.clone(), managed_credentials.clone());
+    let mut vault_state =
+        VaultState::new(secrets.clone(), managed_credentials.clone(), clock.clone());
     if let Some(probe) = mcp_probe {
         vault_state = vault_state.with_probe(probe);
     }

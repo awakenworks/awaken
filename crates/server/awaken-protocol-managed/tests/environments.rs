@@ -13,7 +13,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn app() -> Router {
-    let (authoring, execution) = awaken_protocol_managed_testkit::environment_components();
+    let (authoring, execution) = awaken_protocol_managed_testkit::environment_components(
+        awaken_lease_contract::system_clock(),
+    );
     environment_authoring_router(authoring).merge(environment_work_router(execution))
 }
 
@@ -843,7 +845,9 @@ async fn work_poll_honors_documented_blocking_partitions_and_boundaries() {
 /// spelling that would demand an unsupported allowlist provider.
 #[tokio::test]
 async fn snapshot_normalizes_the_networking_policy() {
-    let (authoring, execution) = awaken_protocol_managed_testkit::environment_components();
+    let (authoring, execution) = awaken_protocol_managed_testkit::environment_components(
+        awaken_lease_contract::system_clock(),
+    );
     let app =
         environment_authoring_router(authoring).merge(environment_work_router(execution.clone()));
     async fn make(app: &Router, cfg: Value) -> String {
@@ -918,7 +922,9 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
     // healthcheck; C3 exact replay -> E3 same Environment and one healthcheck; C4
     // conflicting payload -> E4 registry rejection before another side effect.
     // Decision table: R1=C1=>E1; R2=C2=>E2; R3=C2+C3=>E3; R4=C2+C4=>E4.
-    let (authoring, execution) = awaken_protocol_managed_testkit::environment_components();
+    let (authoring, execution) = awaken_protocol_managed_testkit::environment_components(
+        awaken_lease_contract::system_clock(),
+    );
     assert!(
         std::sync::Arc::ptr_eq(&authoring.application(), &authoring.application()),
         "R1: HTTP and assistant adapters must share one application instance"

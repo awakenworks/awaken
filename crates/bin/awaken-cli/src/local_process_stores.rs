@@ -37,7 +37,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             ),
             data_subjects: data_subjects.clone(),
             erasure_jobs: data_subjects,
-            environments: Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
+            environments: Arc::new(awaken_env_store::InMemoryEnvRegistry::new(awaken_lease_contract::system_clock())),
             sandbox_policies: Arc::new(
                 awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
             ),
@@ -54,7 +54,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             dream_process_store: sessions,
             capture_sink: captured_content.clone(),
             captured_content_eraser: captured_content,
-            environment_work: Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
+            environment_work: Arc::new(awaken_work_store::InMemoryWorkQueue::new(awaken_lease_contract::system_clock())),
         }),
     }
 }
@@ -78,6 +78,7 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) 
         awaken_protocol_managed::VaultState::new(
             control.secrets.clone(),
             control.credentials.clone(),
+            stores.clock.clone(),
         )
         .with_probe(Arc::new(ExtMcpProbe)),
     );

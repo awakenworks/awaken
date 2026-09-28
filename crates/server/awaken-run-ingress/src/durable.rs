@@ -35,6 +35,9 @@ pub struct DispatchTestHarness<S> {
     /// run is blocked by the dispatch tombstone, so submit returns this existing
     /// state rather than creating a second execution (ADR-0060).
     reader: Arc<dyn CommittedThreadView>,
+    /// The fixture's wall clock: every synchronous drive and the live-control
+    /// service it hands out time the attempt with it.
+    clock: Arc<dyn WallClock>,
 }
 
 impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
@@ -51,11 +54,17 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     /// Build a test harness from a runtime, a dispatch store, and the durable
     /// commit boundary. The commit handle is the single source of truth shared by
     /// the runtime's writes and the worker's reads (G6 same-source wiring).
-    pub fn new<C>(runtime: Arc<Runtime>, store: Arc<S>, commit: Arc<C>) -> Self
+    /// `clock` is the fixture's wall clock (see the `clock` field).
+    pub fn new<C>(
+        runtime: Arc<Runtime>,
+        store: Arc<S>,
+        commit: Arc<C>,
+        clock: Arc<dyn WallClock>,
+    ) -> Self
     where
         C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
-        Self::with_owner(runtime, store, commit, "dispatch-test-harness", None)
+        Self::with_owner(runtime, store, commit, "dispatch-test-harness", None, clock)
     }
 
     /// Like [`new`](Self::new) but with an explicit claim `owner`. Each process in
@@ -70,11 +79,20 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
         stream_checkpoint: Option<
             Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
         >,
+        clock: Arc<dyn WallClock>,
     ) -> Self
     where
         C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
-        Self::with_owner_and_resolver(runtime, store, commit, owner, stream_checkpoint, None)
+        Self::with_owner_and_resolver(
+            runtime,
+            store,
+            commit,
+            owner,
+            stream_checkpoint,
+            None,
+            clock,
+        )
     }
 
     /// Like [`with_owner`](Self::with_owner) but also installs the model→executor
@@ -91,6 +109,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
             Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
         >,
         inference_materializer: Option<crate::worker_context::InferenceMaterializerFn>,
+        clock: Arc<dyn WallClock>,
     ) -> Self
     where
         C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
@@ -106,6 +125,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
         Self {
             worker: Arc::new(worker),
             reader,
+            clock,
         }
     }
 
@@ -264,10 +284,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
                 },
             )
             .await?;
-        let processed = self
-            .worker
-            .run_until_idle(awaken_lease_contract::system_clock())
-            .await?;
+        let processed = self.worker.run_until_idle(self.clock.clone()).await?;
         state_of(&processed, &run_id).ok_or_else(|| {
             Error::from(ExecError::Execution(
                 "superseding run was not processed".into(),
@@ -394,10 +411,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
         let Some(_thread_id) = self.worker.store().cancel(run_id).await? else {
             return Ok(false);
         };
-        let driven = self
-            .worker
-            .tick_run(run_id, awaken_lease_contract::system_clock())
-            .await?;
+        let driven = self.worker.tick_run(run_id, self.clock.clone()).await?;
         Ok(!matches!(
             driven,
             Some((_, RunState::Ended(cause)))
@@ -435,7 +449,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
             .map_err(|err| ExecError::Execution(err.to_string()))?;
         let processed = self
             .worker
-            .run_until_idle(awaken_lease_contract::system_clock())
+            .run_until_idle(self.clock.clone())
             .await
             .map_err(exec_error)?;
         state_of(&processed, &run_id)
@@ -486,6 +500,7 @@ mod tests {
             Arc::new(MemoryCommitCoordinator::new(
                 awaken_lease_contract::system_clock(),
             )),
+            awaken_lease_contract::system_clock(),
         );
         let provisional = Arc::downgrade(&ingress.reader);
         let projection = Arc::new(crate::RecoveryProjection::new());
