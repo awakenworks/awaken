@@ -30,7 +30,7 @@ use crate::interval::{budget_reach_projection_close_cursor, interval_close_curso
 use crate::order::historical_pending_projection_order;
 use crate::role::{TranscriptRole, phase};
 use crate::transcript::assistant_response_coordinates;
-use crate::{AnchoredOutcome, CanonicalOrder, FactKey, FactProvenance, FactRole};
+use crate::{AnchoredOutcome, CanonicalOrder, FactKey, FactProvenance, FactRole, Ordinal};
 
 /// The committed evidence one candidate is ordered over, all borrowed.
 ///
@@ -154,22 +154,15 @@ impl<'a> ThreadIndex<'a> {
         }
     }
 
-    fn message_order(
-        &self,
-        index: usize,
-        ordinal: usize,
-        event_count: usize,
-    ) -> Option<CanonicalOrder> {
+    /// A Message's facts sit at its index in the Thread, then at their own
+    /// position inside the Message's fold.
+    fn message_order(&self, index: usize, ordinal: usize) -> Option<CanonicalOrder> {
         let cursor = *self.snapshot.message_commit_cursors.get(index)?;
         Some(CanonicalOrder {
             processed_at_unix_ms: self.snapshot.commit_timestamps.get(&cursor).copied(),
             source_commit_cursor: cursor,
             phase: phase::TRANSCRIPT,
-            // The per-Message ordinal is bounded by the Message's own fold, so
-            // the scaled index keeps Messages of one commit in source order.
-            ordinal: index
-                .saturating_mul(event_count.saturating_add(1))
-                .saturating_add(ordinal),
+            ordinal: Ordinal::within(index, ordinal),
         })
     }
 }
@@ -215,7 +208,6 @@ pub struct OrderIndex<'a> {
     evidence: OrderEvidence<'a>,
     lifecycle_by_cursor: HashMap<RunLifecycleCursor, &'a RunLifecycleEvent>,
     threads: HashMap<&'a str, ThreadIndex<'a>>,
-    batch_stride: usize,
     /// Answerable pause events keyed by (Thread, Run, call).
     pending_orders: HashMap<(String, String, String), CanonicalOrder>,
 }
@@ -235,18 +227,10 @@ impl<'a> OrderIndex<'a> {
         for (thread_id, snapshot) in evidence.children {
             threads.insert(thread_id.as_str(), ThreadIndex::new(snapshot));
         }
-        let batch_stride = evidence
-            .batches
-            .iter()
-            .map(|batch| batch.events.len())
-            .max()
-            .unwrap_or_default()
-            .saturating_add(1);
         let mut index = Self {
             evidence,
             lifecycle_by_cursor,
             threads,
-            batch_stride,
             pending_orders: HashMap::new(),
         };
         index.pending_orders = index.index_pending_orders();
@@ -340,7 +324,7 @@ impl<'a> OrderIndex<'a> {
                             .time_for(&awaiting.thread_id.0, awaiting.source_commit_cursor),
                         source_commit_cursor: awaiting.source_commit_cursor,
                         phase: phase::TRANSCRIPT,
-                        ordinal: 0,
+                        ordinal: Ordinal::FIRST,
                     },
                 );
             }
@@ -352,7 +336,6 @@ impl<'a> OrderIndex<'a> {
     /// Admission order within the retained batches breaks ties; an entry
     /// without a fence is not public yet.
     pub fn inbound_orders(&self) -> impl Iterator<Item = (&'a str, CanonicalOrder)> + '_ {
-        let batch_stride = self.batch_stride;
         self.evidence
             .batches
             .iter()
@@ -371,9 +354,7 @@ impl<'a> OrderIndex<'a> {
                                     processed_at_unix_ms: entry.processed_at_unix_ms,
                                     source_commit_cursor: anchor.source_commit_cursor,
                                     phase: phase::INBOUND_ADMISSION,
-                                    ordinal: batch_index
-                                        .saturating_mul(batch_stride)
-                                        .saturating_add(ordinal),
+                                    ordinal: Ordinal::within(batch_index, ordinal),
                                 },
                             )
                         }),
@@ -390,7 +371,6 @@ impl<'a> OrderIndex<'a> {
         thread_id: &str,
         message_id: &str,
         call_id: &str,
-        event_count: usize,
     ) -> Option<CanonicalOrder> {
         let thread = self.threads.get(thread_id)?;
         if !thread.aligned {
@@ -409,7 +389,7 @@ impl<'a> OrderIndex<'a> {
                         ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id == call_id,
                         _ => false,
                     })?;
-                thread.message_order(index, block, event_count)
+                thread.message_order(index, block)
             })
             .min()
     }
@@ -423,9 +403,8 @@ impl<'a> OrderIndex<'a> {
         thread_id: &str,
         source_id: &str,
         call_id: &str,
-        event_count: usize,
     ) -> Option<CanonicalOrder> {
-        let from_message = self.message_call_order(thread_id, source_id, call_id, event_count);
+        let from_message = self.message_call_order(thread_id, source_id, call_id);
         let from_pause = self
             .pending_orders
             .get(&(
@@ -504,9 +483,7 @@ impl<'a> OrderIndex<'a> {
                                 .copied(),
                             source_commit_cursor,
                             phase: phase::TRANSCRIPT,
-                            ordinal: message_index
-                                .saturating_mul(message.content.len().saturating_add(1))
-                                .saturating_add(block_ordinal),
+                            ordinal: Ordinal::within(message_index, block_ordinal),
                         },
                     );
                 }
@@ -526,7 +503,7 @@ impl<'a> OrderIndex<'a> {
                 .time_for(&terminal.thread_id.0, terminal.source_commit_cursor),
             source_commit_cursor: report.max(terminal.source_commit_cursor),
             phase: FactRole::ChildMessageReceived.phase(),
-            ordinal: 0,
+            ordinal: Ordinal::FIRST,
         })
     }
 
@@ -535,7 +512,7 @@ impl<'a> OrderIndex<'a> {
             source_commit_cursor: event.source_commit_cursor,
             processed_at_unix_ms: self.time_for(&event.thread_id.0, event.source_commit_cursor),
             phase: role.phase(),
-            ordinal: 0,
+            ordinal: Ordinal::FIRST,
         }
     }
 
@@ -544,7 +521,7 @@ impl<'a> OrderIndex<'a> {
     /// terminal facts (see [`Self::parent_terminal_order`]). `None` means the
     /// evidence does not anchor the fact, so the candidate must fail closed.
     #[must_use]
-    pub fn fact_order(&self, key: &FactKey, event_count: usize) -> Option<CanonicalOrder> {
+    pub fn fact_order(&self, key: &FactKey) -> Option<CanonicalOrder> {
         let session_id = self.evidence.session_id;
         match (&key.provenance, key.role) {
             (FactProvenance::Lifecycle { cursor }, FactRole::AggregateStatusRunning) => {
@@ -589,7 +566,7 @@ impl<'a> OrderIndex<'a> {
                             processed_at_unix_ms: Some(interval.ended_at_unix_ms),
                             source_commit_cursor: interval_close_cursor(interval)?,
                             phase: key.role.phase(),
-                            ordinal: 0,
+                            ordinal: Ordinal::FIRST,
                         })
                     })
                     .min()
@@ -616,7 +593,7 @@ impl<'a> OrderIndex<'a> {
                                 .copied(),
                             source_commit_cursor,
                             phase: key.role.phase(),
-                            ordinal: usize::try_from(*sequence).unwrap_or(usize::MAX),
+                            ordinal: Ordinal::at(usize::try_from(*sequence).unwrap_or(usize::MAX)),
                         }
                     })
             }
@@ -638,7 +615,7 @@ impl<'a> OrderIndex<'a> {
                         .copied(),
                     source_commit_cursor,
                     phase: key.role.phase(),
-                    ordinal: 0,
+                    ordinal: Ordinal::FIRST,
                 })
             }
             (FactProvenance::ArchivedDisposition, FactRole::ArchivedStatusTerminated) => {
@@ -654,7 +631,7 @@ impl<'a> OrderIndex<'a> {
                         .copied(),
                     source_commit_cursor,
                     phase: key.role.phase(),
-                    ordinal: 0,
+                    ordinal: Ordinal::FIRST,
                 })
             }
             (
@@ -688,9 +665,10 @@ impl<'a> OrderIndex<'a> {
                             processed_at_unix_ms: self.time_for(session_id, source_commit_cursor),
                             source_commit_cursor,
                             phase: key.role.phase(),
-                            ordinal: batch_index
-                                .saturating_mul(self.batch_stride)
-                                .saturating_add(usize::try_from(*iteration).unwrap_or(usize::MAX)),
+                            ordinal: Ordinal::within(
+                                batch_index,
+                                usize::try_from(*iteration).unwrap_or(usize::MAX),
+                            ),
                         })
                     })
                     .min()
@@ -712,7 +690,7 @@ impl<'a> OrderIndex<'a> {
                             .time_for(session_id, outcome.terminal_commit_cursor),
                         source_commit_cursor: outcome.terminal_commit_cursor,
                         phase: key.role.phase(),
-                        ordinal: batch_index.saturating_mul(self.batch_stride),
+                        ordinal: Ordinal::at(batch_index),
                     })
                     .min()
             }
@@ -734,7 +712,7 @@ impl<'a> OrderIndex<'a> {
                             processed_at_unix_ms: self.time_for(session_id, source_commit_cursor),
                             source_commit_cursor,
                             phase: key.role.phase(),
-                            ordinal: index,
+                            ordinal: Ordinal::at(index),
                         })
                     })
                     .min()
@@ -758,7 +736,7 @@ impl<'a> OrderIndex<'a> {
                         *ordinal
                             < message_projection_ordinal_bound(&thread.snapshot.messages[index])
                     })
-                    .filter_map(|&index| thread.message_order(index, *ordinal, event_count))
+                    .filter_map(|&index| thread.message_order(index, *ordinal))
                     .min()
             }
             (
@@ -787,7 +765,7 @@ impl<'a> OrderIndex<'a> {
                                     .iter()
                                     .any(|block| matches!(block, ContentBlock::Thinking { .. })),
                         );
-                        thread.message_order(index, ordinal, event_count)
+                        thread.message_order(index, ordinal)
                     })
                     .min()
             }
@@ -914,7 +892,7 @@ impl<'a> OrderIndex<'a> {
                     processed_at_unix_ms: terminal.failed_at_unix_ms,
                     source_commit_cursor: terminal_source,
                     phase: key.role.phase(),
-                    ordinal: 0,
+                    ordinal: Ordinal::FIRST,
                 })
             }
             FactRole::ParentTerminalChildStatusTerminated
@@ -945,7 +923,7 @@ impl<'a> OrderIndex<'a> {
                 .or_else(|| self.time_for(self.evidence.session_id, terminal_source)),
             source_commit_cursor: terminal_source,
             phase: role.phase(),
-            ordinal: 0,
+            ordinal: Ordinal::FIRST,
         }
     }
 
@@ -990,12 +968,14 @@ mod tests {
         FactKey::new(thread, role, provenance)
     }
 
-    fn order(order: Option<CanonicalOrder>) -> Option<(u64, u16, usize, Option<u64>)> {
+    type Coordinate = (u64, u16, (usize, usize), Option<u64>);
+
+    fn order(order: Option<CanonicalOrder>) -> Option<Coordinate> {
         order.map(|order| {
             (
                 order.source_commit_cursor,
                 order.phase,
-                order.ordinal,
+                (order.ordinal.source, order.ordinal.within),
                 order.processed_at_unix_ms,
             )
         })
@@ -1139,12 +1119,11 @@ mod tests {
         let prefix = |source| FactProvenance::LifecyclePrefix {
             cursor: cursor(source).0,
         };
-        let events = 10;
         let rows = [
             (
                 "L1 root role at its commit",
                 key(SESSION, FactRole::RootLifecycleStatusRunning, at(1)),
-                Some((1, 20, 0, None)),
+                Some((1, 20, (0, 0), None)),
             ),
             (
                 "L2 role on another Thread",
@@ -1154,12 +1133,12 @@ mod tests {
             (
                 "L3 aggregate opening",
                 key(SESSION, FactRole::AggregateStatusRunning, at(1)),
-                Some((1, 10, 0, None)),
+                Some((1, 10, (0, 0), None)),
             ),
             (
                 "L4 child opening opens the aggregate",
                 key(SESSION, FactRole::AggregateStatusRunning, at(2)),
-                Some((2, 10, 0, None)),
+                Some((2, 10, (0, 0), None)),
             ),
             (
                 "L5 a terminal is no opening",
@@ -1174,7 +1153,7 @@ mod tests {
             (
                 "L7 terminal-prefix opening",
                 key(SESSION, FactRole::AggregateTerminalStatusRunning, prefix(6)),
-                Some((6, 10, 0, None)),
+                Some((6, 10, (0, 0), None)),
             ),
             (
                 "L8 terminal prefix needs a boundary",
@@ -1184,7 +1163,7 @@ mod tests {
             (
                 "L9 aggregate usage at any commit",
                 key(SESSION, FactRole::AggregateUsage, prefix(2)),
-                Some((2, 90, 0, None)),
+                Some((2, 90, (0, 0), None)),
             ),
             (
                 "I1 interval close",
@@ -1195,7 +1174,7 @@ mod tests {
                         interval_id: "interval".into(),
                     },
                 ),
-                Some((6, 100, 0, Some(99))),
+                Some((6, 100, (0, 0), Some(99))),
             ),
             (
                 "I2 unknown interval",
@@ -1215,7 +1194,7 @@ mod tests {
                     FactRole::BudgetReachUsage,
                     FactProvenance::BudgetReach { generation: 1 },
                 ),
-                Some((6, 90, 0, None)),
+                Some((6, 90, (0, 0), None)),
             ),
             (
                 "B2 open budget reach",
@@ -1236,7 +1215,7 @@ mod tests {
                         ordinal: 1,
                     },
                 ),
-                Some((1, 50, 1, None)),
+                Some((1, 50, (0, 1), None)),
             ),
             (
                 "M2 fold beyond the Message bound",
@@ -1261,7 +1240,7 @@ mod tests {
                         response: 0,
                     },
                 ),
-                Some((2, 50, 11 + 1, Some(2_000))),
+                Some((2, 50, (1, 1), Some(2_000))),
             ),
             (
                 "M4 thinking marker first",
@@ -1274,7 +1253,7 @@ mod tests {
                         response: 0,
                     },
                 ),
-                Some((2, 50, 11, Some(2_000))),
+                Some((2, 50, (1, 0), Some(2_000))),
             ),
             (
                 "A1 model request",
@@ -1286,7 +1265,7 @@ mod tests {
                         sequence: audit_sequence,
                     },
                 ),
-                Some((4, 40, usize::try_from(audit_sequence).unwrap(), None)),
+                Some((4, 40, (usize::try_from(audit_sequence).unwrap(), 0), None)),
             ),
             (
                 "A2 unknown audit row",
@@ -1307,20 +1286,20 @@ mod tests {
             ),
         ];
         for (rule, key, expected) in rows {
-            assert_eq!(order(index.fact_order(&key, events)), expected, "{rule}");
+            assert_eq!(order(index.fact_order(&key)), expected, "{rule}");
         }
         assert_eq!(
-            order(index.tool_order(SESSION, &tool_use.id.0, "call", events)),
-            Some((3, 50, 2 * 11, None)),
+            order(index.tool_order(SESSION, &tool_use.id.0, "call")),
+            Some((3, 50, (2, 0), None)),
             "T1 tool use at its Message block"
         );
         assert_eq!(
-            order(index.tool_order(SESSION, "run", "ticket", events)),
-            Some((5, 50, 0, None)),
+            order(index.tool_order(SESSION, "run", "ticket")),
+            Some((5, 50, (0, 0), None)),
             "T2 current pause at its Awaiting commit"
         );
         assert_eq!(
-            order(index.tool_order(SESSION, "run", "other", events)),
+            order(index.tool_order(SESSION, "run", "other")),
             None,
             "T3 no Message and no pause"
         );
@@ -1329,7 +1308,10 @@ mod tests {
                 .inbound_orders()
                 .map(|(_, order)| (order.source_commit_cursor, order.phase, order.ordinal))
                 .collect::<Vec<_>>(),
-            vec![(1, 120, 0), (1, 120, 1)],
+            vec![
+                (1, 120, Ordinal::within(0, 0)),
+                (1, 120, Ordinal::within(0, 1))
+            ],
             "N1 admission fence and admission order"
         );
         let terminal_source = index.parent_terminal_source(0);
@@ -1453,9 +1435,154 @@ mod tests {
             let advisor = index.advisor_operation_orders();
             assert_eq!(
                 order(advisor.get(&expected).copied()),
-                aligned.then_some((7, 50, 0, Some(1_800_000_000_123))),
+                aligned.then_some((7, 50, (0, 0), Some(1_800_000_000_123))),
                 "E3/E4"
             );
         }
+    }
+
+    #[test]
+    fn same_commit_order_is_a_function_of_each_facts_own_coordinates() {
+        // Cause/effect graph: C1 two Messages share one commit and the first
+        // has more blocks than the Managed record holds events; C2 a reader
+        // canonicalizes that commit holding any number of events (a refresh
+        // schedule); C3 a larger inbound batch is retained after a smaller
+        // one; C4 two Advisor calls of one commit sit in Messages of different
+        // lengths. Effects: E1 a fact's order is identical under every C2; E2
+        // every block of the first Message precedes the second Message; E3 the
+        // earlier batch keeps its order when C3 adds a later, larger batch;
+        // E4 the Advisor calls keep Message order. Rules: R1 C1+C2 -> E1+E2;
+        // R2 C3 -> E3; R3 C4 -> E4.
+        let run = RunId("run".into());
+        let mut blocks = (0..11)
+            .map(|step| ContentBlock::thinking(format!("step {step}")))
+            .collect::<Vec<_>>();
+        blocks.push(ContentBlock::tool_use(
+            "late-call",
+            awaken_runtime_contract::resolved::ADVISOR_TOOL_ID,
+            serde_json::json!({}),
+        ));
+        let long = Message::new(MessageId::assistant(&run, 0), Role::Assistant, blocks);
+        let short = Message::new(
+            MessageId::assistant(&run, 1),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "short-call",
+                awaken_runtime_contract::resolved::ADVISOR_TOOL_ID,
+                serde_json::json!({}),
+            )],
+        );
+        let text = Message::text(MessageId("after".into()), Role::User, "after");
+        let root = RunRecoverySnapshot {
+            thread_id: ThreadId(SESSION.into()),
+            claimed_run_id: run.clone(),
+            runs: vec![Record {
+                id: run.clone(),
+                thread_id: ThreadId(SESSION.into()),
+                state: RunState::Running,
+            }],
+            latest_run_id: Some(run.clone()),
+            messages: vec![long.clone(), short.clone(), text.clone()],
+            message_commit_cursors: vec![3, 3, 3],
+            commit_timestamps: std::collections::BTreeMap::new(),
+            state: vec![],
+            state_commit_cursors: vec![],
+            events: vec![],
+            resume_tickets: vec![],
+            thread_version: 1,
+            store_cursor: 3,
+            next_commit_ordinal: 1,
+        };
+        let batch = |inputs: usize, revision: u64| {
+            let mut batch = SessionEventBatch::compile(
+                &awaken_session_types::SessionId::from(SESSION),
+                &format!("batch-{revision}"),
+                (0..inputs)
+                    .map(|input| SessionEventInput::UserMessage {
+                        content: vec![ContentBlock::text(format!("{revision}-{input}"))],
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            batch.admission_projection_anchor = Some(SessionEventProjectionAnchor {
+                source_commit_cursor: 1,
+            });
+            batch
+        };
+        let children = HashMap::new();
+        let historical = HashMap::new();
+        let child_pending = HashMap::new();
+        macro_rules! index_over {
+            ($batches:expr) => {
+                OrderIndex::new(OrderEvidence {
+                    session_id: SESSION,
+                    batches: $batches,
+                    closed_intervals: &[],
+                    budget_reach: &[],
+                    parent_terminal: ParentTerminalEvidence::default(),
+                    lifecycle: &[],
+                    root: Some(&root),
+                    children: &children,
+                    links: &[],
+                    outcomes: &[],
+                    historical_pending: &historical,
+                    root_pending: None,
+                    child_pending: &child_pending,
+                })
+            };
+        }
+        let small = [batch(1, 1), batch(1, 2)];
+        let index = index_over!(&small);
+        let after = key(
+            SESSION,
+            FactRole::Transcript(TranscriptRole::AgentMessage),
+            FactProvenance::Message {
+                message_id: "after".into(),
+                ordinal: 0,
+            },
+        );
+        // The index is built from committed evidence alone: no reader's event
+        // count or other held state is an input, so every refresh schedule
+        // resolves these keys to the same coordinates.
+        let late = order(index.tool_order(SESSION, &long.id.0, "late-call"));
+        let short_order = order(index.tool_order(SESSION, &short.id.0, "short-call"));
+        let after = order(index.fact_order(&after));
+        assert_eq!(late, Some((3, 50, (0, 11), None)), "R1/E1");
+        assert_eq!(short_order, Some((3, 50, (1, 0), None)), "R1/E1");
+        assert_eq!(after, Some((3, 50, (2, 0), None)), "R1/E1");
+        assert!(late < short_order && short_order < after, "R1/E2");
+        let inbound = |index: OrderIndex<'_>| {
+            index
+                .inbound_orders()
+                .map(|(operation, order)| (operation.to_string(), order))
+                .collect::<HashMap<_, _>>()
+        };
+        let before_growth = inbound(index_over!(&small));
+        let grown = [batch(1, 1), batch(1, 2), batch(4, 3)];
+        let after_growth = inbound(index_over!(&grown));
+        for (operation, order) in &before_growth {
+            assert_eq!(
+                (order.source_commit_cursor, order.phase, order.ordinal),
+                {
+                    let grown = after_growth[operation];
+                    (grown.source_commit_cursor, grown.phase, grown.ordinal)
+                },
+                "R2/E3 {operation}"
+            );
+        }
+        let advisor = index.advisor_operation_orders();
+        let operation = |step, call| {
+            awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(&run, step, call)
+        };
+        let late_call = advisor.get(&operation(0, "late-call")).copied();
+        let short_call = advisor.get(&operation(1, "short-call")).copied();
+        assert!(
+            late_call.is_some() && short_call.is_some(),
+            "R3 both Advisor calls are indexed"
+        );
+        assert!(
+            late_call < short_call,
+            "R3/E4 Advisor calls keep Message order"
+        );
     }
 }

@@ -38,6 +38,10 @@ enum Step {
     Begin(usize),
     /// Commit a claim-fenced `Rescheduled` transition of the same Run.
     Reschedule(usize),
+    /// Commit, in one commit, a response whose tool call follows more
+    /// thinking blocks than the replica holds events, its result, and a
+    /// further response.
+    Burst(usize),
 }
 
 struct Scenario {
@@ -281,6 +285,32 @@ impl Scenario {
                     RunLifecycleEventKind::Rescheduled,
                     RunState::Running,
                 ));
+            }
+            Step::Burst(index) => {
+                let run = self.run(index);
+                let call = format!("burst-{index}");
+                let mut blocks = (0..11)
+                    .map(|step| ContentBlock::thinking(format!("step {step}")))
+                    .collect::<Vec<_>>();
+                blocks.push(ContentBlock::tool_use(
+                    &call,
+                    "read",
+                    serde_json::json!({"path": "burst.txt"}),
+                ));
+                for message in [
+                    Message::new(MessageId::assistant(&run, 3), Role::Assistant, blocks),
+                    Message::new(
+                        MessageId(format!("{}-burst-result", run.0)),
+                        Role::Tool,
+                        vec![ContentBlock::tool_result(
+                            &call,
+                            vec![ContentBlock::text("burst")],
+                        )],
+                    ),
+                    Message::text(MessageId::assistant(&run, 4), Role::Assistant, "after"),
+                ] {
+                    self.runtime.push_committed_message(cursor, message);
+                }
             }
             Step::Close(index) => {
                 let (run, epoch) = self.runs[index].clone().expect("Input precedes Close");
@@ -585,6 +615,35 @@ async fn every_refresh_schedule_of_a_rescheduled_second_interval_equals_its_cold
             &RESCHEDULED_RUN[..],
         ]
         .concat(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn every_refresh_schedule_orders_one_commits_messages_by_their_own_coordinates() {
+    // Causes: C1 one commit holds a response whose tool call is its twelfth
+    // block, then that call's result, then another response; C2 the replica
+    // holds fewer events than that block index when it orders the commit, and
+    // a different number under every refresh schedule. Effects: E1 warm and
+    // cold agree at every point; E2 every schedule orders the commit by each
+    // fact's own Message and block, so the call precedes its result and the
+    // later response.
+    assert_every_schedule_is_equivalent(
+        &[Step::Input(0), Step::Burst(0), Step::Close(0)],
+        1,
+        &[
+            "user.message",
+            "session.status_running",
+            "session.thread_status_running",
+            "agent.thinking",
+            "agent.tool_use",
+            "agent.tool_result",
+            "agent.message",
+            "agent.message",
+            "session.thread_status_idle",
+            "session.usage",
+            "session.status_idle",
+        ],
     )
     .await;
 }
