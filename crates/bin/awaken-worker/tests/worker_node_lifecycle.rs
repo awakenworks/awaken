@@ -204,12 +204,29 @@ impl awaken_session_executor::HandExecutorFactory for NoHandFactory {
 
 #[async_trait::async_trait]
 impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionProvider {
+    fn adoption_layout(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        awaken_container_contract::ContainerAdoptionLayout,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_sandbox_container::container_adoption_layout(handle)
+    }
+
+    fn physical_incarnation(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::container_physical_incarnation(handle)
+    }
+
     async fn create_environment_for_effect(
         &self,
         _spec: &awaken_provisioning_contract::SandboxSpec,
         _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
         _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-        _intent: awaken_sandbox_container::ContainerRealizationIntent,
+        _intent: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<
         std::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,

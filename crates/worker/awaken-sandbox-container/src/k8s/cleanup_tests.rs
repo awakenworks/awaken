@@ -295,7 +295,7 @@ async fn delayed_pod_create_cannot_be_closed_by_a_replacement_runtime() {
         )
         .unwrap();
         let intent = ContainerRealizationIntent::Create;
-        let attempt = ContainerCreateAttempt::fresh();
+        let attempt = crate::fresh_create_attempt();
         let context = ContainerRealizationContext::new(
             "scope",
             &fingerprint,

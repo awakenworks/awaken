@@ -434,6 +434,7 @@ dependencies = [
  "awaken-config-service",
  "awaken-config-store",
  "awaken-connection-plan",
+ "awaken-container-contract",
  "awaken-control",
  "awaken-coordinator",
  "awaken-coordinator-client",
@@ -614,6 +615,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "yamux",
+]
+
+[[package]]
+name = "awaken-container-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-channel",
+ "awaken-provisioning-contract",
+ "awaken-sandbox-control",
+ "serde",
 ]
 
 [[package]]
@@ -2330,6 +2342,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-channel",
  "awaken-connection-plan",
+ "awaken-container-contract",
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-local-process",
@@ -2734,6 +2747,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-authority-clock",
  "awaken-connection-plan",
+ "awaken-container-contract",
  "awaken-credential",
  "awaken-credential-contract",
  "awaken-credential-materializer",
@@ -3218,6 +3232,7 @@ dependencies = [
  "async-trait",
  "awaken-acp-contract",
  "awaken-authority-clock",
+ "awaken-container-contract",
  "awaken-coordinator-client",
  "awaken-credential-materializer",
  "awaken-environment-contract",

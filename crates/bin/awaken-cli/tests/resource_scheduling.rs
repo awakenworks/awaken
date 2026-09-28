@@ -35,6 +35,23 @@ fn recording_provider_cannot_advertise_process_stop_evidence() {
 
 #[async_trait]
 impl ContainerEnvironmentProvider for RecordingProvider {
+    fn adoption_layout(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        awaken_container_contract::ContainerAdoptionLayout,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_sandbox_container::container_adoption_layout(handle)
+    }
+
+    fn physical_incarnation(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::container_physical_incarnation(handle)
+    }
+
     async fn observe_environment(
         &self,
         _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
@@ -109,11 +126,11 @@ impl ContainerEnvironmentProvider for RecordingProvider {
         spec: &pc::SandboxSpec,
         fence: &pc::SandboxEffectFence,
         source: &dyn pc::CurrentExecutionAuthority,
-        intent: awaken_sandbox_container::ContainerRealizationIntent,
+        intent: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         assert!(matches!(
             intent,
-            awaken_sandbox_container::ContainerRealizationIntent::Create
+            awaken_container_contract::EnvironmentRealizationIntent::Create
         ));
         pc::with_current_sandbox_effect(fence, source, |_| {
             let mut specs = self.specs.lock().unwrap();

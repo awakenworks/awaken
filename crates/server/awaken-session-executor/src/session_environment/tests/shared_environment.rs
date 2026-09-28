@@ -41,7 +41,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
                     authority: &denied,
                 },
                 None,
-                awaken_sandbox_container::ContainerRealizationIntent::Create
+                awaken_container_contract::EnvironmentRealizationIntent::Create
             )
             .await
             .is_err()
@@ -57,7 +57,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .unwrap();

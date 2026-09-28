@@ -8,24 +8,9 @@ use super::*;
 static HOST_PROJECTION_SEQUENCE: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// The Managed Sessions file subresource owns this stable projection root.
-/// Kubernetes mounts it read-only into the Agent and read-write only into the
-/// runtime-owned projector sidecar, which makes live replacement enforceable
-/// without rebuilding the Session environment.
-pub const LIVE_INPUTS_ROOT: &str = "/mnt/session/uploads";
-
-/// Return a normalized path relative to [`LIVE_INPUTS_ROOT`]. This is the one
-/// lexical admission rule shared by planning, live projection, removal, and Host
-/// routing; callers must not reproduce prefix checks independently.
-#[must_use]
-pub fn live_input_relative_path(path: &str) -> Option<&str> {
-    let relative = path.strip_prefix(LIVE_INPUTS_ROOT)?.strip_prefix('/')?;
-    (!relative.is_empty()
-        && relative
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != ".."))
-    .then_some(relative)
-}
+// The projection root and its one lexical admission rule are shared with the
+// Session owner through the provisioning contract.
+pub use awaken_container_contract::{LIVE_INPUTS_ROOT, live_input_relative_path};
 
 /// One classification for initial planning and subsequent attach/remove. Keeping
 /// it here prevents Docker/Podman and Kubernetes from drifting on which mounts

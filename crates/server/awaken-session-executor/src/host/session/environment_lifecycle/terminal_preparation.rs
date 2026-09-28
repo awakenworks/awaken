@@ -387,9 +387,9 @@ impl SharedHost {
                     effect_fence,
                 },
                 if mode == BoundEnvironmentPreparationMode::LiveSource {
-                    awaken_sandbox_container::ContainerObservationPurpose::Recovery
+                    awaken_container_contract::ContainerObservationPurpose::Recovery
                 } else {
-                    awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup
+                    awaken_container_contract::ContainerObservationPurpose::TerminalCleanup
                 },
             )
             .await

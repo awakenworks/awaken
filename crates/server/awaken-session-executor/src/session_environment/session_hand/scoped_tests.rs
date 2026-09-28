@@ -44,7 +44,7 @@ async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .unwrap();

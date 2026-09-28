@@ -770,7 +770,7 @@ impl SharedHost {
                 &handle,
                 Some(environment.as_ref()),
                 awaken_provisioning_contract::SandboxObservationBasis::Unattached,
-                awaken_sandbox_container::ContainerObservationPurpose::Recovery,
+                awaken_container_contract::ContainerObservationPurpose::Recovery,
             )
             .await
             .map_err(|error| {
@@ -985,7 +985,7 @@ impl SharedHost {
                 &handle,
                 retained,
                 provider_effect.observation_basis(&spec),
-                awaken_sandbox_container::ContainerObservationPurpose::Recovery,
+                awaken_container_contract::ContainerObservationPurpose::Recovery,
             )
             .await
             .map_err(|error| {

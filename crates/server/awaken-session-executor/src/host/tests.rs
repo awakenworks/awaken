@@ -1277,7 +1277,24 @@ impl TerminalFenceRefreshProbe {
 }
 
 #[async_trait::async_trait]
-impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecoveryProvider {
+impl awaken_container_contract::ContainerEnvironmentProvider for TerminalRecoveryProvider {
+    fn adoption_layout(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        awaken_container_contract::ContainerAdoptionLayout,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        awaken_sandbox_container::container_adoption_layout(handle)
+    }
+
+    fn physical_incarnation(
+        &self,
+        handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<String, awaken_provisioning_contract::SandboxError> {
+        awaken_sandbox_container::container_physical_incarnation(handle)
+    }
+
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         managed_test_container_capabilities()
     }
@@ -1289,7 +1306,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
     async fn create_unattached_environment(
         &self,
         _spec: &pc::SandboxSpec,
-    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
         Err(pc::SandboxError::unsupported(
             "absent-auxiliary fixture never creates a container",
         ))
@@ -1298,10 +1315,10 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
     async fn create_environment_for_effect(
         &self,
         _spec: &pc::SandboxSpec,
-        _effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         _authority: &dyn pc::CurrentExecutionAuthority,
-        _intent: awaken_sandbox_container::ContainerRealizationIntent,
-    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+        _intent: awaken_container_contract::EnvironmentRealizationIntent,
+    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
         Err(pc::SandboxError::unsupported(
             "absent-auxiliary fixture never creates a container",
         ))
@@ -1309,7 +1326,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
 
     async fn observe_environment(
         &self,
-        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
         basis: pc::SandboxObservationBasis<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         if matches!(basis, pc::SandboxObservationBasis::Unattached) {
@@ -1361,8 +1378,8 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
 
     async fn adopt_unattached_environment(
         &self,
-        _adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+        _adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
         Err(pc::SandboxError::unsupported(
             "absent-auxiliary fixture never adopts a live container",
         ))
@@ -1370,10 +1387,10 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
 
     async fn adopt_environment_for_effect(
         &self,
-        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
-        effect_fence: &awaken_sandbox_container::ContainerEffectFence,
+        adoption: awaken_container_contract::ContainerEnvironmentAdoption<'_>,
+        effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
+    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
         if !matches!(self.scenario, TerminalRecoveryScenario::LiveMemory) {
             return Err(pc::SandboxError::unsupported(
                 "non-live terminal recovery fixture cannot be ordinarily adopted",
@@ -1399,10 +1416,10 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         _expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
-    ) -> Result<Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>, pc::SandboxError>
+    ) -> Result<Option<Arc<dyn awaken_container_contract::ContainerEnvironment>>, pc::SandboxError>
     {
         pc::with_current_sandbox_effect::<
-            Option<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+            Option<Arc<dyn awaken_container_contract::ContainerEnvironment>>,
         >(terminal_effect_fence, authority, |_| match self.scenario {
             TerminalRecoveryScenario::OrphanClaim => Err(pc::SandboxError::unsupported(
                 "orphan-claim observation must fail before terminal preparation",
@@ -1467,13 +1484,13 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
 
     fn restore_targets(
         &self,
-    ) -> Option<&dyn awaken_sandbox_container::RestoreTargetContainerEnvironmentProvider> {
+    ) -> Option<&dyn awaken_container_contract::RestoreTargetContainerEnvironmentProvider> {
         Some(self)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_sandbox_container::RestoreTargetContainerEnvironmentProvider
+impl awaken_container_contract::RestoreTargetContainerEnvironmentProvider
     for TerminalRecoveryProvider
 {
     async fn acquire_restore_environment(
@@ -1481,7 +1498,7 @@ impl awaken_sandbox_container::RestoreTargetContainerEnvironmentProvider
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
     ) -> Result<
-        pc::SandboxRestoreTarget<Arc<dyn awaken_sandbox_container::ContainerEnvironment>>,
+        pc::SandboxRestoreTarget<Arc<dyn awaken_container_contract::ContainerEnvironment>>,
         pc::SandboxError,
     > {
         Err(pc::SandboxError::unsupported(
@@ -1723,27 +1740,69 @@ impl TerminalRecoveryEnvironment {
 }
 
 #[async_trait::async_trait]
-impl awaken_sandbox_container::SandboxControlServicePublisher for TerminalRecoveryEnvironment {
+impl awaken_sandbox_control::SandboxControlServicePublisher for TerminalRecoveryEnvironment {
     async fn publish_sandbox_control_service(
         &self,
-        _kind: awaken_sandbox_container::SandboxControlServiceKind,
-        _service: Arc<dyn awaken_sandbox_container::SandboxControlService>,
+        _kind: awaken_sandbox_control::SandboxControlServiceKind,
+        _service: Arc<dyn awaken_sandbox_control::SandboxControlService>,
     ) -> Result<
-        Box<dyn awaken_sandbox_container::PublishedSandboxControlService>,
-        awaken_sandbox_container::SandboxControlPublishError,
+        Box<dyn awaken_sandbox_control::PublishedSandboxControlService>,
+        awaken_sandbox_control::SandboxControlPublishError,
     > {
         // This recovery fixture declares no control-service topology. It must
         // fail closed instead of manufacturing a provider publication lease.
-        Err(awaken_sandbox_container::SandboxControlPublishError)
+        Err(awaken_sandbox_control::SandboxControlPublishError)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_sandbox_container::ContainerEnvironment for TerminalRecoveryEnvironment {
+impl awaken_container_contract::ContainerEnvironment for TerminalRecoveryEnvironment {
+    async fn checkpoint_upload(
+        &self,
+        _access: awaken_container_contract::ContainerCheckpointAccess<'_>,
+        _mutation: awaken_container_contract::ContainerCheckpointMutation<'_>,
+    ) -> Result<
+        Option<awaken_provisioning_contract::SandboxCheckpointUpload>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test container environment does not implement a fenced checkpoint participant",
+        ))
+    }
+
+    async fn remove_live_input_path(
+        &self,
+        _path: &str,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "late mount removal is unsupported on this test container",
+        ))
+    }
+
+    fn record_owned_path(
+        &self,
+        _path: &str,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test container environment does not support durable owned-path evidence",
+        ))
+    }
+
+    async fn open_agent_channel(
+        &self,
+    ) -> Result<
+        Box<dyn awaken_agent_channel::AgentChannel>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Err(awaken_provisioning_contract::SandboxError::unsupported(
+            "test container environment does not expose a resident agent channel",
+        ))
+    }
+
     async fn spawn_agent_process(
         &self,
         _command: pc::Command,
-    ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
+    ) -> Result<awaken_container_contract::RuntimeAgentProcess, pc::SandboxError> {
         self.events.lock().unwrap().push("agent-live-io");
         Err(pc::SandboxError::unsupported(
             "terminal recovery fixture must not launch an Agent process",
@@ -1753,7 +1812,7 @@ impl awaken_sandbox_container::ContainerEnvironment for TerminalRecoveryEnvironm
     async fn read_files(
         &self,
         root: &str,
-    ) -> Result<Vec<awaken_sandbox_container::EnvironmentFile>, pc::SandboxError> {
+    ) -> Result<Vec<awaken_container_contract::EnvironmentFile>, pc::SandboxError> {
         match self.mode {
             TerminalRecoveryEnvironmentMode::Disposing => {
                 self.events.lock().unwrap().push("read-files-live-io");
@@ -1784,7 +1843,7 @@ impl awaken_sandbox_container::ContainerEnvironment for TerminalRecoveryEnvironm
                     .any(|materialization| materialization.mount_path == root) =>
             {
                 self.events.lock().unwrap().push("read-terminal-memory");
-                Ok(vec![awaken_sandbox_container::EnvironmentFile {
+                Ok(vec![awaken_container_contract::EnvironmentFile {
                     path: "changed.txt".into(),
                     bytes: b"changed-under-terminal-v2".to_vec(),
                 }])

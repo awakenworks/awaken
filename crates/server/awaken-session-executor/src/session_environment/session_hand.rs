@@ -52,7 +52,7 @@ pub(super) enum SessionAgentLauncher {
     Workdir(Arc<LocalSandbox>),
     Namespace(Arc<NamespaceSandbox>),
     Container {
-        sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        sandbox: Arc<dyn awaken_container_contract::ContainerEnvironment>,
     },
 }
 
@@ -553,7 +553,7 @@ pub(crate) struct SessionHandExecutor {
     idle_after: Duration,
     mode: HandMode,
     container_skills: Option<(
-        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        Arc<dyn awaken_container_contract::ContainerEnvironment>,
         Arc<ContainerSkillCache>,
     )>,
 }
@@ -646,7 +646,7 @@ impl SessionHandExecutor {
     }
 
     pub(super) fn container(
-        sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        sandbox: Arc<dyn awaken_container_contract::ContainerEnvironment>,
         skills: Arc<ContainerSkillCache>,
         factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
@@ -674,7 +674,7 @@ impl SessionHandExecutor {
         idle_after: Duration,
         residency: crate::deployment_config::ContainerHandResidency,
         container_skills: Option<(
-            Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+            Arc<dyn awaken_container_contract::ContainerEnvironment>,
             Arc<ContainerSkillCache>,
         )>,
     ) -> Self {

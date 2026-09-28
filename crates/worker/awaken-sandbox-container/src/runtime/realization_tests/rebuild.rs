@@ -27,7 +27,7 @@ fn rebuilt_result_converges_without_relaxing_source_or_effect_fences() {
         source_incarnation: "incarnation-1".into(),
         source_runtime_handle: None, // adapter owns the real PVC -> evidence mapping
     };
-    let attempt = crate::ContainerCreateAttempt("rebuild-attempt".into());
+    let attempt = crate::ContainerCreateAttempt::new("rebuild-attempt");
     for source in [false, true] {
         for continuity in [false, true] {
             for reconstructible in [false, true] {

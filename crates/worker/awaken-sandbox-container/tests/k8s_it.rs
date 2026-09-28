@@ -19,8 +19,8 @@ use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_sandbox_container::RestoreTargetContainerEnvironmentProvider as _;
 use awaken_sandbox_container::k8s::K8sRuntime;
 use awaken_sandbox_container::{
-    ContainerEnvironmentProvider, ContainerPlan, ContainerProvider, ContainerRealizationIntent,
-    ContainerRuntime, ContainerState, K8sContinuationVolume, NetworkMode, RootfsPlan,
+    ContainerEnvironmentProvider, ContainerPlan, ContainerProvider, ContainerRuntime,
+    ContainerState, K8sContinuationVolume, NetworkMode, RootfsPlan,
 };
 use k8s_common::{
     container_id, disposal_authorization, effect_fence, fixture_image, spec_with_command,
@@ -120,7 +120,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         &desired,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("create a real Pod via the apiserver");
@@ -134,7 +134,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         &desired,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("an identical retry must adopt the existing realization");
@@ -151,7 +151,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         &changed,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .err()
@@ -307,7 +307,7 @@ async fn create_replay_keeps_a_later_managed_file_generation() {
         &desired,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("KLI3 initial fenced Create");
@@ -359,7 +359,7 @@ async fn create_replay_keeps_a_later_managed_file_generation() {
         &desired,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("KLI3 same-effect Create replay");
@@ -691,7 +691,7 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         &frozen,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("create first incarnation");
@@ -776,9 +776,8 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         &frozen,
         &rebuild_fence,
         &EffectAuthority::new(&rebuild_fence),
-        ContainerRealizationIntent::Rebuild {
-            source_incarnation,
-            source_runtime_handle,
+        awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+            source: Box::new(first_handle.clone()),
         },
     )
     .await
@@ -857,7 +856,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         &frozen,
         &first_fence,
         &EffectAuthority::new(&first_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .unwrap();
@@ -893,7 +892,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         &frozen,
         &second_fence,
         &EffectAuthority::new(&second_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .unwrap();
@@ -965,7 +964,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         &frozen,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("KPV3 C1 create retained realization");
@@ -1023,7 +1022,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         &frozen,
         &foreign_fence,
         &EffectAuthority::new(&foreign_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .err()
@@ -1050,7 +1049,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         &frozen,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("KPV3b exact response-loss replay");
@@ -1129,13 +1128,13 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         &frozen,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("KPV5 C1 create retained source");
     let source_handle = source.handle();
     let pod_name = container_id(&source_handle);
-    let (pod_uid, claim_uid, source_runtime_handle) = match source_handle
+    let (pod_uid, claim_uid) = match source_handle
         .container_payload()
         .unwrap()
         .runtime_handle
@@ -1144,15 +1143,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid,
             claim_uid: Some(claim_uid),
-        }) => (
-            pod_uid.clone(),
-            claim_uid.clone(),
-            source_handle
-                .container_payload()
-                .unwrap()
-                .runtime_handle
-                .clone(),
-        ),
+        }) => (pod_uid.clone(), claim_uid.clone()),
         other => panic!("KPV5 C1 expected Pod+claim V2 handle, got {other:?}"),
     };
 
@@ -1304,9 +1295,8 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         &frozen,
         &rebuild_fence,
         &EffectAuthority::new(&rebuild_fence),
-        ContainerRealizationIntent::Rebuild {
-            source_incarnation: pod_uid,
-            source_runtime_handle,
+        awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+            source: Box::new(source_handle.clone()),
         },
     )
     .await
@@ -1409,13 +1399,13 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         &frozen,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("KPV6 C1 create retained source");
     let source_handle = source.handle();
     let pod_name = container_id(&source_handle);
-    let (pod_uid, claim_uid, runtime_handle) = match source_handle
+    let (pod_uid, claim_uid) = match source_handle
         .container_payload()
         .unwrap()
         .runtime_handle
@@ -1424,15 +1414,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid,
             claim_uid: Some(claim_uid),
-        }) => (
-            pod_uid.clone(),
-            claim_uid.clone(),
-            source_handle
-                .container_payload()
-                .unwrap()
-                .runtime_handle
-                .clone(),
-        ),
+        }) => (pod_uid.clone(), claim_uid.clone()),
         other => panic!("KPV6 C1 expected Pod+claim V2 handle, got {other:?}"),
     };
 
@@ -1515,7 +1497,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
     let rebuild_provider = provider.clone();
     let rebuild_spec = frozen.clone();
     let rebuild_scope = scope.clone();
-    let rebuild_source_uid = pod_uid.clone();
+    let rebuild_source_handle = source_handle.clone();
     let rebuild = tokio::spawn(async move {
         let fence = effect_fence(&rebuild_scope, "rebuild", "delete-race-owner", 2);
         ContainerEnvironmentProvider::create_environment_for_effect(
@@ -1523,9 +1505,8 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
             &rebuild_spec,
             &fence,
             &EffectAuthority::new(&fence),
-            ContainerRealizationIntent::Rebuild {
-                source_incarnation: rebuild_source_uid,
-                source_runtime_handle: runtime_handle,
+            awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+                source: Box::new(rebuild_source_handle),
             },
         )
         .await
@@ -1671,13 +1652,13 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         &frozen,
         &create_fence,
         &EffectAuthority::new(&create_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .expect("KPV4 C1 create retained source");
     let source_handle = source.handle();
     let pod_name = container_id(&source_handle);
-    let (pod_uid, claim_uid, runtime_handle) = match source_handle
+    let (pod_uid, claim_uid) = match source_handle
         .container_payload()
         .unwrap()
         .runtime_handle
@@ -1686,15 +1667,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid,
             claim_uid: Some(claim_uid),
-        }) => (
-            pod_uid.clone(),
-            claim_uid.clone(),
-            source_handle
-                .container_payload()
-                .unwrap()
-                .runtime_handle
-                .clone(),
-        ),
+        }) => (pod_uid.clone(), claim_uid.clone()),
         other => panic!("KPV4 C1 expected Pod+claim V2 handle, got {other:?}"),
     };
 
@@ -1826,9 +1799,8 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         &frozen,
         &rebuild_fence,
         &EffectAuthority::new(&rebuild_fence),
-        ContainerRealizationIntent::Rebuild {
-            source_incarnation: pod_uid,
-            source_runtime_handle: runtime_handle,
+        awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+            source: Box::new(source_handle.clone()),
         },
     )
     .await;
@@ -1884,7 +1856,7 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         &frozen,
         &owner_fence,
         &EffectAuthority::new(&owner_fence),
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     )
     .await
     .unwrap();
@@ -1938,7 +1910,7 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         &frozen,
         &foreign_fence,
         &authority,
-        ContainerRealizationIntent::Create,
+        awaken_container_contract::EnvironmentRealizationIntent::Create,
     );
     let error = error.await.err().expect("KPV2 foreign effect rejects");
     assert!(

@@ -884,7 +884,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
                 ),
             },
             None,
-            awaken_sandbox_container::ContainerRealizationIntent::Create,
+            awaken_container_contract::EnvironmentRealizationIntent::Create,
         )
         .await
         .unwrap();

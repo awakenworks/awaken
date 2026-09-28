@@ -29,7 +29,7 @@ fn repository_git_tls_env(
     vec![pc::EnvVar {
         name: "GIT_SSL_CAINFO".into(),
         value: pc::EnvValue::Inline {
-            value: awaken_sandbox_container::REPOSITORY_GATEWAY_CA_PATH.into(),
+            value: awaken_container_contract::REPOSITORY_GATEWAY_CA_PATH.into(),
         },
         visibility: pc::EnvVisibility::Process,
     }]
@@ -120,13 +120,11 @@ impl SandboxControlService for OperationRepositoryCredential {
 }
 
 async fn publish_credential(
-    sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
+    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
     remote_url: &str,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
-) -> Result<
-    Option<Box<dyn awaken_sandbox_container::PublishedSandboxControlService>>,
-    pc::SandboxError,
-> {
+) -> Result<Option<Box<dyn awaken_sandbox_control::PublishedSandboxControlService>>, pc::SandboxError>
+{
     let Some(credential) = credential else {
         return Ok(None);
     };
@@ -144,7 +142,7 @@ async fn publish_credential(
 }
 
 pub(super) async fn provision(
-    sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
+    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
     publisher_bin: &str,
     plan: &pc::RepositoryRealizationPlan,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
@@ -232,7 +230,7 @@ fn repository_clone_command(
 }
 
 pub(super) async fn push(
-    sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
+    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
     helper_bin: &str,
     plan: &pc::RepositoryRealizationPlan,
     expectation: &pc::RepositoryPublicationExpectation,
@@ -396,7 +394,7 @@ mod tests {
         assert_eq!(
             private[0].value,
             pc::EnvValue::Inline {
-                value: awaken_sandbox_container::REPOSITORY_GATEWAY_CA_PATH.into()
+                value: awaken_container_contract::REPOSITORY_GATEWAY_CA_PATH.into()
             },
             "T1"
         );
