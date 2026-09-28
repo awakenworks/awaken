@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
+# Reviewed public API snapshot (public-api/awaken-runtime.txt): INVARIANTS G2 runtime-core surface.
+api_snapshot = true
 context = "runtime"
 layer = "application"
 authority = "runtime"

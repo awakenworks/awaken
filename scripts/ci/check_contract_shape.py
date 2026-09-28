@@ -43,6 +43,7 @@ projection every crate-boundary fitness check uses.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import json
 import re
 import sys
@@ -391,11 +392,6 @@ def compare(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
     recorded: dict[str, dict] = baseline.get("crates", {})
     max_depth = max((entry.get("depth", 0) for entry in recorded.values()), default=0)
     errors: list[str] = []
-    for name in sorted(set(recorded) - set(measurements)):
-        errors.append(
-            f"{name}: recorded in contract_shape_baseline.json but no longer a contract crate; "
-            "run `python3 scripts/ci/check_contract_shape.py --write-baseline`"
-        )
     for name, current in sorted(measurements.items()):
         entry = recorded.get(name)
         known = entry is not None
@@ -406,11 +402,6 @@ def compare(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
             errors.append(
                 f"{name}: rule depth: contract depth {current.depth} exceeds baseline {base_depth}. "
                 f"Fix: {HOW_TO_FIX['depth']}"
-            )
-        elif known and current.depth < base_depth:
-            errors.append(
-                f"{name}: rule depth: contract depth fell to {current.depth} from baseline "
-                f"{base_depth}; lower the baseline with --write-baseline to hold the gain"
             )
         # size
         budget = current.budget()
@@ -425,13 +416,6 @@ def compare(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
                 f"{HOW_TO_FIX['production_lines']}; growth that is truly needed is recorded with "
                 "--write-baseline --reason"
             )
-        elif base_lines is not None and (
-            current.production_lines <= budget or base_lines - current.production_lines >= LINE_SLACK
-        ):
-            errors.append(
-                f"{name}: rule production_lines: {current.production_lines} production lines, baseline "
-                f"{base_lines}; lower the baseline with --write-baseline to hold the gain"
-            )
         # counted instances
         for rule in RULES[2:]:
             count = current.count(rule)
@@ -442,12 +426,41 @@ def compare(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
                     f"{name}: rule {rule}: {count} instance(s), baseline {base}. Fix: "
                     f"{HOW_TO_FIX[rule]}.\n    {instances}"
                 )
-            elif count < base:
-                errors.append(
-                    f"{name}: rule {rule}: {count} instance(s), below the baseline {base}; lower "
-                    "the baseline with --write-baseline to hold the gain"
-                )
     return errors
+
+
+def tightenable(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
+    """Gains the baseline has not recorded yet.
+
+    A fall used to fail the gate until someone hand-lowered the number, which
+    made the baseline the file most often co-edited with contract code (26 of
+    its 42 edits in 500 commits only lowered a number). A fall is now admitted
+    here and recorded mechanically by ``--tighten``, which the pre-commit hook
+    runs and stages, so the gain is still kept and no person edits the file for
+    it. Only growth needs a human, with ``--write-baseline --reason``.
+    """
+
+    recorded: dict[str, dict] = baseline.get("crates", {})
+    gains: list[str] = [
+        f"{name}: recorded but no longer a contract crate"
+        for name in sorted(set(recorded) - set(measurements))
+    ]
+    for name, current in sorted(measurements.items()):
+        entry = recorded.get(name)
+        if entry is None:
+            continue
+        if current.depth < entry.get("depth", current.depth):
+            gains.append(f"{name}.depth: {entry['depth']} -> {current.depth}")
+        base_lines = entry.get("production_lines")
+        if base_lines is not None and (
+            current.production_lines <= current.budget()
+            or base_lines - current.production_lines >= LINE_SLACK
+        ):
+            gains.append(f"{name}.production_lines: {base_lines} -> {current.production_lines}")
+        for rule in RULES[2:]:
+            if current.count(rule) < entry.get(rule, 0):
+                gains.append(f"{name}.{rule}: {entry[rule]} -> {current.count(rule)}")
+    return gains
 
 
 def render_baseline(
@@ -548,10 +561,11 @@ def self_test() -> None:
     | G1   | C1 a -> b -> a                                   | cycle error, no measurements |
     | G2   | C2 chain a -> b -> c                             | depths 2/1/0                 |
     | D1   | C2 depth > baseline                              | reject                       |
-    | D2   | C2 depth < recorded baseline                     | reject: lower the baseline   |
+    | D2   | C2 depth < recorded baseline                     | admit; --tighten records it  |
     | L1   | C3 ports crate over budget, no baseline          | reject                       |
     | L2   | C3 over budget, <= baseline                      | admit                        |
-    | L3   | C3 shrinks by >= LINE_SLACK / under budget       | reject: lower the baseline   |
+    | L3   | C3 shrinks by >= LINE_SLACK / under budget       | admit; --tighten records it  |
+    | L5   | recorded crate no longer a contract crate        | admit; --tighten drops it    |
     | L4   | C3 trait-free crate under TYPES budget           | admit, role types            |
     | N1   | C4 struct/enum/trait/variant names               | counted                      |
     | N2   | C4 comment, string literal, fn, cfg(test) item   | not counted                  |
@@ -561,7 +575,7 @@ def self_test() -> None:
     | F1   | C6 "not implemented"/"does not support"/Unsupported | counted                   |
     | F2   | C6 Err(Forbidden)/Err(Inactive), Ok default, no body | not counted               |
     | R1   | C7 count > baseline                              | reject naming instances      |
-    | R2   | C7 count < baseline                              | reject: lower the baseline   |
+    | R2   | C7 count < baseline                              | admit; --tighten records it  |
     | W1   | C8 raise without reason                          | growth reported              |
     | W2   | C8 raise with reason                             | reason retained in baseline  |
     | K1   | C9 no kinds metadata                             | reject                       |
@@ -587,7 +601,9 @@ def self_test() -> None:
     errors, measured = measure(chain)
     assert not errors and [measured[n].depth for n in "abc"] == [2, 1, 0], "G2"
     assert compare(measured, {"crates": {"a": {"depth": 1}, "b": {"depth": 1}, "c": {"depth": 0}}}), "D1"
-    assert any("fell to 1" in e for e in compare(measured, {"crates": {"a": {"depth": 2}, "b": {"depth": 2}, "c": {"depth": 0}}})), "D2"
+    deeper = {"crates": {"a": {"depth": 2}, "b": {"depth": 2}, "c": {"depth": 0}}}
+    assert not compare(measured, deeper), "D2 a fall is admitted"
+    assert tightenable(measured, deeper) == ["b.depth: 2 -> 1"], "D2 and reported"
     assert not compare(measured, {"crates": {"a": {"depth": 2}, "b": {"depth": 1}, "c": {"depth": 0}}}), "G2 admits"
 
     port = "pub trait Port {\n    fn call(&self);\n}\n"
@@ -595,9 +611,12 @@ def self_test() -> None:
     assert compare({"p": big}, {"crates": {}}), "L1"
     assert not compare({"p": big}, {"crates": {"p": {"depth": 0, "production_lines": PORT_LINE_BUDGET + 10}}}), "L2"
     shrunk = {"crates": {"p": {"depth": 0, "production_lines": PORT_LINE_BUDGET + 10 + LINE_SLACK}}}
-    assert compare({"p": big}, shrunk), "L3 slack"
+    assert not compare({"p": big}, shrunk) and tightenable({"p": big}, shrunk), "L3 slack"
     small = Measurement(depth=0, production_lines=PORT_LINE_BUDGET - 1, role="ports")
-    assert compare({"p": small}, {"crates": {"p": {"depth": 0, "production_lines": PORT_LINE_BUDGET + 5}}}), "L3 budget"
+    under = {"crates": {"p": {"depth": 0, "production_lines": PORT_LINE_BUDGET + 5}}}
+    assert not compare({"p": small}, under) and tightenable({"p": small}, under), "L3 budget"
+    gone = {"crates": {"p": {"depth": 0}, "retired": {"depth": 1}}}
+    assert tightenable({"p": small}, gone) == ["retired: recorded but no longer a contract crate"], "L5"
     assert measure_sources({"x.rs": project(port)}).role == "ports", "L4 ports"
     private_helper = "trait Members {\n    fn insert(&mut self);\n}\n"
     assert measure_sources({"x.rs": project(private_helper)}).role == "types", "L4 private helper"
@@ -664,7 +683,9 @@ def self_test() -> None:
     counted = Measurement(depth=0, catch_all_errors=["x", "y"])
     rejected = compare({"k": counted}, {"crates": {"k": {"depth": 0, "catch_all_errors": 1}}})
     assert rejected and "x" in rejected[0] and "baseline 1" in rejected[0], "R1"
-    assert compare({"k": counted}, {"crates": {"k": {"depth": 0, "catch_all_errors": 3}}}), "R2"
+    below = {"crates": {"k": {"depth": 0, "catch_all_errors": 3}}}
+    assert not compare({"k": counted}, below), "R2 a fall is admitted"
+    assert tightenable({"k": counted}, below) == ["k.catch_all_errors: 3 -> 2"], "R2 and reported"
     assert not compare({"k": counted}, {"crates": {"k": {"depth": 0, "catch_all_errors": 2}}}), "R admits"
 
     previous = {"crates": {"k": {"depth": 0, "catch_all_errors": 1}}}
@@ -686,6 +707,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", action="store_true", help="print the per-crate measurement table")
     parser.add_argument("--write-baseline", action="store_true", help="record the current tree")
     parser.add_argument("--reason", help="why a recorded number is allowed to grow")
+    parser.add_argument(
+        "--tighten",
+        action="store_true",
+        help="check, then lower every recorded number the tree has fallen below (never raises one)",
+    )
+    parser.add_argument(
+        "--stage", action="store_true", help="with --tighten: git-add the lowered baseline"
+    )
     args = parser.parse_args(argv)
 
     if args.self_test:
@@ -712,7 +741,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {BASELINE.relative_to(ROOT)} for {len(measurements)} contract crates")
         return 0
 
+    if args.stage and not args.tighten:
+        print("usage: --stage only applies to --tighten", file=sys.stderr)
+        return 2
     problems = compare(measurements, previous)
+    if args.tighten and not problems:
+        gains = tightenable(measurements, previous)
+        if gains:
+            document, growth = render_baseline(measurements, previous, None)
+            # compare() admitted the tree, so nothing may have grown; a growth
+            # here would be a disagreement between the two and must not be
+            # written silently.
+            assert not growth, growth
+            BASELINE.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+            for gain in gains:
+                print(f"tightened {gain}")
+            if args.stage:
+                subprocess.run(["git", "add", str(BASELINE)], cwd=ROOT, check=True)
     if problems:
         for problem in problems:
             print(f"ERROR: {problem}", file=sys.stderr)

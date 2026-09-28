@@ -146,9 +146,13 @@ are only `cfg(test)` or `cfg(kani)` and all comments removed):
 | kinds | `[package.metadata.awaken] kinds` names the §1 interface kinds the crate holds; a types-only crate may not hold a port trait, a crate declaring a port kind must | hard error, no baseline |
 
 A count above its baseline fails and names each instance with a fix. A count below its
-baseline also fails until the baseline is lowered, so the gain is kept. Line counts
-fail only once they fall under budget or shrink by 200 lines, so ordinary edits do not
-change the baseline. Raising a number requires
+baseline is admitted and recorded by the tool: the pre-commit hook runs
+`check_contract_shape.py --tighten --stage`, which lowers every number the tree has
+fallen below and stages the file with the commit that achieved it (amended
+2026-09-28; before, a fall failed the gate until someone hand-lowered the number,
+and 26 of the baseline's 42 edits in 500 commits were exactly that). Line counts
+count as a fall only once they fall under budget or shrink by 200 lines, so ordinary
+edits do not change the baseline. Raising a number requires
 `--write-baseline --reason`, and the reason is stored next to the number for review.
 A merge that moves existing instances between crates records its reason the same way,
 so the workspace total stays visible.
@@ -438,7 +442,16 @@ not a second executable specification.
 | C6 | present | current | malformed or wrong response kind | typed rejection; no substituted default |
 
 The pre-push hook now invokes the existing fail-closed public-API snapshot gate
-exactly once. `check-rust.sh --push` already owned maximal all-feature clippy, so
+exactly once. **Amended 2026-09-28:** that gate snapshots only the crates whose
+manifest declares `[package.metadata.awaken] api_snapshot = true` -- today
+`awaken-runtime-contract`, `awaken-agent-contract`, `awaken-tool-contract`,
+`awaken-mcp-wire` and `awaken-runtime`, the surfaces an INVARIANTS row, the
+out-of-workspace fuzz crate or the plugin SPI depends on. No crate is published,
+so every other member's consumers are workspace crates and the compiler already
+refuses a breaking change to them; their 126 snapshots were a hand-blessed second
+copy of that proof and the most co-edited file set in the tree (102 of 332
+production commits). A snapshot file without a selecting manifest is refused as an
+orphan. `check-rust.sh --push` already owned maximal all-feature clippy, so
 no duplicate lint lane was added; the orchestration self-test locks both facts.
 ADR-0082 remains Deferred and none of this closure changes the open-product
 placement in §10.
