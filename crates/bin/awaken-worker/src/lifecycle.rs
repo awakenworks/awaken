@@ -706,11 +706,21 @@ pub(crate) fn spawn_session_realization_reconciliation(
                 let lifecycle = cold_lifecycle.clone();
                 async move {
                     let now = wall_clock_ms();
+                    // The cold claim is a child grant of the observed Worker
+                    // Registry authority: it never outlives it, and a lapsed
+                    // registry proof mints no claim this cycle.
+                    let now_at = awaken_lease_contract::UtcTime::from_epoch_ms(now);
+                    let Some(claim_expiry) = awaken_lease_contract::Expiry::child_within(
+                        awaken_lease_contract::Expiry::after(now_at, lifecycle.authority.remaining()),
+                        now_at,
+                        std::time::Duration::from_millis(cold_lease_ttl_ms),
+                    ) else {
+                        return;
+                    };
                     let cleanup_target = awaken_session_realization_contract::SessionRealizationTarget {
                         owner: lifecycle.identity.worker_id.clone(),
                         runtime_incarnation: lifecycle.identity.lease_owner(),
-                        lease_expires_at_unix_ms: now
-                            .saturating_add(cold_lease_ttl_ms),
+                        lease_expires_at_unix_ms: claim_expiry.to_unix_ms(),
                         reassign_existing_lease: false,
                     };
                     if let Err(error) = lifecycle
