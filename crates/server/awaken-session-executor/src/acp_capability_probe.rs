@@ -1,3 +1,10 @@
+// @formal surface obligation=worker.acp_capability_is_detected_only_after_a_verified_handshake
+// @formal reason: Session-Environment adapter for one bounded ACP capability probe. Its scope is derived
+// @formal reason: from the runtime owner plus the probe inputs rather than generated, so a cancelled probe
+// @formal reason: leaves an environment every tier reconciles by the exact stamp it carries, and the probe
+// @formal reason: is wrapped in one responsibility claim minted before the first poll. It observes
+// @formal reason: capability only through a completed handshake and never publishes evidence of its own;
+// @formal reason: this is not a direct formal-proof claim.
 //! ACP capability negotiation through the already-selected Session Environment.
 //!
 //! The Worker ACP application remains the observation owner. This adapter only

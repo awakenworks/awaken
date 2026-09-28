@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: This source implements the repository-controlled memory product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! HTTP adapters for Data Subject consent, enrollment, capture decisions, and erasure.
 
 use std::sync::Arc;

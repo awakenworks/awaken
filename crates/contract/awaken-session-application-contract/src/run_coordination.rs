@@ -1,3 +1,8 @@
+// @formal surface exclude=projection_dto
+// @formal owner crates/contract/awaken-session-execution-contract/src/session.rs
+// @formal reason: Defines immutable delegated-Run snapshots, budget-resume delivery and ticket shapes,
+// @formal reason: plus a closed disposition enum; it performs no transition, dispatch, persistence, or
+// @formal reason: authorization decision. Runtime and Session owners consume these values.
 //! Runtime-owned child Run and budget-resume coordination projections.
 
 use awaken_agent_contract::agent::delegation::DelegationStatus;

@@ -1,3 +1,11 @@
+// @formal surface obligation=runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
+// @formal surface obligation=sandbox.admission_requires_requested_capabilities
+// @formal surface obligation=session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+// @formal surface obligation=session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal reason: Selects the admitted Session Environment provider, installs optional execution only
+// @formal reason: after its real probe, and owns claim-fenced create, adoption, observation, restore, and
+// @formal reason: container lease-renewal projection. Startup selection reuses SessionExecutionBinding; OS
+// @formal reason: probe truth is not a refinement claim.
 //! Selection and lifecycle construction for a Session's single environment.
 
 use super::{HandExecutorFactory, SessionEnvironment, container_files};

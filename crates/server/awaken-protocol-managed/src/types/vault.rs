@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: This source implements the repository-controlled credential lifecycle product boundary
+// @formal reason: and is classified against its product requirement; this link is not a formal-proof
+// @formal reason: claim.
 //! Wire types for the `vaults` resource (`beta.vaults.*`, ADR-0043): vaults and
 //! their credentials. The DTOs mirror the SDK types exactly
 //! (`BetaManagedAgentsVault`, `BetaManagedAgentsCredential`, the per-type

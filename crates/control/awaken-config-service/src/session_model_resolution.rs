@@ -1,3 +1,6 @@
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal reason: Adapts Session overrides to the canonical parser and publication authority without a
+// @formal reason: second catalog, credential lookup, candidate merge, or fallback path.
 //! Session model overrides through the canonical publication resolver.
 
 use std::sync::Arc;

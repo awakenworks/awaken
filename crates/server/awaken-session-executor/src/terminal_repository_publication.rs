@@ -1,3 +1,11 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: Runtime execution adapter for the aggregate-derived terminal Repository
+// @formal reason: effect. Dynamic path: the required exact current realization lease gates execution, the
+// @formal reason: frozen input compiles through the existing staging path, and exactly one Repository
+// @formal reason: activation produces the receipt returned to the Session cleanup authority; this adapter
+// @formal reason: owns no second intent or receipt store. Evidence: resource.files.resource_lifecycle and
+// @formal reason: terminal Repository publication tests; this is a product-requirement classification, not
+// @formal reason: a direct formal-proof claim.
 //! Runtime execution of the one aggregate-derived terminal Repository effect.
 
 use awaken_session_error_contract::RunError;

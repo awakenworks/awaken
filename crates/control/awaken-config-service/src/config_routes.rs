@@ -1,3 +1,6 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: This source implements the repository-controlled agent profile product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! HTTP admission/projection for the config authoring plane.
 //!
 //! Domain mutation and publication remain owned by [`ConfigPlane`]; this module

@@ -170,6 +170,9 @@ mod tests {
 /// @obligation credential_inventory.committed_material_is_preserved
 /// @obligation credential_inventory.orphans_are_reported_and_retained_without_an_atomic_claim
 /// @obligation credential_inventory.pending_intent_material_is_preserved
+/// @proof-input-debt free_symbol credential_inventory_decision committed
+/// @proof-input-debt free_symbol credential_inventory_decision pending
+/// @proof-input-debt free_symbol credential_inventory_decision present
 #[kani::proof]
 fn credential_inventory_never_orphans_committed_pending_or_foreign_material() {
     let credential_namespace = kani::any::<bool>();

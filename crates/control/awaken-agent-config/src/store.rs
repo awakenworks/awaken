@@ -708,6 +708,7 @@ pub trait ScopedConfigRegistry: Send + Sync {
 /// @obligation resource_binding.draft_audit_and_effect_are_atomic
 /// @obligation resource_binding.pending_effect_survives_until_readback
 /// @obligation resource_binding.replay_is_idempotent_and_identity_stable
+/// @proof-input-debt free_symbol management_effect_confirmation exact
 #[kani::proof]
 fn management_effect_confirmation_requires_positive_exact_readback() {
     // R1 invalid signed revision => reject even exact readback. R2 positive
@@ -725,6 +726,9 @@ fn management_effect_confirmation_requires_positive_exact_readback() {
 #[cfg(kani)]
 /// @obligation resource_binding.draft_audit_and_effect_are_atomic
 /// @obligation resource_binding.replay_is_idempotent_and_identity_stable
+/// @proof-input-debt free_symbol management_effect_enqueue_decision pending_exists
+/// @proof-input-debt free_symbol management_effect_enqueue_decision pending_is_exact
+/// @proof-input-debt free_symbol management_effect_enqueue_decision revision_is_positive
 #[kani::proof]
 fn management_effect_enqueue_is_exact_replay_or_absent_insert() {
     // Causes: C1 the effect revision is positive; C2 a pending effect exists;
@@ -863,6 +867,7 @@ fn management_audit_call_identity_is_stable_and_tuple_exact() {
 /// @obligation audit.stable_call_replay_does_not_repeat_business_write
 /// @obligation management_http.no_business_write_without_durable_audit
 /// @obligation resource_binding.draft_audit_and_effect_are_atomic
+/// @proof-input-debt free_symbol management_audit_admission exact_record
 #[kani::proof]
 fn management_audit_admission_requires_exact_intent_and_closed_state() {
     // Cause/effect rules: A0 absent => reject; A1 any changed record => reject;

@@ -14,6 +14,21 @@ const SESSION_CREATE_ALLOWED = new Set(["lib/api/client.ts"]);
 // a stored secret is never read back into the UI). @awaken/ui owns the only
 // raw password control; the product adapter supplies copy only.
 const MAX_LINES = 600;
+// The opening `// @formal ...` lines of a source are the formal ledger's
+// file-head anchors (scripts/ci/formal_anchors.py): metadata that moved out of
+// formal/*.json into the file it classifies, not surface code. They do not
+// count toward the size cap; an anchor line anywhere else does.
+function surfaceLines(text) {
+  const lines = text.split("\n");
+  let head = 0;
+  while (head < lines.length && lines[head].startsWith("// @formal ")) head += 1;
+  return lines.length - head;
+}
+for (const [fixture, expected] of [
+  ["a\nb", 2],
+  ["// @formal surface requirement=x.y\n// @formal reason: r\na\nb", 2],
+  ["a\n// @formal reason: r\nb", 3],
+]) assert.equal(surfaceLines(fixture), expected);
 
 let failed = false;
 
@@ -50,7 +65,7 @@ function walk(dir) {
       console.error(`shared-notice-owner: ${rel} must use InlineNotice`);
       failed = true;
     }
-    const lines = text.split("\n").length;
+    const lines = surfaceLines(text);
     if (lines > MAX_LINES) {
       console.error(`file-size: ${rel} is ${lines} lines (> ${MAX_LINES}) — split the surface`);
       failed = true;

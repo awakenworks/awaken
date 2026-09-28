@@ -1,3 +1,12 @@
+// @formal surface obligation=worker.acp_capability_is_detected_only_after_a_verified_handshake
+// @formal surface obligation=observation_reconcile.evidence_aba_has_fresh_fence
+// @formal surface obligation=worker_credential.projected_binding_use_rechecks_after_probe
+// @formal surface obligation=worker_credential.host_observation_projection_is_backend_scoped
+// @formal reason: Discovers and refreshes ACP host observations. One checked discovery consumer binds
+// @formal reason: reply identity to the requested catalog backend before the existing resolver cache,
+// @formal reason: capability fallback or default catalog walk can project it. Foreign replies carry no
+// @formal reason: borrowed evidence; paired TLC identity invariants and actual await-barrier/capability
+// @formal reason: tables cross-check the boundary without proving process IO or Rust refinement.
 //! Data-driven discovery of ACP agents installed on the trusted local host.
 //!
 //! The [`AcpCli`] catalog owns every command and classification

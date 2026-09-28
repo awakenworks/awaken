@@ -1,3 +1,9 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/server/awaken-dispatch-testkit/src/lib.rs
+// @formal reason: Static owner: reusable ingress fakes and fixture constructors. Dynamic path: the
+// @formal reason: tooling-only testkit includes this exact file for conformance execution; it is absent
+// @formal reason: from the product runtime graph. Evidence:
+// @formal reason: crates/server/awaken-dispatch-testkit/src/lib.rs.
 // Private fixture builders shared by the conformance rule families. Included
 // once at crate root so fixture identity and credential setup remain canonical.
 fn dispatch(ns: &str, run: &str, thread: &str) -> RunDispatch {

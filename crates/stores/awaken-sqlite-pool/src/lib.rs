@@ -1,3 +1,11 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: Static owner: the one embedded SQLite connection policy shared by persistent store
+// @formal reason: adapters. Dynamic path: every file connection receives the same bounded wait and
+// @formal reason: foreign-key policy, while a process-serialized one-time WAL transition prevents a
+// @formal reason: redundant journal-mode write from racing another store's migration transaction.
+// @formal reason: Evidence: store.backends.schema_and_adapter_conformance plus the adjacent
+// @formal reason: connection-policy decision-table tests and Session-store concurrent migration test; this
+// @formal reason: is a product-requirement classification, not a direct formal-proof claim.
 //! Canonical SQLite connection policy for embedded process stores.
 //!
 //! Store adapters continue to own schemas, migrations, transactions, and domain

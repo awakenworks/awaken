@@ -1,3 +1,9 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Static owner: executable-only plugin and toolset publication projection. Dynamic path:
+// @formal reason: compilation removes inactive authoring residue and validates selected toolsets before
+// @formal reason: the immutable Agent fingerprint is minted. Evidence:
+// @formal reason: control.agent_profiles.immutable_profile and adjacent decision-table tests; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! Canonical executable-only projections used by Agent publication.
 
 use crate::config::AgentConfig;

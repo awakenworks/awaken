@@ -1,3 +1,6 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: This source implements the repository-controlled remote worker product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! The provisioning value objects: mounts, env, network, limits, artifacts.
 //!
 //! All serializable (they cross the config→worker edge as data). Paths are

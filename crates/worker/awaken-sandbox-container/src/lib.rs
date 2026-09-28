@@ -1,3 +1,6 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: This source implements the repository-controlled remote worker product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Container / Kubernetes sandbox provider (ADR-0041 Slice 5), below the neutral
 //! seam. It realizes the same [`pc::SandboxProvider`]/[`pc::Sandbox`] ports as the
 //! local tier, over a dependency-inverted [`ContainerRuntime`] port so the provider

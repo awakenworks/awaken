@@ -1,3 +1,7 @@
+// @formal surface obligation=mcp.at_most_one_final_response
+// @formal surface obligation=mcp.rejected_request_skips_host
+// @formal surface obligation=mcp.final_stops_progress
+// @formal reason: MCP service adapter over the server core.
 //! The transport-neutral MCP request handler.
 //!
 //! [`McpToolService`] maps the MCP server methods onto the runtime's tool

@@ -1,3 +1,6 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: This source implements the repository-controlled public dto product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! The Models API (`/v1/models`) the official `@anthropic-ai/sdk` drives via
 //! GA `client.models` or `client.beta.models`. Both report the same executable
 //! inventory through their distinct `ModelInfo` / `BetaModelInfo` projections. The list is a plain

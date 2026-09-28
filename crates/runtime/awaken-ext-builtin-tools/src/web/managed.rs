@@ -1,3 +1,7 @@
+// @formal surface requirement=runtime.builtin_tools.tool_registration
+// @formal reason: The managed Gateway adapter reuses the configured Web plugin owner while delegating
+// @formal reason: authorization to its injected resolver and retaining no credential authority; this is
+// @formal reason: product-boundary classification, not a direct formal-proof claim.
 //! One protocol adapter for Cloud-routed WebSearch and WebFetch.
 
 use std::io::Read;

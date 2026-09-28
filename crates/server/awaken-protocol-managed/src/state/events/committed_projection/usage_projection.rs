@@ -1,3 +1,8 @@
+// @formal surface requirement=session.multiagent.thread_authority
+// @formal reason: Static owner: neutral token accounting projected from the same committed Thread recovery
+// @formal reason: prefix as transcript and Run state. Dynamic path: Managed reads no second usage snapshot
+// @formal reason: and applies only the Session-frozen price authority; this adds no accounting store or
+// @formal reason: state machine.
 //! Usage projection from the same committed Thread prefix as transcript recovery.
 
 use super::*;

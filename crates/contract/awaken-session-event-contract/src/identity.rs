@@ -1,3 +1,10 @@
+// @formal surface requirement=session.multiagent.thread_authority
+// @formal reason: Static owner: stable Session Event batch, operation and Run identities plus the closed
+// @formal reason: Agent-run boundary moved from the Session facade into the extracted Event vocabulary
+// @formal reason: owner. Dynamic path: a committed Session revision deterministically selects one batch
+// @formal reason: and each ordinal one operation, preserving replay identity without a clock or second
+// @formal reason: registry. Adjacent tests qualify the codec and identity partitions; this is not a proof
+// @formal reason: of persistence or protocol delivery.
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_session_types::{SessionId, SessionRevision};
 

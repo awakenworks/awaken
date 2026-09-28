@@ -1,3 +1,8 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/server/awaken-dispatch-testkit/src/lib.rs
+// @formal reason: Static owner: pending Session-message conformance cases. Dynamic path: the tooling-only
+// @formal reason: testkit includes this exact file to drive store implementations under test; it is not a
+// @formal reason: production message port. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.
 // Session activity rotation and atomic continuation conformance rules. Included
 // at crate root to preserve the public testkit API.
 /// Coordinated reply activity cause/effect decision table.

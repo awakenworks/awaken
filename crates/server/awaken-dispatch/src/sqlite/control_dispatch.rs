@@ -1,3 +1,10 @@
+// @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
+// @formal reason: Static owner: SQLite implementation of the existing ControlDispatchQueue, not a second
+// @formal reason: claim or credential authority. Dynamic path: exact owner/epoch/live-lease predicates
+// @formal reason: gate credential-binding reads; Session reservations and activation invoke canonical
+// @formal reason: classifiers inside BEGIN IMMEDIATE before row/receipt publication. Shared reservation
+// @formal reason: and credential conformance own executable evidence; SQL, serde and async refinement are
+// @formal reason: not claimed proved.
 // SQLite control-only Dispatch authority. Included beside DispatchQueue.
 #[async_trait]
 impl ControlDispatchQueue for SqliteDispatchStore {

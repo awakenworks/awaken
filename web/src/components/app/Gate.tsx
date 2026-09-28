@@ -1,3 +1,5 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: The component renders capability gates but cannot itself enforce server authority.
 import { LoaderCircle } from "@awaken/ui/icons";
 import { InlineNotice, Skeleton } from "@awaken/ui";
 // Presentational wrapper over a GateState: renders a skeleton while loading, the

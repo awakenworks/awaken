@@ -1,3 +1,7 @@
+// @formal surface obligation=work.single_active_claim
+// @formal surface obligation=work.heartbeat_compare_and_set
+// @formal surface obligation=work.terminal_lease_clear
+// @formal reason: Managed WorkQueue command routes.
 //! Coordinator-owned Environment WorkQueue HTTP adapter.
 
 use std::sync::Arc;

@@ -1,3 +1,7 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Authoring form for one MCP server definition. It submits a whole configuration for the
+// @formal reason: server to validate and never writes partial state or credential material. Classification
+// @formal reason: only, not formal evidence.
 import { useState } from "react";
 import { Button } from "@awaken/ui";
 import { Modal, TextField, TextAreaField, useConfirm } from "../ui";

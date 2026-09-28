@@ -1,3 +1,6 @@
+// @formal surface requirement=product.dream.dream_job
+// @formal reason: This source implements the repository-controlled dream product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Managed-protocol adapters for the Coordinator-owned Dream application.
 
 use async_trait::async_trait;

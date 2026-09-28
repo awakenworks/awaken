@@ -1,3 +1,7 @@
+// @formal surface exclude=topology_dto
+// @formal owner docs/adr/0045-connection-plan-and-network-topology.md
+// @formal reason: Serializable connection-topology value object with field-preserving convenience
+// @formal reason: constructors; transport authentication and admission are intentionally absent.
 //! The connection plan value object (ADR-0045 D2).
 //!
 //! `ConnectionPlan` names *how two ends meet*: a transport address, who initiates,

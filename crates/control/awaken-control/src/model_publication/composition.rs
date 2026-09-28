@@ -1,3 +1,6 @@
+// @formal surface requirement=control.admin_publication.audited_publication
+// @formal reason: This source implements the repository-controlled publication product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 use super::CatalogModelPublicationResolver;
 use awaken_config_resolver::InferenceProfileStore;
 use awaken_credential_vault::repo::CredentialRepo;

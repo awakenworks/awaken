@@ -1,3 +1,6 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: Vault DTOs describe credential lifecycle state without proving provider or secret-store
+// @formal reason: behavior.
 export interface Vault {
   id: string;
   type: "vault";

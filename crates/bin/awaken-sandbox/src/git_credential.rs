@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: The stateless Git helper resolves each get through the sole live Sandbox control
+// @formal reason: authority, bounds and zeroizes input/output, rejects expired material, and deliberately
+// @formal reason: creates no credential cache.
 //! One-shot Git credential helper for the closed Sandbox control channel.
 //!
 //! The helper owns no credential state. `get` asks the Session authority every

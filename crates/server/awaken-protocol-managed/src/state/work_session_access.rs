@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Rehydrates the exact Session owner, frozen Skills, and attached Memory bindings for a
+// @formal reason: current Work request; durable Session and WorkQueue aggregates remain the only
+// @formal reason: authorities.
 //! Narrow projection used to authorize one leased Managed Environment Work.
 
 use std::collections::BTreeMap;

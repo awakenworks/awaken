@@ -1,3 +1,10 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: the single crash-safe filesystem realization marker shared by Local and
+// @formal reason: Namespace providers. Dynamic path: one locked marker advances create, rebuild, ready,
+// @formal reason: terminal removal, and removed cuts while binding the exact effect fence, immutable
+// @formal reason: fingerprint, physical incarnation, root inode, checkpoint participant, and completion
+// @formal reason: receipt; Session authorization remains upstream and this is not a direct formal-proof
+// @formal reason: claim.
 //! One crash-safe filesystem-realization authority shared by Local and
 //! Namespace sandbox adapters.
 //!

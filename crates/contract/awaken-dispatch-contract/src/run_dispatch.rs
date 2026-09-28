@@ -576,6 +576,8 @@ impl RunDispatch {
 
 #[cfg(kani)]
 /// @obligation delegation.independent_child_scheduling_lease
+/// @proof-input-debt free_symbol classify_dispatch_admission has_session_thread
+/// @proof-input-debt free_symbol classify_dispatch_admission session_thread_matches
 #[kani::proof]
 fn dispatch_admission_shape_keeps_child_affinity_independent() {
     // Cause/effect graph: C1 Session affinity is absent, matches the Run Thread,

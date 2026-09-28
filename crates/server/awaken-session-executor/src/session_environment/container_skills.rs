@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.skills.version_pinning
+// @formal reason: This source implements the repository-controlled skills product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Live skill discovery cache for a Session-owned remote hand.
 
 use awaken_provisioning_contract as pc;

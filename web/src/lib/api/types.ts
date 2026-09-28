@@ -1,3 +1,6 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: Open API response/request types are a TypeScript DTO boundary, not checked Rust mapping
+// @formal reason: evidence.
 // Wire types for the faces the console talks to. Admin-plane shapes mirror
 // contracts/openapi.generated.json (schemars SSOT); managed shapes mirror the
 // Managed Agents wire implemented by awaken-protocol-managed.

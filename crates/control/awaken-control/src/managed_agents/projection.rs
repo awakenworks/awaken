@@ -1,3 +1,7 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: The extracted Managed Agent projection validates and maps the existing immutable Agent
+// @formal reason: profile between the wire and ConfigPlane boundaries; it carries references only,
+// @formal reason: resolves no secret material, and adds no authoring authority.
 //! Managed Agent wire/domain projections and boundary validation.
 
 use super::*;

@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.skills.version_pinning
+// @formal reason: Skill upload and selection author versioned resources; content verification occurs
+// @formal reason: outside the browser.
 import { Box, FileText, Play, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button as SharedButton, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 

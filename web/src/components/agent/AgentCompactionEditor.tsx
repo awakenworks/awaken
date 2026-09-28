@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.compaction.suffix_preservation
+// @formal reason: The compaction editor authors trigger and exact-suffix retention intent; browser
+// @formal reason: controls do not prove folding or semantic preservation.
 import { Card, Switch } from "@awaken/ui";
 import type { AgentConfig, CompactionStrategy } from "../../lib/api/types";
 import { TextField } from "../ui";

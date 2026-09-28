@@ -1,3 +1,7 @@
+// @formal surface exclude=observability_adapter
+// @formal owner crates/runtime/awaken-observability/src/metrics.rs
+// @formal reason: Projects already-observed structure-only facts into OpenTelemetry/Prometheus
+// @formal reason: instruments; counters and exporter shutdown have no authority over product state.
 //! OpenTelemetry-backed implementation of the runtime's [`MetricsRecorder`] port
 //! (#2). The recorder feeds structure-only instruments on the global `Meter`; the
 //! engine records at the same `chat`/tool chokepoints as the spans, so metrics and

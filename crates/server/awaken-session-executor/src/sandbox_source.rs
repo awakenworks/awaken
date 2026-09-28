@@ -57,6 +57,8 @@ const fn acp_mcp_projection_admission(
 
 #[cfg(kani)]
 /// @obligation acp.fixed_official_launch_preserves_process_local_mcp_routes
+/// @proof-input-debt free_symbol acp_mcp_projection_admission projected
+/// @proof-input-debt free_symbol acp_mcp_projection_admission trusted_fixed_acp
 #[kani::proof]
 fn acp_mcp_projection_has_one_exact_authority() {
     // Causes: C1 the launch is selected from the CLI catalog; C2 the launch is

@@ -245,6 +245,11 @@ fn commit_epoch_completion_requires_observed_release() {
 /// @obligation remote_worker.execution_requires_claimed_snapshot
 /// @obligation remote_worker.single_live_claim_owner
 /// @obligation remote_worker.stale_epoch_never_mutates_truth
+/// @proof-input-debt free_symbol classify_commit_epoch_admission epoch_matches
+/// @proof-input-debt free_symbol classify_commit_epoch_admission expiry_present
+/// @proof-input-debt free_symbol classify_commit_epoch_admission owner_matches
+/// @proof-input-debt free_symbol classify_commit_epoch_admission owner_present
+/// @proof-input-debt free_symbol classify_commit_epoch_admission row_in_required_state
 #[kani::proof]
 fn commit_epoch_guard_admits_only_complete_exact_claim() {
     let row_in_required_state: bool = kani::any();

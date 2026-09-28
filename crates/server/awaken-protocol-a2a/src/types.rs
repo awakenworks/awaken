@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: This source implements the repository-controlled protocol product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! The A2A v0.3 protocol wire types (anti-corruption boundary).
 //!
 //! The only place A2A (Agent2Agent) vocabulary lives. This is the subset the

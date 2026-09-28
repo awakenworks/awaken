@@ -1,3 +1,7 @@
+// @formal surface requirement=runtime.outcomes.outcome_lifecycle
+// @formal reason: The live-Session half of Outcome authoring: it owns the draft while open and hands
+// @formal reason: sending to the one Session send seam that already owns idempotency. Classification only,
+// @formal reason: not formal evidence.
 // The live-Session half of Outcome authoring. It owns only the draft while the
 // dialog is open; the Session surface owns sending, because an Outcome is an
 // ordinary inbound event on the one send seam that already handles idempotency,

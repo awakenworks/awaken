@@ -1,3 +1,6 @@
+// @formal surface obligation=acp.permission_tool_identity_normalization_is_exact
+// @formal surface obligation=credential.http_effect_usage_binds_exact_fields_and_placements
+// @formal reason: Managed ACP credential delivery boundary.
 use super::*;
 
 /// How Awaken-managed model coordinates reach a CLI through its provider

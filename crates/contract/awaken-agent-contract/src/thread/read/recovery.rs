@@ -1,3 +1,7 @@
+// @formal surface exclude=read_port_contract
+// @formal owner docs/design/runtime-persistence.md
+// @formal reason: Serializable recovery snapshot and asynchronous read-port signature only; it cannot
+// @formal reason: mutate, fence, or select committed truth.
 //! Claim-scoped recovery reads for a database-independent Worker.
 //!
 //! A remote Worker cannot reconstruct a Run by calling the synchronous read

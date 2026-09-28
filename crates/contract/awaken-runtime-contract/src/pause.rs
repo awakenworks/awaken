@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.cancellation.terminal_cancellation
+// @formal reason: This source implements the repository-controlled cancellation product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Cooperative pause signal — the input-side mirror of cancellation (ADR-0054).
 //!
 //! An operator asks an in-flight run to pause via `LiveCommand::Pause`; the

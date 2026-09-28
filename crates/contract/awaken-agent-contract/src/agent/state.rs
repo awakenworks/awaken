@@ -321,6 +321,7 @@ mod kani_proofs {
     /// Every other closed scope is E2/no binding. The four symbolic rows prove
     /// the selector total and prevent scope widening.
     /// @obligation thread_state.run_identity_binding
+    /// @proof-input-debt tautology scope_binds_run
     #[kani::proof]
     fn run_identity_binding_is_exactly_run_scoped() {
         let scope = any_scope(kani::any());
@@ -345,6 +346,7 @@ mod kani_proofs {
     /// Decision table covers Remove, commutative object/object merge, and the
     /// replacement complement across all policies and object-shape booleans.
     /// @obligation thread_state.materialization_effect
+    /// @proof-input-debt free_symbol materialization_effect existing_is_object
     #[kani::proof]
     fn state_materialization_effect_is_total_and_exact() {
         let merge = any_merge(kani::any());

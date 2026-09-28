@@ -1,3 +1,11 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the extracted closed terminal assignment, work, and
+// @formal reason: preparation-authorization vocabulary re-exported by the existing Session realization
+// @formal reason: contract. Dynamic path: Control projects the one Session-root cleanup operation and
+// @formal reason: exact Workspace/effect authorization to Runtime without adding a queue, receipt store,
+// @formal reason: lease authority, or lifecycle state machine; generic Session realization renewal remains
+// @formal reason: in its existing owner. This is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Closed terminal assignment, work, and preparation authorization.
 //!
 //! This private module is a mechanical responsibility boundary. The Session

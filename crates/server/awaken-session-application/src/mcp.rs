@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: This source implements the repository-controlled mcp product boundary and is classified
+// @formal reason: against its product requirement; this link is not a formal-proof claim.
 //! Canonical Session MCP authoring normalization and credential selection.
 
 use awaken_session_error_contract::RunError;

@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.agent_loop.runtime_execution
+// @formal reason: This source implements the repository-controlled agent loop product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! `Runtime::run`: the one-call embedded entry.
 //!
 //! Every entry consumes the same immutable `ExecutableAgentSnapshot`; embedded and

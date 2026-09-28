@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.skills.version_pinning
+// @formal reason: This source implements the repository-controlled skills product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! The skills API (`/v1/skills`) over the host's durable delivered-skill catalog
 //! (ADR-0036) plus the official `@anthropic-ai/sdk` `beta.skills.*` surface:
 //! multipart create, retrieve, list, delete, and the `versions` subresource

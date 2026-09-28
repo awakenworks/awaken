@@ -1,3 +1,10 @@
+// @formal surface requirement=runtime.agent_loop.runtime_execution
+// @formal reason: Static owner: Runtime Host composition for ordinary configured root and auxiliary Agent
+// @formal reason: Runs. Dynamic path: a frozen catalog entry, effective tool authorization, one sandbox
+// @formal reason: executor, and caller-owned commit/history context enter the existing Runtime loop;
+// @formal reason: authorization, credential custody, and delegated-child lifecycle remain with their
+// @formal reason: canonical owners. Evidence: runtime.agent_loop.runtime_execution and G41 runner tests;
+// @formal reason: this is a product-requirement classification, not a direct proof claim.
 //! Root and auxiliary configured-Agent execution.
 
 use std::collections::HashSet;

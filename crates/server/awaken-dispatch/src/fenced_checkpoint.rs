@@ -1,3 +1,9 @@
+// @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
+// @formal reason: The checkpoint adapter retains the canonical dispatch commit-epoch guard across local
+// @formal reason: reads/writes/deletes, or delegates to the claim-bound upstream checkpoint operations.
+// @formal reason: Replacement must fence stale mutation. The checkpoint_fence decision-table test and
+// @formal reason: transport E2E own executable adapter coverage; this classification does not promote
+// @formal reason: asynchronous adapter wiring to a production-kernel proof.
 //! Claim-fenced adapter for interrupted-stream checkpoints.
 //!
 //! A stale or unverifiable claim receives an explicit fenced error and cannot

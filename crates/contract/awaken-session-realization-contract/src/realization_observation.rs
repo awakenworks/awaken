@@ -1,3 +1,11 @@
+// @formal surface exclude=test_support_observation_port
+// @formal owner crates/contract/awaken-session-realization-contract/src/session_realization.rs
+// @formal owner crates/devtools/awaken-scenario-host/src/realization_observation.rs
+// @formal owner e2e/managed_mcp_recovery_e2e.ts
+// @formal reason: The parent module exports this port only under the test-support feature. It forwards
+// @formal reason: checkpoints to the scenario executable without owning product transitions or
+// @formal reason: persistence; the scenario adapter and real HTTP crash tests validate observation
+// @formal reason: behavior. This exclusion is not a production proof claim.
 //! Test-support observation port; no product transitions or persistence owner.
 //! Installed once by the scenario executable. Production builds omit the port.
 use std::sync::{Arc, OnceLock};

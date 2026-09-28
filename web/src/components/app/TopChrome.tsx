@@ -1,3 +1,5 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Top chrome displays Workspace context but is not an authority source.
 import { ChevronDown, Search } from "@awaken/ui/icons";
 import { AppearanceSelect, BrandMark } from "@awaken/ui/brand/react";
 import { Button as SharedButton, MenuPopover, SuiteSwitcher } from "@awaken/ui";

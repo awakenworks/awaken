@@ -298,6 +298,8 @@ mod verification {
 
     /// @obligation remote_worker.recovery_projection_is_committed_prefix
     /// @kani default-features=false
+    /// @proof-input-debt free_symbol classify_recovery_snapshot_admission run_matches
+    /// @proof-input-debt free_symbol classify_recovery_snapshot_admission thread_matches
     #[kani::proof]
     fn recovery_snapshot_admission_requires_exact_claim_identity() {
         // Causes: C1 returned Run matches the claim; C2 returned Thread matches

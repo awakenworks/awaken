@@ -291,6 +291,7 @@ mod verification {
     }
 
     /// @obligation tool_result.resume_receipt_is_atomic_with_ticket_consumption
+    /// @proof-input-debt tautology resume_commit_is_coherent
     #[kani::proof]
     fn a_resume_receipt_requires_consumption_of_the_exact_ticket() {
         // Causes: exact/foreign Thread, exact/foreign Run and retention/removal

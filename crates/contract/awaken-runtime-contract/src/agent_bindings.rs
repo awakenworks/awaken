@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.executable_snapshots.immutable_snapshot
+// @formal reason: This source implements the repository-controlled snapshot product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Published Agent bindings consumed by execution adapters.
 //!
 //! Agent authoring owns the external wire unions. Compilation normalizes the

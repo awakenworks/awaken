@@ -1,3 +1,11 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the canonical Session terminal-cleanup sidecar for exactly one
+// @formal reason: command-bound Repository publication outcome. Dynamic path: a verified receipt or
+// @formal reason: permanent rejection is recorded mutually exclusively before ordinary root cleanup, exact
+// @formal reason: replay returns the same durable outcome, and unavailable effects retain the pending
+// @formal reason: command without a second queue, store, or state machine. Evidence:
+// @formal reason: session.lifecycle.session_state, G48, and the adjacent decoder and decision-table tests;
+// @formal reason: this is a product-requirement classification, not a direct formal-proof claim.
 //! Exact Repository publication effect vocabulary and sidecar codec.
 //!
 //! This module owns the secret-free intent, command, receipt verification, and

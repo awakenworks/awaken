@@ -1,3 +1,10 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: Static owner: config-page credential choices and MCP inspection over the existing Vault
+// @formal reason: owner. Dynamic path: a route selects or probes a credential through that owner's
+// @formal reason: admission, so inspection returns status rather than material and cannot become a second
+// @formal reason: credential store or a path that reveals a secret the Vault would refuse. Evidence:
+// @formal reason: credential.lifecycle.credential_lifecycle plus the vault route tests; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! Config-page credential choices, MCP inspection, and the
 //! `mcp_oauth_validate` route over the existing Vault owner.
 use super::*;

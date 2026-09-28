@@ -1,3 +1,7 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Read-only inventory of which Agents bind a configured MCP server, projected from the
+// @formal reason: config plane; it selects nothing and stores no credential. Classification only, not
+// @formal reason: formal evidence.
 import { ExternalLink, Info, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";

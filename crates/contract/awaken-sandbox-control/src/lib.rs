@@ -1,3 +1,10 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Passive control-protocol vocabulary: the only plaintext holder is SandboxControlSecret,
+// @formal reason: zeroized on drop and redacted in Debug alongside the response username/password;
+// @formal reason: RepositoryGitCredentialQuery::validate rejects non-HTTPS and line-injected queries
+// @formal reason: before any service sees them. The crate stores and resolves no credential itself; the
+// @formal reason: Session-owned SandboxControlService remains the sole resolver and closing its
+// @formal reason: publication lease revokes the transport.
 //! Closed, provider-neutral control protocol for one live Sandbox.
 //!
 //! This crate owns only the protocol vocabulary (service kinds, request and

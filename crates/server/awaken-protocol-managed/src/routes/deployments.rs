@@ -1,3 +1,7 @@
+// @formal surface obligation=deployment.cas_prevents_lost_update
+// @formal surface obligation=deployment.stale_scheduler_cannot_claim_or_overwrite
+// @formal surface obligation=deployment.claim_and_run_commit_atomically
+// @formal reason: Managed HTTP adapter for the Deployment aggregate.
 //! Managed Deployment HTTP adapter.
 //!
 //! This module owns only wire admission, filtering/pagination, DTO projection,

@@ -231,6 +231,15 @@ fn validate_session_create_command(
 #[cfg(kani)]
 /// @obligation session.owner_saved_atomically
 /// @obligation session.visible_row_always_owned
+/// @proof-input-debt free_symbol session_create_shape_is_valid fresh_revision
+/// @proof-input-debt free_symbol session_create_shape_is_valid idempotency_key_nonempty
+/// @proof-input-debt free_symbol session_create_shape_is_valid lifecycle_targets_match
+/// @proof-input-debt free_symbol session_create_shape_is_valid owner_nonempty
+/// @proof-input-debt free_symbol session_create_shape_is_valid payload_hash_nonempty
+/// @proof-input-debt free_symbol session_create_shape_is_valid session_id_nonempty
+/// @proof-input-debt free_symbol transactional_session_identity_row_plan aggregate_present
+/// @proof-input-debt free_symbol transactional_session_identity_row_plan owner_nonempty
+/// @proof-input-debt free_symbol transactional_session_identity_row_plan revision_present
 #[kani::proof]
 fn session_identity_and_create_shapes_require_one_owned_live_row() {
     // Cause/effect tables exhaust row kind/presence and every create command

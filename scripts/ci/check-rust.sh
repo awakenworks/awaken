@@ -238,7 +238,7 @@ case "$mode" in
       # unclassified module is refused at the commit that introduces it. This
       # whole-tree run stays here because the coverage *ratio* it reports is
       # global: only a full walk can show a surface that lost its last owner.
-      step "formal-surface" "classify the new source in formal/surface-classifications.json (or record an exclusion)" \
+      step "formal-surface" "classify the new source in its own opening lines (// @formal surface ... with a // @formal reason:)" \
         python3 scripts/ci/check_formal_surface.py --require-complete
     fi
     ;;

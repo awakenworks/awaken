@@ -1,3 +1,7 @@
+// @formal surface obligation=config.generation_is_monotonic
+// @formal surface obligation=config.stale_writer_never_applies
+// @formal surface obligation=session_execution.terminal_state_never_reopens
+// @formal reason: Revisioned Session update path.
 //! Canonical mutable Session command and its durable/effect ordering.
 
 use std::collections::BTreeMap;

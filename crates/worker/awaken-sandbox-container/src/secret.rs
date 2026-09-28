@@ -1,3 +1,6 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: This source implements the repository-controlled credential product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 /// Broker-materialized secret bytes carried only below the provisioning seam.
 ///
 /// The wrapper deliberately redacts `Debug` output so a rendered container plan

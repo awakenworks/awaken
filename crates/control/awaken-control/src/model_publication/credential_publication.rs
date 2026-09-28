@@ -1,3 +1,6 @@
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal surface obligation=credential_reference.exact_revision_never_resolves_another_revision
+// @formal reason: Binds exact credential evidence into immutable model publication.
 //! Secret-free credential selection and Provider publication projection.
 
 use awaken_config_resolver::{

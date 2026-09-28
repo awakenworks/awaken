@@ -1,3 +1,7 @@
+// @formal surface exclude=test_only
+// @formal owner crates/server/awaken-session-executor/src/mcp.rs
+// @formal reason: In-process MCP protocol emulator declared under cfg(test) and used only by runtime-host
+// @formal reason: tests.
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

@@ -264,6 +264,7 @@ pub(crate) fn management_effect_retirement_is_admitted(
 #[cfg(kani)]
 /// @obligation resource_binding.pending_effect_survives_until_readback
 /// @obligation resource_binding.replay_is_idempotent_and_identity_stable
+/// @proof-input-debt tautology management_effect_retirement_decision
 #[kani::proof]
 fn management_effect_retirement_requires_present_matching_receipt() {
     // C1 current pending row exists; C2 its complete payload matches the receipt.

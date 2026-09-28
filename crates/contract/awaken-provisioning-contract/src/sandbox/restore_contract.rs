@@ -1,3 +1,8 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: The provider-neutral restore contract binds one committed Session effect to an exact
+// @formal reason: secret-free physical target and durable handle; providers implement this existing port
+// @formal reason: without introducing another lifecycle authority, and this is not a direct formal-proof
+// @formal reason: claim.
 //! Exact provider-neutral restore identity and physical-target contract.
 
 use super::{SandboxCheckpointRef, SandboxError, SandboxHandle, SandboxRestorationEvidence};

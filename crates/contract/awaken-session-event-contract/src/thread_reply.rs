@@ -1,3 +1,10 @@
+// @formal surface requirement=session.multiagent.thread_authority
+// @formal reason: Static owner: the extracted neutral Session Thread target, reply command, activity fence
+// @formal reason: and delivery vocabulary shared by Event admission and coordination. Dynamic path: exact
+// @formal reason: Session, Run, correlation, tool occurrence and optional committed Thread version remain
+// @formal reason: one immutable command; stable identities derive from that command and no protocol
+// @formal reason: adapter or mailbox owns a second selector. This is a product-boundary classification;
+// @formal reason: adjacent decision tables cover the finite routing partitions.
 use crate::SessionUserRunSystemInput;
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::run::Id as RunId;

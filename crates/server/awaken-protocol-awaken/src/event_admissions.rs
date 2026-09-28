@@ -1,3 +1,8 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: The native close router and DTO project the existing Session admission outcome,
+// @formal reason: including deletion and optional legacy observation coordinates; they do not submit
+// @formal reason: events or execute work. This is a protocol product boundary, not a direct proof of route
+// @formal reason: installation, HTTP delivery or deletion retention.
 //! Final non-admission proof for response-loss reconciliation. Ordinary event
 //! submission remains exclusively on the Anthropic Managed Agents surface.
 

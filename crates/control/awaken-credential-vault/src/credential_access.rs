@@ -1,3 +1,11 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Static owner: the sole pure CredentialSource-to-CredentialAccess compiler. Dynamic path:
+// @formal reason: one already-selected source must pass authority, active status, Workspace, positive
+// @formal reason: revision, binding, target, usage, expiry, material-origin, and
+// @formal reason: selected-or-bounded-deferred-holder checks before canonical access is emitted; every
+// @formal reason: rejection precedes material IO. Evidence: credential.plaintext_boundary.exact_holder and
+// @formal reason: the adjacent source-to-access decision-table tests; this is a product-requirement
+// @formal reason: classification, not a direct formal-proof claim.
 //! Exact source-to-access compilation and optional material delivery.
 //!
 //! Callers retain row lookup and selection. The pure compiler authorizes one

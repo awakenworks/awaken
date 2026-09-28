@@ -1649,6 +1649,10 @@ mod verification {
     use super::*;
 
     /// @obligation session.cleanup_completion_requires_exact_identity_and_canonical_artifact_evidence
+    /// @proof-input-debt free_symbol session_cleanup_completion_admitted canonical_receipt_matches
+    /// @proof-input-debt free_symbol session_cleanup_completion_admitted effect_matches
+    /// @proof-input-debt free_symbol session_cleanup_completion_admitted session_matches
+    /// @proof-input-debt free_symbol session_cleanup_completion_admitted thread_matches
     #[kani::proof]
     fn session_cleanup_completion_requires_every_identity_axis() {
         let artifact_effects_unique = kani::any::<bool>();

@@ -1,3 +1,6 @@
+// @formal surface requirement=control.admin_publication.audited_publication
+// @formal reason: This source implements the repository-controlled publication product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Per-connection projection of one logical Thread's Runtime-owned live
 //! observations into stream-only Managed `event_start` / `event_delta` frames.
 //!

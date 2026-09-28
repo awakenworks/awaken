@@ -1,3 +1,11 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the provider-neutral immutable preparation and physical-disposal
+// @formal reason: authorization value objects re-exported by the existing Sandbox runtime contract.
+// @formal reason: Dynamic path: the Session aggregate projects one durable preparation fingerprint and an
+// @formal reason: authorized realization successor through the canonical constructors before the selected
+// @formal reason: provider may delete the exact physical Sandbox; this adds no cleanup state machine,
+// @formal reason: receipt store, provider selector, or parallel lifecycle authority and is
+// @formal reason: product-requirement evidence rather than a direct formal-proof claim.
 //! Aggregate-derived two-stage Sandbox disposal authorization.
 
 use serde::{Deserialize, Serialize};

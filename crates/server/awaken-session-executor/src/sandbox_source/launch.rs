@@ -1,3 +1,6 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: This source implements the repository-controlled remote worker product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! ACP launch-route selection for sandbox-backed channel sources.
 //!
 //! This module owns the configuration-plane decision of which registered ACP

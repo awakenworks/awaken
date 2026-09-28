@@ -1,3 +1,7 @@
+// @formal surface obligation=run.lifecycle_absorption
+// @formal surface obligation=checkpoint.durable_watermark_never_rolls_back
+// @formal surface obligation=checkpoint.terminal_completion_clears_resume
+// @formal reason: Folds committed truth into lifecycle events and terminal projections.
 //! Neutral projection events and the protocol `Transcoder` seam.
 //!
 //! This is the single shape every public protocol adapter projects from. A

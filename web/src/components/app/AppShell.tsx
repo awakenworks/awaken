@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: The application shell reconciles route Workspace and browser state; it is a central UI
+// @formal reason: boundary.
 import { Suspense, useEffect, useLayoutEffect, useState } from "react";
 import { Dialog, LoadingState, useCommandPalette, useCommandPaletteShortcut, ConfirmProvider } from "@awaken/ui";
 import { Outlet, useLocation, useNavigate } from "react-router";

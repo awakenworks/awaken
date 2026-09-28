@@ -1,3 +1,9 @@
+// @formal surface obligation=sandbox.admission_requires_requested_capabilities
+// @formal surface obligation=sandbox.fail_closed_policy_never_downgrades
+// @formal surface obligation=sandbox.allowlist_claim_requires_runtime_and_issuer_evidence
+// @formal surface obligation=external.container_and_kernel_isolation
+// @formal reason: Projects network policy into a fail-closed direct-deny or capability-authenticated
+// @formal reason: allowlist boundary.
 use awaken_provisioning_contract as pc;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};

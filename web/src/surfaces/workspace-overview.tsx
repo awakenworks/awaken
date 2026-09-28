@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Workspace overview routing and queries project the current product context without
+// @formal reason: selecting server authority.
 import { ChevronRight } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Overview: readiness and recent runtime activity for the active scope.

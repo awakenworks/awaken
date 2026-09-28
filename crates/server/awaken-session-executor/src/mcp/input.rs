@@ -1,3 +1,11 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: Static owner: MCP application notifications entering the Session through the existing
+// @formal reason: Run admission port. Dynamic path: a selected server notification becomes one admitted
+// @formal reason: Session message under the configured policy and its generation reference, with no HTTP
+// @formal reason: loopback, second dialogue loop, or notification store of its own; a notification whose
+// @formal reason: generation is superseded or whose host is gone is dropped rather than admitted.
+// @formal reason: Evidence: protocol.mcp.mcp_protocol plus the MCP notification admission tests; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! MCP application notifications enter the existing Session Run admission port.
 //! No HTTP loopback, second dialogue loop, or notification persistence owner.
 

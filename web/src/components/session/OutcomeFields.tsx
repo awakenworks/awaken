@@ -1,3 +1,7 @@
+// @formal surface requirement=runtime.outcomes.outcome_lifecycle
+// @formal reason: The shared field set for authoring an Outcome's description, rubric and iteration bound.
+// @formal reason: It owns a draft only; admission belongs to the send seam. Classification only, not
+// @formal reason: formal evidence.
 // The one Outcome authoring form. Reused by the live Session control and by the
 // Quickstart first run so both paths present the same three decisions and hand
 // `session-outcome.ts` the same draft shape.

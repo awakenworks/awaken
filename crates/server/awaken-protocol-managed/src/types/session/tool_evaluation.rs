@@ -1,3 +1,12 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: Static owner: the official BetaManagedAgentsAgentToolEvaluation projection on agent
+// @formal reason: tool-use events. Dynamic path: a recorded gate decision plus the policy that produced it
+// @formal reason: is mapped to the SDK's closed shape; a decision whose policy was never recorded
+// @formal reason: (historical rows, a per-Run narrowing, a plugin gate, a person answering a ticket)
+// @formal reason: projects no evaluation rather than inventing one. Evidence:
+// @formal reason: protocol.adapters.adapter_projection plus this module's from_audit decision table and
+// @formal reason: the managed projection JSON rows; this is a product-requirement classification, not a
+// @formal reason: direct proof claim.
 //! The SDK's per-call `evaluation` on Agent tool-use events, projected from
 //! the committed permission audit.
 //!

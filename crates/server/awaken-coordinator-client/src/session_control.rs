@@ -1,3 +1,9 @@
+// @formal surface exclude=transport_adapter
+// @formal owner crates/server/awaken-coordinator-client/src/worker_control_client.rs
+// @formal reason: Static owner: Worker-side implementation of neutral Session-control ports. Dynamic path:
+// @formal reason: each method forwards the exact Worker identity, claim, and command to
+// @formal reason: WorkerControlClient; authentication and state decisions remain server-side. Evidence:
+// @formal reason: crates/server/awaken-coordinator-client/src/worker_control_client.rs.
 //! Worker-side Session realization control over the authenticated Coordinator transport.
 
 use awaken_dispatch_contract::ClaimedSessionControlError;

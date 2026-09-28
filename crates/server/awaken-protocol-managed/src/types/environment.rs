@@ -1,3 +1,6 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: This source implements the repository-controlled public dto product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Wire types for the `environments` resource + its work queue
 //! (`beta.environments.*` / `beta.environments.work.*`): `BetaEnvironment`, the
 //! work item, and the small action responses (delete / queue stats / heartbeat).

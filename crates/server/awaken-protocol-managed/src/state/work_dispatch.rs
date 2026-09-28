@@ -1,3 +1,7 @@
+// @formal surface exclude=application_adapter
+// @formal owner crates/server/awaken-session-application/src/realization.rs
+// @formal reason: Triggers the application-owned WorkQueue reconciler and logs its report; it makes no
+// @formal reason: dispatch state or settlement decision.
 //! Managed adapter trigger for the canonical Session WorkQueue reconciler.
 
 use super::ManagedState;

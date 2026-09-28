@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: The payload-opaque forwarder admits only the fixed runtime-owned socket and a loopback
+// @formal reason: listener, and its readiness marker is inode and process-incarnation fenced; credential
+// @formal reason: authority remains in the Session service.
 //! Pod-local payload-opaque forwarder for one demanded Sandbox control service.
 
 use std::net::SocketAddr;

@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: This source implements the repository-controlled admin product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Provider-connection read projection.
 //!
 //! The reusable application service owns the write command. This module owns

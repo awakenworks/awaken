@@ -69,6 +69,7 @@ pub(crate) const fn acp_tool_export_admitted(
 
 #[cfg(kani)]
 /// @obligation acp.tool_export_requires_claim_execution_environment
+/// @proof-input-debt free_symbol acp_tool_export_admitted environment_present
 #[kani::proof]
 fn acp_tool_export_requires_claim_execution_environment() {
     // Causes: C1 coordination/execution purpose; C2 ACP/native backend; C3 a
@@ -93,6 +94,8 @@ fn acp_tool_export_requires_claim_execution_environment() {
 #[cfg(kani)]
 /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
 /// @obligation session_run.reservation_never_executes
+/// @proof-input-debt free_symbol runtime_environment_admission expected_binding
+/// @proof-input-debt free_symbol runtime_environment_admission retained
 #[kani::proof]
 fn runtime_environment_admission_is_total_and_coordination_never_borrows() {
     // Causes: C1 coordination/execution purpose; C2 a resident Environment;

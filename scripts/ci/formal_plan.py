@@ -42,7 +42,7 @@ from pathlib import Path, PurePosixPath
 import formal_anchors
 from _crate_boundary_workspace import _balanced_end, rust_syntax
 from formal_kani_options import serialize
-from formal_sources import SourceError, source_text
+from formal_sources import SourceError, detached_git_environment, repository_environment, source_text
 
 # Input set: every Rust source (harnesses, their tags and the module tree that
 # names them) and every Cargo manifest (package and targets).
@@ -411,8 +411,12 @@ def harnesses(root: Path) -> list[Planned]:
     return planned
 
 
-def batches(root: Path, tier: str) -> list[Batch]:
-    """The ``full`` tier runs every harness; ``pr`` leaves out the nightly ones."""
+def batches(root: Path, tier: str, affected: set[str] | None = None) -> list[Batch]:
+    """The ``full`` tier runs every harness; ``pr`` leaves out the nightly ones.
+
+    ``affected`` (package names, from ``affected_packages``) narrows the plan
+    to the harnesses a change can alter; ``None`` keeps every package.
+    """
 
     if tier not in ("pr", "full"):
         raise PlanError(f"unknown plan tier {tier!r}")
@@ -420,10 +424,109 @@ def batches(root: Path, tier: str) -> list[Batch]:
     for item in harnesses(root):
         if tier == "pr" and item.tier != "pr":
             continue
+        if affected is not None and item.selection.package not in affected:
+            continue
         grouped.setdefault(item.selection, Batch(item.selection)).names.extend(item.qualified)
     for batch in grouped.values():
         batch.names.sort()
     return [grouped[key] for key in sorted(grouped)]
+
+
+# A script this file names, or a Python module it imports from beside itself.
+SCRIPT_REFERENCE = re.compile(r"scripts/ci/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)*")
+PYTHON_IMPORT = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
+FORMAL_RUNNER = "scripts/ci/check_formal.sh"
+
+
+def script_closure(root: Path, roots: tuple[str, ...]) -> set[str]:
+    """Every repository file the given entry scripts reach, transitively.
+
+    Consumers: ``affected_packages`` (a change to the formal runner's closure
+    affects every harness) and the formal receipt fixture, which copies the
+    closure instead of a hand-kept file list.
+    """
+
+    pending = list(roots)
+    seen: set[str] = set()
+    while pending:
+        relative = pending.pop()
+        if relative in seen or not (root / relative).is_file():
+            continue
+        seen.add(relative)
+        if (root / relative).suffix in {".patch", ".c", ".rs", ".toml"}:
+            continue
+        text = (root / relative).read_text(encoding="utf-8", errors="ignore")
+        references = SCRIPT_REFERENCE.findall(text)
+        if relative.endswith(".py"):
+            parent = PurePosixPath(relative).parent
+            references += [
+                (parent / f"{module}.py").as_posix()
+                for module in PYTHON_IMPORT.findall(text)
+                if (root / parent / f"{module}.py").is_file()
+            ]
+        pending.extend(reference for reference in references if reference not in seen)
+    return seen
+
+
+def _dependencies(manifest: dict) -> set[str]:
+    names: set[str] = set()
+    tables = [manifest, *manifest.get("target", {}).values()]
+    for table in tables:
+        for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+            for name, value in table.get(section, {}).items():
+                names.add(value.get("package", name) if isinstance(value, dict) else name)
+    return names
+
+
+def affected_packages(root: Path, base: str) -> set[str] | None:
+    """Packages whose harness results a change since ``base`` can alter.
+
+    A changed file inside a package affects that package and, through Cargo,
+    every workspace package that depends on it. A change to the formal
+    runner's own closure, or to a file at the repository root (the workspace
+    manifest, lock or toolchain), affects every harness: None. Anything else
+    (documentation, the Web console, obligation files) runs no Kani batch.
+    An unknown ``base`` is refused, never read as "nothing changed".
+    """
+
+    environment = repository_environment(root)
+    if environment is None:
+        raise PlanError(f"cannot list the changes since {base!r}: {root} is not a repository top")
+    listed = subprocess.run(
+        ["git", "diff", "--name-only", "--no-renames", base, "--"], cwd=root,
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    if listed.returncode != 0:
+        raise PlanError(f"cannot list the changes since {base!r}: {listed.stderr.strip()}")
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"], cwd=root,
+        capture_output=True, text=True, check=True, env=environment,
+    )
+    changed = set(listed.stdout.split()) | set(untracked.stdout.split())
+    runner = script_closure(root, (FORMAL_RUNNER,))
+    manifests = {
+        str(PurePosixPath(relative).parent): tomllib.loads(text)
+        for relative, text in source_text(root, formal_anchors.CARGO_MANIFESTS).items()
+    }
+    names = {directory: manifest.get("package", {}).get("name") for directory, manifest in manifests.items()}
+    touched: set[str] = set()
+    for path in changed:
+        if path in runner or "/" not in path:
+            return None
+        owner = max((directory for directory in names if path.startswith(f"{directory}/")), key=len, default=None)
+        if owner is not None and names[owner]:
+            touched.add(names[owner])
+    dependents: dict[str, set[str]] = {}
+    for directory, manifest in manifests.items():
+        for dependency in _dependencies(manifest):
+            dependents.setdefault(dependency, set()).add(names[directory])
+    pending = list(touched)
+    while pending:
+        for dependent in dependents.get(pending.pop(), ()):
+            if dependent not in touched:
+                touched.add(dependent)
+                pending.append(dependent)
+    return touched
 
 
 def digest(plan: list[Batch]) -> str:
@@ -522,6 +625,44 @@ def self_test() -> None:
         (crate / "src/file.rs").write_text(harness("file_default"))
         (crate / "src/orphan.rs").write_text(harness("orphan_default"))
         refused(root, "crates/a/src/orphan.rs:4: Kani harness orphan_default is not reachable")
+
+    # Affected packages. A1 a change in b affects b and its dependent a, not
+    # c; A2 a documentation change affects no package; A3 a root file (the
+    # lock) and A4 the formal runner affect everything (None); A5 an unknown
+    # base is refused, never read as "nothing changed".
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        for name, dependencies in (("a", '[dependencies]\nb = { path = "../b" }\n'), ("b", ""), ("c", "")):
+            (root / f"crates/{name}/src").mkdir(parents=True)
+            (root / f"crates/{name}/Cargo.toml").write_text(
+                f'[package]\nname = "{name}"\nversion = "0.0.0"\n{dependencies}')
+            (root / f"crates/{name}/src/lib.rs").write_text(harness(f"{name}_proof"))
+        (root / "docs").mkdir()
+        (root / "docs/x.md").write_text("x\n")
+        (root / "Cargo.lock").write_text("# lock\n")
+        (root / "scripts/ci").mkdir(parents=True)
+        (root / FORMAL_RUNNER).write_text("python3 scripts/ci/formal_plan.py kani --tier full\n")
+        git = ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "core.hooksPath=/dev/null"]
+        detached = detached_git_environment()
+        for arguments in (["init", "--quiet"], ["add", "."], ["commit", "--quiet", "-m", "fixture"]):
+            subprocess.run([*git, *arguments], cwd=root, check=True, capture_output=True, env=detached)
+        for edited, expected in (
+            ("crates/b/src/lib.rs", {"a", "b"}), ("docs/x.md", set()),
+            ("Cargo.lock", None), (FORMAL_RUNNER, None),
+        ):
+            original = (root / edited).read_text()
+            (root / edited).write_text(original + "// changed\n")
+            assert affected_packages(root, "HEAD") == expected, (edited, affected_packages(root, "HEAD"))
+            (root / edited).write_text(original)
+        (root / "crates/b/src/lib.rs").write_text(harness("b_proof") + "// changed\n")
+        planned = {tuple(batch.argv()) for batch in batches(root, "pr", affected_packages(root, "HEAD"))}
+        assert planned == {("a", "--exact", "--harness", "a_proof"), ("b", "--exact", "--harness", "b_proof")}, planned
+        try:
+            affected_packages(root, "no-such-base")
+        except PlanError as error:
+            assert "cannot list the changes since 'no-such-base'" in str(error), "A5"
+        else:
+            raise AssertionError("A5 an unknown base must be refused")
     print("formal_plan self-test: the decision table holds")
 
 
@@ -529,18 +670,20 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("plan", nargs="?", choices=("kani",), help="the plan to print (one batch per line)")
     parser.add_argument("--tier", choices=("pr", "full"), help="pr leaves out tier=nightly harnesses")
+    parser.add_argument("--affected", metavar="BASE", help="only the harnesses a change since BASE can alter")
     parser.add_argument("--digest", action="store_true", help="print the plan digest instead of the batches")
     parser.add_argument("--self-test", action="store_true", help="run the decision table")
     arguments = parser.parse_args(argv)
     if arguments.self_test:
-        if arguments.plan or arguments.tier or arguments.digest:
+        if arguments.plan or arguments.tier or arguments.digest or arguments.affected:
             parser.error("--self-test takes no plan arguments")
         self_test()
         return 0
     if arguments.plan != "kani" or arguments.tier is None:
-        parser.error("print a plan with `kani --tier pr|full`, or run --self-test")
+        parser.error("print a plan with `kani --tier pr|full [--affected BASE]`, or run --self-test")
     try:
-        plan = batches(ROOT, arguments.tier)
+        affected = affected_packages(ROOT, arguments.affected) if arguments.affected else None
+        plan = batches(ROOT, arguments.tier, affected)
         sys.stdout.write(f"{digest(plan)}\n" if arguments.digest else render(plan))
     except (PlanError, ValueError) as error:
         print(f"formal plan: {error}", file=sys.stderr)

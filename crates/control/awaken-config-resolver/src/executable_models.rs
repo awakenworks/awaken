@@ -46,6 +46,7 @@ const fn executable_model_readiness(
 
 #[cfg(kani)]
 /// @obligation model_readiness.brokered_and_direct_routes_require_exact_access_evidence
+/// @proof-input-debt free_symbol executable_model_readiness offering_active
 #[kani::proof]
 fn brokered_and_direct_model_readiness_require_their_exact_access_evidence() {
     let offering_active = kani::any();

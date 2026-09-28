@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: The drawer issues MemoryStore queries and mutations; database consistency is not a UI
+// @formal reason: claim.
 import { ChevronDown, Plus } from "@awaken/ui/icons";
 import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

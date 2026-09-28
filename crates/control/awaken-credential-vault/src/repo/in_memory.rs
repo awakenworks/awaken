@@ -5,6 +5,11 @@
 // @formal entrypoint credential.managed_rollout_outbox_is_atomic_with_exact_pair_publication
 // @formal entrypoint credential.rotation_revision_cas
 // @formal evidence credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+// @formal surface exclude=test_support_adapter
+// @formal owner crates/control/awaken-credential-vault/src/repo.rs
+// @formal reason: Every state type and repository implementation is compiled only under cfg(any(test,
+// @formal reason: feature = test-support)) and serves tests or scenario fixtures. Production Credential
+// @formal reason: authority remains the neutral repository contract and external durable adapters.
 //! Canonical in-memory credential repository used by tests and fixtures.
 
 use std::{collections::HashMap, sync::Mutex};

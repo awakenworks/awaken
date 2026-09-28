@@ -1,3 +1,8 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: The sole issuance service validates the requested protocol, operation, Workspace,
+// @formal reason: existing Session, frozen Agent, lifecycle, TTL, and binding before minting a narrower
+// @formal reason: application capability; this is product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Coordinator API for issuing narrow, short-lived application credentials.
 
 use std::collections::{HashMap, HashSet};

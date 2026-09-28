@@ -1,3 +1,10 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: Static owner: role-local inference materialization store assembly. Dynamic path: the
+// @formal reason: selected backend opens one CredentialRepo and wraps the paired blob store with the
+// @formal reason: injected process seal key as the canonical SealedAeadSecretStore; it neither resolves
+// @formal reason: nor exposes credential material and adds no second credential authority. Evidence:
+// @formal reason: assembly.binary_roles.role_assembly; product-requirement classification, not a direct
+// @formal reason: proof claim.
 //! The credential-materialization store subset used by a trusted local
 //! composition.
 //!

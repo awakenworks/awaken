@@ -1,3 +1,7 @@
+// @formal surface obligation=remote_attempt.committed_task_is_endpoint_pinned
+// @formal surface obligation=remote_attempt.recovery_reattaches_without_resending
+// @formal surface obligation=remote_attempt.cancel_addresses_pinned_task
+// @formal reason: A2A transport client used by the remote-attempt protocol.
 //! The A2A outbound client: call a *remote* A2A agent.
 //!
 //! The mirror of the inbound [`router`](crate::router): the same wire types and the

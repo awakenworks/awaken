@@ -1,3 +1,7 @@
+// @formal surface obligation=mcp.sessionless_stream_lifecycle
+// @formal surface obligation=mcp.at_most_one_final_response
+// @formal surface obligation=mcp.cancellation_has_no_success_result
+// @formal reason: HTTP transport for the MCP server state machine.
 //! Streamable HTTP MCP server (axum router).
 //!
 //! The inverse of the client transport in `awaken-ext-mcp/src/http.rs`, and

@@ -1943,6 +1943,7 @@ mod verification {
     }
 
     /// @obligation tool.transition_preconditions
+    /// @proof-input-debt tautology must_seal_on_run_end
     #[kani::proof]
     fn run_end_sealing_targets_exactly_nonterminal_calls() {
         let phase = symbolic_phase(kani::any());

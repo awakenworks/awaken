@@ -1,3 +1,5 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Toast state reports workflow effects and has no authority semantics.
 import {
   ToastProvider as SharedToastProvider,
   useToast as useSharedToast,

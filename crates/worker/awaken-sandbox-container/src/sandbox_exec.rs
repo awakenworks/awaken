@@ -1,3 +1,12 @@
+// @formal surface obligation=acp.process_cleanup_requires_observed_exit_and_retained_owner
+// @formal reason: Static owner: the environment side of that same exec-attempt identity - both Session
+// @formal reason: spawn edges (opaque stdio agent and plain process), the machinery edge cleanup reads the
+// @formal reason: workspace through, and the gate disposal closes them with. Dynamic path: every Session
+// @formal reason: edge takes its attempt through one admission that refuses once disposal has sealed the
+// @formal reason: environment, and each mints its ClaimedEffect before the future is built; disposal seals
+// @formal reason: first and then reaps, tolerating a failed reap only on an observation that the container
+// @formal reason: is not running. Container-side signal delivery remains a real process effect covered by
+// @formal reason: the feature-gated backend suites, not by a direct proof.
 //! Every process one Session environment starts, and what each one owes.
 //!
 //! # Why this is one module

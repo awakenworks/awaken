@@ -1,3 +1,9 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/stores/awaken-session-store/tests/session_repo_conformance.rs
+// @formal reason: Trait-generic SessionStore (SessionRepository + LifecycleOutbox) and
+// @formal reason: DeploymentRepository conformance suite (ADR-0081 §7). It is a tooling-only test library
+// @formal reason: every backend's test target calls; no product crate links or invokes it, and it admits
+// @formal reason: nothing at runtime.
 //! Trait-generic conformance suite for the `SessionStore` port — the
 //! `SessionRepository` + `LifecycleOutbox` pair — and the `DeploymentRepository`
 //! decision tables that share its root CAS (ADR-0081 §7).

@@ -1,3 +1,6 @@
+// @formal surface obligation=sandbox.admission_requires_requested_capabilities
+// @formal surface obligation=sandbox.fail_closed_policy_never_downgrades
+// @formal reason: Local provider selection and realization.
 //! `LocalProvider` — the `awaken-provisioning-contract` seam realized on the local
 //! machine (ADR-0041, first slice / Workdir tier).
 //!

@@ -1,3 +1,10 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the closed Control readback for one aggregate-derived terminal Repository
+// @formal reason: publication, its immutable Workspace, and the current Session realization lease. Dynamic
+// @formal reason: path: canonical wire validation carries the current same-generation root authority to
+// @formal reason: the existing Worker transport without adding a publication command, lease, receipt
+// @formal reason: store, or lifecycle owner; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Closed Session-root projection for one terminal Repository publication.
 //!
 //! The projection stays under Session realization Control ownership: this

@@ -1,3 +1,11 @@
+// @formal surface obligation=acp.process_cleanup_requires_observed_exit_and_retained_owner
+// @formal reason: Static owner: the Docker tier of that same exec-attempt identity - the public id
+// @formal reason: carrying both exec id and in-container pid record, the wrapper argv that writes the
+// @formal reason: record before exec-ing the command, and the signal path that resolves it. Dynamic path:
+// @formal reason: the wrapper records the pid strictly before the command runs, signal short-circuits on
+// @formal reason: an observed terminal status at both ends, and a recovered handle is rebuilt from the
+// @formal reason: public id alone. Container-side signal delivery is a real process effect covered by the
+// @formal reason: feature-gated Docker suite, not by a direct proof.
 //! One Docker exec, and how it is addressed after the caller that started it
 //! is gone.
 //!

@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: Portable migration bundle for the sole Coordinator application-access repository; this
+// @formal reason: is product-requirement classification, not a formal-proof claim.
 //! Portable schema authority for Coordinator application access.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};

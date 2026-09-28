@@ -79,6 +79,7 @@ const fn initial_event_installation_plan(
 
 #[cfg(kani)]
 /// @obligation session_environment.terminal_fence_admits_only_inflight_binding_receipts
+/// @proof-input-debt tautology terminal_environment_receipt_admitted
 #[kani::proof]
 fn terminal_environment_receipt_is_admitted_only_during_the_fenced_join() {
     // Causes: C1 the Session is active/terminal; C2 terminal cleanup is in its
@@ -97,6 +98,8 @@ fn terminal_environment_receipt_is_admitted_only_during_the_fenced_join() {
 #[cfg(kani)]
 /// @obligation session_event_batch.initial_plan_and_wake_activity_are_atomic_with_root
 /// @obligation session_execution.initial_event_path_reaches_idle_only_after_full_settlement
+/// @proof-input-debt free_symbol initial_event_installation_plan active_activities_empty
+/// @proof-input-debt free_symbol initial_event_installation_plan event_batches_empty
 #[kani::proof]
 fn initial_event_plan_is_installed_only_on_the_complete_fresh_root() {
     // Cause/effect table covers arbitrary revision/epoch plus both collection

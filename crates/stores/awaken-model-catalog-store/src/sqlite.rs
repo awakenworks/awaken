@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This source implements the repository-controlled store product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! SQLite [`CatalogRepo`] adapter (feature `sqlite`, ADR-0043 sqlite-repos) over
 //! the crate's own `catalog` migration scope ([`catalog_bundle`]). Rows are the
 //! serde of the domain aggregates in the `data {json}` column; keyed columns

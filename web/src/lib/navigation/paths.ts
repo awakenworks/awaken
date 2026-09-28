@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Navigation path generation is a finite browser routing relation not yet linked to a
+// @formal reason: proof kernel.
 // Navigation SSOT. Workspace is the only public scope; groups follow the
 // operator's job rather than internal implementation layers.
 

@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Local setup coordinates authentication requests, route state, and mutations at the
+// @formal reason: browser boundary.
 import { Button, Card } from "@awaken/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { FormEvent, ReactNode, useEffect, useState } from "react";

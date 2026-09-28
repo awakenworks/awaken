@@ -1,3 +1,6 @@
+// @formal surface obligation=service_lifecycle.concurrent_shutdown_waits_for_active_drain
+// @formal surface obligation=service_lifecycle.shutdown_fences_task_registration
+// @formal reason: Registers host background work with the lifecycle fence.
 //! Fire-and-forget auxiliary runs with a bounded drain.
 //!
 //! Out-of-band aux agents (memory extraction, dream) run *after* a main Run

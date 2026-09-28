@@ -1,3 +1,10 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Static owner: Workspace MCP authoring — local definitions, the cloud snapshot and
+// @formal reason: default choices as one bounded configuration. Dynamic path: a write is validated as a
+// @formal reason: whole before it is admitted, and credentials are carried as references only, so
+// @formal reason: authoring can never own credential material or reach Agent and Session bindings.
+// @formal reason: Evidence: control.agent_profiles.immutable_profile plus this module's validation tests;
+// @formal reason: this is a product-requirement classification, not a direct proof claim.
 //! Workspace MCP authoring. Credentials are references, never owned here.
 //! A bounded Workspace configuration owns local definitions, a cloud snapshot
 //! and default choices atomically. It does not own Agent or Session bindings.

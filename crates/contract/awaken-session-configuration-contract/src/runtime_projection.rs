@@ -1,3 +1,11 @@
+// @formal surface exclude=projection_vocabulary
+// @formal owner crates/contract/awaken-session-configuration-contract/src/lib.rs
+// @formal owner crates/contract/awaken-session-execution-contract/src/session/roles.rs
+// @formal owner crates/server/awaken-session-executor/src/host.rs
+// @formal reason: SessionInit and SessionSandboxLayout are passive, secret-free typed projections
+// @formal reason: assembled from already-authorized frozen Session configuration and Resource bindings.
+// @formal reason: They define no transition, admission, fallback, persistence, retry, or physical effect;
+// @formal reason: runtime roles and the Runtime Host remain the behavior owners.
 use awaken_provisioning_contract::{EnvVar, MountRequirement};
 use awaken_resource_contract::InputBinding;
 use awaken_session_resource_contract::ResolvedSessionResources;

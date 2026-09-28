@@ -1,3 +1,6 @@
+// @formal surface requirement=session.multiagent.thread_authority
+// @formal reason: Thread selection and event queries render multi-agent relationships without granting
+// @formal reason: authority.
 import { CornerDownRight } from "@awaken/ui/icons";
 import { Button, Card } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

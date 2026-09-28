@@ -1,3 +1,7 @@
+// @formal surface obligation=sandbox.admission_never_weakens_isolation
+// @formal surface obligation=sandbox.admission_requires_requested_capabilities
+// @formal surface obligation=sandbox.fail_closed_policy_never_downgrades
+// @formal reason: Prepares an admitted Environment plan from capability and isolation requirements.
 //! `prepare_environment` — the pure planning step between a [`SandboxSpec`] and a
 //! provider's `create`. It validates the spec against a backend's
 //! [`SandboxCapabilities`] and returns a normalized [`EnvironmentPlan`], failing

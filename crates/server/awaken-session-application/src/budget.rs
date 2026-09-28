@@ -1,3 +1,5 @@
+// @formal surface obligation=session_budget.accepted_cost_arithmetic_never_wraps
+// @formal reason: Application integration for proved budget arithmetic.
 //! Session-root list-cost admission and cumulative usage settlement.
 
 use awaken_session_budget_contract::{ManagedBudgetUsageCursor, SessionUsage};

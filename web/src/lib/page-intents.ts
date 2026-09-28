@@ -1,3 +1,5 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Page intent decoding controls console workflow presentation and remains browser-owned.
 import { NAV } from "./navigation/paths";
 
 export interface PageIntent {

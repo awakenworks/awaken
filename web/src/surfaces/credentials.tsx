@@ -1,3 +1,6 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: Credential creation and lifecycle requests cross provider, storage, and human
+// @formal reason: boundaries.
 import { Plus } from "@awaken/ui/icons";
 import { Skeleton, Button, Card } from "@awaken/ui";
 

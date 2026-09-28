@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Shared UI primitives carry action and permission presentation props but do not enforce
+// @formal reason: policy.
 import { Skeleton, EmptyState as SharedEmptyState, JsonInspector as SharedJsonInspector } from "@awaken/ui";
 // Small stateless display primitives used across Awaken surfaces.
 

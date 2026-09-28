@@ -1,3 +1,7 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: This protocol adapter publishes and binds exact Sandbox policy revisions under the
+// @formal reason: existing capability-floor product requirement; this classification is not a new
+// @formal reason: authorization path or a formal-proof claim.
 //! Awaken sandbox execution-policy authoring protocol.
 
 use std::collections::BTreeMap;

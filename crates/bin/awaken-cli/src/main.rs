@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: The CLI assembly consumes the canonical workspace and hosted-runtime authorization
+// @formal reason: profiles; this classification covers wiring, not a direct formal-proof claim.
 //! `awaken` — product launcher, operator commands, and AllInOne startup.
 
 use std::process::ExitCode;

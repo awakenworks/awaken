@@ -1,3 +1,7 @@
+// @formal surface requirement=platform.resilience.failure_safety
+// @formal reason: The single scheduling helper moves canonical synchronous IAM verification off the async
+// @formal reason: worker without caching or replacing authorization truth; its decision-table test
+// @formal reason: verifies event-loop liveness.
 //! One scheduling boundary for synchronous IAM authentication work.
 
 /// Execute a synchronous IAM operation on Tokio's blocking pool.

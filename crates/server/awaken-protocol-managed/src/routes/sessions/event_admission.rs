@@ -1,3 +1,8 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: The close adapter delegates persisted ownership and exact-key/fingerprint reconciliation
+// @formal reason: to SessionApplication and lowers its closed outcome enum to the native receipt. Existing
+// @formal reason: adapter tests own executable route evidence; this classification does not claim a formal
+// @formal reason: refinement of authentication, header parsing or transport.
 use crate::common::scope::RequiredWorkspaceScope;
 use std::sync::Arc;
 

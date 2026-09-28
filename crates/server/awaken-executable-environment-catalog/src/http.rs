@@ -1,3 +1,7 @@
+// @formal surface obligation=executable_projection.runtime_admission_requires_both_refreshes
+// @formal surface obligation=executable_projection.failed_refresh_never_enters_handler
+// @formal surface obligation=environment.registration_intent_is_atomic_recoverable_and_idempotent
+// @formal reason: Private HTTP executable-Environment projection boundary.
 //! Authenticated HTTP adapters for executable Environment registration.
 
 use std::sync::Arc;

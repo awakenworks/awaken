@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: The immutable legacy Session migration streams are selected and converged by the
+// @formal reason: canonical schema owner; repositories never branch on this compatibility history.
 //! Closed Session histories published before the current aggregate baseline.
 //! Both streams share V1..V14, diverge at V15, and receive the same physical
 //! upgrade as their final branch-local migration. Runtime repositories never

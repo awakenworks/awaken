@@ -1,3 +1,6 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: The model selector authors route intent but cannot prove provider binding or
+// @formal reason: availability.
 import { ExternalLink, LoaderCircle, TriangleAlert } from "@awaken/ui/icons";
 import { InlineNotice, Button as SharedButton } from "@awaken/ui";
 import type { AgentConfig, ModelSelection, RuntimeCap } from "../../lib/api/types";

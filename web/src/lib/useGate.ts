@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: The hook computes presentation gating from server facts; the server remains the policy
+// @formal reason: authority.
 // Truth-driven capability gate: probe a real endpoint and reduce the query to a
 // four-way state. A face that is absent (404/405) is genuinely not mounted — a
 // designed surface waiting on its backend, not an error. Live → render the real

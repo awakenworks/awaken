@@ -1,3 +1,7 @@
+// @formal surface exclude=static_agent_wiring
+// @formal owner crates/runtime/awaken-ext-memory/src/agent.rs
+// @formal reason: Builds two fixed internal Agent snapshots from static instructions and descriptors;
+// @formal reason: extraction admission, persistence, and secret filtering are owned by other modules.
 //! The memory-extractor agent: id, instructions (Claude Code's memory taxonomy),
 //! its default config, and the per-run extraction prompt.
 

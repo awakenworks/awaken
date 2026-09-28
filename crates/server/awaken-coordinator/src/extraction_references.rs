@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: This source implements the repository-controlled memory product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Atomic Resource-reference projection for durable Memory extraction work.
 
 use std::sync::Arc;

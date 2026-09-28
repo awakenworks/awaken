@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: PostgreSQL adapter for the sole Coordinator application-access repository; this is
+// @formal reason: product-requirement classification, not a formal-proof claim.
 use async_trait::async_trait;
 use sqlx::Row;
 use sqlx::postgres::PgPool;

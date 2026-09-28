@@ -1,3 +1,9 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: root-derived terminal cleanup effects, exact Memory intents and targets,
+// @formal reason: and completion helpers. Dynamic path: adapters carry the aggregate's existing operation
+// @formal reason: and realization fence unchanged to physical effects and return exact receipts; this file
+// @formal reason: introduces no second cleanup operation, queue, or store and is not a direct formal-proof
+// @formal reason: claim.
 //! Executable terminal effects, exact Memory reconciliation, and completion errors.
 
 use super::state::SessionCleanupState;

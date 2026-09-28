@@ -1,3 +1,8 @@
+// @formal surface obligation=credential_reference.exact_revision_never_resolves_another_revision
+// @formal surface obligation=worker.revoked_credential_blocks_new_materialization
+// @formal surface obligation=worker.durable_dispatch_contains_no_plaintext_secret
+// @formal reason: The sole materializer's shared admission helper rechecks the selected plaintext holder,
+// @formal reason: exact source mechanism, expiry, and immutable target before any secret realization.
 //! Shared exact-adapter admission rules.
 //!
 //! The materializer remains the sole realization adapter; this module only

@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: The canonical HTTP Basic material constructor preserves exactly two redacted fields
+// @formal reason: under one typed credential boundary; this is product-boundary classification, not a
+// @formal reason: direct formal-proof claim.
 use std::collections::BTreeMap;
 
 use awaken_agent_contract::{RedactedString, StructuredCredentialMaterial};

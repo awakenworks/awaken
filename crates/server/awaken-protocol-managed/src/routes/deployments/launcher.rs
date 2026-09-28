@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.scheduled_work.durable_wake
+// @formal reason: This source implements the repository-controlled scheduled product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Managed Session adapter for the Deployment application's narrow launch port.
 
 use std::sync::Arc;

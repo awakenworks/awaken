@@ -1,3 +1,6 @@
+// @formal surface requirement=product.dream.dream_job
+// @formal reason: This source implements the repository-controlled dream product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Durable Dream job and automatic-policy adapters.
 
 use awaken_session_dream_contract::{

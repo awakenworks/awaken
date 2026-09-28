@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.acp.acp_normalization
+// @formal reason: This source implements the repository-controlled acp product boundary and is classified
+// @formal reason: against its product requirement; this link is not a formal-proof claim.
 //! Cross-directory / cross-machine recovery of a local-dir ACP CLI's session.
 //!
 //! A CLI like Claude Code or Codex keeps its conversation under a subtree of its

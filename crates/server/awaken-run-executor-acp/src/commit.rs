@@ -1,3 +1,7 @@
+// @formal surface requirement=protocol.acp.acp_normalization
+// @formal reason: ACP projects messages, ToolBatch, permission ticket and terminal outcome through one
+// @formal reason: ThreadCommit. Only Runtime-owned tickets create a Runtime batch; unconsumed exact
+// @formal reason: permission continuations settle without implying an executed effect was absent.
 //! ACP's one ThreadCommit projection: messages, batch, ticket and terminal fact.
 //! Transport notifications and one-shot permission grants never commit directly.
 use super::*;

@@ -1,3 +1,9 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: Both Session stores reuse this sole deletion-receipt codec under their root delete CAS.
+// @formal reason: Adjacent codec tables reject corrupt identities, preserve legacy unknown versus
+// @formal reason: known-empty evidence and retain only ordered opaque operation coordinates. This is
+// @formal reason: product-requirement evidence, not a formal proof of SQL atomicity or tombstone
+// @formal reason: retention.
 use awaken_session_state_contract::{
     DeletedSessionEventAdmissions, PersistedSession, RetainedEventAdmission, SessionRepositoryError,
 };

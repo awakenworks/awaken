@@ -1,3 +1,7 @@
+// @formal surface obligation=webhook.delivery_requires_an_enqueued_fact
+// @formal surface obligation=webhook.failed_delivery_remains_pending
+// @formal surface obligation=webhook.periodic_retry_never_retires_a_failed_fact
+// @formal reason: Webhook dispatch and retry implementation.
 //! Delivery: project a committed [`WebhookEvent`] to every matching subscription,
 //! signed (Standard Webhooks) and retried, auto-disabling an endpoint after too
 //! many consecutive failures. The HTTP transport is a port so a real reqwest

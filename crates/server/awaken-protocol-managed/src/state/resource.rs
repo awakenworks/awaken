@@ -1,3 +1,6 @@
+// @formal surface obligation=session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal surface obligation=session_resources.install_replacement_requires_newer_or_unattempted_authority_amendment
+// @formal reason: Managed resource input projection.
 //! Managed wire parsing and projection for typed Session inputs.
 
 use super::*;

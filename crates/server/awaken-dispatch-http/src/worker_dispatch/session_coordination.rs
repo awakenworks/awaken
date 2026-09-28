@@ -1,3 +1,9 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Static owner: HTTP adapter for claim-scoped Session coordination. Dynamic path:
+// @formal reason: authenticated Worker requests carry the exact dispatch claim into the neutral
+// @formal reason: coordination port and return its typed result. Evidence:
+// @formal reason: worker.remote_execution.remote_protocol and signed transport tests; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! Claim-fenced HTTP anti-corruption handlers for Session Agent coordination.
 //!
 //! This module owns no Session or dispatch state. It authenticates one existing

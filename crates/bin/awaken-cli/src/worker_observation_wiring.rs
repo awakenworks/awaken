@@ -1,3 +1,6 @@
+// @formal surface obligation=observation_reconcile.evidence_aba_has_fresh_fence
+// @formal surface obligation=observation_reconcile.failed_refresh_does_not_advance_fence
+// @formal reason: Wires the one Worker-observation source/router used by reconciliation.
 //! One role-aware startup for the Coordinator Worker-observation authority.
 
 use std::sync::Arc;

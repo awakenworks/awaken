@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: This source implements the repository-controlled permission product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Durable SandboxExecutionPolicy versions.
 
 mod expanded_schema;

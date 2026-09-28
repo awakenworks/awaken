@@ -1,3 +1,6 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: This source implements the repository-controlled store product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Postgres [`CatalogRepo`] adapter (feature `postgres`, ADR-0043) over the
 //! crate's own `catalog` migration scope ([`catalog_bundle`]) — the network-DB
 //! sibling of [`SqliteCatalogRepo`](crate::sqlite::SqliteCatalogRepo). Rows are the

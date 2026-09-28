@@ -1,3 +1,9 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: The container adapter has one static owner for exact restore metadata, stable target
+// @formal reason: identity, and the retained host-staging namespace; physical lifecycle remains in
+// @formal reason: provider_realization and durable-handle decoding remains in recovery, so this is a
+// @formal reason: product-requirement classification rather than a parallel state machine or direct
+// @formal reason: formal-proof claim.
 //! Exact restoration-target projection for the container provider.
 //!
 //! This module owns restore metadata labels, stable target identity, and the

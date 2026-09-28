@@ -1,3 +1,11 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: Static owner: Runtime Host adapts the frozen Session Memory binding to the canonical
+// @formal reason: MemoryRepository complete-generation API without owning a second CAS rule. Dynamic path:
+// @formal reason: create has no predecessor, while write, delete and extraction replay pass the exact
+// @formal reason: immutable-id/version/content token into the repository; path-sensitive operations use
+// @formal reason: update_materialized so a renamed or replaced materialization conflicts. Repository locks
+// @formal reason: and transactions remain the only mutation authorities, and adjacent runtime tests
+// @formal reason: provide executable wiring evidence rather than a direct backend or durability proof.
 //! Data-plane adapter for one already-authorized platform MemoryStore binding.
 //!
 //! Resource resolution owns the binding identity and maximum access. This

@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Selects the one capability-derived filesystem or semantic delivery mode and rejects
+// @formal reason: post-projection drift; tool and Skill authorities remain in their frozen Session inputs.
 //! One capability-derived delivery and Environment-deferral decision.
 //!
 //! Session construction consumes these classifiers; prompt, mount, Native, and

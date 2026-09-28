@@ -108,6 +108,7 @@ fn arbitrary_geography(value: u8) -> InferenceGeography {
 
 #[cfg(kani)]
 /// @obligation model_geography.every_attempt_candidate_requires_exact_processing_evidence
+/// @proof-input-debt free_symbol candidate_geography_admitted anthropic_messages
 #[kani::proof]
 fn processing_geography_requires_exact_evidence_from_every_candidate() {
     let required = kani::any::<bool>().then(|| arbitrary_geography(kani::any()));

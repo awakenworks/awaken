@@ -1,3 +1,13 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: Static owner: the sole route-scoped browser-origin policy for AI SDK application
+// @formal reason: ingress. Dynamic path: omitted configuration installs no CORS middleware; configured
+// @formal reason: values must be bounded, unique, canonical HTTPS or loopback origins without credentials,
+// @formal reason: path, query, fragment, or wildcard, and only the AI SDK router receives the exact-origin
+// @formal reason: middleware. The application-token guard remains the request authority, sibling protocols
+// @formal reason: stay closed, and this module adds no authentication or alternate route policy. Evidence:
+// @formal reason: runtime.permission.authority_never_widens and the adjacent origin/preflight
+// @formal reason: decision-table tests; this is a product-requirement classification, not a direct proof
+// @formal reason: claim.
 //! Route-scoped browser CORS policy for the AI SDK application ingress.
 //!
 //! CORS is a deployment admission boundary, not an authentication mechanism.

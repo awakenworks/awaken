@@ -132,6 +132,11 @@ pub fn validate_skill_bundle(
 /// @obligation skill.execution_pin_binds_exact_workspace_revision_and_hash
 /// @obligation skill.invalid_workspace_or_hash_fails_closed
 /// @obligation skill.loaded_version_equals_session_pin
+/// @proof-input-debt free_symbol skill_pin_facts_match custom_kind
+/// @proof-input-debt free_symbol skill_pin_facts_match same_hash
+/// @proof-input-debt free_symbol skill_pin_facts_match same_revision
+/// @proof-input-debt free_symbol skill_pin_facts_match same_skill
+/// @proof-input-debt free_symbol skill_pin_facts_match same_workspace
 #[kani::proof]
 fn skill_execution_pin_requires_exact_workspace_revision_and_hash() {
     let custom_kind = kani::any();

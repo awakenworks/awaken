@@ -1,3 +1,11 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the one definition of the neutral behaviour a runtime that does not own a
+// @formal reason: SessionRuntime role exposes (the former trait defaults, written once as neutral_role!
+// @formal reason: and as the NeutralRuntime value). Dynamic path: ownership queries answer nothing, reads
+// @formal reason: answer empty, every write and effect is refused as unavailable before any state, store,
+// @formal reason: or authorization decision, and streaming delegates to the core run; no transition,
+// @formal reason: persistence, or authorization decision is taken here, so no parallel Session state
+// @formal reason: authority can arise from a runtime that answers None for a role.
 //! Neutral behaviour for [`SessionRuntime`] roles a runtime does not own: [`neutral_role!`]
 //! writes it once per role and [`NeutralRuntime`] is that behaviour as a value partial doubles forward to.
 

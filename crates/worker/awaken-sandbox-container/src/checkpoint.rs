@@ -1,3 +1,10 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: current-authority access and checkpoint participant transitions for the
+// @formal reason: existing Container runtime. Dynamic path: acquire before begin, preserve original upload
+// @formal reason: identity across terminal takeover, and delegate receipt validation to
+// @formal reason: SandboxCheckpointUpload; rejected or decoded conflicting evidence grants no new
+// @formal reason: authority. Adjacent participant tables are executable evidence, not a direct proof of
+// @formal reason: external effects.
 //! Physical checkpoint participant access. Archive and object custody stay at
 //! the calling codec/store; Session remains the only lifecycle authority.
 

@@ -911,6 +911,7 @@ pub enum BackgroundTaskError {
 
 #[cfg(kani)]
 /// @obligation background_task.single_fenced_attempt
+/// @proof-input-debt free_symbol execution_is_admitted identity_matches
 #[kani::proof]
 fn background_execution_admission_is_exact_fenced_live_and_phase_monotone() {
     // All pairs of five phases, both identity/remote predicates and all u64

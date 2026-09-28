@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.ui_adapters.stream_projection
+// @formal reason: The preview client issues AG-UI requests and inspects bounded SSE frames; browser
+// @formal reason: transport and rendering do not prove stream order or completeness.
 import { ArrowLeft, ArrowRight, RefreshCw, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard } from "@awaken/ui";
 // Protocol-specific Preview adapters and their bounded event inspector. Both

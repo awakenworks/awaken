@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: This source implements the repository-controlled protocol product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! A2A request decoding: resolve the context (thread) id and convert the inbound
 //! message to neutral runtime input. All A2A-specific parsing lives here so the
 //! router only routes.

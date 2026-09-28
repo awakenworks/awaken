@@ -1,3 +1,7 @@
+// @formal surface exclude=presentation_only
+// @formal owner crates/bin/awaken-cli/src/config.rs
+// @formal reason: Formats an already-resolved deployment into redacted text or JSON; it owns no
+// @formal reason: authorization, state transition, concurrency, or persistence decision.
 //! Redacted rendering of the resolved deployment configuration.
 
 use std::collections::BTreeMap;

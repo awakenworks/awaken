@@ -1656,6 +1656,7 @@ fn same_resource_conflict_is_symmetric_and_exactly_one_write_or_more() {
 /// @obligation tool_schedule.parallel_bound_is_positive_exact_and_zero_normalizes_to_one
 /// @obligation tool_schedule.partition_is_total_contiguous_and_exactly_once
 /// @obligation tool_schedule.serial_is_singleton_and_compatible_prefixes_are_maximal
+/// @proof-input-debt free_symbol tool_wave_can_extend first_is_serial
 #[kani::proof]
 fn tool_wave_extension_requires_every_exact_guard() {
     let first_is_serial: bool = kani::any();
@@ -1679,6 +1680,7 @@ fn tool_wave_extension_requires_every_exact_guard() {
 #[cfg(kani)]
 /// @obligation tool_schedule.parallel_bound_is_positive_exact_and_zero_normalizes_to_one
 /// @obligation tool_schedule.serial_is_singleton_and_compatible_prefixes_are_maximal
+/// @proof-input-debt free_symbol tool_wave_can_extend first_is_serial
 #[kani::proof]
 fn tool_wave_extension_never_crosses_the_positive_bound_or_admits_serial() {
     let first_is_serial: bool = kani::any();

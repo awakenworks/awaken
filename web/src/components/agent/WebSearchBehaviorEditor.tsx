@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.federated_tools.perception_not_authority
+// @formal reason: Web-search discovery/configuration is perception-only authoring, not execution authority
+// @formal reason: proof.
 import { Box, ExternalLink, TriangleAlert } from "@awaken/ui/icons";
 import { InlineNotice, Button as SharedButton } from "@awaken/ui";
 import type { CredentialSource } from "../../lib/api/types";

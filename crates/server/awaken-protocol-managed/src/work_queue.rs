@@ -1,3 +1,7 @@
+// @formal surface obligation=work.lease_authority_snapshot_and_owner_mutations_are_atomic
+// @formal surface obligation=work.terminal_lease_clear
+// @formal reason: Projects the neutral WorkQueue claim and its one-time Session bearer into the official
+// @formal reason: wire shape without owning lease or token state.
 //! The environment work-queue port now lives in `awaken-session-work-contract` (a
 //! contract/ leaf); this module consumes it and owns the neutral→wire projection
 //! (`WorkItem` → the Anthropic `BetaSelfHostedWork`), the one place the wire shape is

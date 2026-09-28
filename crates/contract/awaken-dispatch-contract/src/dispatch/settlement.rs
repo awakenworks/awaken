@@ -1,3 +1,8 @@
+// @formal surface obligation=session_execution.one_physical_attempt_per_thread
+// @formal reason: Existing Dispatch-to-Session observer contract in the same public namespace. It declares
+// @formal reason: authority ownership; actual slot admission stays in the guarded store and HTTP/Worker
+// @formal reason: implementations. The bounded model link is not a proof of arbitrary callback
+// @formal reason: implementations.
 // Exact Dispatch-to-Session settlement observer port; included in dispatch
 // to preserve its public namespace alongside the existing queue contract.
 

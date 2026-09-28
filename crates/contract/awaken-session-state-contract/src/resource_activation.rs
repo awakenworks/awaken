@@ -241,6 +241,7 @@ fn resource_materialization_selects_only_active_or_pending_root_generation() {
 
 #[cfg(kani)]
 /// @obligation session_resources.terminal_assignment_retains_desired_generation
+/// @proof-input-debt free_symbol desired_resource_generation_slot pending
 #[kani::proof]
 fn terminal_resource_projection_retains_the_exact_desired_generation() {
     // Causes: C1 a pending replacement is retained by the Session root; C2 no
@@ -298,6 +299,7 @@ fn failed_resource_replacement_never_promotes_the_pending_manifest() {
 
 #[cfg(kani)]
 /// @obligation session_resources.restart_retries_same_pending_revision
+/// @proof-input-debt free_symbol pending_resource_retry_revision pending
 #[kani::proof]
 fn resource_retry_reuses_exact_pending_revision() {
     // Cause/effect graph: C1 a persisted pending manifest exists; C2 it does

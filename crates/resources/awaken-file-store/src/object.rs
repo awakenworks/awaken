@@ -107,6 +107,12 @@ mod kani_proofs {
 
     /// @obligation object_store.configuration_is_secret_free_and_provider_exact
     /// @kani features=object-store
+    /// @proof-input-debt free_symbol object_store_config_decision bucket_nonempty
+    /// @proof-input-debt free_symbol object_store_config_decision endpoint_present
+    /// @proof-input-debt free_symbol object_store_config_decision prefix_nonempty
+    /// @proof-input-debt free_symbol object_store_config_decision prefix_normalized
+    /// @proof-input-debt free_symbol object_store_config_decision region_nonempty
+    /// @proof-input-debt free_symbol object_store_config_decision region_present
     #[kani::proof]
     fn object_store_configuration_accepts_exactly_the_provider_compatible_shape() {
         let provider = if kani::any::<bool>() {

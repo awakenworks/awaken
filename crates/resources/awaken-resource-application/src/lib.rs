@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: This source implements the repository-controlled files product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Canonical Resources application services.
 //!
 //! Persistence selection produces one [`ResourceAuthorities`]. This layer derives

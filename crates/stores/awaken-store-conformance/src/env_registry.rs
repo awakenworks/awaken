@@ -1,3 +1,8 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/stores/awaken-env-store/tests/env_registry_conformance.rs
+// @formal reason: Trait-generic EnvRegistry conformance suite (ADR-0081 §7). It is a tooling-only test
+// @formal reason: library every backend's test target calls; no product crate links or invokes it, and it
+// @formal reason: admits nothing at runtime.
 //! Trait-generic conformance suite for the `EnvRegistry` port (ADR-0081 §7).
 //!
 //! Every backend runs [`run_suite`] with its own `fresh_with` factory. Unique

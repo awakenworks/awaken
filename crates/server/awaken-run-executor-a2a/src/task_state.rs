@@ -616,6 +616,7 @@ mod kani_proofs {
     /// @obligation remote_attempt.endpoint_mismatch_fails_closed
     /// @obligation remote_attempt.prepared_operation_precedes_send_and_blocks_unknown_replay
     /// @obligation remote_attempt.recovery_reattaches_without_resending
+    /// @proof-input-debt free_symbol remote_operation_decision endpoint_matches
     #[kani::proof]
     fn remote_operation_route_is_total_and_fail_closed() {
         // Cause graph: C1 state is absent/prepared/accepted; C2 its endpoint
@@ -676,6 +677,7 @@ mod kani_proofs {
 
     /// @obligation remote_attempt.cancel_addresses_pinned_task
     /// @obligation remote_attempt.resume_preserves_context_and_task_reference
+    /// @proof-input-debt tautology task_reference_admitted
     #[kani::proof]
     fn task_reference_admission_requires_complete_fields_and_required_identity_matches() {
         // Causes: C1 endpoint present; C2 task id present; C3 context id

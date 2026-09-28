@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.pending_input_delegation.delegation_delivery
+// @formal reason: The overview projects delegation relationships; it is classified without claiming
+// @formal reason: protocol proof.
 import { ArrowRight, Plus } from "@awaken/ui/icons";
 import { Button, Card } from "@awaken/ui";
 import { useMemo, useState } from "react";

@@ -1,3 +1,8 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Projected Pod identity and rotating token adapter over the existing request-authorizer
+// @formal reason: port. It reuses the transport-owned HTTPS selector/client and never grants stop
+// @formal reason: authority. The adjacent rotation/projection/constructor tests are executable evidence;
+// @formal reason: the scalar transport proof does not prove file I/O, token rotation or TLS internals.
 use std::io::Read;
 use std::path::PathBuf;
 

@@ -1,3 +1,9 @@
+// @formal surface obligation=authz.method_mapping_total
+// @formal surface obligation=authz.decision_collapse_fail_closed
+// @formal surface obligation=work.lease_authority_snapshot_and_owner_mutations_are_atomic
+// @formal reason: Authenticates the current Work lease and maps it to an exact Session, Work, frozen
+// @formal reason: Skill, and attached Memory route capability; it introduces no token ledger or resource
+// @formal reason: authority.
 //! Per-Work capability edge for the official Managed Environment Worker.
 //!
 //! The current WorkQueue lease remains the single authority. This module only

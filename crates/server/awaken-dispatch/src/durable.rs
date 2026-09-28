@@ -1,3 +1,7 @@
+// @formal surface obligation=ingress.epoch_reclaim
+// @formal surface obligation=ingress.commit_epoch_atomic_local
+// @formal surface obligation=ingress.settle_fence
+// @formal reason: Durable ingress orchestration.
 //! Test-support composition over the authoritative Dispatch Worker and store.
 //!
 //! Production code composes `DispatchWorker`, `DispatchPool`, and `DispatchService`

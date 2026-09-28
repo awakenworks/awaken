@@ -1,3 +1,6 @@
+// @formal surface obligation=config.generation_is_monotonic
+// @formal surface obligation=config.stale_writer_never_applies
+// @formal reason: Reference store CAS/generation adapter.
 //! In-memory reference adapters for tests and local development.
 //!
 //! Production composition injects durable adapters for the ports in

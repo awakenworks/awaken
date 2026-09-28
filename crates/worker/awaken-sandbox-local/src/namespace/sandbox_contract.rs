@@ -1,3 +1,9 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: NamespaceSandbox's implementation of the admitted Sandbox contract.
+// @formal reason: Dynamic path: spawn, mount, Artifact access, status, and disposal revalidate the exact
+// @formal reason: root and realization evidence, with destructive cleanup requiring the
+// @formal reason: aggregate-projected effect fence; it creates no parallel Sandbox authority and is not a
+// @formal reason: direct formal-proof claim.
 use super::*;
 
 #[async_trait]

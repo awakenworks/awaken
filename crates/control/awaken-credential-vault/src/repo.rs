@@ -478,6 +478,8 @@ const fn managed_retirement_parent_fence(
 
 #[cfg(kani)]
 /// @obligation credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
+/// @proof-input-debt free_symbol managed_retirement_parent_fence is_delete
+/// @proof-input-debt free_symbol managed_retirement_parent_fence parent_accepts_child_mutation
 #[kani::proof]
 fn managed_vault_delete_fence_allows_only_absorbing_child_delete() {
     let exact_parent = kani::any::<bool>();
@@ -1140,6 +1142,12 @@ fn managed_creation_pair_requires_every_binding_axis() {
 
 #[cfg(kani)]
 /// @obligation credential.managed_mutation_requires_exact_source_and_child_successor_fences
+/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_child_active
+/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_child_archived
+/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_child_deleted
+/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_source_active
+/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed after_source_archived
+/// @proof-input-debt free_symbol managed_mutation_operation_shape_allowed before_child_deleted
 #[kani::proof]
 fn managed_mutation_operation_shape_is_closed_and_delete_is_absorbing() {
     let operation = kani::any::<u8>();

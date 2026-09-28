@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.workflow_extension.workflow_state
+// @formal reason: This source implements the repository-controlled workflow product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! DSL parsing: a declarative machine definition (JSON/YAML) compiled to the
 //! immutable [`Machine`] model.
 

@@ -181,6 +181,7 @@ pub fn classify_native_attempt_termination(
 
 #[cfg(kani)]
 /// @obligation sandbox.k8s_process_observation_requires_complete_exit
+/// @proof-input-debt free_symbol termination_from_facts coverage_installed
 #[kani::proof]
 fn native_attempt_termination_requires_every_closed_surface_fact() {
     // Exhaust the production decision for all 16 combinations. A complete

@@ -1,3 +1,11 @@
+// @formal surface obligation=tool_policy.selector_fails_closed_for_unregistered_widened_or_mismatched_calls
+// @formal reason: The vocabulary the audit trail records beside a permission decision: which authored
+// @formal reason: policy decided (always_allow, always_ask, auto, rule) and, for auto only, why it did not
+// @formal reason: allow (an open registry: high_risk, indeterminate, or a code a newer producer names). It
+// @formal reason: carries no authority of its own - the gate outcome remains the decision - so the
+// @formal reason: selector obligation still owns fail-closed behavior; the policy vocabulary is proven
+// @formal reason: closed and the reason registry open by their own serde decision tables and by the Kani
+// @formal reason: harness every_gate_outcome_has_one_exact_audit_label, which pins one label per outcome.
 //! The vocabularies a permission audit fact carries beside its decision.
 //!
 //! A `PermissionDecided` fact records *what* the gate decided (`allow`, `ask`,
