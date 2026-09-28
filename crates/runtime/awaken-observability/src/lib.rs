@@ -13,6 +13,8 @@
 //!     stack (managed handler → host → runtime → provider → tool) nests under it and is
 //!     exported on the same trace.
 //!   * [`shutdown`] flushes buffered spans before the process exits.
+//!   * [`PiiRedactor`] scrubs free-text PII before captured content reaches a
+//!     span attribute or event history.
 //!
 //! The spans themselves live in the crates they describe (via `#[instrument]`); this
 //! crate never emits domain spans, only owns the exporter and propagation wiring.
@@ -22,6 +24,7 @@ mod http;
 mod metrics;
 mod otel;
 mod propagation;
+mod redaction;
 
 pub use config::{LogFormat, ObservabilityConfig, OtelConfig, OtelConfigBuilder, OtelProtocol};
 pub use http::trace_http;
@@ -32,6 +35,7 @@ pub use metrics::{
 };
 pub use otel::init_otlp_tracer;
 pub use propagation::{current_traceparent, dispatch_span, span_with_remote_parent};
+pub use redaction::PiiRedactor;
 
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
