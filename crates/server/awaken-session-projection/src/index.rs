@@ -1496,7 +1496,7 @@ mod tests {
         let batch = |inputs: usize, revision: u64| {
             let mut batch = SessionEventBatch::compile(
                 &awaken_session_types::SessionId::from(SESSION),
-                &format!("batch-{revision}"),
+                format!("batch-{revision}"),
                 (0..inputs)
                     .map(|input| SessionEventInput::UserMessage {
                         content: vec![ContentBlock::text(format!("{revision}-{input}"))],
