@@ -1451,19 +1451,15 @@ impl SessionApplication {
         else {
             return Ok(false);
         };
-        let Some(latest_run_id) = snapshot.latest_run_id.as_ref() else {
+        let Some(latest) = snapshot
+            .current_run()
+            .map_err(|error| RunError::internal(format!("root Thread recovery: {error}")))?
+        else {
             return Ok(false);
         };
-        if latest_run_id == target_run_id {
+        if &latest.id == target_run_id {
             return Ok(false);
         }
-        let latest = snapshot
-            .runs
-            .iter()
-            .find(|run| &run.id == latest_run_id)
-            .ok_or_else(|| {
-                RunError::internal("root Thread recovery omitted its latest Run state")
-            })?;
         if latest.state == RunState::Awaiting {
             // The queued input is already a durable recovery trigger. Reuse
             // its exact predecessor interval/Dispatch receipt instead of a

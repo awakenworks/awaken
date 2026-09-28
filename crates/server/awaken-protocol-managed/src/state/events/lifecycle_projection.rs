@@ -72,9 +72,16 @@ impl ManagedState {
             }
             let agent_name = record.child_threads[index].agent.display_name().to_string();
             let is_advisor = record.child_threads[index].agent.is_advisor();
-            let run_terminates_thread = coordinated_child_run_is_terminal(is_advisor, &event.state);
-            match event.kind {
-                RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => {
+            let run_terminates_thread = awaken_session_execution_contract::coordinated_thread_closed(
+                awaken_session_execution_contract::CoordinatedThreadKind::from_is_advisor(is_advisor),
+                &event.state,
+            );
+            // The contract owns the Run-boundary set; everything outside it is
+            // Running/Resumed or the Rescheduled retry receipt.
+            match awaken_session_event_contract::SessionAgentRunBoundary::of_lifecycle_kind(
+                event.kind,
+            ) {
+                None if event.kind != RunLifecycleEventKind::Rescheduled => {
                     if record.child_threads[index].status != SessionThreadStatus::Running {
                         record.child_threads[index].status = SessionThreadStatus::Running;
                         record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
@@ -82,7 +89,7 @@ impl ManagedState {
                             id: managed_multiagent_event_id(
                                 &record.session.id,
                                 thread_id,
-                                "lifecycle-status-running",
+                                event_role::LIFECYCLE_STATUS_RUNNING,
                                 ManagedMultiagentEventProvenance::Lifecycle {
                                     cursor: event.cursor.0,
                                 },
@@ -95,8 +102,8 @@ impl ManagedState {
                         });
                     }
                 }
-                RunLifecycleEventKind::Rescheduled => {
-                    // One committed retry receipt represents both observable
+                None => {
+                    // Rescheduled: one committed retry receipt represents both observable
                     // edges: the old attempt was rescheduled, then its already
                     // claimed replacement began running. Keeping both under the
                     // same lifecycle cursor makes warm replay and cold rebuild
@@ -107,7 +114,7 @@ impl ManagedState {
                         id: managed_multiagent_event_id(
                             &record.session.id,
                             thread_id,
-                            "lifecycle-status-rescheduled",
+                            event_role::LIFECYCLE_STATUS_RESCHEDULED,
                             ManagedMultiagentEventProvenance::Lifecycle {
                                 cursor: event.cursor.0,
                             },
@@ -123,7 +130,7 @@ impl ManagedState {
                         id: managed_multiagent_event_id(
                             &record.session.id,
                             thread_id,
-                            "rescheduled-lifecycle-status-running",
+                            event_role::RESCHEDULED_LIFECYCLE_STATUS_RUNNING,
                             ManagedMultiagentEventProvenance::Lifecycle {
                                 cursor: event.cursor.0,
                             },
@@ -135,10 +142,7 @@ impl ManagedState {
                         processed_at: None,
                     });
                 }
-                RunLifecycleEventKind::Awaiting
-                | RunLifecycleEventKind::Completed
-                | RunLifecycleEventKind::Failed
-                | RunLifecycleEventKind::Cancelled => {
+                Some(_) => {
                     let terminal_pending = historical_pending.get(&event.cursor).or_else(|| {
                         (latest_cursor_by_thread.get(thread_id) == Some(&event.cursor))
                             .then(|| pending.get(thread_id))
@@ -175,7 +179,7 @@ impl ManagedState {
                         let id = managed_multiagent_event_id(
                             &record.session.id,
                             thread_id,
-                            "lifecycle-error",
+                            event_role::LIFECYCLE_ERROR,
                             ManagedMultiagentEventProvenance::Lifecycle {
                                 cursor: event.cursor.0,
                             },
@@ -214,7 +218,7 @@ impl ManagedState {
                             id: managed_multiagent_event_id(
                                 &record.session.id,
                                 thread_id,
-                                "failed-lifecycle-status-terminated",
+                                event_role::FAILED_LIFECYCLE_STATUS_TERMINATED,
                                 ManagedMultiagentEventProvenance::Lifecycle {
                                     cursor: event.cursor.0,
                                 },
@@ -233,7 +237,7 @@ impl ManagedState {
                         id: managed_multiagent_event_id(
                             &record.session.id,
                             thread_id,
-                            "lifecycle-status-idle",
+                            event_role::LIFECYCLE_STATUS_IDLE,
                             ManagedMultiagentEventProvenance::Lifecycle {
                                 cursor: event.cursor.0,
                             },
@@ -257,7 +261,7 @@ impl ManagedState {
                             id: managed_multiagent_event_id(
                                 &record.session.id,
                                 thread_id,
-                                "advisor-lifecycle-status-terminated",
+                                event_role::ADVISOR_LIFECYCLE_STATUS_TERMINATED,
                                 ManagedMultiagentEventProvenance::Lifecycle {
                                     cursor: event.cursor.0,
                                 },
@@ -295,7 +299,7 @@ impl ManagedState {
                 id: managed_multiagent_event_id(
                     &record.session.id,
                     &child.id,
-                    "archived-status-terminated",
+                    event_role::ARCHIVED_STATUS_TERMINATED,
                     ManagedMultiagentEventProvenance::ArchivedDisposition,
                 ),
                 kind: OutboundKind::SessionThreadStatusTerminated {
@@ -332,7 +336,7 @@ impl ManagedState {
                 id: managed_multiagent_event_id(
                     &record.session.id,
                     &child.id,
-                    "parent-terminal-child-status-terminated",
+                    event_role::PARENT_TERMINAL_CHILD_STATUS_TERMINATED,
                     ManagedMultiagentEventProvenance::ParentTerminal,
                 ),
                 kind: OutboundKind::SessionThreadStatusTerminated {
@@ -345,7 +349,7 @@ impl ManagedState {
         let primary_terminated_id = managed_multiagent_event_id(
             &record.session.id,
             &record.session.id,
-            "parent-terminal-primary-status-terminated",
+            event_role::PARENT_TERMINAL_PRIMARY_STATUS_TERMINATED,
             ManagedMultiagentEventProvenance::ParentTerminal,
         );
         if !record.has_event_id(&primary_terminated_id) {
@@ -367,7 +371,7 @@ impl ManagedState {
             id: managed_multiagent_event_id(
                 &record.session.id,
                 &record.session.id,
-                "parent-terminal-session-status-terminated",
+                event_role::PARENT_TERMINAL_SESSION_STATUS_TERMINATED,
                 ManagedMultiagentEventProvenance::ParentTerminal,
             ),
             kind: OutboundKind::SessionStatusTerminated {},
@@ -490,7 +494,7 @@ impl ManagedState {
                         id: managed_multiagent_event_id(
                             &record.session.id,
                             &thread_id,
-                            "link-thread-created",
+                            event_role::LINK_THREAD_CREATED,
                             ManagedMultiagentEventProvenance::LinkOperation {
                                 operation_id: &link.created_by_operation_id,
                             },
@@ -505,7 +509,7 @@ impl ManagedState {
                         id: managed_multiagent_event_id(
                             &record.session.id,
                             &thread_id,
-                            "link-status-running",
+                            event_role::LINK_STATUS_RUNNING,
                             ManagedMultiagentEventProvenance::LinkOperation {
                                 operation_id: &link.created_by_operation_id,
                             },

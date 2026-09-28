@@ -1458,7 +1458,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
                 .get(thread_id)
                 .cloned()
         };
-        let resume_tickets = pending
+        let resume_tickets: Vec<awaken_agent_contract::thread::read::recovery::RunResumeTicket> = pending
             .map(|pending| {
                 let reason = if pending.client_executed {
                     awaken_agent_contract::agent::awaiting::ToolAwaitReason::ClientExecution
@@ -1590,6 +1590,23 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
                 id: run_id,
                 thread_id: awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
                 state: awaken_agent_contract::agent::run::RunState::Running,
+            });
+        }
+        // Honor the recovery contract: a latest coordinate always has its
+        // committed Run record. A fixture Run without scripted lifecycle is
+        // Awaiting exactly when the fixture exposes its ticket, else Running.
+        if !runs.iter().any(|run| run.id == latest_run_id) {
+            let awaiting = resume_tickets
+                .iter()
+                .any(|ticket| ticket.run_id == latest_run_id);
+            runs.push(awaken_agent_contract::agent::run::Record {
+                id: latest_run_id.clone(),
+                thread_id: awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+                state: if awaiting {
+                    awaken_agent_contract::agent::run::RunState::Awaiting
+                } else {
+                    awaken_agent_contract::agent::run::RunState::Running
+                },
             });
         }
         let base_store_cursor = lifecycle

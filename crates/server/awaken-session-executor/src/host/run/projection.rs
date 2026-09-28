@@ -78,13 +78,14 @@ pub(in crate::host) fn session_thread_reply_result(
     }
 }
 
+/// The one answerable ticket of `run_id` under the neutral selector: two rows
+/// or a foreign owner are damaged authority, never a first-match pick.
 pub(super) fn recovery_ticket(
     committed: &RunRecoverySnapshot,
     run_id: &RunId,
-) -> Option<ResumeTicket> {
+) -> Result<Option<ResumeTicket>, HostError> {
     committed
-        .resume_tickets
-        .iter()
-        .find(|entry| &entry.run_id == run_id)
-        .map(|entry| entry.ticket.clone())
+        .answerable_ticket(run_id)
+        .map(|ticket| ticket.cloned())
+        .map_err(|error| HostError::internal(error.to_string()))
 }

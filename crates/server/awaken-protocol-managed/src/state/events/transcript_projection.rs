@@ -102,7 +102,7 @@ impl ManagedState {
                     let id = managed_multiagent_event_id(
                         &record.session.id,
                         thread_id,
-                        "advisor-message-received",
+                        event_role::ADVISOR_MESSAGE_RECEIVED,
                         ManagedMultiagentEventProvenance::AgentReport {
                             run_id: &latest_run_id.0,
                         },
@@ -175,7 +175,7 @@ impl ManagedState {
                         id: managed_multiagent_event_id(
                             &record.session.id,
                             thread_id,
-                            "child-message-received",
+                            event_role::CHILD_MESSAGE_RECEIVED,
                             ManagedMultiagentEventProvenance::AgentReport {
                                 run_id: report_run_id,
                             },
@@ -494,7 +494,7 @@ impl ManagedState {
             let sent_event_id = managed_multiagent_event_id(
                 &record.session.id,
                 &thread_id,
-                "coordination-message-sent",
+                event_role::COORDINATION_MESSAGE_SENT,
                 ManagedMultiagentEventProvenance::CoordinationCall { event_id: &call_id },
             );
             // The deterministic public event is the sole projection receipt.
@@ -518,7 +518,7 @@ impl ManagedState {
                 let running_id = managed_multiagent_event_id(
                     &record.session.id,
                     &thread_id,
-                    "coordination-status-running",
+                    event_role::COORDINATION_STATUS_RUNNING,
                     ManagedMultiagentEventProvenance::CoordinationCall { event_id: &call_id },
                 );
                 record.append_event_once(Event {

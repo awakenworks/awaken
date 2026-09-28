@@ -142,14 +142,10 @@ impl SessionRecoveryInterests {
                 )));
         let local_realization = !session.is_terminal()
             && realization::environment_admits_realization_effects(&session.environment)
-            && session.frozen_baseline().is_none_or(|baseline| {
-                !environment_requires_external_owner(baseline.runtime_placement)
-            });
+            && !session.requires_external_environment_owner();
         let dispatch_projection = !session.is_terminal()
             && session.needs_initial_realization_recovery()
-            && session.frozen_baseline().is_some_and(|baseline| {
-                environment_requires_external_owner(baseline.runtime_placement)
-            });
+            && session.requires_external_environment_owner();
         Self {
             resources: session.needs_resource_reconciliation()
                 || (audit_resource_references && session.resources.has_references()),
@@ -228,7 +224,12 @@ mod event_batches;
 pub use event_batches::SessionEventBatchIdempotency;
 mod outcome_reconciliation;
 mod projection;
+mod projection_evidence;
 pub use credentials::SessionPreparationError;
+pub use projection_evidence::{
+    ProjectionThreadSnapshots, SessionProjectionEvidence, SessionProjectionReadTimings,
+    committed_lifecycle_prefix,
+};
 mod mcp;
 mod realization;
 mod resource_reconciliation;

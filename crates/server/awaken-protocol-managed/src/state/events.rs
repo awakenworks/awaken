@@ -35,21 +35,6 @@ const fn inbound_admission_order(
     }
 }
 
-/// Whether one committed coordinated Run permanently closes its logical child
-/// Thread. Ordinary Agent Threads remain reusable after completion or external
-/// cancellation and close only on the contract's failed classification;
-/// one-shot Advisor consultations close at every terminal Run boundary.
-pub(super) fn coordinated_child_run_is_terminal(
-    is_advisor: bool,
-    state: &awaken_agent_contract::agent::run::RunState,
-) -> bool {
-    if is_advisor {
-        state.is_terminal()
-    } else {
-        awaken_session_execution_contract::coordinated_thread_failed(state)
-    }
-}
-
 /// One public inbound event rebuilt from canonical Session/Thread truth. The
 /// batch coordinate is ephemeral ordering metadata, never a second event log.
 #[derive(Clone)]
@@ -407,24 +392,6 @@ impl DurableOutcomeProjection {
     }
 }
 
-fn retained_outcome_ids(
-    batches: &[awaken_session_event_contract::SessionEventBatch],
-) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    batches
-        .iter()
-        .flat_map(|batch| &batch.events)
-        .filter_map(|entry| match &entry.event {
-            SessionEventCommand::DefineOutcome { outcome_id, .. }
-                if seen.insert(outcome_id.clone()) =>
-            {
-                Some(outcome_id.clone())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 fn validate_durable_outcome_projection(
     outcome_id: String,
     terminal: CommittedOutcomeProjection,
@@ -466,7 +433,7 @@ fn append_durable_outcome_projections(
                     let start_id = managed_multiagent_event_id(
                         &record.session.id,
                         &record.session.id,
-                        "outcome-evaluation-start",
+                        event_role::OUTCOME_EVALUATION_START,
                         ManagedMultiagentEventProvenance::OutcomeEvaluation {
                             outcome_id: &projection.outcome_id,
                             iteration: iteration.iteration,
@@ -474,21 +441,21 @@ fn append_durable_outcome_projections(
                     );
                     for (role, kind) in [
                         (
-                            "outcome-evaluation-start",
+                            event_role::OUTCOME_EVALUATION_START,
                             OutboundKind::SpanOutcomeEvaluationStart {
                                 outcome_id: projection.outcome_id.clone(),
                                 iteration: iteration.iteration,
                             },
                         ),
                         (
-                            "outcome-evaluation-ongoing",
+                            event_role::OUTCOME_EVALUATION_ONGOING,
                             OutboundKind::SpanOutcomeEvaluationOngoing {
                                 outcome_id: projection.outcome_id.clone(),
                                 iteration: iteration.iteration,
                             },
                         ),
                         (
-                            "outcome-evaluation-end",
+                            event_role::OUTCOME_EVALUATION_END,
                             OutboundKind::SpanOutcomeEvaluationEnd {
                                 outcome_id: projection.outcome_id.clone(),
                                 outcome_evaluation_start_id: start_id.clone(),
@@ -535,7 +502,7 @@ fn append_durable_outcome_projections(
                 let id = managed_multiagent_event_id(
                     &record.session.id,
                     &record.session.id,
-                    "outcome-error",
+                    event_role::OUTCOME_ERROR,
                     ManagedMultiagentEventProvenance::Outcome {
                         outcome_id: &projection.outcome_id,
                     },
@@ -855,6 +822,7 @@ mod admission;
 mod committed_projection;
 mod coordination_receipts;
 mod delivery;
+mod event_role;
 pub(crate) use committed_projection::ProjectionObservationDecision;
 pub(super) use delivery::committed_delivery_delta;
 pub(crate) use delivery::{CommittedDeliveryPage, CommittedEventDelivery, session_deletion_event};

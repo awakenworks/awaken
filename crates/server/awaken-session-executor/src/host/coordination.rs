@@ -24,9 +24,9 @@ use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
 use awaken_dispatch::Outbox as _;
 use awaken_runtime_contract::tool_batch::ToolBatch;
 use awaken_session_execution_contract::{
-    CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
-    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
-    coordinated_thread_failed,
+    CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadLink,
+    CoordinatedThreadTarget, SessionAgentMessageCommand, SessionAgentMessageReceipt,
+    SessionAgentReportContinuation, coordinated_thread_closed,
 };
 
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
@@ -398,27 +398,24 @@ impl SharedHost {
                 "Session Thread awaiting ticket changed after Event admission",
             ));
         }
-        if snapshot.latest_run_id.as_ref() != Some(&command.expected_run_id)
-            || !snapshot.runs.iter().any(|run| {
-                run.id == command.expected_run_id && matches!(run.state, RunState::Awaiting)
-            })
-        {
+        let current = snapshot
+            .current_run()
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        if !current.is_some_and(|run| {
+            run.id == command.expected_run_id && matches!(run.state, RunState::Awaiting)
+        }) {
             return Err(HostError::bad_request("Session Thread has no awaiting Run"));
         }
-        let mut tickets = snapshot.resume_tickets.iter().filter(|entry| {
-            entry.run_id == command.expected_run_id
-                && entry.ticket.thread_id == thread_id
-                && entry.ticket.correlation_id == command.expected_correlation_id
-        });
-        let ticket = tickets.next().ok_or_else(|| {
-            HostError::bad_request("Session Thread awaiting ticket changed after Event admission")
-        })?;
-        if tickets.next().is_some() {
-            return Err(HostError::internal(
-                "Session Thread has multiple matching committed resume tickets",
-            ));
-        }
-        let ticket = ticket.ticket.clone();
+        let ticket = snapshot
+            .answerable_ticket(&command.expected_run_id)
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .filter(|ticket| ticket.correlation_id == command.expected_correlation_id)
+            .ok_or_else(|| {
+                HostError::bad_request(
+                    "Session Thread awaiting ticket changed after Event admission",
+                )
+            })?
+            .clone();
         match ticket.target() {
             AwaitTarget::ToolCall { .. } => {
                 validate_awaiting_tool_authority(&thread_id, &ticket, &snapshot.state)?
@@ -443,19 +440,20 @@ impl SharedHost {
     }
 
     /// Derive the absorbing follow-up fence from the latest committed Run in the
-    /// parent Session partition. No Thread status or dispatch flag shadows that
-    /// lifecycle truth.
-    pub(super) async fn coordinated_thread_has_failed_run(
+    /// parent Session partition through the contract close rule for the Thread's
+    /// kind. No Thread status or dispatch flag shadows that lifecycle truth.
+    pub(super) async fn coordinated_thread_is_closed(
         &self,
         session_id: &str,
         thread_id: &ThreadId,
+        kind: CoordinatedThreadKind,
     ) -> Result<bool, HostError> {
         let commit = self.commit_for_read(session_id).await?;
         Ok(commit
             .authoritative_latest_run(thread_id)
             .await
             .map_err(HostError::internal)?
-            .is_some_and(|run| coordinated_thread_failed(&run.state)))
+            .is_some_and(|run| coordinated_thread_closed(kind, &run.state)))
     }
 
     /// Read the exact parent-partition Awaiting coordinate before the Session
@@ -623,24 +621,23 @@ impl SharedHost {
             ));
         }
         let links = self.coordinated_threads(session_id, None).await?;
-        if intent == CoordinatedRunIntent::FollowUp
-            && !links.iter().any(|link| {
+        if intent == CoordinatedRunIntent::FollowUp {
+            let Some(link) = links.iter().find(|link| {
                 link.thread_id == *thread_id
                     && matches!(link.target, CoordinatedThreadTarget::Agent { .. })
-            })
-        {
-            return Err(HostError::bad_request(
-                "follow-up target is not an ordinary coordinated Agent Thread",
-            ));
-        }
-        if intent == CoordinatedRunIntent::FollowUp
-            && self
-                .coordinated_thread_has_failed_run(session_id, thread_id)
+            }) else {
+                return Err(HostError::bad_request(
+                    "follow-up target is not an ordinary coordinated Agent Thread",
+                ));
+            };
+            if self
+                .coordinated_thread_is_closed(session_id, thread_id, link.target.kind())
                 .await?
-        {
-            return Err(HostError::bad_request(
-                "Agent Thread terminated after a failed Run",
-            ));
+            {
+                return Err(HostError::bad_request(
+                    "Agent Thread terminated after a failed Run",
+                ));
+            }
         }
 
         let mut archived = Vec::new();
@@ -797,9 +794,14 @@ impl SharedHost {
             .session_thread_disposition(session_id.as_str(), &thread_id)
             .await?
             == awaken_agent_contract::ThreadDisposition::Archived;
+        // Follow-up admission above accepted only ordinary Agent Threads.
         let failed = intent == CoordinatedRunIntent::FollowUp
             && self
-                .coordinated_thread_has_failed_run(session_id.as_str(), &thread_id)
+                .coordinated_thread_is_closed(
+                    session_id.as_str(),
+                    &thread_id,
+                    CoordinatedThreadKind::Agent,
+                )
                 .await?;
         if archived || failed {
             // This admission may already be durable, so it is not a definitive

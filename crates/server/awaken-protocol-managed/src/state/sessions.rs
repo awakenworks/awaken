@@ -9,7 +9,7 @@ use super::*;
 use super::session_mcp_projection::typed_mcp_servers;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RehydrationPurpose {
+pub(super) enum RehydrationPurpose {
     Interactive,
     CollectionRead,
     FrozenControl,
@@ -146,42 +146,17 @@ impl ManagedState {
         }))
     }
 
-    const fn is_local_cloud_session(
-        placement: awaken_session_configuration_contract::SessionRuntimePlacement,
-        self_hosted: bool,
-    ) -> bool {
-        matches!(
-            placement,
-            awaken_session_configuration_contract::SessionRuntimePlacement::Local
-        ) && !self_hosted
-    }
-
+    /// Map the one neutral public status law onto the Managed wire vocabulary.
     pub(super) fn wire_session_status(persisted: &PersistedSession) -> SessionStatus {
-        match persisted.execution {
-            SessionExecutionState::Preparing | SessionExecutionState::Activating => {
-                // A cloud Session has already accepted its complete durable
-                // root. Its active Event epoch, rather than Sandbox readiness,
-                // determines the compatible logical status. Registered Worker
-                // placement retains the conservative pre-realization boundary.
-                let local_cloud = persisted.frozen_baseline().is_some_and(|baseline| {
-                    Self::is_local_cloud_session(
-                        baseline.runtime_placement,
-                        baseline.environment.self_hosted,
-                    )
-                });
-                if !local_cloud {
-                    SessionStatus::Rescheduling
-                } else if persisted.active_activity_epochs.is_empty() {
-                    SessionStatus::Idle
-                } else {
-                    SessionStatus::Running
-                }
+        match persisted.public_status() {
+            awaken_session_state_contract::SessionPublicStatus::Idle => SessionStatus::Idle,
+            awaken_session_state_contract::SessionPublicStatus::Running => SessionStatus::Running,
+            awaken_session_state_contract::SessionPublicStatus::Rescheduling => {
+                SessionStatus::Rescheduling
             }
-            SessionExecutionState::ActivationFailed => SessionStatus::Terminated,
-            SessionExecutionState::Running => SessionStatus::Running,
-            SessionExecutionState::Rescheduling => SessionStatus::Rescheduling,
-            SessionExecutionState::Idle => SessionStatus::Idle,
-            SessionExecutionState::Terminated => SessionStatus::Terminated,
+            awaken_session_state_contract::SessionPublicStatus::Terminated => {
+                SessionStatus::Terminated
+            }
         }
     }
 
@@ -692,10 +667,11 @@ impl ManagedState {
                 &mcp_targets,
             )
             .await?;
-        let local_cloud = Self::is_local_cloud_session(
+        let local_cloud = awaken_session_state_contract::SessionPlacementClass::new(
             self.application.runtime_placement(),
             environment.self_hosted,
-        );
+        )
+        .realized_by_coordinator();
         // Cause/effect layout gate: C1 the complete effective typed bindings,
         // frozen Environment, and exact publication-selected provider produce a
         // non-overlapping final Sandbox layout -> continue; C2 any projected
@@ -1114,7 +1090,7 @@ impl ManagedState {
         self.rehydrated_session_for(id, owner_scope, persisted, RehydrationPurpose::Interactive)
     }
 
-    fn rehydrated_session_for(
+    pub(super) fn rehydrated_session_for(
         &self,
         id: &str,
         owner_scope: &str,
@@ -1276,45 +1252,8 @@ impl ManagedState {
         &self,
         id: &str,
     ) -> Result<(), StateError> {
-        if self.sessions.lock().unwrap().contains_key(id) {
-            return Ok(());
-        }
-        let persisted = self
-            .application
-            .session(&awaken_session_types::SessionId::from(id))
+        self.hydrate_session_record(id, RehydrationPurpose::FrozenControl)
             .await
-            .map_err(StateError::from)?;
-        if persisted.is_hidden() {
-            return Err(StateError::NotFound);
-        }
-        let owner_scope = self
-            .application
-            .owner(&awaken_session_types::SessionId::from(id))
-            .await
-            .map_err(Self::map_application_mutation_error)?;
-        let record = SessionRecord::new(
-            persisted.agent_id().unwrap_or("assistant").to_string(),
-            self.rehydrated_session_for(
-                id,
-                &owner_scope,
-                persisted.clone(),
-                RehydrationPurpose::FrozenControl,
-            )?,
-            persisted.revision,
-            persisted.resources,
-            Vec::new(),
-        );
-        self.sessions
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_insert(record);
-        self.owners
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_insert(owner_scope);
-        Ok(())
     }
 
     /// `GET /v1/sessions/{id}`.

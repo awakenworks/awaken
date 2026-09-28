@@ -879,6 +879,7 @@ impl awaken_session_execution_contract::OutcomeRuntime for EndSessionRecorder {
 /// | P1 | yes | local | once | none |
 /// | P2 | no | local | local phase driver | local |
 mod binding_recovery;
+mod dream_source;
 mod external_identity;
 mod terminal;
 

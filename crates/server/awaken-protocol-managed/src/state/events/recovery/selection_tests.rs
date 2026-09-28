@@ -292,7 +292,16 @@ fn check_terminal_ticket_selection(kind: u8, latest: bool, reverse: bool, ticket
     let result = ManagedState::pending_ticket_from_recovery_snapshot(&snapshot);
     // Independent construction facts, not RunState::is_terminal or a second
     // copy of the production predicate, select the expected decision-table row.
-    if kind != 1 {
+    if !latest {
+        // R0: committed Runs without their latest coordinate are a damaged
+        // prefix; the claimed Run is never promoted to current.
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(StateError::is_projection_recovery_required),
+            "R0 omitted latest coordinate fails closed"
+        );
+    } else if kind != 1 {
         assert!(
             matches!(result, Ok(None)),
             "R1/R2 no candidate for a closed or running Run"
@@ -316,12 +325,15 @@ fn check_terminal_ticket_selection(kind: u8, latest: bool, reverse: bool, ticket
 #[test]
 fn terminal_pending_selection_covers_current_run_and_residual_ticket_table() {
     // Causes: C1 current Run is Running/Awaiting/one of all eight Ended failure
-    // classes; C2 latest Run overrides an old claimed Awaiting Run, or claimed
-    // is current when latest is absent; C3 current/old tickets are each absent
-    // or present; C4 Run vector order is reversed. Effects: E1 no candidate;
-    // E2 damaged-wait error; E3 exact current candidate. Decision table:
-    // R1 Ended (every cause) + any C2/C3/C4 => E1, even with residual tickets.
-    // R2 Running + any C2/C3/C4 => E1.
+    // classes; C2 latest Run overrides an old claimed Awaiting Run, or the
+    // latest coordinate is absent while Runs are committed; C3 current/old
+    // tickets are each absent or present; C4 Run vector order is reversed.
+    // Effects: E1 no candidate; E2 damaged-wait error; E3 exact current
+    // candidate. Decision table:
+    // R0 latest absent + any C1/C3/C4 => E2 (no claimed-Run fallback).
+    // R1 Ended (every cause) + latest present + any C3/C4 => E1, even with
+    // residual tickets.
+    // R2 Running + latest present + any C3/C4 => E1.
     // R3 Awaiting + current ticket absent => E2 (old ticket cannot substitute).
     // R4 Awaiting + current ticket present => E3 (positive non-vacuity control).
     // Exhaust 10*2*2*4 = 160 rows. The immutable snapshot is the read boundary;

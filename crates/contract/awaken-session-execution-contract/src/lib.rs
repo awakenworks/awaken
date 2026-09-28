@@ -46,16 +46,17 @@ pub(crate) use awaken_session_state_contract::{
 pub(crate) use awaken_session_types::SessionId;
 
 pub use coordination::{
-    CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
-    SessionAgentBoundaryAction, SessionAgentBoundaryCommand, SessionAgentBoundaryRole,
-    SessionAgentBoundaryVisibility, SessionAgentCommittedReport, SessionAgentCoordination,
-    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
-    SessionAgentRosterEntry, SessionAgentRunBoundary, SessionAgentTarget,
-    SessionRunActivityAdmission, SessionRunActivityAdmissionMode, SessionThreadTarget,
-    SessionThreadToolReply, SessionThreadToolReplyActivity, SessionThreadToolReplyCommand,
-    SessionThreadToolReplyDelivery, SessionThreadToolReplyFence, coordinated_thread_failed,
-    coordinated_thread_id, session_agent_boundary_action, session_agent_report_messages,
-    session_agent_report_text, session_agent_run_boundary, session_run_activity_operation_id,
+    CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadLink,
+    CoordinatedThreadTarget, SessionAgentBoundaryAction, SessionAgentBoundaryCommand,
+    SessionAgentBoundaryRole, SessionAgentBoundaryVisibility, SessionAgentCommittedReport,
+    SessionAgentCoordination, SessionAgentMessageCommand, SessionAgentMessageReceipt,
+    SessionAgentReportContinuation, SessionAgentRosterEntry, SessionAgentRunBoundary,
+    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
+    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyActivity,
+    SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, SessionThreadToolReplyFence,
+    coordinated_thread_closed, coordinated_thread_id, session_agent_boundary_action,
+    session_agent_report_messages, session_agent_report_text, session_agent_run_boundary,
+    session_run_activity_operation_id,
 };
 pub use run_admission::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunActivityReceiptPlan,
@@ -68,7 +69,7 @@ pub use session::{
     CoordinationRuntime, EnvironmentRuntime, LiveInboxApplication, LiveInboxApplicationError,
     LiveInboxEntry, LiveInboxError, LiveInboxRuntime, LiveInboxSnapshot, McpAttachmentRealizer,
     NeutralRuntime, OutcomeDrive, OutcomeFailure, OutcomeIteration, OutcomeReport, OutcomeRuntime,
-    RealizationRuntime, SessionEnvironmentBindingSink, SessionRuntime,
+    RealizationRuntime, SessionEnvironmentBindingSink, SessionProjectionSource, SessionRuntime,
     SessionThreadLiveSubscription, StreamingRunRuntime, TerminalCleanupRuntime, ThreadReadRuntime,
     ToolPermissionDecision, drain_mcp_generation_receipt, publish_mcp_generation_receipt,
 };

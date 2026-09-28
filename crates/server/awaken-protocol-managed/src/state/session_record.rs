@@ -82,20 +82,28 @@ pub(super) enum ProjectionPublishDecision {
     RejectSourceRegression,
 }
 
+/// The process-local cache CAS guards the shared monotone admission kernel.
+/// The wire rendering is derived from its source coordinates, so a divergent
+/// rendering at the same source is a legitimate re-render and applies.
 const fn decide_projection_publish_from_facts(
     cache_matches: bool,
     candidate_dominates: bool,
     source_equal: bool,
     projection_changed: bool,
 ) -> ProjectionPublishDecision {
+    use awaken_session_types::{MonotoneAdmission, SourceOrder, monotone_admission};
     if !cache_matches {
-        ProjectionPublishDecision::RetryStaleCache
-    } else if !candidate_dominates {
-        ProjectionPublishDecision::RejectSourceRegression
-    } else if source_equal && !projection_changed {
-        ProjectionPublishDecision::AlreadyCurrent
-    } else {
-        ProjectionPublishDecision::Apply
+        return ProjectionPublishDecision::RetryStaleCache;
+    }
+    match monotone_admission(
+        SourceOrder::of_dominance(candidate_dominates, source_equal),
+        !projection_changed,
+    ) {
+        MonotoneAdmission::Advance | MonotoneAdmission::Divergent => {
+            ProjectionPublishDecision::Apply
+        }
+        MonotoneAdmission::Replay => ProjectionPublishDecision::AlreadyCurrent,
+        MonotoneAdmission::Reject => ProjectionPublishDecision::RejectSourceRegression,
     }
 }
 

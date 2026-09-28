@@ -57,7 +57,7 @@ impl ManagedState {
         let id = managed_multiagent_event_id(
             &record.session.id,
             &record.session.id,
-            "root-lifecycle-error",
+            event_role::ROOT_LIFECYCLE_ERROR,
             ManagedMultiagentEventProvenance::Lifecycle {
                 cursor: terminal.cursor.0,
             },
@@ -133,63 +133,44 @@ impl ManagedState {
             })
             .collect::<Result<Vec<_>, StateError>>()?;
         let initial_cursor = base_record.checkpoint.source.lifecycle_cursor;
-        // Read Outcome observation before the root recovery fence. A terminal
-        // Outcome projection is derived from that same Thread aggregate and its
-        // evaluation/state command is the immutable public-order anchor. Reading
-        // the fence first could pair an older state prefix with a newer terminal
-        // and manufacture an unanchored public event during a concurrent commit.
-        let mut durable_outcome_projections = Vec::new();
-        for outcome_id in retained_outcome_ids(&persisted.event_batches) {
-            if let Some(terminal) = self
-                .application
-                .committed_outcome_projection(session_id, &outcome_id)
-                .await
-                .map_err(StateError::Run)?
-            {
-                durable_outcome_projections
-                    .push(validate_durable_outcome_projection(outcome_id, terminal)?);
-            }
-        }
-        // Read the root fence once and reuse that atomic prefix for the initial
-        // relationship projection. It includes every coordinated link committed
-        // at or before this fence, so an unknown lifecycle event is classifiable
-        // without guessing from its Thread id. An event beyond the fence remains
-        // unconsumed until the next refresh. The final relationship and root
-        // reads below still observe fresh prefixes after the child reads.
-        let outcomes_done = started.elapsed();
-        let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
-        let durable_outcome_projections = durable_outcome_projections
+        // The Session application reads the Runtime evidence through its
+        // read-only projection port, in the order that keeps it one prefix:
+        // retained terminal Outcomes before the root fence, then the root,
+        // its coordinated links and children, then their merged lifecycle.
+        let awaken_session_application::SessionProjectionEvidence {
+            outcome_terminals,
+            root: root_snapshot,
+            links,
+            children: child_snapshots,
+            lifecycle: lifecycle_events,
+            timings: read_timings,
+        } = self
+            .application
+            .read_projection_evidence(&persisted, started)
+            .await
+            .map_err(StateError::Run)?;
+        let durable_outcome_projections = outcome_terminals
+            .into_iter()
+            .map(|(outcome_id, terminal)| validate_durable_outcome_projection(outcome_id, terminal))
+            .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .filter_map(|projection| projection.anchor(root_snapshot.as_ref()))
             .collect::<Vec<_>>();
-        let (links, child_snapshots) = self
-            .coordinated_projection_prefix(session_id, root_snapshot.as_ref())
-            .await?;
-        // Lifecycle is derived from these exact atomic prefixes, alongside their
-        // transcript, tickets and disposition. Reopening the global feed would
-        // scan unrelated Sessions and introduce a second observation to fence.
-        // The disposable cursor is only a live-delivery optimization. Canonical
-        // list reconstruction always folds the complete retained lifecycle so a
-        // cold replica and a warm replica derive the same interval buckets.
-        let snapshots_done = started.elapsed();
-        let lifecycle_events =
-            Self::committed_lifecycle_prefix(root_snapshot.iter().chain(child_snapshots.values()))?;
-        let lifecycle_done = started.elapsed();
+        let outcomes_done = read_timings.outcomes;
+        let snapshots_done = read_timings.snapshots;
+        let lifecycle_done = read_timings.lifecycle;
         let mut transcripts = child_snapshots
             .iter()
             .map(|(thread_id, snapshot)| (thread_id.clone(), snapshot.messages.clone()))
             .collect::<std::collections::HashMap<_, _>>();
-        let child_latest_run_states = child_snapshots
-            .iter()
-            .filter_map(|(thread_id, snapshot)| {
-                let latest_run_id = snapshot.latest_run_id.as_ref()?;
-                snapshot
-                    .runs
-                    .iter()
-                    .find(|run| &run.id == latest_run_id)
-                    .map(|run| (thread_id.clone(), run.state.clone()))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
+        // A child with no committed Run yet has no state to project; a damaged
+        // prefix is surfaced instead of silently dropping the child's state.
+        let mut child_latest_run_states = std::collections::HashMap::new();
+        for (thread_id, snapshot) in &child_snapshots {
+            if let Some(run) = Self::current_recovery_run(snapshot)? {
+                child_latest_run_states.insert(thread_id.clone(), run.state.clone());
+            }
+        }
         let mut child_pending = std::collections::HashMap::new();
         for (thread_id, snapshot) in &child_snapshots {
             if let Some(pending) = Self::pending_from_recovery_snapshot(snapshot)? {
@@ -483,13 +464,7 @@ impl ManagedState {
         };
         let root_terminal = accepted_lifecycle.iter().rev().find(|event| {
             event.thread_id.0 == session_id
-                && matches!(
-                    event.kind,
-                    RunLifecycleEventKind::Awaiting
-                        | RunLifecycleEventKind::Completed
-                        | RunLifecycleEventKind::Failed
-                        | RunLifecycleEventKind::Cancelled
-                )
+                && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
         });
         let projected_root_terminal = root_terminal.filter(|event| {
             !record
@@ -567,7 +542,7 @@ impl ManagedState {
                 managed_multiagent_event_id(
                     &record.session.id,
                     &record.session.id,
-                    "aggregate-status-running",
+                    event_role::AGGREGATE_STATUS_RUNNING,
                     ManagedMultiagentEventProvenance::Lifecycle {
                         cursor: event.cursor.0,
                     },
@@ -584,7 +559,7 @@ impl ManagedState {
                     managed_multiagent_event_id(
                         &record.session.id,
                         &record.session.id,
-                        "aggregate-terminal-status-running",
+                        event_role::AGGREGATE_TERMINAL_STATUS_RUNNING,
                         ManagedMultiagentEventProvenance::LifecyclePrefix {
                             cursor: terminal.cursor.0,
                         },
@@ -644,7 +619,7 @@ impl ManagedState {
                             managed_multiagent_event_id(
                                 &record.session.id,
                                 &record.session.id,
-                                "root-lifecycle-status-running",
+                                event_role::ROOT_LIFECYCLE_STATUS_RUNNING,
                                 ManagedMultiagentEventProvenance::Lifecycle {
                                     cursor: lifecycle.cursor.0,
                                 },
@@ -659,7 +634,7 @@ impl ManagedState {
                             id: managed_multiagent_event_id(
                                 &record.session.id,
                                 &record.session.id,
-                                "root-lifecycle-session-status-rescheduled",
+                                event_role::ROOT_LIFECYCLE_SESSION_STATUS_RESCHEDULED,
                                 ManagedMultiagentEventProvenance::Lifecycle {
                                     cursor: lifecycle.cursor.0,
                                 },
@@ -672,7 +647,7 @@ impl ManagedState {
                             managed_multiagent_event_id(
                                 &record.session.id,
                                 &record.session.id,
-                                "root-lifecycle-status-rescheduled",
+                                event_role::ROOT_LIFECYCLE_STATUS_RESCHEDULED,
                                 ManagedMultiagentEventProvenance::Lifecycle {
                                     cursor: lifecycle.cursor.0,
                                 },
@@ -684,7 +659,7 @@ impl ManagedState {
                             managed_multiagent_event_id(
                                 &record.session.id,
                                 &record.session.id,
-                                "root-rescheduled-lifecycle-status-running",
+                                event_role::ROOT_RESCHEDULED_LIFECYCLE_STATUS_RUNNING,
                                 ManagedMultiagentEventProvenance::Lifecycle {
                                     cursor: lifecycle.cursor.0,
                                 },
@@ -857,13 +832,7 @@ impl ManagedState {
             known_children.contains(event.thread_id.0.as_str())
                 && child_dispositions.get(event.thread_id.0.as_str())
                     != Some(&awaken_agent_contract::ThreadDisposition::Archived)
-                && matches!(
-                    event.kind,
-                    RunLifecycleEventKind::Awaiting
-                        | RunLifecycleEventKind::Completed
-                        | RunLifecycleEventKind::Failed
-                        | RunLifecycleEventKind::Cancelled
-                )
+                && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
         });
         let child_terminal_reached_budget = child_terminal.is_some_and(|event| {
             event.kind == RunLifecycleEventKind::Awaiting
@@ -937,18 +906,12 @@ impl ManagedState {
         // is historical and its reply has already resumed the Run.
         for terminal in all_accepted_lifecycle.iter().filter(|event| {
             event.thread_id.0 == session_id
-                && matches!(
-                    event.kind,
-                    RunLifecycleEventKind::Awaiting
-                        | RunLifecycleEventKind::Completed
-                        | RunLifecycleEventKind::Failed
-                        | RunLifecycleEventKind::Cancelled
-                )
+                && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
         }) {
             let idle_id = managed_multiagent_event_id(
                 &record.session.id,
                 &record.session.id,
-                "root-lifecycle-status-idle",
+                event_role::ROOT_LIFECYCLE_STATUS_IDLE,
                 ManagedMultiagentEventProvenance::Lifecycle {
                     cursor: terminal.cursor.0,
                 },
@@ -1032,7 +995,7 @@ impl ManagedState {
                             id: managed_multiagent_event_id(
                                 &record.session.id,
                                 &record.session.id,
-                                "budget-reach-usage",
+                                event_role::BUDGET_REACH_USAGE,
                                 ManagedMultiagentEventProvenance::BudgetReach { generation },
                             ),
                             kind: OutboundKind::SessionUsage {
@@ -1045,7 +1008,7 @@ impl ManagedState {
                             id: managed_multiagent_event_id(
                                 &record.session.id,
                                 &record.session.id,
-                                "budget-reach-status-idle",
+                                event_role::BUDGET_REACH_STATUS_IDLE,
                                 ManagedMultiagentEventProvenance::BudgetReach { generation },
                             ),
                             kind: OutboundKind::SessionStatusIdle {
@@ -1097,7 +1060,7 @@ impl ManagedState {
                     let aggregate_usage_id = managed_multiagent_event_id(
                         &record.session.id,
                         &record.session.id,
-                        "aggregate-usage",
+                        event_role::AGGREGATE_USAGE,
                         ManagedMultiagentEventProvenance::LifecyclePrefix {
                             cursor: aggregate_terminal_cursor.0,
                         },
@@ -1105,7 +1068,7 @@ impl ManagedState {
                     let aggregate_idle_id = managed_multiagent_event_id(
                         &record.session.id,
                         &record.session.id,
-                        "aggregate-status-idle",
+                        event_role::AGGREGATE_STATUS_IDLE,
                         ManagedMultiagentEventProvenance::LifecyclePrefix {
                             cursor: aggregate_terminal_cursor.0,
                         },
