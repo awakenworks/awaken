@@ -1,3 +1,7 @@
+// @formal surface obligation=webhook.delivery_requires_an_enqueued_fact
+// @formal surface obligation=webhook.failed_delivery_remains_pending
+// @formal surface obligation=webhook.periodic_retry_never_retires_a_failed_fact
+// @formal reason: Control-plane webhook subscription/delivery adapter.
 //! Config-plane webhook subscription and delivery adapter.
 //!
 //! The managed webhook bridge connects the managed session lifecycle (the

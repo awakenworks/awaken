@@ -83,8 +83,9 @@ pre-commit:
 
     # A Kani harness that takes a free symbol where production computes the
     # fact, restates its callee's body, or hides a #[cfg(kani)] fork inside a
-    # production entrypoint, is green and proves nothing. The registry's
-    # justified/backlog lists ratchet the ones that already exist.
+    # production entrypoint, is green and proves nothing. The justified
+    # registry and the `/// @proof-input-debt` tags on harnesses ratchet the
+    # ones that already exist; a staged debt HEAD does not carry is refused.
     proof-input-derivation:
       # >>> generated glob from check_proof_input_derivation.py INPUT_GLOBS — do not edit
       glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/coverage.toml,formal/obligations/**/*,formal/proof-input-exceptions.json,scripts/ci/check_proof_input_derivation.py,scripts/ci/formal_ledger.py,web/src/**/*}"

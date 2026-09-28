@@ -1,3 +1,8 @@
+// @formal surface exclude=test_only
+// @formal owner crates/control/awaken-config-service/src/config_service.rs
+// @formal reason: Shared ConfigService fixtures, fake resolvers, registries, and failure injectors
+// @formal reason: included only by config_service.rs under cfg(test); they own no production
+// @formal reason: authorization, durability, concurrency, or credential boundary.
 // Shared fixtures for Config Service owner and adapter tests.
 //
 // Structural cause/effect coverage rationale: moving an item changes neither

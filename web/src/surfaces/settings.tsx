@@ -1,3 +1,5 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Settings routing and Workspace context are part of console workflow presentation.
 import { ExternalLink, Flag } from "@awaken/ui/icons";
 import { InlineNotice, Card } from "@awaken/ui";
 import { useNavigate, useParams } from "react-router";

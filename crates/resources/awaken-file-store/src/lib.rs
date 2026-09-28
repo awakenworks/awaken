@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: This source implements the repository-controlled files product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Content-addressed blob store (ADR-0041) — the neutral hub for sandbox mounts and
 //! artifacts. `put(bytes) -> id` where **`id` is the BLAKE3 content hash**; `get(id)`
 //! resolves it. The store is immutable and deduplicating: equal bytes always yield

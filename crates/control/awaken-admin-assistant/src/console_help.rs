@@ -1,3 +1,7 @@
+// @formal surface exclude=presentation_content
+// @formal owner crates/control/awaken-admin-assistant/src/console_help.rs
+// @formal reason: Curated, read-only help text and topic lookup for the console; it neither authorizes nor
+// @formal reason: mutates any product resource despite security vocabulary in the prose.
 //! The console help corpus behind `admin_explain_console` (Q4 option b): a BOUNDED,
 //! curated set of topics, each a fixed 5-section explanation (what / why / where / how /
 //! gotchas). Chosen over a retrieval corpus because the console's help domain is small +

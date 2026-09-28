@@ -1,3 +1,6 @@
+// @formal surface obligation=remote_worker.execution_requires_claimed_snapshot
+// @formal surface obligation=worker.secret_materialization_is_claim_fenced
+// @formal reason: Claim-scoped Worker execution context.
 //! Private live dependencies used by a durable dispatch worker.
 //!
 //! This is infrastructure wiring, not a Run-domain object. Durable Run data is

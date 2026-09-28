@@ -1,3 +1,8 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: All three container adapters reuse this immutable-incarnation classifier. Partial
+// @formal reason: identity, multiple objects, fingerprint mismatch or foreign effect fence fail closed;
+// @formal reason: only exact observed absence can report unavailability. Provider observation and durable
+// @formal reason: Session adoption retain separate ownership.
 //! Shared immutable-incarnation and retained-participant observation rules.
 //! Docker, Podman and Kubernetes call this one classifier. Its cause/effect
 //! regression tables remain in the parent runtime test module beside the

@@ -1,3 +1,5 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: Protocol capability presentation is a UI projection and cannot prove peer conformance.
 import { ArrowRight, ExternalLink } from "@awaken/ui/icons";
 import { Card, CopyButton as IconCopyButton } from "@awaken/ui";
 // Built-in connection guide for every execution/protocol adapter mounted by the

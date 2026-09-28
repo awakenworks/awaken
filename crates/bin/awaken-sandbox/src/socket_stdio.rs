@@ -1,3 +1,8 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: The sandbox role owns duplicated pipe/socket descriptors. Actual EOF closes the owned
+// @formal reason: output while reverse traffic drains; protocol framing and domain commands stay in
+// @formal reason: connection-plan and their adapters. This classification covers ownership and
+// @formal reason: cancellation surface, not an OS proof.
 //! Own the actual process pipes; protocol framing stays in the caller.
 
 use std::process::ExitCode;

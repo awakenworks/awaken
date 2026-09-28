@@ -1,3 +1,6 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Secret entry is a plaintext browser boundary; masking is not proof of custody or
+// @formal reason: isolation.
 import { SecretField as SharedSecretField, type SecretIntent, type SecretMode } from "@awaken/ui";
 import { useApp } from "../../lib/app-state";
 

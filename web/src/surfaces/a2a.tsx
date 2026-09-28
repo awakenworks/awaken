@@ -1,3 +1,6 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: The A2A surface renders and mutates protocol-facing configuration; peers and transport
+// @formal reason: stay external.
 import { Button, Card } from "@awaken/ui";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../lib/api/client";

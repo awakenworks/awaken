@@ -1,3 +1,5 @@
+// @formal surface obligation=worker.placement_extension_cannot_widen_eligibility
+// @formal reason: Replaceable ranker sees only already-eligible candidates.
 //! Coordinator-owned Worker ranking policy.
 //!
 //! Eligibility remains the pure kernel in `awaken-worker-registry`; this module

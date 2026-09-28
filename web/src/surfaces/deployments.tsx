@@ -1,3 +1,6 @@
+// @formal surface requirement=platform.resilience.failure_safety
+// @formal reason: Deployment queries and mutations render externally scheduled work; UI state is not
+// @formal reason: failure-safety proof.
 import { ArrowRight, Check, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Deployments: schedule an Agent to run on a cron

@@ -1,3 +1,5 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Session file queries project resource state; storage durability remains external.
 import { Button, Card } from "@awaken/ui";
 // The session's associated resources + output artifacts (Anthropic Managed Agents
 // parity): the memory stores / files / repos MOUNTED for this session

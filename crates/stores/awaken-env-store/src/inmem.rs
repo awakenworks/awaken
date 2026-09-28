@@ -1,3 +1,5 @@
+// @formal surface obligation=environment.registration_intent_is_atomic_recoverable_and_idempotent
+// @formal reason: In-memory Environment registration intent store.
 //! In-memory reference [`EnvRegistry`] backend.
 //!
 //! [`InMemoryEnvRegistry`] is the single-process reference fixture. Product

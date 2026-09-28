@@ -1,3 +1,12 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Static owner: the ConfigService application seam for exact system-owned Agent archive
+// @formal reason: and reconciliation-revision writes; mutable lifecycle admission remains the pure
+// @formal reason: AgentConfig decision and generation atomicity remains the one ConfigRegistry/store CAS
+// @formal reason: authority. Dynamic path: the exact current revision and transition-specific candidate
+// @formal reason: are validated before one fenced write, while adjacent cause/effect tests cover
+// @formal reason: lifecycle-only rejection, stale conflict, and zero-write outcomes. This requirement-only
+// @formal reason: classification does not claim a proof of database CAS, audited replay, executable
+// @formal reason: withdrawal, or transport effects.
 //! Agent lifecycle admission for config authoring writes.
 
 use awaken_agent_config::{AgentConfig, AgentLifecycle, ConfigRegistry, ConfigWrite};

@@ -1,3 +1,6 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: This source implements the repository-controlled routing product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! The catalog repository port (ADR-0043) — CRUD over the catalog aggregates,
 //! the write path the admin config API drives. The in-memory backend here is P0;
 //! a sqlite/postgres backend over the `catalog` migration scope follows. Every

@@ -1,3 +1,6 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Defines the fail-closed backend-erased provider and live-environment authority boundary;
+// @formal reason: this is a product-requirement classification, not a formal-proof claim.
 //! Backend-erased contracts for Session-owned container environments.
 
 use crate::ContainerHandleCodec as _;

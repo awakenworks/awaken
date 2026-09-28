@@ -1,3 +1,12 @@
+// @formal surface obligation=worker.durable_dispatch_contains_no_plaintext_secret
+// @formal reason: Static owner: provider-specific credential-file codec at the sandbox provisioning edge.
+// @formal reason: Dynamic path: after upstream exact reference selection and materialization, it consumes
+// @formal reason: already-resolved CredentialMaterial, exposes plaintext only while serializing the pinned
+// @formal reason: CodexAuthJson bytes, and rejects unsupported structured material; it performs no lookup,
+// @formal reason: revision selection, caching, or artifact publication. Evidence:
+// @formal reason: worker.durable_dispatch_contains_no_plaintext_secret and the adjacent codec decision
+// @formal reason: table; the link associates this downstream plaintext boundary and is not a direct proof
+// @formal reason: claim.
 //! Provider-owned credential-file codecs used only at the sandbox provisioning edge.
 //!
 //! Selection, authorization, revision fencing, and secret lookup remain in

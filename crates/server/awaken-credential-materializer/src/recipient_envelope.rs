@@ -1,3 +1,11 @@
+// @formal surface obligation=credential_envelope.issuance_requires_exact_claim
+// @formal reason: Self-hosted transport implements the existing issuer and exact resolver ports. It calls
+// @formal reason: canonical access admission and issuance validation, and authenticates complete
+// @formal reason: access/holder/target/expiry/key coordinates with recipient-specific AEAD. Adjacent
+// @formal reason: decision-table tests cover two recipients, independent key projections, replay mutations
+// @formal reason: and per-use transport-key withdrawal. Existing Kani proves only the exact issuance claim
+// @formal reason: kernel; cryptography, key-file custody, credential lifecycle propagation and distributed
+// @formal reason: liveness remain outside that proof.
 //! Self-hosted recipient-key transport for the existing Credential envelope.
 //!
 //! This adapter owns no Vault, credential selection, queue, or material store.

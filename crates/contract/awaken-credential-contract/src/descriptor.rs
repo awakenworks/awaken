@@ -1,3 +1,11 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Static owner: canonical secret-free credential descriptor and exact purpose, audience,
+// @formal reason: usage, and material-shape contract. Dynamic path: publication and materialization
+// @formal reason: callers normalize Repository origins, reject unsupported or duplicate targets, and
+// @formal reason: require exact target, usage, expiry, and opened-material shape before plaintext
+// @formal reason: consumption. Evidence: credential.plaintext_boundary.exact_holder and the adjacent
+// @formal reason: descriptor decision-table tests; this is a product-requirement classification, not a
+// @formal reason: direct formal-proof claim.
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: The support matrix projects Native or ACP capability expectations; browser presentation
+// @formal reason: cannot attest the executable Runtime floor.
 import { Check, TriangleAlert } from "@awaken/ui/icons";
 import { InlineNotice, Button } from "@awaken/ui";
 import type { AgentConfig, RuntimeCap } from "../../lib/api/types";

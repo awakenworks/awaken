@@ -1,3 +1,10 @@
+// @formal surface obligation=session_execution.one_physical_attempt_per_thread
+// @formal reason: Process-local Worker placement measurement enters only after the existing persisted
+// @formal reason: physical-attempt admission succeeds and leaves when that admitted scope returns. The
+// @formal reason: authoritative Dispatch slot and its existing proof remain unchanged; adjacent Pool
+// @formal reason: decision-table tests cover resolver, Runtime and return boundaries. This link classifies
+// @formal reason: executable concurrency evidence and does not promote atomic scheduling, heartbeat
+// @formal reason: sampling or registry placement to a formal proof.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 

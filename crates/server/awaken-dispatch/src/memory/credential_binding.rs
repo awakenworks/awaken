@@ -1,3 +1,10 @@
+// @formal surface obligation=credential.attempt_delivery_is_exact_epoch_bound_and_authority_preserving
+// @formal reason: Static owner: read-only in-memory projection of the binding already frozen by the
+// @formal reason: Dispatch claim. Dynamic path: under the parent store mutex it returns a binding only for
+// @formal reason: the exact live owner, epoch and candidate; expiry, replacement and foreign candidates
+// @formal reason: return absence. The production delivery-admission kernel and shared
+// @formal reason: Memory/SQLite/PostgreSQL conformance table own exact authority and epoch rules; this
+// @formal reason: classification does not claim a proof of mutex scheduling or backend refinement.
 use awaken_runtime_contract::{AttemptCredentialBinding, CandidateFingerprint};
 
 use super::{DispatchState, RunClaim, State};

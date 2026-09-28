@@ -1,3 +1,6 @@
+// @formal surface obligation=remote_worker.recovery_projection_is_committed_prefix
+// @formal surface obligation=session.visible_row_always_owned
+// @formal reason: Rehydrates disposable projections from canonical Session truth.
 //! Cold reconstruction of disposable Managed Session projections.
 
 use super::*;

@@ -1,3 +1,9 @@
+// @formal surface requirement=session.multiagent.thread_authority
+// @formal reason: Static owner: managed parent and child transcript projection. Dynamic path: committed
+// @formal reason: thread-scoped content is mapped to the correct transcript while delegation boundaries
+// @formal reason: remain intact. Evidence: session.multiagent.thread_authority and managed transcript
+// @formal reason: projection tests; this is a product-requirement classification, not a direct proof
+// @formal reason: claim.
 //! Committed child transcript classification and coordination cross-post projection.
 
 use super::*;

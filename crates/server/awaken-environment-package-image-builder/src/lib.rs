@@ -1,3 +1,13 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: the sole build-stage projection from a canonical non-self-hosted
+// @formal reason: package-image demand to the existing package provisioner. Dynamic path: canonical demand
+// @formal reason: admission excludes SelfHosted and empty packages; Cloud Unrestricted projects to
+// @formal reason: NetworkPolicy::Unrestricted, while Cloud Limited preserves allowed_hosts, conditionally
+// @formal reason: adds the Environment owner's PUBLIC_PACKAGE_REGISTRY_HOSTS, sorts and deduplicates them,
+// @formal reason: and supplies the same policy to build and availability. The Environment contract owns
+// @formal reason: authored networking and registry-catalog semantics, while the provisioner owns
+// @formal reason: enforcement; this is a runtime.capabilities.capability_floor product-requirement
+// @formal reason: classification, not a direct formal-proof claim.
 //! Coordinator adapter from an exact Environment build demand to the existing
 //! container package-image provisioner. It owns no job state, lease, cache, or
 //! registry client; those remain in their authoritative components.

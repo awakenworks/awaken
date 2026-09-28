@@ -1,3 +1,6 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: Vault secret entry and mutations cross the browser plaintext boundary; masking is not
+// @formal reason: custody proof.
 import { Info, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Runtime secrets: tool/integration credentials only. Inference

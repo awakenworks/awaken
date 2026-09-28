@@ -1,3 +1,8 @@
+// @formal surface exclude=test_support_crate
+// @formal owner crates/stores/awaken-work-store/tests/work_queue_conformance.rs
+// @formal reason: Trait-generic WorkQueue conformance suite (ADR-0081 §7). It is a tooling-only test
+// @formal reason: library every backend's test target calls; no product crate links or invokes it, and it
+// @formal reason: admits nothing at runtime.
 //! Trait-generic conformance suite for the `WorkQueue` port (ADR-0081 §7).
 //!
 //! Every backend — the in-memory reference, SQLite, PostgreSQL, and any closed

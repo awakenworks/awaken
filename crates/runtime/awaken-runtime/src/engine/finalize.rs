@@ -210,6 +210,7 @@ pub(super) async fn finish_with_reader(
 
 #[cfg(kani)]
 /// @obligation delegation.cancel_intent
+/// @proof-input-debt tautology committed_cancellation_delivery_is_admitted
 #[kani::proof]
 fn child_cancellation_effect_requires_committed_intent() {
     // Cause/effect table: only commit-success + staged-intent admits delivery;

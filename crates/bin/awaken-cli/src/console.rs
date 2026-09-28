@@ -1,3 +1,7 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: The CLI parser admits first installation and legacy adoption only through complete
+// @formal reason: explicit switch/reference pairs while ordinary migration carries no bind authority; this
+// @formal reason: is an assembly product-requirement classification, not a direct formal-proof claim.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ServiceArgs {
     pub config_path: Option<std::path::PathBuf>,

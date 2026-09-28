@@ -1,3 +1,6 @@
+// @formal surface obligation=credential_reference.exact_revision_never_resolves_another_revision
+// @formal surface obligation=worker.durable_dispatch_contains_no_plaintext_secret
+// @formal reason: Freezes secret-free exact credential inputs for a Session.
 //! Exact Repository credential pinning at the Session application boundary.
 
 use awaken_credential_contract::{

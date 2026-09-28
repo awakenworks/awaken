@@ -1,3 +1,10 @@
+// @formal surface requirement=runtime.agent_loop.runtime_execution
+// @formal reason: Static owner: private-proof receipt and neutral Host boundary value types over canonical
+// @formal reason: Run, Pending, and PermissionDecision contracts. Dynamic path: only a verified committed
+// @formal reason: Run snapshot constructs the receipt consumed by the existing settled-step projection;
+// @formal reason: bare executor state cannot become application completion. Evidence:
+// @formal reason: runtime.agent_loop.runtime_execution and settled-step projection tests; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! Neutral value types produced/consumed by [`SharedHost`]: pending tools,
 //! run results, resume commands, host errors, and outcome reports.
 

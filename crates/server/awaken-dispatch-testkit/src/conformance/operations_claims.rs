@@ -2,6 +2,11 @@
 // @formal evidence ingress.epoch_reclaim
 // @formal evidence ingress.single_owner
 // @formal evidence worker.retry_preserves_pinned_binding
+// @formal surface exclude=test_support_crate
+// @formal owner crates/server/awaken-dispatch-testkit/src/lib.rs
+// @formal reason: Static owner: operation-claim conformance cases. Dynamic path: the tooling-only testkit
+// @formal reason: includes this exact file to drive implementations under test; production dispatch never
+// @formal reason: calls it. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.
 // Operational-feed and exact/parent-mediated claim conformance rules. Included
 // at crate root so no parallel conformance surface is introduced.
 /// Verify the durable operational feed independently from Run lifecycle truth.

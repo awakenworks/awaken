@@ -1,3 +1,6 @@
+// @formal surface obligation=run.lifecycle_absorption
+// @formal surface obligation=checkpoint.crash_preserves_durable_truth
+// @formal reason: Read projection over committed lifecycle truth.
 //! Durable, backend-neutral Run lifecycle feed projected from committed facts.
 //!
 //! The feed is deliberately separate from dispatch delivery operations. It

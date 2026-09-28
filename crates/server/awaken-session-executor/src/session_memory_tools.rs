@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: Projects frozen Session Memory binding ids into semantic tools while all CAS writes and
+// @formal reason: durable heads remain owned by the canonical Memory repository.
 //! Filesystem-free projection of frozen Session MemoryStore bindings.
 //!
 //! The tools carry only Session binding ids. They never accept a Workspace id,

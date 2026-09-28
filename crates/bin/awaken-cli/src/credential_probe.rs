@@ -1,3 +1,7 @@
+// @formal surface exclude=external_adapter
+// @formal owner crates/control/awaken-admin-config-api/src/router.rs
+// @formal reason: Projects the provider adapter's three-state credential-probe result into the admin API
+// @formal reason: vocabulary without selecting credentials or deciding admission.
 //! Provider credential validation adapter used only by Control startup.
 
 /// The live credential probe backed by provider-genai. Keeping this adapter in

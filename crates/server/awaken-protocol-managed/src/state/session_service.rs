@@ -1,3 +1,8 @@
+// @formal surface exclude=composition_wiring
+// @formal owner crates/server/awaken-session-application/src/lib.rs
+// @formal reason: Constructs the disposable Managed projection and installs application ports;
+// @formal reason: test-support builders are configuration-gated and production behavior remains in
+// @formal reason: SessionApplication.
 //! Managed protocol access to the canonical Session application.
 
 use std::collections::HashMap;

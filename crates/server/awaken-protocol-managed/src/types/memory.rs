@@ -1,3 +1,9 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: Static owner: Managed Memory version and actor wire DTOs. Dynamic path: the IAM edge
+// @formal reason: supplies the Resources domain's canonical non-secret actor value and this adapter
+// @formal reason: projects it to the public version shape without making an authorization or Memory
+// @formal reason: consistency decision. Evidence: product.public_dto.anti_corruption; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! Strong DTOs added by the Managed Memory version-attribution contract.
 
 use serde::Serialize;

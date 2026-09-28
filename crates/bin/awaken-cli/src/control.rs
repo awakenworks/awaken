@@ -1,3 +1,6 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: This source implements the repository-controlled assembly product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Control process startup over the canonical deployment stores.
 //!
 //! This module owns only the control-only process choice. Router, IAM,

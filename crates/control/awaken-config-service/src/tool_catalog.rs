@@ -166,6 +166,7 @@ mod verification {
     use super::*;
 
     /// @obligation tool_policy.scoped_catalog_admin_membership_is_exact_and_non_disclosing
+    /// @proof-input-debt free_symbol scoped_catalog_membership is_reserved_scope
     #[kani::proof]
     fn only_the_reserved_scope_selects_admin_catalog_membership() {
         let is_reserved_scope: bool = kani::any();
@@ -178,6 +179,7 @@ mod verification {
     }
 
     /// @obligation tool_policy.scoped_catalog_admin_membership_is_exact_and_non_disclosing
+    /// @proof-input-debt free_symbol scoped_catalog_membership is_reserved_scope
     #[kani::proof]
     fn every_non_reserved_scope_selects_strictly_global_membership() {
         let is_reserved_scope: bool = kani::any();

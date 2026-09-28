@@ -1,3 +1,6 @@
+// @formal surface obligation=environment.registration_intent_is_atomic_recoverable_and_idempotent
+// @formal surface obligation=work.single_active_claim
+// @formal reason: Environment authoring and execution projection route.
 //! The Managed **environments** family (`/v1/environments`) + the **work queue**
 //! (`/v1/environments/:id/work…`), the official `@anthropic-ai/sdk`
 //! `beta.environments.*` and `beta.environments.work.*` surfaces. An environment

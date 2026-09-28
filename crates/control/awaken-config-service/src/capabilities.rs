@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: This source implements the repository-controlled capability product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! The capability snapshot (`GET /v1/capabilities`): the host-level facts the
 //! management console needs to author agents data-driven — the advertised tool
 //! descriptors and the installable plugins with their config JSON-Schema. These

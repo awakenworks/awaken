@@ -1189,6 +1189,7 @@ mod verification {
     }
 
     /// @obligation credential.managed_vault_child_admission_requires_active_parent_capacity_and_unique_key
+    /// @proof-input-debt free_symbol managed_credential_insert_admitted duplicate_environment_key
     #[kani::proof]
     fn managed_credential_insert_requires_every_aggregate_invariant() {
         let workspace_matches = kani::any();

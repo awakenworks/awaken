@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Assistant visibility uses route and local storage presentation state only;
+// @formal reason: classification is not proof.
 import { Sparkles, X } from "@awaken/ui/icons";
 // The always-on Admin Assistant FAB: a floating button that opens the authoring copilot
 // as a NON-MODAL panel (the console stays usable behind it; Escape closes; open state

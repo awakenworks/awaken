@@ -1,3 +1,6 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: This source implements the repository-controlled public dto product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Typed inputs shared by Session and Deployment `resources[]`.
 
 use serde::{Deserialize, Deserializer, Serialize};

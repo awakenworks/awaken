@@ -1,3 +1,10 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the sole process-local read-only Session Event-batch cutover projection.
+// @formal reason: Dynamic path: only a successful final canonical recovery scan atomically advances its
+// @formal reason: generation and exact aggregate counts, while a failed scan leaves the previous snapshot
+// @formal reason: unchanged and creates no second Session store or lifecycle authority. Evidence:
+// @formal reason: session.lifecycle.session_state, ADR-0075, and the adjacent final-scan decision-table
+// @formal reason: tests; this is a product-requirement classification, not a direct formal-proof claim.
 use std::sync::{Arc, RwLock};
 
 use awaken_session_state_contract::{SessionEnvironmentPhase, SessionRepositoryError, SessionScan};

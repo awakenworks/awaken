@@ -1,3 +1,8 @@
+// @formal surface obligation=session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+// @formal surface obligation=session_realization.concurrent_drivers_preserve_one_owner_fence
+// @formal reason: Shared root-lease and terminal-assignment admission helpers keep local recovery and
+// @formal reason: external Workers beside one CAS claim algorithm and verify the aggregate's exact
+// @formal reason: realization generation, preventing a second terminal lease state machine.
 //! Existing root-lease and terminal-claim admission helpers.
 
 use super::*;

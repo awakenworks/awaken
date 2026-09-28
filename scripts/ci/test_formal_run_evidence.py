@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 from pathlib import Path
 import shlex
 import shutil
@@ -11,7 +10,8 @@ import sys
 import tempfile
 import unittest
 
-from formal_run_evidence import ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts
+import formal_plan
+from formal_run_evidence import FULL_SELECTION, ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts
 
 
 def nested_shell_function(source: str, name: str) -> str:
@@ -24,10 +24,6 @@ def formal_gate_initialization(root: Path) -> str:
     source = (root / "scripts/ci/check_formal.sh").read_text()
     return source.split("\npython3 scripts/ci/check_feature_coverage.py", 1)[0]
 
-
-SCRIPT_REFERENCE = re.compile(r"scripts/ci/[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)*")
-# `import name` / `from name import ...` of a module beside the importer.
-PYTHON_IMPORT = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 
 # Entry points the fixture executes, plus the data files they read that no
 # script names in its own text.
@@ -47,33 +43,13 @@ FIXTURE_ROOTS = (
 def fixture_sources() -> list[str]:
     """Every repository file the fixture's entry scripts can reach.
 
-    Each copied script is scanned for `scripts/ci/...` paths and those are
-    copied too, transitively; a Python script's imports of a sibling module
-    are dependencies of the same kind. A script that grows a dependency
-    therefore brings it into the fixture by itself; nothing has to be
-    remembered here.
+    The closure is the formal plan's own (``formal_plan.script_closure``):
+    each script's `scripts/ci/...` references and sibling imports, followed
+    transitively. A script that grows a dependency therefore brings it into
+    the fixture by itself; nothing has to be remembered here.
     """
 
-    pending = list(FIXTURE_ROOTS)
-    seen: set[str] = set()
-    while pending:
-        relative = pending.pop()
-        if relative in seen or not (ROOT / relative).is_file():
-            continue
-        seen.add(relative)
-        if (ROOT / relative).suffix in {".patch", ".c", ".rs", ".toml"}:
-            continue
-        text = (ROOT / relative).read_text(encoding="utf-8", errors="ignore")
-        references = SCRIPT_REFERENCE.findall(text)
-        if relative.endswith(".py"):
-            parent = Path(relative).parent
-            references += [
-                (parent / f"{module}.py").as_posix()
-                for module in PYTHON_IMPORT.findall(text)
-                if (ROOT / parent / f"{module}.py").is_file()
-            ]
-        pending.extend(reference for reference in references if reference not in seen)
-    return sorted(seen)
+    return sorted(formal_plan.script_closure(ROOT, FIXTURE_ROOTS))
 
 
 def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = None) -> None:
@@ -232,7 +208,7 @@ class EvidenceTests(unittest.TestCase):
         invocation = "  run_kani " + " ".join(batch.argv()) + "\n"
         selection = runner + invocation
         strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
-        version = begin_record(self.root, True, 100)["proof_toolchain"]["z3"]
+        version = begin_record(self.root, True, 100, FULL_SELECTION)["proof_toolchain"]["z3"]
         for installed, reported, version_exit, proof_exit, strict, expected in (
             (True, version, 0, 0, 1, 0),
             (True, "wrong", 0, 0, 1, 1),
@@ -263,7 +239,7 @@ class EvidenceTests(unittest.TestCase):
                                      "resources::memory_stores::memory_time_filter_compares_visible_milliseconds_without_merging_them")
                 if not installed:
                     self.assertIn("skipped Z3", result.stdout)
-        passed = finish_record(begin_record(self.root, True, 100), self.root, False, 110)
+        passed = finish_record(begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110)
         changed = dict(passed, proof_toolchain=dict(passed["proof_toolchain"], z3="wrong"))
         with self.assertRaisesRegex(ValueError, "toolchain"):
             validate_record(changed, self.root, 110)
@@ -350,7 +326,7 @@ class EvidenceTests(unittest.TestCase):
     def test_completion_requires_strict_unchanged_inputs_and_all_tools(self):
         # R1 strict+unchanged+all tools succeeds; R2 optional/R3 missing tools/
         # R4 source changes/R5 time reverses/R6 second completion all reject.
-        record = begin_record(self.root, True, 100)
+        record = begin_record(self.root, True, 100, FULL_SELECTION)
         passed = finish_record(record, self.root, False, 110)
         validate_record(passed, self.root, 110)
         for changed, missing, now in (
@@ -372,7 +348,7 @@ class EvidenceTests(unittest.TestCase):
         # is rejected. Constraints: only a strict unchanged exit-0 invocation may
         # become Passed. Decision rules: R1=C1->N1, R2=C2->N2, R3=C3->reject.
         ordinary = finish_record(
-            begin_record(self.root, True, 100), self.root, False, 110,
+            begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110,
             23, "execution-failed", "formal-gate",
         )
         self.assertEqual(ordinary["status"], "not-passed")
@@ -380,7 +356,7 @@ class EvidenceTests(unittest.TestCase):
             "kind": "execution-failed", "exit_code": 23, "stage": "formal-gate",
         })
         timed_out = finish_record(
-            begin_record(self.root, True, 100), self.root, False, 110,
+            begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110,
             124, "resource-bound", "cargo-kani", "awaken-provider-genai", 37,
         )
         self.assertEqual(timed_out["status"], "not-passed")
@@ -396,7 +372,7 @@ class EvidenceTests(unittest.TestCase):
             with self.subTest(exit_code=exit_code, subject=subject, deadline=deadline), \
                     self.assertRaises(ValueError):
                 finish_record(
-                    begin_record(self.root, True, 100), self.root, False, 110,
+                    begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110,
                     exit_code, "resource-bound", "cargo-kani", subject, deadline,
                 )
 
@@ -404,7 +380,7 @@ class EvidenceTests(unittest.TestCase):
         # V2-V4: take a valid completed receipt, change one axis at a time.
         # Every mutation rejects independently; the positive row prevents a
         # reject-everything implementation from satisfying this decision table.
-        passed = finish_record(begin_record(self.root, True, 100), self.root, False, 110)
+        passed = finish_record(begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110)
         validate_record(passed, self.root, 110)
         # V5 each new CBMC source/patch/options axis comes from bootstrap and
         # independently invalidates a receipt when changed; no second pin list.
@@ -421,19 +397,32 @@ class EvidenceTests(unittest.TestCase):
             ("source", dict(passed["source"], tree="a" * 40)),
             ("source", dict(passed["source"], clean=False)),
             ("proof_toolchain", {}), ("runner", dict(passed["runner"], digest="sha256:" + "0" * 64)),
+            # Tiering: a pr or narrowed run, or a receipt naming another plan,
+            # cannot qualify a release even when everything else matches.
+            ("selection", {"tier": "pr", "affected_base": None}),
+            ("selection", {"tier": "pr", "affected_base": "HEAD"}),
+            ("plan_digest", "sha256:" + "0" * 64), ("schema_version", 1),
         )
         for key, value in mutations:
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 validate_record(dict(passed, **{key: value}), self.root, 110)
+        # A pr receipt is a real passed receipt of its own plan, not of the full one.
+        pr = finish_record(begin_record(self.root, True, 100, {"tier": "pr", "affected_base": None}),
+                           self.root, False, 110)
+        self.assertEqual(pr["status"], "passed")
+        with self.assertRaisesRegex(ValueError, "not a full-tier run"):
+            validate_record(pr, self.root, 110)
+        with self.assertRaisesRegex(ValueError, "only for a pr run"):
+            begin_record(self.root, True, 100, {"tier": "full", "affected_base": "HEAD"})
 
     def test_new_invocation_retires_old_success_and_atomic_file_is_valid(self):
         # C1 previous Passed; C2 new Running. E1 the same output path no longer
         # validates until the new invocation completes. No second report store.
         path = self.root / "target/formal-run.json"
-        first = begin_record(self.root, True, 100)
+        first = begin_record(self.root, True, 100, FULL_SELECTION)
         write_record(path, finish_record(first, self.root, False, 110))
         validate_record(json.loads(path.read_text()), self.root, 110)
-        second = begin_record(self.root, True, 120)
+        second = begin_record(self.root, True, 120, FULL_SELECTION)
         self.assertNotEqual(first["run_id"], second["run_id"])
         write_record(path, second)
         with self.assertRaises(ValueError):
@@ -465,7 +454,7 @@ class EvidenceTests(unittest.TestCase):
                 checker_started.unlink(missing_ok=True)
                 if stage == "tool-selection":
                     patch.write_bytes(original + b"\n")
-                write_record(path, finish_record(begin_record(self.root, True, 100), self.root, False, 110))
+                write_record(path, finish_record(begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110))
                 result = subprocess.run(["bash", "scripts/ci/check_formal.sh", "--require-tools"],
                                         cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
                 self.assertEqual(result.returncode, expected, result.stderr)
@@ -659,7 +648,7 @@ class EvidenceTests(unittest.TestCase):
         # A stable dirty tree may complete for local diagnosis; it cannot
         # attest a release commit, including newly added/untracked Rust input.
         (self.root / "untracked.rs").write_text("// new module\n")
-        record = finish_record(begin_record(self.root, True, 100), self.root, False, 110)
+        record = finish_record(begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110)
         with self.assertRaisesRegex(ValueError, "clean release source"):
             validate_record(record, self.root, 110)
 
@@ -671,7 +660,7 @@ class EvidenceTests(unittest.TestCase):
         runner = self.root / "scripts/ci/check_formal.sh"
         self.git("config", "core.autocrlf", "false")
         self.assertFalse(b"\r\n" in runner.read_bytes(), "LF fixture")
-        passed = finish_record(begin_record(self.root, True, 100), self.root, False, 110)
+        passed = finish_record(begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110)
         windows = self.root.parent / "windows-checkout"
         subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", "--config", "core.autocrlf=true",
                         str(self.root), str(windows)], check=True, capture_output=True)

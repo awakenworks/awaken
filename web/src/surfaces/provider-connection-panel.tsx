@@ -1,3 +1,6 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: Provider connection authoring coordinates credential lifecycle effects outside formal
+// @formal reason: browser proof.
 import { Check, ExternalLink } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";

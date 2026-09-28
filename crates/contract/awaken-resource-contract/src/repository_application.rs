@@ -1,3 +1,11 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: Repository authoring commands, application and metadata-only
+// @formal reason: credential-validation ports, and the shared Session-owned Repository filter over
+// @formal reason: existing Resource Catalog types. Dynamic path: Session prefixes or either ownership
+// @formal reason: marker exclude reuse; an unavailable credential validator fails closed. Adjacent
+// @formal reason: application decision tables cover these boundaries. This product classification does not
+// @formal reason: prove arbitrary metadata, credential implementations, secret custody or Session
+// @formal reason: credential pinning.
 //! Reusable Repository authoring. Credential material stays in the Vault;
 //! Session creation continues to own exact credential revision/holder pinning.
 

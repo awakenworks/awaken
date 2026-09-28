@@ -1,3 +1,11 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: secret-free coordinate and closed outcome vocabulary for the existing
+// @formal reason: RepositoryRealizer port. Dynamic path: the exact desired and optional prior commits
+// @formal reason: validate before transport, canonical receipts bind the frozen realization plan, and only
+// @formal reason: a proven absent update lease or third commit is admissible as permanent rejection; this
+// @formal reason: extraction adds no realizer, writer, queue, or state machine. Evidence:
+// @formal reason: resource.files.resource_lifecycle, G48, and the adjacent contract decision table; this
+// @formal reason: is a product-requirement classification, not a direct formal-proof claim.
 //! Exact Repository publication coordinate, outcome, and transport errors.
 //!
 //! The parent Sandbox contract retains the sole `RepositoryRealizer` port. This

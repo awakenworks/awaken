@@ -1,3 +1,7 @@
+// @formal surface exclude=wire_dto
+// @formal owner crates/server/awaken-protocol-managed/src/routes/user_profiles.rs
+// @formal reason: Pure serde request and response shapes for the external user-profile API; storage,
+// @formal reason: authorization, and update semantics live in the route owner.
 //! Wire types for the `user-profiles` resource (`beta.userProfiles.*`): a user
 //! profile is the entity behind an agent run (an end user, a resold company, or
 //! the platform itself). Pure serde shapes — the store, routes, and record→wire

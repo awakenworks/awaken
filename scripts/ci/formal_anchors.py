@@ -39,8 +39,10 @@ RUST_SOURCES = "crates/**/*.rs"
 CARGO_MANIFESTS = "crates/**/Cargo.toml"
 PROOF_ATTRIBUTE = "#[kani::proof]"
 # `@obligation <id>` names an obligation the harness serves (formal_ledger);
-# `@kani key=value ...` states its non-default Kani selection (formal_plan).
-TAGS = ("obligation", "kani")
+# `@kani key=value ...` states its non-default Kani selection (formal_plan);
+# `@proof-input-debt <rule> <kernel> [<parameter>]` records an unreviewed
+# proof-input finding (check_proof_input_derivation).
+TAGS = ("obligation", "kani", "proof-input-debt")
 # A doc-comment line carrying one tag: `/// @<tag> <value...>`.
 ANCHOR = re.compile(r"^\s*///\s*@(?P<tag>[a-z][a-z-]*)(?:\s+(?P<value>.*?))?\s*$")
 BLOCK_LINE = re.compile(r"^\s*(?:#\[.*\]|///.*|//(?!!).*)\s*$")
@@ -170,6 +172,14 @@ def scan(root: Path) -> Scan:
 #     // @formal entrypoint <obligation id>   (production entrypoint, so evidence too)
 #     // @formal evidence <obligation id>     (evidence only: a test, a model link)
 #
+# and, for a source the surface inventories flag, how it is classified:
+#
+#     // @formal surface requirement=<feature.requirement>   (a product boundary)
+#     // @formal surface obligation=<obligation id>          (one line per obligation)
+#     // @formal surface exclude=<boundary>                  (not a safety surface)
+#     // @formal owner <path>          (exclude only: where the behaviour does live)
+#     // @formal reason: <text>        (required; continued on further reason lines)
+#
 # An anchor line anywhere else in the file is refused, so the block stays the
 # one place a reader looks. Consumer: ``formal_ledger`` (evidence and
 # production entrypoints of each obligation).
@@ -179,8 +189,9 @@ def scan(root: Path) -> Scan:
 # anchors only here, and an obligation file may not name such a source.
 SOURCE_ANCHORED = re.compile(r"(?:crates/.+\.rs|web/src/.+)")
 HEADER_PREFIX = "// @formal "
-HEADER = re.compile(r"^// @formal (?P<role>[a-z][a-z-]*)(?: (?P<value>\S(?:.*\S)?))?$")
-HEADER_ROLES = ("entrypoint", "evidence")
+HEADER = re.compile(r"^// @formal (?P<role>[a-z][a-z-]*):?(?: (?P<value>\S(?:.*\S)?))?$")
+HEADER_ROLES = ("entrypoint", "evidence", "surface", "reason", "owner")
+SURFACE_KINDS = ("requirement", "obligation", "exclude")
 
 
 @dataclass(frozen=True)
@@ -218,3 +229,75 @@ def headers(root: Path) -> tuple[list[Header], list[str]]:
             else:
                 found.append(Header(path, number, match["role"], match["value"]))
     return found, errors
+
+
+@dataclass(frozen=True)
+class Surface:
+    """One source's own surface classification.
+
+    Consumers: ``check_formal_surface`` (Rust sources), ``check_formal_web_surface``
+    (Web sources) and ``check_proof_boundaries`` (requirement-only surfaces).
+    """
+
+    path: str
+    line: int
+    requirement: str | None
+    obligations: tuple[str, ...]
+    exclude: str | None
+    reason: str
+    owners: tuple[str, ...]
+
+
+def surfaces(found: list[Header]) -> tuple[dict[str, Surface], list[str]]:
+    """Each source's classification from its opening lines, and malformed ones."""
+
+    by_path: dict[str, list[Header]] = {}
+    for header in found:
+        if header.role in ("surface", "reason", "owner"):
+            by_path.setdefault(header.path, []).append(header)
+    classified: dict[str, Surface] = {}
+    errors: list[str] = []
+    for path, headers in sorted(by_path.items()):
+        kinds: dict[str, list[tuple[Header, str]]] = {}
+        for header in headers:
+            if header.role != "surface":
+                continue
+            kind, equals, value = header.value.partition("=")
+            if kind not in SURFACE_KINDS or not equals or not value or " " in value:
+                errors.append(
+                    f"{header.where}: expected `// @formal surface "
+                    f"<{'|'.join(SURFACE_KINDS)}>=<value>`, got {header.value!r}"
+                )
+                continue
+            kinds.setdefault(kind, []).append((header, value))
+        reason = " ".join(header.value for header in headers if header.role == "reason")
+        owners = tuple(header.value for header in headers if header.role == "owner")
+        first = min(headers, key=lambda header: header.line)
+        if not kinds:
+            errors.append(f"{first.where}: a @formal reason or owner line needs a `// @formal surface` line")
+            continue
+        if len(kinds) != 1 or any(len(values) > 1 for kind, values in kinds.items() if kind != "obligation"):
+            errors.append(
+                f"{first.where}: duplicate surface classification {path}: a source is classified once, "
+                "by one requirement=, one exclude=, or obligation= lines"
+            )
+            continue
+        (kind, values), = kinds.items()
+        names = [value for _, value in values]
+        if len(names) != len(set(names)):
+            errors.append(f"{first.where}: surface classification {path} repeats an obligation id")
+            continue
+        if not reason:
+            errors.append(f"{first.where}: surface classification {path} needs a `// @formal reason:` line")
+            continue
+        if owners and kind != "exclude":
+            errors.append(f"{first.where}: `// @formal owner` lines belong to an exclude= surface only")
+            continue
+        classified[path] = Surface(
+            path, first.line,
+            values[0][1] if kind == "requirement" else None,
+            tuple(names) if kind == "obligation" else (),
+            values[0][1] if kind == "exclude" else None,
+            reason, owners,
+        )
+    return classified, errors

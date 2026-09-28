@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: This source implements the repository-controlled credential lifecycle product boundary
+// @formal reason: and is classified against its product requirement; this link is not a formal-proof
+// @formal reason: claim.
 //! Vault anti-corruption layer (ADR-0043 / G16) between the public Anthropic Managed
 //! Agents wire (`@anthropic-ai/sdk`, mirrored by `awaken-protocol-managed`) and
 //! the neutral credential/catalog domain. The wire keeps Anthropic's snake_case

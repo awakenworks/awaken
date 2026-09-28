@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.federated_tools.perception_not_authority
+// @formal reason: This source implements the repository-controlled federated product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Host adapters for the configurable WebSearch extension.
 //!
 //! The extension owns provider discovery and execution. This module supplies

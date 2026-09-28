@@ -1,3 +1,11 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: Static owner: the per-extraction in-memory WriteMemory tool sink and committed-message
+// @formal reason: decoder split from the Host Memory orchestrator; durable MemoryRepository authority
+// @formal reason: remains unchanged. Dynamic path: one auxiliary Agent run records accepted write_memory
+// @formal reason: name/content pairs, the orchestrator takes that finite map, and only the existing
+// @formal reason: extraction controller admits its durable mutations; malformed blocks and rejected
+// @formal reason: content create no proposal. This requirement-only classification is not a proof of model
+// @formal reason: behavior, concurrent tool execution, or repository durability.
 use super::*;
 
 #[derive(Default)]

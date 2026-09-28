@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Generated capability DTOs project server-owned membership metadata into browser
+// @formal reason: authoring and do not enforce Runtime policy.
 import type {
   AgentToolPermissionPolicy,
   InputResourceKind,

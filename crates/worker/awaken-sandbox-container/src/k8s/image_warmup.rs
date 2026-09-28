@@ -1,3 +1,13 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: Static owner: opt-in Kubernetes translation of existing immutable Environment warm
+// @formal reason: demand into OpenKruise jobs using deployment namespace, node selector and existing
+// @formal reason: pull-secret names only; no credential bytes, image catalog or Session authority are
+// @formal reason: created. Dynamic path: validate digest and budget before effects, reuse only exact owned
+// @formal reason: jobs, reject foreign objects, recover create conflicts or response loss by observation,
+// @formal reason: and leave missing/forbidden infrastructure on the existing cold path without minting
+// @formal reason: Ready capacity. Adjacent projection and supported-kube-transport decision-table tests
+// @formal reason: cover this adapter boundary. This is a product-requirement classification, not a direct
+// @formal reason: formal proof of Kubernetes or OpenKruise.
 //! Node image preparation through Kubernetes' native DaemonSet controller.
 //! Reuses the canonical realization fingerprint and create/recovery boundary.
 

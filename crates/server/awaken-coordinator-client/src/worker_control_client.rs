@@ -1,3 +1,6 @@
+// @formal surface obligation=worker_drain.registry_transition_follows_local_fence
+// @formal surface obligation=worker_credential.stale_heartbeat_never_rolls_back_revision
+// @formal reason: Worker registry/heartbeat control client.
 //! Worker lifecycle client over the same authenticated upstream used for
 //! dispatch and commits. It carries no store and trusts no client-side clock.
 

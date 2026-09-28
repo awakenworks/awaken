@@ -1,3 +1,10 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the topology-neutral, stateless executor of the one terminal action
+// @formal reason: projected by the Session aggregate; it owns no cursor, retry record, receipt store, or
+// @formal reason: phase authority. Dynamic path: every preparation, Repository publication, and physical
+// @formal reason: disposal is authorized and recorded through SessionRealizationControl before the driver
+// @formal reason: re-reads durable work, while external effect truth and eventual convergence remain
+// @formal reason: executable or adapter evidence rather than a direct formal-proof claim.
 //! One topology-neutral driver for terminal preparation and physical disposal.
 //!
 //! The Session aggregate remains the only queue and phase owner. This module

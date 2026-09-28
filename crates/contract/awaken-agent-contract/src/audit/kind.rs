@@ -1,3 +1,7 @@
+// @formal surface exclude=wire_vocabulary
+// @formal owner crates/contract/awaken-agent-contract/src/audit/kind.rs
+// @formal reason: Closed serde vocabulary for audit event names only; lifecycle authority and transition
+// @formal reason: decisions live in the commit and fold implementations.
 use serde::{Deserialize, Serialize};
 
 /// The committed **observability / lifecycle** event stream (persisted to

@@ -1,3 +1,6 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: This source implements the repository-controlled files product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Product-plane preparation of caller-owned [`pc::MountSource::CacheVolume`]
 //! directories. Providers still only mount opaque paths; this module owns the
 //! one content-keyed preparation path used by explicit startup warmup and by

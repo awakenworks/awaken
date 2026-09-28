@@ -1,3 +1,10 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: Static owner: the extracted Host adapter binds a frozen Agent publication,
+// @formal reason: Session-scoped Memory handle, and committed Thread reader to the existing
+// @formal reason: MemoryTerminalObserver and extraction aggregate. Dynamic path: disabled or absent
+// @formal reason: bindings produce no observer; an enabled exact binding delegates terminal extraction to
+// @formal reason: the one durable Memory controller, so this requirement-only classification adds no
+// @formal reason: observer state machine or consistency authority and makes no direct formal-proof claim.
 //! Host projection from a frozen Memory publication to the shared terminal observer.
 //!
 //! The Memory bounded context retains the observer and durable extraction state

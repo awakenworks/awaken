@@ -6,7 +6,6 @@ from __future__ import annotations
 import importlib.util
 import contextlib
 import io
-import json
 import pathlib
 import tempfile
 import unittest
@@ -29,26 +28,59 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
         # Removal of only the duplicate restores R1 without increasing proof grade.
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            (root / "policy.rs").write_text("fn decide() {}")
-            classifications = root / "classifications.json"
-            first = {"path": "policy.rs", "requirement_id": "domain", "reason": "owner"}
-            with mock.patch.multiple(MODULE, ROOT=root, CLASSIFICATIONS=classifications):
+            relative = "crates/x/src/policy.rs"
+            (root / relative).parent.mkdir(parents=True)
+            first = {"path": relative, "requirement_id": "domain", "reason": "owner"}
+            with mock.patch.multiple(MODULE, ROOT=root):
                 for second_owner in [None, "domain", "protocol", None]:
-                    entries = [first]
+                    head = "// @formal surface requirement=domain\n"
                     if second_owner is not None:
-                        entries.append({**first, "requirement_id": second_owner})
-                    classifications.write_text(json.dumps({
-                        "version": 1, "classifications": entries,
-                    }))
+                        head += f"// @formal surface requirement={second_owner}\n"
+                    (root / relative).write_text(head + "// @formal reason: owner\nfn decide() {}")
                     if second_owner is None:
                         self.assertEqual(MODULE.load_classifications(set(), {"domain", "protocol"}),
-                                         {"policy.rs": first}, "R1")
+                                         {relative: first}, "R1")
                     else:
                         message = io.StringIO()
                         with contextlib.redirect_stderr(message), self.assertRaises(SystemExit) as error:
                             MODULE.load_classifications(set(), {"domain", "protocol"})
                         self.assertEqual(error.exception.code, 1, "R2/R3")
-                        self.assertIn("duplicate surface classification policy.rs", message.getvalue())
+                        self.assertIn(f"duplicate surface classification {relative}", message.getvalue())
+
+    def test_a_source_classifies_itself_once_with_a_reason(self) -> None:
+        # Causes: S1 requirement=, S2 obligation= lines, S3 exclude= with owners;
+        # S4 a reason without a surface; S5 a surface without a reason; S6 an
+        # owner on a non-exclusion; S7 a malformed kind; S8 two kinds at once.
+        # Effects: S1-S3 one classification whose reason joins its lines;
+        # S4-S8 refusal naming the file and line.
+        headers = MODULE.formal_anchors.headers
+        cases = [
+            ("S1", ["surface requirement=a.b", "reason: one", "reason: two"], ("a.b", (), None, "one two", ())),
+            ("S2", ["surface obligation=x.y", "surface obligation=x.z", "reason: r"], (None, ("x.y", "x.z"), None, "r", ())),
+            ("S3", ["surface exclude=wire_dto", "owner crates/o.rs", "reason: r"], (None, (), "wire_dto", "r", ("crates/o.rs",))),
+            ("S4", ["reason: r"], "needs a `// @formal surface` line"),
+            ("S5", ["surface requirement=a.b"], "needs a `// @formal reason:` line"),
+            ("S6", ["surface requirement=a.b", "owner crates/o.rs", "reason: r"], "belong to an exclude= surface only"),
+            ("S7", ["surface proof=a.b", "reason: r"], "expected `// @formal surface <requirement|obligation|exclude>=<value>`"),
+            ("S8", ["surface requirement=a.b", "surface exclude=wire_dto", "reason: r"], "duplicate surface classification"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "crates/x/src/lib.rs"
+            source.parent.mkdir(parents=True)
+            for label, lines, expected in cases:
+                with self.subTest(label):
+                    source.write_text("".join(f"// @formal {line}\n" for line in lines) + "fn f() {}\n")
+                    found, errors = MODULE.formal_anchors.surfaces(headers(root)[0])
+                    if isinstance(expected, str):
+                        self.assertEqual(found, {})
+                        self.assertTrue(errors and errors[0].startswith("crates/x/src/lib.rs:1: "), errors)
+                        self.assertIn(expected, errors[0])
+                    else:
+                        self.assertEqual(errors, [])
+                        surface = found["crates/x/src/lib.rs"]
+                        self.assertEqual((surface.requirement, surface.obligations, surface.exclude,
+                                          surface.reason, surface.owners), expected)
 
     def test_explicit_targets_survive_disabled_cargo_auto_discovery(self) -> None:
         # T1 auto roots disabled -> conventional unregistered lib/bin files do
@@ -96,12 +128,10 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
             }]})
             features = root / "features.json"
             features.write_text('{"features":[]}')
-            exclusions = root / "exclusions.json"
+            source = "// @formal evidence example.policy\nfn authorize() {}"
             with (
                 mock.patch.multiple(
-                    MODULE, ROOT=root, FEATURES=features,
-                    EXCLUSIONS=exclusions, CLASSIFICATIONS=root / "classifications.json",
-                    PRODUCTION_ROOTS=[root / "crates"],
+                    MODULE, ROOT=root, FEATURES=features, PRODUCTION_ROOTS=[root / "crates"],
                 ),
                 mock.patch.object(MODULE._crate_boundary_workspace, "iter_crate_manifests", return_value=[manifest]),
                 mock.patch("sys.argv", ["check_formal_surface.py", "--require-complete"]),
@@ -109,24 +139,21 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()),
             ):
                 MODULE.main()
-                classifications = root / "classifications.json"
-                classifications.write_text(json.dumps({"version": 1, "classifications": [{
-                    "path": policy, "obligation_ids": ["example.policy"], "reason": "redundant owner",
-                }]}))
+                (root / policy).write_text(source.replace("\nfn", "\n// @formal surface obligation=example.policy\n"
+                                                           "// @formal reason: redundant owner\nfn"))
                 message = io.StringIO()
                 with contextlib.redirect_stderr(message), self.assertRaises(SystemExit) as error:
                     MODULE.main()
                 self.assertEqual(error.exception.code, 1, "L4")
                 self.assertIn("classifications duplicate an exclusion or source-ledger link", message.getvalue(), "L4")
-                classifications.unlink()
+                (root / policy).write_text(source)
                 MODULE.main()
                 (crate / "src/lib.rs").write_text("")
                 with self.assertRaises(SystemExit) as error:
                     MODULE.main()
                 self.assertEqual(error.exception.code, 1, "L2")
-                exclusions.write_text(json.dumps({"exclusions": [{
-                    "path": policy, "boundary": "test_only", "reason": "invalid camouflage",
-                }]}))
+                (root / policy).write_text(source.replace("\nfn", "\n// @formal surface exclude=test_only\n"
+                                                           "// @formal reason: invalid camouflage\nfn"))
                 with self.assertRaises(SystemExit) as error:
                     MODULE.main()
                 self.assertEqual(error.exception.code, 1, "L3")

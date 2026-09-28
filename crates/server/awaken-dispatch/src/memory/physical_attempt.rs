@@ -1,3 +1,12 @@
+// @formal surface obligation=session_execution.one_physical_attempt_per_thread
+// @formal reason: Static owner: the in-memory adapter transaction for the existing physical-attempt slot;
+// @formal reason: it owns no independent admission rule. Dynamic path: while holding the parent
+// @formal reason: MemoryDispatchStore authority lock, it projects the exact lease, retired epoch,
+// @formal reason: same-Thread peer occupancy, slot and frozen execution-binding facts, delegates admission
+// @formal reason: and binding to the canonical Dispatch kernels, then atomically installs only the
+// @formal reason: returned claim and binding transition. Kernel and backend tests cross-check these seams;
+// @formal reason: mutex scheduling and complete adapter/store refinement remain executable evidence rather
+// @formal reason: than a separate formal-proof claim.
 // The Memory adapter's existing physical admission transaction. Kept with
 // its owning store; all backends share the Dispatch decision kernel.
 use super::*;

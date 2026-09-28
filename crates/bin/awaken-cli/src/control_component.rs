@@ -1,3 +1,6 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: This source implements the repository-controlled assembly product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Process adapters for the canonical Control application component.
 //!
 //! This module maps concrete product stores and provider adapters onto

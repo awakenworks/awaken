@@ -1,3 +1,7 @@
+// @formal surface requirement=resource.memory.memory_consistency
+// @formal reason: The container staging ledger retains mounted and unknown Memory effect responsibilities
+// @formal reason: until exact recovery succeeds. Executable decision-table tests cover this adapter path;
+// @formal reason: this classification does not claim refinement of the local-owner formal model.
 use std::path::PathBuf;
 use std::sync::Arc;
 

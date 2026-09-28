@@ -1,3 +1,7 @@
+// @formal surface exclude=observability_adapter
+// @formal owner crates/runtime/awaken-observability/src/otel.rs
+// @formal reason: Configures external trace exporters and a JSON-lines diagnostic sink; failures
+// @formal reason: intentionally affect telemetry only and never authorize or mutate a product aggregate.
 //! Exporter wiring from typed deployment configuration, with shutdown flushing.
 //!
 //! Two collector sinks are supported, in priority order:

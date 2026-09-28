@@ -1,3 +1,8 @@
+// @formal surface obligation=remote_tool.stable_operation_identity
+// @formal surface obligation=remote_tool.invoke_at_most_once
+// @formal surface obligation=remote_tool.result_matches_operation
+// @formal surface obligation=remote_tool.indeterminate_never_false_success
+// @formal reason: Composition of the remote Hand/tool relay protocol.
 //! Worker-owned binding from a segregated Hand channel to the neutral tool port.
 
 use std::sync::Arc;

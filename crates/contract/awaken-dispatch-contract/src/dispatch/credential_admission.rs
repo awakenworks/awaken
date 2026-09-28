@@ -64,6 +64,7 @@ pub const fn claim_credential_operation(
 
 #[cfg(kani)]
 /// @obligation credential_effect.boundary_preserves_exact_materialization_authority
+/// @proof-input-debt free_symbol claim_credential_operation cancellation_requested
 #[kani::proof]
 fn claim_credential_operation_is_total_and_terminal_dominates() {
     // Cause/effect decision table: C1 terminal repair, C2 cancellation request.

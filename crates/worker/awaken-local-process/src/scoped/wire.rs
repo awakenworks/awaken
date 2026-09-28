@@ -1,3 +1,10 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: the one bounded private command codec between ScopedProcess and its
+// @formal reason: trusted helper, not a serializable domain command or credential store. Dynamic path:
+// @formal reason: validate length before allocation, decode exact argv/env/cwd from a zeroizing frame,
+// @formal reason: reject malformed or partial input before GO, and keep payloads out of logs and errors.
+// @formal reason: Decoder and real-process executable tests cover this adapter; the abstract lifecycle
+// @formal reason: model does not prove byte parsing or allocator erasure.
 //! One bounded private command codec; never serialize the domain planning type.
 use super::invalid;
 use awaken_provisioning_contract::MaterializedCommand;

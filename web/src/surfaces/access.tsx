@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: Access workflows display and submit authority configuration; the browser is never the
+// @formal reason: policy authority.
 import { ArrowRight, KeyRound, LockKeyhole, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Access: embedded-IAM token management. The mint response is the

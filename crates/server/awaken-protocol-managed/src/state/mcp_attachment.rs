@@ -1,3 +1,8 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: Test-support-only Managed-state construction now implements the required MCP effect port
+// @formal reason: explicitly and fails closed for stage, publish and drain. Production composition still
+// @formal reason: installs the canonical ManagedHost realizer; this adapter creates no MCP state, receipt
+// @formal reason: or fallback path.
 //! Default MCP attachment normalization policy.
 
 /// Private fail-closed null adapter for applications that do not enable MCP

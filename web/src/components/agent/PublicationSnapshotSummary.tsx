@@ -1,3 +1,6 @@
+// @formal surface requirement=control.admin_publication.audited_publication
+// @formal reason: The publication summary projects the reviewed Runtime, tool execution, approval, and
+// @formal reason: resource plan; server publication remains authoritative.
 import type { AgentConfig, AgentToolsetMemberCap, InputBinding, PluginCap, RuntimeCap } from "../../lib/api/types";
 import { DEFAULT_DELEGATION_LIMITS, rosterOf } from "../../lib/agent-collaboration";
 import { executionRuntimeId } from "../../lib/agent-model-selection";

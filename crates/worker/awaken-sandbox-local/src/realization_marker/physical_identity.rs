@@ -1,3 +1,9 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: physical-incarnation and restore-input identity helpers for the one
+// @formal reason: filesystem realization marker. Dynamic path: creation mints one non-path identity and
+// @formal reason: removed-source recovery accepts only the exact completed checkpoint participant
+// @formal reason: fingerprint, without owning lifecycle state or authorization; this is not a direct
+// @formal reason: formal-proof claim.
 use super::*;
 
 pub(super) fn new_physical_incarnation() -> Result<String, pc::SandboxError> {

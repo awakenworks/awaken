@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: The typed Agent Toolset helper projects capability-owned authoring metadata; Runtime
+// @formal reason: policy enforcement remains server-owned.
 import type {
   AgentConfig,
   AgentManagedToolset,

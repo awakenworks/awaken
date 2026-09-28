@@ -1,3 +1,7 @@
+// @formal surface obligation=ingress.single_owner
+// @formal surface obligation=ingress.epoch_reclaim
+// @formal surface obligation=ingress.settle_fence
+// @formal reason: Backend-neutral dispatch implementation.
 //! A runtime-selectable dispatch backend: one type that carries either the SQLite
 //! or the Postgres store, chosen at assembly time (single-machine vs a multi-node
 //! fleet sharing one Postgres queue, ADR-0019). It holds the active backend as an

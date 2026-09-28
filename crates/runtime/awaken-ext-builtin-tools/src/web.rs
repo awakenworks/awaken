@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.builtin_tools.tool_registration
+// @formal reason: This source implements the repository-controlled builtin product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Network tools. `web_search` has one provider registry shared by native and
 //! mediated ACP execution; providers own HTTP details while the platform owns
 //! configuration, exact credential resolution, and tool exposure.

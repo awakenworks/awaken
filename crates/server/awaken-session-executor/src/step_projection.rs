@@ -153,6 +153,7 @@ mod verification {
     }
 
     /// @obligation runtime.settled_step_projection_is_closed_exact_and_non_widening
+    /// @proof-input-debt free_symbol settled_step_plan has_pending
     #[kani::proof]
     fn settled_step_projection_cannot_invent_pending_or_observations() {
         // Causes: C1 the committed Run state spans Running/Awaiting/Ended; C2 a

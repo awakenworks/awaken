@@ -1,3 +1,8 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: The one extracted publication helper validates credential references, MCP transports,
+// @formal reason: toolsets, skills, and delegation targets before compiling typed Agent bindings; it
+// @formal reason: remains part of the immutable Agent-profile boundary and does not resolve secret
+// @formal reason: material.
 //! Validation and projection of authored integrations into runtime Agent bindings.
 
 use awaken_runtime_contract::agent_bindings::{AgentBindings, ToolsetPolicy, ToolsetSource};

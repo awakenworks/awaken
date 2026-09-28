@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: This read-only Managed adapter delegates to the canonical Session application
+// @formal reason: observation and performs only wire projection; it owns no durable fact or execution
+// @formal reason: authority, and this link is not a formal-proof claim.
 //! Awaken-only read projection for exact Session execution evidence.
 
 use crate::common::scope::RequiredWorkspaceScope;

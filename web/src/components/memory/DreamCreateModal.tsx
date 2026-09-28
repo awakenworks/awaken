@@ -1,3 +1,6 @@
+// @formal surface requirement=product.dream.dream_job
+// @formal reason: The modal authors and submits Dream jobs; generated semantics and browser completion are
+// @formal reason: unproved.
 import { Button } from "@awaken/ui";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";

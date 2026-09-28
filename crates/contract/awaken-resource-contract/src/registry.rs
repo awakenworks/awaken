@@ -1281,6 +1281,7 @@ mod registry_proofs {
     }
 
     /// @obligation session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+    /// @proof-input-debt free_symbol live_binding_admission workspace_matches
     #[kani::proof]
     fn live_resource_binding_requires_exact_scope_active_state_and_existing_pin() {
         let workspace_matches: bool = kani::any();

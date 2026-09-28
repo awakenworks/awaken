@@ -1,3 +1,5 @@
+// @formal surface requirement=product.dream.dream_job
+// @formal reason: Dream scheduling policy authoring is a browser effect boundary, not lifecycle proof.
 import { Button, Card, Switch } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";

@@ -1,3 +1,6 @@
+// @formal surface requirement=model.routing.exact_binding
+// @formal reason: Model catalog, connection, and selection mutations author route intent at the browser
+// @formal reason: edge.
 import { ArrowRight, TriangleAlert } from "@awaken/ui/icons";
 import { InlineNotice, Skeleton, Button, Card } from "@awaken/ui";
 

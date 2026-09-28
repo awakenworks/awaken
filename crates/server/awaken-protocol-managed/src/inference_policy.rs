@@ -1,3 +1,6 @@
+// @formal surface obligation=model_geography.every_attempt_candidate_requires_exact_processing_evidence
+// @formal reason: Defines the dynamic Workspace geography policy port evaluated at save, Session creation,
+// @formal reason: and every Turn checkpoint.
 //! Workspace-owned inference geography admission.
 
 use crate::types::ModelInferenceGeo;

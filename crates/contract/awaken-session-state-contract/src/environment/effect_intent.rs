@@ -1,3 +1,9 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Static owner: the one provider-independent Session Environment effect intent, stable
+// @formal reason: operation identity, and closed authorization result. Dynamic path: the parent aggregate
+// @formal reason: authorizes and commits exact receipts while providers carry this immutable intent across
+// @formal reason: I/O, so no adapter creates a second Environment operation identity or authorization
+// @formal reason: path; this is a product-requirement classification, not a direct formal-proof claim.
 //! Provider-independent Session Environment effect intent.
 //!
 //! The parent aggregate authorizes and commits receipts. This module owns the

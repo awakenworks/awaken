@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: The UI export surface exposes authority-sensitive widgets; this is inventory
+// @formal reason: classification only.
 // Product adapters for copy, domain projections, and page composition.
 // Product-neutral primitives are imported directly from @awaken/ui.
 export { cx, type Tone, type ClassValue } from "./cx";

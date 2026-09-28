@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.workflow_extension.workflow_state
+// @formal reason: This source implements the repository-controlled workflow product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Tool-result matching for result-conditioned transitions.
 //!
 //! Built directly on [`awaken_tool_pattern`]. A result is viewed through

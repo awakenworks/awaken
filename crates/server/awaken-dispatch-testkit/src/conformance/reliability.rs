@@ -3,6 +3,13 @@
 // @formal evidence ingress.settle_fence
 // @formal evidence remote_worker.single_live_claim_owner
 // @formal evidence run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal surface exclude=test_support_crate
+// @formal owner crates/server/awaken-dispatch/tests/dispatch_conformance.rs
+// @formal reason: Static owner: normalized crash-recovery history for adapter differential tests. Dynamic
+// @formal reason: path: the tooling-only testkit drives production DispatchStore implementations and
+// @formal reason: records observations; it neither transitions nor persists product state itself.
+// @formal reason: Evidence:
+// @formal reason: run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing.
 /// Settlement-fence and pending-input cause/effect table shared by every store.
 /// C1 an Awaiting Run has one bound input; C2 claimant A disappears; C3 B reclaims
 /// at a newer epoch and another input arrives; C4 stale A settles Awaiting; C5

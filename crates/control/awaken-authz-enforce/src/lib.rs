@@ -677,6 +677,8 @@ pub fn session_action(method: &str) -> ActionKey {
 
 #[cfg(kani)]
 /// @obligation authz.method_mapping_total
+/// @proof-input-debt free_symbol session_action_class exact_get
+/// @proof-input-debt free_symbol session_action_class exact_head
 #[kani::proof]
 fn session_method_mapping_is_total_and_read_only_for_exact_safe_methods() {
     // Closed classifier domain after exact string comparisons: every possible

@@ -1,3 +1,7 @@
+// @formal surface requirement=store.backends.schema_and_adapter_conformance
+// @formal reason: Inbox/Outbox ports and PendingInput moved together from dispatch.rs with their wire
+// @formal reason: tests. Atomic relay-and-enqueue remains one backend transaction; this module split adds
+// @formal reason: no store or formal-proof claim.
 // Pending-input and cross-Thread delivery contracts, included in `dispatch` like
 // its existing queue contract. Preserve public type paths and the one backend
 // transaction that joins delivery to dispatch.

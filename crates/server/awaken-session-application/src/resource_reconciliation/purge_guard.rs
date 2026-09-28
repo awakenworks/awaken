@@ -1,3 +1,12 @@
+// @formal surface obligation=resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
+// @formal surface obligation=resource_reclamation.reference_and_lease_races_fail_closed
+// @formal reason: Static owner: the read-only Session reference projection consumed by the existing
+// @formal reason: Resource reclamation authority; it owns no purge command, lease, fence, or receipt.
+// @formal reason: Dynamic path: it resolves every active and pending Session Resource reference to
+// @formal reason: canonical targets, reports exact blockers, and turns quarantine or catalog uncertainty
+// @formal reason: into a fail-closed error before the reclaimer may physically purge; the linked
+// @formal reason: obligations also retain the separate lease and effect-fence requirements owned
+// @formal reason: downstream.
 //! Read-only Session reference projection for physical Resource reclamation.
 
 use std::sync::Arc;

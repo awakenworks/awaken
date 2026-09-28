@@ -1,3 +1,5 @@
+// @formal surface requirement=product.dream.dream_job
+// @formal reason: Dream list routing and query state project the durable job API into the browser.
 import { Plus } from "@awaken/ui/icons";
 import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 import { useInfiniteQuery } from "@tanstack/react-query";

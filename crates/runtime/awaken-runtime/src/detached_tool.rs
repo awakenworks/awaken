@@ -1,3 +1,8 @@
+// @formal surface requirement=runtime.background_tool_execution.durable_session_scope
+// @formal reason: Static owner: prepared execution of one snapshot-pinned ordinary tool. Dynamic path:
+// @formal reason: invoke and protocol-neutral start, poll, and cancel reuse the canonical descriptor,
+// @formal reason: executor, permission, placement, output, recovery, and shared concurrency admission
+// @formal reason: without a second tool registry.
 //! Prepared execution of one ordinary tool outside the model loop.
 //!
 //! The API is deliberately tool-agnostic. Product adapters such as a committed

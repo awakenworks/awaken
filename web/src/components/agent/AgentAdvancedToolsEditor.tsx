@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.permission.authority_never_widens
+// @formal reason: Advanced tool authoring projects typed ToolSet permission intent and related policy
+// @formal reason: hints; only the Runtime gate can grant execution authority.
 import { Plus, X } from "@awaken/ui/icons";
 import { Button, Card, Switch } from "@awaken/ui";
 // Complete Agent tool authoring beyond the ordinary catalog checklist: dynamic

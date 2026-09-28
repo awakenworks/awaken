@@ -1,3 +1,8 @@
+// @formal surface obligation=config.publication_revision_is_scoped_by_execution_target_and_exact_replay
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal surface obligation=credential_reference.exact_revision_never_resolves_another_revision
+// @formal reason: Publication preparation freezes the scoped source revision, resolution inputs, exact
+// @formal reason: credential references, and matching executable registration.
 //! Publication assembly owned by [`ConfigService`](super::ConfigService).
 //!
 //! Keeping resolution, resource freezing, compilation, and registration-shape

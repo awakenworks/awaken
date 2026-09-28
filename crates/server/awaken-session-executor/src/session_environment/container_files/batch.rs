@@ -1,3 +1,13 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: the bounded command planner inside the existing Container read-only tree
+// @formal reason: installer; it adds no credential materialization, archive extractor, catalog or
+// @formal reason: lifecycle authority. Dynamic path: validate every relative path and collision before
+// @formal reason: effects, transfer binary files into one private stage through bounded detached commands,
+// @formal reason: restrict permissions, then use a separate authority-checked spawn for atomic
+// @formal reason: publication; failures preserve the prior tree and cleanup rejects symlink ancestors.
+// @formal reason: Adjacent cause-effect tests execute the actual portable program, and real Kubernetes
+// @formal reason: consumers verify fsGroup and retained data. This is a product-requirement
+// @formal reason: classification, not a direct formal proof of shell or filesystem behavior.
 //! Bounded detached transfer for the one atomic read-only tree installer.
 use super::*;
 

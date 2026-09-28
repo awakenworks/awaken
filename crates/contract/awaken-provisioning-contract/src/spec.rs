@@ -1,3 +1,6 @@
+// @formal surface obligation=worker.durable_dispatch_contains_no_plaintext_secret
+// @formal surface obligation=object_store.configuration_is_secret_free_and_provider_exact
+// @formal reason: Materializes secret-reference process commands below the durable secret-free boundary.
 //! The sandbox spec (what to realize), the declared environment config, and the
 //! process launch input.
 

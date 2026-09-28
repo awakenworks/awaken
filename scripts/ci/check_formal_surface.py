@@ -22,6 +22,7 @@ import re
 import sys
 
 import _crate_boundary_workspace
+import formal_anchors
 import formal_ledger
 
 
@@ -45,8 +46,6 @@ INPUT_GLOBS: tuple[str, ...] = (
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-EXCLUSIONS = ROOT / "formal" / "surface-exclusions.json"
-CLASSIFICATIONS = ROOT / "formal" / "surface-classifications.json"
 FEATURES = ROOT / "formal" / "features.json"
 
 
@@ -311,22 +310,29 @@ def detect_signals(source: str) -> list[str]:
     ]
 
 
-def load_exclusions() -> dict[str, dict[str, str]]:
-    if not EXCLUSIONS.exists():
-        return {}
-    raw = json.loads(EXCLUSIONS.read_text(encoding="utf-8"))
-    exclusions: dict[str, dict[str, str]] = {}
-    for item in raw.get("exclusions", []):
-        path = item.get("path", "")
-        reason = item.get("reason", "")
-        boundary = item.get("boundary", "")
-        if not path or not reason or not boundary:
-            fail("every surface exclusion needs path, boundary, and reason")
-        if path in exclusions:
-            fail(f"duplicate surface exclusion {path}")
-        if not (ROOT / path).is_file():
-            fail(f"surface exclusion references missing source {path}")
-        exclusions[path] = item
+def surface_anchors() -> dict[str, formal_anchors.Surface]:
+    """Each Rust source's own classification, from its `// @formal surface` lines."""
+
+    headers, errors = formal_anchors.headers(ROOT)
+    classified, surface_errors = formal_anchors.surfaces(headers)
+    errors += surface_errors
+    if errors:
+        fail("\n".join(sorted(errors)))
+    return {path: surface for path, surface in classified.items() if path.endswith(".rs")}
+
+
+def load_exclusions() -> dict[str, dict[str, object]]:
+    exclusions: dict[str, dict[str, object]] = {}
+    for path, surface in surface_anchors().items():
+        if surface.exclude is None:
+            continue
+        missing = [owner for owner in surface.owners if not (ROOT / owner).is_file()]
+        if missing:
+            fail(f"{surface.path}:{surface.line}: surface exclusion names missing owner(s) {', '.join(missing)}")
+        exclusions[path] = {
+            "path": path, "boundary": surface.exclude, "reason": surface.reason,
+            "evidence": list(surface.owners),
+        }
     return exclusions
 
 
@@ -347,52 +353,24 @@ def load_requirement_ids() -> set[str]:
 def load_classifications(
     obligation_ids: set[str], requirement_ids: set[str]
 ) -> dict[str, dict[str, object]]:
-    if not CLASSIFICATIONS.exists():
-        return {}
-    raw = json.loads(CLASSIFICATIONS.read_text(encoding="utf-8"))
-    if raw.get("version") != 1:
-        fail("surface classifications version must be 1")
-    items = raw.get("classifications")
-    if not isinstance(items, list):
-        fail("surface classifications must contain a classifications list")
     classifications: dict[str, dict[str, object]] = {}
-    for item in items:
-        if not isinstance(item, dict):
-            fail("every surface classification must be an object")
-        path = str(item.get("path", ""))
-        reason = str(item.get("reason", ""))
-        linked_obligations = item.get("obligation_ids")
-        requirement_id = item.get("requirement_id")
-        has_obligations = isinstance(linked_obligations, list) and bool(linked_obligations)
-        has_requirement = isinstance(requirement_id, str) and bool(requirement_id)
-        if not path or not reason:
-            fail("every surface classification needs path and reason")
-        if has_obligations == has_requirement:
-            fail(
-                f"surface classification {path} must name exactly one of "
-                "obligation_ids or requirement_id"
-            )
-        if path in classifications:
-            fail(f"duplicate surface classification {path}")
-        if not (ROOT / path).is_file():
-            fail(f"surface classification references missing source {path}")
-        if has_obligations:
-            if any(not isinstance(item_id, str) or not item_id for item_id in linked_obligations):
-                fail(f"surface classification {path} has an invalid obligation id")
-            if len(linked_obligations) != len(set(linked_obligations)):
-                fail(f"surface classification {path} repeats an obligation id")
-            missing = sorted(set(linked_obligations) - obligation_ids)
+    for path, surface in surface_anchors().items():
+        if surface.exclude is not None:
+            continue
+        if surface.obligations:
+            missing = sorted(set(surface.obligations) - obligation_ids)
             if missing:
+                fail(f"surface classification {path} names missing obligations: " + ", ".join(missing))
+            classifications[path] = {"path": path, "obligation_ids": list(surface.obligations),
+                                     "reason": surface.reason}
+        else:
+            if surface.requirement not in requirement_ids:
                 fail(
-                    f"surface classification {path} names missing obligations: "
-                    + ", ".join(missing)
+                    f"surface classification {path} names missing complete product "
+                    f"requirement id {surface.requirement!r}"
                 )
-        elif requirement_id not in requirement_ids:
-            fail(
-                f"surface classification {path} names missing complete product "
-                f"requirement id {requirement_id!r}"
-            )
-        classifications[path] = item
+            classifications[path] = {"path": path, "requirement_id": surface.requirement,
+                                     "reason": surface.reason}
     return classifications
 
 
@@ -426,13 +404,12 @@ def check_staged(paths: list[str]) -> None:
     """Incremental mode: the whole-tree predicate, restricted to given paths.
 
     A path is answered when the obligation ledger cites it as evidence, or when
-    ``formal/surface-classifications.json`` or ``formal/surface-exclusions.json``
-    carries a row for it -- the same three ways the whole-tree walk marks a
-    surface covered. Everything else that is a reachable-root production source
+    its own opening lines classify it (``// @formal surface ...``) -- the same
+    ways the whole-tree walk marks a surface covered. Everything else that is a reachable-root production source
     and still carries a risk signal is refused, by name and with its signals.
 
-    Cost is O(changed): the three registries are read once, and only the given
-    files are lexed. The global coverage *ratio* still needs the whole walk, so
+    Cost is O(changed): the ledger and the anchors are read once, and only the
+    given files are lexed. The global coverage *ratio* still needs the whole walk, so
     ``--require-complete`` keeps that job on the push and release gates.
     """
 
@@ -464,8 +441,9 @@ def check_staged(paths: list[str]) -> None:
             unclassified.append((relative, signals))
     if unclassified:
         fail(
-            "staged production sources carry unclassified safety surfaces; add a row to "
-            "formal/surface-classifications.json or formal/surface-exclusions.json:\n"
+            "staged production sources carry unclassified safety surfaces; classify each in "
+            "its own opening lines (`// @formal surface requirement=|obligation=|exclude=` "
+            "with a `// @formal reason:`):\n"
             + "\n".join(
                 f"  {relative} [{','.join(signals)}]" for relative, signals in unclassified
             )
@@ -572,18 +550,11 @@ def main() -> None:
 
     inventory.sort(key=lambda item: str(item["path"]))
     paths = {str(item["path"]) for item in inventory}
-    stale_exclusions = sorted(set(exclusions) - paths)
-    if stale_exclusions:
-        fail(
-            "exclusions no longer match detected surfaces: "
-            + ", ".join(stale_exclusions)
-        )
-    stale_classifications = sorted(set(classifications) - paths)
-    if stale_classifications:
-        fail(
-            "classifications no longer match detected surfaces: "
-            + ", ".join(stale_classifications)
-        )
+    # A classified source whose signal heuristic stopped matching is reported,
+    # not refused: the classification lives in the file, so it moves and dies
+    # with it, and a regex drifting under a reviewed decision is not a defect
+    # of the commit that edited the file.
+    stale = sorted((set(exclusions) | set(classifications)) - paths)
     redundant_classifications = sorted(
         path
         for path in classifications
@@ -644,6 +615,7 @@ def main() -> None:
                         "product_requirement_linked_ratio": product_requirement_ratio,
                     },
                     "surfaces": inventory,
+                    "stale_classifications": stale,
                 },
                 indent=2,
                 sort_keys=True,
@@ -661,6 +633,8 @@ def main() -> None:
             f"({product_requirement_ratio:.1%}); "
             f"{len(uncovered)} uncovered"
         )
+        for relative in stale:
+            print(f"  report: {relative} is classified but no longer carries a risk signal")
         for item in uncovered[:25]:
             print(f"  uncovered {item['path']} [{','.join(item['signals'])}]")
         if len(uncovered) > 25:

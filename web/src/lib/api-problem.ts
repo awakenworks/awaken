@@ -1,3 +1,5 @@
+// @formal surface requirement=protocol.adapters.adapter_projection
+// @formal reason: API error normalization is a browser protocol projection and is not formal proof.
 import { ApiClientError } from "./api/client";
 
 export type ApiProblemAction =

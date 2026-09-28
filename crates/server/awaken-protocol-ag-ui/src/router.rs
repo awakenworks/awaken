@@ -1,3 +1,10 @@
+// @formal surface requirement=protocol.ui_adapters.stream_projection
+// @formal reason: Static owner: AG-UI route, resume, and SSE anti-corruption mapping over the neutral
+// @formal reason: RunApplication port. Dynamic path: an AG-UI request is decoded into one Run or matching
+// @formal reason: pending-tool resume and committed Runtime outcomes are projected back to the protocol
+// @formal reason: stream; Runtime remains the lifecycle and permission authority. Evidence:
+// @formal reason: protocol.ui_adapters.stream_projection and AG-UI router and streaming tests; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! The axum router: AG-UI routes over a `RunApplication`. Handlers decode the
 //! `RunAgentInput`, drive one turn or resume through the port, and project the
 //! committed step into an AG-UI SSE event stream.

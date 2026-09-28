@@ -1,3 +1,10 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Static owner: the extracted ConfigService ordinary authoring seam delegates mutable
+// @formal reason: canonicalization to AgentConfig and exact lifecycle writes to the existing lifecycle
+// @formal reason: module, while ConfigRegistry remains the sole generation-CAS authority. Dynamic path:
+// @formal reason: each write observes the current revision, canonicalizes once, and attempts one fenced
+// @formal reason: store mutation; this is a product-requirement classification and does not claim a direct
+// @formal reason: proof of database CAS or audit transactions.
 //! Mutable Config Service authoring and lifecycle CAS operations.
 //!
 //! This module owns the ordinary authoring port but delegates the single domain

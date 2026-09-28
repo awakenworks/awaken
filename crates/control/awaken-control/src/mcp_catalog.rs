@@ -1,3 +1,10 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Static owner: the config-only MCP catalog, preferences, inspection and exact binding
+// @formal reason: preview. Dynamic path: every query composes already-authored configuration into the
+// @formal reason: binding a Session would receive, without executing a Session, storing credential
+// @formal reason: material, or constructing an MCP client. Evidence:
+// @formal reason: control.agent_profiles.immutable_profile plus this module's catalog and preview tests;
+// @formal reason: this is a product-requirement classification, not a direct proof claim.
 //! Config-only MCP catalog, preferences, inspection and exact binding preview.
 //! No Session execution, credential storage or MCP client is implemented here.
 use awaken_agent_config::mcp_config::*;

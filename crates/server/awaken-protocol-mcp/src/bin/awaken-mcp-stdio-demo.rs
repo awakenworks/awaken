@@ -1,3 +1,6 @@
+// @formal surface exclude=demonstration_binary
+// @formal owner crates/server/awaken-protocol-mcp/src/bin/awaken-mcp-stdio-demo.rs
+// @formal reason: Standalone MCP stdio demonstration program, not a product server or worker entrypoint.
 //! Demo stdio/Streamable-HTTP MCP server over toy tools.
 //!
 //! Serves `echo` (plain) and `count` (progress-streaming) so any MCP client

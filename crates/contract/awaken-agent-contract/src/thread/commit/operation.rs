@@ -390,6 +390,7 @@ mod verification {
     /// @obligation store_history.exact_retry_and_every_rejection_are_atomic_stutters
     /// @obligation store_history.receipt_refines_one_exact_durable_record
     /// @obligation store_history.recovery_preserves_committed_time_and_receipt_identity
+    /// @proof-input-debt free_symbol classify_operation_identity run_identity_matches
     #[kani::proof]
     fn operation_identity_replays_only_the_same_run_and_payload() {
         let run_identity_matches: bool = kani::any();

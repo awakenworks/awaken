@@ -1,3 +1,7 @@
+// @formal surface exclude=composition_wiring
+// @formal owner crates/control/awaken-config-service/src/config_service.rs
+// @formal reason: Builder methods install already-authorized collaborator ports into ConfigService fields
+// @formal reason: and contain no selection or authorization policy.
 //! Composition-time wiring for the config application service.
 //!
 //! These builders attach ports owned by sibling bounded contexts. Operational

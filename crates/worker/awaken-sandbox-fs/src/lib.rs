@@ -1,3 +1,9 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: policy-free Sandbox filesystem primitives. Dynamic path: callers retain
+// @formal reason: resource and realization authority while this crate performs stable-inode locking,
+// @formal reason: descriptor-relative no-follow reads, writes, shredding, exact removal, and atomic
+// @formal reason: no-replace publication; external filesystem durability remains the declared Resource
+// @formal reason: boundary and this is not a direct formal-proof claim.
 //! Policy-free filesystem primitives shared by sandbox providers.
 //!
 //! Repository identity, sandbox realization ownership, retry, and cleanup

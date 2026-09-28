@@ -1,3 +1,6 @@
+// @formal surface obligation=credential.rotation_revision_cas
+// @formal surface obligation=credential_reference.exact_revision_never_resolves_another_revision
+// @formal reason: Refresh path preserves revision-bound credential identity.
 //! Exact OAuth refresh and Vault rotation adapter.
 
 use std::collections::BTreeMap;

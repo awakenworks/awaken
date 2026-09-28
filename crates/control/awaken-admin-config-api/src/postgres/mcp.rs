@@ -1,3 +1,10 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: Static owner: the PostgreSQL binding of the Workspace MCP configuration repository.
+// @formal reason: Dynamic path: a validated configuration is written and read back whole, so a partially
+// @formal reason: applied definition set cannot become the Workspace's answer; credentials remain
+// @formal reason: references this store never materializes. Evidence:
+// @formal reason: product.admin_console.console_workflows plus the shared MCP configuration repository
+// @formal reason: conformance; this is a product-requirement classification, not a direct proof claim.
 use super::*;
 use awaken_agent_config::mcp_config::{
     McpConfigError, McpConfiguration, McpConfigurationRepository, validate_mcp_configuration_write,

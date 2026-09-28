@@ -1,3 +1,9 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: The existing Platform MCP egress port accepts an exact generation and credential
+// @formal reason: reference and returns only a mediated route and expiry. Runtime Host consumes this port
+// @formal reason: and refuses a missing mediator instead of resolving Platform-held plaintext locally.
+// @formal reason: This is a contract and product-requirement classification, not a proof that an external
+// @formal reason: mediator enforces the route or credential revocation.
 //! Platform-mediated MCP egress port.
 //!
 //! A hosted deployment performs the authenticated MCP call from its own egress

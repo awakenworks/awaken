@@ -1,3 +1,8 @@
+// @formal surface obligation=sandbox.admission_never_weakens_isolation
+// @formal surface obligation=sandbox.fail_closed_policy_never_downgrades
+// @formal surface obligation=external.container_and_kernel_isolation
+// @formal reason: Renders the admitted rootfs, read-only, resource, mount, and network authority into
+// @formal reason: rootless Podman argv.
 //! Pure rootfs and rootless-Podman planning for Session environments.
 
 use awaken_provisioning_contract as pc;

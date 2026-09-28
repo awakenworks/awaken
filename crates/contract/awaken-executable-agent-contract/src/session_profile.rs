@@ -122,6 +122,7 @@ mod kani_proofs {
     use super::requested_profile_revision_matches;
 
     /// @obligation agent_profile.requested_revision_never_follows_mutable_current
+    /// @proof-input-debt tautology requested_profile_revision_matches
     #[kani::proof]
     fn requested_agent_profile_accepts_only_the_same_positive_revision() {
         let candidate: u64 = kani::any();

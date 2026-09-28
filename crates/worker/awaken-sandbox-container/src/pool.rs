@@ -1,3 +1,6 @@
+// @formal surface obligation=sandbox_continuation.distinct_mutable_roots_share_one_retained_claim_without_aliasing
+// @formal surface obligation=worker.sandbox_continuity_requires_a_binding
+// @formal reason: Container pool and continuation claim reuse.
 //! Warm container pool (ADR-0056 §warm-pool): pre-provisioned reusable capacity in
 //! front of the container tier, addressing BOTH cold-start latency and resource
 //! reuse. A pool keeps up to `size` **empty live environments** ready per container

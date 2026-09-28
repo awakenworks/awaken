@@ -1,5 +1,11 @@
 // @formal evidence credential_effect.boundary_preserves_exact_materialization_authority
 // @formal evidence ingress.epoch_reclaim
+// @formal surface exclude=test_support_crate
+// @formal owner crates/server/awaken-dispatch-testkit/src/lib.rs
+// @formal reason: Static owner: recovery-credential conformance cases. Dynamic path: the tooling-only
+// @formal reason: testkit includes this exact file to exercise claimed recovery; it does not resolve
+// @formal reason: credentials in production. Evidence:
+// @formal reason: crates/server/awaken-dispatch-testkit/src/lib.rs.
 // Retry, identity, terminal recovery, and credential conformance rules. Included
 // at crate root; every rule still exercises the one DispatchQueue contract.
 /// Retry-exhaustion cause/effect decision table shared by every backend:

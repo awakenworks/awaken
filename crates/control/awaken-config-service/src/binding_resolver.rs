@@ -1,3 +1,6 @@
+// @formal surface obligation=config.inference_access_resolved_once_at_publication
+// @formal surface obligation=model_readiness.brokered_and_direct_routes_require_exact_access_evidence
+// @formal reason: Publication binding resolver freezes executable model access.
 //! Model publication resolution (ADR-0052 D5 / ADR-0062).
 //!
 //! One port turns authored model selection into complete, ordered snapshot

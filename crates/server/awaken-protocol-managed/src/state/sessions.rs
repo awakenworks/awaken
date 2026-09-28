@@ -51,6 +51,8 @@ const fn rehydration_publication_decision(
 #[cfg(kani)]
 /// @obligation session.missing_publication_is_available_only_to_noninteractive_frozen_projection
 /// @kani profile=solver-kissat-v1
+/// @proof-input-debt free_symbol rehydration_publication_decision has_frozen_revision
+/// @proof-input-debt free_symbol rehydration_publication_decision profile_available
 #[kani::proof]
 fn missing_agent_publication_is_available_only_to_noninteractive_projection() {
     let purpose_discriminant: u8 = kani::any();

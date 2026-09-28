@@ -1,3 +1,7 @@
+// @formal surface requirement=credential.plaintext_boundary.exact_holder
+// @formal reason: The hosted credential request projects canonical typed material into the write-only
+// @formal reason: Vault boundary and rejects OAuth downgrade; this is product-boundary classification, not
+// @formal reason: a direct formal-proof claim.
 use awaken_credential_contract::{CredentialDescriptor, CredentialMaterial, CredentialRef};
 use awaken_credential_vault::{CredentialError, CredentialKind};
 

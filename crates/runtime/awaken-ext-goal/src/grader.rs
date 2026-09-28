@@ -1,3 +1,6 @@
+// @formal surface requirement=runtime.outcomes.outcome_lifecycle
+// @formal reason: This source implements the repository-controlled outcomes product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Agent-backed Outcome grading over the ordinary Runtime Run boundary.
 
 use awaken_runtime_contract::execution::RunExecutor;

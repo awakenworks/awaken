@@ -1,3 +1,7 @@
+// @formal surface obligation=credential.visible_row_always_has_material
+// @formal surface obligation=credential.material_is_always_published_or_intent_tracked
+// @formal surface obligation=credential.restart_recovery_compensates_unpublished_material
+// @formal reason: Sealed material/intents persistence implementation.
 //! AEAD-sealed [`SecretStore`] adapter (ADR-0043, feature `sealed-aead`).
 //!
 //! Encryption-at-rest so a stolen disk / DB dump / backup is inert without the

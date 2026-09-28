@@ -1,3 +1,9 @@
+// @formal surface requirement=product.public_dto.anti_corruption
+// @formal reason: Static owner: Managed Files wire DTOs and request-value validation. Dynamic path: SDK
+// @formal reason: query, metadata, scope, deletion, and expiry shapes are decoded or projected around the
+// @formal reason: canonical File authority without creating another File lifecycle. Evidence:
+// @formal reason: product.public_dto.anti_corruption and SDK surface conformance; this is a
+// @formal reason: product-requirement classification, not a direct proof claim.
 //! Strong Managed Files DTOs. The beta and GA shapes project the same
 //! `FileRecord`; their protocol differences never create another File authority.
 

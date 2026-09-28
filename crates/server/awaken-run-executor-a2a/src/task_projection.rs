@@ -1,3 +1,10 @@
+// @formal surface requirement=worker.remote_execution.remote_protocol
+// @formal reason: Static owner: projection helpers for one publication-pinned remote A2A attempt. Dynamic
+// @formal reason: path: committed Run input and history are mapped to the existing A2A task driver, while
+// @formal reason: task boundaries become canonical Run messages, await tickets, or terminal causes without
+// @formal reason: a second task lifecycle. Evidence: worker.remote_execution.remote_protocol and
+// @formal reason: remote-attempt tests; this is a product-requirement classification, not a direct proof
+// @formal reason: claim.
 //! Projection between committed Awaken Runs and remote A2A task boundaries.
 
 use awaken_agent_contract::agent::awaiting::{AwaitTarget, RemoteInputReason, ResumeTicket};

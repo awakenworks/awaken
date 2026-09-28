@@ -813,6 +813,7 @@ mod verification {
     }
 
     /// @obligation live_inbox.reorder_is_exact_and_rejection_stutters
+    /// @kani tier=nightly
     #[kani::proof]
     #[kani::unwind(8)]
     fn rejected_live_inbox_reorder_is_an_atomic_stutter() {

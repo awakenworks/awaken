@@ -1,3 +1,7 @@
+// @formal surface exclude=projection_state_holder
+// @formal owner crates/server/awaken-protocol-managed/src/state/rehydration.rs
+// @formal reason: Declares disposable in-memory wire projection fields only; it implements no locking
+// @formal reason: protocol or canonical Session transition.
 //! Wire projection state for the Managed protocol adapter.
 
 use std::collections::HashMap;

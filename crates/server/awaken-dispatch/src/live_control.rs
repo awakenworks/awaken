@@ -1,3 +1,13 @@
+// @formal surface obligation=run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal surface obligation=live_inbox.attempt_scope_is_local_current_capability_gated_and_never_carried_over
+// @formal reason: Static owner: the single protocol-neutral live-control adapter over canonical dispatch
+// @formal reason: and current-attempt authority. Dynamic path: cancel first records intent through the
+// @formal reason: Dispatch store; for a matching cancellable dispatch it then signals the live Runtime
+// @formal reason: when present and drives that same durable row through DispatchWorker. A live-delivery or
+// @formal reason: drive failure is surfaced while the committed intent remains durable, and a terminal or
+// @formal reason: unknown store result falls back only to inline live delivery. Pause and wake target only
+// @formal reason: the current attempt and map NotActive to NoSubscriber. It adds no second inbox, Run
+// @formal reason: state, or durable control store.
 //! Fail-closed live run control: cancel, pause and wake by correlation-id (G5/G18).
 //!
 //! [`LiveRunControlService`] is the protocol-neutral `LiveRunControl` seam and

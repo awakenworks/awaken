@@ -1,3 +1,8 @@
+// @formal surface requirement=runtime.builtin_tools.tool_registration
+// @formal reason: Builtin Web provider adapters implement the existing provider port. Direct fetch runs
+// @formal reason: blocking I/O with bounded bodies and disables redirects when a domain filter applies;
+// @formal reason: provider-server tools cannot fall through to host execution. Model routing and
+// @formal reason: authorization remain upstream.
 //! Direct and provider-server Web provider adapters.
 
 use std::io::Read;

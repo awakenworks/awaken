@@ -1386,6 +1386,7 @@ mod verification {
     }
 
     /// @obligation work.heartbeat_compare_and_set
+    /// @proof-input-debt free_symbol work_lease_mutation_admission owner_and_epoch_match
     #[kani::proof]
     fn work_lease_mutation_requires_present_exact_authority_and_matching_condition() {
         let present = kani::any::<bool>();
@@ -1400,6 +1401,12 @@ mod verification {
     }
 
     /// @obligation session_work.release_requires_exact_owner_and_epoch
+    /// @proof-input-debt free_symbol session_work_release_admission authority_is_cleared
+    /// @proof-input-debt free_symbol session_work_release_admission epoch_matches
+    /// @proof-input-debt free_symbol session_work_release_admission identity_matches
+    /// @proof-input-debt free_symbol session_work_release_admission owner_matches
+    /// @proof-input-debt free_symbol session_work_release_admission state_is_active
+    /// @proof-input-debt free_symbol session_work_release_admission state_is_stopped
     #[kani::proof]
     fn session_work_release_requires_exact_owner_and_epoch() {
         // Same complete C1-C5/E1-E3 table as the native test. The asserted

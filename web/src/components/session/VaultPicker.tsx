@@ -1,3 +1,6 @@
+// @formal surface requirement=credential.lifecycle.credential_lifecycle
+// @formal reason: Chooses which Vaults a Session may draw credentials from, by reference; the Vault owner
+// @formal reason: still admits every use. Classification only, not formal evidence.
 import { useId } from "react";
 import { CheckPicker } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";

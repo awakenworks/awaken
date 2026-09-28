@@ -1,3 +1,6 @@
+// @formal surface requirement=product.admin_console.console_workflows
+// @formal reason: The localized SchemaForm is a visual adapter over the shared renderer; browser
+// @formal reason: validation and human-authored values remain a console workflow boundary.
 import {
   SchemaForm as SharedSchemaForm,
   stringControlForSchema,

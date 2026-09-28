@@ -1,3 +1,6 @@
+// @formal surface requirement=assembly.binary_roles.role_assembly
+// @formal reason: This source implements the repository-controlled assembly product boundary and is
+// @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Deployment-selected runtime process and migration process.
 
 use super::*;

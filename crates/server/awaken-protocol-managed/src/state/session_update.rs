@@ -1,3 +1,6 @@
+// @formal surface obligation=config.generation_is_monotonic
+// @formal surface obligation=session_execution.terminal_state_never_reopens
+// @formal reason: Session update mutation over revisioned truth.
 //! Managed wire projection around the canonical Session update command.
 
 use super::*;

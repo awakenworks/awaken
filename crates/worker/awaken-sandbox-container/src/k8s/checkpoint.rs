@@ -1,3 +1,10 @@
+// @formal surface requirement=runtime.capabilities.capability_floor
+// @formal reason: Static owner: checkpoint participant persistence in the source Pod metadata under its
+// @formal reason: existing UID and resourceVersion CAS. Dynamic path: recheck current grant and exact
+// @formal reason: Pod/PVC binding, persist pending or complete evidence, then validate the returned
+// @formal reason: participant; replay reobserves physical truth and conflict or response loss returns
+// @formal reason: error. Kubernetes IO, concurrency and eventual reconciliation remain outside a direct
+// @formal reason: formal-proof claim.
 //! The source Pod's existing metadata/CAS owns its checkpoint participant.
 //! No Worker cache, additional object, finalizer or deletion authority.
 

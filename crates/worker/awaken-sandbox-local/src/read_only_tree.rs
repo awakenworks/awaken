@@ -1,3 +1,11 @@
+// @formal surface requirement=resource.files.resource_lifecycle
+// @formal reason: Static owner: the local Sandbox filesystem effect for runtime-owned immutable trees.
+// @formal reason: Dynamic path: each file projection validates jailed relative paths and symlink
+// @formal reason: boundaries, writes through a create-new temporary plus fsync and rename, and applies
+// @formal reason: read-only permissions; filesystem atomicity and rollback remain the declared external
+// @formal reason: Resource boundary. Evidence: resource.files.resource_lifecycle and the adjacent path,
+// @formal reason: permission, and replay tests; this is a product-requirement classification, not a direct
+// @formal reason: formal-proof claim.
 //! Atomic, path-jailed projection of runtime-owned immutable trees.
 
 use awaken_provisioning_contract as pc;

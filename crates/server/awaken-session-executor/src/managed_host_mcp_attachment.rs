@@ -1,3 +1,9 @@
+// @formal surface requirement=protocol.mcp.mcp_protocol
+// @formal reason: Static owner: managed MCP attachment realization at the runtime host. Dynamic path: the
+// @formal reason: claimed Session attachment is resolved into the single MCP transport used by the
+// @formal reason: executing Run and released with that scope. Evidence: protocol.mcp.mcp_protocol and
+// @formal reason: managed MCP Session tests; this is a product-requirement classification, not a direct
+// @formal reason: proof claim.
 fn validate_stdio_credential_binding(
     target: &awaken_session_mcp_contract::McpTarget,
     has_credential: bool,

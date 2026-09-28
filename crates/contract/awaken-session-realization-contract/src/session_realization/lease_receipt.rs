@@ -1,3 +1,9 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Transient Control response horizon and nonserializable local request observation
+// @formal reason: accompany the existing durable Session lease. The shared authority_lease arithmetic
+// @formal reason: rejects exhausted or regressed evidence without a second owner or store. Adjacent
+// @formal reason: cause-effect tests exercise boundaries; this is a product-requirement classification,
+// @formal reason: not a completed formal refinement claim.
 //! Transient evidence returned by the existing Session lease authority.
 //! PersistedSession continues to store only SessionRealizationLease.
 

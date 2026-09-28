@@ -1,3 +1,6 @@
+// @formal surface obligation=sandbox.admission_never_weakens_isolation
+// @formal surface obligation=sandbox.fail_closed_policy_never_downgrades
+// @formal reason: Kubernetes realization phase machine.
 use std::fmt::Debug;
 use std::time::Duration;
 

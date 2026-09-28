@@ -1,3 +1,7 @@
+// @formal surface exclude=test_only
+// @formal owner crates/server/awaken-session-executor/src/host/worker_resolver/dispatched_mcp_tests.rs
+// @formal reason: Claimed-dispatch fixtures and fake model compiled only through the test-gated
+// @formal reason: worker_resolver module.
 //! Shared claimed-dispatch fixtures for Worker resolver tests.
 //!
 //! The resolver scenarios reuse one activation builder, deferred Environment,

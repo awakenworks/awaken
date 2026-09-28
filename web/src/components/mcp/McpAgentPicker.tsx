@@ -1,3 +1,7 @@
+// @formal surface requirement=control.agent_profiles.immutable_profile
+// @formal reason: Chooses which Agents a Workspace MCP server is offered to; the authored binding remains
+// @formal reason: the config plane's, and this surface never reaches Session execution. Classification
+// @formal reason: only, not formal evidence.
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button, Card } from "@awaken/ui";
