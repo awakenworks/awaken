@@ -18,8 +18,6 @@ use awaken_managed_session_events::{
 };
 use std::collections::HashMap;
 
-mod coordination_order;
-
 pub(super) struct CanonicalizationEvidence<'a> {
     pub(super) persisted: &'a awaken_session_state_contract::PersistedSession,
     pub(super) lifecycle_events: &'a [RunLifecycleEvent],
@@ -216,13 +214,25 @@ impl ManagedState {
                 }
             }
         }
-        let coordination_frontier = coordination_order::order_coordination_facts(
-            record,
+        let coordination = awaken_managed_session_events::coordination_orders(
             &index,
+            &timeline_encoding::issued_tool_events(record),
             links,
-            &coordination_facts,
-            &mut orders,
+            &orders
+                .iter()
+                .map(|(id, order)| (id.as_str(), *order))
+                .collect(),
         );
+        for (id, key) in &coordination_facts {
+            if let Some(order) = coordination.get(key) {
+                orders.insert(id.clone(), *order);
+            }
+        }
+        let coordination_frontier = coordination
+            .values()
+            .map(|order| order.source_commit_cursor)
+            .max()
+            .unwrap_or_default();
 
         // Initial activation can fail before Runtime owns a cleanup cursor. In
         // that case terminality follows the complete immutable prefix already

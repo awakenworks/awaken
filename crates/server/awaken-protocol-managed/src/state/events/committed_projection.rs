@@ -110,7 +110,7 @@ impl ManagedState {
             == awaken_session_state_contract::SessionExecutionState::ActivationFailed
             || persisted.terminal_cleanup.runtime_commit_cursor().is_some()
         {
-            self.append_parent_terminal_projection(record);
+            self.append_parent_terminal_projection(record)?;
         }
         Self::replace_interval_aggregate_projections(
             record,

@@ -8,7 +8,7 @@
 use super::candidate_evidence::CandidateEvidence;
 use super::root_projection::RootProjection;
 use super::*;
-use awaken_managed_session_events::{FactKey, FactProvenance, FactRole};
+use awaken_managed_session_events::{FactKey, FactKind, FactProvenance, FactRole, TimelineFact};
 
 impl ManagedState {
     pub(super) fn close_aggregate(
@@ -134,20 +134,18 @@ impl ManagedState {
                     .any(|projection| projection.owns_failure_run(&terminal.run_id)),
                 evidence.root.as_ref(),
             )?;
-            let stop_reason = Self::public_run_stop_reason(
-                record,
-                None,
+            let stop = awaken_managed_session_events::terminal_stop(
                 &terminal.state,
                 historical_pending
                     .get(&terminal.cursor)
                     .or(root_pending.filter(|_| root_terminal == Some(terminal))),
                 terminal.await_reason.as_ref(),
-            )?;
-            let kind = primary_thread_status_kind(
-                record,
-                PrimaryThreadStatusProjection::Idle { stop_reason },
+                false,
             );
-            record.append_fact_once(idle_key, kind);
+            record.publish_fact_once(
+                &TimelineFact::new(idle_key, FactKind::ThreadIdle(stop)),
+                None,
+            )?;
             record
                 .checkpoint
                 .progress

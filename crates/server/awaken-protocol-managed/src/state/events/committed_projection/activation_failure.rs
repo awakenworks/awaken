@@ -12,51 +12,12 @@ impl ManagedState {
         persisted: &awaken_session_state_contract::PersistedSession,
         lifecycle_events: &[RunLifecycleEvent],
     ) -> Result<(), StateError> {
-        if persisted.execution
-            != awaken_session_state_contract::SessionExecutionState::ActivationFailed
+        if let Some(fact) =
+            awaken_managed_session_events::activation_failure_fact(persisted, lifecycle_events)
+                .map_err(projection_error)?
         {
-            return Ok(());
+            record.publish_fact_once(&fact, None)?;
         }
-        if persisted
-            .realization_progress
-            .failure_source_run_id
-            .as_deref()
-            .is_some_and(|source_run_id| {
-                lifecycle_events.iter().any(|event| {
-                    event.thread_id.0 == persisted.session_id
-                        && &event.run_id == source_run_id
-                        && matches!(
-                            event.state,
-                            awaken_agent_contract::agent::run::RunState::Ended(
-                                awaken_agent_contract::agent::run::EndCause::Error(_)
-                            )
-                        )
-                })
-            })
-        {
-            return Ok(());
-        }
-        let message = persisted
-            .realization_progress
-            .last_error
-            .as_deref()
-            .filter(|message| !message.trim().is_empty())
-            .ok_or_else(|| {
-                StateError::Run(RunError::internal(
-                    "activation_failed Session has no durable realization failure cause",
-                ))
-            })?;
-        let key = awaken_managed_session_events::FactKey::new(
-            record.session.id.clone(),
-            awaken_managed_session_events::FactRole::ActivationFailedError,
-            awaken_managed_session_events::FactProvenance::ParentTerminal,
-        );
-        record.append_fact_once(
-            key,
-            OutboundKind::SessionError {
-                error: SessionError::classify(persisted.execution.as_str(), message),
-            },
-        );
         Ok(())
     }
 }

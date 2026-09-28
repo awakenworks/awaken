@@ -6,19 +6,19 @@ use super::*;
 use crate::types::{EvaluatedPermission, RecordedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
-use awaken_ext_builtin_tools::SEND_MESSAGE;
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::{
     SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
     SessionEventToolReplyKind, SessionOutcomeRubric,
 };
+#[cfg(test)]
+use awaken_managed_session_events::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
 use awaken_managed_session_events::{FactKey, FactProvenance, FactRole};
 #[cfg(test)]
 use awaken_session_execution_contract::SessionThreadToolReply;
 use awaken_session_execution_contract::{
     CoordinatedThreadLink, CoordinatedThreadTarget, SessionThreadTarget,
-    session_agent_report_messages, session_agent_report_text,
 };
 
 const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
@@ -333,7 +333,6 @@ fn projection_error(error: awaken_managed_session_events::ProjectionError) -> St
 /// no cursor, cache, or projection state.
 struct ChildTranscriptProjection<'a> {
     thread_id: &'a str,
-    agent_name: &'a str,
     advisor_model: Option<&'a str>,
     messages: &'a [awaken_agent_contract::agent::message::Message],
     lifecycle_events: &'a [RunLifecycleEvent],
@@ -501,16 +500,6 @@ fn primary_thread_status_kind(
             agent_name,
         },
     }
-}
-
-/// Append one primary-Thread lifecycle projection as a timeline fact.
-fn push_primary_thread_status(
-    record: &mut SessionRecord,
-    key: FactKey,
-    status: PrimaryThreadStatusProjection,
-) -> String {
-    let kind = primary_thread_status_kind(record, status);
-    record.push_fact(key, kind)
 }
 
 /// Canonical deterministic id shared by root/child live previews and their
@@ -711,7 +700,6 @@ enum ValidatedEventBatchDrive {
 
 mod admission;
 mod committed_projection;
-mod coordination_receipts;
 mod delivery;
 #[cfg(test)]
 mod event_role;
@@ -721,6 +709,7 @@ pub(crate) use delivery::{CommittedDeliveryPage, CommittedEventDelivery, session
 mod lifecycle_projection;
 mod recovery;
 mod stream;
+mod timeline_encoding;
 mod transcript_projection;
 
 #[cfg(test)]
