@@ -15,6 +15,7 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     AnyDispatchStore, CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, DispatchState,
     FencedStreamCheckpointStore, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
@@ -38,9 +39,7 @@ use awaken_runtime_contract::{
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_coordinator_client::HttpDispatchQueue;
-use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock,
-};
+use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
 
 fn activation(run: &str, thread: &str) -> RunActivation {
     RunActivation::new(
@@ -262,7 +261,7 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
         WorkerDispatchService::new(
             mem,
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(10)),
+            Arc::new(ManualClock::new(10)),
             Arc::new(FixedWorkerLeasePolicy::new(1_000)),
         )
         .with_local_credential_capabilities(capabilities)
@@ -329,7 +328,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
     for fail in [false, true] {
         let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(10));
         let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
-        let clock = Arc::new(ManualWorkerClock::new(10));
+        let clock = Arc::new(ManualClock::new(10));
         let run_id = if fail {
             "delivery-fail"
         } else {
@@ -447,7 +446,7 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
-    let clock = Arc::new(ManualWorkerClock::new(0));
+    let clock = Arc::new(ManualClock::new(0));
     let service = Arc::new(
         WorkerDispatchService::new(
             mem.clone() as Arc<dyn ControlDispatchQueue>,
@@ -584,7 +583,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         })
         .await
         .expect("seed committed recovery truth");
-    let clock = Arc::new(ManualWorkerClock::new(0));
+    let clock = Arc::new(ManualClock::new(0));
     let service = Arc::new(
         WorkerDispatchService::new(
             mem.clone() as Arc<dyn ControlDispatchQueue>,
@@ -908,7 +907,7 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let mem = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
-    let clock = Arc::new(ManualWorkerClock::new(0));
+    let clock = Arc::new(ManualClock::new(0));
     let (dispatch, capabilities) = credential_dispatch("credential-run", "credential-thread");
     let service = Arc::new(
         WorkerDispatchService::new(

@@ -11,6 +11,7 @@ use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     ApplicationError, AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus,
     ClosedAttemptExecution, ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt,
@@ -24,9 +25,7 @@ use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock};
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };
-use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock,
-};
+use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, Semaphore};
 
@@ -383,7 +382,7 @@ impl Fixture {
         let service = WorkerDispatchService::new(
             store.clone(),
             Arc::new(HeaderWorkerAuthenticator),
-            Arc::new(ManualWorkerClock::new(200)),
+            Arc::new(ManualClock::new(200)),
             Arc::new(FixedWorkerLeasePolicy::new(budget)),
         )
         .with_worker_directory(directory.clone(), 10_000)

@@ -3,6 +3,8 @@
 //! Actual TokenReview + HTTP + reopened SQLite + independently assembled stop.
 //! The shared k3d harness owns the isolated cluster; no fake provider receipts.
 use super::*;
+use awaken_lease_contract::WallClockExt;
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::ControlDispatchQueue;
 use awaken_dispatch::{
     AttemptAdmission, DispatchQueue, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
@@ -13,9 +15,7 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_worker_registry::SqliteWorkerDirectory;
 use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_upstream};
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;
-use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, ManualWorkerClock, WorkerClock, WorkerUpstream,
-};
+use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
 use k8s_openapi::api::authentication::v1::TokenRequest;
 use k8s_openapi::api::core::v1::{Namespace, Pod, ServiceAccount};
 use kube::api::{DeleteParams, Patch, PatchParams, PostParams};
@@ -102,7 +102,7 @@ impl Server {
 async fn coordinator(
     files: &std::path::Path,
     transport: &WorkerTransport,
-    clock: Arc<ManualWorkerClock>,
+    clock: Arc<ManualClock>,
 ) -> (String, Arc<SqliteDispatchStore>, Server) {
     let store = Arc::new(
         // The test clock advances only while the first server is down. Freeze
@@ -253,7 +253,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     let files = tempfile::tempdir().unwrap();
     let old_token = files.path().join("old-token");
     let next_token = files.path().join("next-token");
-    let clock = Arc::new(ManualWorkerClock::new(100));
+    let clock = Arc::new(ManualClock::new(100));
     let (address, store, server) = coordinator(files.path(), &transport, clock.clone()).await;
     std::fs::write(
         &old_token,

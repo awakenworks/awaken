@@ -41,9 +41,7 @@ use awaken_runtime_contract::snapshot::{
 use awaken_store_postgres::PostgresCommitCoordinator;
 use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_coordinator_client::RemoteClaimedRunCommit;
-use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock,
-};
+use awaken_worker_transport_security::{FixedWorkerLeasePolicy, HeaderWorkerAuthenticator};
 use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -234,7 +232,7 @@ async fn active_active_control_child() {
         WorkerDispatchService::new(
             dispatch.clone(),
             authenticator.clone(),
-            Arc::new(SystemWorkerClock),
+            awaken_lease_contract::system_clock(),
             Arc::new(FixedWorkerLeasePolicy::new(120_000)),
         )
         .with_worker_directory(directory.clone(), 120_000)

@@ -6,6 +6,7 @@ mod postgres_support;
 
 use std::sync::Arc;
 
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     MemoryDispatchStore, WorkerDirectory, WorkerManifest, WorkerRegistration, WorkerState,
 };
@@ -17,7 +18,7 @@ use awaken_coordinator_client::WorkerControlClient;
 use awaken_worker_transport_security::kubernetes::{
     KubernetesPodIdentity, KubernetesWorkerAuthenticator, KubernetesWorkerRequestAuthorizer,
 };
-use awaken_worker_transport_security::{FixedWorkerLeasePolicy, ManualWorkerClock, WorkerUpstream};
+use awaken_worker_transport_security::{FixedWorkerLeasePolicy, WorkerUpstream};
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 
@@ -31,7 +32,7 @@ fn manifest() -> WorkerManifest {
 struct Fixture {
     address: String,
     directory: Arc<dyn WorkerDirectory>,
-    clock: Arc<ManualWorkerClock>,
+    clock: Arc<ManualClock>,
     files: tempfile::TempDir,
     server: tokio::task::JoinHandle<()>,
 }
@@ -67,7 +68,7 @@ impl Fixture {
             std::time::Duration::from_secs(2),
         )
         .unwrap();
-        let clock = Arc::new(ManualWorkerClock::new(100));
+        let clock = Arc::new(ManualClock::new(100));
         let service = WorkerDispatchService::new(
             Arc::new(MemoryDispatchStore::new(
                 awaken_lease_contract::system_clock(),

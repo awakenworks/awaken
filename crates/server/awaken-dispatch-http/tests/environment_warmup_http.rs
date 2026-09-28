@@ -1,9 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use awaken_dispatch_http::worker_environment_warmup_router_with_clock;
+use awaken_lease_testkit::ManualClock;
+use awaken_dispatch_http::worker_environment_warmup_router;
 use awaken_dispatch_testkit::worker_http::ready_worker;
-use awaken_worker_transport_security::{HeaderWorkerAuthenticator, ManualWorkerClock};
+use awaken_worker_transport_security::HeaderWorkerAuthenticator;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -67,11 +68,11 @@ async fn warmup_projection_preserves_source_failure_and_identity_fencing() {
         result: Ok(Vec::new()),
         calls: AtomicUsize::new(0),
     });
-    let success_router = worker_environment_warmup_router_with_clock(
+    let success_router = worker_environment_warmup_router(
         success.clone(),
         directory.clone(),
         Arc::new(HeaderWorkerAuthenticator),
-        Arc::new(ManualWorkerClock::new(0)),
+        Arc::new(ManualClock::new(0)),
     );
 
     let (status, body) = post(
@@ -98,11 +99,11 @@ async fn warmup_projection_preserves_source_failure_and_identity_fencing() {
         result: Err("catalog unavailable".into()),
         calls: AtomicUsize::new(0),
     });
-    let failure_router = worker_environment_warmup_router_with_clock(
+    let failure_router = worker_environment_warmup_router(
         failure.clone(),
         directory,
         Arc::new(HeaderWorkerAuthenticator),
-        Arc::new(ManualWorkerClock::new(0)),
+        Arc::new(ManualClock::new(0)),
     );
     let (status, body) = post(
         &failure_router,

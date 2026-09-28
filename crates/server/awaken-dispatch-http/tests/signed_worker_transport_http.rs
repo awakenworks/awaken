@@ -18,6 +18,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     AttemptAdmission, ClaimedStreamPublisher as _, DispatchQueue, MemoryDispatchStore,
     RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory,
@@ -25,8 +26,7 @@ use awaken_dispatch::{
     WorkerSnapshot, WorkerState,
 };
 use awaken_dispatch_http::{
-    WorkerDispatchService, dispatch_transport_router_with_service,
-    worker_environment_warmup_router_with_clock,
+    WorkerDispatchService, dispatch_transport_router_with_service, worker_environment_warmup_router,
 };
 use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -36,14 +36,13 @@ use awaken_runtime_contract::snapshot::{
 use awaken_store_inmem::MemoryStreamSink;
 use awaken_coordinator_client::{WorkerControlClient, WorkerControlSessionClient};
 use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, ManualWorkerClock, SignedWorkerAuthenticator,
-    SignedWorkerRequestAuthorizer, WorkerRequestAuthenticator, WorkerSigningCredential,
-    WorkerUpstream,
+    FixedWorkerLeasePolicy, SignedWorkerAuthenticator, SignedWorkerRequestAuthorizer,
+    WorkerRequestAuthenticator, WorkerSigningCredential, WorkerUpstream,
 };
 
 #[derive(Default)]
 struct RecordingSessionControl {
-    clock: Option<Arc<ManualWorkerClock>>,
+    clock: Option<Arc<ManualClock>>,
     projection: Mutex<Option<awaken_session_realization_contract::FrozenSessionProjection>>,
     activations: Mutex<usize>,
     acknowledgements: Mutex<usize>,
@@ -83,7 +82,7 @@ impl RecordingSessionControl {
         awaken_session_realization_contract::SessionRealizationLeaseReceipt,
         awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
-        use awaken_worker_transport_security::WorkerClock as _;
+        use awaken_lease_contract::WallClockExt as _;
         // The same injected authority clock drives HTTP admission and response
         // publication. Fixtures rejected before Control need no clock at all.
         awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
@@ -872,7 +871,7 @@ fn standard_worker_dispatch(activation: RunActivation) -> RunDispatch {
 /// A1 C1->E1; A2 C2->E2; A3 C3->E3; A4 C4->E2 over real HTTP.
 #[tokio::test(flavor = "multi_thread")]
 async fn signed_identity_covers_register_heartbeat_and_dispatch() {
-    let clock = Arc::new(ManualWorkerClock::new(10_000));
+    let clock = Arc::new(ManualClock::new(10_000));
     let credential = WorkerSigningCredential::new(
         "signed-http-worker",
         "rotation-1",
@@ -880,8 +879,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         b"test-only-signing-secret".to_vec(),
     )
     .unwrap();
-    let authenticator = SignedWorkerAuthenticator::new(credential.clone())
-        .with_clock(clock.clone())
+    let authenticator = SignedWorkerAuthenticator::new(credential.clone(), clock.clone())
         .with_time_policy(60_000, 0);
     let authenticator: Arc<dyn WorkerRequestAuthenticator> = Arc::new(authenticator);
     let directory = Arc::new(TestWorkerDirectory::default());
@@ -926,7 +924,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
     };
     let router = dispatch_transport_router_with_service(Arc::new(service)).merge(
-        worker_environment_warmup_router_with_clock(
+        worker_environment_warmup_router(
             Arc::new(StaticEnvironmentWarmups(vec![warmup])),
             directory.clone(),
             authenticator,
@@ -950,9 +948,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
 
     let authorizer = Arc::new(
-        SignedWorkerRequestAuthorizer::new(credential)
-            .with_clock(clock.clone())
-            .with_assertion_ttl_ms(10_000),
+        SignedWorkerRequestAuthorizer::new(credential, clock.clone()).with_assertion_ttl_ms(10_000),
     );
     let bootstrap = WorkerUpstream::new(format!("http://{address}"))
         .with_worker_id("signed-http-worker")
@@ -2794,9 +2790,11 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
     let directory = Arc::new(TestWorkerDirectory::default());
     // The dispatch port reads "now" from its store; mirror the service clock.
     let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
-    let service =
-        WorkerDispatchService::local(Arc::new(MemoryDispatchStore::new(dispatch_clock.clone())))
-            .with_worker_directory(directory.clone(), 30_000);
+    let service = WorkerDispatchService::local(
+        Arc::new(MemoryDispatchStore::new(dispatch_clock.clone())),
+        awaken_lease_contract::system_clock(),
+    )
+    .with_worker_directory(directory.clone(), 30_000);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let router = dispatch_transport_router_with_service(Arc::new(service));
@@ -2945,9 +2943,10 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         .await
         .unwrap();
     let queued_before = dispatch.list_dispatches().await.unwrap();
-    let service = WorkerDispatchService::local(dispatch.clone())
-        .with_worker_directory(directory.clone(), 30_000)
-        .with_session_control(session_control.clone());
+    let service =
+        WorkerDispatchService::local(dispatch.clone(), awaken_lease_contract::system_clock())
+            .with_worker_directory(directory.clone(), 30_000)
+            .with_session_control(session_control.clone());
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -3189,8 +3188,8 @@ async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
     let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let session_control = Arc::new(RecordingSessionControl::default());
     *session_control.projection.lock().unwrap() = Some(frozen_projection());
-    let service =
-        WorkerDispatchService::local(dispatch).with_session_control(session_control.clone());
+    let service = WorkerDispatchService::local(dispatch, awaken_lease_contract::system_clock())
+        .with_session_control(session_control.clone());
     let router = dispatch_transport_router_with_service(Arc::new(service));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

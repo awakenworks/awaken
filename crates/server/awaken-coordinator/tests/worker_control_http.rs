@@ -8,6 +8,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     DispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
     WORKER_LOCAL_CREDENTIALS_CAPABILITY,
@@ -26,7 +27,7 @@ use awaken_worker_registry::{
 use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_coordinator_client::{WorkerControlClient, WorkerRegistrationError};
 use awaken_worker_transport_security::{
-    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, WorkerUpstream,
+    FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, WorkerUpstream,
 };
 
 // Registration requires explicit current protocol evidence. Default/ANY remains
@@ -42,7 +43,7 @@ fn current_manifest() -> WorkerManifest {
 
 #[tokio::test]
 async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
-    let clock = Arc::new(ManualWorkerClock::new(100));
+    let clock = Arc::new(ManualClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let service = WorkerDispatchService::new(
         Arc::new(MemoryDispatchStore::new(
@@ -181,7 +182,7 @@ async fn authenticated_header_cannot_register_a_different_worker_id() {
             awaken_lease_contract::system_clock(),
         )) as Arc<dyn ControlDispatchQueue>,
         Arc::new(HeaderWorkerAuthenticator),
-        Arc::new(ManualWorkerClock::new(0)),
+        Arc::new(ManualClock::new(0)),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
     )
     .with_worker_directory(directory, 30);
@@ -258,7 +259,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
     // Coverage rationale: `registered http claim skips incompatible work and` is one independent
     // branch selecting `uses incarnation owner`; a multi-row decision table is not applicable, and
     // sibling tests own alternate causes.
-    let clock = Arc::new(ManualWorkerClock::new(100));
+    let clock = Arc::new(ManualClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
     // The dispatch port reads "now" from its store; the Worker registry keeps
     // its own clock, so this test drives both authorities explicitly.
@@ -385,7 +386,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     // a delayed pre-rotation heartbeat cannot roll the observation back.
     // Rules: R1 N/N/live=>E1; R2 N+1/N/live=>reject; R3 N+1/N+1/live=>E2;
     // R4 any/exact/expired=>reject; R5 stale sequence carrying N=>E3.
-    let clock = Arc::new(ManualWorkerClock::new(100));
+    let clock = Arc::new(ManualClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
     // The dispatch port reads "now" from its store; the Worker registry keeps
     // its own clock, so this test drives both authorities to the same reading.
