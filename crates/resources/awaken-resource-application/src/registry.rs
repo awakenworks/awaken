@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use awaken_lease_contract::WallClock;
+
 use awaken_resource_contract::{
     ChangeMemoryStoreState, ChangeRepositoryState, ConfigVersion, ExecutionResourceResolver,
     InsertOutcome, LiveResourceBindingVerifier, MemoryStoreAggregate, MemoryStoreConfigVersion,
@@ -17,38 +19,17 @@ use awaken_resource_contract::{
     UpdateMemoryStoreProfile,
 };
 
-pub trait RegistryClock: Send + Sync {
-    fn now_unix_nanos(&self) -> u64;
-}
-
-#[derive(Debug, Default)]
-pub struct SystemRegistryClock;
-
-impl RegistryClock for SystemRegistryClock {
-    fn now_unix_nanos(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
-            .unwrap_or_default()
-    }
-}
-
 pub struct RegistryApplication {
     repository: Arc<dyn ResourceRegistryRepository>,
-    clock: Arc<dyn RegistryClock>,
+    /// The Resources context's one clock: every profile, publication and state
+    /// timestamp this application commits is its reading, the same clock the
+    /// registration commands of that context stamp creation with.
+    clock: Arc<dyn WallClock>,
 }
 
 impl RegistryApplication {
     #[must_use]
-    pub fn new(repository: Arc<dyn ResourceRegistryRepository>) -> Self {
-        Self::with_clock(repository, Arc::new(SystemRegistryClock))
-    }
-
-    #[must_use]
-    pub fn with_clock(
-        repository: Arc<dyn ResourceRegistryRepository>,
-        clock: Arc<dyn RegistryClock>,
-    ) -> Self {
+    pub fn new(repository: Arc<dyn ResourceRegistryRepository>, clock: Arc<dyn WallClock>) -> Self {
         Self { repository, clock }
     }
 
@@ -282,7 +263,7 @@ impl ResourceAdministration for RegistryApplication {
             command.name,
             command.description,
             command.metadata,
-            self.clock.now_unix_nanos(),
+            self.clock.now().as_unix_nanos_u64(),
         );
         self.replace_memory(&id, stored).await
     }
@@ -299,7 +280,7 @@ impl ResourceAdministration for RegistryApplication {
             &command.workspace_id,
             command.expected_current,
             command.config,
-            self.clock.now_unix_nanos(),
+            self.clock.now().as_unix_nanos_u64(),
         )?;
         self.replace_memory(&id, stored).await
     }
@@ -315,7 +296,7 @@ impl ResourceAdministration for RegistryApplication {
         stored.aggregate.change_state(
             &command.workspace_id,
             command.state,
-            self.clock.now_unix_nanos(),
+            self.clock.now().as_unix_nanos_u64(),
         )?;
         self.replace_memory(&id, stored).await
     }
@@ -380,7 +361,7 @@ impl ResourceAdministration for RegistryApplication {
             &command.workspace_id,
             command.expected_current,
             command.config,
-            self.clock.now_unix_nanos(),
+            self.clock.now().as_unix_nanos_u64(),
         )?;
         self.replace_repository(&id, stored).await
     }
@@ -396,7 +377,7 @@ impl ResourceAdministration for RegistryApplication {
         stored.aggregate.change_state(
             &command.workspace_id,
             command.state,
-            self.clock.now_unix_nanos(),
+            self.clock.now().as_unix_nanos_u64(),
         )?;
         self.replace_repository(&id, stored).await
     }
@@ -489,14 +470,6 @@ mod tests {
         ));
     }
 
-    struct FixedClock(u64);
-
-    impl RegistryClock for FixedClock {
-        fn now_unix_nanos(&self) -> u64 {
-            self.0
-        }
-    }
-
     #[tokio::test]
     async fn application_owns_profile_timestamps_with_an_injected_clock() {
         // Responsibility test: driving adapters supply intent but never time.
@@ -506,7 +479,12 @@ mod tests {
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open test Registry repository"),
         );
-        let registry = RegistryApplication::with_clock(repository, Arc::new(FixedClock(42)));
+        let registry = RegistryApplication::new(
+            repository,
+            Arc::new(awaken_lease_testkit::FixedClock::at(
+                awaken_lease_contract::UtcTime::from_unix_nanos(42),
+            )),
+        );
         registry
             .register_memory_store(RegisterMemoryStore {
                 definition: MemoryStoreDefinition {
@@ -556,7 +534,7 @@ mod tests {
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open test Registry repository"),
         );
-        let registry = RegistryApplication::new(repository);
+        let registry = RegistryApplication::new(repository, awaken_lease_contract::system_clock());
         for (id, state) in [
             ("active", ResourceState::Active),
             ("archived", ResourceState::Archived),

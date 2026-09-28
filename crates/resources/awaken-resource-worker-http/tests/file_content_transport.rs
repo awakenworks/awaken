@@ -315,6 +315,7 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         store.clone(),
         store.clone(),
         lifecycle,
+        awaken_lease_contract::system_clock(),
     ));
     let source = Arc::new(ApplicationFileContentSource::new(application));
     let service = Arc::new(
@@ -593,6 +594,7 @@ async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
         store.clone(),
         store,
         lifecycle,
+        awaken_lease_contract::system_clock(),
     ));
     let service = Arc::new(
         WorkerFileContentService::new(
@@ -683,6 +685,7 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
         store.clone(),
         store,
         lifecycle,
+        awaken_lease_contract::system_clock(),
     ));
     let service = Arc::new(
         WorkerFileContentService::new(
@@ -821,6 +824,7 @@ async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
         store.clone(),
         store,
         lifecycle,
+        awaken_lease_contract::system_clock(),
     ));
     let service = Arc::new(
         WorkerFileContentService::new(

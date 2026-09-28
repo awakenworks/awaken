@@ -26,6 +26,7 @@ pub struct ResourceAuthorities {
     skill_store: Arc<dyn SkillStore>,
     skill_lifecycle: Arc<crate::skill_lifecycle::ReferenceIndexedSkillStore>,
     reclamation: Arc<dyn ResourceReclamationRepository>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl ResourceAuthorities {
@@ -37,6 +38,7 @@ impl ResourceAuthorities {
         memory_repository: Arc<dyn MemoryRepository>,
         skill_store: Arc<dyn SkillStore>,
         reclamation: Arc<dyn ResourceReclamationRepository>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         let skill_lifecycle = Arc::new(crate::skill_lifecycle::ReferenceIndexedSkillStore::new(
             skill_store,
@@ -50,6 +52,7 @@ impl ResourceAuthorities {
             skill_store: skill_lifecycle.clone(),
             skill_lifecycle,
             reclamation,
+            clock,
         }
     }
 
@@ -87,5 +90,13 @@ impl ResourceAuthorities {
     #[must_use]
     pub fn reclamation(&self) -> Arc<dyn ResourceReclamationRepository> {
         self.reclamation.clone()
+    }
+
+    /// The Resources context's one clock, selected with the authorities: the
+    /// registry, the File, Memory-store and Repository commands and the Files
+    /// API all read it, so no Resource record mixes two timelines.
+    #[must_use]
+    pub fn clock(&self) -> Arc<dyn awaken_lease_contract::WallClock> {
+        self.clock.clone()
     }
 }

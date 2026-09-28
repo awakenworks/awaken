@@ -571,6 +571,7 @@ pub fn build_unscoped_resource_router() -> Router {
         memory_stores: resources.memory_stores(),
         skills: Some(authorities.skill_store()),
         purge: resources.purge_scheduler(),
+        clock: authorities.clock(),
     })
 }
 

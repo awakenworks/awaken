@@ -5,6 +5,8 @@ use super::*;
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn in_memory_process_stores() -> ProcessStores {
+    // The ephemeral process's one wall clock.
+    let clock = awaken_lease_contract::system_clock();
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let sessions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -20,7 +22,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
     ProcessStores {
         workspace_root: None,
         platform_workspace: SharedHost::mint_local_workspace(),
-        clock: awaken_lease_contract::system_clock(),
+        clock: clock.clone(),
         control: Some(ControlStores {
             catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
             credentials,
@@ -41,7 +43,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             ),
         }),
         coordinator: Some(CoordinatorStores {
-            resources: ephemeral_resources_application(),
+            resources: ephemeral_resources_application(clock),
             sessions: sessions.clone(),
             application_access: Arc::new(
                 awaken_coordinator::application_access_store::ApplicationAccessStore::open_in_memory()
@@ -149,9 +151,12 @@ pub(super) async fn open_local_process_stores(
     dir: &std::path::Path,
     key: &[u8; 32],
 ) -> Result<ProcessStores, String> {
+    // The local process's one wall clock, shared by Resources and every store.
+    let clock = awaken_lease_contract::system_clock();
     let resources = open_resources_application(
         config::ResourceStoreBackend::Embedded(dir.to_path_buf()),
         PostgresSchemaMode::Migrate,
+        clock.clone(),
     )
     .await?;
     open_process_stores(ProcessStoreOpenOptions {
@@ -167,7 +172,7 @@ pub(super) async fn open_local_process_stores(
         seal_key: Some(key),
         role: config::Role::AllInOne,
         postgres_schema: PostgresSchemaMode::Migrate,
-        clock: awaken_lease_contract::system_clock(),
+        clock,
     })
     .await
 }

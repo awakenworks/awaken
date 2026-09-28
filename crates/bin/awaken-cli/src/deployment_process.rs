@@ -91,7 +91,8 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         worker_directory.clone(),
     )?;
     let resources =
-        open_resources_application(deployment.resources.clone(), postgres_schema).await?;
+        open_resources_application(deployment.resources.clone(), postgres_schema, clock.clone())
+            .await?;
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
         coordinator: deployment.coordinator.clone(),
@@ -257,10 +258,16 @@ pub(crate) async fn migrate_deployment_schema_prepared(
     let publish_local_workspace = prepared.publishes_local_workspace();
     let platform_workspace = prepared.platform_workspace_before_write()?;
     let manifest = migration_manifest(deployment.role);
+    // The migration process's one wall clock.
+    let clock = awaken_lease_contract::system_clock();
     let resources = if manifest.contains(&MigrationComponent::Resources) {
         Some(
-            open_resources_application(deployment.resources.clone(), PostgresSchemaMode::Migrate)
-                .await?,
+            open_resources_application(
+                deployment.resources.clone(),
+                PostgresSchemaMode::Migrate,
+                clock.clone(),
+            )
+            .await?,
         )
     } else {
         None
@@ -278,7 +285,7 @@ pub(crate) async fn migrate_deployment_schema_prepared(
             seal_key: key,
             role: deployment.role,
             postgres_schema: PostgresSchemaMode::Migrate,
-            clock: awaken_lease_contract::system_clock(),
+            clock,
         })
         .await
         .map(drop)?;

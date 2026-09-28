@@ -1882,6 +1882,8 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-file-store",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-memory-store",
  "awaken-resource-contract",
  "awaken-resource-reclaimer",
@@ -1889,7 +1891,6 @@ dependencies = [
  "awaken-session-configuration-contract",
  "awaken-session-resource-contract",
  "awaken-skill-store",
- "chrono",
  "rusqlite",
  "tempfile",
  "tokio",
@@ -1916,6 +1917,7 @@ name = "awaken-resource-persistence"
 version = "1.0.0"
 dependencies = [
  "awaken-file-store",
+ "awaken-lease-contract",
  "awaken-memory-store",
  "awaken-resource-application",
  "awaken-resource-contract",

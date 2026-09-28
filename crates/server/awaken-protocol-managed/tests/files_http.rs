@@ -15,7 +15,8 @@ use tower::ServiceExt;
 mod support;
 
 fn router() -> Router {
-    files_router(support::resources::ephemeral_resources().files())
+    let resources = support::resources::ephemeral_resources();
+    files_router(resources.files(), resources.authorities().clock())
 }
 
 const BOUNDARY: &str = "X-AWAKEN-BOUNDARY";
@@ -616,7 +617,7 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
         .create_file(record)
         .await
         .unwrap();
-    let router = files_router(resources.files());
+    let router = files_router(resources.files(), resources.authorities().clock());
 
     let body = get(&router, "/v1/files?scope_id=deleted-session")
         .await
@@ -756,4 +757,104 @@ async fn file_routes_require_a_preselected_workspace() {
             StatusCode::NOT_FOUND
         );
     }
+}
+
+// Test design: file_expiry_and_creation_share_the_one_resources_clock
+// Cause/effect decision table. One ManualClock is the Resources clock (the File
+// application's and the Files API's); the upload happens at t0 =
+// 1_700_000_000_000 ms (2023-11-14T22:13:20Z) with expires_in_seconds = 3600
+// (the smallest relative expiry the API admits).
+// | Rule | Clock at       | Effect                                                 |
+// | R1   | t0 (upload)    | created_at = 2023-11-14T22:13:20Z and                  |
+// |      |                | expires_at = 2023-11-14T23:13:20.000Z, both from the   |
+// |      |                | injected clock rather than the host                     |
+// | R2   | deadline - 1ms | download of an output carrying that expiry: 200 (live)  |
+// | R3   | deadline       | download 404 expired: the instant at the deadline is    |
+// |      |                | already past it (the one expiry law)                   |
+#[tokio::test]
+async fn file_expiry_and_creation_share_the_one_resources_clock() {
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(1_700_000_000_000));
+    let resources = support::resources::resources_at(
+        std::sync::Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+        clock.clone(),
+    );
+    let router = files_router(resources.files(), clock.clone());
+
+    let mut body = multipart_file("expiring.txt", b"expiring bytes");
+    let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
+    body.truncate(body.len() - closing.len());
+    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"expires_in_seconds\"\r\n\r\n3600\r\n",
+    );
+    body.extend_from_slice(&closing);
+    // The cursor-metadata surface is the one that reports `expires_at`.
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/v1/files?beta=true")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "R1 upload {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let created: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        created["created_at"], "2023-11-14T22:13:20Z",
+        "R1 {created}"
+    );
+    assert_eq!(
+        created["expires_at"], "2023-11-14T23:13:20.000Z",
+        "R1 {created}"
+    );
+
+    // Uploads are not downloadable; a generated output carrying the exact
+    // `expires_at` the upload minted exercises the download-time judgement.
+    let authorities = resources.authorities();
+    let blob_id = authorities
+        .file_store()
+        .put(b"expiring output")
+        .await
+        .unwrap();
+    authorities
+        .file_catalog()
+        .create_file(FileRecord {
+            id: "file_expiring_output".into(),
+            workspace_id: "test".into(),
+            blob_id,
+            filename: "output.txt".into(),
+            mime_type: "text/plain".into(),
+            size_bytes: 15,
+            created_at: created["created_at"].as_str().unwrap().into(),
+            expires_at: Some(created["expires_at"].as_str().unwrap().into()),
+            downloadable: true,
+            scope_id: None,
+            logical_path: None,
+            harvest_key: None,
+            artifact_idempotency_scope: None,
+            deleted: false,
+        })
+        .await
+        .unwrap();
+    let content = "/v1/files/file_expiring_output/content";
+
+    clock.set(1_700_003_599_999);
+    get(&router, content).await.expect(StatusCode::OK);
+
+    clock.set(1_700_003_600_000);
+    get(&router, content).await.expect(StatusCode::NOT_FOUND);
 }

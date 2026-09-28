@@ -467,6 +467,7 @@ impl SharedHost {
                 file_store.clone(),
                 file_catalog.clone(),
                 reclamation.clone(),
+                awaken_lease_contract::system_clock(),
             )) as Arc<dyn awaken_resource_contract::FileApplicationService>
         });
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
@@ -747,6 +748,7 @@ impl SharedHost {
                 self.file_store.clone(),
                 self.file_catalog.clone(),
                 repository.clone(),
+                awaken_lease_contract::system_clock(),
             ))
                 as Arc<dyn awaken_resource_contract::FileApplicationService>;
             self.file_content_source = Arc::new(

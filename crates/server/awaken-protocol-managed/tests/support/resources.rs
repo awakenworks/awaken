@@ -8,12 +8,21 @@ use awaken_resource_contract::SkillStore;
 /// Build the canonical Resources application consumed during process startup,
 /// with an injectable Skill repository for durability-specific protocol cases.
 pub fn resources(skill_store: Arc<dyn SkillStore>) -> ResourcesApplication {
+    resources_at(skill_store, awaken_lease_contract::system_clock())
+}
+
+/// The same application over an explicit Resources clock, shared by the
+/// registry and every Resources command exactly as process startup shares it.
+pub fn resources_at(
+    skill_store: Arc<dyn SkillStore>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> ResourcesApplication {
     let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Registry"),
     );
-    let registry = Arc::new(RegistryApplication::new(storage.clone()));
+    let registry = Arc::new(RegistryApplication::new(storage.clone(), clock.clone()));
     ResourcesApplication::new(ResourceAuthorities::new(
         registry,
         files.clone(),
@@ -21,6 +30,7 @@ pub fn resources(skill_store: Arc<dyn SkillStore>) -> ResourcesApplication {
         Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
         skill_store,
         storage,
+        clock,
     ))
 }
 

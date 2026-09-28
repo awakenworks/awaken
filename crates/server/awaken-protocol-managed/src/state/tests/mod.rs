@@ -11,7 +11,10 @@ fn ephemeral_resource_registry() -> awaken_resource_application::RegistryApplica
         awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Registry"),
     );
-    awaken_resource_application::RegistryApplication::new(storage)
+    awaken_resource_application::RegistryApplication::new(
+        storage,
+        awaken_lease_contract::system_clock(),
+    )
 }
 
 /// A runtime that records every `end_session` thread it is asked to tear down,

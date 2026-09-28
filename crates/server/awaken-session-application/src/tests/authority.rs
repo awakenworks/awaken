@@ -708,8 +708,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     // Decision rules: R1 absent=>E1; R2 present+C2+C3=>E2; R3
     // present+!C2+C3=>E3; R4 present+C2+!C3=>E3. Registry inventory is the one
     // replay receipt; the Session application creates no side store or cache.
-    let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
-    let registry = resources.authorities().resource_registry();
+    let registry = super::creation::ephemeral_resource_registry();
     let repository_id = managed_repository_id("repo-replay");
     let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -835,8 +834,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     // | S9 activation | pass | Replayed | Applied | fail | E5 + E4 |
     // | S10 activation | pass | Replayed | Replayed | fail | E5 |
     // | S11/S12 success/replay | pass | Applied/Replayed | Applied/Replayed | pass/already Active | E6 + E5 |
-    let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
-    let inner = resources.authorities().resource_registry();
+    let inner = super::creation::ephemeral_resource_registry();
     let registry = Arc::new(FaultInjectingResourceRegistry::new(inner.clone()));
     let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
     let app = repository_saga_application(registry.clone(), ingress.clone());
@@ -1163,8 +1161,7 @@ async fn repository_retirement_requires_durable_owner_before_any_vault_effect() 
     // |---|---|---|---|---|---|
     // | A1 | present | mismatch | forged | yes | E2 + E4, no Vault effect |
     // | A2 | absent | n/a | forged | yes | E3 + E4, no Vault effect |
-    let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
-    let registry = resources.authorities().resource_registry();
+    let registry = super::creation::ephemeral_resource_registry();
     let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
     let sessions: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -1259,9 +1256,7 @@ async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_
     let dir = tempfile::tempdir().expect("temporary Session repository");
     let path = dir.path().join("repository-retirement.db");
     let path = path.to_string_lossy().to_string();
-    let resources_authority =
-        awaken_resource_persistence::ephemeral().expect("Resource authorities");
-    let registry = resources_authority.authorities().resource_registry();
+    let registry = super::creation::ephemeral_resource_registry();
     let ingress = Arc::new(FaultInjectingCredentialMaterialIngress::default());
     let session_id = "retirement-restart";
     let credential = awaken_credential_contract::CredentialRef {

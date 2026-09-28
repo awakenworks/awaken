@@ -100,12 +100,11 @@ fn input(
 }
 
 async fn resource_registry() -> std::sync::Arc<awaken_resource_application::RegistryApplication> {
-    let storage = std::sync::Arc::new(
-        awaken_resource_store::SqliteResourceStore::in_memory()
-            .expect("open ephemeral Resource Registry"),
-    );
+    let storage = awaken_resource_store::SqliteResourceStore::in_memory()
+        .expect("open ephemeral Resource Registry");
     let registry = std::sync::Arc::new(awaken_resource_application::RegistryApplication::new(
-        storage,
+        std::sync::Arc::new(storage),
+        awaken_lease_contract::system_clock(),
     ));
     for id in [
         "mem_1",

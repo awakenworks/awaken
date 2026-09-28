@@ -802,6 +802,7 @@ pub(super) async fn prepare_runtime_routers(
             memory_stores: resource_application.memory_stores(),
             skills: Some(resource_authorities.skill_store()),
             purge: resource_application.purge_scheduler(),
+            clock: resource_authorities.clock(),
         });
     let coordinator = awaken_coordinator::build_coordinator_component(
         awaken_coordinator::CoordinatorDependencies {

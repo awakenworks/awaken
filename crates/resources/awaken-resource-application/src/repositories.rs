@@ -24,16 +24,20 @@ use awaken_resource_contract::{
 pub struct RepositoryApplication {
     registry: Arc<dyn ResourceRegistry>,
     credentials: Arc<dyn RepositoryCredentialValidator>,
+    /// Stamps a registration's creation instant on the registry's timeline.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl RepositoryApplication {
     pub fn new(
         registry: Arc<dyn ResourceRegistry>,
         credentials: Arc<dyn RepositoryCredentialValidator>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             registry,
             credentials,
+            clock,
         }
     }
 
@@ -165,7 +169,7 @@ impl RepositoryApplicationService for RepositoryApplication {
                     metadata: Default::default(),
                     state: ResourceState::Active,
                     current_config_version: ConfigVersion::INITIAL,
-                    timestamps: ResourceTimestamps::created(super::now_nanos()),
+                    timestamps: ResourceTimestamps::created(self.clock.now().as_unix_nanos_u64()),
                 },
                 initial_config: RepositoryConfigVersion {
                     repository_id: id.into(),

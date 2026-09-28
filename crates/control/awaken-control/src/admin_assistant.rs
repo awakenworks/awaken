@@ -1655,6 +1655,7 @@ mod tests {
         );
         let registry = Arc::new(awaken_resource_application::RegistryApplication::new(
             storage,
+            awaken_lease_contract::system_clock(),
         ));
         for (id, state) in [
             ("mem-1", ResourceState::Active),

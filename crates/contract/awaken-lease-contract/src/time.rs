@@ -75,6 +75,13 @@ impl UtcTime {
         self.0.as_nanos()
     }
 
+    /// Unix nanoseconds in the `u64` column the Resource registry persists,
+    /// saturating at `u64::MAX` (the year 2554) instead of wrapping.
+    #[must_use]
+    pub fn as_unix_nanos_u64(self) -> u64 {
+        u64::try_from(self.0.as_nanos()).unwrap_or(u64::MAX)
+    }
+
     /// The RFC 3339 UTC spelling a durable record carries in an observation
     /// field, at millisecond precision. Whole seconds keep the historical
     /// `...:SSZ` spelling and trailing fractional zeros are dropped, so the
@@ -82,6 +89,17 @@ impl UtcTime {
     #[must_use]
     pub fn to_rfc3339(self) -> String {
         utc::epoch_millis_to_rfc3339(self.as_epoch_ms())
+    }
+
+    /// The fixed-width `YYYY-MM-DDTHH:MM:SS.mmmZ` spelling, truncated to the
+    /// millisecond, for wire fields whose published shape always carries three
+    /// fractional digits (the Files API `expires_at`).
+    #[must_use]
+    pub fn to_rfc3339_millis(self) -> String {
+        let millis = i128::from(self.as_epoch_ms_i64());
+        let text = utc::format_rfc3339_utc_nanos(millis * 1_000_000);
+        let (whole, fraction) = text.split_once('.').expect("UTC codec renders a fraction");
+        format!("{whole}.{}Z", &fraction[..3])
     }
 
     /// The fixed-width `YYYY-MM-DDTHH:MM:SSZ` spelling, truncated to the whole
@@ -145,6 +163,13 @@ mod tests {
         let nanos = 1_700_000_000_123_456_789_u128;
         let fine = UtcTime::from_unix_nanos(nanos);
         assert_eq!(fine.as_unix_nanos(), nanos, "E3");
+        assert_eq!(fine.as_unix_nanos_u64(), 1_700_000_000_123_456_789, "E3");
+        let beyond_u64_nanos = UtcTime::from_duration_since_epoch(Duration::from_secs(u64::MAX));
+        assert_eq!(
+            beyond_u64_nanos.as_unix_nanos_u64(),
+            u64::MAX,
+            "E2 nanos saturate"
+        );
         assert_eq!(fine.as_epoch_ms(), 1_700_000_000_123, "E3");
 
         let ms = 1_709_164_800_250_u64;
@@ -180,9 +205,25 @@ mod tests {
             "R2"
         );
         assert_eq!(reading.to_rfc3339_secs().len(), 20, "R2");
+        assert_eq!(
+            reading.to_rfc3339_millis(),
+            "2027-01-15T08:00:00.999Z",
+            "R2"
+        );
+        assert_eq!(
+            UtcTime::UNIX_EPOCH.to_rfc3339_millis(),
+            "1970-01-01T00:00:00.000Z",
+            "R2"
+        );
+        assert_eq!(
+            UtcTime::parse_rfc3339(&reading.to_rfc3339_millis()),
+            Some(reading),
+            "R2 round trip"
+        );
         let far = UtcTime::from_epoch_ms(u64::MAX);
         assert_eq!(far.to_rfc3339(), "9999-12-31T23:59:59.999Z", "R3");
         assert_eq!(far.to_rfc3339_secs(), "9999-12-31T23:59:59Z", "R3");
+        assert_eq!(far.to_rfc3339_millis(), "9999-12-31T23:59:59.999Z", "R3");
         assert_eq!(UtcTime::parse_rfc3339("2026-02-29T00:00:00Z"), None, "R4");
         assert_eq!(UtcTime::parse_rfc3339("1969-12-31T23:59:59Z"), None, "R4");
         assert_eq!(

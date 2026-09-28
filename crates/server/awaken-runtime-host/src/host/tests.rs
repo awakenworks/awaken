@@ -500,13 +500,10 @@ fn install_recording_session_application(host: &Arc<SharedHost>) {
 }
 
 fn resource_registry() -> Arc<awaken_resource_application::RegistryApplication> {
-    let storage = Arc::new(
-        awaken_resource_store::SqliteResourceStore::in_memory()
-            .expect("open ephemeral Resource Registry"),
-    );
-    Arc::new(awaken_resource_application::RegistryApplication::new(
-        storage,
-    ))
+    let storage = awaken_resource_store::SqliteResourceStore::in_memory()
+        .expect("open ephemeral Resource Registry");
+    let clock = awaken_lease_contract::system_clock();
+    awaken_resource_application::RegistryApplication::new(Arc::new(storage), clock).into()
 }
 
 #[derive(Default)]
@@ -10405,6 +10402,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         raw_host
             .resource_reclamation()
             .expect("test lifecycle repository"),
+        awaken_lease_contract::system_clock(),
     ));
     raw_host = raw_host.with_file_application(
         application.clone(),
