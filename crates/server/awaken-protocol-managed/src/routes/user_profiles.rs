@@ -1,3 +1,4 @@
+// @formal entrypoint managed_user_profiles.capability_and_field_projection_is_total_exclusive_and_exact
 //! Managed User Profiles HTTP adapter over the Control-owned Data Subject application.
 
 use std::collections::BTreeMap;

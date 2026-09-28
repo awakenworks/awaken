@@ -1,3 +1,6 @@
+// @formal entrypoint remote_tool.invoke_at_most_once
+// @formal entrypoint remote_tool.protocol_version_requires_stable_v2_operation_identity
+// @formal entrypoint remote_tool.result_matches_operation
 //! The hand side (ADR-0044 D3): a value-returning tool server.
 //!
 //! [`HandSession`] is the pure request handler — a tool registry plus an

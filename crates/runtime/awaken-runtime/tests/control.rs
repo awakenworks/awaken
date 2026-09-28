@@ -1,3 +1,5 @@
+// @formal evidence live_inbox.attempt_scope_is_local_current_capability_gated_and_never_carried_over
+// @formal evidence tool.session_thread_composition
 //! Cancellation produces a terminal Cancelled outcome and DirectAttemptDriver
 //! is the concrete queue-less delivery seam.
 

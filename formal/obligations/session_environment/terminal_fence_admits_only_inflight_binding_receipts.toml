@@ -4,14 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.database_engine_correctness",
 ]
-evidence = [
-  "crates/server/awaken-session-application/src/application.rs",
-  "crates/server/awaken-session-executor/src/host/session/environment_realization.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/server/awaken-session-application/src/application.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''The closed active/terminal and terminal-cleanup Fenced/not-Fenced domain is exhaustive; the existing Environment receipt kernel separately proves exact receipt identity and phase.'''

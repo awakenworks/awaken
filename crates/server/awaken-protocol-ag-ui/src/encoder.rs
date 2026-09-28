@@ -1,3 +1,4 @@
+// @formal entrypoint ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
 //! Project a committed step into AG-UI events. The step fold is shared
 //! (`awaken_agent_contract::event`); this module owns the AG-UI *transcoder* —
 //! the `Fact -> AgUiEvent` mapping. The encoder is per-stream: it holds the

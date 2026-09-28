@@ -7,29 +7,11 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "formal/tla/CredentialEffectBoundary.tla",
-  "crates/contract/awaken-credential-contract/src/http_effect.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
   "formal/tla/CredentialEffectBoundary.cfg",
+  "formal/tla/CredentialEffectBoundary.tla",
   "scripts/ci/formal_credential_mutations.py",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-credential-materializer/src/claimed_materialization.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/recovery_credentials.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-credential-contract/src/http_effect.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/credential_admission.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/contract/awaken-runtime-contract/src/credential.rs",
-  "crates/contract/awaken-runtime-contract/src/execution.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-credential-materializer/src/claimed_materialization.rs",
-  "crates/server/awaken-credential-materializer/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Twelve opaque binding coordinates with two identities each (all 4096 initial match/mismatch combinations), independent one-step revision/generation/epoch advancement, three clock values with exact expiry at two, withdrawal and crash/restart. Observations retain effect-time authority; receipt negatives vary each coordinate independently. Thirty-three semantic mutants and six useful/rejection/history witnesses qualify the abstract relation, not universal Rust refinement or cryptographic/provider correctness.'''

@@ -1,3 +1,4 @@
+// @formal entrypoint authz.legacy_workspace_binding_migration_is_authority_preserving_and_idempotent
 use super::*;
 
 #[test]

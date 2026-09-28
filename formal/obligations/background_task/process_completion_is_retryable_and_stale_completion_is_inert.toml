@@ -2,20 +2,15 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/BackgroundTask.tla",
   "formal/tla/BackgroundTask.cfg",
-  "crates/runtime/awaken-ext-background-task/src/plugin.rs",
-  "crates/runtime/awaken-ext-background-task/tests/plugin_state.rs",
+  "formal/tla/BackgroundTask.tla",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-ext-background-task/src/plugin.rs",
-  "crates/runtime/awaken-ext-background-task/src/supervisor.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The named Kani harness directly invokes the sole production completion_fold_plan across committed-attempt absence/presence, owner equality and every u64 candidate/committed epoch pair. Only an exact owner+epoch selects StageRetainingCandidate; every strictly older epoch selects RetireStale; absent, same-epoch different-owner and newer candidates select Preserve. Repeating the exact inputs returns the same retained staging plan. The fixed Kani 0.67.0 run completed 266 checks with zero failures for the named harness under one job, an empty RUSTC_WRAPPER, a 600-second deadline, a 12 GiB cgroup memory ceiling and a /tmp target/build directory.'''

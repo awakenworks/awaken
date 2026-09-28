@@ -1,3 +1,7 @@
+// @formal entrypoint remote_worker.acknowledged_projection_is_monotonic
+// @formal entrypoint remote_worker.execution_requires_claimed_snapshot
+// @formal entrypoint remote_worker.pending_signal_is_consumed_by_commit
+// @formal entrypoint remote_worker.recovery_projection_is_committed_prefix
 //! Worker-local read projection loaded from committed Control-Node truth.
 //!
 //! The projection exists only to satisfy the runtime's synchronous read ports on

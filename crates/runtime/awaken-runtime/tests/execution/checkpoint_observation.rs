@@ -1,3 +1,4 @@
+// @formal evidence checkpoint.recovery_never_precedes_commit
 //! Checkpoint observation is an execution precondition, not best-effort absence.
 
 use super::*;

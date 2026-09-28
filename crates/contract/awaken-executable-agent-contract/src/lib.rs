@@ -1,3 +1,4 @@
+// @formal entrypoint executable_snapshot.pin_is_complete_exact_and_non_mixing
 //! Control-to-Coordinator executable Agent registration boundary.
 //!
 //! The values in this crate are transport commands configured from existing

@@ -1,3 +1,4 @@
+// @formal entrypoint remote_worker.terminal_scan_is_bounded_and_preserves_authority
 //! Bounded discovery shared by Worker and Host terminal reconciliation.
 //! The cursor schedules reads only; Dispatch and ThreadCommit retain authority.
 

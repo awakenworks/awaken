@@ -1,3 +1,4 @@
+// @formal evidence skill.pinned_version_survives_retirement
 //! Postgres [`SkillStore`] over the crate's `skill_store` migration scope — the
 //! multi-node sibling of the sqlite backend, the same portable bundle.
 

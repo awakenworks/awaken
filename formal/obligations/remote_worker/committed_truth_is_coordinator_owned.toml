@@ -8,21 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/server/awaken-dispatch/src/application.rs",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-  "crates/server/awaken-session-executor/src/commit_ingest.rs",
-  "crates/server/awaken-session-executor/src/store.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/coordinator.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
-  "crates/server/awaken-dispatch/src/application.rs",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-  "crates/server/awaken-session-executor/src/commit_ingest.rs",
-  "crates/server/awaken-session-executor/src/store.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/coordinator.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The claimed-commit application service now accepts only a resolver for an existing OperationCoordinator. A deployment adapter may select the physical Session partition from trusted dispatch truth, but it can no longer replace the write call: after claim, Run/Thread and payload validation, ClaimedCommitService itself invokes the sole OperationCoordinator::commit_operation boundary. Runtime Host's remote projection remains read-only and rejects authoritative writes.'''

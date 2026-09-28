@@ -1,3 +1,4 @@
+// @formal entrypoint agent_inputs.rejected_revision_does_not_mutate
 //! SQLite adapter (feature `sqlite`, ADR-0043 sqlite-repos) for the admin-plane
 //! aggregates, over the crate's own `admin` migration scope ([`admin_bundle`]):
 //! one [`SqliteAdminStore`] serves the admin aggregate ports from a single

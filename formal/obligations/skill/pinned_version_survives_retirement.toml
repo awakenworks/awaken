@@ -2,23 +2,17 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SkillVersionPin.tla",
-  "formal/tla/SkillVersionPin.cfg",
   "docs/adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md",
   "docs/design/resources-memory-files-skills.md",
-  "crates/contract/awaken-resource-contract/src/lib.rs",
-  "crates/resources/awaken-skill-store/src/sqlite.rs",
-  "crates/resources/awaken-skill-store/src/postgres.rs",
-  "crates/resources/awaken-skill-store/tests/conformance.rs",
+  "formal/tla/SkillVersionPin.cfg",
+  "formal/tla/SkillVersionPin.tla",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/resources/awaken-skill-store/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The linked SkillVersionPin TLA+ model remains finite independent cross-evidence and is not claimed as Rust refinement.'''

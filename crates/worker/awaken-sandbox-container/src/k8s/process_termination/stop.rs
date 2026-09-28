@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
 //! Independent stop command for an already bound, retained Worker Pod domain.
 //! It never removes evidence or calls Dispatch/Session cleanup.
 

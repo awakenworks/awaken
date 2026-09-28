@@ -1,3 +1,4 @@
+// @formal entrypoint tool.discovery_limit
 //! Runtime-owned search, reveal state, and persistence for on-demand tool schemas.
 //!
 //! The stable contract carries only the authored presentation and boundary input.

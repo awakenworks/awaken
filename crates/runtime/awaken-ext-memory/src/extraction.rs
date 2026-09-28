@@ -1,3 +1,4 @@
+// @formal entrypoint memory_extraction.unknown_execution_never_reenters_retry
 //! Durable Memory extraction aggregate and repository port.
 //!
 //! Extraction is Memory extension work triggered by a committed terminal Run. It

@@ -1,3 +1,4 @@
+// @formal evidence authz.method_mapping_total
 //! Sampled property tests of `session_action` — the HTTP-method → action
 //! mapping that decides whether a request needs `agent.read` or `agent.write` authority
 //! (ADR-0059 verification pass). The unit tests sample GET/HEAD/POST/lowercase; this

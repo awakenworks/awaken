@@ -1,3 +1,6 @@
+// @formal entrypoint remote_tool.hand_availability_recovery_and_terminal_transitions_are_closed
+// @formal entrypoint remote_tool.hand_generation_exhaustion_is_terminal_and_never_wraps
+// @formal entrypoint remote_tool.hand_launch_must_cross_a_tracked_starting_phase_before_ready
 //! The single Hand lifecycle shared by every Hand-equipped Session environment.
 //!
 //! TrustedHost, Namespace and Container differ in how they open a channel. Tool

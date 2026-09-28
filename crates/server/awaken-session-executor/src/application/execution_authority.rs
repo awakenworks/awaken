@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Worker proof composition at existing Session authority installation seams.
 
 use awaken_provisioning_contract::CurrentExecutionAuthority;

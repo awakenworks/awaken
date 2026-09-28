@@ -1,3 +1,6 @@
+// @formal entrypoint remote_tool.invoke_at_most_once
+// @formal entrypoint remote_tool.result_matches_operation
+// @formal evidence remote_tool.indeterminate_never_false_success
 //! Idempotency authority for remote hand operations.
 //!
 //! A transport request id is deliberately not an effect identity. The ledger is

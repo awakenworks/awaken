@@ -5,12 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/AgentInputRevision.tla",
   "formal/tla/AgentInputRevision.cfg",
+  "formal/tla/AgentInputRevision.tla",
 ]
-production_entrypoints = [
-  "crates/control/awaken-config-resolver/src/stores.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani directly checks the private production revision decision over all Option<i64>, i64 and aggregate-equality equivalence classes, including invalid durable revisions and exhaustion. The sole public write-plan admission derives equality with structural PartialEq; arbitrary aggregate equality, SQL/JSON, locking and commit execution are not implementation-refined.'''

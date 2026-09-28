@@ -1,3 +1,6 @@
+// @formal entrypoint session.agent_message_requires_exact_committed_tool_source_and_payload
+// @formal entrypoint tool_result.conflicting_delivery_operation_never_reuses_a_receipt
+// @formal entrypoint tool_result.exact_delivery_retry_replays_one_receipt
 //! Durable admission and derived reads for Managed Agent coordination.
 //!
 //! A child remains an ordinary `RunDispatch` whose logical Thread is stored in

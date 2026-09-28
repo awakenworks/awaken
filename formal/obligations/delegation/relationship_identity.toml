@@ -2,21 +2,16 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/Delegation.tla",
   "formal/tla/Delegation.cfg",
-  "scripts/ci/formal_delegation_mutations.py",
-  "crates/runtime/awaken-runtime/src/engine/delegation.rs",
-  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
+  "formal/tla/Delegation.tla",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/formal_delegation_mutations.py",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
-  "crates/runtime/awaken-runtime/src/engine/delegation.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The named Kani harness exhausts relationship presence, all six exact identity facts and every DelegationStatus without assumptions. Only one present, exact Open relationship admits the external child invocation; missing, conflicting and closed rows fail closed.'''

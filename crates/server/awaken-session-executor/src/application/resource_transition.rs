@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.install_replacement_requires_newer_or_unattempted_authority_amendment
 //! Finite admission kernel for the Runtime copy of one aggregate-authored
 //! Resource transition.
 //!

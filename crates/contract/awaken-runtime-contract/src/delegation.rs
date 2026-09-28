@@ -1,3 +1,6 @@
+// @formal entrypoint delegation.late_result_closed
+// @formal entrypoint delegation.result_consume_once
+// @formal entrypoint delegation.result_record_once
 //! Runtime interface for executing a first-class delegated child Run.
 //!
 //! Local and remote Agents implement the same lifecycle. Their adapters may

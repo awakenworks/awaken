@@ -1,3 +1,4 @@
+// @formal evidence session_run.reservation_never_executes
 //! Cross-module Managed Agents overview -> Dream E2E.
 
 mod support;

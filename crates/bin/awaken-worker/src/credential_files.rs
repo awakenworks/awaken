@@ -1,3 +1,5 @@
+// @formal entrypoint credential.worker_plaintext_holder_projection_is_exact_and_non_widening
+// @formal evidence credential.material_profile_admission_preserves_complete_tuples
 //! Exact Worker-private credential materialization from projected files.
 //!
 //! Kubernetes Secrets and Vault CSI drivers may project material into the

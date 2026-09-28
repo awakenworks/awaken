@@ -1,3 +1,4 @@
+// @formal entrypoint credential.mcp_adopted_revocation_removes_accepting_generation_before_new_calls
 //! MCP tool transport abstraction.
 //!
 //! `McpToolTransport` is the seam [`McpRawTool`](crate::tool::McpRawTool) calls

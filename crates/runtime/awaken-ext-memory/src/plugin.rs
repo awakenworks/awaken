@@ -1,3 +1,4 @@
+// @formal entrypoint memory.recall_config_contributes_authority_exactly_when_enabled
 //! Recall as a plugin hook.
 //!
 //! [`MemoryPlugin`] contributes a `BeforeInference` [`PhaseHook`] that injects

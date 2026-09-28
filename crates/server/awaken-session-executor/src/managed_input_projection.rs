@@ -1,3 +1,4 @@
+// @formal entrypoint credential_effect.mcp_realization_preserves_exact_authoring_target
 //! Canonical lowering of Managed request inputs before they enter the shared Host.
 
 use awaken_agent_contract::agent::content::ContentBlock;

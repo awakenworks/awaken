@@ -1,3 +1,6 @@
+// @formal evidence session_environment.owner_topology_is_exact_and_frozen
+// @formal evidence session_environment.source_disposal_requires_a_verified_checkpoint
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Aggregate-authorized terminal Environment preparation substrate.
 //!
 //! This private split retains the parent module's sole `SessionEnvironmentOwner`;

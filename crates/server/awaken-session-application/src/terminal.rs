@@ -1,3 +1,8 @@
+// @formal entrypoint dream.public_terminal_requires_exact_session_and_artifact_cleanup_receipts
+// @formal entrypoint session.delete_intent_is_hidden_terminal_and_idempotent
+// @formal entrypoint session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
+// @formal entrypoint session_execution.terminal_state_never_reopens
+// @formal entrypoint session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
 //! Durable terminal Session transitions.
 
 use awaken_provisioning_contract::RepositoryPublicationExpectation;

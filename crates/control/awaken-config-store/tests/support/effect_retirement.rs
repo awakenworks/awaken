@@ -1,3 +1,6 @@
+// @formal evidence resource_binding.draft_audit_and_effect_are_atomic
+// @formal evidence resource_binding.pending_effect_survives_until_readback
+// @formal evidence resource_binding.replay_is_idempotent_and_identity_stable
 //! Shared durable-journal schedule; application readback wiring has Host tests.
 use awaken_agent_config::{
     AgentConfig, AgentInputConfig, AuditedConfigWrite, ManagementAuditRecord, ManagementEffect,

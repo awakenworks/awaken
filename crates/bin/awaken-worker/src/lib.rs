@@ -1,3 +1,14 @@
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal entrypoint worker.readiness_is_probe_independent_but_dynamic_evidence_gates_claim
+// @formal entrypoint worker.realization_scope_uses_only_the_kubernetes_namespace_or_persisted_local_workspace
+// @formal entrypoint worker.sandbox_tool_recovery_is_a_hard_claim_axis
+// @formal entrypoint worker_authority.independent_evidence_never_extends_expired_proof
+// @formal entrypoint worker_credential.heartbeat_observations_are_one_atomic_batch
+// @formal entrypoint worker_credential.probe_failure_does_not_drain_worker
+// @formal entrypoint worker_credential.publication_budget_covers_probe_and_delivery
+// @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
+// @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
+// @formal evidence worker_drain.registry_transition_follows_local_fence
 //! `awaken-worker` — the production authority-store-isolated executor.
 //!
 //! A peer of the control and data planes. It owns no Run, Session, Resource, or

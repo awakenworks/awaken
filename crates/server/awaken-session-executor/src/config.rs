@@ -1,3 +1,4 @@
+// @formal entrypoint tool_policy.managed_agent_and_mcp_defaults_are_source_exact_and_configurable
 //! Assembling a runtime and its config, and reading a run's output.
 //!
 //! The "how to build a run" concern, kept out of the session substrate: the

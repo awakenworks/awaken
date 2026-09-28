@@ -2,19 +2,11 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
-evidence = [
-  "crates/server/awaken-protocol-managed/src/state/events/delivery.rs",
-  "crates/server/awaken-protocol-managed/src/routes/sessions/stream.rs",
-  "crates/server/awaken-protocol-managed/tests/streaming.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani directly invokes the actual logical-deletion read decision over every combination of root presence, exact Session id, exact owner, hidden disposition, terminal execution and positive owner-scoped tombstone presence. Current roots dominate tombstones; missing rows without a tombstone never prove deletion. Default checks retained; 0 of 3 failed.'''

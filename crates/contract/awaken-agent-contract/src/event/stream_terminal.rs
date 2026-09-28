@@ -1,3 +1,4 @@
+// @formal entrypoint ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
 //! Finite decision kernel for closing a live protocol stream.
 //!
 //! Protocol adapters own their wire vocabularies, but they share these safety

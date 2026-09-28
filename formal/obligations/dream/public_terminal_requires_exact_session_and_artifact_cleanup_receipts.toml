@@ -5,16 +5,10 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/DreamCleanupBoundary.tla",
   "formal/tla/DreamCleanupBoundary.cfg",
-  "crates/server/awaken-dream-application/src/lib.rs",
-  "crates/server/awaken-session-application/src/terminal.rs",
+  "formal/tla/DreamCleanupBoundary.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-dream-contract/src/lib.rs",
-  "crates/server/awaken-dream-application/src/lib.rs",
-  "crates/server/awaken-session-application/src/terminal.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production Dream status projection and cleanup admission exhaust the closed status and cleanup-pending domain, including canceled command replay; Session and artifact effects remain pending until their canonical application receipts commit.'''

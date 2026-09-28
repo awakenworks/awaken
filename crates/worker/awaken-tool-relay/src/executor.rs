@@ -1,3 +1,6 @@
+// @formal entrypoint remote_tool.cancelled_channel_never_correlates_a_late_reply_to_another_call
+// @formal entrypoint remote_tool.indeterminate_never_false_success
+// @formal entrypoint remote_tool.stable_operation_identity
 //! The brain side (ADR-0044 D1): a remote [`ToolExecutor`].
 //!
 //! [`RemoteToolExecutor`] frames one already-authorized [`ToolCall`] onto a

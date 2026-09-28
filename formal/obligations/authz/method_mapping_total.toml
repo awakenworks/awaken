@@ -4,11 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/AuthzKernel.tla",
-  "crates/control/awaken-authz-enforce/tests/session_action_properties.rs",
 ]
-production_entrypoints = [
-  "crates/control/awaken-authz-enforce/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The closed production classifier domain after exact GET and HEAD string comparisons. String equality and ActionKey assembly remain runtime TCB; every guarded HTTP method crosses this classifier and all non-matches fail safe to agent.write.'''

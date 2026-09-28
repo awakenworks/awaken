@@ -6,16 +6,8 @@ tcb_assumptions = [
   "external.orchestrator_correctness",
   "external.worker_host_executor_equivalence",
 ]
-evidence = [
-  "crates/contract/awaken-worker-contract/src/manifest.rs",
-  "crates/contract/awaken-worker-contract/src/requirements.rs",
-  "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-worker-contract/src/lib.rs",
-  "crates/contract/awaken-worker-contract/src/manifest.rs",
-  "crates/contract/awaken-worker-contract/src/requirements.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

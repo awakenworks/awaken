@@ -1,3 +1,4 @@
+// @formal entrypoint skill.invalid_workspace_or_hash_fails_closed
 //! Runtime Skill catalog and execution setup.
 //!
 //! Skills bridge three things only the host sees together: the sandbox

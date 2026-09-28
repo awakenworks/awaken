@@ -1,3 +1,4 @@
+// @formal evidence session_execution.one_physical_attempt_per_thread
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch::{
     AttemptAdmission as A, AttemptExecutionBinding, PhysicalAttempt, SettleOutcome as S,

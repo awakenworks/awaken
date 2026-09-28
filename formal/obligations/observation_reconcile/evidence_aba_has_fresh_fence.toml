@@ -8,15 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ObservationReconcileProof.tla",
-  "crates/contract/awaken-worker-contract/src/lib.rs",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-  "crates/bin/awaken-cli/src/observation_reconcile.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-worker-contract/src/registry.rs",
-  "crates/server/awaken-worker-registry/src/transition.rs",
-  "crates/bin/awaken-cli/src/observation_reconcile.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The contract-owned production projection preserves the observation fence for unchanged heartbeats and admits changed credential/ACP evidence only with a strictly greater heartbeat sequence. Worker Registry uses that projection for every admitted heartbeat, and the sole publication fingerprint includes the resulting observation sequence before crossing the mutex-owned reconciliation gate. Kani proves the full u64 x u64 x bool projection, so A -> B -> A cannot reuse A's numeric fence; an inconsistent nonincreasing durable fence fails closed. Fingerprint collision resistance, registry transaction integrity, source-list consistency, Tokio mutex correctness, publication I/O and external orchestration remain executable or TCB evidence.'''

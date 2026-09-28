@@ -1,3 +1,4 @@
+// @formal entrypoint worker.durable_dispatch_contains_no_plaintext_secret
 //! [`RedactedString`] — the one already-resolved secret value type that crosses
 //! into the runtime (ADR-0043, D6/D9). The host resolves credentials and hands
 //! the runtime/adapters this opaque value; it is redacted in `Debug`/`Display`,

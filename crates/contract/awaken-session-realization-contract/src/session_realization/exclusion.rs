@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! The one Session realization exclusion, and the permit that proves it is held.
 //!
 //! The durable lease fences *other* processes. It cannot fence two drivers

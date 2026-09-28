@@ -1,3 +1,4 @@
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
 use super::{DispatchError, RunClaim, WorkerIdentity};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,8 @@
+// @formal evidence background_task.terminal_observer_reads_authoritative_committed_state_not_process_projection
+// @formal evidence outcome.stable_run_identity_and_exactly_once_ack
+// @formal evidence run.commit_shape_atomicity
+// @formal evidence store_history.commits_form_one_dense_stable_global_order
+// @formal evidence thread_state.atomic_commit_and_replay
 //! Live Postgres tests for the durable commit boundary.
 //!
 //! They run against a real Postgres (the commit transaction and scoped recovery

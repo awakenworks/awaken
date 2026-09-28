@@ -1,3 +1,4 @@
+// @formal entrypoint management_http.idempotency_key_admission_is_exact_and_fail_closed
 //! Canonical public Managed API header vocabulary.
 
 use axum::http::HeaderMap;

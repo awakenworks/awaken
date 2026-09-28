@@ -6,14 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/AggregateCAS.tla",
-  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
-  "crates/stores/awaken-data-subject-store/src/postgres.rs",
 ]
-production_entrypoints = [
-  "crates/control/awaken-data-subject-application/src/lib.rs",
-  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
-  "crates/stores/awaken-data-subject-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The existing production revision successor is the sole arithmetic owner used before DataSubject aggregate compare-and-swap. Kani exhausts every u64 current revision: a successor exists only as current + 1 and is strictly greater, while u64::MAX returns explicit exhaustion instead of wrapping or saturating. The harness already owns the narrower strict-or-exhausted obligation and is reused here rather than duplicating the kernel or proof.'''

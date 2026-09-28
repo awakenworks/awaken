@@ -1,3 +1,14 @@
+// @formal entrypoint delegation.stable_child_crash_recovery
+// @formal entrypoint tool.concurrency_resource_conflict
+// @formal entrypoint tool.executor_entry_order
+// @formal entrypoint tool.publication_barrier
+// @formal entrypoint tool.recovery_policy
+// @formal entrypoint tool_result.call_is_consumed_at_most_once
+// @formal entrypoint tool_schedule.every_wave_is_pairwise_compatible
+// @formal entrypoint tool_schedule.order_is_stable_and_conflicting_predecessors_are_never_bypassed
+// @formal entrypoint tool_schedule.parallel_bound_is_positive_exact_and_zero_normalizes_to_one
+// @formal entrypoint tool_schedule.partition_is_total_contiguous_and_exactly_once
+// @formal entrypoint tool_schedule.serial_is_singleton_and_compatible_prefixes_are_maximal
 //! The per-step tool-dispatch branch of the execution loop.
 //!
 //! Split out of `engine/mod.rs` (the step-loop driver) so the "run this step's

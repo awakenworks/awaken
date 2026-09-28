@@ -1,3 +1,8 @@
+// @formal evidence checkpoint.recovery_never_precedes_commit
+// @formal evidence ingress.epoch_reclaim
+// @formal evidence remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
+// @formal evidence session_execution.one_physical_attempt_per_thread
+// @formal evidence session_execution.pre_start_cancel_ack_requires_fresh_slot_install
 //! Focused integration tests for the durable dispatch worker's LEASE semantics —
 //! the fence that makes durable recovery safe under a multi-owner fleet.
 //!

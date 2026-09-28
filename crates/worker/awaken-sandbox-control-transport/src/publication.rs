@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox_control.single_publication_is_stale_fenced_non_wrapping_and_close_absorbing
 //! Provider-neutral publication lifecycle shared by Sandbox implementations.
 
 use std::sync::Arc;

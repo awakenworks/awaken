@@ -6,23 +6,9 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/worker/claim_renewal.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/tests/harness/mod.rs",
-  "crates/server/awaken-dispatch/tests/pool_memory.rs",
   "e2e/remote_attempt_lifecycle_e2e.ts",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/server/awaken-dispatch/src/worker/claim_renewal.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production reducer exhausts current-claim and exact-cancelled-physical-attempt facts. Backend transaction linearizability and remote A2A terminal truth remain executable or external evidence.'''

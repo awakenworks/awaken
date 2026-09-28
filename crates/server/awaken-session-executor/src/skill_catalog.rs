@@ -1,3 +1,7 @@
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal entrypoint session_resources.external_io_requires_durable_prepared_state
+// @formal entrypoint skill.invalid_workspace_or_hash_fails_closed
+// @formal entrypoint skill.loaded_version_equals_session_pin
 //! `SkillCatalog` — the host's skill offering plus its durable-catalog cache coherence.
 //!
 //! Groups the three skill fields that were flat on [`crate::SharedHost`] (the static

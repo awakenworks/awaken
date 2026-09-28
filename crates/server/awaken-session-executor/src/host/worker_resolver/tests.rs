@@ -1,3 +1,5 @@
+// @formal evidence session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal evidence session_resources.explicit_empty_manifest_revokes_runtime_projection
 use super::claimed_dispatch::adopt_bound_sandbox;
 use super::test_support::{
     AdoptionModel, ToggleBindingSink, available_local_environment_binding, claim,

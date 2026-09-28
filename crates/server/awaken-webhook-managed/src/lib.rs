@@ -1,3 +1,8 @@
+// @formal entrypoint webhook.committed_outbox_row_is_recoverable
+// @formal entrypoint webhook.delivery_requires_an_enqueued_fact
+// @formal entrypoint webhook.failed_delivery_remains_pending
+// @formal entrypoint webhook.outbox_fact_identity_is_stable
+// @formal entrypoint webhook.periodic_retry_never_retires_a_failed_fact
 //! Coordinator-owned lifecycle outbox projection.
 //!
 //! Coordinator retains the durable fact until the injected Control delivery

@@ -6,13 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/SessionRootProof.tla",
-  "crates/stores/awaken-session-store/src/lib.rs",
-  "crates/server/awaken-session-application/src/tests/creation.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/creation.rs",
-  "crates/stores/awaken-session-store/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Unbounded inductive invariant stated in the linked TLAPS proof; adapters remain outside the theorem.'''

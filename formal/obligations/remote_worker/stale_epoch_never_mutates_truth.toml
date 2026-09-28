@@ -9,27 +9,8 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
   "formal/tla/WorkerReplacement.tla",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite.rs",
-  "crates/server/awaken-dispatch/src/postgres.rs",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-  "crates/server/awaken-dispatch/tests/harness/mod.rs",
-  "crates/server/awaken-session-executor/src/commit_ingest.rs",
-  "crates/contract/awaken-resource-contract/src/execution.rs",
-  "crates/server/awaken-coordinator/src/artifact_publication.rs",
-  "crates/resources/awaken-resource-worker-http/src/artifact_publication_http.rs",
-  "crates/resources/awaken-resource-worker-http/tests/artifact_publication_transport.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite.rs",
-  "crates/server/awaken-dispatch/src/postgres.rs",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-  "crates/server/awaken-session-executor/src/commit_ingest.rs",
-  "crates/server/awaken-coordinator/src/artifact_publication.rs",
-  "crates/resources/awaken-resource-worker-http/src/artifact_publication_http.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Every memory, SQLite, and PostgreSQL commit-lock adapter uses the contract-owned admission kernel over one locked row snapshot. Kani proves that only a row in the required leased state with a complete exact owner and epoch yields a guard; absent, wrong-owner, and stale-epoch snapshots are fenced, while incomplete lease authority is rejected as corruption. Thread commits and ordinary Artifact publication both cross this same guard before their authoritative write and retain it until that write settles. The production commit path additionally observes explicit backend release before returning. Backend mutex/transaction isolation, durable row decoding, Resource and Thread store behavior, HTTP authentication, and process failure during an in-flight write remain executable or TCB evidence.'''

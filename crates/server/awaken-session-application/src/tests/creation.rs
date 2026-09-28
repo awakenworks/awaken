@@ -1,3 +1,12 @@
+// @formal evidence agent_profile.effective_publication_field_replacement_is_exact_and_noop_preserving
+// @formal evidence agent_profile.requested_revision_never_follows_mutable_current
+// @formal evidence session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+// @formal evidence session_creation.atomic_complete_root_precedes_every_projection
+// @formal evidence session_creation.exact_replay_conflict_and_tombstone_are_closed
+// @formal evidence session_creation.network_intersection_is_canonical_and_non_widening
+// @formal evidence session_creation.selected_environment_is_frozen_in_baseline
+// @formal evidence session_creation.work_projection_is_disposable_repairable_and_non_authoritative
+// @formal evidence session_event_batch.initial_plan_and_wake_activity_are_atomic_with_root
 use super::*;
 use awaken_session_types::SessionId;
 

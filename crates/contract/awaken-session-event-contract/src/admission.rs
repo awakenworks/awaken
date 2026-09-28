@@ -1,3 +1,6 @@
+// @formal entrypoint session_event_batch.exact_retry_replays_and_changed_retry_conflicts
+// @formal entrypoint session_event_batch.final_non_admission_excludes_late_acceptance
+// @formal entrypoint session_event_batch.idempotency_key_appends_at_most_once
 /// The sole closed/exact/conflict classification used by durable admission and
 /// application retry lookup. It classifies retained Session-root facts only;
 /// root CAS atomicity and persistence remain owned by the repository transaction.

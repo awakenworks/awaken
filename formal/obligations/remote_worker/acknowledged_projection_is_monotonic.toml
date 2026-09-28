@@ -8,14 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-  "crates/server/awaken-dispatch/tests/recovery_projection.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-  "crates/server/awaken-dispatch/src/recovery_projection.rs",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production projection accepts only a receipt bound to the exact operation identity and payload. Its shared scalar classifier either returns an exact no-op for an already applied receipt or advances Thread version and Run ordinal by one while preserving a nondecreasing store cursor; all identity, gap, and counter-overflow cases fail before cache mutation. Kani proves the complete scalar classifier domains. Snapshot locking, committed receipt authenticity, event-cursor encoding, aggregate projection, and durable Coordinator readback remain executable or TCB evidence.'''

@@ -1,3 +1,4 @@
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! Behavior tests for the Kubernetes runtime adapter.
 //!
 //! Kept as a child of `k8s` so private adapter evidence and cause/effect

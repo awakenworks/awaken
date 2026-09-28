@@ -1,3 +1,9 @@
+// @formal entrypoint live_inbox.boundary_drain_retires_exactly_the_returned_best_effort_fold
+// @formal entrypoint live_inbox.close_is_absorbing
+// @formal entrypoint live_inbox.identity_is_monotonic
+// @formal entrypoint live_inbox.reorder_is_exact_and_rejection_stutters
+// @formal entrypoint live_inbox.replace_preserves_identity_and_order
+// @formal entrypoint live_inbox.retired_message_never_reappears
 //! Live inbox: the input-direction mirror of the stream sink (G10/G13's
 //! best-effort side). An in-process, editable queue of messages addressed to a
 //! running attempt, consumed only at safe loop boundaries.

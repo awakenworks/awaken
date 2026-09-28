@@ -1,3 +1,4 @@
+// @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 //! Direct execution of the existing asynchronous replacement boundary.
 use crate::mutation::commit_observed_snapshot;
 use awaken_session_repository_contract::SessionRepository;

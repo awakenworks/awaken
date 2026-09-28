@@ -1,3 +1,7 @@
+// @formal evidence acp.mcp_alias_permission_consensus_never_widens_authority
+// @formal evidence acp.permission_tool_identity_normalization_is_exact
+// @formal evidence acp.process_cleanup_requires_observed_exit_and_retained_owner
+// @formal evidence session_execution.one_physical_attempt_per_thread
 // awaken-file-limit-ceiling: 5856 (legacy oversized test file: split, never grow)
 //! End-to-end tests with in-memory fakes: a scripted duplex channel stands in for
 //! the launched CLI — no daemon, no network.

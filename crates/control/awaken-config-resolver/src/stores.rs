@@ -1,3 +1,6 @@
+// @formal entrypoint agent_inputs.applied_revision_is_exact_successor
+// @formal entrypoint agent_inputs.rejected_revision_does_not_mutate
+// @formal entrypoint agent_inputs.same_revision_same_content_is_idempotent
 //! Read ports for the authored control-plane aggregates — the store traits the
 //! resolver and the runtime host consult at bind time.
 //!

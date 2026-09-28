@@ -2,35 +2,16 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SessionStartProtocol.tla",
   "formal/tla/SessionStartProtocol.cfg",
-  "crates/server/awaken-session-application/src/realization.rs",
-  "crates/server/awaken-protocol-awaken/src/profiled_sessions.rs",
-  "crates/server/awaken-protocol-managed/src/types/session.rs",
-  "formal/tla/SessionStartRootProof.tla",
+  "formal/tla/SessionStartProtocol.tla",
   "formal/tla/SessionStartProtocolReachability.cfg",
-  "crates/server/awaken-session-application/src/tests/creation.rs",
-  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/server/awaken-session-application/src/mutation.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
-  "crates/stores/awaken-session-store/src/postgres.rs",
+  "formal/tla/SessionStartRootProof.tla",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/creation.rs",
-  "crates/server/awaken-session-application/src/realization.rs",
-  "crates/server/awaken-protocol-awaken/src/profiled_sessions.rs",
-  "crates/server/awaken-protocol-managed/src/types/session.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/execution_state.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/server/awaken-session-application/src/mutation.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
-  "crates/stores/awaken-session-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''SessionStartRootProof reuses the exact canonical SessionRootProof instance and proves acceptance implies a complete durable root, accepted activation failure remains queryable, complete root precedes projections, and Work row/root authority agree over unbounded abstract traces. It does not prove all Event/Work safety or recovery liveness.'''

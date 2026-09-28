@@ -1,3 +1,5 @@
+// @formal entrypoint delegation.relationship_identity
+// @formal entrypoint delegation.result_consume_once
 //! Delegated child-Run dispatch and resume.
 //!
 //! Kept separate from the main loop so parent/child correlation and continuation

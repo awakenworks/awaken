@@ -1,3 +1,5 @@
+// @formal entrypoint sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Lifecycle operations shared by every concrete Session environment.
 
 use awaken_provisioning_contract as pc;

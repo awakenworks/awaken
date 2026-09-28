@@ -2,29 +2,16 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/BackgroundTask.tla",
   "formal/tla/BackgroundTask.cfg",
-  "crates/server/awaken-session-executor/src/background_task.rs",
-  "crates/server/awaken-session-executor/src/background_task/ownership.rs",
-  "crates/server/awaken-session-executor/src/host/session.rs",
-  "crates/server/awaken-session-executor/src/authority.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-  "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
+  "formal/tla/BackgroundTask.tla",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-executor/src/store.rs",
-  "crates/server/awaken-session-executor/src/background_task.rs",
-  "crates/server/awaken-session-executor/src/background_task/ownership.rs",
-  "crates/server/awaken-session-executor/src/host/session.rs",
-  "crates/server/awaken-session-executor/src/authority.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The named Kani harness directly invokes HostCommit::committed_authority across both source variants and arbitrary boolean payloads: Local mints one CommittedAuthority and the sole Remote variant, whose only read source is RecoveryProjection, never does. The fixed Kani 0.67.0 run completed 21 checks with zero failures under one job, an empty RUSTC_WRAPPER, a 600-second deadline and a 12 GiB cgroup memory ceiling. The receipt constructor is private to the canonical HostCommit owner; no background-specific State, query, repository or registry is introduced.'''

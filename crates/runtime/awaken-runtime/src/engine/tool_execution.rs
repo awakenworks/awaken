@@ -1,3 +1,7 @@
+// @formal entrypoint model_advisor.never_substitutes_for_primary_admission_or_duplicates_a_binding
+// @formal entrypoint permission.runtime_capability_and_verdict_projection_never_widens_authority
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
+// @formal entrypoint tool.executor_entry_order
 //! Tool authorization, execution selection, and resumed-result folding.
 
 use super::*;

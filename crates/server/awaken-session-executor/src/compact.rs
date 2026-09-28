@@ -1,3 +1,4 @@
+// @formal entrypoint compaction.artifact_identity_coverage_and_content_fail_closed
 //! Context compaction: the process-startup wiring.
 //!
 //! The policy half — when to fold ([`fold_point`]), the compactor agent's config

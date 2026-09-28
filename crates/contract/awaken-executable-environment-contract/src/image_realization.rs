@@ -1,3 +1,4 @@
+// @formal entrypoint environment_image_build.single_claim_exact_reclaim_and_stale_fence
 //! Coordinator-owned image realization of a registered executable Environment.
 //!
 //! It describes durable build demand, lease transitions, and the builder and

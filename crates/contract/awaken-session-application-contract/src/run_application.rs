@@ -1,3 +1,4 @@
+// @formal entrypoint session_time.utc_projection_domain_is_total_exact_and_idempotent
 //! Protocol-neutral Run application API shared by every public adapter.
 //!
 //! This module is the one application waist for submit/resume/control/query.

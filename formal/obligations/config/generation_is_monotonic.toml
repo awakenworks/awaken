@@ -5,26 +5,13 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/AggregateCAS.tla",
-  "crates/control/awaken-config-store/src/schema.rs",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
   "formal/tla/AggregateCAS.cfg",
-  "crates/stores/awaken-sql-storage/src/lib.rs",
-  "crates/control/awaken-config-store/tests/integration.rs",
-  "crates/control/awaken-config-store/tests/postgres.rs",
-  "crates/control/awaken-config-store/tests/support/revision_cas.rs",
-  "crates/control/awaken-config-store/tests/support/audit_identity.rs",
+  "formal/tla/AggregateCAS.tla",
   "scripts/ci/check_formal.sh",
   "scripts/ci/check_formal_mutations.py",
   "scripts/ci/formal_config_mutations.py",
 ]
-production_entrypoints = [
-  "crates/control/awaken-config-store/src/schema.rs",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-config-store/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''AggregateCAS exhausts two writers and generations 0..3, including client-proposed absent/exact/stale revisions, exhaustion, and the actual generation/value frame on rejected writes. Five semantic model mutants challenge absent and stale admission, exhaustion, rejected payload overwrite and rejected generation overwrite. The abstract model treats exhaustion as non-application; concrete stores return a typed storage error.'''

@@ -7,15 +7,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ExecutableProjectionRefreshProof.tla",
-  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
-  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-durable-projection/src/lib.rs",
-  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
-  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''ProjectionRefreshDomain is now the sole shared in-process owner of both the actual Tokio mutation mutex and ProjectionCursor. Both production registrars reuse this exact type for register, withdraw and refresh; the plan read, replay, catalog install and cursor reconciliation occur while its opaque ProjectionRefreshGuard remains live. The prior duplicated per-adapter Mutex-plus-cursor fields were removed.'''

@@ -1,3 +1,4 @@
+// @formal entrypoint credential.restart_recovery_compensates_unpublished_material
 //! `awaken-cli` library: product-process startup.
 //!
 //! Control (`awaken-control`) and Coordinator (`awaken-coordinator`) do not depend on

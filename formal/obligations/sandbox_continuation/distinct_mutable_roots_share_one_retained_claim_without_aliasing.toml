@@ -4,16 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.container_and_kernel_isolation",
 ]
-evidence = [
-  "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",
-  "crates/worker/awaken-sandbox-container/src/k8s/pod_projection.rs",
-  "crates/worker/awaken-sandbox-container/tests/k8s_it.rs",
-]
-production_entrypoints = [
-  "crates/worker/awaken-sandbox-container/src/writable.rs",
-  "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",
-  "crates/worker/awaken-sandbox-container/src/k8s/pod_projection.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

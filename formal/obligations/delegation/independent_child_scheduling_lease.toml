@@ -2,39 +2,16 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "model_linked"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/Delegation.tla",
-  "formal/tla/Delegation.cfg",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-session-executor/src/agent_runner.rs",
-  "crates/server/awaken-session-executor/src/agent_runner/child_execution.rs",
-  "crates/server/awaken-session-executor/src/agent_runner/child_attempt.rs",
-  "crates/server/awaken-session-executor/src/agent_runner/child_dispatch.rs",
-  "crates/server/awaken-session-executor/src/coordination.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/operations_claims.rs",
-  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
-  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
-  "scripts/ci/check_formal.sh",
   "formal/VERIFICATION_BOUNDARIES.md",
+  "formal/tla/Delegation.cfg",
+  "formal/tla/Delegation.tla",
+  "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/dispatch.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-session-executor/src/agent_runner/child_execution.rs",
-  "crates/server/awaken-session-executor/src/agent_runner/child_attempt.rs",
-  "crates/server/awaken-session-executor/src/agent_runner/child_dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The assumption-free admission Kani harness exhausts absent, same-Thread and distinct-parent Session affinity against absent, positive and zero activity coordinates over the full u64 domain. A distinct parent affinity is always classified as SessionChild unless an explicit zero activity coordinate fails closed; the reducer is the sole production implementation behind RunDispatch::admission_shape and authors no lifecycle state.'''

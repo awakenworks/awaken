@@ -1,3 +1,4 @@
+// @formal evidence mcp.sessionless_stream_lifecycle
 //! Shared black-box conformance assertions for MCP server adapters.
 //!
 //! A second host (for example a flow/resource runtime) implements the tiny

@@ -1,3 +1,9 @@
+// @formal entrypoint background_task.never_replay_and_attempt_exhaustion_fail_closed
+// @formal entrypoint run.commit_shape_atomicity
+// @formal entrypoint run.ticket_coherence
+// @formal entrypoint thread_state.atomic_commit_and_replay
+// @formal entrypoint thread_state.exclusive_batch_conflict
+// @formal entrypoint thread_state.run_identity_binding
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};

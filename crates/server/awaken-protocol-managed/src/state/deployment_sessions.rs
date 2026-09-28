@@ -1,3 +1,4 @@
+// @formal entrypoint session_creation.repository_receipt_is_the_only_post_create_effect_gate
 //! DeploymentRun idempotency at the existing Managed Session boundary.
 
 use super::*;

@@ -1,3 +1,6 @@
+// @formal entrypoint executable_projection.concurrent_refresh_is_serialized_per_domain
+// @formal entrypoint executable_projection.cursor_never_leads_installed_projection
+// @formal entrypoint executable_projection.installed_projection_never_leads_authority
 //! Shared high-water mechanics for rebuildable Coordinator projections.
 //!
 //! This crate deliberately knows neither Agent nor Environment commands. It

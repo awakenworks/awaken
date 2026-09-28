@@ -1,3 +1,4 @@
+// @formal entrypoint ingress.pending_input_exactly_once
 use crate::{DispatchTransition, GuardedTransition, PhysicalAttemptSlot};
 
 /// One authoritative settlement plan for the Dispatch row and its pending

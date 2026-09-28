@@ -1,3 +1,8 @@
+// @formal entrypoint agent_profile.worker_projection_requires_exact_frozen_publication
+// @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal entrypoint session_realization.control_failure_disposition_and_current_owner_loss_are_total_exact_and_terminal_absorbing
+// @formal entrypoint session_resources.install_replacement_requires_newer_or_unattempted_authority_amendment
+// @formal evidence session_environment.closed_revoked_recovery_consumes_only_exact_unprotected_owner
 //! Worker-side projection and effect adapters for the canonical Session
 //! realization driver.
 

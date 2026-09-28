@@ -1,3 +1,7 @@
+// @formal entrypoint ingress.commit_epoch_atomic_remote_custom
+// @formal entrypoint remote_worker.committed_truth_is_coordinator_owned
+// @formal entrypoint sandbox.k8s_process_observation_requires_complete_exit
+// @formal evidence session_execution.one_physical_attempt_per_thread
 //! Protocol-neutral application ports used by Coordinator HTTP adapters.
 
 use awaken_dispatch_contract::ControlDispatchQueue;

@@ -1,3 +1,5 @@
+// @formal evidence memory.cas_has_one_winner_per_generation
+// @formal evidence memory.rename_replace_preserves_source_identity
 //! One backend-neutral Memory conformance authority, shared by unit and integration tests.
 #![allow(dead_code)] // Different feature selections exercise different backend rows.
 

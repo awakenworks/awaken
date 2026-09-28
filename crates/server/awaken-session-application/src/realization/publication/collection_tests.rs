@@ -1,3 +1,4 @@
+// @formal evidence session_realization.publication_excludes_staged_retired_generation
 //! Real aggregate transitions and publication collections, without assumed uniqueness.
 use super::*;
 use awaken_session_mcp_contract::{

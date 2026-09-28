@@ -1,3 +1,8 @@
+// @formal entrypoint ingress.commit_epoch_atomic_remote_custom
+// @formal entrypoint remote_worker.committed_truth_is_coordinator_owned
+// @formal entrypoint remote_worker.operation_identity_maps_to_one_hash_and_append
+// @formal entrypoint remote_worker.stale_epoch_never_mutates_truth
+// @formal entrypoint run.lifecycle_absorption
 //! The write-plane half of the Coordinator/Worker seam: a database-less Worker sends
 //! one versioned [`CommitOperation`] under its current claim. The Coordinator cell
 //! validates the claim and applies the operation through the authoritative

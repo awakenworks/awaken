@@ -1,3 +1,4 @@
+// @formal evidence sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Real Linux tree receipts through the existing Session Environment lifecycle.
 //! The portability gate supplies the built helper explicitly; missing substrate
 //! is failure, not a passing skip. Authority below is a provider-port fixture,

@@ -1,3 +1,4 @@
+// @formal entrypoint checkpoint.crash_preserves_durable_truth
 //! Durable snapshot of an interrupted inference stream, for cross-process resume.
 //!
 //! A model response can be cut off mid-stream (a transient transport drop, an

@@ -1,3 +1,6 @@
+// @formal entrypoint session.runtime_projection_distinguishes_pending_resolving_and_processed_tools_and_fails_closed
+// @formal entrypoint tool_result.pending_commit_coordinate_is_exact
+// @formal entrypoint tool_result.terminal_run_rejects_late_result
 //! Committed recovery snapshots, pending-tool identity resolution, and projection qualification.
 
 use super::*;

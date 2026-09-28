@@ -1,3 +1,4 @@
+// @formal entrypoint session_creation.network_intersection_is_canonical_and_non_widening
 //! Canonical frozen Session network policy and restriction algebra.
 
 /// Frozen network fact. This is Session state, not a provider request; the Host

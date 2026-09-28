@@ -2,38 +2,20 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/RunIngressKernel.tla",
-  "formal/tla/RunIngress.tla",
-  "formal/tla/RunIngress.cfg",
-  "formal/tla/SessionRunProtocol.tla",
-  "formal/tla/SessionRunProtocol.cfg",
   "docs/adr/0075-unified-managed-session-worker-execution.md",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/pool.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
-  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "formal/tla/RunIngress.cfg",
+  "formal/tla/RunIngress.tla",
+  "formal/tla/RunIngressKernel.tla",
+  "formal/tla/SessionRunProtocol.cfg",
+  "formal/tla/SessionRunProtocol.tla",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/dispatch.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/pool.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts the shared production claim phase over all seven Dispatch states, the full u64 epoch domain, every claim mode and arbitrary frozen binding witnesses. Ordinary claim excludes Reserved and ReservationLeased; reservation recovery alone changes Reserved or ReservationLeased to ReservationLeased at exactly epoch+1. The reservation receipt planner independently proves RecoveryClaimed cannot create or reuse a Session activity receipt.'''

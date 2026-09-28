@@ -2,25 +2,17 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SessionRuntimeProjection.tla",
-  "formal/tla/SessionRuntimeProjection.cfg",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
-  "formal/tla/ManagedProjectionPublish.tla",
   "formal/tla/ManagedProjectionPublish.cfg",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/tests/refresh_failure.rs",
+  "formal/tla/ManagedProjectionPublish.tla",
+  "formal/tla/SessionRuntimeProjection.cfg",
+  "formal/tla/SessionRuntimeProjection.tla",
   "scripts/ci/formal_dispatch_mutations.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The sole async reducer now returns one typed Error, changed-prefix Retry, or Complete candidate to the canonical publication owner. Kani exhausts those variants with arbitrary warm and candidate result/checkpoint bytes: Error preserves the exact error and exposes no publish effect, Retry stutters, and only Complete transfers one owned pair. Production builds exclusively on a cloned SessionRecord and consumes this kernel before entering the existing cache CAS; the cause/effect regression compares the complete warm projection before and after a late correlation failure.'''

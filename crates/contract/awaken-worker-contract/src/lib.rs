@@ -1,3 +1,13 @@
+// @formal entrypoint worker.accepted_protocol_version_is_inside_advertised_range
+// @formal entrypoint worker.never_replace_rejects_every_replacement
+// @formal entrypoint worker.non_ready_state_never_accepts_work
+// @formal entrypoint worker.readiness_is_probe_independent_but_dynamic_evidence_gates_claim
+// @formal entrypoint worker.same_incarnation_does_not_spend_replacement_authority
+// @formal entrypoint worker.sandbox_continuity_requires_a_binding
+// @formal entrypoint worker.sandbox_tool_recovery_is_a_hard_claim_axis
+// @formal entrypoint worker_credential.dynamic_observation_requires_exact_fact_and_half_open_lease
+// @formal evidence observation_reconcile.evidence_aba_has_fresh_fence
+// @formal evidence worker.placement_extension_cannot_widen_eligibility
 //! Neutral worker identity, compatibility, and placement-policy contract.
 //!
 //! This crate deliberately separates the non-replaceable eligibility kernel from

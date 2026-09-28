@@ -1,3 +1,10 @@
+// @formal entrypoint credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
+// @formal entrypoint credential.managed_deleted_lifecycle_is_absorbing
+// @formal entrypoint credential.managed_mutation_requires_exact_source_and_child_successor_fences
+// @formal entrypoint credential.managed_vault_child_admission_requires_active_parent_capacity_and_unique_key
+// @formal entrypoint credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
+// @formal entrypoint credential.managed_vault_replacement_rejects_stale_and_non_successor_revisions
+// @formal entrypoint credential.vault_workspace_authority_admission_is_exact_and_non_widening
 //! Secret-free Managed Vault catalog.
 //!
 //! The catalog owns the management projection that is not part of a

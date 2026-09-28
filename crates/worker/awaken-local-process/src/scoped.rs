@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Systemd-free Linux execution ownership. Sanitized bubblewrap starts a
 //! trusted helper; an inherited private socket carries workload input and OS
 //! descriptors. Bootstrap frames and injected credentials use that private

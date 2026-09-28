@@ -1,3 +1,6 @@
+// @formal entrypoint worker.acp_capability_is_detected_only_after_a_verified_handshake
+// @formal entrypoint worker_credential.dynamic_observation_requires_exact_fact_and_half_open_lease
+// @formal entrypoint worker_credential.expired_observation_never_executes
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
 use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,

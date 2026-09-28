@@ -1,3 +1,5 @@
+// @formal entrypoint authz.application_protocol_is_scoped_by_application_guard_not_service_guard
+// @formal entrypoint executable_projection.failed_refresh_never_enters_handler
 //! `awaken-coordinator` — the Coordinator application and protocol data plane.
 //!
 //! It owns one protocol-neutral [`SharedHost`] (from `awaken-session-executor`,

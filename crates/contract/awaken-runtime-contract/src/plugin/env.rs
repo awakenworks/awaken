@@ -1,3 +1,4 @@
+// @formal entrypoint plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
 //! The per-run execution environment: the merge that validates each plugin
 //! against its bound, rejects duplicate ids, orders dependencies first, and
 //! exposes the merged tool face / hooks / guards / gates to the kernel.

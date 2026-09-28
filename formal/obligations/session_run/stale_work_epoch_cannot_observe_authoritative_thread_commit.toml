@@ -2,43 +2,22 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
   "external.eventual_network_delivery",
 ]
 evidence = [
-  "formal/tla/SessionRunProtocol.tla",
-  "formal/tla/SessionRunProtocol.cfg",
-  "formal/tla/SessionRunCommitObservation.cfg",
-  "formal/tla/SessionStartProtocol.tla",
-  "formal/tla/SessionStartProtocol.cfg",
-  "scripts/ci/formal_model_mutation_runner.py",
-  "scripts/ci/formal_dispatch_mutations.py",
-  "scripts/ci/check_formal.sh",
   "docs/adr/0075-unified-managed-session-worker-execution.md",
-  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch/session_realization.rs",
-  "crates/server/awaken-dispatch-http/src/claimed_commit_http.rs",
-  "crates/server/awaken-dispatch-http/tests/dispatch_transport_http.rs",
-  "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http.rs",
-  "crates/server/awaken-dispatch-http/tests/commit_ingest_http.rs",
-  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
+  "formal/tla/SessionRunCommitObservation.cfg",
+  "formal/tla/SessionRunProtocol.cfg",
+  "formal/tla/SessionRunProtocol.tla",
+  "formal/tla/SessionStartProtocol.cfg",
+  "formal/tla/SessionStartProtocol.tla",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/formal_dispatch_mutations.py",
+  "scripts/ci/formal_model_mutation_runner.py",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-work-contract/src/lib.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch/session_realization.rs",
-  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The canonical SessionRunProtocol retains its existing full three-Run, two-Worker, three-epoch model-checking evidence. A dedicated local action wrapper keeps that same constant domain and reuses ObserveCommittedRun verbatim over complete current commit-ready and stale-reclaimed Work source-state cuts. Its action property requires every first committed observation to use the exact current Dispatch owner/epoch and Work realization; removing only the observation's CurrentRealization guard must fail, while the stale cut must be reachable.'''

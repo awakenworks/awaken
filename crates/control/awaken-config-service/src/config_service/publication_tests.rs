@@ -1,3 +1,5 @@
+// @formal evidence config.inference_access_resolved_once_at_publication
+// @formal evidence config_activation.stale_publication_never_installs
 #[tokio::test]
 async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
     // Cause/effect decision table: R1 one ordinary model pool, no advisor, and

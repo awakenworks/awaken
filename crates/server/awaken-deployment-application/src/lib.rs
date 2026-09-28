@@ -1,3 +1,8 @@
+// @formal entrypoint deployment.cas_prevents_lost_update
+// @formal entrypoint deployment.claim_and_run_commit_atomically
+// @formal entrypoint deployment.scheduled_capacity_is_transactional
+// @formal entrypoint deployment.stale_scheduler_cannot_claim_or_overwrite
+// @formal entrypoint executable_projection.failed_refresh_never_enters_handler
 //! Coordinator-owned Deployment aggregate, scheduling, and Session launch orchestration.
 //!
 //! Public protocol adapters translate their wire DTOs into the commands in this

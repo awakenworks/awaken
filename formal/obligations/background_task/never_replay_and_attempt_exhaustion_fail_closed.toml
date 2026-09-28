@@ -2,29 +2,15 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/BackgroundTask.tla",
   "formal/tla/BackgroundTask.cfg",
-  "crates/runtime/awaken-ext-background-task/src/plugin.rs",
-  "crates/runtime/awaken-ext-background-task/tests/state_machine.rs",
-  "crates/runtime/awaken-runtime/tests/background_task_state.rs",
-  "crates/runtime/awaken-runtime/src/engine/progress.rs",
-  "crates/contract/awaken-agent-contract/src/agent/state.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "formal/tla/BackgroundTask.tla",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-ext-background-task/src/model.rs",
-  "crates/runtime/awaken-ext-background-task/src/plugin.rs",
-  "crates/runtime/awaken-runtime/src/engine/progress.rs",
-  "crates/contract/awaken-agent-contract/src/agent/state.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The two named Kani harnesses consume the sole production expired-attempt predicates and reclaim_mutation_plan. Across all four recovery modes, remote/cancellation facts, u64 epochs, u16 attempt budgets, five lifecycle phases, attempt presence, u64 lease times, revisions and successor leases, an expired local NeverReplay attempt cannot acquire a replacement, an exhausted replayable local attempt ends AttemptsExhausted, and every rejected admission yields no plan.'''

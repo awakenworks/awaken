@@ -1,3 +1,4 @@
+// @formal entrypoint remote_worker.recovery_projection_is_committed_prefix
 //! Runtime services exposed to a database-less execution Worker.
 
 use std::sync::Arc;

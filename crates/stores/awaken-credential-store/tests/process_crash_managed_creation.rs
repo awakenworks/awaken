@@ -1,3 +1,8 @@
+// @formal evidence credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+// @formal evidence credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+// @formal evidence credential.managed_creation_publishes_source_and_child_atomically
+// @formal evidence credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+// @formal evidence credential.restart_recovery_compensates_unpublished_material
 #![cfg(all(feature = "sqlite", feature = "sealed-aead"))]
 
 use std::collections::BTreeMap;

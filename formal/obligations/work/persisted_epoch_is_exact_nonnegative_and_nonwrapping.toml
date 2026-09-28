@@ -3,15 +3,9 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/stores/awaken-sql-storage/src/lib.rs",
   "scripts/ci/check_authority_arithmetic.py",
-  "crates/stores/awaken-work-store/src/session_access.rs",
 ]
-production_entrypoints = [
-  "crates/stores/awaken-work-store/src/mutation.rs",
-  "crates/stores/awaken-sql-storage/src/lib.rs",
-  "crates/stores/awaken-work-store/src/session_access.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani checks the actual lease_epoch transition over the full i64 x bool input domain, using shared StoredU64 checked arithmetic and an independent i128 specification. This is a numeric transition proof, not SQL locking, bearer entropy, queue linearizability, or universal implementation refinement.'''

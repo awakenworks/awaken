@@ -1,3 +1,9 @@
+// @formal entrypoint session.owner_saved_atomically
+// @formal entrypoint session.visible_row_always_owned
+// @formal entrypoint session_creation.exact_replay_conflict_and_tombstone_are_closed
+// @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
+// @formal entrypoint webhook.committed_outbox_row_is_recoverable
+// @formal entrypoint webhook.lifecycle_commit_and_outbox_are_atomic
 //! Durable [`SessionRepository`] and [`LifecycleOutbox`] backends: the home for the Managed
 //! session aggregate (agent / model / title / metadata / accepted MCP servers),
 //! over the store's own `managed` migration scope ([`session_bundle`]). Two

@@ -1,3 +1,4 @@
+// @formal entrypoint sandbox.file_read_authority_is_explicit
 //! Session-owned file, mount, Skill-cache, and Artifact projection operations.
 //!
 //! The environment lifecycle and process launcher remain in the parent module;

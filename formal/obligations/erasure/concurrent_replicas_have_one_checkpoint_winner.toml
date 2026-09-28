@@ -5,20 +5,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/ErasureSaga.tla",
-  "formal/tla/ErasureSaga.cfg",
-  "crates/control/awaken-data-subject-application/src/lib.rs",
-  "crates/stores/awaken-data-subject-store/src/memory.rs",
-  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
-  "crates/stores/awaken-data-subject-store/src/postgres.rs",
-  "crates/stores/awaken-data-subject-store/tests/repo_conformance.rs",
   "docs/adr/0050-telemetry-content-capture-consent-and-gdpr-erasure.md",
+  "formal/tla/ErasureSaga.cfg",
+  "formal/tla/ErasureSaga.tla",
 ]
-production_entrypoints = [
-  "crates/control/awaken-data-subject-application/src/lib.rs",
-  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
-  "crates/stores/awaken-data-subject-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''ErasureSaga checks a finite two-replica/two-eraser transition system in which only a replica holding the current base revision can checkpoint. This proves one abstract revision transition per base; no Rust-to-model refinement is implied.'''

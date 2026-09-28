@@ -1,3 +1,4 @@
+// @formal entrypoint credential.managed_rollout_abstract_ack_requires_every_target_adoption
 //! Optional managed-platform adapters supplied by a hosted composition.
 
 use std::sync::Arc;

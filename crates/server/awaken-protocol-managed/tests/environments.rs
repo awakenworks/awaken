@@ -1,3 +1,4 @@
+// @formal evidence work.pre_heartbeat_worker_identity
 //! Environments + the self-hosted work queue over HTTP: env CRUD + archive, and
 //! the work lifecycle (list / poll / ack / heartbeat / stop / stats) including the
 //! single-active-lease (open-tier single-worker) cap.

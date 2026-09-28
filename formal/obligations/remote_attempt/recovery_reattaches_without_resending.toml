@@ -8,13 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteAttempt.tla",
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/lib.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-run-executor-a2a/src/executor.rs",
-  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The complete finite production route admits reattachment only for endpoint-matching Accepted state; execute maps that route only to tasks/get, Fresh alone may prepare and send, and Prepared admits neither path. Durable state decoding, repository read order, String equality, transport behavior and external peer semantics remain runtime or external evidence.'''

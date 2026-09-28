@@ -1,3 +1,4 @@
+// @formal entrypoint credential.attempt_delivery_is_exact_epoch_bound_and_authority_preserving
 //! Claim-scoped recipient delivery from the existing Vault authority.
 //!
 //! This adapter owns no selection, queue or publication state. It revalidates

@@ -1,3 +1,4 @@
+// @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 //! Canonical aggregate projections for one persisted Session runtime interval.
 
 use super::canonical_order::{

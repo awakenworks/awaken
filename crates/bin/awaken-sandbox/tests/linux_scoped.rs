@@ -1,3 +1,4 @@
+// @formal evidence sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Real Linux qualification without systemd or delegated cgroups.
 //! No successful prerequisite skips; Worker integration is a separate gate.
 #![cfg(target_os = "linux")]

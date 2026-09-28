@@ -1,3 +1,20 @@
+// @formal entrypoint delegation.independent_child_scheduling_lease
+// @formal entrypoint ingress.epoch_reclaim
+// @formal entrypoint ingress.settle_fence
+// @formal entrypoint ingress.single_owner
+// @formal entrypoint remote_worker.execution_requires_claimed_snapshot
+// @formal entrypoint remote_worker.single_live_claim_owner
+// @formal entrypoint run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
+// @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
+// @formal entrypoint session_run.recovery_claim_is_admission_only
+// @formal entrypoint tool.session_thread_composition
+// @formal entrypoint worker.retry_preserves_pinned_binding
+// @formal entrypoint worker_credential.exact_revision_and_current_epoch_required
+// @formal entrypoint worker_credential.expired_observation_never_executes
+// @formal evidence run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
 //! Backend-neutral state transitions for one durable dispatch row.
 //!
 //! Storage adapters remain responsible for atomic compare-and-set and durable

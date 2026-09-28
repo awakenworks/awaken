@@ -1,3 +1,4 @@
+// @formal evidence sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 //! Existing Session authority may project a newer absolute OS cutoff. This
 //! transport owns neither the lease nor its renewal/revocation schedule.
 use super::{ExecutionDeadline, MAX_WINDOW, grant, invalid, timed_out};

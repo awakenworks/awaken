@@ -1,3 +1,10 @@
+// @formal entrypoint delegation.independent_child_scheduling_lease
+// @formal entrypoint ingress.epoch_reclaim
+// @formal entrypoint ingress.single_owner
+// @formal entrypoint remote_worker.single_live_claim_owner
+// @formal entrypoint run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
+// @formal entrypoint run_ingress.request_local_resolution_retry_honors_persisted_deadline
+// @formal entrypoint worker.retry_preserves_pinned_binding
 //! Exact SQLite dispatch claiming.
 //!
 //! This module owns the one `BEGIN IMMEDIATE` claim transition shared by

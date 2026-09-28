@@ -1,3 +1,5 @@
+// @formal entrypoint worker_credential.exact_revision_and_current_epoch_required
+// @formal entrypoint worker_credential.expired_observation_never_executes
 //! Canonical admission of Worker-local credential observations.
 //!
 //! Provider adapters report liveness, but the neutral credential contract owns

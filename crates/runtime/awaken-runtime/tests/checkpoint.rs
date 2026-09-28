@@ -1,3 +1,7 @@
+// @formal evidence checkpoint.crash_preserves_durable_truth
+// @formal evidence checkpoint.recovery_never_precedes_commit
+// @formal evidence checkpoint.terminal_completion_clears_resume
+// @formal evidence model_operation.reentry_requires_positive_execution_evidence
 //! Durable interrupted-stream checkpoints, driven end-to-end through `execute`
 //! (not the inference call in isolation): the engine flushes a partial at an
 //! interruption boundary and clears it once the step concludes. A retained

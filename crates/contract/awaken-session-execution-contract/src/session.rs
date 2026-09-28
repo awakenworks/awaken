@@ -1,3 +1,7 @@
+// @formal entrypoint session_execution.settled_step_has_no_parallel_observation_authority
+// @formal entrypoint session_outcome.awaiting_constructor_is_nonterminal_and_nonfailed
+// @formal entrypoint session_outcome.ended_constructor_owns_failure_and_clears_pending_tool
+// @formal evidence session.agent_message_requires_exact_committed_tool_source_and_payload
 //! Neutral value types and the [`SessionRuntime`] interface the adapter drives:
 //! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
 

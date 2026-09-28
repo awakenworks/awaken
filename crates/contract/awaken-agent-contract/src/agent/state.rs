@@ -1,3 +1,7 @@
+// @formal entrypoint background_task.never_replay_and_attempt_exhaustion_fail_closed
+// @formal entrypoint thread_state.exclusive_batch_conflict
+// @formal entrypoint thread_state.materialization_effect
+// @formal entrypoint thread_state.run_identity_binding
 //! Typed agent state: keys, scopes, merge policies, staged commands, and the
 //! materialized store rebuilt from committed commands for replay (G1/G13).
 //!

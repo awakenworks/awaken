@@ -1,3 +1,9 @@
+// @formal entrypoint credential.worker_plaintext_holder_projection_is_exact_and_non_widening
+// @formal entrypoint credential_envelope.issuance_requires_exact_claim
+// @formal entrypoint environment.cloud_native_credential_custody_selection_is_exact
+// @formal entrypoint worker.durable_dispatch_contains_no_plaintext_secret
+// @formal evidence credential.attempt_delivery_is_exact_epoch_bound_and_authority_preserving
+// @formal evidence credential.material_profile_admission_preserves_complete_tuples
 //! Shared secret-free credential execution facts (ADR-0067).
 //!
 //! Storage, material location, target usage, plaintext authorization and model

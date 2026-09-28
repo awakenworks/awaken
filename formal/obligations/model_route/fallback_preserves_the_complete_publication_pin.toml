@@ -8,16 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/InferenceAccessPublication.tla",
-  "crates/contract/awaken-runtime-contract/src/resolved.rs",
-  "crates/server/awaken-credential-materializer/src/inference.rs",
-  "crates/server/awaken-session-executor/src/host/completion.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/model_routing.rs",
-  "crates/contract/awaken-runtime-contract/src/resolved.rs",
-  "crates/server/awaken-credential-materializer/src/inference.rs",
-  "crates/server/awaken-session-executor/src/host/completion.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The linked bounded TLA+ model checks publication immutability across route updates. The named Kani harnesses prove that the production selector returns only an address-identical primary or fallback and that all four complete route identity axes are mandatory. Publication construction, collection memory safety, asynchronous materialization, and host execution remain runtime TCB.'''

@@ -5,25 +5,15 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/WorkQueueProof.tla",
   "formal/tla/SessionRunProtocol.tla",
   "formal/tla/SessionStartProtocol.tla",
-  "crates/stores/awaken-work-store/src/lib.rs",
-  "crates/stores/awaken-work-store/src/inmem.rs",
-  "crates/stores/awaken-work-store/tests/work_queue_conformance.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-  "crates/stores/awaken-work-store/src/inmem/loom_tests.rs",
-  "scripts/ci/check_formal.sh",
-  "formal/tla/WorkQueue.tla",
   "formal/tla/WorkQueue.cfg",
+  "formal/tla/WorkQueue.tla",
+  "formal/tla/WorkQueueProof.tla",
+  "scripts/ci/check_formal.sh",
   "scripts/ci/check_formal_mutations.py",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-work-contract/src/lib.rs",
-  "crates/stores/awaken-work-store/src/lib.rs",
-  "crates/stores/awaken-work-store/src/inmem.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Parameterized abstract TLAPS lemmas prove that every existing WorkQueueKernel Stop effect binds the exact request owner and epoch, mismatched owner/epoch allows only unchanged authority, and an exact Stop clears only the addressed row while retaining its epoch. TLC checks the original 3-item/2-worker/MaxEpoch=3/MaxHeartbeat=2/MaxTime=4 model; deleting either request guard is killed by the precise action property. A reachable legal Stop and enabled unlabeled Stopped stutter prevent vacuous boundary claims. The model has no accepted replay request or bool response, so it does not prove the production Stopped/same-epoch replay result or Rust/SQL refinement.'''

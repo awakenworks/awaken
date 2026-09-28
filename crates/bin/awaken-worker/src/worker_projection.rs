@@ -1,3 +1,4 @@
+// @formal entrypoint credential.worker_plaintext_holder_projection_is_exact_and_non_widening
 //! Exact projection of an operator-selected trust domain into the sole
 //! plaintext-holder boundary implemented by the Worker file resolver.
 

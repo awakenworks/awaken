@@ -1,3 +1,5 @@
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal entrypoint worker.accepted_protocol_version_is_inside_advertised_range
 use std::collections::BTreeSet;
 
 use awaken_credential_contract::CredentialRef as WorkerCredentialRevision;

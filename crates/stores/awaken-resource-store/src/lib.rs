@@ -1,3 +1,5 @@
+// @formal entrypoint resource_reclamation.physical_purge_requires_zero_references_leases_and_fence
+// @formal entrypoint resource_reclamation.reference_and_lease_races_fail_closed
 //! Durable resource-lifecycle state adapters.
 //!
 //! Purge intents and reverse references are resource-plane operational data. They

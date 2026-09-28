@@ -5,30 +5,14 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/RunIngressKernel.tla",
-  "formal/tla/RunIngress.tla",
+  "e2e/remote_worker_recovery_e2e.ts",
   "formal/tla/RunIngress.cfg",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/memory/store.rs",
-  "crates/server/awaken-dispatch/src/sqlite.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
-  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "formal/tla/RunIngress.tla",
+  "formal/tla/RunIngressKernel.tla",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
-  "e2e/remote_worker_recovery_e2e.ts",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/clock.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/memory/store.rs",
-  "crates/server/awaken-dispatch/src/sqlite.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts the production deadline_millis kernel over every u64 store-now and relative-TTL pair. The result is bounded by the signed SQL millisecond domain, never precedes normalized store time, equals the mathematical sum whenever representable, and saturates instead of wrapping.'''

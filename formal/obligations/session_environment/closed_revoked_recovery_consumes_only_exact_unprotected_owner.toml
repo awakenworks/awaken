@@ -3,19 +3,11 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/SessionEnvironmentProjection.tla",
   "formal/tla/SessionEnvironmentProjection.cfg",
-  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",
-  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/tests.rs",
-  "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/projection_synchronizer.rs",
-  "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization.rs",
+  "formal/tla/SessionEnvironmentProjection.tla",
   "scripts/ci/check_formal_mutations.py",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle.rs",
-  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",
-  "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/projection_synchronizer.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite projection model exhausts exact-owner, closed-observation, rebuild-policy and retirement-cause decisions. Provider observation truth, Rust Arc identity, lifecycle locking and aggregate Rebuild remain outside this model proof.'''

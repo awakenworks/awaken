@@ -5,16 +5,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SessionRuntimeProjection.tla",
   "formal/tla/SessionRuntimeProjection.cfg",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/historical_pending.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+  "formal/tla/SessionRuntimeProjection.tla",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/historical_pending.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''

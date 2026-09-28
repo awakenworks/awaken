@@ -1,3 +1,13 @@
+// @formal entrypoint delegation.independent_child_scheduling_lease
+// @formal entrypoint remote_worker.execution_requires_claimed_snapshot
+// @formal entrypoint session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
+// @formal entrypoint session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
+// @formal entrypoint session_execution.one_physical_attempt_per_thread
+// @formal entrypoint session_run.recovery_claim_is_admission_only
+// @formal entrypoint session_run.reservation_never_executes
+// @formal entrypoint session_run.reservation_precedes_activity
+// @formal entrypoint worker.retry_preserves_pinned_binding
+// @formal evidence run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
 //! The dispatch ports now live in `awaken-dispatch-contract` (ADR-0039 2.1),
 //! re-exported here so the host's internal `crate::dispatch::*` paths and existing
 //! consumers are unchanged.

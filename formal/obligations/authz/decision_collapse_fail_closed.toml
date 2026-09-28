@@ -5,9 +5,7 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/AuthzKernel.tla",
 ]
-production_entrypoints = [
-  "crates/control/awaken-authz-enforce/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani directly checks the production collapse over all three AuthorizationDecision variants. Token validation, IAM policy evaluation, HTTP middleware and unbounded method strings are not proved by this harness.'''

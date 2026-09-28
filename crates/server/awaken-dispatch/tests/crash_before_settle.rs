@@ -1,3 +1,5 @@
+// @formal evidence ingress.pending_input_exactly_once
+// @formal evidence remote_worker.pending_signal_is_consumed_by_commit
 //! Integration tests for the durable worker's CRASH-BEFORE-SETTLE recovery.
 //!
 //! The load-bearing claim in `worker.rs` (and mirrored by every store) is that

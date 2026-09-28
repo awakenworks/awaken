@@ -1,3 +1,13 @@
+// @formal entrypoint ingress.pending_input_exactly_once
+// @formal entrypoint ingress.settle_fence
+// @formal entrypoint remote_worker.maintenance_scheduler_respects_adapter_ownership
+// @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
+// @formal entrypoint session_run.recovery_claim_is_admission_only
+// @formal entrypoint session_run.reservation_precedes_activity
+// @formal entrypoint session_run.reservation_ttl_uses_store_clock
+// @formal evidence ingress.epoch_reclaim
+// @formal evidence ingress.single_owner
+// @formal evidence run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
 /// Durable run-dispatch queue: activation opportunity, claim, lease, recovery.
 #[async_trait]
 pub trait DispatchQueue: Send + Sync {

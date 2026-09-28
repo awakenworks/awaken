@@ -1,3 +1,13 @@
+// @formal evidence runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal evidence session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
+// @formal evidence session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
+// @formal evidence session_resources.explicit_empty_manifest_revokes_runtime_projection
+// @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
+// @formal evidence session_run.reservation_never_executes
+// @formal evidence session_terminal.unstarted_reservation_is_rejected_after_cancel
+// @formal evidence worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
+// @formal evidence worker_drain.grace_expiry_retains_cancellation_observer
 // awaken-file-limit-ceiling: 27231 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_dispatch_contract::ControlDispatchQueue;

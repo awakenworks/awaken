@@ -1,3 +1,5 @@
+// @formal evidence session_execution.one_physical_attempt_per_thread
+// @formal evidence tool.recovery_policy
 //! A gated tool call runs only when the gate allows; a denied call never
 //! executes even though the tool is registered and visible (G9/G21).
 

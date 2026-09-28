@@ -1,3 +1,6 @@
+// @formal entrypoint executable_projection.concurrent_refresh_is_serialized_per_domain
+// @formal entrypoint executable_projection.cursor_never_leads_installed_projection
+// @formal entrypoint executable_projection.installed_projection_never_leads_authority
 //! PostgreSQL durability adapter for the executable Environment projection.
 //!
 //! Only boundary commands are persisted. Startup and every mutation replay the

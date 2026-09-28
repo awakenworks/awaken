@@ -6,21 +6,11 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SessionThreadToolComposition.tla",
   "formal/tla/SessionThreadToolComposition.cfg",
+  "formal/tla/SessionThreadToolComposition.tla",
   "formal/tla/ThreadCommitProjection.tla",
-  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
-  "crates/runtime/awaken-runtime/src/runtime.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/runtime/awaken-runtime/tests/awaiting.rs",
-  "crates/runtime/awaken-runtime/tests/control.rs",
-  "crates/server/awaken-dispatch/tests/pool_memory.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
-  "crates/runtime/awaken-runtime/src/runtime.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The composition model explores three Runs on two Threads, two calls per Run and at most two tool attempts. It composes the ThreadCommitProjection tool lifecycle with one physical-attempt slot per logical Thread; crash retains physical occupancy and only a separate observed process-bound receipt permits release.'''

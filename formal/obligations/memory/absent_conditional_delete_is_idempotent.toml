@@ -6,15 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/MemoryCAS.tla",
-  "crates/resources/awaken-memory-store/src/sqlite.rs",
-  "crates/resources/awaken-memory-store/src/postgres.rs",
-  "crates/resources/awaken-memory-store/tests/conformance.rs",
 ]
-production_entrypoints = [
-  "crates/resources/awaken-memory-store/src/repository.rs",
-  "crates/resources/awaken-memory-store/src/sqlite.rs",
-  "crates/resources/awaken-memory-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts absence and all eight id/version/hash match classes through the single production conditional-delete owner used by the volatile, SQLite and PostgreSQL adapters. An absent path returns Absent before delete/history effects and repeated absence follows the same result; only an exact present token authorizes Delete. Path selection, lock and transaction correctness, SQL execution, asynchronous cancellation and durable database effects remain implementation or external TCB; this is an admission-kernel proof rather than universal backend refinement.'''

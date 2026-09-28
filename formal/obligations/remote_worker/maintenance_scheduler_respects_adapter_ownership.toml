@@ -3,26 +3,14 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/DispatchMaintenanceScheduling.tla",
-  "formal/tla/DispatchMaintenanceScheduling.cfg",
-  "scripts/ci/formal_dispatch_mutations.py",
-  "crates/server/awaken-dispatch/tests/pool_memory.rs",
-  "crates/server/awaken-coordinator-client/tests/dispatch_client.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/pool.rs",
-  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
-  "crates/server/awaken-dispatch/tests/pool_memory/maintenance_observations.rs",
-  "crates/server/awaken-dispatch/tests/harness/maintenance.rs",
   "formal/runtime-refinement-manifest.json",
-  "scripts/ci/render_runtime_refinement_traces.py",
+  "formal/tla/DispatchMaintenanceScheduling.cfg",
+  "formal/tla/DispatchMaintenanceScheduling.tla",
   "scripts/ci/check-reliability.sh",
+  "scripts/ci/formal_dispatch_mutations.py",
+  "scripts/ci/render_runtime_refinement_traces.py",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/pool.rs",
-  "crates/server/awaken-dispatch/src/service.rs",
-  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Eight immutable ownership/execution/timer partitions with Boolean hint, fallback, deadline, cancellation and observation state. Fair poll/tick/stop actions prove conditional execution and shutdown progress; owner-work and remote-timer fence mutants violate exact invariants, and a disabled-execution mutant violates the named temporal property. Positive owner-maintenance and remote-execution witnesses exclude vacuity. Atomic scheduling steps exclude in-flight storage, callback hangs, Dispatch transactions, OS scheduling fairness and physical termination; no Rust refinement is implied. Twelve virtual-time Rust rows and real HTTP type-erasure tests check the implementation seams separately.'''

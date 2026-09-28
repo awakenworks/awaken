@@ -1,3 +1,5 @@
+// @formal entrypoint capture.policy_meet_and_projection_are_exact_non_widening_and_fail_closed
+// @formal entrypoint permission.runtime_capability_and_verdict_projection_never_widens_authority
 //! The permission gate — the runtime's single authorization choke point.
 //!
 //! [`PermissionGate`] is the [`ToolGateHook`] the loop calls before every

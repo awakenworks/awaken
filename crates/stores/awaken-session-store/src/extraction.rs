@@ -1,3 +1,4 @@
+// @formal entrypoint memory_extraction.unknown_execution_never_reenters_retry
 //! Durable Memory extraction repository adapters.
 //!
 //! The table is an application-work outbox beside the Managed Session aggregate.

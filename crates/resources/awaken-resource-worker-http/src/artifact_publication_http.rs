@@ -1,3 +1,4 @@
+// @formal entrypoint remote_worker.stale_epoch_never_mutates_truth
 //! Coordinator HTTP adapter for claim-fenced Session artifact publication.
 
 use std::sync::Arc;

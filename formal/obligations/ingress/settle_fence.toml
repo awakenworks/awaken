@@ -2,31 +2,19 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/RunIngressKernel.tla",
-  "formal/tla/RunIngress.tla",
-  "formal/tla/RunIngress.cfg",
   "docs/adr/0010-idempotent-pending-consumption.md",
   "docs/adr/0060-durable-dispatch-completion-tombstone.md",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
-  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "formal/tla/RunIngress.cfg",
+  "formal/tla/RunIngress.tla",
+  "formal/tla/RunIngressKernel.tla",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The named Kani harnesses exhaust the production DispatchTransition state, u64 epoch, logical outcome and physical-attempt-slot domains: every unequal epoch fences, and an exact current epoch removes only Done or transitions only to Awaiting when the physical slot is empty. Fixed Kani 0.67.0 with the qualified patched CBMC/CaDiCaL backend reverified the assumption-free stale harness with 161 checks and zero failures in 0.07831255 seconds of verification and 1.79 guarded seconds, at 352812 KiB maximum RSS and 50181888 KiB minimum MemAvailable under 600-second, 12-GiB RSS and 12-GiB available-memory guards with -j1 and RUSTC_WRAPPER empty.'''

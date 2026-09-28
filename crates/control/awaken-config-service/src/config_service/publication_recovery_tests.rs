@@ -1,3 +1,4 @@
+// @formal evidence config_activation.stale_publication_never_installs
 #[tokio::test]
 async fn startup_reconciliation_reuses_registration_and_keeps_latest_current() {
     // Registration recovery decision table: R1 newest durable publication is

@@ -1,3 +1,4 @@
+// @formal evidence runtime.max_token_continuation_requires_every_guard_and_exhaustion_never_succeeds
 //! A permanent inference failure commits a terminal Failed reason carrying the
 //! error's classification code; a retryable one is retried with backoff and can
 //! still succeed (G26). A `MaxTokens`-truncated text response is continued in place

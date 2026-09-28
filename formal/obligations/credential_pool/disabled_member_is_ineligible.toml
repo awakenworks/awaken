@@ -6,9 +6,7 @@ tcb_assumptions = [
   "external.provider_revocation_propagation",
 ]
 evidence = []
-production_entrypoints = [
-  "crates/control/awaken-credential-vault/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

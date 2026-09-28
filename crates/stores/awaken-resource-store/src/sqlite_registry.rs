@@ -1,3 +1,6 @@
+// @formal entrypoint resource_catalog.aggregate_revision_is_strictly_monotonic_and_never_wraps
+// @formal entrypoint resource_catalog.config_publication_is_exact_and_never_wraps
+// @formal entrypoint resource_catalog.lifecycle_timestamp_projection_is_total_and_exact
 //! SQLite adapter for the Resource Registry aggregate repository.
 
 use async_trait::async_trait;

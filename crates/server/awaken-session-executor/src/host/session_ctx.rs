@@ -1,3 +1,6 @@
+// @formal entrypoint acp.tool_export_requires_claim_execution_environment
+// @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
+// @formal entrypoint session_run.reservation_never_executes
 //! Per-thread runtime context ([`SessionCtx`]) owned by [`SharedHost`].
 
 use super::*;

@@ -5,24 +5,13 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/StoreHistory.tla",
-  "formal/tla/StoreHistory.cfg",
-  "crates/stores/awaken-store-conformance/src/lib.rs",
-  "crates/stores/awaken-store-fs/tests/recovery.rs",
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
   "formal/runtime-refinement-manifest.json",
-  "scripts/ci/render_runtime_refinement_traces.py",
+  "formal/tla/StoreHistory.cfg",
+  "formal/tla/StoreHistory.tla",
   "scripts/ci/check_formal_mutations.py",
+  "scripts/ci/render_runtime_refinement_traces.py",
 ]
-production_entrypoints = [
-  "crates/runtime/awaken-store-inmem/src/lib.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''At most three committed records, two Threads/Runs/operations/payloads/time values, legacy unknown observations and disposable recovery prefixes. Rejection/retry use the existing stuttering relation. OS power loss is outside the model.'''

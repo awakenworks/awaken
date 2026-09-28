@@ -6,23 +6,10 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WebhookOutbox.tla",
-  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
-  "crates/stores/awaken-session-store/src/lib.rs",
-  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
-  "crates/stores/awaken-session-store/tests/process_crash_outbox.rs",
-  "crates/stores/awaken-session-store/src/postgres.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
-  "crates/stores/awaken-session-store/src/lib.rs",
-  "crates/stores/awaken-session-store/src/postgres.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The finite TLA+ transition commits lifecycle state and its queued fact together, without Rust-to-model refinement. In production, SessionMutation carries lifecycle_facts through the same create or root-CAS repository call; both SQL adapters write the aggregate or tombstone, idempotency receipt and outbox rows before committing one transaction. The shared conformance suite observes exact facts beside create, archive and delete outcomes on SQLite and live PostgreSQL. A cross-backend decision table rejects the actual outbox INSERT after each create, replace and delete root write, then observes the exact predecessor aggregate or absence, no tombstone, no command receipt and an unchanged outbox through the production repository port. The strict formal gate runs the SQLite rollback table and process-kill/reopen witness; the required database gate runs the same success and rollback rules on PostgreSQL when configured. These finite injected executions do not prove SQL engine atomicity/isolation/durability, arbitrary statement faults, fail-stop timing, PostgreSQL availability or hardware persistence; those remain executable evidence or TCB rather than Kani-proved behavior.'''

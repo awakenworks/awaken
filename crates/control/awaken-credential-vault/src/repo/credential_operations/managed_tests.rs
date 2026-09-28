@@ -1,3 +1,8 @@
+// @formal evidence credential.failed_create_compensates_material
+// @formal evidence credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+// @formal evidence credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+// @formal evidence credential.managed_rollout_failure_or_busy_session_remains_pending
+// @formal evidence credential.restart_recovery_compensates_unpublished_material
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

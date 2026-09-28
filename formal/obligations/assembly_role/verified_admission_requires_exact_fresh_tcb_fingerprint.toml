@@ -7,15 +7,12 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/VerifiedProfileAdmission.tla",
-  "scripts/release/verification_manifest.py",
-  "crates/server/awaken-service-lifecycle/src/release_admission_main.rs",
-  "scripts/ci/check_formal_mutations.py",
   "scripts/ci/check_formal.sh",
+  "scripts/ci/check_formal_mutations.py",
+  "scripts/release/verification_manifest.py",
 ]
 production_entrypoints = [
   "scripts/release/verification_manifest.py",
-  "crates/server/awaken-service-lifecycle/src/release_admission.rs",
-  "crates/server/awaken-service-lifecycle/src/release_admission_main.rs",
 ]
 
 [[bounds]]

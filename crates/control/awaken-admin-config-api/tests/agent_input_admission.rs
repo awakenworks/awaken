@@ -1,3 +1,4 @@
+// @formal evidence agent_inputs.rejected_revision_does_not_mutate
 #![cfg(all(feature = "sqlite", feature = "test-support"))]
 #[path = "support/agent_input_admission.rs"]
 mod admission;

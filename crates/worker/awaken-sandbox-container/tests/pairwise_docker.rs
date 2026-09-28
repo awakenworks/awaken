@@ -1,3 +1,4 @@
+// @formal evidence sandbox.docker_absence_requires_explicit_backend_not_found
 //! Container-tier egress, verified against a REAL Docker daemon (not just planned).
 //!
 //! The pure planners (`egress_plan`, `network_of`) and the fake-runtime provider tests

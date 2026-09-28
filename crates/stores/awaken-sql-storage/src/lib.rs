@@ -1,3 +1,6 @@
+// @formal entrypoint work.persisted_epoch_is_exact_nonnegative_and_nonwrapping
+// @formal evidence config.generation_is_monotonic
+// @formal evidence config.stale_writer_never_applies
 //! Canonical synchronous-port to asynchronous-store runtime bridge.
 //!
 //! A few durable adapters implement pre-existing synchronous repository ports

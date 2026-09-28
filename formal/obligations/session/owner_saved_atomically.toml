@@ -3,21 +3,12 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "formal/tla/SessionOwnership.tla",
-  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
-  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
-  "crates/stores/awaken-session-store/src/postgres.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
   "formal/tla/SessionOwnership.cfg",
+  "formal/tla/SessionOwnership.tla",
   "formal/tla/SessionOwnershipProof.tla",
   "formal/tla/SessionRootProof.tla",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
-  "crates/stores/awaken-session-store/src/postgres.rs",
-  "crates/stores/awaken-session-store/src/sqlite.rs",
-  "crates/stores/awaken-session-store/src/lib.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''SessionOwnership is an observation wrapper of the sole SessionRootKernel; the old independent SaveOwned writer is removed. TLAPS reuses SessionRootProof and proves visible owner/revision coherence, exact read tuple capture, and immutable owner binding for arbitrary owner/payload domains and any permitted natural revision/realization bounds over unbounded traces.'''

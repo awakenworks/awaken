@@ -1,3 +1,5 @@
+// @formal entrypoint config.inference_access_resolved_once_at_publication
+// @formal entrypoint model_route.fallback_preserves_the_complete_publication_pin
 //! Exact selection from the immutable, publication-pinned model route set.
 //!
 //! A route is the complete [`ResolvedModelCandidate`], not merely its model id.

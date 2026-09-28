@@ -1,3 +1,4 @@
+// @formal entrypoint session.agent_message_requires_exact_committed_tool_source_and_payload
 //! Asynchronous Agent coordination tools.
 //!
 //! These are ordinary first-party tools over one injected orchestration port.

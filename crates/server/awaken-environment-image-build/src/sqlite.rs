@@ -1,3 +1,4 @@
+// @formal entrypoint environment_image_build.single_claim_exact_reclaim_and_stale_fence
 use std::path::Path;
 use std::sync::Arc;
 

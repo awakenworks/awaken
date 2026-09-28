@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Exact restoration acquisition, materialization and terminal disposal share one test owner.
 use pc::CheckpointingSandbox as _;
 #[tokio::test]

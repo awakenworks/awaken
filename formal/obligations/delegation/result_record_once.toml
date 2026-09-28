@@ -6,9 +6,7 @@ evidence = [
   "formal/tla/Delegation.tla",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-runtime-contract/src/delegation.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The named Kani harness exhausts all four production delivery phases. Only Absent records a newly applied Ready successor, a Ready replay stutters with no second effect, and Consumed or Discarded cannot reopen through Record.'''

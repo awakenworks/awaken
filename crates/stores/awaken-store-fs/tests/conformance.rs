@@ -1,3 +1,5 @@
+// @formal evidence outcome.stable_run_identity_and_exactly_once_ack
+// @formal evidence run.commit_shape_atomicity
 //! The filesystem backend passes the shared store conformance suite (ADR-0039 2.6).
 
 use awaken_store_fs::FsCommitCoordinator;

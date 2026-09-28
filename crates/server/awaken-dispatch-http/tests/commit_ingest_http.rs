@@ -1,3 +1,5 @@
+// @formal evidence ingress.commit_epoch_atomic_remote_custom
+// @formal evidence session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 //! Canonical typed Worker commit transport over real HTTP.
 
 use std::sync::Arc;

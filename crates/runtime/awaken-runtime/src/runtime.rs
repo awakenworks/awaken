@@ -1,3 +1,6 @@
+// @formal entrypoint live_inbox.attempt_scope_is_local_current_capability_gated_and_never_carried_over
+// @formal entrypoint plugin_activation.identity_dependencies_capabilities_and_uniqueness_are_exact
+// @formal entrypoint tool.session_thread_composition
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Weak};

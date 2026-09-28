@@ -2,17 +2,11 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
-evidence = [
-  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
-  "crates/server/awaken-protocol-managed/tests/session_resources.rs",
-  "crates/bin/awaken-cli/tests/management_surface.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani invokes the actual rotation-generation admission gate over the full u64 captured/current generation domain and every actual durable execution-state and disposition variant; terminal status is derived through the aggregate terminality law rather than supplied as a free Boolean. Archived/deleting/deleted cannot be admitted by nonterminal execution. Archive payload is not inspected by this predicate. Admission is exactly equal generations and a nonterminal root, including MAX; both positive and rejection directions are checked. Default checks retained; 0 of 104 failed, 2 unreachable checks.'''

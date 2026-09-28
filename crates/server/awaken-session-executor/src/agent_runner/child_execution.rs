@@ -1,3 +1,4 @@
+// @formal entrypoint delegation.independent_child_scheduling_lease
 //! Child Run boundary orchestration.
 //!
 //! Execution-edge materialization lives in [`super::child_attempt`] and durable

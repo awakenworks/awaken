@@ -1,3 +1,6 @@
+// @formal entrypoint credential.attempt_delivery_is_exact_epoch_bound_and_authority_preserving
+// @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
+// @formal evidence worker.secret_materialization_is_claim_fenced
 //! Credential execution contracts.
 //!
 //! Published policy and material-resolution values live in

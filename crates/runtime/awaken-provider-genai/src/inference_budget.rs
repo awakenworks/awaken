@@ -1,3 +1,4 @@
+// @formal evidence llm.inference_budget_requires_positive_response_before_actual_watchdog
 //! Provider-side reading of the one caller-declared inference budget.
 //!
 //! Adapters own no timeout of their own. Under Runtime they read the attempt

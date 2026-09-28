@@ -9,31 +9,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
-  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
-  "crates/server/awaken-dispatch/src/memory.rs",
-  "crates/server/awaken-dispatch/src/sqlite/claim.rs",
-  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/postgres/claim.rs",
-  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-  "crates/server/awaken-dispatch/src/commit_fence.rs",
-  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The existing dispatch transition kernel is the sole executable lease transition and Kani exhausts every durable state and u64 epoch: each runnable claim advances exactly once to Leased, exhaustion fails closed, and reserved or terminal rows cannot reopen. The existing commit and physical-attempt kernels exhaust complete owner/epoch presence and equality, reject torn authority, and prevent another owner from installing or clearing the exact physical slot.'''

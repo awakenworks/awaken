@@ -1,3 +1,4 @@
+// @formal entrypoint session.cleanup_completion_requires_exact_identity_and_canonical_artifact_evidence
 //! `awaken-session-executor` — authority-free shared execution host infrastructure.
 //!
 //! It owns protocol-neutral execution coordination, Session-environment

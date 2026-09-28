@@ -1,3 +1,5 @@
+// @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
+// @formal entrypoint worker.secret_materialization_is_claim_fenced
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

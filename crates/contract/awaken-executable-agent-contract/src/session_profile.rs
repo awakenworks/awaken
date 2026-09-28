@@ -1,3 +1,4 @@
+// @formal entrypoint agent_profile.requested_revision_never_follows_mutable_current
 //! Session defaults projected from one immutable executable Agent publication.
 //!
 //! This belongs to the Control-to-Coordinator registration boundary: Control

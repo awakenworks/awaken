@@ -1,3 +1,11 @@
+// @formal entrypoint credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+// @formal entrypoint credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+// @formal entrypoint credential.provider_scope_widening_requires_exact_revision_provider_and_endpoint
+// @formal entrypoint credential.visible_row_always_has_material
+// @formal entrypoint credential_pool.cooldown_boundary_is_exact
+// @formal entrypoint credential_pool.disabled_member_is_ineligible
+// @formal entrypoint credential_pool.empty_eligible_set_fails_closed
+// @formal entrypoint credential_pool.exhausted_member_is_unavailable
 //! Credential / vault domain (ADR-0043, agents bucket). A **config store** whose
 //! aggregates are *secret-free*: a [`CredentialSource`] holds only a reference to
 //! secret material, never the material itself. The plaintext lives behind the

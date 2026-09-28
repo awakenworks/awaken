@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
 //! Immutable Worker capability selection and standard manifest derivation.
 
 use std::collections::BTreeSet;

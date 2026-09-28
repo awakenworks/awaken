@@ -1,3 +1,4 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Runtime-side mechanics for Session Environment checkpoint continuation.
 //!
 //! The Session application remains the durable lifecycle owner. These helpers

@@ -5,15 +5,8 @@ tcb_assumptions = [
   "external.database_engine_correctness",
   "external.worker_host_executor_equivalence",
 ]
-evidence = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-  "crates/server/awaken-dispatch/tests/lease_semantics.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production predicate and Kani harness exhaust every AttemptAdmission variant. Durable store serialization, asynchronous cancellation timing and external executor quiescence remain executable or external evidence.'''

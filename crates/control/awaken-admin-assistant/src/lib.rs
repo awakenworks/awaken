@@ -1,3 +1,5 @@
+// @formal entrypoint audit.business_action_follows_audit_record
+// @formal entrypoint audit.call_identity_is_stable
 //! The management ("admin") assistant's tools — ADR-0052.
 //!
 //! This is the platform's FAB-equivalent: an ordinary agent (authored, compiled,

@@ -1,3 +1,6 @@
+// @formal evidence remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
+// @formal evidence remote_worker.execution_requires_claimed_snapshot
+// @formal evidence remote_worker.pending_signal_is_consumed_by_commit
 // Unit tests for the one DispatchWorker implementation. The containing module
 // stays in `worker.rs`, preserving every existing test path and design comment.
 use awaken_dispatch_contract::ControlDispatchQueue;

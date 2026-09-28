@@ -1,3 +1,4 @@
+// @formal entrypoint runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
 //! Physical parent-Session capabilities borrowed by a separately dispatched child.
 
 use super::*;

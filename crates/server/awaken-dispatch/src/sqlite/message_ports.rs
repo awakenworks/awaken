@@ -1,3 +1,4 @@
+// @formal entrypoint ingress.pending_mutation_plan_requires_exact_revision_and_nonwrapping_edit
 // SQLite durable Inbox/Outbox and operational-feed ports. Included by
 // `sqlite.rs`; the shared connection/transaction authority stays on the parent store.
 use crate::inbox_mutation::{

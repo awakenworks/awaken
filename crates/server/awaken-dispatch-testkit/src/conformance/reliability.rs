@@ -1,3 +1,8 @@
+// @formal evidence ingress.epoch_reclaim
+// @formal evidence ingress.pending_input_exactly_once
+// @formal evidence ingress.settle_fence
+// @formal evidence remote_worker.single_live_claim_owner
+// @formal evidence run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
 /// Settlement-fence and pending-input cause/effect table shared by every store.
 /// C1 an Awaiting Run has one bound input; C2 claimant A disappears; C3 B reclaims
 /// at a newer epoch and another input arrives; C4 stale A settles Awaiting; C5

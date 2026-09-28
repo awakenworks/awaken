@@ -1,3 +1,4 @@
+// @formal entrypoint session_event_batch.final_non_admission_excludes_late_acceptance
 //! Minimal retained admission evidence. No message, tool input or execution log.
 #[cfg(any(test, kani))]
 use crate::RetainedEventAdmission;

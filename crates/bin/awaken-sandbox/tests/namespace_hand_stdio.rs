@@ -1,3 +1,4 @@
+// @formal evidence sandbox.workspace_path_projection_is_one_logical_root_and_never_discloses_provider_host_paths
 //! Real bwrap proof that Namespace and Container Hands consume the same sandbox paths.
 #![cfg(all(feature = "hand", target_os = "linux"))]
 

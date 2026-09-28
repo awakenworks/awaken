@@ -5,16 +5,13 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "formal/tla/AcpBoundary.tla",
-  "formal/tla/AcpBoundary.cfg",
-  "crates/server/awaken-protocol-acp/src/jsonrpc/wire.rs",
   "docs/design/acp-harness-capability-and-tool-bridge.md",
+  "formal/tla/AcpBoundary.cfg",
+  "formal/tla/AcpBoundary.tla",
   "formal/verification-boundaries/acp-handshake-and-wire.md",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/server/awaken-protocol-acp/src/jsonrpc/wire.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The finite duplex projection has one-slot pipes, two outbound chunks, two or three inbound chunks, a two-frame queue, cancellation and overflow. Weakly fair I/O reaches an explicit terminal outcome, preserves the per-endpoint sequence and does not invent a delivered frame. This is an abstract bounded model, not an automatic Rust refinement.'''

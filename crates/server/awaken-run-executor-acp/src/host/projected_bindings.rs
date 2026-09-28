@@ -1,3 +1,4 @@
+// @formal entrypoint worker_credential.projected_binding_use_rechecks_after_probe
 //! Read-only host-login binding projection. The external projector owns intent;
 //! this adapter owns only bounded reads and execution-time liveness evidence.
 

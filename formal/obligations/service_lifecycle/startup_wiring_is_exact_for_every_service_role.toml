@@ -4,15 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
-evidence = [
-  "crates/bin/awaken-cli/src/process_stores.rs",
-  "crates/bin/awaken-cli/src/service.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-service-lifecycle/src/lib.rs",
-  "crates/bin/awaken-cli/src/process_stores.rs",
-  "crates/bin/awaken-cli/src/service.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

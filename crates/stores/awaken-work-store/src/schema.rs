@@ -1,3 +1,6 @@
+// @formal entrypoint work.exact_boundary_reclaim
+// @formal entrypoint work.lease_authority_snapshot_and_owner_mutations_are_atomic
+// @formal entrypoint work.terminal_lease_clear
 //! Portable work-queue schema, row codec, and lease-time normalization shared
 //! by the SQLite and PostgreSQL adapters.
 

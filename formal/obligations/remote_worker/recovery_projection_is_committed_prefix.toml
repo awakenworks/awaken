@@ -8,16 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-session-executor/src/worker_services.rs",
-  "crates/server/awaken-dispatch/tests/recovery_projection.rs",
-  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-dispatch/src/recovery_projection.rs",
-  "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/server/awaken-session-executor/src/worker_services.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production recovery installation classifier and its Kani harness exhaust every Run/Thread identity class: only the exact guarded-dispatch identity can replace the Worker projection, with Run mismatch taking stable precedence and every rejection leaving the prior projection unchanged.'''

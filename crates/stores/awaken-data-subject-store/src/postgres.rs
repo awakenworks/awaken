@@ -1,3 +1,7 @@
+// @formal entrypoint data_subject.revision_is_monotonic
+// @formal entrypoint data_subject.stale_writer_never_applies
+// @formal entrypoint erasure.checkpoint_never_forgets_completed_targets
+// @formal entrypoint erasure.concurrent_replicas_have_one_checkpoint_winner
 //! Postgres adapter for the data-subject application (feature `postgres`, ADR-0050),
 //! the network-DB sibling of [`SqliteDataSubjectRepo`](crate::SqliteDataSubjectRepo)
 //! over the Control-owned `control_data_subject` migration scope. The subject aggregate

@@ -1,3 +1,6 @@
+// @formal evidence checkpoint.durable_watermark_never_rolls_back
+// @formal evidence checkpoint.terminal_completion_clears_resume
+// @formal evidence llm.inference_budget_requires_positive_response_before_actual_watchdog
 use super::*;
 use awaken_agent_contract::agent::state::{MergePolicy, Scope};
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointError;

@@ -1,3 +1,7 @@
+// @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
+// @formal entrypoint webhook.committed_outbox_row_is_recoverable
+// @formal entrypoint webhook.delivery_requires_an_enqueued_fact
+// @formal entrypoint webhook.lifecycle_commit_and_outbox_are_atomic
 use super::*;
 use crate::{ManagedLifecycleFact, SessionId};
 use async_trait::async_trait;

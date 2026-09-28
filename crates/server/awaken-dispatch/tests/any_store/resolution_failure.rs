@@ -1,3 +1,4 @@
+// @formal evidence remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
 use super::*;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{DispatchWorker, ManualClock};

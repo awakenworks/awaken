@@ -2,31 +2,13 @@ claim_scope = "repository_safety"
 proof_grade = "abstract_model_checked"
 status = "model_linked"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
   "formal/tla/CheckpointRecovery.tla",
-  "crates/contract/awaken-agent-contract/src/stream/checkpoint.rs",
-  "crates/runtime/awaken-runtime/src/engine/inference.rs",
-  "crates/runtime/awaken-runtime/tests/checkpoint.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-fs/tests/stream_checkpoint.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/tests/failure_atomicity.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-  "crates/server/awaken-dispatch/src/postgres_checkpoint.rs",
-  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
-  "crates/server/awaken-dispatch/tests/runtime_postgres.rs",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-agent-contract/src/stream/checkpoint.rs",
-  "crates/runtime/awaken-runtime/src/engine/inference.rs",
-  "crates/stores/awaken-store-fs/src/lib.rs",
-  "crates/stores/awaken-store-sqlite/src/lib.rs",
-  "crates/stores/awaken-store-postgres/src/lib.rs",
-  "crates/server/awaken-dispatch/src/postgres_checkpoint.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''CheckpointRecovery model checking is finite at MaxChunks=3. Its CrashPreservesDurableTruth invariant says only that the abstract committed durable prefix is unchanged by Crash; FlushCheckpoint is an atomic abstract action. It does not model filesystem calls, database transactions, write errors or a mechanical Rust-to-TLA refinement.'''

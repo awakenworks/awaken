@@ -1,3 +1,8 @@
+// @formal entrypoint session.runtime_projection_delivery_preserves_exact_payload_digest_and_monotonic_completion
+// @formal entrypoint session.runtime_projection_equal_source_and_content_is_a_read_without_cache_write_or_broadcast
+// @formal entrypoint session.runtime_projection_failed_refresh_stutters_warm_state
+// @formal entrypoint session.runtime_projection_stale_writer_never_rolls_back_visible_result
+// @formal entrypoint session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
 //! Atomic publication of one fully reduced Managed projection candidate.
 
 use super::super::delivery::committed_delivery_delta;

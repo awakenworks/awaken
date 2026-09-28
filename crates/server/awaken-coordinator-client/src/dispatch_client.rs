@@ -1,3 +1,8 @@
+// @formal entrypoint remote_worker.maintenance_scheduler_respects_adapter_ownership
+// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
+// @formal evidence remote_worker.execution_requires_claimed_snapshot
+// @formal evidence remote_worker.recovery_projection_is_committed_prefix
+// @formal evidence remote_worker.single_live_claim_owner
 //! The database-less worker's dispatch client: a `Dispatch` implementation whose
 //! claim/settle verbs are HTTP calls to the Coordinator's registered Worker router,
 //! so a worker drives runs without ever opening the store.

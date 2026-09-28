@@ -1,3 +1,4 @@
+// @formal entrypoint session_resources.failed_replacement_preserves_active_manifest
 //! The Session Resource desired-manifest command: its idempotent replay, its
 //! root-CAS replacement, and the convergence that follows an accepted
 //! generation.

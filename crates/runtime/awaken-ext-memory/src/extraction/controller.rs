@@ -1,3 +1,4 @@
+// @formal entrypoint memory_extraction.unknown_execution_never_reenters_retry
 //! Memory-owned application controller for durable extraction intents.
 //!
 //! The parent module retains the aggregate and its ports; this module advances

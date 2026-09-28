@@ -1,3 +1,4 @@
+// @formal entrypoint store_history.receipt_refines_one_exact_durable_record
 //! Claim-fenced committed-truth application port.
 
 use awaken_agent_contract::thread::commit::coordinator::Error as CommitError;

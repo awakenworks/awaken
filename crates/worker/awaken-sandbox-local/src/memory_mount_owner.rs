@@ -1,3 +1,4 @@
+// @formal entrypoint memory_participant.live_provider_retains_pending_and_failed_operations
 //! Physical Memory participant ownership within a live Provider. Marker and
 //! current-effect admission remain the authority; this index keeps the original
 //! mount future and guards reachable across caller cancellation and wrapper Drop.

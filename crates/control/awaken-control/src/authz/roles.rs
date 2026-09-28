@@ -1,3 +1,9 @@
+// @formal entrypoint authz.agent_publisher_role_is_exact_workspace_agent_model_read_and_skill_only
+// @formal entrypoint authz.application_protocol_is_scoped_by_application_guard_not_service_guard
+// @formal entrypoint authz.credential_ingress_role_is_exact_workspace_apikey_and_provider_connect_only
+// @formal entrypoint authz.hosted_workspace_and_runtime_member_grants_are_exact
+// @formal entrypoint authz.legacy_workspace_binding_migration_is_authority_preserving_and_idempotent
+// @formal entrypoint authz.run_backed_protocol_routes_use_the_exact_run_action_namespace
 //! Pure authorization selectors shared by policy construction and route guards.
 //!
 //! Owned by `awaken-control`, their only consumer: hosted-platform role

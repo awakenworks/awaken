@@ -1,3 +1,4 @@
+// @formal entrypoint run_ingress.relinquish_requires_exact_current_claim_and_preserves_retry_budget
 // SQLite release transaction for the neutral DispatchQueue contract. Kept
 // separate from the large trait implementation because it owns one physical
 // attempt settlement boundary and is reused by multiple release entry points.

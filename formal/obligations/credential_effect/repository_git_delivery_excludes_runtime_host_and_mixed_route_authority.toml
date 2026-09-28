@@ -5,15 +5,8 @@ tcb_assumptions = [
   "external.container_and_kernel_isolation",
   "external.provider_revocation_propagation",
 ]
-evidence = [
-  "crates/contract/awaken-session-resource-contract/src/resource.rs",
-  "crates/server/awaken-session-executor/src/session_environment/container_repositories.rs",
-]
-production_entrypoints = [
-  "crates/contract/awaken-credential-contract/src/delivery_plan.rs",
-  "crates/contract/awaken-session-resource-contract/src/resource.rs",
-  "crates/server/awaken-session-executor/src/session_environment/container_repositories.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production pure delivery projection is exhaustively checked over all three PlaintextBoundary variants. The proof establishes only the holder-to-route/authority relation; target binding, credential freshness, Sandbox isolation, Git behavior, network enforcement, and external Gateway correctness remain native-test or deployment evidence.'''

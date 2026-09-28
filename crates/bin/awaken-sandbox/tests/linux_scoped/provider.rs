@@ -1,3 +1,4 @@
+// @formal evidence sandbox.scoped_launch_requires_current_grant_and_init_exit_for_quiescence
 use super::*;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, Sandbox as _};
 use awaken_sandbox_local::LocalProvider;

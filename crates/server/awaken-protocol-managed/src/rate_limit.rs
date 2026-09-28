@@ -1,3 +1,4 @@
+// @formal entrypoint managed_rate_limit.organization_buckets_never_over_admit_under_monotonic_time
 //! Organization-scoped request limiting for the Managed Agents HTTP surface.
 //!
 //! The edge supplies the authenticated Workspace coordinate. Open/local

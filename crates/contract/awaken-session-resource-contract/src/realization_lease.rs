@@ -1,3 +1,4 @@
+// @formal entrypoint session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
 //! Session-owned realization fence and its laws. Persistence stores this value;
 //! it does not own a second lease vocabulary or authorization algorithm.
 

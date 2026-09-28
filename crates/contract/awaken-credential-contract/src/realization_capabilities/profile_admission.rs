@@ -1,3 +1,4 @@
+// @formal entrypoint credential.material_profile_admission_preserves_complete_tuples
 //! Complete-profile admission: dimensions from different adapters never join.
 
 pub(crate) const fn credential_profile_supports(

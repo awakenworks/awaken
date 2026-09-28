@@ -1,3 +1,12 @@
+// @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
+// @formal evidence session_realization.publication_excludes_staged_retired_generation
+// @formal evidence session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
+// @formal evidence session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+// @formal evidence session_resources.external_io_requires_durable_prepared_state
+// @formal evidence session_resources.failed_replacement_preserves_active_manifest
+// @formal evidence session_resources.terminal_assignment_retains_desired_generation
+// @formal evidence session_resources.terminal_session_never_reactivates
+// @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // awaken-file-limit-ceiling: 6486 (legacy oversized test file: split, never grow)
 use super::*;
 mod cleanup_timing;

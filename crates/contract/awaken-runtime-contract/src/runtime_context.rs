@@ -1,3 +1,7 @@
+// @formal entrypoint session.legacy_derived_context_remains_durable_but_is_hidden_from_new_model_requests
+// @formal entrypoint session.transcript_prefix_is_exact_request_only_context_not_durable_truth
+// @formal evidence session_execution.one_physical_attempt_per_thread
+// @formal evidence worker.secret_materialization_is_claim_fenced
 //! Per-attempt live wiring kept separate from durable activation data.
 //!
 //! `RunActivation` is immutable, serializable run input; `RuntimeRunContext`

@@ -1,3 +1,4 @@
+// @formal evidence agent_inputs.rejected_revision_does_not_mutate
 //! Live Postgres admin-store conformance (feature `postgres`): the same sync
 //! store ports the sqlite backend serves, exercised against a real Postgres.
 //! Isolated in its own schema (baked into the connection URL's `search_path`), so

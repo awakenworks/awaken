@@ -5,15 +5,9 @@ tcb_assumptions = [
   "external.container_and_kernel_isolation",
 ]
 evidence = [
-  "crates/server/awaken-session-executor/src/acp_tool_export.rs",
-  "crates/server/awaken-session-executor/src/host/session.rs",
   "e2e/acp_awaken_tool_bridge_e2e.mjs",
 ]
-production_entrypoints = [
-  "crates/server/awaken-session-executor/src/host/session_ctx.rs",
-  "crates/server/awaken-session-executor/src/acp_tool_export.rs",
-  "crates/server/awaken-session-executor/src/host/session.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

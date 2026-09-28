@@ -1,3 +1,4 @@
+// @formal evidence session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
 use super::*;
 use crate::host::worker_resolver::test_support::{
     AdoptionModel, deferred_environment, empty_frozen_projection_for_snapshot, managed_test_host,

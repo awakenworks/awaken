@@ -1,3 +1,5 @@
+// @formal entrypoint remote_worker.stale_epoch_never_mutates_truth
+// @formal entrypoint session_run.reservation_ttl_uses_store_clock
 //! SQLite durable implementation of the dispatch-store ports.
 //!
 //! The embedded sibling of [`PostgresDispatchStore`](crate::PostgresDispatchStore),

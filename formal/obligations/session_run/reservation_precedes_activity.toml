@@ -2,30 +2,19 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/SessionRunProtocol.tla",
-  "formal/tla/SessionRunProtocol.cfg",
   "docs/adr/0040-server-durable-ingress-integration.md",
   "docs/adr/0075-unified-managed-session-worker-execution.md",
-  "crates/server/awaken-session-application/src/run_admission.rs",
-  "crates/server/awaken-session-application/src/tests/run_admission.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/dispatch.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
-  "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
+  "e2e/remote_worker_recovery_e2e.ts",
+  "formal/tla/SessionRunProtocol.cfg",
+  "formal/tla/SessionRunProtocol.tla",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
-  "e2e/remote_worker_recovery_e2e.ts",
 ]
-production_entrypoints = [
-  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
-  "crates/server/awaken-session-application/src/run_admission.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/server/awaken-dispatch/src/dispatch.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts the production reservation-to-activity plan over all five SessionRunReservation variants, optional prior receipt presence and every u64 receipt value. A fresh or replayed durable reservation with no receipt is the only class that requests one activity commit; a nonzero receipt is reused exactly, zero fails closed, and RecoveryClaimed or Completed never opens an activity. The application calls this reducer only after DispatchQueue::reserve_session_run returns.'''

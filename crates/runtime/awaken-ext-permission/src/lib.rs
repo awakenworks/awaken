@@ -1,3 +1,4 @@
+// @formal entrypoint permission.extension_policy_merge_is_exact_and_fail_closed
 //! A declarative, Claude-Code-compatible permission policy.
 //!
 //! This extension implements the runtime's [`ToolPermissionPolicy`] port with rules

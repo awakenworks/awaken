@@ -1,3 +1,6 @@
+// @formal entrypoint assembly_role.local_managed_mount_requires_exact_local_worker_component
+// @formal entrypoint assembly_role.process_role_projects_exact_startup_authority
+// @formal entrypoint assembly_role.worker_never_acquires_service_startup_or_migration_authority
 /// The canonical product role is owned by the service-lifecycle contract.
 /// Configuration re-exports it instead of maintaining a second role enum or
 /// another role-to-startup mapping.

@@ -1,3 +1,4 @@
+// @formal entrypoint object_store.configuration_is_secret_free_and_provider_exact
 //! Object-store backend (`object-store` feature) via the `object_store` crate.
 //! The object **key is the content id**, so writes are naturally immutable and
 //! idempotent. Unit-tested against the in-memory object store; real S3 needs creds.

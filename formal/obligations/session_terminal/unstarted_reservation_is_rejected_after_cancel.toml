@@ -2,13 +2,8 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/server/awaken-session-executor/src/host/tests.rs",
-  "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
-]
-production_entrypoints = [
-  "crates/server/awaken-session-executor/src/host/run/quiescence.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust closed DispatchState domain; the surrounding terminal Session transition is assumed committed before this reducer is called.'''

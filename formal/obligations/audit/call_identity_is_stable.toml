@@ -2,29 +2,15 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.database_engine_correctness",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/AuditCommit.tla",
-  "crates/control/awaken-admin-assistant/src/lib.rs",
-  "crates/control/awaken-control/src/lib.rs",
   "formal/tla/AuditCommit.cfg",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-config-store/src/schema.rs",
-  "crates/control/awaken-config-store/tests/support/audit_identity.rs",
-  "crates/control/awaken-config-store/tests/integration.rs",
-  "crates/control/awaken-config-store/tests/postgres.rs",
+  "formal/tla/AuditCommit.tla",
   "scripts/ci/check_formal.sh",
 ]
-production_entrypoints = [
-  "crates/control/awaken-agent-config/src/store.rs",
-  "crates/control/awaken-admin-assistant/src/lib.rs",
-  "crates/control/awaken-control/src/lib.rs",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''ManagementAuditRecord now owns the sole production identity constructor and borrowed tuple projection. Its generic reducer preserves the two opaque coordinates without parsing, hashing or concatenation. Kani exhausts all u64 values for the original and candidate tool/call coordinates and proves that an exact replay is stable and another projection is equal exactly when both coordinates are equal, covering all four coordinate-equality classes without assumptions or stubs.'''

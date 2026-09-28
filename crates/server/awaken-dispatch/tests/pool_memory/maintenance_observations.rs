@@ -1,3 +1,4 @@
+// @formal evidence remote_worker.maintenance_scheduler_respects_adapter_ownership
 //! Actual scheduler entrypoints, with deterministic returning/pending I/O cuts.
 use super::*;
 use harness::maintenance::{MaintenanceProbe, Operation};

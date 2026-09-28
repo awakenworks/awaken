@@ -1,3 +1,5 @@
+// @formal entrypoint authz.credential_ingress_role_is_exact_workspace_apikey_and_provider_connect_only
+// @formal entrypoint authz.hosted_workspace_and_runtime_member_grants_are_exact
 use super::*;
 
 #[test]

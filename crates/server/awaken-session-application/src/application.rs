@@ -1,3 +1,13 @@
+// @formal entrypoint executable_projection.failed_refresh_never_enters_handler
+// @formal entrypoint model_route.session_override_reuses_only_exact_identity_and_resolves_every_mismatch
+// @formal entrypoint runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
+// @formal entrypoint session_creation.selected_environment_is_frozen_in_baseline
+// @formal entrypoint session_creation.work_projection_is_disposable_repairable_and_non_authoritative
+// @formal entrypoint session_environment.owner_topology_is_exact_and_frozen
+// @formal entrypoint session_environment.terminal_fence_admits_only_inflight_binding_receipts
+// @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
+// @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
+// @formal entrypoint session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
 /// Process-level execution topology interpreted by the Session application.
 /// The selected value is frozen into every newly admitted Session; protocol
 /// adapters never inspect or override it.

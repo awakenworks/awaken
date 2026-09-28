@@ -54,6 +54,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     "crates/**/Cargo.toml",
     "formal/coverage.toml",
     "formal/obligations/**/*",
+    "web/src/**/*",
     "formal/proof-input-exceptions.json",
     "scripts/ci/formal_ledger.py",
 )

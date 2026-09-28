@@ -1,3 +1,4 @@
+// @formal entrypoint ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
 //! Project a committed step (and thread history) into AI SDK UI Message Stream
 //! parts. The step fold is shared (`awaken_agent_contract::event`); this module
 //! owns the AI SDK *transcoder* — the `Fact -> UIStreamEvent` mapping — and

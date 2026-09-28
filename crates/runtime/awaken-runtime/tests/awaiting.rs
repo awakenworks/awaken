@@ -1,3 +1,4 @@
+// @formal evidence tool.session_thread_composition
 //! A gate Suspend awaits the run on a committed awaiting ticket; a validated
 //! resume continues it, and a mismatched or stale resume fails closed (G5/G28).
 

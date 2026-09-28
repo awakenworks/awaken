@@ -8,13 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/CredentialInventory.tla",
-  "crates/control/awaken-credential-vault/src/repo/credential_operations/tests.rs",
-  "crates/control/awaken-control/src/component.rs",
 ]
-production_entrypoints = [
-  "crates/control/awaken-credential-vault/src/repo/inventory.rs",
-  "crates/control/awaken-control/src/component.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''The production inventory loop consumes one closed Preserve/ReportOrphan/ReportMissing classifier with no deletion outcome. Kani exhausts all sixteen combinations of namespace ownership, material presence, committed reference and pending reference; a source-only or Managed pending reference is never classified as an orphan.'''

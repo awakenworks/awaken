@@ -1,3 +1,6 @@
+// @formal entrypoint deployment.claim_and_run_commit_atomically
+// @formal entrypoint deployment.stale_scheduler_cannot_claim_or_overwrite
+// @formal entrypoint executable_projection.failed_refresh_never_enters_handler
 //! Deployment schedule calculation and due-run orchestration.
 //!
 //! This module owns no state. It operates on the one [`DeploymentApplication`]

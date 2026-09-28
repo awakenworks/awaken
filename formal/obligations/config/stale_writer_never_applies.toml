@@ -5,24 +5,13 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "formal/tla/AggregateCAS.tla",
   "formal/tla/AggregateCAS.cfg",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-config-store/tests/integration.rs",
-  "crates/control/awaken-config-store/tests/postgres.rs",
-  "crates/control/awaken-config-store/tests/support/revision_cas.rs",
-  "crates/control/awaken-config-store/tests/support/audit_identity.rs",
-  "crates/stores/awaken-sql-storage/src/lib.rs",
+  "formal/tla/AggregateCAS.tla",
   "scripts/ci/check_formal.sh",
   "scripts/ci/check_formal_mutations.py",
   "scripts/ci/formal_config_mutations.py",
 ]
-production_entrypoints = [
-  "crates/control/awaken-config-store/src/lib.rs",
-  "crates/control/awaken-config-store/src/sqlite.rs",
-  "crates/control/awaken-config-store/src/postgres.rs",
-]
+production_entrypoints = []
 
 [[bounds]]
 text = '''ConfigRevisionWritePlan is the sole Config-owned admission and expected/successor owner used by unconditional, ordinary and audited SQLite/PostgreSQL writes. Absence admits only expected zero for insert one; a present row admits only its positive exact expectation for a checked successor. Present zero, absent positive, stale and future expectations conflict with the observed revision, while invalid or exhausted expectations fail before SQL.'''

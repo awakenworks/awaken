@@ -1,3 +1,4 @@
+// @formal entrypoint ingress.pending_mutation_plan_requires_exact_revision_and_nonwrapping_edit
 // PostgreSQL operational-feed and durable Inbox/Outbox ports. Included by
 // `postgres.rs` to keep every implementation on PostgresDispatchStore's module path.
 use crate::inbox_mutation::{

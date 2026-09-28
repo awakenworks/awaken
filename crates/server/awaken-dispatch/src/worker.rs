@@ -1,3 +1,21 @@
+// @formal entrypoint checkpoint.recovery_never_precedes_commit
+// @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
+// @formal entrypoint delegation.independent_child_scheduling_lease
+// @formal entrypoint ingress.pending_input_exactly_once
+// @formal entrypoint remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
+// @formal entrypoint remote_worker.execution_requires_claimed_snapshot
+// @formal entrypoint remote_worker.pending_signal_is_consumed_by_commit
+// @formal entrypoint remote_worker.recovery_projection_is_committed_prefix
+// @formal entrypoint remote_worker.single_live_claim_owner
+// @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+// @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
+// @formal entrypoint session_run.recovery_claim_is_admission_only
+// @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
+// @formal entrypoint tool_result.terminal_run_rejects_late_result
+// @formal entrypoint worker.secret_materialization_is_claim_fenced
+// @formal entrypoint worker_credential.dynamic_observation_requires_exact_fact_and_half_open_lease
+// @formal entrypoint worker_credential.exact_revision_and_current_epoch_required
+// @formal entrypoint worker_credential.expired_observation_never_executes
 //! The dispatch worker: claim one runnable dispatch, run it, settle it.
 //!
 //! The worker is the only place that converts a durable dispatch into a Runtime

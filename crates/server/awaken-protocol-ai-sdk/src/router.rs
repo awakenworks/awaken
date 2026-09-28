@@ -1,3 +1,4 @@
+// @formal evidence tool_result.only_matching_call_is_accepted
 //! The axum router: AI SDK v6 UI Message Stream routes over a `RunApplication`.
 //!
 //! Handlers decode the request, drive one turn or resume through the port, and

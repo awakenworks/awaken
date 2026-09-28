@@ -1,3 +1,5 @@
+// @formal entrypoint session.agent_message_missing_lifecycle_projection_relinquishes_without_settlement
+// @formal entrypoint session.agent_message_target_boundary_not_source_receipt_settles_activity
 //! Neutral Session-owned Agent coordination vocabulary.
 //!
 //! A coordinated child is still an ordinary Thread containing ordinary Runs.

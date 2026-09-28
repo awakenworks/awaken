@@ -2,18 +2,11 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = [
-  "external.container_and_kernel_isolation",
   "external.async_runtime_synchronization_and_scheduling",
+  "external.container_and_kernel_isolation",
 ]
-evidence = [
-  "crates/worker/awaken-sandbox-container/src/docker/removal.rs",
-  "crates/worker/awaken-sandbox-container/src/docker/removal/tests.rs",
-  "crates/worker/awaken-sandbox-container/tests/pairwise_docker.rs",
-]
-production_entrypoints = [
-  "crates/worker/awaken-sandbox-container/src/docker.rs",
-  "crates/worker/awaken-sandbox-container/src/docker/removal.rs",
-]
+evidence = []
+production_entrypoints = []
 
 [[bounds]]
 text = '''Direct Kani proof invokes the unchanged production docker_not_found classifier over every u16 HTTP status and the independent transport-timeout error variant. It passes 608 checks with zero failures and six unreachable checks under unwind 2. Only an explicit 404 is absence; no API-error message or transport timeout can stand in for it.'''

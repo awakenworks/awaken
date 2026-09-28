@@ -1,3 +1,8 @@
+// @formal entrypoint audit.business_action_follows_audit_record
+// @formal entrypoint audit.call_identity_is_stable
+// @formal entrypoint management_http.crash_preserves_pending_audit
+// @formal entrypoint management_http.no_business_write_without_durable_audit
+// @formal entrypoint management_http.successful_write_marks_audit_committed
 //! `awaken-control` — the authoring / authz plane (Stage B2).
 //!
 //! This crate owns the management **authoring** surfaces and the embedded IAM

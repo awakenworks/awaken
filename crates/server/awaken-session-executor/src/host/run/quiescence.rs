@@ -1,3 +1,4 @@
+// @formal entrypoint session_terminal.unstarted_reservation_is_rejected_after_cancel
 //! Terminal delegation quiescence over durable dispatch authority.
 
 use super::*;

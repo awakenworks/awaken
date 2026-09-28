@@ -1,3 +1,4 @@
+// @formal entrypoint credential_effect.repository_git_delivery_excludes_runtime_host_and_mixed_route_authority
 //! Repository Git effects executed exclusively inside a container Sandbox.
 
 use std::sync::Arc;
