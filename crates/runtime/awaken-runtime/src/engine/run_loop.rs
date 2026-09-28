@@ -309,9 +309,7 @@ async fn infer_step(
             )
             .await
             .ok_or_else(|| {
-                awaken_runtime_contract::llm::Error::Unauthorized(
-                    "model preparation cancelled".into(),
-                )
+                awaken_runtime_contract::llm::Error::Cancelled("model preparation cancelled".into())
             })??;
             if !context.physical_quiescence.permits_execution() {
                 break Ok(InferStepOutcome::Indeterminate);
@@ -329,9 +327,7 @@ async fn infer_step(
             )
             .await
             .ok_or_else(|| {
-                awaken_runtime_contract::llm::Error::Unauthorized(
-                    "model admission cancelled".into(),
-                )
+                awaken_runtime_contract::llm::Error::Cancelled("model admission cancelled".into())
             })?
             .map_err(|error| {
                 awaken_runtime_contract::llm::Error::Unauthorized(format!(
@@ -389,7 +385,7 @@ async fn infer_step(
             }
         };
         if context.is_cancelled() {
-            break Err(awaken_runtime_contract::llm::Error::Unauthorized(
+            break Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled".into(),
             ));
         }

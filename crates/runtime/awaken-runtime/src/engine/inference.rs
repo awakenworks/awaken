@@ -355,7 +355,7 @@ async fn infer_with_retry_inner(
     let mut attempt = 0;
     loop {
         if cancellation.is_some_and(|token| token.is_cancelled()) {
-            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+            return Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled".into(),
             ));
         }
@@ -427,7 +427,7 @@ async fn infer_with_retry_inner(
                     )
                     .await?;
             }
-            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+            return Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled before executor admission".into(),
             ));
         }
@@ -455,7 +455,7 @@ async fn infer_with_retry_inner(
             model_read(cancellation, read).await
         };
         let Some(outcome) = outcome else {
-            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+            return Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled".into(),
             ));
         };
@@ -484,7 +484,7 @@ async fn infer_with_retry_inner(
             // Cancellation may have arrived while the return write was held.
             // Do not consume/update a stream checkpoint for a retry that will
             // never be entered.
-            return Err(awaken_runtime_contract::llm::Error::Unauthorized(
+            return Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled".into(),
             ));
         }

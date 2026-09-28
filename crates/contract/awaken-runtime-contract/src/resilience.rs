@@ -48,6 +48,8 @@ pub enum FailureClass {
     UsageLimit { reset_after: Option<Duration> },
     /// This request shape cannot succeed on any retry of the same binding.
     Permanent,
+    /// The caller cancelled the run. Says nothing about the provider.
+    Cancelled,
 }
 
 impl FailureClass {
@@ -93,6 +95,9 @@ impl FailureClass {
                 retry_after: reset_after,
             },
             Self::Permanent => Disposition::Permanent,
+            // A cancellation is no evidence against this binding: neither
+            // failover nor cooldown, which is exactly the Transient routing.
+            Self::Cancelled => Disposition::Transient,
         }
     }
 }
@@ -121,6 +126,7 @@ impl Error {
             | Error::LoginRequired(_)
             | Error::ModelNotFound(_)
             | Error::ContentFiltered(_) => FailureClass::Permanent,
+            Error::Cancelled(_) => FailureClass::Cancelled,
             // `classification()` never returns the evidence wrapper.
             Error::Observed { source, .. } => source.class(),
         }
@@ -182,6 +188,8 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 /// already names the model's own terminal stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryStop {
+    /// The caller cancelled the run; no further attempt is wanted.
+    Cancelled,
     /// The failure class cannot clear by retrying the identical call.
     NotRetryable,
     /// The attempt could not prove the provider stopped (or never started), so
@@ -246,6 +254,9 @@ impl RetryPolicy {
         failed_attempt: u32,
         jitter: u64,
     ) -> RetryVerdict {
+        if class == FailureClass::Cancelled {
+            return RetryVerdict::Stop(RetryStop::Cancelled);
+        }
         if !evidence.permits_reentry() {
             return RetryVerdict::Stop(RetryStop::ExecutionUncertain);
         }
@@ -477,6 +488,14 @@ mod tests {
                 false,
                 Disposition::Permanent,
             ),
+            // A cancellation is not the binding's fault: no retry, and a
+            // routing disposition that neither fails over nor cools.
+            (
+                || Error::Cancelled("run cancelled".into()),
+                FailureClass::Cancelled,
+                false,
+                Disposition::Transient,
+            ),
         ];
         for (error, class, retryable, disposition) in rows {
             let observed = error().with_execution_evidence(terminated());
@@ -495,7 +514,8 @@ mod tests {
     fn retry_verdict_decision_table() {
         // Causes: C1 class (+ provider pause), C2 execution evidence, C3
         // failed attempt index, C4 policy budget, C5 jitter draw. Effect: the
-        // verdict. Rules: R1 no reentry evidence => ExecutionUncertain; R2 a
+        // verdict. Rules: R0 a cancelled run => Cancelled, whatever else
+        // holds; R1 no reentry evidence => ExecutionUncertain; R2 a
         // class that cannot clear in place => NotRetryable; R3 budget spent
         // => AttemptsExhausted (a throttle gets at least 12 retries unless the
         // caller disabled retries); R4 otherwise retry after the equal-jitter
@@ -535,6 +555,24 @@ mod tests {
                 0,
                 0,
                 stop(RetryStop::ExecutionUncertain),
+            ),
+            (
+                "R0 cancelled, unknown evidence",
+                &policy,
+                FailureClass::Cancelled,
+                ModelExecutionEvidence::Unknown,
+                0,
+                0,
+                stop(RetryStop::Cancelled),
+            ),
+            (
+                "R0 cancelled with budget left",
+                &fast,
+                FailureClass::Cancelled,
+                terminated(),
+                0,
+                0,
+                stop(RetryStop::Cancelled),
             ),
             (
                 "R1 beats a throttle",

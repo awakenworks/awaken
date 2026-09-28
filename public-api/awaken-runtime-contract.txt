@@ -649,6 +649,7 @@ pub use awaken_runtime_contract::llm::TokenUsage
 pub use awaken_runtime_contract::llm::ToolCall
 pub enum awaken_runtime_contract::llm::Error
 pub awaken_runtime_contract::llm::Error::Binding(alloc::string::String)
+pub awaken_runtime_contract::llm::Error::Cancelled(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContentFiltered(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContextOverflow(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::InvalidRequest(alloc::string::String)
@@ -1199,6 +1200,7 @@ pub mod awaken_runtime_contract::resilience
 pub use awaken_runtime_contract::resilience::Classify
 pub use awaken_runtime_contract::resilience::Disposition
 pub enum awaken_runtime_contract::resilience::FailureClass
+pub awaken_runtime_contract::resilience::FailureClass::Cancelled
 pub awaken_runtime_contract::resilience::FailureClass::Overloaded
 pub awaken_runtime_contract::resilience::FailureClass::Overloaded::retry_after: core::option::Option<core::time::Duration>
 pub awaken_runtime_contract::resilience::FailureClass::Permanent
@@ -1217,6 +1219,7 @@ pub awaken_runtime_contract::resilience::RetryDecision::Retry
 pub awaken_runtime_contract::resilience::RetryDecision::Terminal
 pub enum awaken_runtime_contract::resilience::RetryStop
 pub awaken_runtime_contract::resilience::RetryStop::AttemptsExhausted
+pub awaken_runtime_contract::resilience::RetryStop::Cancelled
 pub awaken_runtime_contract::resilience::RetryStop::ExecutionUncertain
 pub awaken_runtime_contract::resilience::RetryStop::NotRetryable
 pub enum awaken_runtime_contract::resilience::RetryVerdict

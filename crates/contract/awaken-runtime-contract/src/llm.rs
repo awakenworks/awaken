@@ -469,8 +469,8 @@ mod thread_usage_key_tests {
 /// decides both the retry policy (`is_retryable`) and the stable code
 /// (`code`) a run that cannot recover reports in its terminal failure.
 /// Retryable: `Provider`, `InvalidResponse`, `RateLimited`, `Overloaded`,
-/// `Timeout`. Permanent: everything else — retrying an identical request cannot
-/// succeed.
+/// `Timeout`. Never retried: every permanent rejection (retrying an identical
+/// request cannot succeed), a hard `UsageLimit`, and `Cancelled`.
 #[derive(Debug, Error)]
 pub enum Error {
     /// The adapter's independent execution evidence. Unannotated failures are
@@ -547,6 +547,11 @@ pub enum Error {
     /// A content-safety filter rejected the request or response. Permanent.
     #[error("content filtered: {0}")]
     ContentFiltered(String),
+    /// The run was cancelled while this model call was being prepared,
+    /// admitted or observed. Not a provider failure: never retried, never
+    /// counted against provider health and never a reason to fail over.
+    #[error("model call cancelled: {0}")]
+    Cancelled(String),
 }
 
 impl Error {
@@ -628,6 +633,7 @@ impl Error {
             Error::LoginRequired(_) => "login_required",
             Error::ModelNotFound(_) => "model_not_found",
             Error::ContentFiltered(_) => "content_filtered",
+            Error::Cancelled(_) => "cancelled",
         }
     }
 }
@@ -804,7 +810,7 @@ mod error_classification_tests {
             assert_eq!(e.code(), code, "code for {e:?}");
         }
 
-        let permanent: [(Error, &str); 7] = [
+        let permanent: [(Error, &str); 8] = [
             (Error::Binding("bad".into()), "binding_rejected"),
             (
                 Error::ContextOverflow("too long".into()),
@@ -815,6 +821,7 @@ mod error_classification_tests {
             (Error::ModelNotFound("404".into()), "model_not_found"),
             (Error::ContentFiltered("blocked".into()), "content_filtered"),
             (Error::LoginRequired("expired".into()), "login_required"),
+            (Error::Cancelled("run cancelled".into()), "cancelled"),
         ];
         for (e, code) in permanent {
             assert!(!e.is_retryable(), "{e:?} must be permanent");
