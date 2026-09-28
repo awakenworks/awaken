@@ -7,6 +7,7 @@
 //! Projection of Runtime-owned model and context observations.
 
 use super::*;
+use awaken_managed_session_events::{FactKey, FactProvenance, FactRole};
 
 impl ManagedState {
     /// Project committed per-Run observations from the same recovery prefix as
@@ -21,25 +22,21 @@ impl ManagedState {
         use awaken_runtime_contract::compaction::RunCompactionMarker;
         use awaken_runtime_contract::llm::ModelRequestObservation;
 
+        let at = |role, provenance| FactKey::new(thread_id, role, provenance);
         for run in &snapshot.runs {
             if RunCompactionMarker::is_recorded(&snapshot.state, &run.id.0) {
-                let id = managed_multiagent_event_id(
-                    &record.session.id,
-                    thread_id,
-                    event_role::RUN_CONTEXT_COMPACTED,
-                    ManagedMultiagentEventProvenance::RunState { run_id: &run.id.0 },
+                let key = at(
+                    FactRole::RunContextCompacted,
+                    FactProvenance::RunState {
+                        run_id: run.id.0.clone(),
+                    },
                 );
+                let id = record.fact_id(&key);
                 if !record.has_event_id(&id) {
                     if thread_id != record.session.id {
-                        record
-                            .event_thread_owners
-                            .insert(id.clone(), thread_id.to_string());
+                        record.event_thread_owners.insert(id, thread_id.to_string());
                     }
-                    record.append_event_once(Event {
-                        id,
-                        kind: OutboundKind::ThreadContextCompacted {},
-                        processed_at: None,
-                    });
+                    record.append_fact_once(key, OutboundKind::ThreadContextCompacted {});
                 }
             }
 
@@ -57,22 +54,14 @@ impl ManagedState {
                 else {
                     continue;
                 };
-                let provenance = || ManagedMultiagentEventProvenance::Audit {
-                    run_id: &run.id.0,
+                let provenance = || FactProvenance::Audit {
+                    run_id: run.id.0.clone(),
                     sequence: audit.sequence,
                 };
-                let start_id = managed_multiagent_event_id(
-                    &record.session.id,
-                    thread_id,
-                    event_role::MODEL_REQUEST_START,
-                    provenance(),
-                );
-                let end_id = managed_multiagent_event_id(
-                    &record.session.id,
-                    thread_id,
-                    event_role::MODEL_REQUEST_END,
-                    provenance(),
-                );
+                let start = at(FactRole::ModelRequestStart, provenance());
+                let end = at(FactRole::ModelRequestEnd, provenance());
+                let start_id = record.fact_id(&start);
+                let end_id = record.fact_id(&end);
                 if record.has_event_id(&end_id) {
                     continue;
                 }
@@ -82,24 +71,17 @@ impl ManagedState {
                         .insert(start_id.clone(), thread_id.to_string());
                     record
                         .event_thread_owners
-                        .insert(end_id.clone(), thread_id.to_string());
+                        .insert(end_id, thread_id.to_string());
                 }
-                record.events.extend([
-                    Event {
-                        id: start_id.clone(),
-                        kind: OutboundKind::SpanModelRequestStart {},
-                        processed_at: None,
+                record.push_fact(start, OutboundKind::SpanModelRequestStart {});
+                record.push_fact(
+                    end,
+                    OutboundKind::SpanModelRequestEnd {
+                        model_request_start_id: start_id,
+                        is_error: Some(observation.is_error),
+                        model_usage: SpanModelUsage::from(observation.usage),
                     },
-                    Event {
-                        id: end_id,
-                        kind: OutboundKind::SpanModelRequestEnd {
-                            model_request_start_id: start_id,
-                            is_error: Some(observation.is_error),
-                            model_usage: SpanModelUsage::from(observation.usage),
-                        },
-                        processed_at: None,
-                    },
-                ]);
+                );
             }
         }
         Ok(())

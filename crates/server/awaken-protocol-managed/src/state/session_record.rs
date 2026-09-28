@@ -64,6 +64,10 @@ pub(super) struct ManagedProjectionProgress {
     /// incremental reducer progress, never a durable source coordinate.
     pub(super) thread_message_ids: HashSet<(String, String)>,
     pub(super) terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
+    /// The timeline fact behind every issued multiagent event id. Its public
+    /// id is a one-way hash of this key, so canonical ordering resolves the
+    /// key itself instead of rebuilding every candidate id from the evidence.
+    pub(super) fact_keys: HashMap<String, awaken_managed_session_events::FactKey>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -304,6 +308,46 @@ impl SessionRecord {
             .into_iter()
             .map(|(cursor, position)| (cursor, self.events[position].clone()))
             .collect()
+    }
+
+    /// The public id of one timeline fact of this Session.
+    pub(super) fn fact_id(&self, key: &awaken_managed_session_events::FactKey) -> String {
+        super::events::fact_event_id(&self.session.id, key)
+    }
+
+    /// Append one timeline fact as a public Event, recording the fact behind
+    /// its id. Returns the id.
+    pub(super) fn push_fact(
+        &mut self,
+        key: awaken_managed_session_events::FactKey,
+        kind: OutboundKind,
+    ) -> String {
+        let id = self.fact_id(&key);
+        self.checkpoint.progress.fact_keys.insert(id.clone(), key);
+        self.events.push(Event {
+            id: id.clone(),
+            kind,
+            processed_at: None,
+        });
+        id
+    }
+
+    /// Append one timeline fact unless its id is already present.
+    pub(super) fn append_fact_once(
+        &mut self,
+        key: awaken_managed_session_events::FactKey,
+        kind: OutboundKind,
+    ) -> bool {
+        let id = self.fact_id(&key);
+        if self.has_event_id(&id) {
+            return false;
+        }
+        self.checkpoint.progress.fact_keys.insert(id.clone(), key);
+        self.append_event_once(Event {
+            id,
+            kind,
+            processed_at: None,
+        })
     }
 
     /// Append one deterministic public Event if its id is not already present.

@@ -1,25 +1,24 @@
 // @formal surface obligation=session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
-// @formal reason: Request-local indices reuse the existing committed coordination receipt selector and
-// @formal reason: canonical order constructors. They preserve first eligible receipt, exact child
-// @formal reason: identity, max(source,result) commit anchoring and terminal-report ordering inside the
-// @formal reason: sole private candidate. Adjacent decision tables and warm/cold late-result integration
-// @formal reason: tests cover behavior. This is reducer TCB linked to the existing paired-publication
-// @formal reason: obligation, not a proof of HashMap joins, full canonicalizer equivalence, SQL isolation
-// @formal reason: or performance.
-//! Coordinate accepted call and terminal-report ordering from indexed facts.
-use super::message_index::MessageEventIndex;
+// @formal reason: Request-local joins reuse the existing committed coordination receipt selector and
+// @formal reason: the timeline domain's order of each call and result. They preserve first eligible
+// @formal reason: receipt, exact child identity, max(source,result) commit anchoring and terminal-report
+// @formal reason: ordering inside the sole private candidate. Adjacent decision tables and warm/cold
+// @formal reason: late-result integration tests cover behavior. This is reducer TCB linked to the
+// @formal reason: existing paired-publication obligation, not a proof of HashMap joins, full
+// @formal reason: canonicalizer equivalence, SQL isolation or performance.
+//! Coordinate accepted call and terminal-report ordering from ordered facts.
 use super::*;
 use crate::state::events::coordination_receipts::CoordinationReceipts;
-use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
+use awaken_managed_session_events::{FactKey, FactProvenance, FactRole};
 use std::collections::{HashMap, HashSet};
 
 fn accepted_order(
     receipts: &CoordinationReceipts,
-    results: &HashMap<&str, CanonicalEventOrder>,
-    orders: &HashMap<String, CanonicalEventOrder>,
+    results: &HashMap<&str, CanonicalOrder>,
+    orders: &HashMap<String, CanonicalOrder>,
     source: &Event,
     thread: &str,
-) -> Option<CanonicalEventOrder> {
+) -> Option<CanonicalOrder> {
     if receipts.get(&source.id) != Some(thread) {
         return None;
     }
@@ -31,120 +30,39 @@ fn accepted_order(
     )
 }
 
-fn index_snapshot_tool_operations(
+/// The Run operation behind every issued tool-use event whose source Message
+/// is a committed assistant response of a projected Thread.
+fn tool_operations(
     session_id: &str,
-    thread_id: &str,
-    snapshot: &RunRecoverySnapshot,
-    event_index: &MessageEventIndex<'_>,
-    tool_operation_by_event_id: &mut HashMap<String, String>,
-    advisor_operation_orders: &mut HashMap<String, CanonicalEventOrder>,
-) {
-    if snapshot.messages.len() != snapshot.message_commit_cursors.len() {
-        return;
-    }
-    let run_ids = snapshot
-        .runs
+    events: &[Event],
+    index: &OrderIndex<'_>,
+) -> HashMap<String, String> {
+    events
         .iter()
-        .map(|run| run.id.clone())
-        .collect::<Vec<_>>();
-    let coordinates = ManagedState::assistant_response_coordinates(&snapshot.messages, &run_ids);
-    for (message_index, (message, source_commit_cursor)) in snapshot
-        .messages
-        .iter()
-        .zip(snapshot.message_commit_cursors.iter().copied())
-        .enumerate()
-    {
-        let Some((run_id, step, _)) = coordinates.get(&message.id.0) else {
-            continue;
-        };
-        for (block_ordinal, block) in message.content.iter().enumerate() {
-            let ContentBlock::ToolUse {
-                id: call_id, name, ..
-            } = block
-            else {
-                continue;
-            };
-            if name != awaken_runtime_contract::resolved::ADVISOR_TOOL_ID {
-                continue;
-            }
-            let operation_id =
-                awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
-                    &awaken_agent_contract::agent::run::Id(run_id.clone()),
-                    *step,
-                    call_id,
-                );
-            let order = CanonicalEventOrder {
-                processed_at_unix_ms: snapshot
-                    .commit_timestamps
-                    .get(&source_commit_cursor)
-                    .copied(),
-                source_commit_cursor,
-                phase: 50,
-                ordinal: message_index
-                    .saturating_mul(message.content.len().saturating_add(1))
-                    .saturating_add(block_ordinal),
-            };
-            advisor_operation_orders
-                .entry(operation_id)
-                .and_modify(|current| *current = (*current).min(order))
-                .or_insert(order);
-        }
-    }
-
-    let public_thread = public_thread_id(session_id, thread_id);
-    for (source_id, (run_id, step, _)) in &coordinates {
-        for (event, call_id) in event_index.tool_events_for_source(&public_thread, source_id) {
-            tool_operation_by_event_id.insert(
-                event.id.clone(),
-                awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
-                    &awaken_agent_contract::agent::run::Id(run_id.clone()),
-                    *step,
-                    call_id,
-                ),
-            );
-        }
-    }
+        .filter_map(|event| {
+            let tool = decode_managed_tool_event_id(&event.id)?;
+            let thread_id = internal_thread_id(session_id, tool.thread_id);
+            let operation = index.tool_operation(&thread_id, tool.source_id, tool.call_id)?;
+            Some((event.id.clone(), operation))
+        })
+        .collect()
 }
 
-pub(super) struct CoordinationSnapshots<'a> {
-    pub(super) root: Option<&'a RunRecoverySnapshot>,
-    pub(super) children: &'a HashMap<String, RunRecoverySnapshot>,
-}
-
-pub(super) fn index_coordination_orders(
+/// Order every coordination fact of the candidate and return the highest
+/// source cursor any coordination candidate occupies, issued or not.
+pub(super) fn order_coordination_facts(
     record: &SessionRecord,
+    index: &OrderIndex<'_>,
     links: &[CoordinatedThreadLink],
-    snapshots: CoordinationSnapshots<'_>,
-    lifecycle_events: &[RunLifecycleEvent],
-    event_index: &MessageEventIndex<'_>,
-    orders: &mut HashMap<String, CanonicalEventOrder>,
-    time_for: &impl Fn(&str, u64) -> Option<u64>,
-) {
+    facts: &[(String, FactKey)],
+    orders: &mut HashMap<String, CanonicalOrder>,
+) -> u64 {
     if links.is_empty() {
-        return;
+        return 0;
     }
-    let mut tool_operation_by_event_id = HashMap::<String, String>::new();
-    let mut advisor_operation_orders = HashMap::<String, CanonicalEventOrder>::new();
-    if let Some(snapshot) = snapshots.root {
-        index_snapshot_tool_operations(
-            &record.session.id,
-            &record.session.id,
-            snapshot,
-            event_index,
-            &mut tool_operation_by_event_id,
-            &mut advisor_operation_orders,
-        );
-    }
-    for (thread_id, snapshot) in snapshots.children {
-        index_snapshot_tool_operations(
-            &record.session.id,
-            thread_id,
-            snapshot,
-            event_index,
-            &mut tool_operation_by_event_id,
-            &mut advisor_operation_orders,
-        );
-    }
+    let session_id = record.session.id.as_str();
+    let tool_operation_by_event_id = tool_operations(session_id, &record.events, index);
+    let advisor_operation_orders = index.advisor_operation_orders();
 
     let mut sources_by_operation = HashMap::new();
     for event in &record.events {
@@ -189,7 +107,7 @@ pub(super) fn index_coordination_orders(
         }
     }
     let mut terminals = HashMap::<&str, Vec<&RunLifecycleEvent>>::new();
-    for event in lifecycle_events {
+    for event in index.lifecycle() {
         if matches!(
             event.kind,
             RunLifecycleEventKind::Completed
@@ -200,117 +118,96 @@ pub(super) fn index_coordination_orders(
         }
     }
 
+    let mut candidates = HashMap::<FactKey, CanonicalOrder>::new();
     for link in links {
+        let thread = link.thread_id.0.as_str();
         let source = sources_by_operation
             .get(link.created_by_operation_id.as_str())
             .copied();
         let source_order = match &link.target {
             CoordinatedThreadTarget::Agent { .. } => source.and_then(|source| {
-                accepted_order(&receipts, &result_orders, orders, source, &link.thread_id.0)
+                accepted_order(&receipts, &result_orders, orders, source, thread)
             }),
             CoordinatedThreadTarget::Advisor { .. } => advisor_operation_orders
                 .get(&link.created_by_operation_id)
                 .copied(),
         };
         if let Some(source_order) = source_order {
-            for (role, phase) in [
-                (event_role::LINK_THREAD_CREATED, 51),
-                (event_role::LINK_STATUS_RUNNING, 52),
-            ] {
-                retain_earliest_order(
-                    orders,
-                    managed_multiagent_event_id(
-                        &record.session.id,
-                        &link.thread_id.0,
+            for role in [FactRole::LinkThreadCreated, FactRole::LinkStatusRunning] {
+                retain_earliest(
+                    &mut candidates,
+                    FactKey::new(
+                        thread,
                         role,
-                        ManagedMultiagentEventProvenance::LinkOperation {
-                            operation_id: &link.created_by_operation_id,
+                        FactProvenance::LinkOperation {
+                            operation_id: link.created_by_operation_id.clone(),
                         },
                     ),
-                    CanonicalEventOrder {
-                        processed_at_unix_ms: source_order.processed_at_unix_ms,
-                        source_commit_cursor: source_order.source_commit_cursor,
-                        phase,
-                        ordinal: source_order.ordinal,
+                    CanonicalOrder {
+                        phase: role.phase(),
+                        ..source_order
                     },
                 );
             }
         }
-        for source in calls_by_thread
-            .get(link.thread_id.0.as_str())
-            .into_iter()
-            .flatten()
-            .copied()
-        {
+        for source in calls_by_thread.get(thread).into_iter().flatten().copied() {
             let Some(source_order) =
-                accepted_order(&receipts, &result_orders, orders, source, &link.thread_id.0)
+                accepted_order(&receipts, &result_orders, orders, source, thread)
             else {
                 continue;
             };
-            for (role, phase) in [
-                (event_role::COORDINATION_STATUS_RUNNING, 54),
-                (event_role::COORDINATION_MESSAGE_SENT, 55),
+            for role in [
+                FactRole::CoordinationStatusRunning,
+                FactRole::CoordinationMessageSent,
             ] {
-                retain_earliest_order(
-                    orders,
-                    managed_multiagent_event_id(
-                        &record.session.id,
-                        &link.thread_id.0,
+                retain_earliest(
+                    &mut candidates,
+                    FactKey::new(
+                        thread,
                         role,
-                        ManagedMultiagentEventProvenance::CoordinationCall {
-                            event_id: &source.id,
+                        FactProvenance::CoordinationCall {
+                            event_id: source.id.clone(),
                         },
                     ),
-                    CanonicalEventOrder {
-                        processed_at_unix_ms: source_order.processed_at_unix_ms,
-                        source_commit_cursor: source_order.source_commit_cursor,
-                        phase,
-                        ordinal: source_order.ordinal,
+                    CanonicalOrder {
+                        phase: role.phase(),
+                        ..source_order
                     },
                 );
             }
         }
-        for terminal in terminals
-            .get(link.thread_id.0.as_str())
-            .into_iter()
-            .flatten()
-            .copied()
-        {
-            let report_source = snapshots
-                .children
-                .get(&link.thread_id.0)
-                .and_then(|snapshot| report_commit_cursor(snapshot, &terminal.run_id));
-            let Some(source_commit_cursor) = report_source else {
+        for terminal in terminals.get(thread).into_iter().flatten().copied() {
+            let Some(order) = index.report_order(terminal) else {
                 continue;
             };
             for role in [
-                event_role::CHILD_MESSAGE_RECEIVED,
-                event_role::ADVISOR_MESSAGE_RECEIVED,
+                FactRole::ChildMessageReceived,
+                FactRole::AdvisorMessageReceived,
             ] {
-                retain_earliest_order(
-                    orders,
-                    managed_multiagent_event_id(
-                        &record.session.id,
-                        &link.thread_id.0,
+                retain_earliest(
+                    &mut candidates,
+                    FactKey::new(
+                        thread,
                         role,
-                        ManagedMultiagentEventProvenance::AgentReport {
-                            run_id: &terminal.run_id.0,
+                        FactProvenance::AgentReport {
+                            run_id: terminal.run_id.0.clone(),
                         },
                     ),
-                    CanonicalEventOrder {
-                        processed_at_unix_ms: time_for(
-                            &terminal.thread_id.0,
-                            terminal.source_commit_cursor,
-                        ),
-                        source_commit_cursor: source_commit_cursor
-                            .max(terminal.source_commit_cursor),
-                        phase: 55,
-                        ordinal: 0,
-                    },
+                    order,
                 );
             }
         }
     }
+    for (id, key) in facts {
+        if let Some(order) = candidates.get(key) {
+            orders.insert(id.clone(), *order);
+        }
+    }
+    candidates
+        .values()
+        .map(|order| order.source_commit_cursor)
+        .max()
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -319,6 +216,7 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{Id as RunId, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 
     fn tool_event(id: String) -> Event {
         Event {
@@ -358,15 +256,15 @@ mod tests {
     }
 
     #[test]
-    fn tool_operation_join_uses_the_shared_thread_qualified_event_index() {
+    fn tool_operation_join_uses_the_thread_qualified_fact_order() {
         // Cause/effect graph: C1 a root Assistant message owns one exact
         // source id; C2 another Thread has a qualified Event with that same
         // source id but no matching committed message; C3 unrelated Event
         // history grows; C4 the source/cursor vectors align. Effects: E1 only
         // the root Event receives the Run/step operation; E2 the foreign
-        // Thread Event cannot manufacture an operation; E3 candidate visits
-        // remain one after the shared index's single build; E4 the Advisor
-        // order retains the message's commit/time/block coordinate.
+        // Thread Event cannot manufacture an operation; E3 unrelated history
+        // manufactures no operation either; E4 the Advisor order retains the
+        // message's commit/time/block coordinate.
         // Decision table: A1=C1+C4=>E1,E4; A2=C1+C2+C4=>E1,E2;
         // A3=A2+C3(1,000)=>E1-E3. Missing C4 is covered by the caller's
         // established malformed-snapshot tests and returns before any effect.
@@ -396,17 +294,26 @@ mod tests {
                 "call",
             ))
         }));
-        let event_index = MessageEventIndex::new(&events);
-        let mut operations = HashMap::new();
-        let mut advisor_orders = HashMap::new();
-        index_snapshot_tool_operations(
+        let root = snapshot(session_id, &run_id, message);
+        let children = HashMap::new();
+        let historical = HashMap::new();
+        let child_pending = HashMap::new();
+        let index = OrderIndex::new(awaken_managed_session_events::OrderEvidence {
             session_id,
-            session_id,
-            &snapshot(session_id, &run_id, message),
-            &event_index,
-            &mut operations,
-            &mut advisor_orders,
-        );
+            batches: &[],
+            closed_intervals: &[],
+            budget_reach: &[],
+            parent_terminal: Default::default(),
+            lifecycle: &[],
+            root: Some(&root),
+            children: &children,
+            links: &[],
+            outcomes: &[],
+            historical_pending: &historical,
+            root_pending: None,
+            child_pending: &child_pending,
+        });
+        let operations = tool_operations(session_id, &events, &index);
 
         let expected_operation =
             awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
@@ -420,7 +327,8 @@ mod tests {
             "A1/E1"
         );
         assert!(!operations.contains_key(&foreign_event_id), "A2/E2");
-        assert_eq!(event_index.examined(), 1, "A3/E3");
+        assert_eq!(operations.len(), 1, "A3/E3");
+        let advisor_orders = index.advisor_operation_orders();
         let advisor_order = advisor_orders.get(&expected_operation).expect("A1/E4");
         assert_eq!(
             (
@@ -466,13 +374,13 @@ mod tests {
         };
         let receipts =
             CoordinationReceipts::for_calls(&[result], &HashMap::new(), &HashSet::from(["source"]));
-        let source_order = CanonicalEventOrder {
+        let source_order = CanonicalOrder {
             source_commit_cursor: 2,
             phase: 50,
             ordinal: 0,
             processed_at_unix_ms: Some(200),
         };
-        let result_order = CanonicalEventOrder {
+        let result_order = CanonicalOrder {
             source_commit_cursor: 7,
             phase: 50,
             ordinal: 1,

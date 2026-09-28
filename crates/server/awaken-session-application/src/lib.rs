@@ -225,11 +225,10 @@ pub use event_batches::SessionEventBatchIdempotency;
 mod outcome_reconciliation;
 mod projection;
 mod projection_evidence;
-pub use credentials::SessionPreparationError;
-pub use projection_evidence::{
+pub use awaken_managed_session_events::{
     ProjectionThreadSnapshots, SessionProjectionEvidence, SessionProjectionReadTimings,
-    committed_lifecycle_prefix,
 };
+pub use credentials::SessionPreparationError;
 mod mcp;
 mod realization;
 mod resource_reconciliation;

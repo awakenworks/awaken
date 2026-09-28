@@ -7,6 +7,7 @@
 //! Committed child transcript classification and coordination cross-post projection.
 
 use super::*;
+use awaken_managed_session_events::{FactKey, FactProvenance, FactRole};
 
 impl ManagedState {
     pub(super) fn append_child_transcript_projection(
@@ -99,26 +100,25 @@ impl ManagedState {
                     &report_content,
                 );
                 if !content.is_empty() {
-                    let id = managed_multiagent_event_id(
-                        &record.session.id,
+                    let key = FactKey::new(
                         thread_id,
-                        event_role::ADVISOR_MESSAGE_RECEIVED,
-                        ManagedMultiagentEventProvenance::AgentReport {
-                            run_id: &latest_run_id.0,
+                        FactRole::AdvisorMessageReceived,
+                        FactProvenance::AgentReport {
+                            run_id: latest_run_id.0.clone(),
                         },
                     );
+                    let id = record.fact_id(&key);
                     record
                         .event_thread_owners
-                        .insert(id.clone(), record.session.id.clone());
-                    record.events.push(Event {
-                        id,
-                        kind: OutboundKind::AgentThreadMessageReceived {
+                        .insert(id, record.session.id.clone());
+                    record.push_fact(
+                        key,
+                        OutboundKind::AgentThreadMessageReceived {
                             from_session_thread_id: thread_id.to_string(),
                             from_agent_name: Some(agent_name.to_string()),
                             content,
                         },
-                        processed_at: None,
-                    });
+                    );
                 }
             }
             for message in &new_messages {
@@ -171,22 +171,20 @@ impl ManagedState {
                         .get(report_run_id)
                         .filter(|text| !text.is_empty())
                 {
-                    record.events.push(Event {
-                        id: managed_multiagent_event_id(
-                            &record.session.id,
+                    record.push_fact(
+                        FactKey::new(
                             thread_id,
-                            event_role::CHILD_MESSAGE_RECEIVED,
-                            ManagedMultiagentEventProvenance::AgentReport {
-                                run_id: report_run_id,
+                            FactRole::ChildMessageReceived,
+                            FactProvenance::AgentReport {
+                                run_id: report_run_id.clone(),
                             },
                         ),
-                        kind: OutboundKind::AgentThreadMessageReceived {
+                        OutboundKind::AgentThreadMessageReceived {
                             from_session_thread_id: thread_id.to_string(),
                             from_agent_name: Some(agent_name.to_string()),
                             content: vec![ContentBlock::text(text.clone())],
                         },
-                        processed_at: None,
-                    });
+                    );
                 }
                 record.consume_message(thread_id, &message.id.0);
                 continue;
@@ -209,7 +207,7 @@ impl ManagedState {
                     continue;
                 }
             }
-            let historical_boundaries = Self::historical_message_boundaries(
+            let historical_boundaries = awaken_managed_session_events::historical_message_boundaries(
                 message,
                 historical_pending,
                 lifecycle_events,
@@ -256,39 +254,37 @@ impl ManagedState {
             )?;
             for (ordinal, projected) in projected.into_iter().enumerate() {
                 let kind = projected.kind;
-                let id = projected.id.unwrap_or_else(|| {
-                    match (&kind, response_coordinates.get(&message.id.0)) {
-                        (
-                            OutboundKind::AgentMessage { .. } | OutboundKind::AgentThinking {},
-                            Some((run_id, step, response)),
-                        ) => managed_assistant_event_id(
-                            &record.session.id,
-                            thread_id,
-                            run_id,
-                            *step,
-                            *response,
-                            kind.type_str(),
-                        ),
-                        _ => managed_multiagent_event_id(
-                            &record.session.id,
-                            thread_id,
-                            kind.type_str(),
-                            ManagedMultiagentEventProvenance::Message {
-                                message_id: &message.id.0,
-                                ordinal,
-                            },
-                        ),
-                    }
-                });
+                let key = match projected.id {
+                    Some(_) => None,
+                    None => Some(committed_projection::transcript_fact_key(
+                        thread_id,
+                        &message.id.0,
+                        ordinal,
+                        &kind,
+                        response_coordinates.get(&message.id.0),
+                    )?),
+                };
+                let id = match (&projected.id, &key) {
+                    (Some(id), _) => id.clone(),
+                    (None, Some(key)) => record.fact_id(key),
+                    (None, None) => unreachable!("an unqualified fold has a fact key"),
+                };
                 if !record.has_event_id(&id) {
                     record
                         .event_thread_owners
                         .insert(id.clone(), thread_id.to_string());
-                    record.append_event_once(Event {
-                        id,
-                        kind,
-                        processed_at: None,
-                    });
+                    match key {
+                        Some(key) => {
+                            record.append_fact_once(key, kind);
+                        }
+                        None => {
+                            record.append_event_once(Event {
+                                id,
+                                kind,
+                                processed_at: None,
+                            });
+                        }
+                    }
                 }
             }
 
@@ -491,12 +487,17 @@ impl ManagedState {
             child_positions.entry(child.id.clone()).or_insert(position);
         }
         for (call_id, thread_id, message) in calls {
-            let sent_event_id = managed_multiagent_event_id(
-                &record.session.id,
-                &thread_id,
-                event_role::COORDINATION_MESSAGE_SENT,
-                ManagedMultiagentEventProvenance::CoordinationCall { event_id: &call_id },
-            );
+            let at = |role| {
+                FactKey::new(
+                    thread_id.as_str(),
+                    role,
+                    FactProvenance::CoordinationCall {
+                        event_id: call_id.clone(),
+                    },
+                )
+            };
+            let sent = at(FactRole::CoordinationMessageSent);
+            let sent_event_id = record.fact_id(&sent);
             // The deterministic public event is the sole projection receipt.
             // Re-reading the same committed call must not require a parallel
             // process-local call-id cursor, while a call whose link was not yet
@@ -512,33 +513,26 @@ impl ManagedState {
                 continue;
             }
             let agent_name = child.agent.display_name().to_string();
-            if child.status != SessionThreadStatus::Running {
+            let opened = child.status != SessionThreadStatus::Running;
+            if opened {
                 child.status = SessionThreadStatus::Running;
                 child.updated_at = LEGACY_UNRECORDED_AT.to_string();
-                let running_id = managed_multiagent_event_id(
-                    &record.session.id,
-                    &thread_id,
-                    event_role::COORDINATION_STATUS_RUNNING,
-                    ManagedMultiagentEventProvenance::CoordinationCall { event_id: &call_id },
-                );
-                record.append_event_once(Event {
-                    id: running_id,
-                    kind: OutboundKind::SessionThreadStatusRunning {
+                record.append_fact_once(
+                    at(FactRole::CoordinationStatusRunning),
+                    OutboundKind::SessionThreadStatusRunning {
                         session_thread_id: thread_id.clone(),
                         agent_name: agent_name.clone(),
                     },
-                    processed_at: None,
-                });
+                );
             }
-            record.append_event_once(Event {
-                id: sent_event_id,
-                kind: OutboundKind::AgentThreadMessageSent {
-                    to_session_thread_id: thread_id,
+            record.append_fact_once(
+                sent,
+                OutboundKind::AgentThreadMessageSent {
+                    to_session_thread_id: thread_id.clone(),
                     to_agent_name: Some(agent_name),
                     content: vec![ContentBlock::text(message)],
                 },
-                processed_at: None,
-            });
+            );
         }
     }
 }

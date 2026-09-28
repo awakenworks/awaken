@@ -1,0 +1,29 @@
+[package]
+name = "awaken-managed-session-events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure Session timeline projection: fact identity, canonical order and interval selection over committed evidence"
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "domain"
+authority = "session-projection"
+
+[dependencies]
+awaken-agent-contract.workspace = true
+# Compaction markers, the Advisor tool identity and tool-batch operation ids.
+awaken-runtime-contract.workspace = true
+# `Pending`: the one answerable-ticket vocabulary a timeline pause refers to.
+awaken-session-application-contract.workspace = true
+awaken-session-budget-contract.workspace = true
+awaken-session-event-contract.workspace = true
+awaken-session-execution-contract.workspace = true
+awaken-session-state-contract.workspace = true
+awaken-session-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

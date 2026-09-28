@@ -47,6 +47,8 @@ awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-session-work-contract.workspace = true
 awaken-session-application.workspace = true
+# The pure timeline domain: fact identity, canonical order, interval selection.
+awaken-managed-session-events.workspace = true
 awaken-environment-contract.workspace = true
 awaken-environment-application.workspace = true
 awaken-environment-execution-application.workspace = true

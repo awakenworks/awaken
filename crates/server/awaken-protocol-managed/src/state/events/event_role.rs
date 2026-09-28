@@ -1,68 +1,70 @@
-// @formal surface exclude=projection_vocabulary
-// @formal owner crates/server/awaken-protocol-managed/src/state/events.rs
-// @formal owner crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs
-// @formal owner crates/server/awaken-protocol-managed/src/state/events/lifecycle_projection.rs
-// @formal reason: Wire-frozen role strings hashed into Managed multi-agent event ids, shared by the
-// @formal reason: committed-projection emitters and the canonical order table. Constants only: no
-// @formal reason: transition, admission, persistence, retry or effect; the projection modules that
-// @formal reason: consume them remain the behavior owners.
-//! Stable role coordinates hashed into Managed multi-agent event ids.
+//! The wire-stability pin of the role coordinates hashed into Managed
+//! multi-agent event ids.
 //!
-//! Consumers: every committed-projection emitter (lifecycle, transcript,
-//! interval aggregate, run observation, Outcome, activation failure) and the
-//! canonical order table, which rebuilds the same ids to assign their order.
-//! Each side used to spell these strings itself, so a typo on either side
-//! silently dropped an event out of the order table. The values are hashed
-//! into public event ids: they are wire-frozen and pinned by
-//! `managed_event_role_ids_are_wire_stable`.
+//! The roles themselves are [`FactRole`] in the timeline domain, which owns
+//! both the wire string and the canonical phase of each. This test-only module
+//! keeps the literal ids those strings produced before they moved: a changed
+//! row is a public-id break. Consumer: `managed_event_role_ids_are_wire_stable`.
 
-pub(crate) const ACTIVATION_FAILED_ERROR: &str = "activation-failed-error";
-pub(crate) const ADVISOR_LIFECYCLE_STATUS_TERMINATED: &str = "advisor-lifecycle-status-terminated";
-pub(crate) const ADVISOR_MESSAGE_RECEIVED: &str = "advisor-message-received";
-pub(crate) const AGGREGATE_STATUS_IDLE: &str = "aggregate-status-idle";
-pub(crate) const AGGREGATE_STATUS_RUNNING: &str = "aggregate-status-running";
-pub(crate) const AGGREGATE_TERMINAL_STATUS_RUNNING: &str = "aggregate-terminal-status-running";
-pub(crate) const AGGREGATE_USAGE: &str = "aggregate-usage";
-pub(crate) const ARCHIVED_STATUS_TERMINATED: &str = "archived-status-terminated";
-pub(crate) const BUDGET_REACH_STATUS_IDLE: &str = "budget-reach-status-idle";
-pub(crate) const BUDGET_REACH_USAGE: &str = "budget-reach-usage";
-pub(crate) const CHILD_MESSAGE_RECEIVED: &str = "child-message-received";
-pub(crate) const COORDINATION_MESSAGE_SENT: &str = "coordination-message-sent";
-pub(crate) const COORDINATION_STATUS_RUNNING: &str = "coordination-status-running";
-pub(crate) const FAILED_LIFECYCLE_STATUS_TERMINATED: &str = "failed-lifecycle-status-terminated";
-pub(crate) const LIFECYCLE_ERROR: &str = "lifecycle-error";
-pub(crate) const LIFECYCLE_STATUS_IDLE: &str = "lifecycle-status-idle";
-pub(crate) const LIFECYCLE_STATUS_RESCHEDULED: &str = "lifecycle-status-rescheduled";
-pub(crate) const LIFECYCLE_STATUS_RUNNING: &str = "lifecycle-status-running";
-pub(crate) const LINK_STATUS_RUNNING: &str = "link-status-running";
-pub(crate) const LINK_THREAD_CREATED: &str = "link-thread-created";
-pub(crate) const MODEL_REQUEST_END: &str = "model-request-end";
-pub(crate) const MODEL_REQUEST_START: &str = "model-request-start";
-pub(crate) const OUTCOME_ERROR: &str = "outcome-error";
-pub(crate) const OUTCOME_EVALUATION_END: &str = "outcome-evaluation-end";
-pub(crate) const OUTCOME_EVALUATION_ONGOING: &str = "outcome-evaluation-ongoing";
-pub(crate) const OUTCOME_EVALUATION_START: &str = "outcome-evaluation-start";
+use awaken_managed_session_events::FactRole;
+
+pub(crate) const ACTIVATION_FAILED_ERROR: &str = FactRole::ActivationFailedError.as_wire_role();
+pub(crate) const ADVISOR_LIFECYCLE_STATUS_TERMINATED: &str =
+    FactRole::AdvisorLifecycleStatusTerminated.as_wire_role();
+pub(crate) const ADVISOR_MESSAGE_RECEIVED: &str = FactRole::AdvisorMessageReceived.as_wire_role();
+pub(crate) const AGGREGATE_STATUS_IDLE: &str = FactRole::AggregateStatusIdle.as_wire_role();
+pub(crate) const AGGREGATE_STATUS_RUNNING: &str = FactRole::AggregateStatusRunning.as_wire_role();
+pub(crate) const AGGREGATE_TERMINAL_STATUS_RUNNING: &str =
+    FactRole::AggregateTerminalStatusRunning.as_wire_role();
+pub(crate) const AGGREGATE_USAGE: &str = FactRole::AggregateUsage.as_wire_role();
+pub(crate) const ARCHIVED_STATUS_TERMINATED: &str =
+    FactRole::ArchivedStatusTerminated.as_wire_role();
+pub(crate) const BUDGET_REACH_STATUS_IDLE: &str = FactRole::BudgetReachStatusIdle.as_wire_role();
+pub(crate) const BUDGET_REACH_USAGE: &str = FactRole::BudgetReachUsage.as_wire_role();
+pub(crate) const CHILD_MESSAGE_RECEIVED: &str = FactRole::ChildMessageReceived.as_wire_role();
+pub(crate) const COORDINATION_MESSAGE_SENT: &str = FactRole::CoordinationMessageSent.as_wire_role();
+pub(crate) const COORDINATION_STATUS_RUNNING: &str =
+    FactRole::CoordinationStatusRunning.as_wire_role();
+pub(crate) const FAILED_LIFECYCLE_STATUS_TERMINATED: &str =
+    FactRole::FailedLifecycleStatusTerminated.as_wire_role();
+pub(crate) const LIFECYCLE_ERROR: &str = FactRole::LifecycleError.as_wire_role();
+pub(crate) const LIFECYCLE_STATUS_IDLE: &str = FactRole::LifecycleStatusIdle.as_wire_role();
+pub(crate) const LIFECYCLE_STATUS_RESCHEDULED: &str =
+    FactRole::LifecycleStatusRescheduled.as_wire_role();
+pub(crate) const LIFECYCLE_STATUS_RUNNING: &str = FactRole::LifecycleStatusRunning.as_wire_role();
+pub(crate) const LINK_STATUS_RUNNING: &str = FactRole::LinkStatusRunning.as_wire_role();
+pub(crate) const LINK_THREAD_CREATED: &str = FactRole::LinkThreadCreated.as_wire_role();
+pub(crate) const MODEL_REQUEST_END: &str = FactRole::ModelRequestEnd.as_wire_role();
+pub(crate) const MODEL_REQUEST_START: &str = FactRole::ModelRequestStart.as_wire_role();
+pub(crate) const OUTCOME_ERROR: &str = FactRole::OutcomeError.as_wire_role();
+pub(crate) const OUTCOME_EVALUATION_END: &str = FactRole::OutcomeEvaluationEnd.as_wire_role();
+pub(crate) const OUTCOME_EVALUATION_ONGOING: &str =
+    FactRole::OutcomeEvaluationOngoing.as_wire_role();
+pub(crate) const OUTCOME_EVALUATION_START: &str = FactRole::OutcomeEvaluationStart.as_wire_role();
 pub(crate) const PARENT_TERMINAL_CHILD_STATUS_TERMINATED: &str =
-    "parent-terminal-child-status-terminated";
+    FactRole::ParentTerminalChildStatusTerminated.as_wire_role();
 pub(crate) const PARENT_TERMINAL_PRIMARY_STATUS_TERMINATED: &str =
-    "parent-terminal-primary-status-terminated";
+    FactRole::ParentTerminalPrimaryStatusTerminated.as_wire_role();
 pub(crate) const PARENT_TERMINAL_SESSION_STATUS_TERMINATED: &str =
-    "parent-terminal-session-status-terminated";
+    FactRole::ParentTerminalSessionStatusTerminated.as_wire_role();
 pub(crate) const RESCHEDULED_LIFECYCLE_STATUS_RUNNING: &str =
-    "rescheduled-lifecycle-status-running";
-pub(crate) const ROOT_LIFECYCLE_ERROR: &str = "root-lifecycle-error";
+    FactRole::RescheduledLifecycleStatusRunning.as_wire_role();
+pub(crate) const ROOT_LIFECYCLE_ERROR: &str = FactRole::RootLifecycleError.as_wire_role();
 pub(crate) const ROOT_LIFECYCLE_SESSION_STATUS_RESCHEDULED: &str =
-    "root-lifecycle-session-status-rescheduled";
-pub(crate) const ROOT_LIFECYCLE_STATUS_IDLE: &str = "root-lifecycle-status-idle";
-pub(crate) const ROOT_LIFECYCLE_STATUS_RESCHEDULED: &str = "root-lifecycle-status-rescheduled";
-pub(crate) const ROOT_LIFECYCLE_STATUS_RUNNING: &str = "root-lifecycle-status-running";
+    FactRole::RootLifecycleSessionStatusRescheduled.as_wire_role();
+pub(crate) const ROOT_LIFECYCLE_STATUS_IDLE: &str =
+    FactRole::RootLifecycleStatusIdle.as_wire_role();
+pub(crate) const ROOT_LIFECYCLE_STATUS_RESCHEDULED: &str =
+    FactRole::RootLifecycleStatusRescheduled.as_wire_role();
+pub(crate) const ROOT_LIFECYCLE_STATUS_RUNNING: &str =
+    FactRole::RootLifecycleStatusRunning.as_wire_role();
 pub(crate) const ROOT_RESCHEDULED_LIFECYCLE_STATUS_RUNNING: &str =
-    "root-rescheduled-lifecycle-status-running";
-pub(crate) const ROOT_TERMINAL_STATUS_RUNNING: &str = "root-terminal-status-running";
-pub(crate) const RUN_CONTEXT_COMPACTED: &str = "run-context-compacted";
+    FactRole::RootRescheduledLifecycleStatusRunning.as_wire_role();
+pub(crate) const ROOT_TERMINAL_STATUS_RUNNING: &str =
+    FactRole::RootTerminalStatusRunning.as_wire_role();
+pub(crate) const RUN_CONTEXT_COMPACTED: &str = FactRole::RunContextCompacted.as_wire_role();
 
 /// Every fixed role, for the wire-stability pin.
-#[cfg(test)]
 pub(crate) const ALL: &[&str] = &[
     ACTIVATION_FAILED_ERROR,
     ADVISOR_LIFECYCLE_STATUS_TERMINATED,
@@ -260,6 +262,18 @@ mod tests {
                 .map(|(role, id)| (*role, id.as_str()))
                 .collect::<Vec<_>>(),
             PINNED.to_vec()
+        );
+    }
+
+    #[test]
+    fn every_fixed_fact_role_is_pinned() {
+        // A fixed role added to the domain without a pinned id row would mint
+        // public ids no test freezes. The pin list is exactly the domain list.
+        assert_eq!(
+            super::ALL.to_vec(),
+            super::FactRole::FIXED
+                .map(super::FactRole::as_wire_role)
+                .to_vec()
         );
     }
 }

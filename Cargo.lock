@@ -1648,6 +1648,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-managed-session-events"
+version = "1.0.0"
+dependencies = [
+ "awaken-agent-contract",
+ "awaken-runtime-contract",
+ "awaken-session-application-contract",
+ "awaken-session-budget-contract",
+ "awaken-session-event-contract",
+ "awaken-session-execution-contract",
+ "awaken-session-state-contract",
+ "awaken-session-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "awaken-mcp-server-core"
 version = "1.0.0"
 dependencies = [
@@ -1897,6 +1914,7 @@ dependencies = [
  "awaken-file-store",
  "awaken-lease-contract",
  "awaken-lease-testkit",
+ "awaken-managed-session-events",
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-observability",
@@ -2568,6 +2586,7 @@ dependencies = [
  "awaken-executable-environment-contract",
  "awaken-lease-contract",
  "awaken-lease-testkit",
+ "awaken-managed-session-events",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
  "awaken-resource-contract",
