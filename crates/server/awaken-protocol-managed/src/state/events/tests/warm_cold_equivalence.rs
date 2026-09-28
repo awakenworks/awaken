@@ -33,6 +33,11 @@ enum Step {
     Reply(usize),
     /// Commit the final response, `Completed`, and settle the interval.
     Close(usize),
+    /// Admit a Session activity with no retained user Event (a profiled or
+    /// Run-admission start) and commit its Run's `Running` lifecycle.
+    Begin(usize),
+    /// Commit a claim-fenced `Rescheduled` transition of the same Run.
+    Reschedule(usize),
 }
 
 struct Scenario {
@@ -250,6 +255,33 @@ impl Scenario {
                     RunState::Running,
                 ));
             }
+            Step::Begin(index) => {
+                let activity = self
+                    .warm
+                    .application
+                    .begin_activity(&session)
+                    .await
+                    .unwrap();
+                let run_id = RunId(format!("begun-run-{index}"));
+                self.runtime.lifecycle.lock().unwrap().push(lifecycle(
+                    cursor,
+                    &self.session_id,
+                    &run_id,
+                    RunLifecycleEventKind::Running,
+                    RunState::Running,
+                ));
+                self.runs[index] = Some((run_id, activity.activity_epoch));
+            }
+            Step::Reschedule(index) => {
+                let run = self.run(index);
+                self.runtime.lifecycle.lock().unwrap().push(lifecycle(
+                    cursor,
+                    &self.session_id,
+                    &run,
+                    RunLifecycleEventKind::Rescheduled,
+                    RunState::Running,
+                ));
+            }
             Step::Close(index) => {
                 let (run, epoch) = self.runs[index].clone().expect("Input precedes Close");
                 self.runtime.push_committed_message(
@@ -319,12 +351,29 @@ impl Scenario {
             Self::durable_history(&cold, &self.session_id),
             "{label}: warm and cold replicas diverge on one evidence prefix"
         );
+        assert_one_aggregate_opening_per_interval(&warm, label);
         assert_eq!(
             self.warm.get_session(&self.session_id).unwrap().status,
             cold.get_session(&self.session_id).unwrap().status,
             "{label}: aggregate status diverges"
         );
         warm
+    }
+}
+
+/// The aggregate opens once per interval: a second `session.status_running`
+/// before the aggregate closes would announce one interval twice.
+fn assert_one_aggregate_opening_per_interval(history: &[DurableEvent], label: &str) {
+    let mut open = false;
+    for (id, kind, _) in history {
+        match kind["type"].as_str().unwrap_or_default() {
+            "session.status_running" => {
+                assert!(!open, "{label}: {id} opens an interval already open");
+                open = true;
+            }
+            "session.status_idle" | "session.status_terminated" => open = false,
+            _ => {}
+        }
     }
 }
 
@@ -448,6 +497,94 @@ async fn every_refresh_schedule_of_a_permission_pause_equals_its_cold_rebuild() 
             "session.usage",
             "session.status_idle",
         ],
+    )
+    .await;
+}
+
+const RESCHEDULED_RUN: [&str; 9] = [
+    "session.status_running",
+    "session.thread_status_running",
+    "session.status_rescheduled",
+    "session.thread_status_rescheduled",
+    "session.thread_status_running",
+    "agent.message",
+    "session.thread_status_idle",
+    "session.usage",
+    "session.status_idle",
+];
+
+#[tokio::test]
+async fn every_refresh_schedule_of_a_rescheduled_run_equals_its_cold_rebuild() {
+    // Causes: C1 a Session activity is admitted with no retained user Event, so
+    // no Event batch names its Run; C2 the Run commits Running, then a
+    // claim-fenced Rescheduled transition, inside that one interval; C3 the
+    // warm replica refreshes after any subset of the boundaries while the
+    // interval is open or after it closes. Effects: E1 warm and cold publish
+    // one history at every point, including while the interval is open; E2 the
+    // aggregate opens once, at the Run's first opening, and a reschedule does
+    // not reopen it; E3 all 8 schedules end on the sequence a user-Event Run
+    // with the same reschedule publishes.
+    assert_every_schedule_is_equivalent(
+        &[Step::Begin(0), Step::Reschedule(0), Step::Close(0)],
+        1,
+        &RESCHEDULED_RUN,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn every_refresh_schedule_of_an_open_rescheduled_interval_equals_its_cold_rebuild() {
+    // Causes: as above, but the interval is still open at the final read.
+    // Effects: E1/E2 as above; E3 every schedule ends on the open prefix.
+    assert_every_schedule_is_equivalent(
+        &[Step::Begin(0), Step::Reschedule(0)],
+        1,
+        &RESCHEDULED_RUN[..5],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn every_refresh_schedule_of_an_open_user_event_interval_equals_its_cold_rebuild() {
+    // Causes: a user-Event Run is observed only while its interval is open.
+    // Effects: warm and cold agree at every point and end on one open prefix.
+    assert_every_schedule_is_equivalent(
+        &[Step::Input(0), Step::Say(0), Step::Tool(0)],
+        1,
+        &RUN_WITH_EXECUTED_TOOL[..6],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn every_refresh_schedule_of_a_rescheduled_second_interval_equals_its_cold_rebuild() {
+    // Causes: C1 two consecutive admitted intervals with no retained user
+    // Event; C2 the second Run reschedules inside its interval, so its
+    // interval holds two opening commits after the first interval's close.
+    // Effects: E1 warm and cold agree at every point; E2 each interval opens
+    // the aggregate once, at its own first opening, whether it is read live or
+    // only after it closed; E3 all 32 schedules end on one sequence.
+    assert_every_schedule_is_equivalent(
+        &[
+            Step::Begin(0),
+            Step::Close(0),
+            Step::Begin(1),
+            Step::Reschedule(1),
+            Step::Close(1),
+        ],
+        2,
+        &[
+            &[
+                "session.status_running",
+                "session.thread_status_running",
+                "agent.message",
+                "session.thread_status_idle",
+                "session.usage",
+                "session.status_idle",
+            ][..],
+            &RESCHEDULED_RUN[..],
+        ]
+        .concat(),
     )
     .await;
 }

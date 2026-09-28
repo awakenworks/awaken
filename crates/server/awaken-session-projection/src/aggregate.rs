@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent};
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::SessionAgentRunBoundary;
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_state_contract::{PersistedSession, SessionRuntimeInterval};
 
 use crate::interval::{
     budget_reach_projection_close_cursor, interval_close_cursor, interval_lifecycle_open_event,
@@ -78,6 +78,12 @@ pub fn plan_interval_aggregate(
         )
     };
     let mut plan = IntervalAggregatePlan::default();
+    // One selection per closed interval, shared by the withdrawal and the
+    // emission pass below: each interval's opening is chosen against the close
+    // of the interval before it, exactly as the live selection of the running
+    // interval chose it, so withdrawal cannot keep one opening while emission
+    // publishes another.
+    let closed = closed_interval_openings(persisted, lifecycle_events);
     let has_interval_lineage = !persisted.closed_runtime_intervals.is_empty()
         || persisted
             .running_interval
@@ -85,16 +91,13 @@ pub fn plan_interval_aggregate(
             .is_some_and(|interval| interval.opened_revision.0 != 0);
     if has_interval_lineage {
         let replaced = plan.replaced.insert(Vec::new());
-        let mut prior_close = 0;
-        for interval in &persisted.closed_runtime_intervals {
-            let close = interval_close_cursor(interval).unwrap_or(prior_close);
-            let opening = interval_lifecycle_open_event(
-                session_id,
-                interval,
-                prior_close,
-                &persisted.event_batches,
-                lifecycle_events,
-            );
+        for &ClosedIntervalOpening {
+            interval,
+            close,
+            opening,
+            ..
+        } in &closed
+        {
             let open = opening
                 .map(|event| event.source_commit_cursor)
                 .unwrap_or(close);
@@ -132,13 +135,12 @@ pub fn plan_interval_aggregate(
                 FactRole::AggregateStatusRunning,
                 &interval.interval_id,
             ));
-            prior_close = close;
         }
         if let Some(interval) = persisted.running_interval.as_ref()
             && let Some(opening) = running_interval_lifecycle_open_event(
                 session_id,
                 interval,
-                prior_close,
+                closed.last().map_or(0, |last| last.close),
                 &persisted.event_batches,
                 lifecycle_events,
             )
@@ -156,21 +158,16 @@ pub fn plan_interval_aggregate(
         }
     }
 
-    let mut prior_close = 0;
-    for interval in &persisted.closed_runtime_intervals {
-        let close = interval_close_cursor(interval).unwrap_or(prior_close);
+    for &ClosedIntervalOpening {
+        interval,
+        close,
+        opening,
+    } in &closed
+    {
         if interval.observations.is_empty() {
-            prior_close = close;
             continue;
         }
-        let running = interval_lifecycle_open_event(
-            session_id,
-            interval,
-            prior_close,
-            &persisted.event_batches,
-            lifecycle_events,
-        )
-        .map(|opening| lifecycle_running(opening.cursor));
+        let running = opening.map(|opening| lifecycle_running(opening.cursor));
         // A fast interval may commit only Awaiting/Ended. Its terminal-prefix
         // bracket was public before any later interval existed and must be
         // rebuilt on a cold reader using that same exact terminal, never a
@@ -246,12 +243,8 @@ pub fn plan_interval_aggregate(
                         == Some(close)
                 });
         if budget_transition_owns_pause {
-            prior_close = close;
             continue;
         }
-        // This emission pass advances `prior_close` only past empty and
-        // budget-owned intervals; the withdrawal pass above advances it past
-        // every interval.
         plan.steps.push(IntervalStep::Close {
             usage: TimelineFact::new(
                 interval_fact(FactRole::AggregateUsage, &interval.interval_id),
@@ -266,25 +259,80 @@ pub fn plan_interval_aggregate(
             ),
         });
     }
-    if let Some(interval) = persisted.running_interval.as_ref() {
-        let prior_close = persisted
-            .closed_runtime_intervals
-            .iter()
-            .filter_map(interval_close_cursor)
-            .max()
-            .unwrap_or_default();
-        if let Some(opening) = running_interval_lifecycle_open_event(
+    if let Some(interval) = persisted.running_interval.as_ref()
+        && let Some(opening) = running_interval_lifecycle_open_event(
             session_id,
             interval,
-            prior_close,
+            closed.last().map_or(0, |last| last.close),
             &persisted.event_batches,
             lifecycle_events,
-        ) {
-            plan.steps.push(IntervalStep::AppendOnce(TimelineFact::new(
-                lifecycle_running(opening.cursor),
-                FactKind::SessionRunning,
-            )));
-        }
+        )
+    {
+        plan.steps.push(IntervalStep::AppendOnce(TimelineFact::new(
+            lifecycle_running(opening.cursor),
+            FactKind::SessionRunning,
+        )));
     }
     Ok(plan)
+}
+
+/// The latest interval opening the Session has resolved: the running
+/// interval's when it is resolved, otherwise the latest closed interval's.
+/// Each is selected against the same predecessor close as
+/// [`plan_interval_aggregate`], so the aggregate Running key a reader derives
+/// from it is the one the plan keeps.
+#[must_use]
+pub fn latest_interval_opening<'a>(
+    persisted: &'a PersistedSession,
+    lifecycle_events: &'a [RunLifecycleEvent],
+) -> Option<&'a RunLifecycleEvent> {
+    let closed = closed_interval_openings(persisted, lifecycle_events);
+    persisted
+        .running_interval
+        .as_ref()
+        .and_then(|interval| {
+            running_interval_lifecycle_open_event(
+                persisted.session_id.as_str(),
+                interval,
+                closed.last().map_or(0, |last| last.close),
+                &persisted.event_batches,
+                lifecycle_events,
+            )
+        })
+        .or_else(|| closed.last().and_then(|last| last.opening))
+}
+
+/// A closed interval with the opening selected against its predecessor.
+struct ClosedIntervalOpening<'a> {
+    interval: &'a SessionRuntimeInterval,
+    /// Where the interval closed; its predecessor's close when it recorded no
+    /// observation.
+    close: u64,
+    opening: Option<&'a RunLifecycleEvent>,
+}
+
+fn closed_interval_openings<'a>(
+    persisted: &'a PersistedSession,
+    lifecycle_events: &'a [RunLifecycleEvent],
+) -> Vec<ClosedIntervalOpening<'a>> {
+    let mut prior_close = 0;
+    persisted
+        .closed_runtime_intervals
+        .iter()
+        .map(|interval| {
+            let opening = interval_lifecycle_open_event(
+                persisted.session_id.as_str(),
+                interval,
+                prior_close,
+                &persisted.event_batches,
+                lifecycle_events,
+            );
+            prior_close = interval_close_cursor(interval).unwrap_or(prior_close);
+            ClosedIntervalOpening {
+                interval,
+                close: prior_close,
+                opening,
+            }
+        })
+        .collect()
 }
