@@ -16,9 +16,18 @@ use zeroize::Zeroize;
 
 /// Runtime-owned rendezvous directory. It is outside the repository/workspace
 /// namespace and is projected read-only into untrusted workloads. Spec
-/// admission reserves this whole directory, so it is contract vocabulary; the
-/// concrete endpoints inside it belong to the transport.
+/// admission reserves this whole directory, so it is contract vocabulary;
+/// provider-private endpoints inside it belong to the transport.
 pub const SANDBOX_CONTROL_DIRECTORY_PATH: &str = "/run/awaken/control";
+
+/// The one in-Sandbox endpoint of [`SandboxControlServiceKind::RepositoryGitCredential`]
+/// shared by Namespace and hosted Kubernetes. Providers project it differently
+/// outside the Sandbox, but Agent/Hand processes inherit one
+/// transport-independent helper overlay, so the workload-facing address is
+/// contract vocabulary: the Runtime Host renders it into helper argv without
+/// linking a transport.
+pub const REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH: &str =
+    "/run/awaken/control/repository-git-credential.sock";
 
 /// Closed service families a Sandbox provider may publish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

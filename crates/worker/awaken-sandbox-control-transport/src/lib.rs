@@ -21,12 +21,6 @@ pub use publication::{
     SandboxControlPublicationLease, SandboxControlPublicationSlot, SandboxControlPublicationTask,
 };
 
-/// One stable in-Sandbox endpoint shared by Namespace and hosted Kubernetes.
-/// Providers project it differently outside the Sandbox, but Agent/Hand
-/// processes inherit one transport-independent helper overlay.
-pub const REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH: &str =
-    "/run/awaken/control/repository-git-credential.sock";
-
 /// Sidecar-private readiness evidence adjacent to the stable logical socket.
 /// The workload can read but never write this file; only the trusted forwarder
 /// creates it after both of its listeners are bound.
@@ -36,7 +30,9 @@ pub const REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH: &str =
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_sandbox_control::SANDBOX_CONTROL_DIRECTORY_PATH;
+    use awaken_sandbox_control::{
+        REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, SANDBOX_CONTROL_DIRECTORY_PATH,
+    };
 
     #[test]
     fn rendezvous_endpoints_live_directly_in_the_reserved_control_directory() {

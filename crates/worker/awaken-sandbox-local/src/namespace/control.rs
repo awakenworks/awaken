@@ -1,12 +1,14 @@
 //! Linux Namespace realization of the provider-neutral Sandbox control port.
 
 use super::*;
+#[cfg(target_os = "linux")]
+use awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
 use awaken_sandbox_control::{
     PublishedSandboxControlService, SANDBOX_CONTROL_DIRECTORY_PATH, SandboxControlPublishError,
     SandboxControlService, SandboxControlServiceKind, SandboxControlServicePublisher,
 };
 #[cfg(target_os = "linux")]
-use awaken_sandbox_control_transport::{REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, serve_one};
+use awaken_sandbox_control_transport::serve_one;
 use awaken_sandbox_control_transport::{
     SandboxControlPublicationLease, SandboxControlPublicationSlot, SandboxControlPublicationTask,
 };

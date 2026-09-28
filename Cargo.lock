@@ -2218,7 +2218,6 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-sandbox-container",
  "awaken-sandbox-control",
- "awaken-sandbox-control-transport",
  "awaken-sandbox-fs",
  "awaken-sandbox-local",
  "awaken-service-lifecycle",

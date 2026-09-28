@@ -1250,7 +1250,7 @@ mod completion_tests {
                     );
                     assert_eq!(
                         placement.sandbox.control_services.contains(
-                            &awaken_sandbox_container::SandboxControlServiceKind::RepositoryGitCredential
+                            &awaken_sandbox_control::SandboxControlServiceKind::RepositoryGitCredential
                         ),
                         has_repository,
                         "Repository control service: {isolation:?}/{has_repository}/{projected_acp}"
