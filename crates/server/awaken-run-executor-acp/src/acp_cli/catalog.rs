@@ -175,7 +175,9 @@ const CODEX: AcpCli = AcpCli {
         codec: ManagedProviderConfigCodec::Codex,
     }),
     auth_method_id: None,
-    mcp_client_credential_injection: false,
+    // Pinned Codex ACP HTTP headers are process-private per-thread config;
+    // verify-acp-runtimes --authenticated-mcp codex witnesses auth and no persistence.
+    mcp_client_credential_injection: true,
     supports_tool_aliases: false,
     config_home_env: None,
     config_home_aliases: &[],

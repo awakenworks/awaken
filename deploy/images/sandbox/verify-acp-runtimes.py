@@ -9,6 +9,11 @@ import shutil
 import sys
 import tempfile
 import time
+import secrets
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 from pathlib import Path
 
 
@@ -50,7 +55,7 @@ async def request(process, request_id, method, params, runtime_id):
     return await read_response(process, request_id, runtime_id)
 
 
-async def verify(runtime, root, timeout_seconds=30):
+async def verify(runtime, root, timeout_seconds=30, mcp_servers=None, after_session=None):
     runtime_id = runtime["id"]
     missing = [
         executable
@@ -112,12 +117,14 @@ async def verify(runtime, root, timeout_seconds=30):
             process,
             2,
             "session/new",
-            {"cwd": str(workspace), "mcpServers": []},
+            {"cwd": str(workspace), "mcpServers": mcp_servers or []},
             runtime_id,
         )
         if not session.get("sessionId"):
             raise RuntimeError(f"{runtime_id}: session/new returned no sessionId")
         print(f"ACP-RUNTIME PROBE: {runtime_id} session opened", file=sys.stderr, flush=True)
+        if after_session is not None:
+            await after_session()
         return runtime_id, time.monotonic() - started
 
     try:
@@ -145,6 +152,84 @@ async def verify(runtime, root, timeout_seconds=30):
                 os.killpg(process.pid, signal.SIGKILL)
                 await process.wait()
     return result
+
+
+async def verify_private_mcp(runtime, root):
+    # MCP cause/effect decision rules: M1 exact official HTTP Authorization
+    # header reaches authenticated initialize/tools-list; M2 wrong/absent header
+    # is refused; M3 after adapter shutdown no created file, config, database or
+    # log contains the ephemeral credential marker. No model call is needed.
+    token = secrets.token_hex(24)
+    observed = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
+            authenticated = self.headers.get("authorization") == "Bearer " + token
+            observed.append((body.get("method"), authenticated))
+            if not authenticated:
+                self.send_response(401)
+                self.end_headers()
+                return
+            if "id" not in body:
+                self.send_response(202)
+                self.end_headers()
+                return
+            result = {
+                "protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                "serverInfo": {"name": "private-auth-proof", "version": "1"},
+            } if body.get("method") == "initialize" else {"tools": []}
+            payload = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):
+            self.send_response(405)
+            self.end_headers()
+
+        def do_DELETE(self):
+            self.send_response(200)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for headers in ({}, {"Authorization": "Bearer incorrect"}):
+            try:
+                urlopen(Request(f"http://127.0.0.1:{server.server_port}/mcp",
+                    data=b'{"jsonrpc":"2.0","id":0,"method":"initialize"}',
+                    headers={"Content-Type": "application/json", **headers}), timeout=2)
+            except HTTPError as error:
+                if error.code != 401:
+                    raise RuntimeError("MCP probe refused with an unexpected category") from error
+            else:
+                raise RuntimeError("MCP probe accepted an absent or wrong credential")
+        async def await_authenticated_tools():
+            # Session/new may precede async MCP startup. Keep the same owned
+            # adapter and original deadline alive until the actual observation.
+            while ("initialize", True) not in observed or ("tools/list", True) not in observed:
+                await asyncio.sleep(0.1)
+
+        result = await verify(runtime, root, mcp_servers=[{
+            "type": "http", "name": "private-auth-proof",
+            "url": f"http://127.0.0.1:{server.server_port}/mcp",
+            "headers": [{"name": "Authorization", "value": "Bearer " + token}],
+        }], after_session=await_authenticated_tools)
+        for path in root.rglob("*"):
+            if path.is_file() and not path.is_symlink() and token.encode() in path.read_bytes():
+                raise RuntimeError(f"{runtime['id']}: MCP credential persisted in created state")
+        return result
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
 
 
 async def self_test():
@@ -177,6 +262,26 @@ async def self_test():
             raise AssertionError("V2: stalled adapter unexpectedly passed")
     assert time.monotonic() - started < 3, "V2: timed-out adapter was not reaped"
 
+    # V3 Session/new completes but authenticated-MCP observation does not:
+    # the same deadline must still kill/reap the owned adapter process group.
+    runtime["probe_argv"] = [sys.executable, "-c", (
+        "import sys,json; "
+        "[(print(json.dumps({'jsonrpc':'2.0','id':json.loads(line)['id'],"
+        "'result':{'sessionId':'opened'}}),flush=True)) for line in sys.stdin]"
+    )]
+    async def never_observed():
+        await asyncio.sleep(30)
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="awaken-acp-observation-test-") as directory:
+        try:
+            await verify(runtime, Path(directory), timeout_seconds=0.05,
+                after_session=never_observed)
+        except RuntimeError as error:
+            assert "exceeded the Worker probe deadline" in str(error), str(error)
+        else:
+            raise AssertionError("V3: unobserved MCP unexpectedly passed")
+    assert time.monotonic() - started < 3, "V3: observation wait leaked the adapter"
+
 
 async def async_main():
     if sys.argv[1:] == ["--self-test"]:
@@ -184,7 +289,8 @@ async def async_main():
         return
     contract_path = Path("/usr/local/share/awaken/acp-runtimes.json")
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    requested = set(sys.argv[1:])
+    authenticated_mcp = "--authenticated-mcp" in sys.argv[1:]
+    requested = set(value for value in sys.argv[1:] if value != "--authenticated-mcp")
     runtimes = [
         runtime
         for runtime in contract["runtimes"]
@@ -198,7 +304,7 @@ async def async_main():
         return
     with tempfile.TemporaryDirectory(prefix="awaken-acp-probe-") as directory:
         results = await asyncio.gather(
-            *(verify(runtime, Path(directory)) for runtime in runtimes)
+            *((verify_private_mcp if authenticated_mcp else verify)(runtime, Path(directory)) for runtime in runtimes)
         )
     for runtime_id, elapsed in sorted(results):
         print(f"ACP-RUNTIME PASS: {runtime_id} initialize+session/new {elapsed:.2f}s")

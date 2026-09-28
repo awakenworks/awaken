@@ -51,7 +51,10 @@ fn catalog_datum_not_adapter_id_drives_process_private_mcp_auth() {
     // Causes: C1 one production row is selected; C2 its row datum declares
     // client injection; C3 its display id is relabeled independently.
     // Effects: E1 only declared rows admit; E2 an undeclared row rejects.
-    // Constraint: identity is lookup metadata, never a capability allowlist.
+    // Codex 1.10.0 uses official HTTP headers in per-thread config; the real
+    // image probe verifies authenticated initialize/tools-list and scans its
+    // created state for credential persistence. Transport/delivery guards remain
+    // unchanged. Identity is lookup metadata, never a capability allowlist.
     // Decision rules: R1=C1+C2=>E1 for every row; R2=C2+renamed=>E1;
     // R3=!C2+id "claude"=>E2, proving no hidden string branch remains.
     assert_eq!(
@@ -62,7 +65,7 @@ fn catalog_datum_not_adapter_id_drives_process_private_mcp_auth() {
             })
             .map(|cli| cli.id)
             .collect::<Vec<_>>(),
-        ["claude"]
+        ["claude", "codex"]
     );
 
     let mut renamed_declared = *acp_cli("claude").expect("declared row");
@@ -72,7 +75,7 @@ fn catalog_datum_not_adapter_id_drives_process_private_mcp_auth() {
             .admits_mcp_client_credential(Some(McpCredentialDelivery::ClientInjection), true,)
     );
 
-    let mut relabeled_undeclared = *acp_cli("codex").expect("undeclared row");
+    let mut relabeled_undeclared = *acp_cli("opencode").expect("undeclared row");
     relabeled_undeclared.id = "claude";
     assert!(
         !relabeled_undeclared
