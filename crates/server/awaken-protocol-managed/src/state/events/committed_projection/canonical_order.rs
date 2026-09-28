@@ -146,7 +146,6 @@ impl ManagedState {
             }
         }
 
-        let event_count = record.events.len();
         let inbound =
             index
                 .inbound_orders()
@@ -179,9 +178,7 @@ impl ManagedState {
             }
             if let Some(tool) = decode_managed_tool_event_id(&event.id) {
                 let thread_id = internal_thread_id(&session_id, tool.thread_id);
-                if let Some(order) =
-                    index.tool_order(&thread_id, tool.source_id, tool.call_id, event_count)
-                {
+                if let Some(order) = index.tool_order(&thread_id, tool.source_id, tool.call_id) {
                     orders.insert(event.id.clone(), order);
                 }
                 continue;
@@ -208,7 +205,7 @@ impl ManagedState {
                         }
                         _ => true,
                     };
-                    if authenticated && let Some(order) = index.fact_order(key, event_count) {
+                    if authenticated && let Some(order) = index.fact_order(key) {
                         orders.insert(event.id.clone(), order);
                     }
                 }

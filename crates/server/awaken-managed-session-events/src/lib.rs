@@ -64,7 +64,7 @@ pub use lifecycle::{
     terminate_session,
 };
 pub use observation::run_observation_facts;
-pub use order::{CanonicalOrder, historical_pending_projection_order};
+pub use order::{CanonicalOrder, Ordinal, historical_pending_projection_order};
 pub use outcome::{
     AnchoredOutcome, OutcomeAnchor, anchor_outcome, outcome_owns_failure_run, validate_outcome,
 };
