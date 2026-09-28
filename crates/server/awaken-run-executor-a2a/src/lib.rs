@@ -109,7 +109,8 @@ impl TransportResolver for AnonymousHttpTransportResolver {
     ) -> std::result::Result<Arc<dyn Transport>, String> {
         let endpoint = candidate
             .binding()
-            .backend_ref
+            .identity()
+            .2
             .strip_prefix("a2a:")
             .ok_or_else(|| "anonymous A2A fixture received a non-remote candidate".to_string())?;
         Ok(Arc::new(HttpTransport::new(endpoint)))

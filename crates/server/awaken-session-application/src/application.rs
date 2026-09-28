@@ -750,18 +750,18 @@ impl SessionApplication {
             agent_id: &str,
             candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
         ) -> Result<(), RunError> {
-            let backend_ref = &candidate.binding().backend_ref;
+            let backend_ref = &candidate.binding().identity().2;
             if !is_native_session_runtime(Some(backend_ref)) {
                 return Err(RunError::bad_request(format!(
                     "budget_backend_unsupported: Agent `{agent_id}` uses external backend `{backend_ref}`"
                 )));
             }
-            if candidate.binding().model_ref.trim().is_empty() {
+            if candidate.binding().identity().1.trim().is_empty() {
                 return Err(RunError::bad_request(format!(
                     "budget_price_roster_unavailable: Agent `{agent_id}` has no model"
                 )));
             }
-            models.insert(candidate.binding().model_ref.clone());
+            models.insert(candidate.binding().identity().1.to_owned());
             Ok(())
         }
 

@@ -31,7 +31,7 @@ pub(super) fn consistent_agent_filesystem_context(
             ModelProvisioning::HostExecutor | ModelProvisioning::Remote { .. } => None,
         };
         if matches!(
-            Backend::from_ref(&candidate.binding().backend_ref),
+            Backend::from_ref(candidate.binding().identity().2),
             Backend::Acp(_)
         ) {
             has_acp = true;

@@ -42,7 +42,7 @@ fn worker_acp_capabilities(
                 if !acp.capability_fingerprint.trim().is_empty() =>
             {
                 Some(awaken_dispatch::WorkerAcpCapabilityRequirement {
-                    backend_ref: candidate.binding().backend_ref.clone(),
+                    backend_ref: candidate.binding().identity().2.to_owned(),
                     fingerprint: acp.capability_fingerprint.clone(),
                 })
             }
@@ -51,7 +51,7 @@ fn worker_acp_capabilities(
                 ..
             } if !acp.capability_fingerprint.trim().is_empty() => {
                 Some(awaken_dispatch::WorkerAcpCapabilityRequirement {
-                    backend_ref: candidate.binding().backend_ref.clone(),
+                    backend_ref: candidate.binding().identity().2.to_owned(),
                     fingerprint: acp.capability_fingerprint.clone(),
                 })
             }
@@ -71,7 +71,7 @@ pub(crate) fn requires_local_environment(
         .any(|candidate| {
             !matches!(
                 awaken_runtime_contract::resolved::Backend::from_ref(
-                    &candidate.binding().backend_ref
+                    candidate.binding().identity().2
                 ),
                 awaken_runtime_contract::resolved::Backend::Remote(_)
             )
@@ -115,7 +115,7 @@ pub(super) fn inference_plaintext_holder_decision(
             }
         }
         let candidate_boundary = match awaken_runtime_contract::resolved::Backend::from_ref(
-            &candidate.binding().backend_ref,
+            candidate.binding().identity().2,
         ) {
             awaken_runtime_contract::resolved::Backend::Acp(_) => {
                 awaken_runtime_contract::PlaintextBoundary::Workload
@@ -264,7 +264,7 @@ pub fn remote_worker_placement(
     for candidate in std::iter::once(&models.model_binding).chain(models.model_candidates.iter()) {
         placement.required_capabilities.insert(
             awaken_runtime_contract::execution::execution_capability(
-                &candidate.binding().backend_ref,
+                candidate.binding().identity().2,
             ),
         );
         if let Some(capability) = model_realization_capability(candidate) {

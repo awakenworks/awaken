@@ -357,13 +357,14 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             host.register_thread_agent_projection(&thread_id.0, agent_id.unwrap_or("assistant"));
             host.register_thread_backend_projection(
                 &thread_id.0,
-                &claimed
+                claimed
                     .request
                     .activation
                     .snapshot
                     .resolved_spec
                     .model_binding
-                    .backend_ref,
+                    .identity()
+                    .2,
             );
             if let Some(workspace) = stages.first().map(|stage| stage.workspace_id.as_str()) {
                 host.register_thread_workspace(&thread_id.0, workspace);

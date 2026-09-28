@@ -133,7 +133,7 @@ impl CatalogModelPublicationResolver {
             );
         }
         let primary = resolved.remove(0);
-        let primary_model = primary.binding().model_ref.clone();
+        let primary_model = primary.binding().identity().1.to_owned();
         Ok(ResolvedPublicationModels {
             primary,
             candidates: resolved,

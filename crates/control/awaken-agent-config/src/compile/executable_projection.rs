@@ -13,7 +13,7 @@ pub(super) fn plugin_config(
     let acp_backend = config
         .model_binding
         .resolved()
-        .is_some_and(|binding| binding.backend_ref.starts_with("acp:"));
+        .is_some_and(|binding| binding.identity().2.starts_with("acp:"));
     config
         .plugin_config
         .iter()

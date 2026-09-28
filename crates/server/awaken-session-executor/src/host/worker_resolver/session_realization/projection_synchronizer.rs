@@ -1360,8 +1360,9 @@ mod tests {
             .resolved_spec
             .model_binding
             .binding()
-            .model_ref
-            .clone();
+            .identity()
+            .1
+            .to_owned();
         let publications = Arc::new(
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
                 .expect("DH1 claimed publication source"),

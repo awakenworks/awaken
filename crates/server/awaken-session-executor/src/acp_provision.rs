@@ -100,7 +100,7 @@ impl PublishedAcpLaunchResolver {
             ));
         };
         self.cli.validate_provider_server_tool_route(
-            &candidate.binding().provider_identity_ref,
+            candidate.binding().identity().0,
             &endpoint.api_dialect,
             &context.provider_server_tools,
         )?;
@@ -128,9 +128,9 @@ impl PublishedAcpLaunchResolver {
             } = candidate.provisioning()
             {
                 let coherent = match model_selection {
-                    BackendModelSelection::Default => candidate.binding().model_ref.is_empty(),
+                    BackendModelSelection::Default => candidate.binding().identity().1.is_empty(),
                     BackendModelSelection::Exact => {
-                        !candidate.binding().model_ref.trim().is_empty()
+                        !candidate.binding().identity().1.trim().is_empty()
                     }
                 };
                 if !coherent {
@@ -147,7 +147,7 @@ impl PublishedAcpLaunchResolver {
                 }
                 return Ok(ResolvedModel::backend_owned(
                     *model_selection,
-                    candidate.binding().model_ref.clone(),
+                    candidate.binding().identity().1.to_owned(),
                     self.cli.id,
                     &acp.capability_adapter_version,
                     &acp.capability_fingerprint,

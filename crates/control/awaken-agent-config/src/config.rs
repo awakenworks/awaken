@@ -74,7 +74,7 @@ impl ModelSelection {
             Self::BackendDefault { backend_ref, .. } | Self::BackendExact { backend_ref, .. } => {
                 Some(backend_ref.backend_ref())
             }
-            Self::Pinned(binding) => Some(&binding.backend_ref),
+            Self::Pinned(binding) => Some(binding.identity().2),
         }
     }
 
@@ -307,9 +307,9 @@ impl Serialize for ModelSelection {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(Some(4))?;
                 map.serialize_entry("mode", "pinned")?;
-                map.serialize_entry("provider_identity_ref", &binding.provider_identity_ref)?;
-                map.serialize_entry("model_ref", &binding.model_ref)?;
-                map.serialize_entry("backend_ref", &binding.backend_ref)?;
+                map.serialize_entry("provider_identity_ref", &binding.identity().0)?;
+                map.serialize_entry("model_ref", &binding.identity().1)?;
+                map.serialize_entry("backend_ref", &binding.identity().2)?;
                 map.end()
             }
             ModelSelection::Auto => {

@@ -1275,7 +1275,7 @@ mod tests {
         assert_eq!(
             std::iter::once(&spec.model_binding)
                 .chain(spec.model_candidates.iter())
-                .map(|candidate| candidate.binding().model_ref.as_str())
+                .map(|candidate| candidate.binding().identity().1)
                 .collect::<Vec<_>>(),
             vec!["primary", "fallback"]
         );
@@ -1303,7 +1303,7 @@ mod tests {
         let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
             ModelBinding::new("host", "embedded-model", "native"),
         );
-        assert_eq!(candidate.binding().model_ref, "embedded-model");
+        assert_eq!(candidate.binding().identity().1, "embedded-model");
         assert!(matches!(
             candidate.provisioning(),
             ModelProvisioning::HostExecutor

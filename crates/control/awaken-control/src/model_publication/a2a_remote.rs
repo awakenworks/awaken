@@ -48,7 +48,7 @@ impl CatalogModelPublicationResolver {
         binding: ModelBinding,
         sources: &[CredentialSource],
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
-        let Backend::Remote(backend) = Backend::from_ref(&binding.backend_ref) else {
+        let Backend::Remote(backend) = Backend::from_ref(binding.identity().2) else {
             unreachable!("caller matched Remote");
         };
         let endpoint = backend.endpoint();
@@ -82,7 +82,7 @@ impl CatalogModelPublicationResolver {
                 workspace.as_str(),
                 &origin,
                 None,
-                &binding.backend_ref,
+                binding.identity().2,
                 sources,
             );
             let derived = CredentialBinding::OneOfCredentialPool {
@@ -98,7 +98,7 @@ impl CatalogModelPublicationResolver {
                 CredentialSelectionContext {
                     offering_provider: Some(&origin),
                     offering_endpoint: None,
-                    backend_ref: Some(&binding.backend_ref),
+                    backend_ref: Some(binding.identity().2),
                     availability: None,
                     expected_workspace: Some(workspace.as_str()),
                     selection_sequence: 0,
@@ -131,7 +131,7 @@ impl CatalogModelPublicationResolver {
             };
             let material_binding = CredentialMaterialBinding::for_target(
                 workspace.as_str(),
-                &(&binding.backend_ref, &security.fingerprint),
+                &(&binding.identity().2, &security.fingerprint),
                 &usage,
             );
             let selected_holder = self.direct_holders.as_ref().map(|holders| &holders.provider).ok_or_else(|| {

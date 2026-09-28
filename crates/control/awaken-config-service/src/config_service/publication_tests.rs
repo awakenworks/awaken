@@ -670,9 +670,9 @@ async fn publish_resolves_auto_to_the_first_offering_and_keeps_the_source_auto()
     // The compiled publication carries the resolved concrete binding +
     // the remaining offerings as pool candidates (ADR-0052 D5).
     let spec = &publication.snapshot.resolved_spec;
-    assert_eq!(spec.model_binding.model_ref, "m-first");
+    assert_eq!(spec.model_binding.identity().1, "m-first");
     assert_eq!(spec.model_candidates.len(), 1);
-    assert_eq!(spec.model_candidates[0].model_ref, "m-second");
+    assert_eq!(spec.model_candidates[0].identity().1, "m-second");
 
     // The stored *source* config is still Auto — so a later catalog change can
     // re-resolve it (reconcile returns true for policy-owned sources).
@@ -987,7 +987,12 @@ async fn pinned_publication_uses_the_explicit_host_resolver() {
     plane.put(&scope, &agent_config("pinned")).await.unwrap();
     let publication = plane.publish(&scope, "pinned").await.unwrap();
     assert_eq!(
-        publication.snapshot.resolved_spec.model_binding.model_ref,
+        publication
+            .snapshot
+            .resolved_spec
+            .model_binding
+            .identity()
+            .1,
         "m"
     );
 }

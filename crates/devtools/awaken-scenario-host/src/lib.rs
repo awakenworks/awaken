@@ -730,7 +730,7 @@ pub async fn build_resolved_real_router() -> Router {
     mount(
         runtime_resource_host_with_deployment(
             executor,
-            published.primary.binding().model_ref.clone(),
+            published.primary.binding().identity().1.to_owned(),
             scenario_deployment(),
         )
         .await,
@@ -863,7 +863,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     mount(
         runtime_resource_host_with_deployment(
             executor,
-            published.primary.binding().model_ref.clone(),
+            published.primary.binding().identity().1.to_owned(),
             scenario_deployment(),
         )
         .await,

@@ -301,7 +301,7 @@ impl MemoryRuntime {
                 .ok_or_else(|| {
                     format!(
                         "published model candidate `{}` is unavailable",
-                        model.binding().model_ref
+                        model.binding().identity().1
                     )
                 });
         }

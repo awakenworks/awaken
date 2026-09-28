@@ -21,7 +21,7 @@ pub(super) fn validate_acp_session_configuration(
     {
         return Err(unavailable(format!(
             "ACP mode `{mode}` is not advertised by {}",
-            binding.backend_ref
+            binding.identity().2
         )));
     }
     for (id, value) in &configuration.options {
@@ -32,7 +32,7 @@ pub(super) fn validate_acp_session_configuration(
             .ok_or_else(|| {
                 unavailable(format!(
                     "ACP option `{id}` is not advertised by {}",
-                    binding.backend_ref
+                    binding.identity().2
                 ))
             })?;
         if !option

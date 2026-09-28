@@ -104,7 +104,7 @@ impl awaken_dream_application::DreamModelReadiness for ScenarioDreamModelReadine
         };
         Ok(!matches!(
             awaken_runtime_contract::resolved::Backend::from_ref(
-                &publication.primary.binding().backend_ref
+                publication.primary.binding().identity().2
             ),
             awaken_runtime_contract::resolved::Backend::Remote(_)
         ))
@@ -502,10 +502,12 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
                 name: None,
                 description: None,
                 source_revision: snapshot.metadata.source.revision,
-                model: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
+                model: Some(snapshot.resolved_spec.model_binding.identity().1.to_owned()),
                 inference: snapshot.resolved_spec.plugin_config.inference.clone(),
-                execution_model_ref: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
-                backend_ref: snapshot.resolved_spec.model_binding.backend_ref.clone(),
+                execution_model_ref: Some(
+                    snapshot.resolved_spec.model_binding.identity().1.to_owned(),
+                ),
+                backend_ref: snapshot.resolved_spec.model_binding.identity().2.to_owned(),
                 system: None,
                 tool_ids: Vec::new(),
                 toolsets: bindings.toolsets.clone(),
@@ -590,7 +592,7 @@ mod tests {
             ModelProvisioning::HostExecutor
         ));
         assert_eq!(
-            snapshot.resolved_spec.model_binding.binding().backend_ref,
+            snapshot.resolved_spec.model_binding.binding().identity().2,
             "acp:claude"
         );
     }

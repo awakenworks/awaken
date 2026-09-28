@@ -110,7 +110,7 @@ impl CatalogModelPublicationResolver {
         catalog: &ProviderCatalog,
         binding: &ModelBinding,
     ) -> Result<ModelBinding, PublicationResolutionError> {
-        let backend = Backend::from_ref(&binding.backend_ref);
+        let backend = Backend::from_ref(binding.identity().2);
         if let Backend::Remote(endpoint) = backend {
             Self::remote_origin(endpoint.endpoint()).map_err(|reason| {
                 PublicationResolutionError::CandidateUnavailable {
@@ -121,7 +121,7 @@ impl CatalogModelPublicationResolver {
             return Ok(binding.clone());
         }
         if matches!(backend, Backend::Acp(_)) {
-            if binding.provider_identity_ref.trim().is_empty() {
+            if binding.identity().0.trim().is_empty() {
                 return Err(PublicationResolutionError::CandidateUnavailable {
                     binding: binding.clone(),
                     reason: "Pinned ACP binding requires its exact Worker-local identity; use Target for a Provider route or BackendExact for selection intent".into(),
@@ -136,9 +136,9 @@ impl CatalogModelPublicationResolver {
                 reason: format!("invalid backend_ref {}", invalid.as_str()),
             });
         }
-        if binding.provider_identity_ref.trim().is_empty()
-            || binding.model_ref.trim().is_empty()
-            || binding.backend_ref.trim().is_empty()
+        if binding.identity().0.trim().is_empty()
+            || binding.identity().1.trim().is_empty()
+            || binding.identity().2.trim().is_empty()
         {
             return Err(PublicationResolutionError::CandidateUnavailable {
                 binding: binding.clone(),
@@ -146,9 +146,9 @@ impl CatalogModelPublicationResolver {
             });
         }
         let target = ModelTarget {
-            model_id: binding.model_ref.clone(),
-            provider_id: (!binding.provider_identity_ref.is_empty())
-                .then(|| binding.provider_identity_ref.clone()),
+            model_id: binding.identity().1.to_owned(),
+            provider_id: (!binding.identity().0.is_empty())
+                .then(|| binding.identity().0.to_owned()),
             api_dialect: None,
             protocol_endpoint_id: None,
             endpoint_name: None,
@@ -162,13 +162,14 @@ impl CatalogModelPublicationResolver {
         ModelBinding::parse(
             offering.provider_id.as_str(),
             &offering.model_id,
-            &binding.backend_ref,
+            binding.identity().2,
         )
         .map_err(|error| {
             PublicationResolutionError::invalid_binding(
                 format!(
                     "catalog offering `{}` canonicalizing pinned binding `{}`",
-                    offering.model_id, binding.model_ref
+                    offering.model_id,
+                    binding.identity().1
                 ),
                 error,
             )
@@ -180,14 +181,14 @@ impl CatalogModelPublicationResolver {
         binding: &ModelBinding,
         selection: BackendModelSelection,
     ) -> Result<&AcpPublicationCapability, PublicationResolutionError> {
-        let Backend::Acp(backend) = Backend::from_ref(&binding.backend_ref) else {
+        let Backend::Acp(backend) = Backend::from_ref(binding.identity().2) else {
             return Err(PublicationResolutionError::CandidateUnavailable {
                 binding: binding.clone(),
                 reason: "backend-owned model selection requires an ACP backend".into(),
             });
         };
         let cli = backend.cli();
-        if binding.backend_ref != format!("acp:{cli}") {
+        if binding.identity().2 != format!("acp:{cli}") {
             return Err(PublicationResolutionError::CandidateUnavailable {
                 binding: binding.clone(),
                 reason: "backend-owned model selection requires an exact acp:<cli> backend".into(),
@@ -196,14 +197,14 @@ impl CatalogModelPublicationResolver {
         let profile = self
             .acp_capabilities
             .iter()
-            .find(|capability| capability.backend_ref == binding.backend_ref)
+            .find(|capability| capability.backend_ref == binding.identity().2)
             .ok_or_else(|| PublicationResolutionError::CandidateUnavailable {
                 binding: binding.clone(),
                 reason: format!("ACP backend {cli} is not in the executable catalog"),
             })?;
         let coherent = match selection {
-            BackendModelSelection::Default => binding.model_ref.is_empty(),
-            BackendModelSelection::Exact => !binding.model_ref.trim().is_empty(),
+            BackendModelSelection::Default => binding.identity().1.is_empty(),
+            BackendModelSelection::Exact => !binding.identity().1.trim().is_empty(),
         };
         if !coherent {
             return Err(PublicationResolutionError::CandidateUnavailable {

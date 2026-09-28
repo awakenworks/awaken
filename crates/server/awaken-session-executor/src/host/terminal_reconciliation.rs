@@ -88,7 +88,7 @@ impl SharedHost {
                 let (workspace, _, installed, _) =
                     self.resolve_session_publication(thread, agent, None)?;
                 let frozen_model_ref = installed.as_ref().map_or(self.model_ref.as_str(), |root| {
-                    root.resolved_spec.model_binding.model_ref.as_str()
+                    root.resolved_spec.model_binding.identity().1
                 });
                 let effective_model_ref =
                     self.inference_routing.model_ref(thread, frozen_model_ref);
@@ -215,13 +215,14 @@ impl HostWorkerResolver {
         if install_cancellation_executor
             && matches!(
                 awaken_runtime_contract::resolved::Backend::from_ref(
-                    &claimed
+                    claimed
                         .request
                         .activation
                         .snapshot
                         .resolved_spec
                         .model_binding
-                        .backend_ref
+                        .identity()
+                        .2
                 ),
                 awaken_runtime_contract::resolved::Backend::Remote(_)
             )

@@ -385,7 +385,7 @@ fn request_body_for_provider(
         })
         .collect::<Result<Vec<_>, Error>>()?;
     Ok(ResponsesRequest {
-        model: request.model_binding.model_ref.clone(),
+        model: request.model_binding.identity().1.to_owned(),
         input: items,
         store: false,
         tools,

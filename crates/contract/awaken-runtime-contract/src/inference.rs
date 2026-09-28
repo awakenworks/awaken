@@ -46,10 +46,7 @@ pub trait InferenceExecutorMaterializer: Send + Sync {
                 activation.effective_model_ref()
             ));
         }
-        if !matches!(
-            Backend::from_ref(&exact.binding().backend_ref),
-            Backend::Native
-        ) {
+        if !matches!(exact.binding().backend(), Backend::Native) {
             return Ok(None);
         }
         self.materialize_pinned(exact, context)

@@ -58,8 +58,8 @@ impl LlmExecutor for RouteByProviderLlm {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let provider = request.model_binding.provider_identity_ref.clone();
-        let model = request.model_binding.model_ref.clone();
+        let provider = request.model_binding.identity().0.to_owned();
+        let model = request.model_binding.identity().1.to_owned();
         self.seen
             .lock()
             .unwrap()
@@ -88,7 +88,7 @@ impl LlmExecutor for RouteLlm {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let model = request.model_binding.model_ref.clone();
+        let model = request.model_binding.identity().1.to_owned();
         self.seen.lock().unwrap().push(model.clone());
         if self.failing.contains(&model.as_str()) {
             Err(LlmError::Overloaded {
@@ -121,7 +121,7 @@ impl LlmExecutor for TruncateThenFailPrimary {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let model = request.model_binding.model_ref.clone();
+        let model = request.model_binding.identity().1.to_owned();
         let primary_calls = {
             let mut seen = self.seen.lock().unwrap();
             seen.push(model.clone());
