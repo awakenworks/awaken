@@ -228,9 +228,11 @@ pub struct VaultState {
 
 impl VaultState {
     /// Build the vault surface over the credential domain's secret store + repo.
+    /// `clock` is the composing process's one wall clock (see the `clock` field).
     pub fn new(
         secrets: Arc<dyn SecretStore>,
         repository: Arc<dyn ManagedCredentialRepository>,
+        clock: Arc<dyn WallClock>,
     ) -> Self {
         Self {
             secrets,
@@ -239,15 +241,8 @@ impl VaultState {
             refresh_exchange: None,
             material_delivery: None,
             rollout_target: RwLock::new(None),
-            clock: awaken_lease_contract::system_clock(),
+            clock,
         }
-    }
-
-    /// Replace the system wall clock, e.g. with a fixed clock under test.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn WallClock>) -> Self {
-        self.clock = clock;
-        self
     }
 
     /// Sample the owner clock once. The epoch itself is the system clock's

@@ -27,7 +27,6 @@
 
 use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
-use std::time::Instant;
 
 use awaken_agent_contract::ThreadCommit;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
@@ -1544,7 +1543,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             DispatchOutcome::Done => "done",
             DispatchOutcome::Awaiting => "awaiting",
         };
-        let started = std::time::Instant::now();
+        let started = awaken_lease_contract::mono::Stopwatch::start();
         let settlement = if coordinated_claim_is_stale {
             Ok(SettleOutcome::Fenced)
         } else {
@@ -1648,14 +1647,14 @@ fn cancellation_uses_tool_interruption(
 /// early `?`, and each terminal-recovery arm — without threading a timer through
 /// them. Borrows the runtime's metrics recorder for the lifetime of one drive.
 struct DriveTimer<'a> {
-    start: Instant,
+    start: awaken_lease_contract::mono::Stopwatch,
     metrics: &'a dyn awaken_runtime_contract::metrics::MetricsRecorder,
 }
 
 impl<'a> DriveTimer<'a> {
     fn new(metrics: &'a dyn awaken_runtime_contract::metrics::MetricsRecorder) -> Self {
         Self {
-            start: Instant::now(),
+            start: awaken_lease_contract::mono::Stopwatch::start(),
             metrics,
         }
     }

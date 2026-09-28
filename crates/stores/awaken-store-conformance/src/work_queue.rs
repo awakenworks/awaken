@@ -13,7 +13,6 @@
 //! observable contract, not one backend's behaviour.
 
 use awaken_lease_contract::WallClock;
-use awaken_lease_contract::system_clock;
 use awaken_lease_contract::utc::epoch_millis_to_rfc3339;
 use awaken_lease_testkit::ManualClock;
 use awaken_session_types::SessionId;
@@ -765,12 +764,14 @@ pub async fn observation_timestamps_are_the_injected_clock<Q: WorkQueue>(
 }
 
 /// Run the whole contract against a freshly-built backend `Q`. The factory takes
-/// the clock so the observation rules can name the instants they expect.
+/// the clock so the observation rules can name the instants they expect;
+/// `clock` is the caller's timeline for every rule that does not.
 pub async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(
+    clock: Arc<dyn WallClock>,
     fresh_with: impl Fn(Arc<dyn WallClock>) -> F,
     lease_ttl_ms: u64,
 ) {
-    let fresh = || fresh_with(system_clock());
+    let fresh = || fresh_with(clock.clone());
     single_active_cap(&fresh().await).await;
     reclaim_at_ttl(&fresh().await, lease_ttl_ms).await;
     requested_reclaim_uses_refresh_clock(&fresh().await).await;

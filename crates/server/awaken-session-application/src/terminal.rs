@@ -5,6 +5,7 @@
 // @formal entrypoint session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
 //! Durable terminal Session transitions.
 
+use awaken_lease_contract::WallClockExt as _;
 use awaken_provisioning_contract::RepositoryPublicationExpectation;
 use awaken_resource_contract::{BindingId, ResourceAccess};
 use awaken_session_error_contract::RunError;
@@ -151,26 +152,24 @@ fn pending_event_batch_error() -> SessionPreparationError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionDeleteCommand {
     session_id: awaken_session_types::SessionId,
-    requested_at_unix_s: i64,
+    /// A test's fixed request instant. Production commands carry none: the
+    /// application stamps the request on its own clock when it admits it.
+    requested_at_unix_s: Option<i64>,
 }
 
 impl SessionDeleteCommand {
     #[must_use]
     pub fn new(session_id: impl Into<awaken_session_types::SessionId>) -> Self {
-        let requested_at_unix_s = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
-            .unwrap_or(0);
         Self {
             session_id: session_id.into(),
-            requested_at_unix_s,
+            requested_at_unix_s: None,
         }
     }
     #[cfg(test)]
     pub(crate) fn at_for_test(session_id: &str, requested_at_unix_s: i64) -> Self {
         Self {
             session_id: session_id.into(),
-            requested_at_unix_s,
+            requested_at_unix_s: Some(requested_at_unix_s),
         }
     }
 }
@@ -312,7 +311,7 @@ impl SessionApplication {
                 break;
             }
             let mut facts = session
-                .close_runtime_interval(self.now_unix_ms())
+                .close_runtime_interval(self.clock.now_ms())
                 .map(|interval| {
                     runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
                 })
@@ -665,7 +664,7 @@ impl SessionApplication {
                 .archive(archived_at)
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
             let mut facts = session
-                .close_runtime_interval(self.now_unix_ms())
+                .close_runtime_interval(self.clock.now_ms())
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id.as_str(), interval))
                 .into_iter()
                 .collect::<Vec<_>>();
@@ -713,7 +712,13 @@ impl SessionApplication {
             // absorbing without duplicating disposition interpretation here;
             // a rejected first request mutates only this detached candidate.
             let Some(delete_fact) = session
-                .request_delete(&owner_scope, command.requested_at_unix_s)
+                .request_delete(
+                    &owner_scope,
+                    command.requested_at_unix_s.unwrap_or_else(|| {
+                        i64::try_from(self.clock.now().duration_since_epoch().as_secs())
+                            .unwrap_or(i64::MAX)
+                    }),
+                )
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?
             else {
                 return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
@@ -723,7 +728,7 @@ impl SessionApplication {
                 return Err(pending_event_batch_error());
             }
             let mut facts = session
-                .close_runtime_interval(self.now_unix_ms())
+                .close_runtime_interval(self.clock.now_ms())
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
                 .into_iter()
                 .collect::<Vec<_>>();

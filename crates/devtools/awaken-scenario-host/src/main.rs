@@ -65,6 +65,7 @@ fn management_scenario_adapters(rate_limit_transition: bool) -> awaken_cli::Mana
                 create_per_minute: 3,
                 read_per_minute: 1_200,
             },
+            awaken_lease_contract::system_clock(),
         ),
     ))
 }

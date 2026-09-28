@@ -307,7 +307,11 @@ mod tests {
     async fn material_ingress_is_consumer_neutral_and_rejects_binding_drift() {
         let secrets = std::sync::Arc::new(InMemorySecretStore::new());
         let repository = std::sync::Arc::new(InMemoryCredentialRepo::new());
-        let vault = VaultState::new(secrets.clone(), repository.clone());
+        let vault = VaultState::new(
+            secrets.clone(),
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        );
         let source_id = CredentialSourceId("credential:repository:exact".into());
         let exact_target =
             awaken_session_resource_contract::repository_transport_credential_target(

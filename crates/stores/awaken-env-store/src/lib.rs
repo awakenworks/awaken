@@ -1218,7 +1218,10 @@ mod tests {
         // | O3   | archive  | no  | Pending | v1 + v3 Withdraw (E2,E3) |
         // | O4   | all      | any | All     | v1,v2,v3 retained (E4) |
         registration_outbox_conformance(&r()).await;
-        registration_outbox_conformance(&InMemoryEnvRegistry::new()).await;
+        registration_outbox_conformance(&InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ))
+        .await;
     }
 
     #[tokio::test]

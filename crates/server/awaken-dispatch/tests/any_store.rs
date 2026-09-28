@@ -10,6 +10,7 @@ mod harness;
 #[path = "any_store/resolution_failure.rs"]
 mod resolution_failure;
 
+use awaken_lease_contract::system_clock;
 use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
@@ -29,8 +30,7 @@ use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{TICKET, activation, activation_on, tool_runtime};
 
 fn any_in_memory() -> AnyDispatchStore {
-    AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
-        .expect("open in-memory sqlite backend")
+    AnyDispatchStore::open_sqlite_in_memory(system_clock()).expect("open in-memory sqlite backend")
 }
 
 /// The same runtime-selected backend over a raw injected clock handle.
@@ -85,9 +85,8 @@ fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
     // path remains authoritative. This test owns R2/R3 and prevents an implicit
     // process-local checkpoint from returning inside the runtime-selected wrapper.
     assert!(any_in_memory().stream_checkpoint_store().is_none(), "R2");
-    let remote = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    )));
+    let remote =
+        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(system_clock())));
     assert!(remote.stream_checkpoint_store().is_none(), "R3");
 }
 
@@ -668,9 +667,8 @@ async fn any_exposes_the_builtin_backends_operational_feed() {
 async fn any_fails_feed_reads_closed_for_a_dispatch_only_adapter() {
     // A4: no operational source is installed. Both selectors fail; unsupported
     // observation cannot become an empty successful read.
-    let dispatch_only: Arc<dyn awaken_dispatch::Dispatch> = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
+    let dispatch_only: Arc<dyn awaken_dispatch::Dispatch> =
+        Arc::new(MemoryDispatchStore::new(system_clock()));
     let store = AnyDispatchStore::from_dispatch(dispatch_only);
 
     assert!(
@@ -707,6 +705,7 @@ async fn with_owner_drives_a_durable_run_over_any_sqlite() {
         commit.clone(),
         "fleet-node-7",
         None,
+        system_clock(),
     );
 
     let state = ingress

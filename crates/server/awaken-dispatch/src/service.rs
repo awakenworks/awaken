@@ -290,7 +290,7 @@ async fn run_loop<S: ControlDispatch + 'static>(
     );
     let mut next_terminal_reconciliation = maintenance
         .filter(|schedule| schedule.reconciles_terminals())
-        .map(|_| tokio::time::Instant::now());
+        .map(|_| awaken_lease_contract::mono::now());
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -345,7 +345,7 @@ async fn run_loop<S: ControlDispatch + 'static>(
                 tracing::warn!(%error, "dispatch relay failed; retrying");
             }
             if let Some(deadline) = next_terminal_reconciliation
-                && tokio::time::Instant::now() >= deadline
+                && awaken_lease_contract::mono::now() >= deadline
             {
                 if let Err(error) = worker.reconcile_committed_terminals(256).await {
                     tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying");
@@ -353,7 +353,7 @@ async fn run_loop<S: ControlDispatch + 'static>(
                 let interval = config
                     .terminal_reconciliation_interval
                     .expect("the maintenance schedule retained its scan interval");
-                next_terminal_reconciliation = Some(tokio::time::Instant::now() + interval);
+                next_terminal_reconciliation = Some(awaken_lease_contract::mono::now() + interval);
             }
         }
         // Do not enter ordinary execution after a failed terminal commit. The

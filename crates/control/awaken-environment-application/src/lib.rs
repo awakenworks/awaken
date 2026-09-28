@@ -567,7 +567,9 @@ mod tests {
         // R4 built-in mutation -> reject without store or projection effect.
         // Constraints/invariants: the Control history is authoritative and the
         // executable projection is driven only by its immutable command intents.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let registrar = Arc::new(RecordingRegistrar::default());
         let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
         let created = application
@@ -628,7 +630,9 @@ mod tests {
         // | R4   | T  | F  | T  | T  | E5 |
         // Constraints/invariants: the authority commit precedes projection,
         // and recovery drains the same durable intent without minting revisions.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let registrar = Arc::new(RecordingRegistrar::default());
         registrar.fail_registration.store(true, Ordering::SeqCst);
         let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
@@ -711,7 +715,9 @@ mod tests {
         // | A2 | create | T | F | T | E2,E3 |
         // | A3 | update/no-op | T | T/F | T | E2,E3 |
         // | A4 | archive | T | T/F | T | E2,E3,E4 |
-        let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let envs: Arc<dyn EnvRegistry> = registry.clone();
         let registrar = Arc::new(RecordingRegistrar::default());
         let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
@@ -820,7 +826,9 @@ mod tests {
         // (S8/O2/D4, RPN64) -> only the authority transaction creates facts.
         // Decision table: R1(two reads before either ack) -> two identical
         // attempts, one durable intent, pending=0; R2(next drain) -> zero work.
-        let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let created = registry
             .create_once(create_command("concurrent", "one"))
             .await
@@ -885,7 +893,9 @@ mod tests {
         // Effects: A1-A4 converge on one terminal revision and one withdrawal.
         // Constraints/invariants: archive is idempotent and a frozen Withdraw
         // can never be replayed as an executable registration.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let registrar = Arc::new(RecordingRegistrar::default());
         let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
         let created = application
@@ -964,7 +974,9 @@ mod tests {
         // failure but still registers the later healthy Environment;
         // R2 exact healthy id + same unrelated failure -> healthy registration succeeds;
         // R3 unknown id -> no registration and an explicit missing result.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let registrar = Arc::new(RecordingRegistrar::default());
         let application = EnvironmentApplication::new(envs, registrar.clone(), None);
         application
@@ -1037,7 +1049,9 @@ mod tests {
         // | T4 | true | bind policy | Archived | none |
         // Constraints/invariants: the tombstone is absorbing for every mutation
         // path and neither revision nor executable projection may resurrect.
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let registrar = Arc::new(RecordingRegistrar::default());
         let application =
             EnvironmentApplication::new(envs.clone(), registrar.clone(), Some(Arc::new(OnePolicy)));

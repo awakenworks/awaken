@@ -33,7 +33,8 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 #[test]
 fn in_memory_backend_conforms() {
     block(run_suite(
-        async |clock| InMemoryWorkQueue::with_clock(clock),
+        awaken_lease_contract::system_clock(),
+        async |clock| InMemoryWorkQueue::new(clock),
         LEASE_TTL_MS,
     ));
 }
@@ -41,6 +42,7 @@ fn in_memory_backend_conforms() {
 #[test]
 fn sqlite_backend_conforms() {
     block(run_suite(
+        awaken_lease_contract::system_clock(),
         async |clock| SqliteWorkQueue::open_in_memory(clock).expect("sqlite in-memory queue"),
         LEASE_TTL_MS,
     ));
@@ -73,6 +75,7 @@ async fn postgres_backend_conforms() {
     );
     let sequence = AtomicUsize::new(0);
     run_suite(
+        awaken_lease_contract::system_clock(),
         async |clock| {
             let index = sequence.fetch_add(1, Ordering::Relaxed);
             let schema = format!("{prefix}_{index}");

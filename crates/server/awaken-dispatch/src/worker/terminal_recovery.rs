@@ -296,7 +296,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         // a stale settlement CAS. Ordinary Runs retain their original error; a
         // coordinated Run quietly yields to its replacement because it must not
         // manufacture an Error boundary for the parent Session.
-        let started = std::time::Instant::now();
+        let started = awaken_lease_contract::mono::Stopwatch::start();
         let claim = RunClaim::from(&claimed.lease);
         if !self.store.claim_is_current(&claim).await? {
             self.record_settlement_outcome(SettleOutcome::Fenced, "done", started.elapsed());

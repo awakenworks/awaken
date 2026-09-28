@@ -12,6 +12,7 @@
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::RunState;
+use awaken_lease_contract::WallClockExt as _;
 use awaken_session_error_contract::RunError;
 use awaken_session_event_contract::{
     OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchAdmissionAction,
@@ -856,7 +857,7 @@ impl SessionApplication {
             let resolved = session
                 .event_batches
                 .iter_mut()
-                .map(|batch| batch.resolve_terminally(anchor, self.now_unix_ms()))
+                .map(|batch| batch.resolve_terminally(anchor, self.clock.now_ms()))
                 .sum::<usize>();
             if resolved == 0 {
                 return Ok(true);
@@ -1345,7 +1346,7 @@ impl SessionApplication {
                     }
                 } else {
                     changed = batch
-                        .mark_processed(operation_id, projection_anchor, self.now_unix_ms())
+                        .mark_processed(operation_id, projection_anchor, self.clock.now_ms())
                         .map_err(|error| RunError::internal(error.to_string()))?;
                 }
             }
@@ -1376,7 +1377,11 @@ impl SessionApplication {
                             .then(|| entry.event.operation_id().to_string())
                     });
                     changed |= batch
-                        .mark_processed(&failed.operation_id, projection_anchor, self.now_unix_ms())
+                        .mark_processed(
+                            &failed.operation_id,
+                            projection_anchor,
+                            self.clock.now_ms(),
+                        )
                         .map_err(|error| RunError::internal(error.to_string()))?;
                     if let Some(system_operation_id) = adjacent_system
                         && batch.events.iter().any(|entry| {
@@ -1388,7 +1393,7 @@ impl SessionApplication {
                             .mark_processed(
                                 &system_operation_id,
                                 projection_anchor,
-                                self.now_unix_ms(),
+                                self.clock.now_ms(),
                             )
                             .map_err(|error| RunError::internal(error.to_string()))?;
                     }

@@ -1,5 +1,15 @@
 pub mod resources;
 
+/// The Vault surface over `secrets` and `credentials` on the test's host clock.
+#[allow(dead_code)] // This shared module is compiled independently by each integration binary.
+pub fn vault(
+    secrets: std::sync::Arc<dyn awaken_credential_vault::SecretStore>,
+    credentials: std::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
+) -> awaken_protocol_managed::VaultState {
+    let clock = awaken_lease_contract::system_clock();
+    awaken_protocol_managed::VaultState::new(secrets, credentials, clock)
+}
+
 /// A volatile `ManagedState` over the testkit's stores behind their ports.
 #[allow(dead_code)] // This shared module is compiled independently by each integration binary.
 pub fn state(

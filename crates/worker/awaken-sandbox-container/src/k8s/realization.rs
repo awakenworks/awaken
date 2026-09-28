@@ -406,7 +406,7 @@ pub(super) fn pod_readiness(pod: &Pod) -> PodReadiness {
 }
 
 pub(super) async fn await_pod_ready(api: &Api<Pod>, name: &str) -> Result<(), RuntimeError> {
-    let deadline = tokio::time::Instant::now() + POD_READY_TIMEOUT;
+    let deadline = awaken_lease_contract::mono::MonoDeadline::after(POD_READY_TIMEOUT);
     loop {
         let pod = api.get(name).await.map_err(backend)?;
         match pod_readiness(&pod) {
@@ -417,7 +417,7 @@ pub(super) async fn await_pod_ready(api: &Api<Pod>, name: &str) -> Result<(), Ru
                 )));
             }
             PodReadiness::Waiting(reason) => {
-                if tokio::time::Instant::now() >= deadline {
+                if deadline.has_passed() {
                     return Err(backend(format!(
                         "Pod `{name}` did not become ready within {}s: {reason}",
                         POD_READY_TIMEOUT.as_secs()

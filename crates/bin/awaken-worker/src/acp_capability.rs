@@ -4,7 +4,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 #[cfg(test)]
@@ -53,6 +52,8 @@ pub(crate) struct ConfiguredAcpCapabilityObservationSource {
     targets: Vec<ConfiguredAcpCapabilityTarget>,
     negotiator: Arc<dyn AcpCapabilityNegotiator>,
     cwd: PathBuf,
+    /// The Worker's wall clock; each observation is stamped with it.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     // The source is rebuilt with the Worker/image incarnation, so one complete
     // successful batch is immutable for exactly that bounded lifetime.
     successful_observations: tokio::sync::OnceCell<Vec<AcpCapabilityObservation>>,
@@ -63,12 +64,14 @@ impl ConfiguredAcpCapabilityObservationSource {
         mut targets: Vec<ConfiguredAcpCapabilityTarget>,
         negotiator: Arc<dyn AcpCapabilityNegotiator>,
         cwd: PathBuf,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         targets.sort_by(|left, right| left.cli_id.cmp(&right.cli_id));
         Self {
             targets,
             negotiator,
             cwd,
+            clock,
             successful_observations: tokio::sync::OnceCell::new(),
         }
     }
@@ -78,11 +81,9 @@ impl ConfiguredAcpCapabilityObservationSource {
         for (index, target) in self.targets.iter().cloned().enumerate() {
             let negotiator = self.negotiator.clone();
             let cwd = self.cwd.clone();
+            let clock = self.clock.clone();
             probes.spawn(async move {
-                let observed_at_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
+                let observed_at_ms = awaken_lease_contract::WallClockExt::now_ms(clock.as_ref());
                 let observation = match negotiator
                     .negotiate(&target.argv, &cwd, target.auth_method_id.as_deref())
                     .await
@@ -206,6 +207,7 @@ mod tests {
             ],
             Arc::new(Probe),
             PathBuf::from("/workspace"),
+            awaken_lease_contract::system_clock(),
         );
         let observations = verified.capability_observations().await.unwrap();
         assert_eq!(
@@ -226,6 +228,7 @@ mod tests {
             ],
             Arc::new(Probe),
             PathBuf::from("/workspace"),
+            awaken_lease_contract::system_clock(),
         );
         assert!(
             failed
@@ -268,6 +271,7 @@ mod tests {
                 barrier: Arc::new(tokio::sync::Barrier::new(2)),
             }),
             PathBuf::from("/workspace"),
+            awaken_lease_contract::system_clock(),
         );
         let observations = tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -335,6 +339,7 @@ mod tests {
                 .collect(),
             probe.clone(),
             PathBuf::from("/workspace"),
+            awaken_lease_contract::system_clock(),
         );
 
         let (first, joined) = tokio::join!(
@@ -354,6 +359,7 @@ mod tests {
                 .collect(),
             probe.clone(),
             PathBuf::from("/workspace"),
+            awaken_lease_contract::system_clock(),
         );
         rebuilt.capability_observations().await.unwrap();
         assert_eq!(probe.creates.load(Ordering::SeqCst), 4, "R3");
@@ -374,6 +380,7 @@ mod tests {
             vec![configured_target("retry", "probe")],
             probe.clone(),
             PathBuf::from("/workspace"),
+            awaken_lease_contract::system_clock(),
         );
 
         assert!(source.capability_observations().await.is_err(), "R4");

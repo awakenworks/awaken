@@ -385,7 +385,7 @@ impl DrainErrorGate {
                 let retry_not_before = state
                     .retry_not_before
                     .expect("an error state owns a retry deadline");
-                let now = tokio::time::Instant::now();
+                let now = awaken_lease_contract::mono::now();
                 if state.admit_cycle(now >= retry_not_before) {
                     return Some(DrainCycle::Probe(
                         state
@@ -442,7 +442,7 @@ impl DrainErrorGate {
         let mut state = self.state.lock().await;
         state.consecutive_errors = state.consecutive_errors.saturating_add(1);
         let delay = drain_error_backoff(state.consecutive_errors);
-        state.retry_not_before = Some(tokio::time::Instant::now() + delay);
+        state.retry_not_before = Some(awaken_lease_contract::mono::now() + delay);
         state.probe_in_flight = None;
         let consecutive_errors = state.consecutive_errors;
         drop(state);
@@ -1288,7 +1288,7 @@ async fn reconciliation_loop<S: ControlDispatch + 'static>(context: Reconciliati
     } = context;
     let mut next_terminal_reconciliation = maintenance
         .reconciles_terminals()
-        .then(tokio::time::Instant::now);
+        .then(awaken_lease_contract::mono::now);
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -1322,7 +1322,7 @@ async fn reconciliation_loop<S: ControlDispatch + 'static>(context: Reconciliati
             break;
         }
         if let Some(deadline) = next_terminal_reconciliation
-            && tokio::time::Instant::now() >= deadline
+            && awaken_lease_contract::mono::now() >= deadline
         {
             match resolver.reconcile_committed_terminals(256).await {
                 Ok(reconciled) => {
@@ -1339,7 +1339,7 @@ async fn reconciliation_loop<S: ControlDispatch + 'static>(context: Reconciliati
             let interval = config
                 .terminal_reconciliation_interval
                 .expect("the maintenance schedule retained its scan interval");
-            next_terminal_reconciliation = Some(tokio::time::Instant::now() + interval);
+            next_terminal_reconciliation = Some(awaken_lease_contract::mono::now() + interval);
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,

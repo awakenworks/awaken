@@ -8,8 +8,8 @@
 use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 
+use awaken_lease_contract::mono;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::dispatch::{LeaseRenewalOutcome, RunClaim};
@@ -95,7 +95,7 @@ pub(crate) fn renew_claim_while_active<S: ControlDispatch + 'static>(
     let task_shutdown = shutdown.clone();
     let task_attempt_cancellation = attempt_cancellation.clone();
     let task = tokio::spawn(async move {
-        let started = Instant::now();
+        let started = mono::now();
         let mut next_regular_renewal = started + interval;
         let mut next_attempt = next_regular_renewal;
         let mut proof_deadline = started + proof_window;
@@ -115,7 +115,7 @@ pub(crate) fn renew_claim_while_active<S: ControlDispatch + 'static>(
                     break;
                 }
                 _ = tokio::time::sleep_until(next_attempt) => {
-                    let attempt_started = Instant::now();
+                    let attempt_started = mono::now();
                     let attempt_timeout = request_timeout.min(
                         proof_deadline.saturating_duration_since(attempt_started),
                     );
@@ -133,7 +133,7 @@ pub(crate) fn renew_claim_while_active<S: ControlDispatch + 'static>(
                             // Renewal was applied sometime after dispatch and no
                             // later than receipt. Anchor at dispatch so transport
                             // latency cannot extend the durable lease locally.
-                            let received_at = Instant::now();
+                            let received_at = mono::now();
                             proof_deadline = received_at
                                 + timing.remaining_proof_after(
                                     received_at.saturating_duration_since(attempt_started),
@@ -169,7 +169,7 @@ pub(crate) fn renew_claim_while_active<S: ControlDispatch + 'static>(
                         }
                         Ok(Err(error)) => {
                             consecutive_failures = consecutive_failures.saturating_add(1);
-                            let now = Instant::now();
+                            let now = mono::now();
                             tracing::warn!(
                                 run_id = %claim.run_id.0,
                                 owner = %claim.owner,
@@ -180,11 +180,11 @@ pub(crate) fn renew_claim_while_active<S: ControlDispatch + 'static>(
                                 %error,
                                 "dispatch lease renewal failed; retrying within safety window"
                             );
-                            next_attempt = (Instant::now() + retry_delay).min(proof_deadline);
+                            next_attempt = (mono::now() + retry_delay).min(proof_deadline);
                         }
                         Err(_) => {
                             consecutive_failures = consecutive_failures.saturating_add(1);
-                            let now = Instant::now();
+                            let now = mono::now();
                             tracing::warn!(
                                 run_id = %claim.run_id.0,
                                 owner = %claim.owner,
@@ -195,7 +195,7 @@ pub(crate) fn renew_claim_while_active<S: ControlDispatch + 'static>(
                                 timeout_ms = attempt_timeout.as_millis(),
                                 "dispatch lease renewal timed out; retrying within safety window"
                             );
-                            next_attempt = (Instant::now() + retry_delay).min(proof_deadline);
+                            next_attempt = (mono::now() + retry_delay).min(proof_deadline);
                         }
                     }
                 }

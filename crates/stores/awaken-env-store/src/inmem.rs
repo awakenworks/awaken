@@ -41,21 +41,11 @@ struct InMemoryEnvRegistryState {
     seq: u64,
 }
 
-impl Default for InMemoryEnvRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl InMemoryEnvRegistry {
+    /// The reference registry stamping and judging with `clock`, the composing
+    /// process's (or test's) one wall clock.
     #[must_use]
-    pub fn new() -> Self {
-        Self::with_clock(awaken_lease_contract::system_clock())
-    }
-
-    /// The reference registry reading a caller-supplied clock.
-    #[must_use]
-    pub fn with_clock(clock: Arc<dyn WallClock>) -> Self {
+    pub fn new(clock: Arc<dyn WallClock>) -> Self {
         Self {
             state: Mutex::new(InMemoryEnvRegistryState::default()),
             fail_acknowledgements: AtomicUsize::new(0),
@@ -305,7 +295,7 @@ mod tests {
     }
 
     fn r() -> InMemoryEnvRegistry {
-        InMemoryEnvRegistry::new()
+        InMemoryEnvRegistry::new(awaken_lease_contract::system_clock())
     }
 
     #[tokio::test]

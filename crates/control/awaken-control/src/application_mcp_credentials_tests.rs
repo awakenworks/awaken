@@ -97,7 +97,11 @@ async fn call(
 async fn hosted_application_bearer_http_contract_is_stable_and_rotatable() {
     let credentials = Arc::new(InMemoryCredentialRepo::new());
     let secrets = Arc::new(InMemorySecretStore::new());
-    let state = Arc::new(VaultState::new(secrets.clone(), credentials.clone()));
+    let state = Arc::new(VaultState::new(
+        secrets.clone(),
+        credentials.clone(),
+        awaken_lease_contract::system_clock(),
+    ));
     let app = application_mcp_credentials_router(state.clone());
     let body = |url: &str, generation: u64, token: &str| {
         json!({
