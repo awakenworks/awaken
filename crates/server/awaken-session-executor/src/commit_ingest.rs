@@ -64,10 +64,23 @@ pub fn claimed_commit_service(
     )
 }
 
-pub(crate) fn remote_claimed_commit(
-    upstream: &awaken_worker_transport_security::WorkerUpstream,
-) -> Result<Arc<dyn ClaimedRunCommit>, HostError> {
-    awaken_coordinator_client::remote_claimed_commit(upstream).map_err(HostError::internal)
+impl SharedHost {
+    /// The claim-fenced commit transport this Host's claimed Runs write
+    /// through: `None` for a store-owning Host, which commits via its own
+    /// authority; the injected transport for a database-less Worker, which
+    /// fails closed when startup never installed one.
+    pub(crate) fn worker_claimed_commit(
+        &self,
+    ) -> Result<Option<Arc<dyn ClaimedRunCommit>>, HostError> {
+        if self.upstream.is_none() {
+            return Ok(None);
+        }
+        self.claimed_commit.clone().map(Some).ok_or_else(|| {
+            HostError::internal(
+                "database-less Worker requires an injected claimed-commit transport",
+            )
+        })
+    }
 }
 
 #[cfg(test)]
@@ -855,5 +868,56 @@ mod tests {
             "R4-R6 E6 logical child has no resident Session slot"
         );
         assert_no_resident_session_projection(&host, parent_thread, "R4-R6 E6");
+    }
+
+    #[test]
+    fn worker_claimed_commit_is_the_injected_port_only_for_a_worker() {
+        // Decision table: C1 the Host has a Worker upstream; C2 startup injected
+        // a claimed-commit transport. W1 !C1 (any C2) -> None: a store-owning
+        // Host commits through its own authority. W2 C1+C2 -> exactly the
+        // injected port. W3 C1+!C2 -> fails closed instead of a local fallback.
+        struct SelectedOnly;
+        #[async_trait::async_trait]
+        impl ClaimedRunCommit for SelectedOnly {
+            async fn commit(
+                &self,
+                _claim: &RunClaim,
+                _commit: ThreadCommit,
+            ) -> Result<
+                awaken_agent_contract::thread::commit::staged::CommitRecord,
+                awaken_agent_contract::thread::commit::coordinator::Error,
+            > {
+                unreachable!("port selection never commits")
+            }
+        }
+        let injected: Arc<dyn ClaimedRunCommit> = Arc::new(SelectedOnly);
+        let host = || SharedHost::new(Arc::new(crate::NoModelConfiguredExecutor), "stub");
+        let upstream =
+            || awaken_worker_transport_security::WorkerUpstream::new("http://coordinator.invalid");
+
+        assert!(host().worker_claimed_commit().unwrap().is_none(), "W1");
+        assert!(
+            host()
+                .with_worker_claimed_commit(injected.clone())
+                .worker_claimed_commit()
+                .unwrap()
+                .is_none(),
+            "W1 injected"
+        );
+        let selected = host()
+            .with_worker_upstream(upstream())
+            .with_worker_claimed_commit(injected.clone())
+            .worker_claimed_commit()
+            .unwrap()
+            .expect("W2");
+        assert!(Arc::ptr_eq(&selected, &injected), "W2 exact port");
+        let error = match host()
+            .with_worker_upstream(upstream())
+            .worker_claimed_commit()
+        {
+            Ok(_) => panic!("W3 must fail closed"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind, crate::HostErrorKind::Internal, "W3");
     }
 }

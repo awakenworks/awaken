@@ -1344,10 +1344,7 @@ pub async fn build_config_router() -> Router {
     // is what drives the seeded assistant through its admin tools in the run e2e.
     let (model, model_ref) = scenario_model(Arc::new(InstructionEchoModel), "config");
     let deployment = scenario_deployment();
-    let platform_workspace = deployment.storage_dir.as_deref().map_or_else(
-        SharedHost::provision_local_workspace,
-        SharedHost::provision_local_workspace_at,
-    );
+    let platform_workspace = crate::deployment::installation_workspace(&deployment);
     // Config/Session durability decision table: no storage root keeps the
     // disposable scenario in memory; a configured root opens the canonical
     // SQLite ConfigStore beside the durable Session/Dispatch authorities. A

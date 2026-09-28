@@ -198,7 +198,7 @@ pub(crate) fn session_sandbox_projection(
     if has_repository {
         effective_spec
             .control_services
-            .insert(awaken_sandbox_container::SandboxControlServiceKind::RepositoryGitCredential);
+            .insert(awaken_sandbox_control::SandboxControlServiceKind::RepositoryGitCredential);
     }
     let requires_path_fidelity =
         has_repository || opaque_process || spec.isolation >= pc::IsolationClass::Namespace;

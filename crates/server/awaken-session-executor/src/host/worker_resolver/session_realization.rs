@@ -658,7 +658,7 @@ mod tests {
             control,
             directive,
             synchronizer,
-            awaken_local_process::authority_proof_started().unwrap(),
+            awaken_authority_clock::authority_proof_started().unwrap(),
             &realization,
         )
         .await

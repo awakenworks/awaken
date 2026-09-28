@@ -19,7 +19,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
         Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new());
     ProcessStores {
         workspace_root: None,
-        platform_workspace: SharedHost::provision_local_workspace(),
+        platform_workspace: SharedHost::mint_local_workspace(),
         control: Some(ControlStores {
             catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
             credentials,
@@ -123,7 +123,8 @@ pub(super) fn process_stores_for_runtime_storage(
         .expect("open sessions.db under runtime storage directory"),
     );
     stores.workspace_root = Some(dir.to_path_buf());
-    stores.platform_workspace = SharedHost::provision_local_workspace_at(dir);
+    stores.platform_workspace =
+        awaken_installation_workspace::provision_at(dir, SharedHost::mint_local_workspace);
     let coordinator = stores
         .coordinator
         .as_mut()

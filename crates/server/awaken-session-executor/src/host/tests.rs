@@ -1,9 +1,10 @@
-// awaken-file-limit-ceiling: 27445 (legacy oversized test file: split, never grow)
+// awaken-file-limit-ceiling: 27231 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_execution_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
 use awaken_session_types::SessionId;
+mod managed_interrupt;
 mod mcp_relay_lease;
 mod outcome_query;
 mod pinned_skill_read;
@@ -1859,11 +1860,10 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
         }
     }
 
-    // Cause/effect decision table: R1 production Runtime constructor + exact
-    // File content port -> that same port serves immutable bytes; R2 no
-    // post-construction override -> the default-feature CLI remains compilable
-    // without exposing the volatile fixture mutator. Unavailable-source failure
-    // semantics are owned by awaken-resource-contract and tested there.
+    // Cause/effect decision table: R1 production Runtime constructor + exact File content port ->
+    // that same port serves immutable bytes; R2 no post-construction override -> the
+    // default-feature CLI remains compilable without exposing the volatile fixture mutator.
+    // Unavailable-source failure semantics are owned by awaken-resource-contract and tested there.
     let host = SharedHost::new_with_runtime_resources_and_deployment(
         Arc::new(MemoryHostModel),
         "stub",
@@ -1873,6 +1873,7 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
                 .expect("open test Memory repository"),
         ),
         SharedHost::test_memory_extraction_repository(None),
+        SharedHost::mint_local_workspace(),
         crate::DeploymentConfig::ephemeral(),
     );
     let resolved = host
@@ -4084,221 +4085,6 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
             .flatten()
             .is_none(),
         "E3 interrupt must not realize a cold Runtime/Environment"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_intent() {
-    // Test design summary; the full L1 matrix is below. Causes: C1 an exact
-    // attempt is registered and C2 Managed interrupt selects its durable row.
-    // Effects: E1 durable cancel intent precedes E2 live signal and E3 settlement.
-    // Constraint/Invariant: live signaling accelerates but never replaces durable
-    // authority. Decision rule: L1 requires E1 -> E2 -> E3 in that order.
-    use awaken_dispatch::{DispatchQueue as _, RunDispatch};
-    use awaken_runtime_contract::execution::{
-        Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
-    };
-    use awaken_runtime_contract::resume::ResumeCommand;
-
-    struct BlockingManagedAttempt {
-        dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
-        entered: tokio::sync::Notify,
-        live_cancel_observed: tokio::sync::Notify,
-        intent_preceded_signal: std::sync::atomic::AtomicBool,
-    }
-
-    #[async_trait::async_trait]
-    impl RunExecutor for BlockingManagedAttempt {
-        async fn execute(
-            &self,
-            activation: RunActivation,
-            context: RuntimeRunContext,
-        ) -> ExecutionResult<RunState> {
-            let cancellation = context.cancellation.ok_or_else(|| {
-                ExecutionError::Execution("Managed attempt has no cancellation token".into())
-            })?;
-            self.entered.notify_one();
-            cancellation.cancelled().await;
-            let persisted = self
-                .dispatch
-                .list_dispatches()
-                .await
-                .map_err(|error| ExecutionError::Execution(error.to_string()))?
-                .into_iter()
-                .find(|row| row.run_id == activation.run_id)
-                .is_some_and(|row| row.cancellation_requested);
-            self.intent_preceded_signal
-                .store(persisted, Ordering::SeqCst);
-            self.live_cancel_observed.notify_one();
-            Ok(RunState::Ended(EndCause::Cancelled))
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl RunAttemptExecutor for BlockingManagedAttempt {
-        async fn resume(
-            &self,
-            _activation: RunActivation,
-            _command: ResumeCommand,
-            _context: RuntimeRunContext,
-        ) -> ExecutionResult<RunState> {
-            Err(ExecutionError::Execution(
-                "fresh Managed interruption test must not resume".into(),
-            ))
-        }
-    }
-
-    // Cause/effect graph: C0 the application installs one complete frozen
-    // Session projection before its co-located pool claims work; C1 a
-    // Session-affined Run is actively blocked inside
-    // an opaque attempt; C2 Worker RAII registered its exact cancellation token
-    // in the Session Runtime; C3 the Managed Event path has direct foreground
-    // delivery and no `active_run`/`cancel` hint, while its Run still executes
-    // from the process dispatch authority; C4 user.interrupt selects that row.
-    // Effects: E1 the dispatch authority records `cancel_requested` first; E2
-    // only then the same Runtime registry cancels the blocked attempt promptly;
-    // E3 the pool's ordinary replacement claim commits one Cancelled terminal
-    // and settles the row. Constraints: Runtime delivery is only an accelerator,
-    // the caller never drives a second claim, and no Host/ACP-private registry is
-    // introduced. The neighboring remote-cancel and ambiguous/idle tests own the
-    // no-local-registration, multiple-row, and absent-row rules.
-    //
-    // | Rule | active row | exact registration | foreground ingress/hint | interrupt | Effects |
-    // |---|---|---|---|---|---|
-    // | L1 | C0 + leased | yes | direct/absent | accepted | E1 + E2 + E3 |
-    let thread = "managed-live-cancel";
-    let run_id = RunId("managed-live-cancel-run".into());
-    let dispatch = Arc::new(
-        awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
-            awaken_dispatch::SystemClock,
-        ))
-        .expect("dispatch store"),
-    );
-    let attempt = Arc::new(BlockingManagedAttempt {
-        dispatch: dispatch.clone(),
-        entered: tokio::sync::Notify::new(),
-        live_cancel_observed: tokio::sync::Notify::new(),
-        intent_preceded_signal: std::sync::atomic::AtomicBool::new(false),
-    });
-    let mut host = SharedHost::new(Arc::new(OkModel), "stub")
-        .with_dispatch_store(dispatch.clone())
-        .with_remote_attempt_executor(RemoteAttemptInstallation {
-            executor: attempt.clone(),
-            credential_realization: Default::default(),
-        });
-    // Managed Session Events use the dispatch authority independently of the
-    // ordinary foreground-ingress choice. Mirror the scenario-host topology:
-    // direct foreground plus a co-located process pool.
-    host.deployment.durable = false;
-    let host = Arc::new(host);
-    install_recording_session_application(&host);
-    let managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool();
-
-    let mut activation =
-        crate::host::worker_resolver::test_support::test_activation(thread, &run_id.0);
-    activation.snapshot.resolved_spec.model_binding =
-        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
-            awaken_runtime_contract::resolved::ModelBinding::new(
-                "remote",
-                "",
-                "a2a:http://blocking.invalid",
-            ),
-            awaken_tenancy::ScopeId::from(host.local_workspace()),
-            None,
-            "sha256:blocking-remote",
-        )
-        .expect("coherent blocking remote candidate");
-    activation
-        .snapshot
-        .recompute_fingerprint()
-        .expect("coherent blocking remote snapshot");
-    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
-        &managed,
-        thread,
-        host.local_workspace(),
-        crate::host::worker_resolver::test_support::deferred_environment(),
-        &activation.snapshot,
-    )
-    .await;
-    dispatch
-        .enqueue(
-            RunDispatch::new(activation)
-                .for_session(ThreadId(thread.into()))
-                .with_session_activity_epoch(1),
-        )
-        .await
-        .expect("L1 Managed Run admission");
-    host.dispatch_pool_or_err().expect("L1 pool").notify().await;
-
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        attempt.entered.notified(),
-    )
-    .await
-    .expect("L1/C1+C2 exact attempt entered");
-    let ctx = host
-        .ctx_for(thread, None)
-        .await
-        .expect("L1 resident Session");
-    assert!(
-        !ctx.delivery.is_durable()
-            && ctx.active_run.lock().unwrap().is_none()
-            && ctx.cancel.lock().unwrap().is_none(),
-        "L1/C3 Managed Event execution has no foreground control hint"
-    );
-    let active = dispatch
-        .list_dispatches()
-        .await
-        .expect("L1 inspect active row");
-    assert_eq!(active.len(), 1, "L1/C1 one exact dispatch");
-    assert_eq!(
-        active[0].state,
-        awaken_dispatch::DispatchState::Leased,
-        "L1/C1 cancellation must land after the attempt is executing"
-    );
-    assert!(!active[0].cancellation_requested, "L1/C1 precondition");
-
-    tokio::time::timeout(
-        std::time::Duration::from_millis(250),
-        host.interrupt(thread),
-    )
-    .await
-    .expect("L1 interrupt admission is non-blocking")
-    .expect("L1 interrupt accepted");
-    tokio::time::timeout(
-        std::time::Duration::from_millis(250),
-        attempt.live_cancel_observed.notified(),
-    )
-    .await
-    .expect("L1/E2 registered attempt receives live cancellation");
-    assert!(
-        attempt.intent_preceded_signal.load(Ordering::SeqCst),
-        "L1/E1 durable intent must precede the live signal"
-    );
-
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if dispatch
-                .list_dispatches()
-                .await
-                .expect("L1 inspect settlement")
-                .is_empty()
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("L1/E3 cancellation settlement");
-    assert_eq!(
-        host.commit_for_read(thread)
-            .await
-            .expect("L1 committed truth")
-            .run_state(&run_id),
-        Some(RunState::Ended(EndCause::Cancelled)),
-        "L1/E3"
     );
 }
 
@@ -20016,7 +19802,7 @@ fn terminal_provider_fences_use_only_the_current_same_generation_renewal() {
             expired_lease.expires_at_unix_ms - 30_000,
         )
         .unwrap()
-        .observed(awaken_local_process::authority_proof_started().unwrap());
+        .observed(awaken_authority_clock::authority_proof_started().unwrap());
     host.session_slots.update(session_id, |slot| {
         slot.realization_authority =
             crate::session_slot::SessionRealizationAuthority::Live(skewed_proof);

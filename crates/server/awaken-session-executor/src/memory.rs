@@ -1920,6 +1920,7 @@ mod tests {
                 "stub",
                 Arc::new(awaken_resource_contract::UnavailableFileContentSource),
                 content.clone(),
+                SharedHost::mint_local_workspace(),
                 crate::DeploymentConfig::ephemeral(),
             )
             .with_worker_upstream(

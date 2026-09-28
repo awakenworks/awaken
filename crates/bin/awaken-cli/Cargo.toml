@@ -46,6 +46,8 @@ awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
 # durable session repositories the startup opens.
 awaken-session-executor.workspace = true
+# The installation platform Workspace marker this startup reads or publishes.
+awaken-installation-workspace.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
 awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }

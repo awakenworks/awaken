@@ -102,9 +102,8 @@ impl SharedHost {
         if let Some(resolver) = &self.worker_credential_resolver {
             worker = worker.with_worker_credential_resolver(resolver.clone());
         }
-        if let Some(upstream) = &self.upstream {
-            worker =
-                worker.with_claimed_commit(crate::commit_ingest::remote_claimed_commit(upstream)?);
+        if let Some(claimed_commit) = self.worker_claimed_commit()? {
+            worker = worker.with_claimed_commit(claimed_commit);
         }
         if let Some(projection) = recovery_projection {
             worker = worker.with_recovery_projection(projection);

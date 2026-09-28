@@ -1,0 +1,23 @@
+[package]
+name = "awaken-authority-clock"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+# The OS elapsed clock that relative authority proofs and physical execution
+# cutoffs must sample identically. It is a clock *reading*, not an injectable
+# wall-clock port, so both the Runtime Host and the local process adapter link
+# this one owner instead of the Host reaching into the execution plane.
+context = "shared"
+layer = "infrastructure"
+authority = "authority-clock"
+
+[dependencies]
+awaken-runtime-contract.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["time"] }
+
+[lints]
+workspace = true

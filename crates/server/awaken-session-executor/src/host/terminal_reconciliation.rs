@@ -234,9 +234,10 @@ impl HostWorkerResolver {
             })?;
             worker.install_attempt_executor(executor);
         }
-        if let Some(upstream) = &host.upstream {
-            let claimed_commit = crate::commit_ingest::remote_claimed_commit(upstream)
-                .map_err(|error| Self::execution_error(error.to_string()))?;
+        if let Some(claimed_commit) = host
+            .worker_claimed_commit()
+            .map_err(|error| Self::execution_error(error.to_string()))?
+        {
             worker = worker.with_claimed_commit(claimed_commit);
         }
         if let Some(projection) = recovery_projection {

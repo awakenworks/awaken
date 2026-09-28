@@ -32,7 +32,7 @@ fn lease() -> SessionRealizationLease {
 fn install(host: &SharedHost, lease: SessionRealizationLease) {
     let proof = SessionRealizationLeaseReceipt::issued_at(lease, 0)
         .unwrap()
-        .observed(awaken_local_process::authority_proof_started().unwrap());
+        .observed(awaken_authority_clock::authority_proof_started().unwrap());
     host.session_slots.update("session", |slot| {
         slot.realization_authority = SessionRealizationAuthority::Live(proof);
     });

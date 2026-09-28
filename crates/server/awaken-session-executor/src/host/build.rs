@@ -96,33 +96,21 @@ impl From<awaken_resource_application::ResourceAuthorities> for LocalResourceAda
 use awaken_runtime_contract::delegation::RunDelegationService;
 
 impl SharedHost {
-    /// Resolve or provision the stable local workspace coordinate owned by this
-    /// installation. Process startup calls this once and passes the value to every
-    /// resource adapter they assemble.
-    pub fn provision_local_workspace() -> String {
-        resolve_local_workspace(None)
-    }
-
-    /// Explicit-root variant for embedders/tests that do not configure through
-    /// process environment.
-    pub fn provision_local_workspace_at(root: &std::path::Path) -> String {
-        resolve_local_workspace(Some(root))
-    }
-
-    /// Read the exact existing installation Workspace coordinate without
-    /// creating a directory or publishing identity.
-    pub fn local_workspace_at(root: &std::path::Path) -> std::io::Result<Option<String>> {
-        read_local_workspace(&root.join(LOCAL_WORKSPACE_ID_FILE))
-    }
-
-    /// Atomically publish one caller-selected coordinate through the same local
-    /// marker authority. Exact replay succeeds; a concurrent or pre-existing
-    /// different coordinate fails closed without replacement.
-    pub fn publish_local_workspace_at(
-        root: &std::path::Path,
-        workspace_id: &str,
-    ) -> std::io::Result<String> {
-        publish_local_workspace(&root.join(LOCAL_WORKSPACE_ID_FILE), workspace_id)
+    /// Mint a fresh process-unique platform Workspace coordinate. This Host
+    /// owns the coordinate's format; it never persists one. A durable
+    /// installation publishes the minted value once through its installation
+    /// marker (`awaken-installation-workspace`) and passes the resolved
+    /// coordinate to the constructor, so the Host never touches that file.
+    ///
+    /// Renamed from `provision_local_workspace` when the durable marker moved
+    /// out: without a root this only ever minted a volatile value.
+    #[must_use]
+    pub fn mint_local_workspace() -> String {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        format!("workspace_local_{:x}_{nonce:x}", std::process::id())
     }
 
     /// Test-support selection of the same local extraction repository used by
@@ -144,25 +132,36 @@ impl SharedHost {
             None,
             None,
             None,
+            Self::mint_local_workspace(),
             crate::deployment_config::DeploymentConfig::ephemeral(),
         )
     }
 
     /// Test/scenario construction without an injected Resource component.
+    /// The platform Workspace is freshly minted even when `deployment` names a
+    /// storage root; a fixture that needs a durable coordinate installs it with
+    /// [`Self::with_local_workspace`].
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
-        Self::build(llm, model_ref.into(), None, None, None, deployment)
+        Self::build(
+            llm,
+            model_ref.into(),
+            None,
+            None,
+            None,
+            Self::mint_local_workspace(),
+            deployment,
+        )
     }
 
     /// Test-support replacement of a volatile fixture's deployment value.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_deployment_config(mut self, deployment: crate::DeploymentConfig) -> Self {
-        self.session_blob_root = deployment.acp_session_blob_root.clone();
         self.deployment = deployment;
         self
     }
@@ -271,11 +270,13 @@ impl SharedHost {
             Some(resources.into()),
             None,
             None,
+            Self::mint_local_workspace(),
             crate::deployment_config::DeploymentConfig::ephemeral(),
         )
     }
 
-    /// Construct directly from the process's resolved deployment.
+    /// Construct directly from the process's resolved deployment and its
+    /// resolved platform Workspace coordinate.
     /// No resource or runtime backend is opened from process-global state first.
     #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_resources_and_deployment(
@@ -283,6 +284,7 @@ impl SharedHost {
         model_ref: impl Into<String>,
         resources: awaken_resource_application::ResourceAuthorities,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
+        local_workspace: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         Self::build(
@@ -291,6 +293,7 @@ impl SharedHost {
             Some(resources.into()),
             None,
             Some(extraction_repository),
+            local_workspace.into(),
             deployment,
         )
     }
@@ -299,6 +302,7 @@ impl SharedHost {
     /// installed before any Resource data store is selected. Management-only
     /// File and durable extraction authorities fail closed; the Worker opens no
     /// File, Memory-content, or Memory-extraction authority database.
+    /// `local_workspace` is the installation's resolved platform Workspace.
     pub fn new_worker_with_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -306,6 +310,7 @@ impl SharedHost {
             dyn crate::FileContentSource<awaken_dispatch::ResourceOperationFence>,
         >,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+        local_workspace: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         Self::build(
@@ -317,6 +322,7 @@ impl SharedHost {
                 memory_repository,
             }),
             None,
+            local_workspace.into(),
             deployment,
         )
     }
@@ -324,6 +330,7 @@ impl SharedHost {
     /// Construct a Coordinator-local Runtime Host from only its execution data
     /// capability. Resources catalog, File commands, Skill authoring, and
     /// reclamation remain outside and are injected through narrow applications.
+    /// `local_workspace` is the installation's resolved platform Workspace.
     pub fn new_with_runtime_resources_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -332,6 +339,7 @@ impl SharedHost {
         >,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
+        local_workspace: impl Into<String>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         Self::build(
@@ -343,6 +351,7 @@ impl SharedHost {
                 memory_repository,
             }),
             Some(extraction_repository),
+            local_workspace.into(),
             deployment,
         )
     }
@@ -353,13 +362,17 @@ impl SharedHost {
         resources: Option<LocalResourceAdapters>,
         worker_content: Option<WorkerContentAdapters>,
         extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
+        local_workspace: String,
         deployment: crate::DeploymentConfig,
     ) -> Self {
+        assert!(
+            !local_workspace.trim().is_empty(),
+            "local workspace must not be empty"
+        );
         // Process startup parses the deployment axes once from the environment
         // into one typed config. `DeploymentConfig::storage_dir` set → durable SQLite commit
         // and resource adapters (all survive a restart); unset → ephemeral adapters.
         let store_dir = deployment.storage_dir.clone();
-        let local_workspace = resolve_local_workspace(store_dir.as_deref());
         let sandbox_root = crate::acp_backend::session_sandbox_base(&deployment);
         // Product Resource content is injected atomically through ResourceAuthorities;
         // a Worker receives its remote adapter. Only test-support construction may
@@ -516,7 +529,7 @@ impl SharedHost {
             session_provider_explicit: false,
             judge_snapshot: None,
             client_tools: HashSet::new(),
-            local_workspace: local_workspace.clone(),
+            local_workspace,
             session_slots: session_slots.clone(),
             execution_authority: None,
             skills,
@@ -531,12 +544,12 @@ impl SharedHost {
             store_dir: store_dir.clone(),
             // A shared root (e.g. a networked mount) enables cross-machine ACP
             // session recovery; unset means single-machine (stable config home).
-            session_blob_root: deployment.acp_session_blob_root.clone(),
             session_blob_store: deployment
                 .acp_session_blob_root
                 .clone()
                 .map(|root| Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(root))),
             upstream: None,
+            claimed_commit: None,
             memory_reference_encoder: None,
             worker_credential_resolver: None,
             deployment,
@@ -970,6 +983,18 @@ impl SharedHost {
         self
     }
 
+    /// Install the claim-fenced commit transport of a database-less Worker.
+    /// It is consulted only once [`Self::with_worker_upstream`] made this Host a
+    /// Worker; a Worker without it fails closed when it executes a claim.
+    #[must_use]
+    pub fn with_worker_claimed_commit(
+        mut self,
+        claimed_commit: Arc<dyn awaken_dispatch::ClaimedRunCommit>,
+    ) -> Self {
+        self.claimed_commit = Some(claimed_commit);
+        self
+    }
+
     /// Install the Resource transport's opaque Memory capability encoder.
     /// The execution host does not own or inspect the wire representation.
     #[must_use]
@@ -1197,11 +1222,9 @@ impl SharedHost {
     /// on a single machine, where the per-thread config home is already stable.
     #[must_use]
     pub fn with_session_blob_root(mut self, dir: impl Into<PathBuf>) -> Self {
-        let dir = dir.into();
         self.session_blob_store = Some(Arc::new(awaken_run_executor_acp::FsSessionBlobStore::new(
-            dir.clone(),
+            dir.into(),
         )));
-        self.session_blob_root = Some(dir);
         self
     }
 
@@ -1575,11 +1598,7 @@ impl SharedHost {
         // parent's checkpoint/commit projection instead of a child claim.
         let scheduler = if self.runs_local_dispatch_pool() {
             let recovery_projection = commit.recovery_projection();
-            let claimed_commit = self
-                .upstream
-                .as_ref()
-                .map(crate::commit_ingest::remote_claimed_commit)
-                .transpose()?;
+            let claimed_commit = self.worker_claimed_commit()?;
             Some(crate::agent_runner::RunScheduler {
                 store: self.dispatch_store()?,
                 commit: commit.clone(),
@@ -1720,106 +1739,6 @@ impl SharedHost {
     }
 }
 
-const LOCAL_WORKSPACE_ID_FILE: &str = "platform-workspace-id";
-
-fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
-    let path = store_dir.map(|dir| dir.join(LOCAL_WORKSPACE_ID_FILE));
-    if let Some(path) = &path {
-        match read_local_workspace(path) {
-            Ok(Some(existing)) => return existing,
-            Ok(None) => {}
-            Err(error) => panic!(
-                "read platform workspace identity `{}`: {error}",
-                path.display()
-            ),
-        }
-    }
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let generated = format!("workspace_local_{:x}_{nonce:x}", std::process::id());
-    if let Some(path) = path {
-        return match publish_local_workspace(&path, &generated) {
-            Ok(workspace) => workspace,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                read_local_workspace(&path)
-                    .expect("read concurrently published platform workspace identity")
-                    .expect("concurrent platform workspace publisher wrote an identity")
-            }
-            Err(error) => panic!(
-                "persist platform workspace identity `{}`: {error}",
-                path.display()
-            ),
-        };
-    }
-    generated
-}
-
-fn publish_local_workspace(path: &std::path::Path, workspace_id: &str) -> std::io::Result<String> {
-    if workspace_id.is_empty() || workspace_id.trim() != workspace_id {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "platform Workspace identity must be non-empty with no surrounding whitespace",
-        ));
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    match awaken_sandbox_fs::publish_file_noreplace(path, workspace_id.as_bytes()) {
-        Ok(()) => Ok(workspace_id.to_owned()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let existing = read_local_workspace(path)?.ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "concurrent platform Workspace publisher left no identity",
-                )
-            })?;
-            if existing == workspace_id {
-                Ok(existing)
-            } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!(
-                        "platform Workspace identity mismatch: requested {workspace_id:?}, found {existing:?}"
-                    ),
-                ))
-            }
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn read_local_workspace(path: &std::path::Path) -> std::io::Result<Option<String>> {
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    #[cfg(unix)]
-    let aliased = {
-        use std::os::unix::fs::MetadataExt as _;
-        metadata.nlink() != 1
-    };
-    #[cfg(not(unix))]
-    let aliased = false;
-    if !metadata.is_file() || metadata.file_type().is_symlink() || aliased {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("`{}` is not a regular identity file", path.display()),
-        ));
-    }
-    let existing = std::fs::read_to_string(path)?;
-    let existing = existing.trim();
-    if existing.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("`{}` contains an empty identity", path.display()),
-        ));
-    }
-    Ok(Some(existing.to_owned()))
-}
-
 #[cfg(any(test, feature = "test-support"))]
 fn local_memory_extraction_repository(
     storage_dir: Option<&std::path::Path>,
@@ -1847,110 +1766,6 @@ mod startup_tests {
     use super::*;
 
     #[test]
-    fn durable_workspace_identity_publication_is_atomic_and_fail_closed() {
-        // Cause/effect table: C1 identity absent/valid/empty/non-regular; C2 one
-        // or two startup processes publish concurrently; C3 a deployment asks
-        // to publish an exact coordinate. R1 absent+one writes a
-        // complete durable identity; R2 absent+two returns the same winning
-        // identity to both and never truncates it; R3 valid replays byte-for-byte;
-        // R4 empty or non-regular fails closed without replacement. The
-        // policy-free no-replace syscall remains owned by awaken-sandbox-fs.
-        // The read-only owner projects the same table: absent=>None, valid=>the
-        // exact coordinate, malformed/non-regular=>error without publication. R5 an
-        // exact first publish/replay returns that coordinate, while a conflicting
-        // C3 fails without replacing it.
-        let directory = tempfile::tempdir().unwrap();
-        assert!(
-            SharedHost::local_workspace_at(directory.path())
-                .unwrap()
-                .is_none(),
-            "R1 read-only absent probe"
-        );
-        let root = std::sync::Arc::new(directory.path().to_path_buf());
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let spawn = |root: std::sync::Arc<std::path::PathBuf>,
-                     barrier: std::sync::Arc<std::sync::Barrier>| {
-            std::thread::spawn(move || {
-                barrier.wait();
-                resolve_local_workspace(Some(root.as_path()))
-            })
-        };
-        let one = spawn(root.clone(), barrier.clone());
-        let two = spawn(root.clone(), barrier);
-        let one = one.join().unwrap();
-        let two = two.join().unwrap();
-        assert_eq!(one, two, "R2");
-        assert_eq!(resolve_local_workspace(Some(root.as_path())), one, "R3");
-        assert_eq!(
-            SharedHost::local_workspace_at(root.as_path())
-                .unwrap()
-                .as_deref(),
-            Some(one.as_str()),
-            "R3 read-only exact identity"
-        );
-
-        let exact = tempfile::tempdir().unwrap();
-        assert_eq!(
-            SharedHost::publish_local_workspace_at(exact.path(), "workspace-exact").unwrap(),
-            "workspace-exact",
-            "R5 first publish"
-        );
-        assert_eq!(
-            SharedHost::publish_local_workspace_at(exact.path(), "workspace-exact").unwrap(),
-            "workspace-exact",
-            "R5 exact replay"
-        );
-        assert_eq!(
-            SharedHost::publish_local_workspace_at(exact.path(), "workspace-other")
-                .unwrap_err()
-                .kind(),
-            std::io::ErrorKind::AlreadyExists,
-            "R5 mismatch"
-        );
-        assert_eq!(
-            std::fs::read_to_string(exact.path().join("platform-workspace-id")).unwrap(),
-            "workspace-exact",
-            "R5 no replacement"
-        );
-
-        let invalid = tempfile::tempdir().unwrap();
-        std::fs::write(invalid.path().join("platform-workspace-id"), b"").unwrap();
-        assert!(
-            SharedHost::local_workspace_at(invalid.path()).is_err(),
-            "R4 read-only malformed probe"
-        );
-        assert!(
-            std::panic::catch_unwind(|| resolve_local_workspace(Some(invalid.path()))).is_err(),
-            "R4"
-        );
-
-        #[cfg(unix)]
-        {
-            let linked = tempfile::tempdir().unwrap();
-            let target = linked.path().join("foreign");
-            std::fs::write(&target, b"foreign-workspace").unwrap();
-            std::os::unix::fs::symlink(&target, linked.path().join("platform-workspace-id"))
-                .unwrap();
-            assert!(
-                std::panic::catch_unwind(|| resolve_local_workspace(Some(linked.path()))).is_err(),
-                "R4"
-            );
-            assert_eq!(std::fs::read(target).unwrap(), b"foreign-workspace", "R4");
-
-            let hardlinked = tempfile::tempdir().unwrap();
-            let target = hardlinked.path().join("foreign");
-            std::fs::write(&target, b"foreign-workspace").unwrap();
-            std::fs::hard_link(&target, hardlinked.path().join("platform-workspace-id")).unwrap();
-            assert!(
-                std::panic::catch_unwind(|| { resolve_local_workspace(Some(hardlinked.path())) })
-                    .is_err(),
-                "R4"
-            );
-            assert_eq!(std::fs::read(target).unwrap(), b"foreign-workspace", "R4");
-        }
-    }
-
-    #[test]
     fn explicit_extraction_repository_is_the_initial_authority() {
         // Cause/effect graph: C1 an extraction repository is explicit; C2 local
         // storage is configured. Effects: E1 exact injected identity is installed;
@@ -1974,6 +1789,7 @@ mod startup_tests {
             None,
             None,
             Some(expected.clone()),
+            SharedHost::mint_local_workspace(),
             crate::DeploymentConfig::ephemeral(),
         );
 

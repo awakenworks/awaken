@@ -100,13 +100,12 @@ impl PreparedLocalInstallation {
                 expected_workspace_id,
             } => (root, expected_workspace_id.as_deref(), true),
         };
-        let current =
-            awaken_session_executor::SharedHost::local_workspace_at(root).map_err(|error| {
-                format!(
-                    "platform_workspace_unavailable: inspect identity under {}: {error}",
-                    root.display()
-                )
-            })?;
+        let current = awaken_installation_workspace::read_at(root).map_err(|error| {
+            format!(
+                "platform_workspace_unavailable: inspect identity under {}: {error}",
+                root.display()
+            )
+        })?;
         match (expected, current, missing_was_authorized) {
             (Some(expected), Some(actual), _) if actual == expected => Ok(Some(actual)),
             (Some(expected), Some(actual), _) => Err(format!(
@@ -201,13 +200,12 @@ fn classify_local_installation(
         return Ok(PreparedLocalInstallation::NotOwned);
     }
 
-    let marker = awaken_session_executor::SharedHost::local_workspace_at(&deployment.data_dir)
-        .map_err(|error| {
-            format!(
-                "platform_workspace_unavailable: inspect identity under {}: {error}",
-                deployment.data_dir.display()
-            )
-        })?;
+    let marker = awaken_installation_workspace::read_at(&deployment.data_dir).map_err(|error| {
+        format!(
+            "platform_workspace_unavailable: inspect identity under {}: {error}",
+            deployment.data_dir.display()
+        )
+    })?;
     if let Some(expected) = deployment.expected_platform_workspace_id.as_deref() {
         match marker.as_deref() {
             None if authorization.permits_initialization() => {}

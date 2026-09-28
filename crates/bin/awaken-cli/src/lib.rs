@@ -549,7 +549,7 @@ async fn open_process_stores(
     // its canonical Session store has also opened.
     let platform_workspace = match platform_workspace.take() {
         Some(workspace) if publish_local_workspace => {
-            SharedHost::publish_local_workspace_at(&workspace_root, &workspace).map_err(
+            awaken_installation_workspace::publish_at(&workspace_root, &workspace).map_err(
                 |error| {
                     format!(
                         "publish platform Workspace identity under {}: {error}",
@@ -559,7 +559,10 @@ async fn open_process_stores(
             )?
         }
         Some(workspace) => workspace,
-        None => SharedHost::provision_local_workspace_at(&workspace_root),
+        None => awaken_installation_workspace::provision_at(
+            &workspace_root,
+            SharedHost::mint_local_workspace,
+        ),
     };
     Ok(ProcessStores {
         workspace_root: Some(workspace_root),

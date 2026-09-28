@@ -285,6 +285,11 @@ pub struct SharedHost {
     /// [`with_worker_upstream`](Self::with_worker_upstream); `None` is a
     /// store-owning server/host.
     pub(crate) upstream: Option<awaken_worker_transport_security::WorkerUpstream>,
+    /// Claim-fenced commit transport a database-less Worker injects beside its
+    /// upstream ([`with_worker_claimed_commit`](Self::with_worker_claimed_commit)).
+    /// The Host holds only the neutral port; the wire client is composed by the
+    /// Worker binary.
+    pub(crate) claimed_commit: Option<Arc<dyn awaken_dispatch::ClaimedRunCommit>>,
     /// Optional Resource-transport encoder installed by a remote Worker. The
     /// runtime knows only the neutral Resources contract, never an HTTP wire type.
     pub(crate) memory_reference_encoder: Option<Arc<dyn RuntimeMemoryReferenceEncoder>>,
@@ -304,13 +309,12 @@ pub struct SharedHost {
     /// Coordinator-owned durable capability. Runtime and Worker builds contain
     /// no concrete Store acquisition; a database-less Worker leaves this absent.
     pub(crate) authority: Option<Arc<dyn crate::RuntimeAuthority>>,
-    /// When set, an ACP CLI's session is harvested/restored under this durable root
-    /// (keyed by thread+adapter) so it survives a move to another directory or
-    /// worker. Point it at a **shared** location for cross-machine recovery; leave
-    /// `None` on a single machine (the per-thread config home is already stable).
-    pub(crate) session_blob_root: Option<PathBuf>,
-    /// Canonical adapter over `session_blob_root`, shared by ACP recovery and
-    /// data-subject erasure so those paths cannot drift.
+    /// When set, an ACP CLI's session is harvested/restored under this store's
+    /// durable root (keyed by thread+adapter) so it survives a move to another
+    /// directory or worker. Point it at a **shared** location for cross-machine
+    /// recovery; leave `None` on a single machine (the per-thread config home is
+    /// already stable). The one adapter is shared by ACP recovery and data-subject
+    /// erasure so those paths cannot drift.
     pub(crate) session_blob_store: Option<Arc<awaken_run_executor_acp::FsSessionBlobStore>>,
     /// Host-level memory auxiliary-agent capability. It owns no store: every
     /// recall/extraction operation requires a Session-scoped governed binding.

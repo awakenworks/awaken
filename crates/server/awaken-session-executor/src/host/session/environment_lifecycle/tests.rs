@@ -107,7 +107,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                                 0,
                             )
                             .unwrap()
-                            .observed(awaken_local_process::authority_proof_started().unwrap()),
+                            .observed(awaken_authority_clock::authority_proof_started().unwrap()),
                         );
                     })
                 };
@@ -169,7 +169,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                                     renewed, 0,
                                 )
                                 .unwrap()
-                                .observed(awaken_local_process::authority_proof_started().unwrap()),
+                                .observed(awaken_authority_clock::authority_proof_started().unwrap()),
                             )
                         });
                         worker
@@ -489,7 +489,7 @@ fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_close
             "live" => Authority::Live(
                 SessionRealizationLeaseReceipt::issued_at(current.clone(), 0)
                     .unwrap()
-                    .observed(awaken_local_process::authority_proof_started().unwrap()),
+                    .observed(awaken_authority_clock::authority_proof_started().unwrap()),
             ),
             _ => unreachable!(),
         };

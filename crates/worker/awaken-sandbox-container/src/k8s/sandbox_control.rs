@@ -1,10 +1,10 @@
 //! Exact Kubernetes projection and incarnation fence for Sandbox control.
 
 use super::*;
-use awaken_sandbox_control::SANDBOX_CONTROL_DIRECTORY_PATH;
-use awaken_sandbox_control_transport::{
-    REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH, REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH,
+use awaken_sandbox_control::{
+    REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, SANDBOX_CONTROL_DIRECTORY_PATH,
 };
+use awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH;
 use k8s_openapi::api::core::v1::{ContainerPort, EmptyDirVolumeSource, ExecAction, Probe};
 
 pub const DEFAULT_REPOSITORY_GIT_CONTROL_PORT: u16 = 7778;

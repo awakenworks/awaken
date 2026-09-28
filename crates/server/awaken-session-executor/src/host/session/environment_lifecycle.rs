@@ -1218,7 +1218,7 @@ impl SharedHost {
         incoming: &awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> Result<(), HostError> {
         let retirement = self.authorize_worker_effect(|| {
-            let now = awaken_local_process::authority_proof_started()
+            let now = awaken_authority_clock::authority_proof_started()
                 .map_err(|error| HostError::internal(error.to_string()))?;
             if incoming.remaining_at(now).is_none() {
                 return Err(HostError::internal("replacement Session authority time proof is exhausted"));

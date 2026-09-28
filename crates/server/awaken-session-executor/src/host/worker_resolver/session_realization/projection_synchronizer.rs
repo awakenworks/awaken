@@ -102,7 +102,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         awaken_runtime_contract::authority_lease::AuthorityProofStarted,
         awaken_session_error_contract::RunError,
     > {
-        awaken_local_process::authority_proof_started().map_err(|error| {
+        awaken_authority_clock::authority_proof_started().map_err(|error| {
             awaken_session_error_contract::RunError::unavailable(format!(
                 "authority clock: {error}"
             ))

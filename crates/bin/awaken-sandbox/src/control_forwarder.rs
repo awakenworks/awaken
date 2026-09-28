@@ -32,7 +32,7 @@ fn parse_args(args: &[String]) -> Result<(PathBuf, SocketAddr, PathBuf), Control
         return Err(ControlForwarderError::InvalidInvocation);
     };
     if unix_flag != "--unix"
-        || unix != awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH
+        || unix != awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH
         || listen_flag != "--listen"
         || ready_flag != "--ready"
         || ready != awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_READY_MARKER_PATH
@@ -282,7 +282,7 @@ mod tests {
          * loopback address => the sole provider channel; workspace path,
          * wildcard address, or alternate role arguments => reject before bind.
          */
-        let socket = awaken_sandbox_control_transport::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
+        let socket = awaken_sandbox_control::REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH;
         assert!(
             parse_args(&[
                 "--unix".into(),

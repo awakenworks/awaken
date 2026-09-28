@@ -32,31 +32,6 @@ pub mod scoped;
 mod execution_identity;
 pub use execution_identity::{ProcessExecutionIdentity, ProcessNamespaceIdentity};
 
-/// Sample the one local authority clock independently of timer scheduling.
-/// Linux reuses the physical cutoff's suspend-inclusive BOOTTIME. Other
-/// platforms preserve their existing Instant-based proof behavior; this is
-/// not a claim of suspend-inclusive or process-tree qualification there.
-pub fn authority_proof_started()
--> std::io::Result<awaken_runtime_contract::authority_lease::AuthorityProofStarted> {
-    #[cfg(not(target_os = "linux"))]
-    let origin = {
-        static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-        *ORIGIN.get_or_init(std::time::Instant::now)
-    };
-    let scheduled = std::time::Instant::now();
-    #[cfg(target_os = "linux")]
-    let elapsed = scoped::execution_elapsed_time()?;
-    #[cfg(not(target_os = "linux"))]
-    let elapsed = scheduled
-        .checked_duration_since(origin)
-        .ok_or_else(|| std::io::Error::other("local authority elapsed clock regressed"))?;
-    Ok(
-        awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(
-            scheduled, elapsed,
-        ),
-    )
-}
-
 /// One process-lifetime profile shared by Namespace and host-view rendering.
 /// Filesystem and network policy remain the sandbox provider's responsibility.
 pub const BUBBLEWRAP_PROCESS_BOUNDARY: [&str; 4] = [
@@ -240,25 +215,6 @@ mod tests {
     use std::path::Path;
     use std::process::Stdio;
     use std::time::Duration;
-
-    #[test]
-    fn authority_observation_uses_the_platform_clock_without_a_second_origin_on_linux() {
-        // A1 consecutive captures -> nonnegative elapsed and ordered scheduling.
-        // A2 Linux captures lie between samples of the exact clock used by
-        // scoped cutoff, not a new process-relative or wall-clock epoch.
-        #[cfg(target_os = "linux")]
-        let before = scoped::execution_elapsed_time().unwrap();
-        let first = authority_proof_started().unwrap();
-        let second = authority_proof_started().unwrap();
-        assert!(first.elapsed_at(second).is_some());
-        assert!(second.scheduled() >= first.scheduled());
-        #[cfg(target_os = "linux")]
-        {
-            let after = scoped::execution_elapsed_time().unwrap();
-            assert!(before <= first.elapsed_clock());
-            assert!(second.elapsed_clock() <= after);
-        }
-    }
 
     #[cfg(unix)]
     async fn wait_for_marker(path: &Path, expected: &str) {
