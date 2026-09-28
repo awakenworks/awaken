@@ -1183,55 +1183,64 @@ mod acp_projection_tests {
     #[test]
     fn client_injection_uses_only_the_exact_process_protocol_field() {
         use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary};
+        // Cause/effect rules: P1 declared Claude/Codex + exact HTTP process-field
+        // receipt -> private redacted auth; P2 another sink or tampered receipt
+        // -> refusal for either declared client; P3 undeclared OpenCode ->
+        // refusal. All clients use the same projection and receipt validator.
         let prepared = prepared(Some("raw-secret"));
         let exact_request = request(PlaintextBoundary::Workload);
         let exact = receipt(
             &exact_request,
             CredentialRealizationKind::ProcessProtocolField,
         );
-        let projected = project_mcp_session_transport(
-            &prepared,
-            &exact_request,
-            None,
-            &exact,
-            awaken_run_executor_acp::acp_cli("claude").unwrap(),
-        )
-        .expect("exact ClientInjection");
-        assert_eq!(projected.url.as_deref(), Some("https://mcp.gh"));
-        assert_eq!(
-            projected
-                .auth
-                .as_ref()
-                .map(|(name, value)| (name.as_str(), value.as_str())),
-            Some(("Authorization", "Bearer raw-secret"))
-        );
-        assert!(!format!("{projected:?}").contains("raw-secret"));
-
-        for (boundary, realization) in [
-            (
-                PlaintextBoundary::Workload,
-                CredentialRealizationKind::ProcessSecretEnvironment,
-            ),
-            (
-                PlaintextBoundary::Workload,
-                CredentialRealizationKind::PrivateSecretFile,
-            ),
-            (
-                PlaintextBoundary::Platform,
-                CredentialRealizationKind::PlatformRelay,
-            ),
-        ] {
-            let rejected_request = request(boundary);
-            let rejected = receipt(&rejected_request, realization);
+        for backend in ["claude", "codex"] {
+            let adapter = awaken_run_executor_acp::acp_cli(backend).unwrap();
+            let projected =
+                project_mcp_session_transport(&prepared, &exact_request, None, &exact, adapter)
+                    .expect("P1 exact ClientInjection");
+            assert_eq!(projected.url.as_deref(), Some("https://mcp.gh"));
+            assert_eq!(
+                projected
+                    .auth
+                    .as_ref()
+                    .map(|(name, value)| (name.as_str(), value.as_str())),
+                Some(("Authorization", "Bearer raw-secret"))
+            );
+            assert!(!format!("{projected:?}").contains("raw-secret"));
+            for (boundary, realization) in [
+                (
+                    PlaintextBoundary::Workload,
+                    CredentialRealizationKind::ProcessSecretEnvironment,
+                ),
+                (
+                    PlaintextBoundary::Workload,
+                    CredentialRealizationKind::PrivateSecretFile,
+                ),
+                (
+                    PlaintextBoundary::Platform,
+                    CredentialRealizationKind::PlatformRelay,
+                ),
+            ] {
+                let rejected_request = request(boundary);
+                let rejected = receipt(&rejected_request, realization);
+                assert!(
+                    project_mcp_session_transport(
+                        &prepared,
+                        &rejected_request,
+                        None,
+                        &rejected,
+                        adapter,
+                    )
+                    .is_err(),
+                    "P2 alternate sink: {backend}"
+                );
+            }
+            let mut tampered = exact.clone();
+            tampered.receipt_fingerprint = "different-stage".into();
             assert!(
-                project_mcp_session_transport(
-                    &prepared,
-                    &rejected_request,
-                    None,
-                    &rejected,
-                    awaken_run_executor_acp::acp_cli("claude").unwrap(),
-                )
-                .is_err()
+                project_mcp_session_transport(&prepared, &exact_request, None, &tampered, adapter,)
+                    .is_err(),
+                "P2 tampered receipt: {backend}"
             );
         }
         assert!(
@@ -1240,19 +1249,7 @@ mod acp_projection_tests {
                 &exact_request,
                 None,
                 &exact,
-                awaken_run_executor_acp::acp_cli("codex").unwrap(),
-            )
-            .is_err()
-        );
-        let mut tampered = exact;
-        tampered.receipt_fingerprint = "different-stage".into();
-        assert!(
-            project_mcp_session_transport(
-                &prepared,
-                &exact_request,
-                None,
-                &tampered,
-                awaken_run_executor_acp::acp_cli("claude").unwrap(),
+                awaken_run_executor_acp::acp_cli("opencode").unwrap(),
             )
             .is_err()
         );

@@ -57,7 +57,7 @@ impl HostWorkerResolver {
         let ctx = host
             .ctx_for_snapshot(&thread_id.0, agent, published_snapshot)
             .await
-            .map_err(|e| Self::execution_error(e.to_string()))?;
+            .map_err(Self::map_host_resolution_error)?;
         Ok(ctx.claimed_worker.clone())
     }
 
@@ -74,7 +74,7 @@ impl HostWorkerResolver {
         let ctx = host
             .ctx_for_claimed_snapshot(&thread_id.0, agent, published_snapshot, attempt)
             .await
-            .map_err(|error| Self::execution_error(error.to_string()))?;
+            .map_err(Self::map_host_resolution_error)?;
         Ok(ctx.claimed_worker.clone())
     }
 }

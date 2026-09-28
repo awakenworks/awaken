@@ -53,6 +53,21 @@ fn session_realization_control_disposition_projects_exact_worker_effect() {
 }
 
 impl HostWorkerResolver {
+    /// Preserve a deterministic Host admission refusal through the existing
+    /// Session realization classification and pre-execution settlement path.
+    /// Other Host failures keep their existing retryable queue behavior.
+    pub(super) fn map_host_resolution_error(error: crate::HostError) -> awaken_dispatch::Error {
+        if error.kind == crate::HostErrorKind::BadRequest {
+            Self::map_session_realization_drive_error(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                    crate::managed_adapter_error::to_run_error(error),
+                ),
+            )
+        } else {
+            Self::execution_error(error.to_string())
+        }
+    }
+
     pub(super) fn map_session_realization_drive_error(
         error: awaken_session_realization_contract::SessionRealizationDriveError,
     ) -> awaken_dispatch::Error {
@@ -88,6 +103,26 @@ impl HostWorkerResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_resolution_preserves_admission_and_retry_classes_by_kind() {
+        // Cause/effect table: H1 deterministic BadRequest -> the existing
+        // absorbing Session effect; H2-H4 Unavailable/Internal/Conflict -> the
+        // existing claim-local retry. Every row uses identical detail text so
+        // an operator message cannot become a second classification policy.
+        for (error, terminal) in [
+            (crate::HostError::bad_request("same detail"), true),
+            (crate::HostError::unavailable("same detail"), false),
+            (crate::HostError::internal("same detail"), false),
+            (crate::HostError::conflict("same detail"), false),
+        ] {
+            let actual = HostWorkerResolver::map_host_resolution_error(error);
+            assert_eq!(actual.is_terminal_resolution(), terminal);
+            if !terminal {
+                assert!(matches!(actual, awaken_dispatch::Error::Execution(_)));
+            }
+        }
+    }
 
     #[test]
     fn session_realization_preserves_retryable_and_absorbing_failure_classes() {
