@@ -271,7 +271,9 @@ async fn brain_runs_its_tool_inside_a_sandbox_on_a_remote_hand() {
         .connect(&ConnectionPlan::unix_dial(&path))
         .await
         .expect("dial hand");
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_tool_executor(Arc::new(RemoteToolExecutor::new(brain_channel)));

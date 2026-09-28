@@ -125,7 +125,9 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     let (runtime, ran) = tool_runtime();
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let run = RunId("run-1".to_string());
 
     let worker =
@@ -415,7 +417,9 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
     let runtime = input_echo_runtime();
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let thread = ThreadId(THREAD.to_string());
 
     let worker =
@@ -553,7 +557,9 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
     let runtime = input_echo_runtime();
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let thread = ThreadId(THREAD.to_string());
     let run = RunId("run-1".to_string());
 
@@ -764,7 +770,9 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
     let runtime = input_echo_runtime();
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let thread = ThreadId(THREAD.to_string());
     let run = RunId("run-1".to_string());
 

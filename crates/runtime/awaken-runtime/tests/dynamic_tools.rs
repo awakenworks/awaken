@@ -237,7 +237,9 @@ async fn presentation_aliases_an_mcp_tool_and_dispatches_the_alias_to_canonical(
         },
     )]);
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(act, context).await.expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
@@ -363,7 +365,9 @@ async fn an_on_demand_tool_is_hidden_until_tool_search_then_callable_and_persist
         ..Default::default()
     });
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(act, context).await.expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
@@ -427,7 +431,9 @@ async fn dynamic_tool_is_visible_executes_and_refreshes_at_the_step_boundary() {
             tools: tools.clone(),
         }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
@@ -559,7 +565,9 @@ async fn dynamic_tool_state_commands_cannot_escape_the_owning_plugin_bound() {
         .with_plugin(Arc::new(StateBoundPlugin));
     let mut run = activation();
     run.snapshot.resolved_spec.plugin_ids = vec!["state-boundary".into()];
-    let commits = Arc::new(MemoryCommitCoordinator::new());
+    let commits = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     assert_eq!(
         runtime
             .execute(run, RuntimeRunContext::new().with_commit(commits.clone()))

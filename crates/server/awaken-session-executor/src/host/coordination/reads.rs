@@ -209,7 +209,9 @@ mod tests {
         // watermark enrichment; Managed regressions own the final fresh fence.
         let session = "borrowed-coordination-root";
         let run = RunId("borrowed-coordination-run".into());
-        let store = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
+        let store = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let queries = crate::authority::ScriptedStateQueries::new(Ok(Vec::new()));
         let authority = Arc::new(crate::EphemeralRuntimeAuthority::new().with_commit(
             session,
@@ -408,7 +410,9 @@ mod tests {
                 }
                 .into(),
             );
-            let store = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
+            let store = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             let queries =
                 crate::authority::ScriptedStateQueries::new(Err("usage State unavailable".into()));
             let authority = Arc::new(crate::EphemeralRuntimeAuthority::new().with_commit(

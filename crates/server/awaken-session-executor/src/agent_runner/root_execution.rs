@@ -371,7 +371,9 @@ pub(crate) async fn run_agent_until_boundary(
         request.seed,
         request.resume,
         execution.context.unwrap_or_else(|| {
-            let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
+            let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             RuntimeRunContext::new()
                 .with_commit(commit.clone())
                 .with_reader(commit)
@@ -406,7 +408,9 @@ mod tests {
     use crate::agent_runner::fixtures::{agent, user};
 
     fn memory_context() -> RuntimeRunContext {
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         RuntimeRunContext::new()
             .with_commit(commit.clone())
             .with_reader(commit)
@@ -568,7 +572,9 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let provider = LocalProvider::new(tmp.path());
             let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
-            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let commit = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             let context = RuntimeRunContext::new()
                 .with_commit(commit.clone())
                 .with_reader(commit.clone());
@@ -627,7 +633,9 @@ mod tests {
         let provider = LocalProvider::new(&provider_root);
         let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
         let model = Arc::new(CountingModel(AtomicUsize::new(0)));
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let context = || {
             RuntimeRunContext::new()
                 .with_commit(commit.clone())

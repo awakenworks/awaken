@@ -117,7 +117,9 @@ fn activation() -> RunActivation {
 
 fn run_context(sink: &Arc<SpyCaptureSink>, capture: CaptureDecision) -> RuntimeRunContext {
     RuntimeRunContext::new()
-        .with_commit(Arc::new(MemoryCommitCoordinator::new()))
+        .with_commit(Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        )))
         .with_capture(capture)
         .with_capture_sink(
             DataSubjectId("dsub-1".to_string()),

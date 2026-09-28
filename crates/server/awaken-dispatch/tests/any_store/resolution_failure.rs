@@ -25,7 +25,9 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
             } else {
                 AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clone())))
             });
-            let committed = Arc::new(MemoryCommitCoordinator::new());
+            let committed = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             exercise_failure(
                 store,
                 committed.clone(),

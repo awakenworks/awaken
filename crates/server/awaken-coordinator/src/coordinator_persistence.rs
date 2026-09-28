@@ -91,6 +91,7 @@ pub async fn migrate_postgres_schema(deployment: &DeploymentConfig) -> Result<()
 #[cfg(any(test, feature = "test-support"))]
 pub async fn init_scenario_runtime(
     deployment: &DeploymentConfig,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<std::sync::Arc<dyn awaken_session_executor::RuntimeAuthority>, String> {
     if deployment.storage_dir.is_none()
         && deployment.database_url.is_none()
@@ -104,6 +105,7 @@ pub async fn init_scenario_runtime(
     super::runtime_authority::DurableRuntimeAuthority::open(
         deployment,
         super::runtime_authority::SchemaAccess::Migrate,
+        clock,
     )
     .await
     .map(|authority| authority as std::sync::Arc<dyn awaken_session_executor::RuntimeAuthority>)
@@ -112,21 +114,26 @@ pub async fn init_scenario_runtime(
 /// Open every Coordinator-owned runtime authority, applying schemas first.
 /// This Local-mode path returns the one WorkerDirectory instance that must be
 /// injected into every Worker-facing and observation-facing consumer.
-pub async fn open(deployment: &DeploymentConfig) -> Result<CoordinatorPersistence, String> {
-    open_with(deployment, SchemaAccess::Migrate).await
+pub async fn open(
+    deployment: &DeploymentConfig,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+) -> Result<CoordinatorPersistence, String> {
+    open_with(deployment, SchemaAccess::Migrate, clock).await
 }
 
 /// Open Coordinator-owned authorities after verifying externally-applied
 /// PostgreSQL ledgers. SQLite remains an explicitly durable single-node store.
 pub async fn open_existing(
     deployment: &DeploymentConfig,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
-    open_with(deployment, SchemaAccess::Verify).await
+    open_with(deployment, SchemaAccess::Verify, clock).await
 }
 
 async fn open_with(
     deployment: &DeploymentConfig,
     schema: SchemaAccess,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<CoordinatorPersistence, String> {
     let components = postgres_components(deployment);
     let database_url = database_url(deployment)?;
@@ -149,6 +156,7 @@ async fn open_with(
             deployment,
             schema,
             postgres_pool.clone(),
+            clock,
         )
         .await?;
     let run_recovery = runtime_authority.postgres_commit().map(|authority| {
@@ -296,10 +304,10 @@ mod tests {
         // exact identity/generation survives. Postgres migrate/verify rules are
         // covered by worker-registry conformance and migration-ledger tests.
         let missing = DeploymentConfig::ephemeral();
-        init_scenario_runtime(&missing)
+        init_scenario_runtime(&missing, awaken_lease_contract::system_clock())
             .await
             .expect("R0 scenario SQLite runtime needs no shared backend");
-        let missing_error = match open(&missing).await {
+        let missing_error = match open(&missing, awaken_lease_contract::system_clock()).await {
             Ok(_) => panic!("R1 must reject volatile authority"),
             Err(error) => error,
         };
@@ -308,7 +316,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut durable = DeploymentConfig::ephemeral();
         durable.storage_dir = Some(root.path().to_path_buf());
-        let directory = open(&durable).await.expect("R2 durable registry");
+        let directory = open(&durable, awaken_lease_contract::system_clock())
+            .await
+            .expect("R2 durable registry");
         let registered = directory
             .worker_directory
             .register(
@@ -324,7 +334,9 @@ mod tests {
             .unwrap();
         drop(directory);
 
-        let reopened = open_existing(&durable).await.expect("R3 reopen registry");
+        let reopened = open_existing(&durable, awaken_lease_contract::system_clock())
+            .await
+            .expect("R3 reopen registry");
         assert_eq!(
             reopened.worker_directory.current("worker-a").await.unwrap(),
             Some(registered),

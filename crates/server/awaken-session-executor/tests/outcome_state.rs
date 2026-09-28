@@ -34,7 +34,7 @@ async fn state_codec_round_trips_and_rejects_a_stale_transition() {
     // round-trips exactly; E2 C2 is fenced without overwrite. Constraint/
     // Invariant: Thread version is the sole Outcome CAS authority. Decision rule:
     // cover current commit and stale replay partitions.
-    let store = MemoryCommitCoordinator::new();
+    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     let thread = ThreadId("worker-thread".into());
     let adapter = ThreadOutcomeState::new(&thread, &store, &store);
     let (definition, binding, mut state) = fixture();
@@ -74,7 +74,7 @@ async fn active_active_create_uses_one_thread_version_fence() {
     // A1=C1=>E1+E3; A2=C2=>E2+E3. The fence is the store's existing atomic
     // expected_thread_version operation, never either process's Outcome mutex.
     let thread = ThreadId("same-create".into());
-    let store = MemoryCommitCoordinator::new();
+    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     let left = ThreadOutcomeState::new(&thread, &store, &store);
     let right = ThreadOutcomeState::new(&thread, &store, &store);
     let (definition, binding, state) = fixture();
@@ -99,7 +99,7 @@ async fn active_active_create_uses_one_thread_version_fence() {
     );
 
     let thread = ThreadId("competing-create".into());
-    let store = MemoryCommitCoordinator::new();
+    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     let left = ThreadOutcomeState::new(&thread, &store, &store);
     let right = ThreadOutcomeState::new(&thread, &store, &store);
     let left_state = State::new(Id("left".into()), 0);
@@ -140,7 +140,7 @@ async fn state_codec_recovers_append_only_evaluation_and_clears_terminal_pointer
     // E2 C2 clears the active pointer without deleting history. Constraint/
     // Invariant: evaluations are append-only while active selection is mutable.
     // Decision rule: commit C1 then C2 and verify both historical and active views.
-    let store = MemoryCommitCoordinator::new();
+    let store = MemoryCommitCoordinator::new(awaken_lease_contract::system_clock());
     let thread = ThreadId("worker-thread".into());
     let adapter = ThreadOutcomeState::new(&thread, &store, &store);
     let (definition, binding, mut state) = fixture();

@@ -6,68 +6,88 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 
 #[tokio::test]
 async fn commit_then_read() {
-    awaken_store_conformance::commit_then_read(&MemoryCommitCoordinator::new()).await;
+    awaken_store_conformance::commit_then_read(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn events_ordered_and_paged() {
-    awaken_store_conformance::events_ordered_and_paged(&MemoryCommitCoordinator::new()).await;
+    awaken_store_conformance::events_ordered_and_paged(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn commits_accumulate() {
-    awaken_store_conformance::commits_accumulate(&MemoryCommitCoordinator::new()).await;
+    awaken_store_conformance::commits_accumulate(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn transcript_snapshots_freeze_append_only_prefix() {
     awaken_store_conformance::transcript_snapshots_freeze_append_only_prefix(
-        &MemoryCommitCoordinator::new(),
+        &MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
     )
     .await;
 }
 
 #[tokio::test]
 async fn terminal_run_is_fenced() {
-    awaken_store_conformance::terminal_run_is_fenced(&MemoryCommitCoordinator::new()).await;
+    awaken_store_conformance::terminal_run_is_fenced(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn resume_ticket_awaits_then_clears() {
-    awaken_store_conformance::resume_ticket_awaits_then_clears(&MemoryCommitCoordinator::new())
-        .await;
+    awaken_store_conformance::resume_ticket_awaits_then_clears(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn open_wait_selects_only_the_latest_run() {
-    awaken_store_conformance::open_wait_selects_only_the_latest_run(
-        &MemoryCommitCoordinator::new(),
-    )
+    awaken_store_conformance::open_wait_selects_only_the_latest_run(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
     .await;
 }
 
 #[tokio::test]
 async fn concurrent_appends_are_dense_and_distinct() {
     awaken_store_conformance::concurrent_appends_are_dense_and_distinct(
-        &MemoryCommitCoordinator::new(),
+        &MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
     )
     .await;
 }
 
 #[tokio::test]
 async fn empty_store_reads_are_absent() {
-    awaken_store_conformance::empty_store_reads_are_absent(&MemoryCommitCoordinator::new()).await;
+    awaken_store_conformance::empty_store_reads_are_absent(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn committed_state_replays() {
-    awaken_store_conformance::committed_state_replays(&MemoryCommitCoordinator::new()).await;
+    awaken_store_conformance::committed_state_replays(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn delegation_and_tool_state_commit_atomically() {
     awaken_store_conformance::delegation_and_tool_state_commit_atomically(
-        &MemoryCommitCoordinator::new(),
+        &MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
     )
     .await;
 }
@@ -79,28 +99,34 @@ async fn delegation_and_tool_state_commit_atomically() {
 // isolation.
 #[tokio::test]
 async fn two_threads_in_one_store_are_isolated() {
-    awaken_store_conformance::two_threads_in_one_store_are_isolated(&MemoryCommitCoordinator::new())
-        .await;
+    awaken_store_conformance::two_threads_in_one_store_are_isolated(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn recovery_snapshot_is_consistent() {
-    awaken_store_conformance::recovery_snapshot_is_consistent(&MemoryCommitCoordinator::new())
-        .await;
+    awaken_store_conformance::recovery_snapshot_is_consistent(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn commit_operation_is_idempotent_and_cas() {
     awaken_store_conformance::commit_operation_is_idempotent_and_cas(
-        &MemoryCommitCoordinator::new(),
+        &MemoryCommitCoordinator::new(awaken_lease_contract::system_clock()),
     )
     .await;
 }
 
 #[tokio::test]
 async fn concurrent_operations_cas_one_winner() {
-    awaken_store_conformance::concurrent_operations_cas_one_winner(&MemoryCommitCoordinator::new())
-        .await;
+    awaken_store_conformance::concurrent_operations_cas_one_winner(&MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ))
+    .await;
 }
 
 #[tokio::test]

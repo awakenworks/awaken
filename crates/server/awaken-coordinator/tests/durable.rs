@@ -41,9 +41,12 @@ fn host_with_client_tool(host: SharedHost) -> Arc<SharedHost> {
 async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {
     let mut authority_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     authority_deployment.storage_dir = Some(dir.to_path_buf());
-    let authority = awaken_coordinator::init_scenario_runtime(&authority_deployment)
-        .await
-        .expect("open Coordinator-owned SQLite runtime authority");
+    let authority = awaken_coordinator::init_scenario_runtime(
+        &authority_deployment,
+        awaken_lease_contract::system_clock(),
+    )
+    .await
+    .expect("open Coordinator-owned SQLite runtime authority");
     let mut worker_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     worker_deployment.sandbox_dir = Some(dir.join(format!("sandbox-{process}")));
     host_with_client_tool(

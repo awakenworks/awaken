@@ -382,6 +382,8 @@ impl RuntimeAuthorityError {
 /// same injected contract without opening SQL or filesystem stores here.
 #[cfg(any(test, feature = "test-support"))]
 pub struct EphemeralRuntimeAuthority {
+    /// One clock for the dispatch store and every Thread's commit store.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
     commits: std::sync::Mutex<std::collections::HashMap<String, Arc<dyn LocalCommit>>>,
     checkpoints:
         std::sync::Mutex<std::collections::HashMap<String, Arc<dyn StreamCheckpointStore>>>,
@@ -413,10 +415,12 @@ impl EphemeralRuntimeAuthority {
         // scenario/integration compositions. Preserve its atomic Session
         // continuation role when erasing the concrete Memory store; the
         // Worker-only constructor intentionally omits that role.
+        let clock = awaken_lease_contract::system_clock();
         let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_dispatch(Arc::new(
-            awaken_dispatch::MemoryDispatchStore::new(awaken_lease_contract::system_clock()),
+            awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
         ));
         Self {
+            clock,
             commits: std::sync::Mutex::new(std::collections::HashMap::new()),
             checkpoints: std::sync::Mutex::new(std::collections::HashMap::new()),
             dispatch: Arc::new(dispatch),
@@ -438,7 +442,7 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
             .entry(thread.to_owned())
             .or_insert_with(|| {
                 Arc::new(LocalCommitAdapter::projected(
-                    awaken_store_inmem::MemoryCommitCoordinator::new(),
+                    awaken_store_inmem::MemoryCommitCoordinator::new(self.clock.clone()),
                 )) as Arc<dyn LocalCommit>
             })
             .clone())

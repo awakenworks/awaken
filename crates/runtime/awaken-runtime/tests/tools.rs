@@ -306,7 +306,9 @@ async fn allowed_tool_call_executes_and_feeds_result_back() {
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -340,7 +342,9 @@ async fn post_dispatch_invalidation_terminates_without_model_retry() {
             effects: effects.clone(),
         }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     let outcome = runtime
         .execute(
@@ -501,7 +505,9 @@ async fn forged_direct_call_to_configured_detached_target_fails_before_gate() {
         )
         .with_detached_targets(["echo".into()]),
     );
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     runtime
         .execute(
@@ -539,7 +545,9 @@ async fn native_tool_results_use_the_bound_spiller_and_fail_closed() {
         .with_tool(Arc::new(EchoTool {
             ran: Arc::new(AtomicUsize::new(0)),
         }));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     runtime
         .execute(
             activation(),
@@ -565,7 +573,9 @@ async fn native_tool_results_use_the_bound_spiller_and_fail_closed() {
         "N1"
     );
 
-    let failed_commit = Arc::new(MemoryCommitCoordinator::new());
+    let failed_commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let failed = Runtime::new()
         .with_llm(Arc::new(ToolThenText::new()))
         .with_tool(Arc::new(EchoTool {
@@ -593,7 +603,9 @@ async fn native_tool_results_use_the_bound_spiller_and_fail_closed() {
     );
 
     let multimodal_seen = Arc::new(Mutex::new(Vec::new()));
-    let multimodal_commit = Arc::new(MemoryCommitCoordinator::new());
+    let multimodal_commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     Runtime::new()
         .with_llm(Arc::new(ToolThenText::new()))
         .with_tool(Arc::new(MultimodalTool))
@@ -704,7 +716,9 @@ async fn denied_tool_call_never_executes_even_though_visible() {
             reason: "not allowed".to_string(),
         })));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -806,7 +820,9 @@ async fn sandbox_tool_uses_the_wired_executor() {
         })))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_tool_executor(Arc::new(RecordingExecutor {
@@ -863,7 +879,9 @@ async fn sandbox_tool_without_executor_fails_closed_instead_of_running_in_brain(
             ran: brain_ran.clone(),
         })))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
 
     runtime
         .execute(
@@ -887,7 +905,9 @@ async fn unknown_tool_yields_a_model_visible_error_result() {
         .with_llm(Arc::new(CallsTool("ghost")))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -945,7 +965,9 @@ async fn invalid_arguments_yield_a_model_visible_error_result() {
         .with_tool(Arc::new(ValidatingEcho))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -984,7 +1006,9 @@ async fn an_execution_error_yields_a_model_visible_error_result_and_continues() 
         .with_tool(Arc::new(FailingExecTool))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -1293,7 +1317,9 @@ async fn fresh_and_recovered_tool_uncertainty_use_the_same_terminal_decision() {
             }))
             .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
         let activation = activation();
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         if recovered {
             let batch = ToolBatch::for_step(
                 activation.run_id.clone(),
@@ -1416,7 +1442,9 @@ async fn a_panicking_tool_is_isolated_but_cannot_authorize_reinference_or_ack() 
         .with_tool(Arc::new(PanickingTool))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let quiescence = context.physical_quiescence.clone();
 
@@ -1479,7 +1507,9 @@ async fn returned_tool_cannot_hide_an_inline_participants_quiescence_veto() {
     for uncertain in [false, true] {
         for ordinary_error in [false, true] {
             let model = Arc::new(ToolThenText::new());
-            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let commit = Arc::new(MemoryCommitCoordinator::new(
+                awaken_lease_contract::system_clock(),
+            ));
             let admissions = Arc::new(AdmissionCounter(AtomicUsize::new(0)));
             let context = RuntimeRunContext::new()
                 .with_commit(commit.clone())
@@ -1559,7 +1589,9 @@ async fn participant_veto_during_model_admission_waits_prevents_actual_provider_
     }
     for at in 0..=3 {
         let model = Arc::new(ToolThenText::new());
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let mut context = RuntimeRunContext::new()
             .with_commit(commit.clone())
             .with_reader(commit.clone());
@@ -1673,7 +1705,9 @@ async fn gate_set_result_skips_execution_and_stages_supplied_result() {
             awaken_runtime_contract::tool::ToolOutput::ok("call-1", "injected"),
         ))));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     runtime.execute(activation(), context).await.expect("runs");
@@ -1758,7 +1792,9 @@ async fn a_loop_that_never_ends_naturally_terminates_on_the_step_ceiling() {
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     // The run ends on the step-ceiling guard, recorded as a single MaxSteps
@@ -1881,7 +1917,9 @@ async fn an_assistant_step_interleaves_text_and_a_tool_call() {
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
 
     let outcome = runtime.execute(activation(), context).await.expect("runs");
@@ -1927,7 +1965,9 @@ async fn a_tool_call_streams_to_the_live_sink() {
         .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
         .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let sink = Arc::new(MemoryStreamSink::new());
     let context = RuntimeRunContext::new()
         .with_commit(commit.clone())

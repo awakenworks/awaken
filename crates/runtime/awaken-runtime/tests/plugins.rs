@@ -189,7 +189,9 @@ async fn every_entered_phase_hook_vetoes_ack_on_drop_or_unwind_but_not_return() 
                 // witness if recovery is skipped. This tests the Runtime fold,
                 // not permission to bypass an occupied predecessor Dispatch.
                 runtime = runtime.with_llm(Arc::new(TextLlm));
-                let commit = Arc::new(MemoryCommitCoordinator::new());
+                let commit = Arc::new(MemoryCommitCoordinator::new(
+                    awaken_lease_contract::system_clock(),
+                ));
                 let batch = ToolBatch::for_step(
                     activation.run_id.clone(),
                     0,
@@ -302,7 +304,9 @@ async fn resumed_after_tool_hook_retains_the_same_drop_veto() {
         mode: PhaseProbeMode::Pending,
     })
     .with_gate(Arc::new(ConfirmTool));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let original = RuntimeRunContext::new().with_commit(commit.clone());
     let original_quiescence = original.physical_quiescence.clone();
     assert_eq!(
@@ -676,7 +680,9 @@ async fn a_host_deny_masks_the_plugin_gate_chain() {
             consulted: consulted.clone(),
         }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .execute(activation(vec!["recorder".to_string()]), context)
@@ -718,7 +724,9 @@ async fn a_plugin_tool_gate_narrows_an_absent_host_allow() {
         .with_tool(Arc::new(CountingEcho { ran: ran.clone() }))
         .with_plugin(Arc::new(NarrowGatePlugin));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let state = runtime
         .execute(activation(vec!["narrower".to_string()]), context)
@@ -842,7 +850,9 @@ async fn the_audit_names_who_decided_across_the_gate_chain() {
         } else {
             runtime.with_gate(Arc::new(DenyHostGate))
         };
-        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let mut context = RuntimeRunContext::new().with_commit(commit.clone());
         if per_run_deny {
             context =
@@ -874,7 +884,9 @@ async fn the_audit_names_who_decided_across_the_gate_chain() {
         }))
         .with_tool(Arc::new(CountingEcho { ran: ran.clone() }))
         .with_plugin(Arc::new(NarrowGatePlugin));
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     runtime
         .execute(
             activation(vec!["narrower".to_string()]),
@@ -918,7 +930,9 @@ async fn active_plugin_hook_stages_state_through_the_commit_path() {
             resolves: resolves.clone(),
         }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation(vec!["mark".to_string()]), context)
@@ -949,7 +963,9 @@ async fn inactive_plugin_contributes_nothing() {
             resolves: resolves.clone(),
         }));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     // plugin_ids is empty: the plugin is inert and never resolved.
     runtime
@@ -1022,7 +1038,9 @@ async fn out_of_bound_plugin_fails_the_run_closed() {
         .with_llm(Arc::new(TextLlm))
         .with_plugin(Arc::new(OutOfBoundPlugin));
 
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let context = RuntimeRunContext::new().with_commit(commit.clone());
     let outcome = runtime
         .execute(activation(vec!["rogue".to_string()]), context)
