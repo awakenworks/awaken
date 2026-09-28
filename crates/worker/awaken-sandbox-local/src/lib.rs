@@ -605,6 +605,7 @@ mod memory_mount_release_tests {
         // => no effect. W4 successful ack followed by revocation => replay must
         // fail, not return cached success. An explicit Pending poll proves the
         // authorization change occurs AFTER request initiation and BEFORE grant.
+        use awaken_provisioning_contract::test_support::FenceTamper as _;
         use std::{future::Future, task::Poll, time::Duration};
         for rule in [
             "live",
@@ -649,16 +650,17 @@ mod memory_mount_release_tests {
             match rule {
                 "revoked" => *authority.current.lock().unwrap() = None,
                 "zero" => authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO,
-                "replaced" => authority.current.lock().unwrap().as_mut().unwrap().0.epoch += 1,
+                "replaced" => {
+                    let mut guard = authority.current.lock().unwrap();
+                    guard.as_mut().unwrap().0.reassign();
+                }
                 "renewed" => {
-                    authority
-                        .current
-                        .lock()
-                        .unwrap()
+                    let mut guard = authority.current.lock().unwrap();
+                    guard
                         .as_mut()
                         .unwrap()
                         .0
-                        .expires_at_unix_ms += 100
+                        .tamper(|w| w.expires_at_unix_ms += 100);
                 }
                 "cancelled" => {
                     drop(pending);
@@ -1460,15 +1462,15 @@ pub(crate) fn test_disposal_authorization_for_current(
 ) -> awaken_provisioning_contract::SandboxDisposalAuthorization {
     use awaken_provisioning_contract as pc;
 
-    let fingerprint = format!("local-test-preparation:{}", prepared.operation_id);
+    let fingerprint = format!("local-test-preparation:{}", prepared.operation_id());
     let preparation = pc::SandboxDisposalPreparation::new(prepared.clone(), fingerprint).unwrap();
     let operation_id = preparation.operation_id().unwrap();
     let successor = pc::SandboxEffectFence::new(
         operation_id,
-        current.owner.clone(),
-        current.runtime_incarnation.clone(),
-        current.epoch,
-        current.expires_at_unix_ms,
+        current.owner(),
+        current.runtime_incarnation(),
+        current.epoch(),
+        current.expires_at_unix_ms(),
     )
     .unwrap();
     preparation.authorize(successor).unwrap()

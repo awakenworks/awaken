@@ -632,8 +632,8 @@ mod mutation_tests {
             "A3b/E2"
         );
         let provider_effect = effect.sandbox_disposal_authorization().expect("A3b/E2");
-        assert_eq!(provider_effect.prepared_effect_fence().epoch, lease.epoch);
-        assert_eq!(provider_effect.effect_fence().epoch, successor.epoch);
+        assert_eq!(provider_effect.prepared_effect_fence().epoch(), lease.epoch);
+        assert_eq!(provider_effect.effect_fence().epoch(), successor.epoch);
         let mut foreign = crate::SessionCleanupDisposalReceipt::new(&disposal);
         foreign.preparation_fingerprint.push_str("-foreign");
         assert_eq!(
@@ -1198,7 +1198,7 @@ mod mutation_tests {
             disposal
                 .provider_disposal
                 .prepared_effect_fence()
-                .operation_id,
+                .operation_id(),
             terminal_effect.command.effect_id,
             "X2/E3 source and terminal preparation identities remain distinct"
         );

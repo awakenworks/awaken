@@ -16,6 +16,7 @@ use super::*;
 
 #[tokio::test]
 async fn restored_disposal_keeps_immutable_id_and_current_authority_at_each_adapter_response() {
+    use awaken_provisioning_contract::test_support::FenceTamper as _;
     use pc::test_support::EffectAuthority;
     use std::time::Duration;
     // P1 five backend response positions x revoke/replace/expire/renew.
@@ -81,9 +82,9 @@ async fn restored_disposal_keeps_immutable_id_and_current_authority_at_each_adap
                 let mut current = changing.current.lock().unwrap();
                 match change {
                     "revoke" => *current = None,
-                    "replace" => current.as_mut().unwrap().0.epoch += 1,
+                    "replace" => current.as_mut().unwrap().0.reassign(),
                     "expire" => current.as_mut().unwrap().1 = Duration::ZERO,
-                    "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                    "renew" => current.as_mut().unwrap().0.renew(),
                     _ => unreachable!(),
                 }
             }

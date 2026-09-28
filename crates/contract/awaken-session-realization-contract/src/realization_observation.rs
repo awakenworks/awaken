@@ -38,7 +38,7 @@ pub fn generation_observation_key(generation: &McpGeneration) -> String {
 #[must_use]
 pub fn observed_generation(reference: &McpGenerationRef) -> serde_json::Value {
     serde_json::json!({
-        "key": generation_observation_key(&reference.generation()),
+        "key": generation_observation_key(reference.generation()),
         "session_id": reference.session_id(),
         "runtime_incarnation": reference.runtime_incarnation(),
         "lease_epoch": reference.lease_epoch(),

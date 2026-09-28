@@ -48,13 +48,13 @@ impl ContainerCheckpointParticipant {
                 if let Some(upload) = &previous.upload
                     && let Some(reference) = upload.completed_for(
                         access.request_fingerprint,
-                        &access.source_effect_fence.operation_id,
+                        access.source_effect_fence.operation_id(),
                     )?
                 {
                     // Decode is not proof: revalidate a stored complete
                     // receipt against its own original pending evidence.
                     upload.clone().complete(
-                        &access.source_effect_fence.operation_id,
+                        access.source_effect_fence.operation_id(),
                         access.request_fingerprint,
                         &reference,
                     )?;
@@ -77,7 +77,7 @@ impl ContainerCheckpointParticipant {
         match mutation {
             ContainerCheckpointMutation::Acquire => {}
             ContainerCheckpointMutation::Begin(pending) => {
-                if pending.operation_id() != Some(access.source_effect_fence.operation_id.as_str())
+                if pending.operation_id() != Some(access.source_effect_fence.operation_id())
                     || pending.request_fingerprint() != access.request_fingerprint
                     || pending.reference().is_some()
                 {
@@ -102,7 +102,7 @@ impl ContainerCheckpointParticipant {
                         pc::SandboxError::not_found("container checkpoint has no pending upload")
                     })?
                     .complete(
-                        &access.source_effect_fence.operation_id,
+                        access.source_effect_fence.operation_id(),
                         access.request_fingerprint,
                         reference,
                     )?;
@@ -119,6 +119,7 @@ impl ContainerCheckpointParticipant {
 #[cfg(all(test, feature = "k8s"))]
 pub(crate) mod tests {
     use super::*;
+    use awaken_provisioning_contract::test_support::FenceTamper as _;
     use pc::test_support::EffectAuthority;
 
     pub(crate) fn receipt() -> pc::SandboxCheckpointRef {
@@ -289,10 +290,10 @@ pub(crate) mod tests {
         for axis in ["operation", "owner", "boot", "epoch"] {
             let mut changed = source.clone();
             match axis {
-                "operation" => changed.operation_id.push('x'),
-                "owner" => changed.owner.push('x'),
-                "boot" => changed.runtime_incarnation.push('x'),
-                "epoch" => changed.epoch += 1,
+                "operation" => changed.tamper(|w| w.operation_id.push('x')),
+                "owner" => changed.tamper(|w| w.owner.push('x')),
+                "boot" => changed.tamper(|w| w.runtime_incarnation.push('x')),
+                "epoch" => changed.reassign(),
                 _ => unreachable!(),
             }
             assert!(

@@ -243,8 +243,6 @@ mod tests {
         // retried identically; stale authority, malformed input, missing
         // capability, and contradicted expectations are permanent.
         let live = SandboxEffectFence::new("operation", "owner", "incarnation", 1, 100).unwrap();
-        let mut blank_owner = live.clone();
-        blank_owner.owner = " ".into();
         let rows: Vec<(&str, SandboxError, &str, Disposition)> = vec![
             (
                 "S1 expired effect fence at the provider boundary",
@@ -254,7 +252,7 @@ mod tests {
             ),
             (
                 "S2 fence with an empty identity field",
-                blank_owner.validate_identity().unwrap_err(),
+                SandboxEffectFence::new("operation", " ", "incarnation", 1, 100).unwrap_err(),
                 "Invalid",
                 Disposition::Permanent,
             ),

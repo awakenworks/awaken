@@ -222,23 +222,23 @@ where
         .get_or_insert_with(Default::default);
     annotations.insert(
         SANDBOX_EFFECT_ANNOTATION.to_owned(),
-        effect_fence.operation_id.clone(),
+        effect_fence.operation_id().to_owned(),
     );
     annotations.insert(
         SANDBOX_EFFECT_OWNER_ANNOTATION.to_owned(),
-        effect_fence.owner.clone(),
+        effect_fence.owner().to_owned(),
     );
     annotations.insert(
         SANDBOX_EFFECT_RUNTIME_ANNOTATION.to_owned(),
-        effect_fence.runtime_incarnation.clone(),
+        effect_fence.runtime_incarnation().to_owned(),
     );
     annotations.insert(
         SANDBOX_EFFECT_EPOCH_ANNOTATION.to_owned(),
-        effect_fence.epoch.to_string(),
+        effect_fence.epoch().to_string(),
     );
     annotations.insert(
         SANDBOX_EFFECT_EXPIRY_ANNOTATION.to_owned(),
-        effect_fence.expires_at_unix_ms.to_string(),
+        effect_fence.expires_at_unix_ms().to_string(),
     );
 }
 
@@ -590,10 +590,10 @@ impl K8sCreationAttemptKey {
     fn new(scope: &str, fence: &ContainerEffectFence) -> Self {
         Self {
             scope: scope.to_owned(),
-            operation_id: fence.operation_id.clone(),
-            owner: fence.owner.clone(),
-            runtime_incarnation: fence.runtime_incarnation.clone(),
-            epoch: fence.epoch,
+            operation_id: fence.operation_id().to_owned(),
+            owner: fence.owner().to_owned(),
+            runtime_incarnation: fence.runtime_incarnation().to_owned(),
+            epoch: fence.epoch(),
         }
     }
 }

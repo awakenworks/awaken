@@ -3,6 +3,7 @@
 use pc::CheckpointingSandbox as _;
 #[tokio::test]
 async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_disposal() {
+    use awaken_provisioning_contract::test_support::FenceTamper as _;
     use pc::test_support::EffectAuthority;
     use std::time::Duration;
     // Cause/effect graph: C1 exact target is bound/absent; C2 the original
@@ -86,9 +87,9 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 let mut current = authority.current.lock().unwrap();
                 match change {
                     "revoke" => *current = None,
-                    "replace" => current.as_mut().unwrap().0.epoch += 1,
+                    "replace" => current.as_mut().unwrap().0.reassign(),
                     "expire" => current.as_mut().unwrap().1 = Duration::ZERO,
-                    "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                    "renew" => current.as_mut().unwrap().0.renew(),
                     _ => {}
                 }
             }

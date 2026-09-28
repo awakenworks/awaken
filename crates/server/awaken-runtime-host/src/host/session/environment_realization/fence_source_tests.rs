@@ -1,6 +1,7 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::*;
 use crate::session_slot::SessionRealizationAuthority;
+use awaken_provisioning_contract::test_support::FenceTamper as _;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
 use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
 use awaken_session_resource_contract::SessionRealizationLease;
@@ -126,19 +127,21 @@ fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                         slot.lifecycle = Arc::new(tokio::sync::Mutex::new(()));
                     }
                 }),
-                "asserted_future" => asserted.expires_at_unix_ms += 1,
-                "asserted_regressed" => asserted.expires_at_unix_ms -= 1,
-                "asserted_operation" => asserted.operation_id.push_str("-other"),
-                "asserted_owner" => asserted.owner.push_str("-other"),
-                "asserted_incarnation" => asserted.runtime_incarnation.push_str("-other"),
-                "asserted_epoch" => asserted.epoch += 1,
+                "asserted_future" => asserted.renew(),
+                "asserted_regressed" => asserted.tamper(|w| w.expires_at_unix_ms -= 1),
+                "asserted_operation" => asserted.tamper(|w| w.operation_id.push_str("-other")),
+                "asserted_owner" => asserted.tamper(|w| w.owner.push_str("-other")),
+                "asserted_incarnation" => {
+                    asserted.tamper(|w| w.runtime_incarnation.push_str("-other"))
+                }
+                "asserted_epoch" => asserted.reassign(),
                 _ => {
                     match rule {
                         "exact" => {}
                         "renewed" | "renewed_assertion" => {
                             current.expires_at_unix_ms += 30_000;
                             if rule == "renewed_assertion" {
-                                asserted.expires_at_unix_ms += 15_000;
+                                asserted.tamper(|w| w.expires_at_unix_ms += 15_000);
                             }
                         }
                         "current_regressed" => current.expires_at_unix_ms -= 1,
@@ -231,17 +234,13 @@ fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity() {
             .is_err()
     );
     assert!(host.session_slots.read("session", |_| ()).is_none());
-    let mut invalid = valid;
-    invalid.operation_id.clear();
+    // An effect fence with an incomplete identity never reaches capture: the
+    // one admission refuses it before a value exists, installed slot or not.
     assert!(
-        host.session_environment_effect_fence_source("session", &invalid)
-            .is_err()
+        valid.with_persisted(|w| w.operation_id.clear()).is_err(),
+        "blank operation identity is refused at construction"
     );
     install(&host, lease());
-    assert!(
-        host.session_environment_effect_fence_source("session", &invalid)
-            .is_err()
-    );
 
     // C1 slot exists; C2 the capture has an installed live-kind lease;
     // C3 initial generation matches; C4 initial expiry does not exceed it.
@@ -265,10 +264,10 @@ fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity() {
             "closed" => {
                 host.session_slots.close_realization("session", None);
             }
-            "owner" => initial.owner.push_str("-other"),
-            "incarnation" => initial.runtime_incarnation.push_str("-other"),
-            "epoch" => initial.epoch += 1,
-            "expiry" => initial.expires_at_unix_ms += 1,
+            "owner" => initial.tamper(|w| w.owner.push_str("-other")),
+            "incarnation" => initial.tamper(|w| w.runtime_incarnation.push_str("-other")),
+            "epoch" => initial.reassign(),
+            "expiry" => initial.renew(),
             _ => unreachable!(),
         }
         assert!(
@@ -358,7 +357,7 @@ fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation() {
             let result = pending.join().unwrap();
             assert_eq!(result.is_ok(), rule == "renewed", "{rule}");
             if let Ok(fence) = result {
-                assert_eq!(fence.expires_at_unix_ms, 90_000);
+                assert_eq!(fence.expires_at_unix_ms(), 90_000);
             }
         });
     }
@@ -624,7 +623,7 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     "{registered}/{wait}/{change}"
                 );
                 if let Some(fence) = replies.first() {
-                    assert_eq!(fence.expires_at_unix_ms, 90_000);
+                    assert_eq!(fence.expires_at_unix_ms(), 90_000);
                 }
             }
         }

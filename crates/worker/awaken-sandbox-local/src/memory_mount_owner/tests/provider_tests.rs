@@ -17,6 +17,7 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
     // Inline AFTER Memory detects unauthorized later writes/Ready publication.
     // This is port/FS/ownership qualification;
     // the fake FUSE guard does not prove kernel mount or Worker-death recovery.
+    use awaken_provisioning_contract::test_support::FenceTamper as _;
     use std::time::Duration;
     async fn reopen(
         provider: &dyn pc::SandboxProvider,
@@ -143,9 +144,9 @@ async fn creation_and_adoption_recheck_authority_and_retain_pending_memory() {
                             let mut current = authority.current.lock().unwrap();
                             match change {
                                 "revoke" => *current = None,
-                                "replace" => current.as_mut().unwrap().0.epoch += 1,
+                                "replace" => current.as_mut().unwrap().0.reassign(),
                                 "exhaust" => current.as_mut().unwrap().1 = Duration::ZERO,
-                                "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                                "renew" => current.as_mut().unwrap().0.renew(),
                                 _ => {}
                             }
                         }

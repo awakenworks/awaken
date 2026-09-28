@@ -1169,7 +1169,7 @@ impl awaken_session_runtime_contract::McpAttachmentRealizer for HotRuntime {
     ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
         let durable = self
             .repo
-            .get(&request.generation.session_id())
+            .get(request.generation.session_id())
             .await
             .expect("stage follows durable claim");
         let mut state = self.state.lock().unwrap();

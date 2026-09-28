@@ -13,9 +13,6 @@ pub(super) fn validate_handle_marker(
     handle_fence: &pc::SandboxEffectFence,
     incarnation: &str,
 ) -> Result<(), pc::SandboxError> {
-    handle_fence.validate_identity().map_err(|_| {
-        pc::SandboxError::invalid("sandbox handle effect fence has incomplete identity")
-    })?;
     if marker.fingerprint != *fingerprint || marker.physical_incarnation != incarnation {
         return Err(pc::SandboxError::conflict(
             "sandbox handle does not identify the current physical realization",
@@ -84,11 +81,6 @@ fn observe_adoption_inner(
             ));
         }
     };
-    if let Some(current_fence) = current_fence {
-        // Observation is effect-free. Current admission belongs to the caller's
-        // guarded port, not a comparison of Control expiry with Worker UTC.
-        current_fence.validate_identity()?;
-    }
 
     let marker = match match lock {
         Some(lock) => read_marker_locked(root, lock),
@@ -235,7 +227,6 @@ pub(super) fn validate_absent_terminal_source(
 ) -> Result<(TerminalSourceRecord, Option<String>), pc::SandboxError> {
     let (source_fence, incarnation) = match handle {
         Some(source) => {
-            source.effect_fence.validate_identity()?;
             if source.fingerprint != fingerprint || source.physical_incarnation.trim().is_empty() {
                 return Err(pc::SandboxError::conflict(
                     "terminal handle does not bind the absent filesystem realization",
@@ -478,12 +469,8 @@ pub(crate) fn observe_terminal_receipt(
     expected_effect_fence: Option<&pc::SandboxEffectFence>,
     terminal_effect_fence: &pc::SandboxEffectFence,
 ) -> Result<TerminalReceiptObservation, pc::SandboxError> {
-    if let Some(expected) = expected_effect_fence {
-        expected.validate_identity()?;
-    }
     // Terminal callers own response-relative current authority. This read-only
     // preflight checks exact provenance, never a second Provider UTC clock.
-    terminal_effect_fence.validate_identity()?;
     let lock = acquire(root)?;
     let Some(marker) = read_marker_locked(root, &lock)? else {
         validate_absent_terminal_source(

@@ -6,6 +6,7 @@
 
 use super::*;
 use awaken_provisioning_contract::SandboxProvider;
+use awaken_provisioning_contract::test_support::FenceTamper as _;
 use std::collections::HashMap;
 use std::sync::{
     Mutex,
@@ -18,7 +19,7 @@ mod terminal_preparation;
 pub(crate) fn disposal_authorization(
     prepared: &pc::SandboxEffectFence,
 ) -> pc::SandboxDisposalAuthorization {
-    let preparation_fingerprint = format!("test-preparation:{}", prepared.operation_id);
+    let preparation_fingerprint = format!("test-preparation:{}", prepared.operation_id());
     let preparation =
         pc::SandboxDisposalPreparation::new(prepared.clone(), preparation_fingerprint)
             .expect("test preparation is complete");
@@ -27,10 +28,10 @@ pub(crate) fn disposal_authorization(
         .expect("stable disposal identity");
     let successor = pc::SandboxEffectFence::new(
         operation_id,
-        prepared.owner.clone(),
-        prepared.runtime_incarnation.clone(),
-        prepared.epoch,
-        prepared.expires_at_unix_ms,
+        prepared.owner(),
+        prepared.runtime_incarnation(),
+        prepared.epoch(),
+        prepared.expires_at_unix_ms(),
     )
     .expect("test authorization successor is valid");
     preparation
@@ -1557,7 +1558,7 @@ async fn fenced_container_disposal_requires_exact_terminal_memory_ack() {
     );
     assert_eq!(
         broker.effect_operations.lock().unwrap().as_slice(),
-        std::slice::from_ref(&terminal.operation_id),
+        std::slice::from_ref(&terminal.operation_id()),
         "N4/N5 failed predecessor writes no Secret; successor writes exactly once"
     );
     assert_eq!(
@@ -1677,9 +1678,9 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
             })
             .await;
             let mut current = authorization.effect_fence().clone();
-            current.expires_at_unix_ms += 1;
+            current.renew();
             if change == "replace" {
-                current.epoch += 1;
+                current.reassign();
             }
             *authority.current.lock().unwrap() = if change == "revoke" {
                 None
@@ -1826,9 +1827,9 @@ async fn disposal_preparation_rechecks_current_authority_after_each_credential_w
                 usize::from(boundary == "write")
             );
             let mut successor = fence.clone();
-            successor.expires_at_unix_ms += 1;
+            successor.renew();
             if change == "replace" {
-                successor.epoch += 1;
+                successor.reassign();
             }
             if change != "cancel" {
                 *authority.current.lock().unwrap() = if change == "revoke" {
@@ -2538,9 +2539,9 @@ async fn cold_reconstruction_and_adoption_recheck_authority_after_each_provider_
                     let mut current = authority.current.lock().unwrap();
                     match change {
                         "revoke" => *current = None,
-                        "replace" => current.as_mut().unwrap().0.epoch += 1,
+                        "replace" => current.as_mut().unwrap().0.reassign(),
                         "expire" => current.as_mut().unwrap().1 = Duration::ZERO,
-                        "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                        "renew" => current.as_mut().unwrap().0.renew(),
                         _ => {}
                     }
                 }
@@ -3000,9 +3001,9 @@ async fn container_checkpoint_projection_preserves_exact_handle_and_current_auth
         {
             let mut current = authority.current.lock().unwrap();
             match change {
-                "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                "renew" => current.as_mut().unwrap().0.renew(),
                 "revoke" => *current = None,
-                "replace" => current.as_mut().unwrap().0.epoch += 1,
+                "replace" => current.as_mut().unwrap().0.reassign(),
                 "expire" => current.as_mut().unwrap().1 = std::time::Duration::ZERO,
                 "current" => {}
                 _ => unreachable!(),
@@ -4154,18 +4155,14 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                     *authority.current.lock().unwrap() = match change {
                         "revoke" => None,
                         "replace" => Some((
-                            pc::SandboxEffectFence {
-                                epoch: 4,
-                                ..fence.clone()
-                            },
+                            fence.with_persisted(|w| w.epoch = 4).unwrap(),
                             std::time::Duration::from_secs(1),
                         )),
                         "exhaust" => Some((fence.clone(), std::time::Duration::ZERO)),
                         "renew" => Some((
-                            pc::SandboxEffectFence {
-                                expires_at_unix_ms: u64::MAX,
-                                ..fence.clone()
-                            },
+                            fence
+                                .with_persisted(|w| w.expires_at_unix_ms = u64::MAX)
+                                .unwrap(),
                             std::time::Duration::from_secs(2),
                         )),
                         _ => unreachable!(),
@@ -4325,10 +4322,10 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
     )
     .unwrap();
     let renewed = pc::SandboxEffectFence::new(
-        initial.operation_id.clone(),
-        initial.owner.clone(),
-        initial.runtime_incarnation.clone(),
-        initial.epoch,
+        initial.operation_id(),
+        initial.owner(),
+        initial.runtime_incarnation(),
+        initial.epoch(),
         u64::MAX,
     )
     .unwrap();
@@ -4361,19 +4358,20 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
         ("R3-equal", Some(initial.clone())),
         (
             "R3-regressed",
-            Some(pc::SandboxEffectFence {
-                expires_at_unix_ms: initial.expires_at_unix_ms - 1,
-                ..initial.clone()
-            }),
+            Some(
+                initial
+                    .with_persisted(|w| w.expires_at_unix_ms = initial.expires_at_unix_ms() - 1)
+                    .unwrap(),
+            ),
         ),
         (
             "R3",
             Some(
                 pc::SandboxEffectFence::new(
                     "foreign-create",
-                    initial.owner.clone(),
-                    initial.runtime_incarnation.clone(),
-                    initial.epoch,
+                    initial.owner(),
+                    initial.runtime_incarnation(),
+                    initial.epoch(),
                     u64::MAX,
                 )
                 .unwrap(),
@@ -4466,7 +4464,7 @@ impl pc::SecretBroker for RecordingSecretBroker {
         self.effect_operations
             .lock()
             .unwrap()
-            .push(effect.authorization().operation_id.clone());
+            .push(effect.authorization().operation_id().to_owned());
         self.writeback_ids
             .lock()
             .unwrap()
@@ -5464,9 +5462,9 @@ async fn restored_adoption_rechecks_original_authority_after_each_query_response
                         let mut current = authority.current.lock().unwrap();
                         match change {
                             "revoke" => *current = None,
-                            "replace" => current.as_mut().unwrap().0.epoch += 1,
+                            "replace" => current.as_mut().unwrap().0.reassign(),
                             "expire" => current.as_mut().unwrap().1 = Duration::ZERO,
-                            "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                            "renew" => current.as_mut().unwrap().0.renew(),
                             _ => {}
                         }
                     }
@@ -5634,9 +5632,9 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                     let mut current = authority.current.lock().unwrap();
                     match change {
                         "revoke" => *current = None,
-                        "replace" => current.as_mut().unwrap().0.epoch += 1,
+                        "replace" => current.as_mut().unwrap().0.reassign(),
                         "expire" => current.as_mut().unwrap().1 = Duration::ZERO,
-                        "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                        "renew" => current.as_mut().unwrap().0.renew(),
                         _ => {}
                     }
                 }

@@ -630,7 +630,6 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-channel",
- "awaken-lease-contract",
  "awaken-provisioning-contract",
  "awaken-sandbox-control",
  "serde",

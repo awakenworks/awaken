@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::{
     IsolationClass, NetworkPolicy, ResourceLimits, SandboxProvider, SandboxSpec,
+    test_support::FenceTamper as _,
 };
 
 use awaken_container_contract::ContainerEnvironmentProvider as _;
@@ -577,12 +578,10 @@ pub(super) fn restart_disposal_authorization(
     label: &str,
 ) -> pc::SandboxDisposalAuthorization {
     let preparation = pc::SandboxDisposalPreparation::new(prepared, label).unwrap();
-    let effect = pc::SandboxEffectFence::new(
+    // The exact renewal of the prepared lease under the disposal operation.
+    let effect = pc::SandboxEffectFence::for_operation(
         preparation.operation_id().unwrap(),
-        "owner",
-        "runtime",
-        1,
-        u64::MAX,
+        preparation.prepared_effect_fence(),
     )
     .unwrap();
     preparation.authorize(effect).unwrap()

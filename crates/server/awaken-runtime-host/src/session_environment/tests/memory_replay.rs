@@ -529,9 +529,9 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
     let (hot_spec, _) = restart_memory_spec("terminal-fuse-hot");
     let hot_spec = hot_provider.effective_spec(&hot_spec).unwrap();
     let hot_create =
-        pc::SandboxEffectFence::new("create-hot", "owner", "runtime", 1, u64::MAX).unwrap();
+        pc::SandboxEffectFence::new("create-hot", "owner", "runtime", 2, u64::MAX).unwrap();
     let hot_terminal =
-        pc::SandboxEffectFence::new("terminal-hot", "owner", "runtime", 1, u64::MAX).unwrap();
+        pc::SandboxEffectFence::new("terminal-hot", "owner", "runtime", 2, u64::MAX).unwrap();
     let hot = hot_provider
         .create_effective_for_effect(
             &hot_spec,
@@ -603,13 +603,13 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         let (spec, memory) = restart_memory_spec(&format!("terminal-fuse-{label}"));
         let spec = provider.effective_spec(&spec).unwrap();
         let create =
-            pc::SandboxEffectFence::new(format!("create-{label}"), "owner", "runtime", 1, u64::MAX)
+            pc::SandboxEffectFence::new(format!("create-{label}"), "owner", "runtime", 2, u64::MAX)
                 .unwrap();
         let terminal = pc::SandboxEffectFence::new(
             format!("terminal-{label}"),
             "owner",
             "runtime",
-            1,
+            2,
             u64::MAX,
         )
         .unwrap();
@@ -634,7 +634,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             format!("foreign-{label}"),
             "owner",
             "runtime",
-            0,
+            1,
             u64::MAX,
         )
         .unwrap();
@@ -872,9 +872,9 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     let mut current = authority.current.lock().unwrap();
                     match change {
                         "revoke" => *current = None,
-                        "replace" => current.as_mut().unwrap().0.epoch += 1,
+                        "replace" => current.as_mut().unwrap().0.reassign(),
                         "expire" => current.as_mut().unwrap().1 = std::time::Duration::ZERO,
-                        "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                        "renew" => current.as_mut().unwrap().0.renew(),
                         _ => {}
                     }
                 }

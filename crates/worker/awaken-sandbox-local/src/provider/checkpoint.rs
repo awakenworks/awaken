@@ -91,7 +91,7 @@ fn validate_checkpoint_effect(
     request: &pc::SandboxCheckpointRequest,
     effect_fence: &pc::SandboxEffectFence,
 ) -> Result<(), pc::SandboxError> {
-    if request.effect_id == effect_fence.operation_id {
+    if request.effect_id == effect_fence.operation_id() {
         Ok(())
     } else {
         Err(pc::SandboxError::fence_rejected(
@@ -114,9 +114,9 @@ fn checkpoint_request_fingerprint(
         request.base_image_fingerprint.as_str(),
         request.effect_id.as_str(),
         request.format.as_str(),
-        effect_fence.operation_id.as_str(),
-        effect_fence.owner.as_str(),
-        effect_fence.runtime_incarnation.as_str(),
+        effect_fence.operation_id(),
+        effect_fence.owner(),
+        effect_fence.runtime_incarnation(),
     ] {
         hasher.update(&(value.len() as u64).to_be_bytes());
         hasher.update(value.as_bytes());
@@ -125,7 +125,7 @@ fn checkpoint_request_fingerprint(
         request.created_at_unix_ms,
         request.expires_at_unix_ms,
         request.max_bytes,
-        effect_fence.epoch,
+        effect_fence.epoch(),
     ] {
         hasher.update(&value.to_be_bytes());
     }
@@ -549,6 +549,7 @@ impl LocalSandbox {
 mod tests {
     use super::super::workdir_helper_tests::{CheckpointPause, CheckpointStore, workdir_spec};
     use super::*;
+    use awaken_provisioning_contract::test_support::FenceTamper as _;
     use pc::test_support::EffectAuthority;
     use std::sync::{Arc, atomic::Ordering};
     use std::time::Duration;
@@ -602,17 +603,17 @@ mod tests {
                         "expire" => {
                             authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
                         }
-                        "operation" => authority
-                            .current
-                            .lock()
-                            .unwrap()
-                            .as_mut()
-                            .unwrap()
-                            .0
-                            .operation_id
-                            .push('x'),
+                        "operation" => {
+                            let mut guard = authority.current.lock().unwrap();
+                            guard
+                                .as_mut()
+                                .unwrap()
+                                .0
+                                .tamper(|w| w.operation_id.push('x'));
+                        }
                         "generation" => {
-                            authority.current.lock().unwrap().as_mut().unwrap().0.epoch += 1
+                            let mut guard = authority.current.lock().unwrap();
+                            guard.as_mut().unwrap().0.reassign();
                         }
                         _ => {}
                     }
@@ -702,19 +703,16 @@ mod tests {
                 assert_eq!(store.objects.lock().unwrap().len(), 1);
                 match change {
                     "revoke" => *authority.current.lock().unwrap() = None,
-                    "replace" => authority.current.lock().unwrap().as_mut().unwrap().0.epoch += 1,
+                    "replace" => {
+                        let mut guard = authority.current.lock().unwrap();
+                        guard.as_mut().unwrap().0.reassign();
+                    }
                     "expire" => {
                         authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
                     }
                     "renew" => {
-                        authority
-                            .current
-                            .lock()
-                            .unwrap()
-                            .as_mut()
-                            .unwrap()
-                            .0
-                            .expires_at_unix_ms += 1
+                        let mut guard = authority.current.lock().unwrap();
+                        guard.as_mut().unwrap().0.renew();
                     }
                     _ => {}
                 }
@@ -887,14 +885,12 @@ mod tests {
                             authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
                         }
                         "renew" => {
-                            authority
-                                .current
-                                .lock()
-                                .unwrap()
+                            let mut guard = authority.current.lock().unwrap();
+                            guard
                                 .as_mut()
                                 .unwrap()
                                 .0
-                                .expires_at_unix_ms = u64::MAX
+                                .tamper(|w| w.expires_at_unix_ms = u64::MAX);
                         }
                         "cancel" => {}
                         _ => unreachable!(),

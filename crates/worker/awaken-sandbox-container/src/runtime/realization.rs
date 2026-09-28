@@ -7,7 +7,6 @@ use super::{
     ExistingRealization, ExistingRealizationDecision, ExistingRealizationPhase,
     ExistingRealizationRecovery, RebuildContinuityEvidence, RuntimeError,
 };
-use awaken_lease_contract::fence::FenceToken as _;
 use awaken_provisioning_contract as pc;
 
 const fn observation_admitted(
@@ -104,7 +103,7 @@ pub(crate) fn existing_realization_decision(
         )));
     }
     if !observed_fence.authorizes_successor(expected_fence)
-        || (observed_fence.epoch == expected_fence.epoch
+        || (observed_fence.epoch() == expected_fence.epoch()
             && matches!(context.intent, crate::ContainerRealizationIntent::Create)
             && !observed_fence.same_effect_identity(expected_fence))
     {

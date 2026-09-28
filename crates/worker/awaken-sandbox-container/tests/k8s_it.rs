@@ -2085,7 +2085,7 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
                 .annotations
                 .as_ref()
                 .and_then(|annotations| annotations.get("awaken.dev/sandbox-effect"))
-                .is_some_and(|operation| operation == &foreign_fence.operation_id)
+                .is_some_and(|operation| operation == foreign_fence.operation_id())
         });
     assert!(!foreign_claim_created, "KPV2 E1 zero PVC creation");
     assert_eq!(

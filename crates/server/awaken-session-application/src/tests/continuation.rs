@@ -1671,12 +1671,12 @@ async fn disposal_failure_retries_without_recheckpointing() {
         "C4 immutable preparation",
     );
     assert_eq!(
-        authorizations[0].effect_fence().operation_id,
-        authorizations[1].effect_fence().operation_id,
+        authorizations[0].effect_fence().operation_id(),
+        authorizations[1].effect_fence().operation_id(),
         "C4 one physical operation",
     );
-    assert_eq!(authorizations[0].effect_fence().epoch, 4, "C4 A delivery");
-    assert_eq!(authorizations[1].effect_fence().epoch, 5, "C4 B takeover");
+    assert_eq!(authorizations[0].effect_fence().epoch(), 4, "C4 A delivery");
+    assert_eq!(authorizations[1].effect_fence().epoch(), 5, "C4 B takeover");
 }
 
 #[tokio::test]
@@ -1778,11 +1778,13 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
     let authorizations = runtime.disposal_authorizations.lock().unwrap();
     assert_eq!(authorizations.len(), 1, "P2");
     assert_eq!(
-        authorizations[0].prepared_effect_fence().expires_at_unix_ms,
+        authorizations[0]
+            .prepared_effect_fence()
+            .expires_at_unix_ms(),
         200_000,
         "P2 persisted A",
     );
-    assert_eq!(authorizations[0].effect_fence().epoch, 5, "P2 current B");
+    assert_eq!(authorizations[0].effect_fence().epoch(), 5, "P2 current B");
 }
 
 #[tokio::test]

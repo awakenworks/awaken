@@ -1043,11 +1043,11 @@ mod tests {
             None,
         );
         let fence = fenced.sandbox_effect_fence().unwrap().unwrap();
-        assert_eq!(fence.operation_id, fenced.effect_id, "R5 operation");
-        assert_eq!(fence.owner, "worker-a", "R5 owner");
-        assert_eq!(fence.runtime_incarnation, "runtime-a", "R5 runtime");
-        assert_eq!(fence.epoch, 9, "R5 epoch");
-        assert_eq!(fence.expires_at_unix_ms, 1_000, "R5 expiry");
+        assert_eq!(fence.operation_id(), fenced.effect_id, "R5 operation");
+        assert_eq!(fence.owner(), "worker-a", "R5 owner");
+        assert_eq!(fence.runtime_incarnation(), "runtime-a", "R5 runtime");
+        assert_eq!(fence.epoch(), 9, "R5 epoch");
+        assert_eq!(fence.expires_at_unix_ms(), 1_000, "R5 expiry");
     }
 
     #[test]
@@ -1664,29 +1664,29 @@ mod tests {
             let disposal = state.source_release_disposal(current).unwrap();
             let provider = disposal.sandbox_disposal_authorization().unwrap();
             assert_eq!(
-                provider.prepared_effect_fence().operation_id,
+                provider.prepared_effect_fence().operation_id(),
                 operation.effect_id,
                 "{rule} prepared A",
             );
             assert_eq!(
-                provider.prepared_effect_fence().expires_at_unix_ms,
+                provider.prepared_effect_fence().expires_at_unix_ms(),
                 prepared_lease.expires_at_unix_ms,
                 "{rule} exact renewed A",
             );
             assert_eq!(
-                provider.effect_fence().owner,
+                provider.effect_fence().owner(),
                 current.owner,
                 "{rule} current owner",
             );
             assert_eq!(
-                provider.effect_fence().epoch,
+                provider.effect_fence().epoch(),
                 current.epoch,
                 "{rule} current epoch",
             );
             assert_eq!(
                 physical_operation_id
-                    .get_or_insert_with(|| provider.effect_fence().operation_id.clone()),
-                &provider.effect_fence().operation_id,
+                    .get_or_insert_with(|| provider.effect_fence().operation_id().to_owned()),
+                provider.effect_fence().operation_id(),
                 "{rule} one physical effect",
             );
             assert_eq!(

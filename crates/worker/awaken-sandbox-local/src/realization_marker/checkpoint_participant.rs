@@ -133,7 +133,7 @@ impl CheckpointParticipantGuard for ReadyOperationGuard {
         completed_checkpoint(
             &marker,
             request_fingerprint,
-            &self.operation_effect_fence.operation_id,
+            self.operation_effect_fence.operation_id(),
         )
     }
 
@@ -145,7 +145,7 @@ impl CheckpointParticipantGuard for ReadyOperationGuard {
         snapshot_size_bytes: u64,
     ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
         self.current_marker()?;
-        let operation_id = self.operation_effect_fence.operation_id.clone();
+        let operation_id = self.operation_effect_fence.operation_id().to_owned();
         let pending = pc::SandboxCheckpointUpload::pending(
             operation_id,
             request_fingerprint,
@@ -162,7 +162,7 @@ impl CheckpointParticipantGuard for ReadyOperationGuard {
         reference: &pc::SandboxCheckpointRef,
     ) -> Result<(), pc::SandboxError> {
         self.current_marker()?;
-        let operation_id = self.operation_effect_fence.operation_id.clone();
+        let operation_id = self.operation_effect_fence.operation_id().to_owned();
         complete_checkpoint_upload(
             &self.root,
             &self.lock,
@@ -192,7 +192,7 @@ impl CheckpointParticipantGuard for RemovalGuard {
                     "terminal checkpoint participant has no bound Suspend effect",
                 )
             })?;
-        completed_checkpoint(&marker, request_fingerprint, &operation_id.operation_id)
+        completed_checkpoint(&marker, request_fingerprint, operation_id.operation_id())
     }
 
     fn begin_checkpoint_upload(
@@ -210,8 +210,8 @@ impl CheckpointParticipantGuard for RemovalGuard {
                     "terminal checkpoint participant has no bound Suspend effect",
                 )
             })?
-            .operation_id
-            .clone();
+            .operation_id()
+            .to_owned();
         let pending = pc::SandboxCheckpointUpload::pending(
             operation_id,
             request_fingerprint,
@@ -235,8 +235,8 @@ impl CheckpointParticipantGuard for RemovalGuard {
                     "terminal checkpoint participant has no bound Suspend effect",
                 )
             })?
-            .operation_id
-            .clone();
+            .operation_id()
+            .to_owned();
         complete_checkpoint_upload(
             &self.root,
             &self.lock,

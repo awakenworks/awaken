@@ -4,7 +4,6 @@
 //! Kubernetes realization of one retained active-filesystem volume.
 
 use crate::ContainerContinuationHandle;
-use awaken_lease_contract::fence::FenceToken as _;
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
     PersistentVolumeClaim, PersistentVolumeClaimSpec, Pod, VolumeResourceRequirements,
@@ -63,7 +62,7 @@ pub(super) fn create_claim_admission(
         ));
     };
     if !observed_fence.same_effect_identity(expected)
-        || observed_fence.expires_at_unix_ms > expected.expires_at_unix_ms
+        || observed_fence.expires_at_unix_ms() > expected.expires_at_unix_ms()
     {
         return Err(backend(
             "existing Kubernetes continuation PVC is owned by a newer or conflicting effect",

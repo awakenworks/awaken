@@ -124,9 +124,11 @@ async fn physical_disposal_rechecks_current_authority_after_every_retained_wait(
                 "entered {boundary}"
             );
             let mut current = authorization.effect_fence().clone();
-            current.expires_at_unix_ms += 1;
+            current = current
+                .with_persisted(|w| w.expires_at_unix_ms += 1)
+                .unwrap();
             if change == "replace" {
-                current.epoch += 1;
+                current = current.with_persisted(|w| w.epoch += 1).unwrap();
             }
             *authority.current.lock().unwrap() = if change == "revoke" {
                 None
@@ -220,10 +222,16 @@ async fn terminal_preparation_requires_current_authority_before_creating_or_reus
                     .unwrap();
             }
             let mut current = fence.clone();
-            current.expires_at_unix_ms += 1;
+            current = current
+                .with_persisted(|w| w.expires_at_unix_ms += 1)
+                .unwrap();
             match change {
-                "operation" => current.operation_id.push('x'),
-                "generation" => current.epoch += 1,
+                "operation" => {
+                    current = current
+                        .with_persisted(|w| w.operation_id.push('x'))
+                        .unwrap()
+                }
+                "generation" => current = current.with_persisted(|w| w.epoch += 1).unwrap(),
                 _ => {}
             }
             *authority.current.lock().unwrap() = if change == "revoke" {

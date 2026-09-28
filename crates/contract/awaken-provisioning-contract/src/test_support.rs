@@ -47,7 +47,7 @@ impl CurrentExecutionAuthority for EffectAuthority {
         let current = self.current.lock().unwrap();
         let (fence, remaining) = current.as_ref().ok_or(io::ErrorKind::PermissionDenied)?;
         if !asserted.same_effect_identity(fence)
-            || asserted.expires_at_unix_ms > fence.expires_at_unix_ms
+            || asserted.expires_at_unix_ms() > fence.expires_at_unix_ms()
             || remaining.is_zero()
         {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -125,10 +125,10 @@ pub async fn dispose_owned_fixture(
     let preparation = crate::SandboxDisposalPreparation::new(prepared, "fixture-prepared")?;
     let successor = SandboxEffectFence::new(
         preparation.operation_id()?,
-        fence.owner.clone(),
-        fence.runtime_incarnation.clone(),
-        fence.epoch,
-        fence.expires_at_unix_ms,
+        fence.owner(),
+        fence.runtime_incarnation(),
+        fence.epoch(),
+        fence.expires_at_unix_ms(),
     )?;
     let authorization = preparation.authorize(successor.clone())?;
     let successor_authority = EffectAuthority::new(&successor);
@@ -193,4 +193,30 @@ pub fn fixture_legacy_handle(
         locator,
     )
     .expect("fixture legacy payload is one object")
+}
+
+/// Tamper one persisted coordinate of a fixture's fence in place, through the
+/// fence's one admission. Consumers: provider decision tables that advance,
+/// renew or corrupt the current authority of an [`EffectAuthority`] fixture
+/// row by row.
+pub trait FenceTamper {
+    fn tamper(&mut self, edit: impl FnOnce(&mut crate::SandboxEffectFenceWire));
+
+    /// Extend expiry by one millisecond: a renewal of the same tenure.
+    fn renew(&mut self) {
+        self.tamper(|wire| wire.expires_at_unix_ms += 1);
+    }
+
+    /// Advance to the next epoch under the same holder: a reassignment.
+    fn reassign(&mut self) {
+        self.tamper(|wire| wire.epoch += 1);
+    }
+}
+
+impl FenceTamper for SandboxEffectFence {
+    fn tamper(&mut self, edit: impl FnOnce(&mut crate::SandboxEffectFenceWire)) {
+        *self = self
+            .with_persisted(edit)
+            .expect("a tampered fixture fence stays admissible");
+    }
 }

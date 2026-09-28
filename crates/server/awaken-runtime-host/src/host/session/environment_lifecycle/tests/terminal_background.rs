@@ -155,7 +155,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         let binding = serde_json::to_string(&environment.handle()).unwrap();
         let identity = if durable {
             BoundSessionEnvironmentIdentity::Durable {
-                effect_id: create_fence.operation_id.clone(),
+                effect_id: create_fence.operation_id().to_owned(),
                 generation: durable_generation.clone(),
             }
         } else {
@@ -180,7 +180,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         projection.revision.0 += 1;
         projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
             binding: binding.clone(),
-            effect_id: durable.then(|| create_fence.operation_id.clone()),
+            effect_id: durable.then(|| create_fence.operation_id().to_owned()),
             generation: durable.then(|| durable_generation.clone()),
             idle_since_unix_ms: None,
         };
