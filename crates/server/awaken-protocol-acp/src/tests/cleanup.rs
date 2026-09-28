@@ -104,7 +104,15 @@ async fn cleanup_drains_trailing_output_but_never_infers_exit_from_eof() {
     }
 }
 
-#[tokio::test]
+// D14 requires the total-deadline branch to fire *after* the ladder has recorded
+// its signals, and every case below separates those timers by tens of
+// milliseconds: the 20ms grace spends ~50ms of the 80ms total budget. On a
+// loaded host the wall clock lets that budget pre-empt the ladder before TERM is
+// even requested, which reports D14's deadline error with no signals at all and
+// is indistinguishable from a real escalation regression. A paused clock
+// advances only to the next timer deadline, so the settle, grace and wait stages
+// elapse exactly and the budget still expires for the hanging-RPC cases.
+#[tokio::test(start_paused = true)]
 async fn signal_errors_require_later_exit_evidence_within_the_same_reap_budget() {
     // Causes: C1 exit already observed; C2 TERM succeeds/fails; C3 a grace poll
     // observes exit; C4 KILL succeeds/fails; C5 wait observes exit/errors/hangs;
