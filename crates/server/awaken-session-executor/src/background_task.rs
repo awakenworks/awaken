@@ -17,7 +17,7 @@ use awaken_agent_contract::stable_fingerprint;
 use awaken_ext_background_task::{
     BackgroundTask, BackgroundTaskCompletion, BackgroundTaskEnd, BackgroundTaskId,
     BackgroundTaskLifecycle, BackgroundTaskSupervisor, BackgroundTaskWaitCandidate, BackgroundWait,
-    TaskFence, tasks_from_state,
+    TaskTenure, tasks_from_state,
 };
 use awaken_runtime::{PreparedToolExecutor, Runtime};
 use awaken_runtime_contract::ExecutableAgentSnapshot;
@@ -49,15 +49,15 @@ const DEFAULT_REMOTE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 fn attention_identity(
     thread_id: &awaken_runtime_contract::ThreadId,
     task_id: &BackgroundTaskId,
-    fence: &TaskFence,
+    fence: &TaskTenure,
     kind: &BackgroundAttention,
 ) -> String {
     stable_fingerprint(&(
         "background-task-attention-v1",
         thread_id.0.as_str(),
         task_id.as_str(),
-        fence.worker_id.as_str(),
-        fence.epoch,
+        fence.holder().as_str(),
+        fence.epoch().get(),
         kind.identity(),
     ))
 }
@@ -92,7 +92,7 @@ impl BackgroundAttention {
 fn attention_message(
     thread_id: &awaken_runtime_contract::ThreadId,
     task_id: &BackgroundTaskId,
-    fence: &TaskFence,
+    fence: &TaskTenure,
     kind: &BackgroundAttention,
 ) -> (String, Message) {
     let identity = attention_identity(thread_id, task_id, fence, kind);
@@ -117,7 +117,7 @@ async fn publish_attention(
     application: Option<std::sync::Weak<dyn SessionRunBackgroundApplication>>,
     thread_id: &awaken_runtime_contract::ThreadId,
     task_id: &BackgroundTaskId,
-    fence: &TaskFence,
+    fence: &TaskTenure,
     kind: BackgroundAttention,
 ) {
     let Some(application) = application.and_then(|application| application.upgrade()) else {
@@ -212,7 +212,7 @@ impl BackgroundTaskTerminalObserver {
     }
 
     fn completion(
-        fence: TaskFence,
+        fence: TaskTenure,
         output: Result<ToolOutput, String>,
     ) -> BackgroundTaskCompletion {
         let end = match output {
@@ -228,7 +228,7 @@ impl BackgroundTaskTerminalObserver {
         BackgroundTaskCompletion { fence, end }
     }
 
-    fn indeterminate(fence: TaskFence, message: impl Into<String>) -> BackgroundTaskCompletion {
+    fn indeterminate(fence: TaskTenure, message: impl Into<String>) -> BackgroundTaskCompletion {
         BackgroundTaskCompletion {
             fence,
             end: BackgroundTaskEnd::Indeterminate {
@@ -238,7 +238,7 @@ impl BackgroundTaskTerminalObserver {
     }
 
     fn start_failure(
-        fence: TaskFence,
+        fence: TaskTenure,
         kind: ToolKind,
         message: impl Into<String>,
     ) -> BackgroundTaskCompletion {
@@ -260,7 +260,7 @@ impl BackgroundTaskTerminalObserver {
 
     async fn launch(&self, task: BackgroundTask) {
         let attempt = task.attempt().expect("committed Running attempt");
-        let fence = attempt.fence();
+        let fence = attempt.tenure(&task.id);
         let expected = attempt.policy.clone();
         let Some(cancellation) = self.supervisor.register(&task.id, &fence) else {
             return;
@@ -454,7 +454,7 @@ impl BackgroundTaskTerminalObserver {
             } => (attempt, handle.clone(), true),
             _ => unreachable!("committed remote continuation"),
         };
-        let fence = attempt.fence();
+        let fence = attempt.tenure(&task.id);
         let expected = attempt.policy.clone();
         let lease_expires_at_ms = attempt.lease_expires_at_ms;
         let cancellation = self
@@ -602,7 +602,7 @@ impl BackgroundTaskTerminalObserver {
                         let change = stable_fingerprint(&(
                             "background-task-watchdog-v1",
                             task_id.as_str(),
-                            fence.epoch,
+                            fence.epoch().get(),
                             lease_expires_at_ms,
                         ));
                         publish_attention(
@@ -630,7 +630,7 @@ impl BackgroundTaskTerminalObserver {
                     let operation = format!(
                         "background:{}:{}:{}",
                         task_id.as_str(),
-                        fence.epoch,
+                        fence.epoch().get(),
                         if cancelling && !cancel_sent { "cancel" } else { "poll" }
                     );
                     let observed = if cancelling && !cancel_sent {
@@ -717,7 +717,7 @@ impl BackgroundTaskTerminalObserver {
                             let change = stable_fingerprint(&(
                                 "background-task-input-required-v1",
                                 task_id.as_str(),
-                                fence.epoch,
+                                fence.epoch().get(),
                                 message.as_deref().unwrap_or_default(),
                             ));
                             publish_attention(
@@ -808,7 +808,7 @@ impl BackgroundTaskTerminalObserver {
                 BackgroundTaskLifecycle::Cancelling { attempt, .. }
                     if attempt.worker_id == self.supervisor.worker_id() =>
                 {
-                    self.supervisor.cancel(&task.id, &attempt.fence());
+                    self.supervisor.cancel(&task.id, &attempt.tenure(&task.id));
                 }
                 BackgroundTaskLifecycle::Ended { .. } => self.supervisor.retire_terminal(&task.id),
                 _ => {}
@@ -942,14 +942,16 @@ mod tests {
         // state, never completion content or invocation secrets.
         let thread = ThreadId("attention-thread".into());
         let task = BackgroundTaskId::new("attention-task").expect("task id");
-        let first = TaskFence {
-            worker_id: "worker-secret".into(),
-            epoch: 1,
-        };
-        let second = TaskFence {
-            worker_id: "worker-secret".into(),
-            epoch: 2,
-        };
+        let first = awaken_lease_contract::fence::Tenure::granted(
+            BackgroundTaskId::new("task").expect("task id"),
+            "worker-secret".into(),
+            awaken_lease_contract::fence::Epoch::from_persisted(1).unwrap(),
+        );
+        let second = awaken_lease_contract::fence::Tenure::granted(
+            BackgroundTaskId::new("task").expect("task id"),
+            "worker-secret".into(),
+            awaken_lease_contract::fence::Epoch::from_persisted(2).unwrap(),
+        );
         let (operation_a, message_a) =
             attention_message(&thread, &task, &first, &BackgroundAttention::Terminal);
         let (operation_retry, message_retry) =
@@ -981,10 +983,11 @@ mod tests {
         // protocol target loses or rejects the start response -> Indeterminate,
         // because no durable remote task id crossed ThreadCommit and replay may
         // duplicate an external effect. Both rows preserve the original fence.
-        let fence = TaskFence {
-            worker_id: "worker".into(),
-            epoch: 7,
-        };
+        let fence = awaken_lease_contract::fence::Tenure::granted(
+            BackgroundTaskId::new("task").expect("task id"),
+            "worker".into(),
+            awaken_lease_contract::fence::Epoch::from_persisted(7).unwrap(),
+        );
         let regular = BackgroundTaskTerminalObserver::start_failure(
             fence.clone(),
             ToolKind::Regular,
@@ -1016,10 +1019,11 @@ mod tests {
         // one Indeterminate candidate, never Failed/Completed. Both launch
         // branches call this single classifier; Runtime continuation tests own
         // the start/poll/cancel error mapping itself.
-        let fence = TaskFence {
-            worker_id: "worker".into(),
-            epoch: 9,
-        };
+        let fence = awaken_lease_contract::fence::Tenure::granted(
+            BackgroundTaskId::new("task").expect("task id"),
+            "worker".into(),
+            awaken_lease_contract::fence::Epoch::from_persisted(9).unwrap(),
+        );
 
         let completion = BackgroundTaskTerminalObserver::indeterminate(
             fence.clone(),
@@ -1047,10 +1051,11 @@ mod tests {
         // definitive. Exact operation identity makes response-loss retry safe.
         let thread = ThreadId("attention-thread".into());
         let task = BackgroundTaskId::new("attention-task").expect("task id");
-        let fence = TaskFence {
-            worker_id: "worker".into(),
-            epoch: 1,
-        };
+        let fence = awaken_lease_contract::fence::Tenure::granted(
+            BackgroundTaskId::new("task").expect("task id"),
+            "worker".into(),
+            awaken_lease_contract::fence::Epoch::from_persisted(1).unwrap(),
+        );
 
         publish_attention(None, &thread, &task, &fence, BackgroundAttention::Terminal).await;
 
@@ -1739,6 +1744,6 @@ mod tests {
                 .all(|call| { !call.messages[0].text_content().contains("remote-secret-id") }),
             "remote handle never reaches Agent"
         );
-        assert_eq!(fence.epoch, 1);
+        assert_eq!(fence.epoch().get(), 1);
     }
 }

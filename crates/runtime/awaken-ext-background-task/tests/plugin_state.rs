@@ -10,8 +10,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskCompletion, BackgroundTaskConfig,
     BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle, BackgroundTaskOrigin,
-    BackgroundTaskPlugin, BackgroundTaskSupervisor, TaskExecutionPolicy, TaskFence,
-    task_state_cell,
+    BackgroundTaskPlugin, BackgroundTaskSupervisor, TaskExecutionPolicy, task_state_cell,
 };
 use awaken_runtime_contract::plugin::{
     PhaseContext, PhaseHookPoint, PhaseKind, Plugin, ResolvedExecutionEnv,
@@ -154,7 +153,7 @@ async fn expired_cancellation_reconciliation_never_fabricates_remote_termination
                 assert!(
                     matches!(&next.lifecycle, BackgroundTaskLifecycle::Cancelling {
                     attempt, wait: Some(awaken_ext_background_task::BackgroundWait::Remote(actual))
-                } if attempt.worker_id == "replacement" && attempt.epoch == 2 && actual == &handle),
+                } if attempt.worker_id == "replacement" && attempt.epoch.get() == 2 && actual == &handle),
                     "R1"
                 );
             } else {
@@ -508,21 +507,22 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
         .expect("reclaimed task");
     let attempt = reclaimed.attempt().expect("reclaimed attempt");
     assert_eq!(attempt.worker_id, supervisor.worker_id());
-    assert_eq!(attempt.epoch, 2);
+    assert_eq!(attempt.epoch.get(), 2);
 
     assert!(
         supervisor
-            .register(&replacement.id, &replacement.attempt().unwrap().fence())
+            .register(&replacement.id, &replacement.tenure().unwrap())
             .is_some(),
         "C4 setup"
     );
     supervisor.complete(
         replacement.id.clone(),
         BackgroundTaskCompletion {
-            fence: TaskFence {
-                worker_id: "worker-old".into(),
-                epoch: 1,
-            },
+            fence: awaken_lease_contract::fence::Tenure::granted(
+                replacement.id.clone(),
+                "worker-old".into(),
+                awaken_lease_contract::fence::Epoch::FIRST,
+            ),
             end: BackgroundTaskEnd::Completed {
                 content: Vec::new(),
                 is_error: false,
@@ -540,14 +540,14 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     assert!(supervisor.completion(&replacement.id).is_none(), "C4/E4");
     assert!(
         supervisor
-            .register(&replacement.id, &attempt.fence())
+            .register(&replacement.id, &attempt.tenure(&replacement.id))
             .is_some(),
         "C4/E4 the stale guard no longer suppresses post-commit launch"
     );
     supervisor.complete(
         replacement.id.clone(),
         BackgroundTaskCompletion {
-            fence: attempt.fence(),
+            fence: attempt.tenure(&replacement.id),
             end: BackgroundTaskEnd::Indeterminate {
                 message: "retained-new-epoch".into(),
             },
@@ -563,7 +563,11 @@ async fn step_start_folds_completion_and_reclaims_only_after_lease_expiry() {
     let retained = supervisor
         .completion(&replacement.id)
         .expect("C5/E5 newer evidence retained");
-    assert_eq!(retained.fence, attempt.fence(), "C5/E5 exact identity");
+    assert_eq!(
+        retained.fence,
+        attempt.tenure(&replacement.id),
+        "C5/E5 exact identity"
+    );
     assert_eq!(
         retained.end,
         BackgroundTaskEnd::Indeterminate {
