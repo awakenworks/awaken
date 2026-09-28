@@ -130,6 +130,192 @@ async fn native_worker_freezes_binding_before_tool_entry_and_clears_on_return() 
     }
 }
 
+struct ParentReturnsBeforeChild {
+    release: Arc<tokio::sync::Semaphore>,
+    child: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    returned: tokio::sync::Notify,
+    evidence: std::sync::Mutex<Option<awaken_runtime_contract::runtime_context::AttemptQuiescence>>,
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for ParentReturnsBeforeChild {
+    async fn execute(
+        &self,
+        activation: awaken_runtime_contract::RunActivation,
+        context: RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let child_entered = entered.clone();
+        let release = self.release.clone();
+        let quiescence = context.physical_quiescence.clone();
+        *self.evidence.lock().unwrap() = Some(quiescence.clone());
+        *self.child.lock().unwrap() = Some(tokio::spawn(async move {
+            quiescence
+                .observe_return(async {
+                    child_entered.notify_one();
+                    release.acquire().await.unwrap().forget();
+                })
+                .await;
+        }));
+        entered.notified().await;
+        awaken_agent_contract::thread::commit::commit_run(
+            context.commit.as_deref().unwrap(),
+            &activation.thread_id,
+            awaken_agent_contract::thread::commit::RunDisposition::ended(
+                activation.run_id,
+                EndCause::Indeterminate,
+            ),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .map_err(|error| awaken_runtime_contract::execution::Error::Commit(error.to_string()))?;
+        self.returned.notify_one();
+        Ok(RunState::Ended(EndCause::Indeterminate))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for ParentReturnsBeforeChild {
+    async fn resume(
+        &self,
+        activation: awaken_runtime_contract::RunActivation,
+        _command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        self.execute(activation, context).await
+    }
+}
+
+async fn assert_parent_return_waits_for_all_participants<S: ControlDispatch + 'static>(
+    store: Arc<S>,
+    dropped: bool,
+) {
+    // Cause/effect graph: C1 exact physical attempt admitted; C2 parent commits
+    // Ended(Indeterminate) and returns; C3 inline child still active; C4 child
+    // returns OR its owned future drops. R1=C1+C2+C3 => no physical ACK and no
+    // Session settlement callback. R2=R1+returned child => exact slot retired,
+    // Done tombstone and callback once; original Indeterminate remains intact.
+    // R3=R1+dropped child => Unknown, retained slot, no callback or replay.
+    // The production Worker is used with both canonical backends; tests hold
+    // actual owned futures, not a fabricated receipt or private state mutation.
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let executor = Arc::new(ParentReturnsBeforeChild {
+        release: Arc::new(tokio::sync::Semaphore::new(0)),
+        child: Default::default(),
+        returned: Default::default(),
+        evidence: Default::default(),
+    });
+    let observer = Arc::new(RecoverySettlementObserver {
+        calls: AtomicUsize::new(0),
+        store: store.clone(),
+    });
+    store
+        .enqueue_session_child(
+            RunDispatch::new(activation("parent-before-child"))
+                .for_session(ThreadId("parent".into()))
+                .with_session_activity_epoch(1),
+            awaken_dispatch::SessionChildAdmission::new(25, Vec::new()),
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("owner-a", LEASE, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let claim = RunClaim::from(&claimed.lease);
+    let worker = DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "owner-a")
+        .with_settlement_observer(observer.clone());
+    worker.install_attempt_executor(executor.clone());
+    let mut drive =
+        tokio::spawn(async move { worker.drive_claimed(claimed, harness::clock(0)).await });
+    tokio::time::timeout(Duration::from_secs(5), executor.returned.notified())
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut drive)
+            .await
+            .is_err(),
+        "R1 active child keeps the owned drive"
+    );
+    assert!(
+        store
+            .load_physical_attempt(&claim.run_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "R1 occupied"
+    );
+    assert_eq!(
+        observer.calls.load(Ordering::SeqCst),
+        0,
+        "R1 callback withheld"
+    );
+    let evidence = executor.evidence.lock().unwrap().clone().unwrap();
+    assert!(
+        !evidence.permits_execution(),
+        "R1 closed domain rejects delayed work"
+    );
+    let child = executor.child.lock().unwrap().take().unwrap();
+    if dropped {
+        child.abort();
+        assert!(child.await.unwrap_err().is_cancelled());
+    } else {
+        executor.release.add_permits(1);
+        child.await.unwrap();
+    }
+    let result = tokio::time::timeout(Duration::from_secs(5), drive)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.is_some(), !dropped, "R2/R3 logical settlement");
+    assert_eq!(
+        store
+            .load_physical_attempt(&claim.run_id)
+            .await
+            .unwrap()
+            .is_none(),
+        !dropped,
+        "R2/R3 exact retirement"
+    );
+    assert_eq!(
+        observer.calls.load(Ordering::SeqCst),
+        usize::from(!dropped),
+        "R2/R3 callback count"
+    );
+    assert_eq!(
+        commit.run(&claim.run_id).unwrap().state,
+        RunState::Ended(EndCause::Indeterminate),
+        "R2/R3 no success fabrication"
+    );
+}
+
+#[tokio::test]
+async fn physical_ack_waits_for_all_participants_memory() {
+    for dropped in [false, true] {
+        let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+        assert_parent_return_waits_for_all_participants(
+            Arc::new(MemoryDispatchStore::new(clock.clock())),
+            dropped,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn physical_ack_waits_for_all_participants_sqlite() {
+    for dropped in [false, true] {
+        let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+        assert_parent_return_waits_for_all_participants(
+            Arc::new(SqliteDispatchStore::open_in_memory(clock.clock()).unwrap()),
+            dropped,
+        )
+        .await;
+    }
+}
+
 struct ContinuationOnlyAttemptExecutor {
     calls: AtomicUsize,
 }
