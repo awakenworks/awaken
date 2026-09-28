@@ -1,0 +1,32 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/SessionThreadToolComposition.tla",
+  "formal/tla/SessionThreadToolComposition.cfg",
+  "formal/tla/ThreadCommitProjection.tla",
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/runtime.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/runtime/awaken-runtime/tests/awaiting.rs",
+  "crates/runtime/awaken-runtime/tests/control.rs",
+  "crates/server/awaken-dispatch/tests/pool_memory.rs",
+]
+production_entrypoints = [
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/runtime.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+]
+
+[[bounds]]
+text = '''The composition model explores three Runs on two Threads, two calls per Run and at most two tool attempts. It composes the ThreadCommitProjection tool lifecycle with one physical-attempt slot per logical Thread; crash retains physical occupancy and only a separate observed process-bound receipt permits release.'''
+
+[[bounds]]
+text = '''The overlapping same-Thread exclusion responsibility is already owned and directly proved by session_execution.one_physical_attempt_per_thread through the canonical run-ingress physical-attempt kernel, with native direct and durable concurrency tables. Tool transition and executor-entry kernels remain owned by ActiveToolBatch. This row does not duplicate either owner; it records their bounded cross-Run composition.'''
+
+[[bounds]]
+text = '''Conditional recovery assumes fair process-bound receipt progress. The composition itself remains model_linked because no production kernel represents the full Session-to-Thread-to-Run mapping plus async ToolBatch recovery. Opaque remote termination, arbitrary Runs/calls/attempts, database and Tokio scheduling, and Rust-to-model refinement are not proved.'''

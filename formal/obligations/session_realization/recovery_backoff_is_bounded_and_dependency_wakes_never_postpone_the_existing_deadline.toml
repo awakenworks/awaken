@@ -1,0 +1,25 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.performance_and_long_run_stability",
+]
+evidence = [
+  "crates/server/awaken-session-application/src/realization/recovery_backoff.rs",
+  "crates/server/awaken-session-application/src/realization.rs",
+  "crates/server/awaken-session-application/src/tests/realization.rs",
+]
+proof_harnesses = [
+  "session_recovery_backoff_is_bounded_monotonic_and_saturating",
+  "dependency_wake_never_postpones_the_single_existing_deadline",
+  "external_wake_coalescing_is_bounded_and_never_postpones_recovery",
+  "only_an_empty_hint_driven_scan_arms_the_coalescing_window",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/realization/recovery_backoff.rs",
+  "crates/server/awaken-session-application/src/realization.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions; external wake coalescing is capped at one second, is capped by the arming scan's own elapsed cost, cannot pass the existing scheduled deadline, and is armed only by a hint-driven scan that settled no durable work. Tokio Notify delivery, timer accuracy, scheduling, database scan cost and distributed performance remain outside the kernel proof.'''

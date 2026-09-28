@@ -131,7 +131,7 @@ if [[ "${1:-}" = "--self-test" ]]; then
   SECONDS=$start_seconds
   ok "Pod and PVC waits share one physical cleanup deadline"
   # The deployment contract test is hermetic (it stubs docker/k3d/kubectl and
-  # evaluates this file's own initialization prefix), and formal/coverage.json
+  # evaluates this file's own initialization prefix), and the formal/obligations ledger
   # names it as the evidence for the realization-scope requirement. Evidence a
   # lane never runs is a claim nobody earned, so it runs here, beside the rollout
   # table, in the same self-test check-all.sh already selects.

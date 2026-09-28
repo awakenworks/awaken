@@ -1,0 +1,25 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionRootProof.tla",
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/execution_state.rs",
+  "crates/server/awaken-session-application/src/realization.rs",
+  "crates/server/awaken-session-application/src/activity.rs",
+  "crates/server/awaken-session-application/src/terminal.rs",
+]
+proof_harnesses = [
+  "terminal_execution_never_reopens",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/execution_state.rs",
+  "crates/server/awaken-session-application/src/realization.rs",
+  "crates/server/awaken-session-application/src/activity.rs",
+  "crates/server/awaken-session-application/src/terminal.rs",
+]
+
+[[bounds]]
+text = '''The linked TLAPS proof establishes the unbounded abstract terminal-absorption invariant; the named bounded Kani harness proves the production Rust transition predicate over every terminal state and execution-state target. Repository and adapter correctness remain outside the Rust kernel.'''

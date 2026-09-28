@@ -1,0 +1,17 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "model_linked"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/McpServer.tla",
+  "crates/server/awaken-mcp-server-core/src/formal.rs",
+]
+proof_harnesses = [
+  "notifications_never_have_a_jsonrpc_response",
+]
+production_entrypoints = [
+  "crates/server/awaken-mcp-server-core/src/formal.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

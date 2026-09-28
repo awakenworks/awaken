@@ -1,0 +1,36 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/MemoryParticipantOwnership.tla",
+  "formal/tla/MemoryParticipantOwnership.cfg",
+  "scripts/ci/formal_memory_mutations.py",
+  "docs/adr/0053-memory-store-fuse-mount.md",
+  "crates/worker/awaken-sandbox-local/src/namespace/memory_mount.rs",
+  "crates/worker/awaken-sandbox-local/src/memory_mount_owner.rs",
+  "crates/worker/awaken-sandbox-local/src/memory_mount_owner/tests.rs",
+  "crates/worker/awaken-sandbox-local/src/memory_mount_owner/tests/provider_tests.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "live_provider_prunes_only_observed_empty_unreferenced_memory_owners",
+]
+production_entrypoints = [
+  "crates/worker/awaken-sandbox-local/src/memory_mount_owner.rs",
+  "crates/worker/awaken-sandbox-local/src/namespace/memory_mount.rs",
+]
+
+[[bounds]]
+text = '''One live Provider root, one Copy-or-FUSE participant and two callers. Twelve semantic mutants and six witnesses check cancellation/response/pruning retention, typed no-effect versus unknown outcomes, failed unknown recovery, no duplicate mount on resume/reuse, exclusive borrowing, fresh admission/root checks, Copy baseline preservation and settled acknowledgement. The TLA+ result is independent bounded cross-evidence and is not claimed as universal Rust refinement.'''
+
+[[bounds]]
+text = '''MemoryMountRegistry is the sole live Local/Namespace Provider index. Its production retain_memory_owner predicate now owns the complete prune decision: any external wrapper/waiter, currently borrowed state, pending or unknown operation, or returned guard retains the exact owner; only an observed empty unreferenced owner is pruned. Failed unknown recovery remains pending and failed teardown leaves its guard mounted, so both feed that same predicate rather than a parallel failure registry. Kani exhausts all sixteen independent Boolean combinations without user assumptions, stubs or domain reduction. The fixed Kani 0.67.0 and patched CBMC 6.8.0 cdee49cb/CaDiCaL 2.0.0 run verified one harness with zero of nine checks failed in 0.036314536 seconds of verification and 51.05 guarded seconds, at 134668 KiB peak aggregate RSS and 52468464 KiB minimum MemAvailable under 600-second, 12-GiB RSS and 12-GiB available-memory guards, with -j1 and RUSTC_WRAPPER empty.'''
+
+[[bounds]]
+text = '''The adjacent native cause/effect table independently crosses external reference, observable/borrowed state, pending responsibility and mounted responsibility. Existing async tables exercise both Provider entrypoints, caller cancellation before and after guard creation, unknown recovery, failed cleanup, wrapper Drop, concurrent Namespace attach, six root replacement cuts and real Memoryd Copy reconciliation with a no-second-harvest negative control. An exact source mutant that ignored pending responsibility failed the decision table and was restored byte-for-byte.'''
+
+[[bounds]]
+text = '''This direct proof establishes only the canonical live-Provider pruning decision. Arc strong-count observation, Tokio Mutex exclusion and cancellation, future polling, MemoryMounter outcome honesty, root identity, teardown success, marker/Session authority and the mapping from asynchronous effects into pending or mounted fields remain executable evidence, implementation boundary or async TCB. Container staging uses the same typed port but is a different physical owner. Process/Provider death, unconditional liveness, unbounded inventory, hostile-host confinement, remote commit fencing and cross-platform runtime qualification remain outside this proof.'''

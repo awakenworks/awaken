@@ -1,0 +1,22 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/runtime/awaken-ext-permission/src/lib.rs",
+]
+proof_harnesses = [
+  "retired_mode_compiles_into_one_exact_unmatched_default",
+  "matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority",
+  "a_matching_deny_decides_the_whole_fold_whatever_else_matched",
+  "the_fold_returns_a_behavior_some_matching_rule_actually_carried",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-ext-permission/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''
+
+[[bounds]]
+text = '''The precedence proofs run on `fold_matches` over at most three symbolic matches, each carrying an arbitrary deciding-policy label, so they cover the whole fold rather than one step: deny is absolute across it, an empty match set yields no decision, and a returned behavior and policy label are always ones a single authored rule carried (the label is inert cargo and never influences precedence). Pattern matching is excluded by construction and belongs to awaken-tool-pattern; see runtime.permission.rule_match_enumeration in formal/proof-boundaries.json.'''

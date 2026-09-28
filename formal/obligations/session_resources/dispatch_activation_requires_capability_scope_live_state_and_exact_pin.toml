@@ -1,0 +1,52 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/ResourceDispatch.tla",
+  "formal/tla/ResourceDispatch.cfg",
+  "crates/contract/awaken-worker-contract/src/requirements.rs",
+  "crates/contract/awaken-worker-contract/src/lib.rs",
+  "crates/server/awaken-session-executor/src/host/placement.rs",
+  "crates/bin/awaken-worker/src/manifest.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+  "crates/bin/awaken-worker/src/tests.rs",
+  "crates/server/awaken-session-executor/src/dispatch_session_runtime.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_dispatch.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
+  "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
+  "crates/server/awaken-session-executor/src/skill_catalog.rs",
+  "crates/contract/awaken-resource-contract/src/registry.rs",
+  "crates/resources/awaken-resource-application/src/registry.rs",
+  "crates/contract/awaken-session-configuration-contract/src/skill_execution.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/tests.rs",
+  "crates/server/awaken-session-executor/src/host/tests.rs",
+]
+proof_harnesses = [
+  "required_worker_capability_cannot_be_omitted",
+  "dispatched_resource_manifest_requires_exact_nonempty_scope",
+  "live_resource_binding_requires_exact_scope_active_state_and_existing_pin",
+  "skill_execution_pin_requires_exact_workspace_revision_and_hash",
+]
+production_entrypoints = [
+  "crates/contract/awaken-worker-contract/src/requirements.rs",
+  "crates/server/awaken-session-executor/src/host/placement.rs",
+  "crates/bin/awaken-worker/src/manifest.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+  "crates/server/awaken-session-executor/src/dispatch_session_runtime.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_dispatch.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
+  "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
+  "crates/server/awaken-session-executor/src/skill_catalog.rs",
+  "crates/contract/awaken-resource-contract/src/registry.rs",
+  "crates/resources/awaken-resource-application/src/registry.rs",
+]
+
+[[bounds]]
+text = '''Kani exhaustively checks the production per-capability admission predicate for both requirement-presence and offered-capability classes, the dispatch scope predicate for all nonempty/exact-match classes, and the shared MemoryStore/Repository live-binding predicate across every Workspace-match, lifecycle-state and frozen-config-presence combination. can_claim applies the capability predicate to every required capability, dispatch decoding consumes the scope predicate, and both live aggregate verifiers consume the binding predicate.'''
+
+[[bounds]]
+text = '''Decision-table, property and integration tests cover concrete BTreeSet traversal and MissingCapability identity, Worker manifest capability derivation, String trimming/equality and manifest decoding before sandbox creation, plus frozen Memory config reuse, missing pin rejection and later lifecycle revocation. The scalar proofs do not universally refine arbitrary collection iteration, String/JSON implementations, database reads, authenticated transport, filesystem/provider behavior, network delivery, Worker execution equivalence or all asynchronous schedules.'''

@@ -206,7 +206,10 @@ def build_manifest(
         if item["id"] != "external.llm_semantics"
     ]
     return {
-        "schema_version": 3,
+        # Schema 4: the coverage ledger is assembled from formal/coverage.toml,
+        # formal/obligations/**.toml and source anchors, so its digest is the
+        # digest of the canonical assembled bytes rather than of one file.
+        "schema_version": 4,
         "source_digest_basis": "git-blob" if proof_run is not None else "working-tree",
         "profile": profile,
         "source_commit": source_commit,
@@ -215,7 +218,9 @@ def build_manifest(
             "digest": digest_file(artifact),
         },
         "ledger_digests": {
-            "coverage": source_digest("formal/coverage.json"),
+            # Assembled from the index, which a git-blob release requires to
+            # be the clean source commit, so it is the committed ledger.
+            "coverage": formal_ledger.digest(coverage),
             "features": source_digest("formal/features.json"),
             "assumptions": source_digest("formal/assumptions.json"),
             "proof_boundaries": source_digest("formal/proof-boundaries.json"),
@@ -363,7 +368,7 @@ def validate_manifest(
     runtime_fingerprint: dict | None = None,
     now: int | None = None,
 ) -> None:
-    if manifest.get("schema_version") != 3:
+    if manifest.get("schema_version") != 4:
         raise ContractError("unsupported manifest schema")
     if manifest.get("profile") not in PROFILES:
         raise ContractError("unknown manifest profile")
@@ -431,7 +436,7 @@ class VerificationManifestTests(unittest.TestCase):
         root = directory / "source"
         prepare_source_fixture(root, {
             ".gitignore": "target/\ndist/\ndeploy/images/management/.awaken-management.bin\ndeploy/images/management/.awaken-verification.json\n",
-            "formal/coverage.json": json.dumps({"obligations": [row]}) + "\n",
+            **formal_ledger.files({"obligations": [row]}),
             "formal/features.json": json.dumps({"features": [feature]}) + "\n",
             "formal/assumptions.json": '{"assumptions": []}\n',
             "formal/proof-boundaries.json": '{"boundaries": []}\n',
@@ -517,7 +522,7 @@ class VerificationManifestTests(unittest.TestCase):
             for profile in ("awaken-verified-v1", "unknown"):
                 with self.subTest(profile=profile), self.assertRaisesRegex(ContractError, "requested release profile"):
                     validate_manifest(manifest, artifact, repository=root, expected_profile=profile, require_proof_execution=True)
-            mutations = [dict(manifest, schema_version=2), dict(manifest, source_digest_basis="working-tree"),
+            mutations = [dict(manifest, schema_version=3), dict(manifest, source_digest_basis="working-tree"),
                          dict(manifest, bounds=["invented"]), dict(manifest, proof_inputs_digest="sha256:" + "0" * 64),
                          dict(manifest, proof_execution=dict(manifest["proof_execution"], status="running")),
                          dict(manifest, proof_execution=dict(manifest["proof_execution"], runner={}))]
@@ -716,7 +721,7 @@ class VerificationManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             artifact = Path(temporary) / "awaken.tar.gz"
             artifact.write_bytes(b"artifact")
-            manifest.update(schema_version=3, profile="awaken-verified-v1", profile_result={"eligible": True},
+            manifest.update(schema_version=4, profile="awaken-verified-v1", profile_result={"eligible": True},
                             source_commit=source_commit(ROOT),
                             artifact={"name": artifact.name, "digest": digest_file(artifact)})
             with patch(f"{__name__}.build_manifest", return_value=manifest):
@@ -755,7 +760,7 @@ class VerificationManifestTests(unittest.TestCase):
             directory = Path(temporary)
             artifact = directory / "awaken.tar.gz"
             artifact.write_bytes(b"artifact")
-            manifest.update(schema_version=3, profile="awaken-verified-v1", profile_result={"eligible": True},
+            manifest.update(schema_version=4, profile="awaken-verified-v1", profile_result={"eligible": True},
                             source_commit=source_commit(ROOT),
                             artifact={"name": artifact.name, "digest": digest_file(artifact)})
             for name, value in (("manifest", manifest), ("evidence", evidence), ("target", target)):

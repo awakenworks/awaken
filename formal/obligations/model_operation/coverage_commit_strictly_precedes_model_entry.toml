@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "crates/contract/awaken-runtime-contract/src/attempt_termination.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
+  "crates/runtime/awaken-runtime/tests/execution.rs",
+  "crates/bin/awaken-cli/src/worker_transport_security/kubernetes/tests.rs",
+  "crates/bin/awaken-cli/src/worker_transport_security/kubernetes/tests/live.rs",
+]
+proof_harnesses = [
+  "native_coverage_must_be_committed_strictly_before_model_entry",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/attempt_termination.rs",
+]
+
+[[bounds]]
+text = '''Kani calls the actual chronology predicate over every u64 coverage/model commit coordinate; a positive coverage coordinate must be strictly earlier. Same commit, zero, reversed order and MAX coverage refuse. Default checks retained; 0 of 2 failed.'''
+
+[[bounds]]
+text = '''The Native recovery classifier derives both coordinates from its existing aligned append-only recovery snapshot. Native T13 rejects simultaneous coverage/returned evidence. CLI mock/live recovery uses one actual Runtime model-only execution helper instead of manually constructing the barrier and terminal operation in one commit.'''
+
+[[bounds]]
+text = '''This is a scalar committed-order proof, not proof of complete enrollment, remote provider termination, durable/async consistency or Kubernetes honesty. The encompassing process/Native recovery obligation keeps its abstract grade. Actual Pod-bound Worker hard-crash qualification remains the existing distributed k3d scenario.'''

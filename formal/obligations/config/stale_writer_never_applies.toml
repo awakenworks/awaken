@@ -1,0 +1,44 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/AggregateCAS.tla",
+  "formal/tla/AggregateCAS.cfg",
+  "crates/control/awaken-config-store/src/lib.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/control/awaken-config-store/tests/integration.rs",
+  "crates/control/awaken-config-store/tests/postgres.rs",
+  "crates/control/awaken-config-store/tests/support/revision_cas.rs",
+  "crates/control/awaken-config-store/tests/support/audit_identity.rs",
+  "crates/stores/awaken-sql-storage/src/lib.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/check_formal_mutations.py",
+  "scripts/ci/formal_config_mutations.py",
+]
+proof_harnesses = [
+  "config_revision_admission_is_exact_and_nonwrapping",
+]
+production_entrypoints = [
+  "crates/control/awaken-config-store/src/lib.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''ConfigRevisionWritePlan is the sole Config-owned admission and expected/successor owner used by unconditional, ordinary and audited SQLite/PostgreSQL writes. Absence admits only expected zero for insert one; a present row admits only its positive exact expectation for a checked successor. Present zero, absent positive, stale and future expectations conflict with the observed revision, while invalid or exhausted expectations fail before SQL.'''
+
+[[bounds]]
+text = '''Kani exhausts every Option<u64> observed row and independent u64 caller expectation without assumptions through the production owner and StoredU64 conversion. config_revision_admission_is_exact_and_nonwrapping completed 193 checks with zero failures using fixed Kani 0.67.0 e43ae2c, patched CBMC 6.8.0 cdee49/CaDiCaL, -j1 and RUSTC_WRAPPER empty in 45.75 guarded seconds at 140212 KiB sampled peak aggregate tree RSS and 51624024 KiB minimum available memory under 600-second, 12582912-KiB RSS and 12582912-KiB available-memory guards.'''
+
+[[bounds]]
+text = '''SQLite evaluates every Config write under an IMMEDIATE transaction. PostgreSQL takes the same transaction-scoped advisory lock before observing absent or present rows, then retains SELECT FOR UPDATE and the expected-revision SQL predicate. All three modes pass the admitted plan into one existing statement seam rather than reimplementing admission.'''
+
+[[bounds]]
+text = '''Shared adapter tests cover absent, exact, stale, future, storage-boundary, scope, audit rollback, immutable history, reopen, pure CAS races and mixed unconditional/CAS races over independent connections. Exact source mutants that admit absent positive or ignore a present-row mismatch are rejected by the production decision-table test. The linked AggregateCAS semantic mutation gate kills five independent absent, stale, exhaustion, rejected-value and rejected-generation mutants.'''
+
+[[bounds]]
+text = '''The direct proof establishes repository-controlled stale-writer admission over the complete Rust input domain. SQL predicate interpretation, advisory and row locks, RETURNING, transaction isolation and atomicity, serialization, triggers, durability/crashes and arbitrary scheduler progress remain explicit database TCB or executable evidence; no Rust-to-TLA or universal database-engine refinement is claimed.'''

@@ -1,0 +1,31 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "model_linked"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionEnvironmentProjection.tla",
+  "formal/tla/SessionEnvironmentProjection.cfg",
+  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",
+  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/tests.rs",
+  "formal/tla/SessionEnvironmentConvergence.cfg",
+  "formal/runtime-refinement-manifest.json",
+  "crates/server/awaken-session-executor/src/session_slot/projection_receipt.rs",
+  "crates/server/awaken-session-executor/src/host/tests/projection_convergence.rs",
+  "crates/server/awaken-session-executor/src/application.rs",
+]
+proof_harnesses = [
+  "durable_projection_identity_is_exact_or_a_same_physical_owner_stutter",
+  "committed_candidate_retains_effect_kind_and_rejects_identity_relabeling",
+  "projection_revision_admission_is_monotonic_and_exact",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",
+  "crates/server/awaken-session-executor/src/application.rs",
+  "crates/server/awaken-session-executor/src/session_slot/projection_receipt.rs",
+]
+
+[[bounds]]
+text = '''The production closed identity reducers exhaust effect, binding, immutable generation, source-Adoption versus committed-Candidate origin decisions. Source receipt compatibility permits the next Adopt; committed receipt replay stays exact. Both publication and retention consume this reducer. Typed legacy upgrade, handle parsing, lifecycle locking and physical provider truth remain adapter/runtime TCB; inline Rust tables cover source mapping and SQLite dispatch fencing.'''
+
+[[bounds]]
+text = '''Root receipt admission proves the full u64 ordering kernel; digest collision resistance and complete aggregate snapshot provenance remain assumptions. The finite two-process A/B convergence configuration proves safety and eventual convergence under fair delivery and exact closure. ManagedHost Dispatch observations check the same model relation against actual before/after slots and Result; this is executed trace refinement, not universal async or physical-provider refinement.'''

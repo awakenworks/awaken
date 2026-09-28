@@ -1,0 +1,25 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteTool.tla",
+  "crates/contract/awaken-tool-contract/src/tool.rs",
+  "crates/worker/awaken-tool-relay/src/wire.rs",
+  "crates/worker/awaken-tool-relay/src/executor.rs",
+  "crates/worker/awaken-tool-relay/tests/relay.rs",
+]
+proof_harnesses = [
+  "durable_hand_identity_requires_the_runtime_operation_token",
+]
+production_entrypoints = [
+  "crates/contract/awaken-tool-contract/src/tool.rs",
+  "crates/worker/awaken-tool-relay/src/executor.rs",
+]
+
+[[bounds]]
+text = '''The production identity-source decision before Hand dispatch: a present Runtime token always selects the canonical ledger_id, durable recovery without that token rejects before dispatch, and only non-durable compatibility execution may use call identity. Kani proves the closed source decision; fingerprint collision resistance, serialization, Runtime context installation, transport delivery, and external orchestration remain implementation or external evidence.'''

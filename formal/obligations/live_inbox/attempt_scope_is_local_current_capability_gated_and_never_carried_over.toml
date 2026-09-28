@@ -1,0 +1,34 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/LiveInbox.tla",
+  "docs/adr/0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md",
+  "docs/design/run-ingress-message-delivery.md",
+  "crates/runtime/awaken-runtime/src/runtime.rs",
+  "crates/runtime/awaken-runtime/src/ingress.rs",
+  "crates/runtime/awaken-runtime/tests/control.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+  "crates/server/awaken-dispatch/tests/durable_memory.rs",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-runtime/src/runtime.rs",
+  "crates/runtime/awaken-runtime/src/ingress.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''Runtime::begin_active_attempt is the sole production scope owner shared by direct and durable execution. It replaces inherited input according to the executor's LiveInput capability, registers one process-local generation, filters discovery through exact generation and asynchronous ownership verification, closes queued input on Drop, and deregisters only that generation.'''
+
+[[bounds]]
+text = '''Native cause/effect tables cover no-live capability, replacement generation, wrong Thread, lost/unavailable ownership and post-Drop absence. WorkerContext tests reject inherited inboxes, and the durable-worker test observes an exact locally claimed inbox, committed boundary delivery, closure and a distinct empty inbox on the next attempt.'''
+
+[[bounds]]
+text = '''This row remains abstract because the production property composes RAII Drop, LiveInbox allocation and close, a Mutex<HashMap> generation registry, asynchronous AttemptOwnershipVerifier results, and executor capability wiring. There is no Rust-to-TLA refinement or direct implementation proof over that composition; a separate Boolean kernel would only mirror it. Tests do not prove scheduler behavior, panic/unwind cleanup, process death, remote placement, or durable fallback delivery.'''

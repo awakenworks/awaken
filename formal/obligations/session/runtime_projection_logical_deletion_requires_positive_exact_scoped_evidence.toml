@@ -1,0 +1,30 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/delivery.rs",
+  "crates/server/awaken-protocol-managed/src/routes/sessions/stream.rs",
+  "crates/server/awaken-protocol-managed/tests/streaming.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
+]
+proof_harnesses = [
+  "logical_deletion_observation_requires_positive_exact_scoped_evidence",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
+]
+
+[[bounds]]
+text = '''Kani directly invokes the actual logical-deletion read decision over every combination of root presence, exact Session id, exact owner, hidden disposition, terminal execution and positive owner-scoped tombstone presence. Current roots dominate tombstones; missing rows without a tombstone never prove deletion. Default checks retained; 0 of 3 failed.'''
+
+[[bounds]]
+text = '''The observer derives those values from the original Session repository under the existing bounded projection-read budget. Producer and observers use one deterministic immutable deletion-frame renderer; root cleanup timestamps are not fabricated as deletion completion observations. HTTP tests cover cache removal after subscription before body polling and another independent replica without local broadcast, reconnect or command resend.'''
+
+[[bounds]]
+text = '''The proof is scalar logical deletion, not physical quiescence or full async/storage refinement. Repository codec/owner-partition honesty, cross-read consistency, hashing and transport scheduling remain executable evidence or TCB. Native tests reject visible roots, wrong owners and bare absence.'''

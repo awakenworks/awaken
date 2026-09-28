@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.worker_host_executor_equivalence",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/WorkerDrain.tla",
+  "formal/tla/WorkerDrain.cfg",
+  "crates/bin/awaken-worker/src/lib.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+  "crates/bin/awaken-cli/src/service.rs",
+  "crates/server/awaken-session-executor/src/host.rs",
+  "crates/server/awaken-session-executor/src/host/build.rs",
+  "crates/server/awaken-session-executor/src/host/run.rs",
+  "crates/server/awaken-session-executor/src/host/tests.rs",
+]
+production_entrypoints = [
+  "crates/bin/awaken-worker/src/lib.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+  "crates/bin/awaken-cli/src/service.rs",
+  "crates/server/awaken-session-executor/src/host/build.rs",
+  "crates/server/awaken-session-executor/src/host/run.rs",
+]
+
+[[bounds]]
+text = '''WorkerDrain tracks up to three active attempts through grace expiry, cancellation, bounded observation and withdrawal; it does not assume opaque executor return. Production applies one absolute 20-second revocation deadline to local fencing/interruption, Runtime return observation, Session retirement, and the following unused Environment-capacity shutdown. SharedHost also bounds its initial pool-fence acquisition by the caller's absolute Runtime-drain deadline. The native phase table proves a pending return observer remains owned until that deadline, and that false return or any stalled/failed phase yields typed Unconfirmed rather than completion. The heartbeat returns that exact outcome to WorkerNode; it is not revoked a second time. AllInOne continues polling both HTTP surfaces until the Worker cleanup future returns. This remains abstract_model_checked: Tokio scheduling/timer truth, cancellation delivery, HTTP service progress, external executor/provider termination and process death are not directly proved.'''

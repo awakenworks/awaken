@@ -1,0 +1,47 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/WorkQueue.tla",
+  "formal/tla/WorkQueueProof.tla",
+  "crates/stores/awaken-work-store/src/lease_book.rs",
+  "crates/stores/awaken-work-store/src/inmem.rs",
+  "crates/stores/awaken-work-store/src/lib.rs",
+  "crates/stores/awaken-work-store/src/session_access.rs",
+  "crates/stores/awaken-work-store/src/schema.rs",
+  "crates/stores/awaken-work-store/src/inmem/loom_tests.rs",
+  "scripts/ci/check_formal.sh",
+  "crates/stores/awaken-work-store/src/mutation.rs",
+]
+proof_harnesses = [
+  "work_lease_authority_transition_is_complete_and_fenced",
+]
+production_entrypoints = [
+  "crates/stores/awaken-work-store/src/lease_book.rs",
+  "crates/stores/awaken-work-store/src/inmem.rs",
+  "crates/stores/awaken-work-store/src/lib.rs",
+  "crates/stores/awaken-work-store/src/session_access.rs",
+  "crates/stores/awaken-work-store/src/schema.rs",
+  "crates/stores/awaken-work-store/src/mutation.rs",
+]
+
+[[bounds]]
+text = '''Unbounded inductive invariant stated in the linked TLAPS proof; adapters remain outside the theorem.'''
+
+[[bounds]]
+text = '''The test-support in-memory WorkQueue now holds its existing Work rows, token digests and LeaseBook inside one aggregate mutex for complete commands and snapshots. Four real-port Loom scenarios with two competing threads and at most two preemptions cover release/wake/reacquire, token authentication/reclaim, owner teardown/reclaim and renewal/reclaim. The prior implementation fails both release and token-authentication scenarios. This is bounded reference-adapter concurrency evidence, not proof of SQL isolation, arbitrary schedules, token entropy or whole-queue implementation refinement; the abstract theorem grade is unchanged.'''
+
+[[bounds]]
+text = '''The unbounded TLAPS invariant remains abstract. Production durable claim/reclaim and exact Session release now read and mutate lease authority inside one SQLite Immediate transaction or one PostgreSQL environment-row/row lock transaction; the reference LeaseBook snapshots owner, epoch, and lease presence under its single authority mutex.'''
+
+[[bounds]]
+text = '''This remains below direct grade: the existing Kani kernels prove cutoff arithmetic, epoch arithmetic, mutation admission, and exact Session release admission, but no production-called kernel yet represents the complete claim, renew, reclaim, release authority tuple transition. Database and mutex linearizability remain TCB, not Kani proof.'''
+
+[[bounds]]
+text = '''The Work store's production-called tuple transition is the single decision owner for claim, renew, reclaim and exact release. Kani exhausts arbitrary u64 epochs, optional owner/refreshed/expiry fields, command classes and exact/mismatched authority: every applied result is either one complete authority tuple or one complete clear; claim advances exactly once without wrapping; renew preserves owner/epoch; reclaim and exact release clear without changing epoch; mismatched renew/release stutter.'''
+
+[[bounds]]
+text = '''SQLite Immediate transactions, PostgreSQL row/environment locks and the LeaseBook authority mutex are the linearization TCB. The kernel does not prove database engine behavior, clock truth, lock fairness, or physical durability.'''

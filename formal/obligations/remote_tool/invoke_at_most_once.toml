@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteTool.tla",
+  "crates/worker/awaken-tool-relay/src/ledger.rs",
+  "crates/worker/awaken-tool-relay/src/serve.rs",
+  "crates/worker/awaken-tool-relay/tests/relay.rs",
+]
+proof_harnesses = [
+  "ledger_begin_allows_claim_only_from_absent_and_never_from_replay",
+]
+production_entrypoints = [
+  "crates/worker/awaken-tool-relay/src/ledger.rs",
+  "crates/worker/awaken-tool-relay/src/serve.rs",
+]
+
+[[bounds]]
+text = '''The shared production begin disposition used by both Hand ledgers: only Absent can attempt a claim, Executing joins, and Completed replays. The filesystem ledger serializes local admission and uses create_new as its cross-process single-winner CAS. Kani proves the closed local phase decision; mutex/filesystem atomicity and durability, process crashes, tool semantics, network delivery, and external orchestration remain runtime or external evidence.'''

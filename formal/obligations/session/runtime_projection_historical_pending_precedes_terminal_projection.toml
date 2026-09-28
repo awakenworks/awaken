@@ -1,0 +1,34 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/SessionRuntimeProjection.tla",
+  "formal/tla/SessionRuntimeProjection.cfg",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/historical_pending.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "canonical_event_order_never_depends_on_wall_time",
+  "historical_pending_order_precedes_every_admitted_terminal",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/historical_pending.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The production historical-pending owner derives the synthetic tool event from the exact Awaiting audit. The sole canonicalizer now calls the proved ordering plan with that Awaiting source cursor and the next same-Run terminal-like lifecycle cursor; an inverted terminal coordinate withholds the pending order so the private candidate fails closed instead of publishing terminal history first.'''
+
+[[bounds]]
+text = '''Kani exhausts every u64 Awaiting/terminal source-coordinate pair, terminal absence/presence and optional arbitrary wall times. Every admitted historical pending order is strictly before its terminal, including equal source cursors through the canonical phase, while wall time cannot alter admission or order. The existing comparator harness separately proves every canonical sort axis ignores wall time.'''
+
+[[bounds]]
+text = '''The cause/effect integration test exercises real Awaiting audit decoding, synthetic answerable-event qualification, RequiresAction and EndTurn projection, then removes the warm cache and proves the cold rebuild is identical. Kani does not prove audit JSON decoding, lifecycle-event existence/provenance, asynchronous snapshot consistency, Session-root durability, event rendering or universal Rust-to-model refinement; those adapters remain executable-test or deployment TCB.'''

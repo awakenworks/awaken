@@ -1,0 +1,35 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.container_and_kernel_isolation",
+]
+evidence = [
+  "formal/tla/WorkspacePathProjection.tla",
+  "formal/tla/WorkspacePathProjection.cfg",
+  "crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs",
+  "crates/server/awaken-session-executor/src/provisioning.rs",
+  "crates/worker/awaken-sandbox-local/src/namespace.rs",
+  "crates/runtime/awaken-ext-builtin-tools/tests/hand.rs",
+  "crates/bin/awaken-sandbox/tests/namespace_hand_stdio.rs",
+]
+proof_harnesses = [
+  "workspace_path_projection_requires_exact_fidelity_admission",
+]
+production_entrypoints = [
+  "crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs",
+  "crates/server/awaken-session-executor/src/provisioning.rs",
+  "crates/worker/awaken-sandbox-local/src/namespace.rs",
+]
+
+[[bounds]]
+text = '''The linked TLA+ model remains a finite provider/admission/bind/tool transition check. It proves its abstract one-root and no-host-observation invariants; no universal Rust-to-model refinement is inferred.'''
+
+[[bounds]]
+text = '''Kani exhausts both required/not-required and advertised/not-advertised path-fidelity booleans through the production SandboxCapabilities::satisfies_requirements gate without assumptions. The fixed Kani 0.67.0 e43ae2c and patched CBMC 6.8.0 cdee49/CaDiCaL run completed 894 checks with zero failures in 1.00 guarded second at 147084 KiB peak aggregate process-tree RSS and 49582644 KiB minimum available memory under 600-second, 12582912-KiB aggregate-RSS and available-memory guards with -j1 and RUSTC_WRAPPER empty. This directly proves the production fail-closed admission kernel; WorkspaceLayout string operations, provider binding and tool rendering are covered by executable evidence rather than inferred from that Boolean proof.'''
+
+[[bounds]]
+text = '''The contract decision table executes the WorkspaceLayout root/child round trip and rejects empty, relative, traversal, prefix-lookalike, provider-host and runtime-owned path classes. The real Linux Namespace/Hand cause/effect test crosses successful Read/Glob/Edit/Bash/Git observations, read-only mutation failure, a missing logical path, Debug rendering and serialized HandResult errors. Every checked surface omits the provider realization root while Bash and Git observe /workspace; the standalone Hand test separately proves its diagnostic context exposes only shape and no workdir, projection, environment or launcher values.'''
+
+[[bounds]]
+text = '''Provider bind construction, mount-namespace and kernel enforcement, filesystem canonicalization and capabilities, arbitrary shell/Git/process output, serde implementation correctness and unobserved operator diagnostics remain executable or external boundaries. A caller that already supplies a host path as tool input or command output is outside the provider-generated-path claim.'''

@@ -1,0 +1,32 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/WorkerCredentialLiveness.tla",
+  "crates/contract/awaken-worker-contract/src/observation.rs",
+  "crates/contract/awaken-worker-contract/src/lib.rs",
+  "crates/contract/awaken-credential-contract/src/observation_admission.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+]
+proof_harnesses = [
+  "worker_dynamic_observation_requires_exact_fact_and_half_open_lease",
+  "worker_reference_revalidation_accepts_only_exact_available_state",
+  "physical_attempt_slot_installs_and_clears_only_exact_authority",
+]
+production_entrypoints = [
+  "crates/contract/awaken-worker-contract/src/observation.rs",
+  "crates/contract/awaken-credential-contract/src/observation_admission.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+]
+
+[[bounds]]
+text = '''The production placement kernel rejects future or expired half-open observations, the use-time credential kernel accepts only the exact Available reference, and physical-attempt admission rejects a non-current claim. Resolver I/O, clock correctness, lock/transaction serialization and external executor equivalence remain TCB assumptions.'''

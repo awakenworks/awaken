@@ -1,0 +1,26 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/control/awaken-agent-config/src/store.rs",
+  "crates/control/awaken-config-service/src/config_service/publication.rs",
+  "crates/control/awaken-config-service/src/registration_reconciliation.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/control/awaken-control/src/managed_agents.rs",
+]
+proof_harnesses = [
+  "publication_revision_decision_is_target_safe_fail_closed_and_replay_first",
+]
+production_entrypoints = [
+  "crates/control/awaken-agent-config/src/store.rs",
+  "crates/control/awaken-config-service/src/config_service/publication.rs",
+  "crates/control/awaken-config-service/src/registration_reconciliation.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/control/awaken-control/src/managed_agents.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

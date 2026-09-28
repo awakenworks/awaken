@@ -1,0 +1,38 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteWorkerProtocol.tla",
+  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
+  "crates/server/awaken-dispatch/src/application.rs",
+  "crates/server/awaken-dispatch/src/commit_fence.rs",
+  "crates/server/awaken-session-executor/src/commit_ingest.rs",
+  "crates/server/awaken-session-executor/src/store.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/coordinator.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+]
+proof_harnesses = [
+  "commit_epoch_guard_admits_only_complete_exact_claim",
+  "operation_identity_replays_only_the_same_run_and_payload",
+  "operation_append_requires_exact_prefix_and_nonwrapping_version",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
+  "crates/server/awaken-dispatch/src/application.rs",
+  "crates/server/awaken-dispatch/src/commit_fence.rs",
+  "crates/server/awaken-session-executor/src/commit_ingest.rs",
+  "crates/server/awaken-session-executor/src/store.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/coordinator.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+]
+
+[[bounds]]
+text = '''The claimed-commit application service now accepts only a resolver for an existing OperationCoordinator. A deployment adapter may select the physical Session partition from trusted dispatch truth, but it can no longer replace the write call: after claim, Run/Thread and payload validation, ClaimedCommitService itself invokes the sole OperationCoordinator::commit_operation boundary. Runtime Host's remote projection remains read-only and rejects authoritative writes.'''
+
+[[bounds]]
+text = '''The reused Kani kernels exhaust exact claim-owner/epoch admission, operation Run/payload replay identity and version/ordinal append admission. Rust trait-object construction, physical Session selection, backend implementation behavior, database isolation/durability, authentication and network delivery remain executable or external TCB evidence; the proof does not quantify over arbitrary downstream trait implementations or establish a universal whole-process refinement.'''

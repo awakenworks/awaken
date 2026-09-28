@@ -1,0 +1,31 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteWorkerProtocol.tla",
+  "crates/server/awaken-dispatch/src/recovery_projection.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-session-executor/src/worker_services.rs",
+  "crates/server/awaken-dispatch/tests/recovery_projection.rs",
+  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+]
+proof_harnesses = [
+  "recovery_snapshot_admission_requires_exact_claim_identity",
+  "acknowledged_projection_is_exact_monotonic_or_a_noop",
+]
+production_entrypoints = [
+  "crates/server/awaken-dispatch/src/recovery_projection.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-session-executor/src/worker_services.rs",
+]
+
+[[bounds]]
+text = '''The production recovery installation classifier and its Kani harness exhaust every Run/Thread identity class: only the exact guarded-dispatch identity can replace the Worker projection, with Run mismatch taking stable precedence and every rejection leaving the prior projection unchanged.'''
+
+[[bounds]]
+text = '''The existing receipt classifier and Kani harness exhaust all u64 Thread-version, operation-ordinal and store-cursor combinations. A receipt can only be an exact replay or the next commit, and the production updater appends that acknowledged operation without rolling counters back. The authoritative source's repeatable-read snapshot construction, transport delivery, database durability and Worker-host equivalence remain executable or external TCB evidence; this is not a universal Rust-to-TLA refinement.'''

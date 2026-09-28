@@ -1,0 +1,36 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/RunIngress.tla",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/sqlite/release_claim.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/tests/harness/mod.rs",
+  "crates/server/awaken-dispatch/tests/durable_memory.rs",
+  "crates/server/awaken-dispatch/tests/sqlite_dispatch.rs",
+  "crates/server/awaken-dispatch/tests/durable_postgres.rs",
+]
+proof_harnesses = [
+  "relinquish_requires_exact_current_claim_and_preserves_retry_budget",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/sqlite/release_claim.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the production DispatchTransition state, full u64 current/candidate epoch and attempt-count domains, owner equality, and all four physical-attempt slot classes without assumptions. Only an exact current Leased claim can transition; every applied Pending or Recovering result carries the unchanged retry budget.'''
+
+[[bounds]]
+text = '''Memory, SQLite, and PostgreSQL read attempt_count with the claim evidence under their existing aggregate lock or row transaction, consume the same reducer, and write back only its returned value. Mutex/row-lock exclusion, SQL compare-and-set execution, database durability, clocks, and adapter decoding remain native-conformance or TCB evidence rather than Kani claims.'''

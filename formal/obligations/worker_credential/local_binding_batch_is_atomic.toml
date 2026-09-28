@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/AcpLocalBindingBatch.tla",
+  "formal/tla/AcpLocalBindingBatch.cfg",
+  "crates/server/awaken-acp-application/src/lib.rs",
+  "crates/server/awaken-run-executor-acp/src/host/mod.rs",
+  "scripts/ci/formal_credential_mutations.py",
+  "crates/server/awaken-run-executor-acp/src/host/binding_batch_tests.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "local_binding_batch_publication_is_complete_or_stutters",
+]
+production_entrypoints = [
+  "crates/server/awaken-acp-application/src/lib.rs",
+  "crates/server/awaken-run-executor-acp/src/host/mod.rs",
+]
+
+[[bounds]]
+text = '''Two concurrent batches, three credential keys, revisions 1/2, independently Active/Disabled requested values, present/absent initial bindings and one observer. The existing model now separates per-key writes inside the retained mutex and checks exact decisions, each complete commit, rejected stutters and observed committed serial prefixes; a later legal status update may replace an earlier success. Six semantic mutants and six reachability witnesses cover prefix leaks, stale checks, missing writes, unlocked reads, unrelated-key loss, falsely rejected status changes, both writer orders and an observer between commits.'''
+
+[[bounds]]
+text = '''Native threads and Loom share 24 meaningful initial-state/revision/status rows plus four malformed-input races, calling the actual production from_bindings/add_bindings methods and observing the actual map under its mutex. Results, final map, observer and consecutive replays agree with a single serial order. Loom instruments only the mutex; four threads and a fail-closed 1000-branch per-schedule budget are used, with no permutation, duration, preemption or checkpoint truncation. Coordinator source-validation tests remain separate. No Kani or universal Rust/Mutex refinement is claimed; arbitrary input sizes/strings, external projection replacement, remote delivery, source rotation, panic/poison recovery and async login freshness remain outside this bounded schedule evidence.'''
+
+[[bounds]]
+text = '''Kani exhausts the three-member composition used by the production batch admission: publication is permitted iff every member is absent or exact, an accepted batch publishes every requested member, and any rejected position stutters every prior member. The production transaction immutably borrows the current map, constructs one complete owned replacement, and performs one assignment under the same mutex; partial mutation is no longer representable in the function. Rust borrow, Mutex and BTreeMap correctness remain implementation TCB; remote delivery, process crash and probe freshness are outside this local publication claim.'''

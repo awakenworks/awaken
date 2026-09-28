@@ -37,6 +37,8 @@ INPUT_GLOBS: tuple[str, ...] = (
     "crates/**/*.rs",
     "crates/**/Cargo.toml",
     "formal/*.json",
+    "formal/coverage.toml",
+    "formal/obligations/**/*",
     "scripts/ci/_crate_boundary_workspace.py",
     "scripts/ci/formal_ledger.py",
 )

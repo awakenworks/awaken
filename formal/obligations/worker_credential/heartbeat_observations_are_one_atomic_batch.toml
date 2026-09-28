@@ -1,0 +1,25 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/WorkerCredentialLiveness.tla",
+  "crates/bin/awaken-worker/src/credential_liveness.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+]
+proof_harnesses = [
+  "observation_batch_is_single_generation_and_never_wraps",
+]
+production_entrypoints = [
+  "crates/bin/awaken-worker/src/credential_liveness.rs",
+  "crates/bin/awaken-worker/src/lifecycle.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+]
+
+[[bounds]]
+text = '''The production batch-coordinate kernel is exhaustive over u64 generation, observation time and TTL: it cannot wrap, advances exactly once, and gives both evidence families one trusted exclusive deadline. The cache publishes one complete ObservationBatch under one std RwLock write and heartbeat consumes one cloned snapshot; RwLock correctness, Tokio scheduling and host probe I/O remain TCB assumptions and are covered by the adjacent concurrent decision-table tests rather than the scalar Kani proof.'''

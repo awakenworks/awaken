@@ -1,0 +1,38 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ThreadState.tla",
+  "formal/tla/ThreadState.cfg",
+  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/runtime/awaken-runtime/tests/g13_commit_boundary.rs",
+  "crates/stores/awaken-store-fs/tests/recovery.rs",
+  "crates/stores/awaken-store-sqlite/tests/checkpoint_reader.rs",
+  "crates/stores/awaken-store-sqlite/tests/failure_atomicity.rs",
+  "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
+]
+production_entrypoints = [
+  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+]
+
+[[bounds]]
+text = '''The finite ThreadState configuration checks one key, Run and Thread scopes, one- or two-command batches, and at most two committed versions. It covers preparation invisibility, rejected/crashed atomic stutter, exact one-step version advancement, and equality of materialized and replayed abstract state; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''ThreadCommit and Coordinator remain the sole production aggregate and write port. The in-memory adapter publishes under one mutex; the filesystem adapter fsyncs one complete serialized aggregate before replaying it; SQLite and PostgreSQL write state-command rows with the commit fact and projections inside one backend transaction. Shared conformance checks exact ordered state replay on every adapter, while file/SQLite reopen, PostgreSQL reconnect when configured, and SQLite real process-kill/capacity/read-only cases cross-check durable success and atomic failure.'''
+
+[[bounds]]
+text = '''No local production kernel owns the composed atomicity claim: mutex exclusion, filesystem append/fsync/rename behavior, SQL transaction rollback/durability, driver correctness, process-crash coordinates, power loss, storage hardware, and async scheduling remain outside Kani. The adjacent Kani harnesses prove Run binding, exclusive-batch rejection, and per-command materialization only; replacing the persistence composition with a Boolean or typed mirror would not prove adapter atomicity or replay.'''

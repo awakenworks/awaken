@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/SessionRootProof.tla",
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/stores/awaken-session-store/src/lib.rs",
+  "crates/server/awaken-session-application/src/tests/creation.rs",
+]
+proof_harnesses = [
+  "create_replay_conflict_and_terminal_occupation_are_exact_and_closed",
+  "only_an_applied_awaited_create_may_enter_post_create_effects",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/stores/awaken-session-store/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Unbounded inductive invariant stated in the linked TLAPS proof; adapters remain outside the theorem.'''
+
+[[bounds]]
+text = '''Kani exhausts all seven SessionExecutionState variants, both creation completion modes and all three repository identity conflicts through the production replay/conflict classifiers. Only AwaitRealization plus ActivationFailed yields the historical terminal occupation; every other exact replay returns repository truth, and AlreadyExists, Tombstoned and IdempotencyMismatch remain distinct closed errors. The existing receipt gate separately proves no Replayed result can enter post-create effects.'''
+
+[[bounds]]
+text = '''SQLite/PostgreSQL conformance and application tests exercise exact payload replay, collision, tombstone and ambiguous-create reread. Repository transaction durability, payload hashing, async read availability and database-engine correctness remain adapter or deployment TCB rather than facts inferred by the classifier.'''

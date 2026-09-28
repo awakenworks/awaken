@@ -1,0 +1,41 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteWorkerProtocol.tla",
+  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/recovery_projection.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+  "crates/server/awaken-dispatch/src/worker/tests.rs",
+  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+]
+proof_harnesses = [
+  "claimed_snapshot_execution_requires_exact_identity",
+  "dispatch_claim_preserves_every_frozen_binding",
+  "physical_attempt_slot_installs_and_clears_only_exact_authority",
+  "commit_epoch_guard_admits_only_complete_exact_claim",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/recovery_projection.rs",
+  "crates/server/awaken-dispatch/src/worker.rs",
+  "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
+]
+
+[[bounds]]
+text = '''The Worker now obtains one private process-local authority only after selecting the committed reader or successfully installing the exact Run/Thread recovery snapshot. Every physical model, tool and Sandbox call site must pass that value, and the production admission rechecks its Run, Thread and epoch before entering the existing physical-attempt boundary. The named Kani harness exhausts all identity-match combinations.'''
+
+[[bounds]]
+text = '''Existing production Kani kernels additionally prove that exact claiming preserves the entire frozen RunDispatch, only a complete current owner/epoch obtains the commit guard, and a physical attempt slot installs or clears only under exact authority. Network response freshness, async call ordering outside the private typestate, transactional adapter behavior, executor behavior and Worker-host equivalence remain executable or external TCB evidence; this is not a universal process refinement.'''

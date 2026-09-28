@@ -1,0 +1,22 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "model_linked"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/ToolBatch.tla",
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+]
+proof_harnesses = [
+  "terminal_calls_are_never_reentered",
+  "only_the_matching_approval_ticket_enters_execution",
+  "every_tool_call_transition_has_the_unique_documented_precondition",
+  "terminal_tool_calls_only_accept_result_staging",
+  "run_end_sealing_targets_exactly_nonterminal_calls",
+  "a_second_wait_is_never_admitted",
+]
+production_entrypoints = [
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

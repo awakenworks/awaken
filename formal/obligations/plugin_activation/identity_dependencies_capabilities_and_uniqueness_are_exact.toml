@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/contract/awaken-runtime-contract/src/plugin/env.rs",
+  "crates/contract/awaken-runtime-contract/src/plugin/mod.rs",
+  "crates/runtime/awaken-runtime/src/runtime.rs",
+]
+proof_harnesses = [
+  "plugin_activation_is_exactly_the_requested_identity",
+  "plugin_activation_requires_every_declared_dependency",
+  "plugin_activation_never_widens_the_capability_bound",
+  "plugin_activation_never_admits_a_duplicate_identity",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/plugin/env.rs",
+  "crates/contract/awaken-runtime-contract/src/plugin/mod.rs",
+  "crates/runtime/awaken-runtime/src/runtime.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

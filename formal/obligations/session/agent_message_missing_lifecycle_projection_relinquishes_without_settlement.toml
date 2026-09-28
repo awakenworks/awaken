@@ -1,0 +1,38 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/AgentMessageProtocol.tla",
+  "formal/tla/AgentMessageProtocol.cfg",
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/server/awaken-session-application/src/tests/authority.rs",
+  "crates/contract/awaken-session-execution-contract/src/coordination.rs",
+]
+proof_harnesses = [
+  "session_agent_boundary_requires_a_visible_committed_target",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/contract/awaken-session-execution-contract/src/coordination.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The production missing-observation branch wakes the sole lifecycle supervisor and returns a retryable error before activity settlement; application/Pool tests cover relinquish and retry behavior.'''
+
+[[bounds]]
+text = '''The obligation includes atomic recovery-prefix visibility and completeness, Pool claim release and absence of a root mutation. No production Kani harness executes these ports or their ordering, so a proof of an extracted Option classifier would be insufficient.'''
+
+[[bounds]]
+text = '''The boundary harness proves every committed boundary with Missing visibility selects RetryMissingProjection and can select no settlement action. SessionApplication consumes that exact action by waking the existing lifecycle supervisor and returning unavailable before usage reconciliation, continuation, interrupt or root CAS; the cause/effect test verifies the activity epoch and side-effect counts remain unchanged.'''
+
+[[bounds]]
+text = '''The exact Run recovery snapshot supplies lifecycle evidence through the shared pure audit projection; no second or global lifecycle query participates in settlement. Snapshot decoding and projection are covered by independent bounded trace tests and four-backend conformance, not by this decision-kernel proof. Runtime prefix visibility, supervisor wake delivery, Tokio task cancellation and Pool claim relinquish/retry scheduling remain async TCB/executable tests. The harness proves the production pre-effect decision and code ordering, not arbitrary executor schedules or database rollback behavior.'''

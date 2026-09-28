@@ -1,0 +1,21 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.mcp_busy_acp_revocation_propagation_and_process_termination",
+  "external.provider_revocation_propagation",
+]
+evidence = [
+  "crates/control/awaken-credential-vault/src/lib.rs",
+  "crates/control/awaken-credential-vault/src/availability.rs",
+]
+proof_harnesses = [
+  "exhausted_credentials_are_unavailable_at_every_time",
+]
+production_entrypoints = [
+  "crates/control/awaken-credential-vault/src/lib.rs",
+  "crates/control/awaken-credential-vault/src/availability.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

@@ -1,0 +1,31 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.performance_and_long_run_stability",
+]
+evidence = [
+  "formal/tla/ErasureSaga.tla",
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+  "crates/control/awaken-data-subject-application/src/erasure_verification.rs",
+  "crates/control/awaken-data-subject-application/src/tests.rs",
+]
+proof_harnesses = [
+  "erasure_progress_selects_exact_first_pending_target",
+  "erasure_progress_counts_selected_target_once_or_preserves_overflow",
+]
+production_entrypoints = [
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Direct bounded Kani proof calls the production ErasureProgress pending_target and record_target methods. Both harnesses cover every 0..2-row Coordinator/Resources list, including empty, duplicate and reversed rows; all four adapter-binding combinations; every u64 revision, x86_64 usize count and both independent accountability_stamped/complete flags. The count harness additionally covers every usize receipt increment. Selection carries borrowed byte adapter tokens; count carries unit tokens; generic selection is proved at those monomorphizations, not for Arc/dynamic dispatch.'''
+
+[[bounds]]
+text = '''erasure-progress-selection-v1 (899 checks, 11 unreachable) and erasure-progress-count-v1 (989 checks, 10 unreachable) pass with fixed default-equivalent CaDiCaL, global unwind 32 and exact actual-GOTO two-slot loop pins: collect/flatten/bool-array/find bound 3; contains/equality and count occurrence-fold bound 4. Unlisted loops retain global 32, including the exact 24-byte overflow error comparison. All safety checks, assertions, unwinding assertions, allocation and real Drop remain enabled; no input assumptions or stubs are added.'''
+
+[[bounds]]
+text = '''The local selected-target transition appends exactly the previously uncompleted target once, adds the receipt exactly, never selects that target again, and preserves the complete remaining checkpoint frame. No pending target leaves the checkpoint unchanged; arithmetic overflow returns the exact error and preserves the entire checkpoint. The earlier global-only RSS-guard termination was not a proof; these are independently completed exact-loop proofs over the same input GOTO.'''
+
+[[bounds]]
+text = '''Asynchronous eraser execution and physical effects, revision CAS, reload, concurrent replica schedules, accountability/terminal publication and complete ErasureSaga refinement are excluded. The linked finite TLA+ model and native resolver/repository tests remain complementary evidence; no Rust-to-model refinement or whole-saga claim is implied.'''

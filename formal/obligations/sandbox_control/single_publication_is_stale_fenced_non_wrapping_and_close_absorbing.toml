@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.container_and_kernel_isolation",
+]
+evidence = [
+  "formal/tla/SandboxControlPublication.tla",
+  "scripts/ci/check_formal_mutations.py",
+  "crates/worker/awaken-sandbox-control-transport/src/publication.rs",
+  "crates/worker/awaken-sandbox-container/src/control.rs",
+  "crates/worker/awaken-sandbox-local/src/namespace/control.rs",
+  "crates/worker/awaken-sandbox-fs/src/unix_socket_path.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "publication_slot_directly_preserves_single_owner_stale_fence_and_absorbing_close",
+]
+production_entrypoints = [
+  "crates/worker/awaken-sandbox-control-transport/src/publication.rs",
+  "crates/worker/awaken-sandbox-container/src/control.rs",
+  "crates/worker/awaken-sandbox-local/src/namespace/control.rs",
+  "crates/worker/awaken-sandbox-fs/src/unix_socket_path.rs",
+]
+
+[[bounds]]
+text = '''The named Kani harness invokes the actual generic SandboxControlPublicationSlot Mutex/Arc methods across every non-poisoned state shape: open vacant, open active with current/stale/foreign leases, replacement while the predecessor remains live, closed with retained cleanup, closed after finish and closed vacant. It proves one active publication, foreign and stale mutation/release stutter, distinct live allocation identity, absorbing close, exact retained cleanup mutation, retained retry cleanup and exactly one finish.'''
+
+[[bounds]]
+text = '''Fixed Kani 0.67.0 with the qualified CBMC/CaDiCaL backend completed 856 checks with zero failures and six unreachable checks in 1.7885993 solver seconds and 4.92 guarded seconds, under one job, empty RUSTC_WRAPPER, a 600-second deadline and 12-GiB cgroup memory ceiling. The harness uses no assumptions, stubs or mirror transition state.'''
+
+[[bounds]]
+text = '''The transport slot is the sole lifecycle owner consumed unchanged by both container and local Namespace registries. Native decision tables additionally cover poisoned-lock recovery, cancelled close/retry, join-before-cleanup, provider replacement, socket inode cleanup and real codec exchange; the finite TLA model and seven mutants remain complementary evidence.'''
+
+[[bounds]]
+text = '''Kani treats Rust atomic operations sequentially and does not prove concurrent Mutex scheduling, Tokio cancellation/join progress, OS socket or inode identity, provider process death, eventual task exit or a universal Rust-to-TLA refinement. Those remain native/model evidence or async/kernel TCB and are not part of this direct slot-kernel claim.'''

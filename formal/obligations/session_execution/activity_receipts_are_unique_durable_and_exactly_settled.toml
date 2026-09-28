@@ -1,0 +1,57 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionActivityProof.tla",
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/server/awaken-session-application/src/activity.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state/tests.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state/proofs.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state/model.rs",
+  "scripts/ci/formal_kani_options.py",
+  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
+  "crates/server/awaken-session-application/src/run_admission.rs",
+  "crates/server/awaken-session-application/src/tests/authority.rs",
+  "crates/server/awaken-session-application/src/tests/run_admission.rs",
+]
+proof_harnesses = [
+  "activity_next_epoch_inserts_exact_checked_successor",
+  "activity_exact_epoch_inserts_only_fresh_positive_member",
+  "activity_two_slot_next_next_admissions_preserve_exact_members",
+  "activity_two_slot_next_exact_admissions_preserve_exact_members",
+  "activity_two_slot_exact_next_admissions_preserve_exact_members",
+  "activity_two_slot_exact_exact_admissions_preserve_exact_members",
+  "activity_terminal_transition_clears_one_real_member",
+  "activity_two_slot_terminal_transition_clears_members",
+  "session_run_reservation_binds_exactly_one_nonzero_activity_receipt",
+  "session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/server/awaken-session-application/src/activity.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/activity_state.rs",
+  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
+  "crates/server/awaken-session-application/src/run_admission.rs",
+]
+
+[[bounds]]
+text = '''Unbounded inductive invariant stated in the linked TLAPS proof; adapters remain outside the theorem.'''
+
+[[bounds]]
+text = '''The sole production activity/execution reducer borrows the real persisted scalar, BTreeSet and execution fields; PersistedSession forwards its existing four entrypoints without a parallel state or receipt map. A 7,840-row native cause/effect table compares the complete aggregate after two Next/Exact admissions, two completions, both terminal transitions and every later execution target. Eight real production mutations qualify arithmetic, admission, exact deletion, legacy zero rejection, terminal clearing and the aggregate field wiring. The empty Running legacy branch may return Some(true) repeatedly until the application commits Idle; these executable checks do not prove SQL receipt durability, CAS atomicity or application exactly-once settlement, and the whole row keeps its abstract-theorem grade.'''
+
+[[bounds]]
+text = '''Kani proves the real borrowed reducer on the real BTreeSet in three harnesses: the Next and Exact one-admission bases from an empty set over every u64 historical/requested value with Idle execution, exact nonwrapping scalar/result/membership and execution frame, and actual insert/search/Drop; and a terminal proof that starts Running, makes one real Next admission from every u64 historical scalar, then checks that the real member is present, that both terminal targets clear it without rewinding the scalar, that replay stutters and that Running is rejected. The bases take about 14 seconds each at a 1.3 GiB peak and the terminal proof 27 seconds at 2.9 GiB. All three use unwind 4 with default safety and unwinding assertions retained; scripts/ci/formal_kani_options.py owns their exact checked tree-height loop bounds. The four Next/Exact two-call partitions and the two-admission terminal table run the same production reducer, which is generic over the ActivityMembers trait (insert, contains, remove, len, is_empty, clear; contains and len exist only under test and kani), instantiated with TwoSlotMembers instead of BTreeSet<u64>: every u64 historical/requested value, the u128/order oracle for the result, the high-water and execution frame, and exact cardinality and membership after both calls. They need no loop profile; the batch of five verifies in 29 seconds at a 0.79 GiB peak. Real Kani mutations of the production reducer qualify both sides. On the model partitions: skipping the Exact insert when the set is nonempty fails M1 in exactly the two partitions whose second call is Exact; writing execution on Exact admission fails A3 in the three partitions with an Exact call; admitting a request equal to the high-water, and wrapping Next at u64::MAX, each fail A1 in the three partitions that exercise them. On the real-set terminal proof: dropping the terminal clear fails T2, and dropping the Next insertion fails T0. A3 and T0 are otherwise reported unreachable only because their conditions constant-fold true; kani::cover probes confirmed both sites are reached on the admitted, rejected, exhausted and second-call paths. The complete PersistedSession constructor (including MCP fingerprint/serde/formatting), arbitrary nonempty prior sets or unbounded admission/settlement traces, durable receipt injection and SQL/application refinement remain outside these bounded proofs.'''
+
+[[bounds]]
+text = '''Kani exhausts arbitrary activity epochs, exact/replayed receipt presence, all reservation classes, all seven execution states and every readiness/budget/continuation partition. The production plans ensure every new activity strictly advances to one non-zero epoch, exact retries reuse the retained receipt, zero/stale receipts fail closed, unknown or duplicate settlement stutters, and only removal of the final exact Running activity may close the interval. The application consumes both plans around the existing idempotent Session-root CAS.'''
+
+[[bounds]]
+text = '''Stable operation hashing, idempotency receipt lookup, BTreeSet mutation, Session serialization, database CAS/durability, clocks, interval outbox persistence and async cancellation remain TCB. Production-kernel grade covers the directly called uniqueness/admission/settlement decisions, not universal SQL or Tokio refinement.'''
+
+[[bounds]]
+text = '''BTreeSet abstraction boundary for every two-admission proof. Symbolically executing the real B-tree twice does not fit in memory: on the real set, activity_exact_exact reached 32640 VCCs (10397 after simplification) and a 54.9 GiB peak, running out at 1m54s on a 60 GiB host alone on an idle machine; bounding all three u64 symbols to 0..=5 (58 GiB) or enumerating 64 concrete triples (56 GiB) ran out as well, and kissat hit the same wall, so the cost is the B-tree code rather than the value range or the solver. Two real B-tree insertions plus the terminal clear hit the same wall: the previous two-admission terminal proof was killed by the out-of-memory killer under a 40 GiB cap within about 70 seconds of CPU, on pristine main as well, so it was split into the one-admission real-set proof above and a two-admission model proof. The two-admission proofs therefore assume that BTreeSet<u64> behaves as a set through ActivityMembers on traces of at most two members. That assumption is checked rather than trusted: the property test two_slot_model_agrees_with_the_real_btreeset_on_two_admission_traces in activity_state/tests.rs runs every step of a boundary-weighted random trace (4096 cases per run) on both sets and requires the same result, high-water, execution and exact member set across two admissions, up to two settlements naming an admitted member, the high-water or any u64 from Idle or Running (including the empty-set legacy branch), and an optional terminal transition. Four model mutations each fail it at the rule they break: insert overwriting one slot (R1 member count), remove never finding (R2 result), clear keeping members (R3 member count) and is_empty reading one slot (R2 result). The model panics on a third distinct member instead of dropping one, so a proof that outgrows it cannot pass by losing a member. A property test samples the real B-tree; it does not prove it. BTreeSet itself stays in the TCB, as the TCB bound of this row already states.'''

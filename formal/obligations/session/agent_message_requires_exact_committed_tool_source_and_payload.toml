@@ -1,0 +1,40 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/AgentMessageProtocol.tla",
+  "formal/tla/AgentMessageProtocol.cfg",
+  "crates/runtime/awaken-ext-builtin-tools/src/coordination.rs",
+  "crates/server/awaken-session-executor/src/host/coordination.rs",
+  "crates/server/awaken-session-executor/src/host/coordination/agent_message_source.rs",
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/contract/awaken-session-execution-contract/src/session.rs",
+  "crates/contract/awaken-session-execution-contract/src/session/roles.rs",
+]
+proof_harnesses = [
+  "session_agent_message_admission_requires_every_committed_field",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-ext-builtin-tools/src/coordination.rs",
+  "crates/server/awaken-session-executor/src/host/coordination.rs",
+  "crates/server/awaken-session-executor/src/host/coordination/agent_message_source.rs",
+  "crates/server/awaken-session-application/src/coordination.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The sole production validator checks committed Thread/Run identity, ActiveToolBatch Run, call presence, send_message tool identity, derived operation id, Executing phase, normalized target and byte-exact message. Its cause/effect unit table mutates tool, phase, identity and payload independently.'''
+
+[[bounds]]
+text = '''No Kani harness calls the complete Store rebuild, ActiveToolBatch decode, call lookup, JSON argument decode and target normalization path. These extraction steps are essential to the whole obligation, so a Boolean proxy would not qualify it as production-kernel proved.'''
+
+[[bounds]]
+text = '''Kani exhausts the eight exact-or-one-field-changed partitions of the production typed operation comparator across Session, Thread, Run, call, operation, target and message. ManagedHost reconstructs that complete command from the committed recovery prefix and the SessionRuntime contract returns the reconstructed value, so Session policy and Dispatch admission no longer consume the untrusted caller copy.'''
+
+[[bounds]]
+text = '''Store rebuild, ActiveToolBatch and JSON decoding, target normalization, String equality, async recovery reads and durable-store correctness remain adapter/runtime TCB. The proof constrains the exact production admission decision after extraction; it does not claim universal serde refinement or database atomicity.'''

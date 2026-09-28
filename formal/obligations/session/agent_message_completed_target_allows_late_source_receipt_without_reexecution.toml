@@ -1,0 +1,45 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/AgentMessageProtocol.tla",
+  "formal/tla/AgentMessageProtocolLateReceiptRecovery.cfg",
+  "crates/server/awaken-dispatch-testkit/src/conformance/dispatch_admission.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/contract/awaken-session-execution-contract/src/coordination.rs",
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-session-application/src/tests/authority.rs",
+]
+proof_harnesses = [
+  "agent_message_completed_tombstone_replays_only_exact_dispatch_identity",
+  "session_agent_boundary_requires_a_visible_committed_target",
+]
+production_entrypoints = [
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-session-application/src/coordination.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''Concrete Dispatch conformance covers exact replay and changed-payload conflict after a completed tombstone, while the late-receipt TLA configuration covers the intended cross-owner ordering.'''
+
+[[bounds]]
+text = '''Proving no reexecution requires completed tombstone durability and atomic adapter admission in memory, SQLite and PostgreSQL plus the later source receipt. No Kani harness calls those storage transactions, so this remains abstract/executable evidence.'''
+
+[[bounds]]
+text = '''Kani exhausts the production completed-tombstone identity reducer and proves only the exact current/legacy Session-command fingerprint or exact full-dispatch fingerprint replays; absent or conflicting identity cannot replay. All three adapters call this reducer before admission, and the boundary plan independently permits a visible completed target to settle or continue without making source receipt an execution authority.'''
+
+[[bounds]]
+text = '''Fingerprint collision resistance and canonical serialization, tombstone durability, memory/SQLite/PostgreSQL transaction correctness, async delivery and process-crash schedules remain TCB/executable conformance. The kernels prove no-reexecution admission decisions; they do not prove database linearizability or cross-owner atomicity.'''

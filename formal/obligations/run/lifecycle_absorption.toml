@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "model_linked"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/RuntimeSystemProof.tla",
+  "formal/tla/SessionRunProtocol.tla",
+  "formal/tla/RemoteWorkerProtocol.tla",
+  "crates/contract/awaken-agent-contract/src/agent/run.rs",
+  "crates/server/awaken-session-executor/src/commit_ingest.rs",
+]
+proof_harnesses = [
+  "ended_is_absorbing_for_every_next_state",
+]
+production_entrypoints = [
+  "crates/contract/awaken-agent-contract/src/agent/run.rs",
+  "crates/server/awaken-session-executor/src/commit_ingest.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''
+
+[[bounds]]
+text = '''RemoteWorkerProtocol exercises the same absorbing terminal relation at the remote commit projection; its finite model evidence complements but does not widen the production RunState kernel proof.'''

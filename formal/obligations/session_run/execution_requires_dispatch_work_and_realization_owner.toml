@@ -1,0 +1,55 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/SessionRunProtocol.tla",
+  "formal/tla/SessionRunProtocol.cfg",
+  "docs/adr/0075-unified-managed-session-worker-execution.md",
+  "crates/contract/awaken-session-work-contract/src/lib.rs",
+  "crates/server/awaken-session-application/src/application.rs",
+  "crates/server/awaken-session-application/src/tests/authority.rs",
+  "crates/server/awaken-session-application/src/tests/realization.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch/session_realization.rs",
+  "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http.rs",
+  "crates/server/awaken-session-executor/src/host/session_ctx.rs",
+  "crates/server/awaken-session-executor/src/host/session.rs",
+  "crates/server/awaken-session-executor/src/managed_host_composition.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_dispatch.rs",
+  "crates/server/awaken-session-executor/src/host/tests.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "session_work_effect_requires_not_required_scope_or_exact_owner",
+  "environment_owner_topology_is_exact_and_frozen",
+  "work_projection_is_derived_only_from_durable_session_truth",
+  "coordination_envelope_never_satisfies_execution_cache_admission",
+  "runtime_environment_admission_is_total_and_coordination_never_borrows",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-work-contract/src/lib.rs",
+  "crates/server/awaken-session-application/src/application.rs",
+  "crates/server/awaken-dispatch-http/src/worker_dispatch/session_realization.rs",
+  "crates/server/awaken-session-executor/src/host/session_ctx.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
+  "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_dispatch.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts all six combinations of the closed NotRequired, Unowned and Leased Work-authority classes with the exact-owner Boolean through the sole production policy kernel. The production wrapper performs exact Rust String equality once and feeds its result into that kernel; the begin, phase, and renewal HTTP paths all consume this one classifier before Session realization Control. Non-empty exact and foreign owner values are cross-checked by native and real-router tests rather than claimed as arbitrary-String direct proof. The sole harness completed 4 checks with zero failures under fixed Kani 0.67.0 and the pinned patched compiler and CBMC backend, single-job execution, empty RUSTC_WRAPPER, no assumptions or stubs, and a 600-second guard; it took 4.71 guarded seconds at 143464 KiB peak aggregate RSS and 48108504 KiB minimum available memory.'''
+
+[[bounds]]
+text = '''The Session application topology and Work-projection kernels independently prove that frozen placement selects one local/external realization owner and only nonterminal self-hosted Session truth requires Work. The Runtime Host cache and Environment kernels independently exclude coordination envelopes from executable cache and physical Environment ownership.'''
+
+[[bounds]]
+text = '''SessionRunProtocol.cfg finitely checks three Runs, two Workers and epochs through three. StartExecution requires an exact leased Dispatch and CurrentRealization, which requires Active Work with the same owner and exact Work epoch. This model does not imply Rust-to-TLA refinement.'''
+
+[[bounds]]
+text = '''The Session application W1-W5 table exercises absent, Cloud, self-hosted current/stopped, terminal and renewal scope through the production Work authority. The signed Worker router/client T17-T19/T24 cases prove a foreign owner blocks resume before Control, ownership loss blocks phases, an exact owner renews through the authoritative port, and retired Work returns a typed retirement without Control mutation. Runtime Host tables cross-check that only a complete frozen projection and execution-purpose context can reach its sole realization driver.'''
+
+[[bounds]]
+text = '''The direct proof covers the closed categorical policy kernel. Rust String equality, borrow and heap behavior, the wrapper's transfer of the equality result, Session/Work database reads, claim-authentication authenticity, SQL isolation/durability, arbitrary async races, realization-lease CAS, provider effects, and eventual Worker progress remain executable evidence or TCB; no arbitrary-String proof or whole-path implementation refinement is claimed.'''

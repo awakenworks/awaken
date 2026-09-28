@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteAttempt.tla",
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
+  "crates/server/awaken-run-executor-a2a/src/lib.rs",
+]
+proof_harnesses = [
+  "task_reference_admission_requires_complete_fields_and_required_identity_matches",
+]
+production_entrypoints = [
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
+]
+
+[[bounds]]
+text = '''The production task-reference admission kernel over complete endpoint/task/context fields and required identity equality. Resume first replaces Accepted A with Prepared B carrying A only as a predecessor coordinate; accepting B permits a new non-empty task id but requires exact equality with A's committed context. Kani proves only the closed admission predicate; operation hashing, JSON decoding, remote protocol honesty, transport delivery, commit durability and external orchestration remain executable or external evidence.'''

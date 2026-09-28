@@ -1,0 +1,25 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/TerminalReconciliationScan.tla",
+  "formal/tla/TerminalReconciliationScan.cfg",
+  "scripts/ci/formal_dispatch_mutations.py",
+  "crates/server/awaken-dispatch/src/reconciliation.rs",
+  "crates/server/awaken-dispatch/src/reconciliation/page_proofs.rs",
+  "crates/server/awaken-dispatch/tests/reconciliation_scan.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "terminal_scan_page_preserves_budget_cursor_and_cancellation",
+]
+production_entrypoints = [
+  "crates/server/awaken-dispatch/src/reconciliation.rs",
+]
+
+[[bounds]]
+text = '''Scheduling-only model: five stable ordered Run IDs, two permanently failing prefix rows, budget two and at most one restart. Every examined row consumes the page budget; scanning preserves an opaque authority snapshot without modeling or duplicating Dispatch transitions. A temporal cursor-advance mutant and a healthy-suffix-after-wrap witness check conditional progress. Fair periodic scheduling and eventual return of reads are explicit premises. Infinite restarts, ongoing insertion, permanent I/O waits, SQL query plans, Rust refinement and external termination are outside this proof.'''
+
+[[bounds]]
+text = '''Direct Kani evidence additionally calls the exact production TerminalScanPage iterator with 0..3 byte identities (including duplicates), arbitrary usize limits and initial cursor, every early-drop position, unwind 5 and default checks. Native decision-table rows extend supplied-page lengths to 300 and limits to 256/257/usize::MAX; actual RunId async tests cover failed observers, corrupt SQL summaries, cancellation, wrap and oversized custom-adapter pages. This proves the bounded traversal kernel, not Tokio locking, RunId allocation, SQL keyset refinement or unbounded fair progress; the production-kernel grade is limited to bounded page traversal and cursor/cancellation safety; fair scheduling, SQL keyset behavior, and external termination remain abstract or external evidence.'''

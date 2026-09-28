@@ -1,0 +1,26 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/WorkerCredentialLiveness.tla",
+  "crates/contract/awaken-worker-contract/src/lib.rs",
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/bin/awaken-worker/src/credential_liveness.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+]
+proof_harnesses = [
+  "process_readiness_after_startup_is_probe_independent",
+]
+production_entrypoints = [
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/bin/awaken-worker/src/credential_liveness.rs",
+  "crates/bin/awaken-worker/src/lib.rs",
+]
+
+[[bounds]]
+text = '''The closed production DynamicEvidenceProbeState domain; startup readiness is independent of pending, successful, or failed probe state while missing dynamic evidence remains a separate fail-closed placement gate.'''

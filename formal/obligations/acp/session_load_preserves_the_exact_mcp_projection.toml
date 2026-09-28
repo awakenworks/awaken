@@ -1,0 +1,20 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.mcp_busy_acp_revocation_propagation_and_process_termination",
+]
+evidence = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc.rs",
+  "crates/server/awaken-protocol-acp/src/jsonrpc/mcp.rs",
+]
+proof_harnesses = [
+  "acp_session_load_preserves_the_exact_mcp_projection",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc.rs",
+  "crates/server/awaken-protocol-acp/src/jsonrpc/mcp.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

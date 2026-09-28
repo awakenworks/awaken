@@ -1,0 +1,30 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/LiveInbox.tla",
+  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
+  "crates/runtime/awaken-runtime/tests/live_inbox.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "retired_live_inbox_identity_is_never_reissued",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''LiveInbox::next_message_id is the sole production identity issuer over the private State frontier. Kani exhausts every retired/current u64 pair without assumptions: whenever a retired id is at or below the frontier, the next accepted id is strictly greater; u64::MAX refuses issuance instead of wrapping.'''
+
+[[bounds]]
+text = '''The native cause/effect table retires ids through both remove and boundary drain, then cross-checks later accepted ids against both retired values. The exhaustion test, concurrent-offer uniqueness test and close admission table cover refusal, serialization and the absorbing terminal path.'''
+
+[[bounds]]
+text = '''The direct proof covers identity non-reissuance from the private monotonic frontier. It does not prove Mutex poisoning or scheduling, VecDeque allocation, durable delivery, process replacement, or the linked TLA model as a Rust refinement.'''

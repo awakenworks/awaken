@@ -1,0 +1,38 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/DispatchMaintenanceScheduling.tla",
+  "formal/tla/DispatchMaintenanceScheduling.cfg",
+  "scripts/ci/formal_dispatch_mutations.py",
+  "crates/server/awaken-dispatch/tests/pool_memory.rs",
+  "crates/server/awaken-coordinator-client/tests/dispatch_client.rs",
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/server/awaken-dispatch/src/service.rs",
+  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+  "crates/server/awaken-dispatch/tests/pool_memory/maintenance_observations.rs",
+  "crates/server/awaken-dispatch/tests/harness/maintenance.rs",
+  "formal/runtime-refinement-manifest.json",
+  "scripts/ci/render_runtime_refinement_traces.py",
+  "scripts/ci/check-reliability.sh",
+]
+proof_harnesses = [
+  "maintenance_schedule_exists_only_for_the_owning_adapter",
+]
+production_entrypoints = [
+  "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
+  "crates/server/awaken-dispatch/src/pool.rs",
+  "crates/server/awaken-dispatch/src/service.rs",
+  "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
+]
+
+[[bounds]]
+text = '''Eight immutable ownership/execution/timer partitions with Boolean hint, fallback, deadline, cancellation and observation state. Fair poll/tick/stop actions prove conditional execution and shutdown progress; owner-work and remote-timer fence mutants violate exact invariants, and a disabled-execution mutant violates the named temporal property. Positive owner-maintenance and remote-execution witnesses exclude vacuity. Atomic scheduling steps exclude in-flight storage, callback hangs, Dispatch transactions, OS scheduling fairness and physical termination; no Rust refinement is implied. Twelve virtual-time Rust rows and real HTTP type-erasure tests check the implementation seams separately.'''
+
+[[bounds]]
+text = '''The existing observation pipeline now checks 42 actual Service/Pool/Reconciler rules: the 12 owner/role/timer partitions plus 30 enabled GC/relay/scan pending-to-cancel-to-success/error-return cuts. Raw port begin/return, drain, hint/poll and polled shutdown Pending/release/join events satisfy MaintenanceObservation in the same model. Eight real-trace semantic mutants, three schema/coverage mutants and an extra-hint positive control qualify this relation; native production mutants remove Service/Pool ownership and abandon Reconciler join. These finite traces do not exhaust Tokio schedules or prove nonreturning I/O, SQL atomicity, physical termination, or universal Rust refinement. Pinned Kani 0.67.0/Tokio 1.53.1 cannot directly verify the clock path: a minimal Instant::now probe reaches unsupported clock_gettime; a real publish_dispatch_hint Future poll did not complete within 240 seconds. No failing probe, time stub or sequentialized-atomic execution receives proof credit.'''
+
+[[bounds]]
+text = '''Kani exhausts the shared production LocalMaintenanceSchedule over adapter ownership and both optional operations: a remote adapter has no local schedule or terminal timer, while a local adapter always relays and enables GC/scan exactly from configuration. Both Service and Pool now consume this one immutable plan, eliminating their parallel Boolean gate logic. The production-kernel grade covers adapter-owned scheduling only; Tokio fairness, callback return, SQL effects and physical termination remain model, trace or external evidence.'''

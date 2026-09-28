@@ -1,0 +1,35 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/RuntimeSystemProof.tla",
+  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
+  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
+  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
+  "crates/runtime/awaken-runtime/tests/delegation.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "cancellation_delivery_is_enabled_only_by_durable_intent",
+  "child_cancellation_effect_requires_committed_intent",
+]
+production_entrypoints = [
+  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
+  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts all three production DelegationStatus values and both RelationshipTransition values. Only Open plus RequestCancel applies a CancelRequested successor and newly enables cancellation projection; a repeated request stutters without manufacturing another relationship effect, completion never enables cancellation, and crossed terminal transitions produce no successor.'''
+
+[[bounds]]
+text = '''The production Runtime finish path stages RunDelegations::end_parent in the same ThreadCommit as the terminal Run and finalized tool batch, awaits the commit result, and consumes the proved committed_cancellation_delivery_is_admitted gate before invoking any child cancellation. Kani exhausts commit-success and staged-intent booleans and proves that every missing or rejected durable boundary suppresses the external effect.'''
+
+[[bounds]]
+text = '''The native cause/effect table crosses one real Awaiting relationship through absent, rejecting, and successful commit boundaries. The first two preserve the committed Open relationship and deliver nothing; success atomically publishes CancelRequested with the same opaque reference and produces one exact cancellation, while cold reconstruction redelivers that committed identity.'''
+
+[[bounds]]
+text = '''The direct proof covers the heap-free relationship and post-commit effect-admission kernels and their production call sites. Rust String/BTreeMap/serde behavior, ThreadCommit encoding, database isolation and durability, arbitrary async schedules, remote adapter behavior, and eventual network delivery remain executable evidence or external TCB rather than universal refinement.'''

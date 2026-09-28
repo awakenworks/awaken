@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/SessionResourceActivation.tla",
+  "formal/tla/SessionResourceActivation.cfg",
+  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
+  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
+  "crates/server/awaken-session-application/src/resource_reconciliation/manifest_command.rs",
+  "crates/server/awaken-session-application/src/tests/realization.rs",
+  "crates/server/awaken-session-application/src/tests/resource_resume.rs",
+]
+proof_harnesses = [
+  "failed_resource_replacement_never_promotes_the_pending_manifest",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
+  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
+  "crates/server/awaken-session-application/src/resource_reconciliation/manifest_command.rs",
+]
+
+[[bounds]]
+text = '''Kani exhaustively checks the closed production manifest-settlement plan across commit, completed rollback and retryable rollback failure. Only commit can promote pending; rollback clears pending while preserving active, and retryable failure preserves both active and pending. SessionResourceState::commit, rollback and note_retryable_failure consume that one plan.'''
+
+[[bounds]]
+text = '''Contract and application decision-table tests exercise concrete File, Skill and empty manifests, repeated failed replacements, JSON restart, revision pairing, activation diagnostics and rollback after Runtime failure. Kani does not prove arbitrary heap or structural equality, activation-record iteration, Repository-retirement derivation, root CAS durability or all asynchronous failure schedules.'''

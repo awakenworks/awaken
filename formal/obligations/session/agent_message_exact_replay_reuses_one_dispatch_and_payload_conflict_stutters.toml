@@ -1,0 +1,46 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/AgentMessageProtocol.tla",
+  "formal/tla/AgentMessageProtocol.cfg",
+  "crates/server/awaken-session-application/src/tests/authority.rs",
+  "crates/server/awaken-dispatch-testkit/src/conformance/dispatch_admission.rs",
+  "crates/server/awaken-session-executor/src/host/coordination/agent_message_source.rs",
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+]
+proof_harnesses = [
+  "session_agent_message_admission_requires_every_committed_field",
+  "agent_message_completed_tombstone_replays_only_exact_dispatch_identity",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-executor/src/host/coordination/agent_message_source.rs",
+  "crates/server/awaken-session-application/src/coordination.rs",
+  "crates/server/awaken-dispatch/src/dispatch.rs",
+  "crates/server/awaken-dispatch/src/memory.rs",
+  "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The shared Dispatch conformance decision table covers exact and conflicting Run identity before and after Done across concrete adapters. The source validator separately checks committed tool payload identity.'''
+
+[[bounds]]
+text = '''The obligation composes Session activity admission, deterministic child Run construction, Dispatch transaction/tombstone persistence and source validation. No single production Kani harness invokes that composition, so adapter tests and the finite TLA model do not justify a production-kernel upgrade.'''
+
+[[bounds]]
+text = '''The source harness proves every committed operation field binds admission, and the Dispatch harness exhausts present/absent tombstone plus Session-command current/legacy and full-dispatch exact-identity partitions. The existing memory, SQLite and PostgreSQL adapters all call this one completed-tombstone reducer, while application tests retain one deterministic activity/Run identity across ambiguous retry.'''
+
+[[bounds]]
+text = '''Hash and canonical serialization collision resistance, Session and Dispatch transaction durability, SQL engine isolation and async crash scheduling remain TCB. The paired production kernels prove exact admission and stutter decisions, not an atomic transaction spanning the Session and Dispatch owners.'''

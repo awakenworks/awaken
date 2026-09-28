@@ -1,0 +1,35 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.eventual_network_delivery",
+]
+evidence = [
+  "formal/tla/RegistrationIntent.tla",
+  "formal/tla/RegistrationIntent.cfg",
+  "crates/stores/awaken-env-store/src/lib.rs",
+  "crates/control/awaken-environment-application/src/lib.rs",
+  "crates/control/awaken-control/src/registration_supervisor.rs",
+  "crates/server/awaken-executable-environment-catalog/src/lib.rs",
+  "crates/contract/awaken-environment-contract/src/lib.rs",
+]
+proof_harnesses = [
+  "environment_registration_intent_is_exact_idempotent_and_recoverable",
+]
+production_entrypoints = [
+  "crates/stores/awaken-env-store/src/lib.rs",
+  "crates/control/awaken-environment-application/src/lib.rs",
+  "crates/control/awaken-control/src/registration_supervisor.rs",
+  "crates/server/awaken-executable-environment-catalog/src/lib.rs",
+  "crates/contract/awaken-environment-contract/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''Kani exhausts the production active/archived operation selector, pending/delivered state and normal/recovery drain mode. Active maps only to Register, archived only to Withdraw, normal delivery stutters only after acknowledgement, and recovery redelivers the same immutable operation without deriving a second work list.'''
+
+[[bounds]]
+text = '''InMemory, SQLite and PostgreSQL append EnvironmentRegistrationIntent::for_item inside the existing aggregate lock or transaction that advances the authored revision and acknowledge only the exact environment/revision/operation key. Backend transaction atomicity, durable engine correctness, asynchronous registrar execution and eventual external availability remain adapter or deployment TCB rather than properties manufactured by the decision kernel.'''

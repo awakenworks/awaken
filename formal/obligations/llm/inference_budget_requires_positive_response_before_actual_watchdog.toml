@@ -1,0 +1,31 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs",
+  "crates/contract/awaken-runtime-contract/src/model_operation.rs",
+  "crates/runtime/awaken-runtime/src/engine/inference.rs",
+  "crates/runtime/awaken-runtime/src/engine/tests.rs",
+  "crates/runtime/awaken-provider-genai/src/inference_budget.rs",
+  "crates/runtime/awaken-provider-genai/src/lib.rs",
+  "crates/runtime/awaken-provider-genai/src/openai_responses.rs",
+  "crates/runtime/awaken-provider-genai/tests/stall.rs",
+]
+proof_harnesses = [
+  "model_budget_requires_positive_response_before_watchdog",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs",
+]
+
+[[bounds]]
+text = '''Kani calls the actual ModelInferenceBudget constructor predicate over all u128 nanosecond total/attempt-response/idle/return-allowance values, a superset of Duration. Admission is exactly 0 < idle <= attempt response <= total with a positive return allowance, which implies a positive response window strictly before the attempt watchdog and no silence window beyond the request's logical deadline.'''
+
+[[bounds]]
+text = '''Runtime derives one logical deadline per model request and one attempt timing (response deadline = min(start + attempt response, logical deadline); watchdog = response deadline + allowance) and native provider adapters only read it through the existing operation task-local; adapters own no timeout, so a provider/runtime mismatch is unrepresentable. A spent deadline refuses before native HTTP; elapsed materialization cannot restart the response clock. Native Runtime900s success and real HTTP text/reasoning/typed-tool800s plus Responses180s cases qualify execution beyond historical caps using explicit virtual time and actual parser/I/O.'''
+
+[[bounds]]
+text = '''The scalar proof does not prove OS/Tokio clock truth, representability, scheduling, serialization, transport or uncancellable journal writes. Native boundary tests cover zero/MAX clock rejection, scope masking, coherent positive success and zero-dispatch invalid configuration. Dispatched timeout remains Unknown, never a remote termination receipt.'''

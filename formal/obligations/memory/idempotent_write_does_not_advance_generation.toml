@@ -1,0 +1,28 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/MemoryCAS.tla",
+  "formal/tla/MemoryCASCopy.cfg",
+  "crates/worker/awaken-sandbox-memoryd/src/copy.rs",
+  "crates/worker/awaken-sandbox-memoryd/src/mounter.rs",
+  "crates/worker/awaken-sandbox-memoryd/tests/copy_lifecycle.rs",
+  "crates/resources/awaken-memory-store/src/repository.rs",
+  "crates/resources/awaken-memory-store/src/sqlite.rs",
+  "crates/resources/awaken-memory-store/src/postgres.rs",
+  "crates/resources/awaken-memory-store/tests/conformance.rs",
+]
+proof_harnesses = [
+  "memory_head_update_admission_preserves_stale_and_idempotent_heads",
+]
+production_entrypoints = [
+  "crates/resources/awaken-memory-store/src/repository.rs",
+  "crates/resources/awaken-memory-store/src/sqlite.rs",
+  "crates/resources/awaken-memory-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts all 32 materialized-path, immutable-id, monotone-version, content-hash and already-current observation classes through the single production admission owner used by the volatile, SQLite and PostgreSQL adapters. An already-current head returns Current only with an exact path and complete generation token; a stale same-content token conflicts, while an exact changed head alone can yield Apply. Equality and hash computation, lock and transaction correctness, SQL row selection, asynchronous cancellation and durable database effects remain implementation or external TCB; this is an admission-kernel proof rather than universal backend refinement.'''

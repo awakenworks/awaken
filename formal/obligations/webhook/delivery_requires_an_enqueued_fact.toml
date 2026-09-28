@@ -1,0 +1,27 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.exactly_once_side_effects",
+]
+evidence = [
+  "formal/tla/WebhookOutbox.tla",
+  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
+  "crates/server/awaken-webhook-managed/src/lib.rs",
+  "crates/server/awaken-webhook-managed/tests/crud.rs",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+]
+proof_harnesses = [
+  "pending_lifecycle_fact_completes_iff_delivery_succeeds_with_the_exact_identity",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-repository-contract/src/repository_port.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/mutation.rs",
+  "crates/server/awaken-webhook-managed/src/lib.rs",
+]
+
+[[bounds]]
+text = '''The sole production WebhookOutboxNotifier delivery call is inside drain_once after pending_lifecycle returns. Each returned row enters the private PendingLifecycleFact::from_repository constructor and the exact same borrow supplies delivery; no public constructor or alternate notifier delivery path can mint a fact. Kani exhausts both delivery outcomes over an arbitrary u64 identity and proves exact reference identity through the production wrapper. Repository row decoding, SQL query correctness, Tokio mutex/scheduling, transport execution, direct LifecycleFactDelivery callers outside this durable notifier and receiver-side effects remain native evidence or TCB.'''

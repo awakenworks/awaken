@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.container_and_kernel_isolation",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "crates/worker/awaken-sandbox-container/src/docker.rs",
+  "crates/worker/awaken-sandbox-container/src/docker/removal.rs",
+  "crates/worker/awaken-sandbox-container/src/docker/removal/tests.rs",
+  "crates/worker/awaken-sandbox-container/tests/pairwise_docker.rs",
+]
+proof_harnesses = [
+  "docker_absence_requires_an_explicit_not_found_response",
+]
+production_entrypoints = [
+  "crates/worker/awaken-sandbox-container/src/docker.rs",
+  "crates/worker/awaken-sandbox-container/src/docker/removal.rs",
+]
+
+[[bounds]]
+text = '''Direct Kani proof invokes the unchanged production docker_not_found classifier over every u16 HTTP status and the independent transport-timeout error variant. It passes 608 checks with zero failures and six unreachable checks under unwind 2. Only an explicit 404 is absence; no API-error message or transport timeout can stand in for it.'''
+
+[[bounds]]
+text = '''The actual Bollard/Axum decision table covers remove acknowledgment, exact-ID 404, 409 with Removing then absence, foreign identity, running/missing state, unauthorized/forbidden/backend outage, a bounded pending deadline, mutable-name-to-ID freezing and invalid identity with zero effects. Real Docker suites separately exercise disposal, retention, mounts, network denial, process and pool behavior.'''
+
+[[bounds]]
+text = '''The proof is solely the response classifier. Request addressing, async scheduling, timeout/cancellation wiring, daemon state honesty and physical deletion are executable or external boundaries. No whole Docker removal or Rust-to-model refinement claim is made.'''

@@ -1,0 +1,11 @@
+claim_scope = "semantic_nonclaim"
+proof_grade = "semantic_nonclaim"
+status = "external"
+tcb_assumptions = []
+evidence = [
+  "formal/README.md",
+]
+production_entrypoints = []
+
+[[bounds]]
+text = '''Outside repository proof; contract and evidence bounds are canonical in formal/assumptions.json.'''

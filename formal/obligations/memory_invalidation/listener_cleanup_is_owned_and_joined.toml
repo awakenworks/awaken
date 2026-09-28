@@ -1,0 +1,28 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/MemoryInvalidationLifecycle.tla",
+  "formal/tla/MemoryInvalidationLifecycle.cfg",
+  "scripts/ci/check_formal_mutations.py",
+  "crates/worker/awaken-sandbox-memoryd/src/fuse.rs",
+  "crates/worker/awaken-sandbox-memoryd/src/fuse/tests.rs",
+]
+proof_harnesses = [
+  "listener_cleanup_requests_stop_then_joins_the_owned_handle_exactly_once",
+]
+production_entrypoints = [
+  "crates/worker/awaken-sandbox-memoryd/src/fuse.rs",
+]
+
+[[bounds]]
+text = '''Two projection-local listeners; setup failure/unwind and successful handle disposal share stop, exit and join. Five semantic mutants and four witnesses cover missing stop, premature return, detached join, peer cancellation and disabled completion. Fair worker scheduling and terminating cache critical sections are assumed.'''
+
+[[bounds]]
+text = '''InvalidationListener::Drop is the sole production cleanup owner and directly invokes stop_and_join_owned_listener. Kani exhausts present and absent ownership for every u64 handle identity, followed by repeated cleanup, and proves that every call requests stop, a present handle enters the join callback only after stop, the exact handle is consumed once, an absent or consumed handle never joins, and the action returns only after its join callback returns. The fixed Kani 0.67 and patched CBMC/CaDiCaL run completes one harness with 60 successful checks and zero failures in 28.65 seconds at 527592 KiB peak aggregate RSS under the 600-second, 12-GiB RSS and 12-GiB available-memory guards with -j1 and RUSTC_WRAPPER empty.'''
+
+[[bounds]]
+text = '''Native tests cover real invalid mount setup, repeated failure, peer subscriber retention, eighteen exit/queue/disposal rows, a stop/exit channel barrier, setup unwind and the local action decision table. Exact source mutants for omitted stop, detached join and stop-after-join fail the decision-table test and are restored. Rust Option and closure call semantics plus std::thread::JoinHandle blocking are implementation TCB; kernel unmount success, abrupt Worker death, scheduler fairness, terminating cache critical sections and Provider compensation retry remain outside the direct proof.'''

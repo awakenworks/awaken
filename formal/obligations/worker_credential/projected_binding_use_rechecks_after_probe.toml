@@ -1,0 +1,27 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/AcpProjectedBindingUse.tla",
+  "formal/tla/AcpProjectedBindingUse.cfg",
+  "scripts/ci/formal_credential_mutations.py",
+  "crates/server/awaken-run-executor-acp/src/host/projected_bindings.rs",
+  "crates/bin/awaken-worker/src/bootstrap.rs",
+]
+proof_harnesses = [
+  "projected_binding_use_rechecks_the_exact_projection_after_probe",
+]
+production_entrypoints = [
+  "crates/server/awaken-run-executor-acp/src/host/projected_bindings.rs",
+  "crates/bin/awaken-worker/src/bootstrap.rs",
+]
+
+[[bounds]]
+text = '''Two consumers and at most two full external projection replacements; images represent enabled default login, revision rotation, CLI rebinding, disable, deletion and corruption. One async gate serializes reload and probe; post-probe exact equality fences observed changes, and cancellation releases the gate. Five semantic mutants and four positive witnesses are checked, including rejection of foreign-backend probe replies despite an unchanged projection. Rust tests additionally cover both heartbeat and per-use paths, all login states, malformed and oversized files, exact reference identity, real file replacement, cancellation and standalone configuration assembly. The existing await-barrier matrix crosses seven file changes, both consumer ports and requested/foreign-known/unknown reply backends (42 rows). Trusted publisher authentication, automatic Control projection delivery, arbitrary ABA/rollback detection, final check-to-launch, OS file IO, unbounded liveness and Rust refinement are outside this bounded claim.'''
+
+[[bounds]]
+text = '''Two consumers and at most two full external projection replacements; images represent enabled default login, revision rotation, CLI rebinding, disable, deletion and corruption. One async gate serializes reload and probe; post-probe exact equality fences observed changes, and cancellation releases the gate. Four semantic mutants and three positive witnesses are checked. Rust tests additionally cover both heartbeat and per-use paths, all login states, malformed and oversized files, exact reference identity, real file replacement, cancellation and standalone configuration assembly. Trusted publisher authentication, automatic Control projection delivery, arbitrary ABA/rollback detection, final check-to-launch, OS file IO, unbounded liveness and Rust refinement are outside this bounded claim.'''
+
+[[bounds]]
+text = '''Kani exhausts the exact/changed post-probe decision used by both batch observation and exact-reference revalidation. File IO, map equality, probe honesty, and the final check-to-launch interval remain executable or external evidence.'''

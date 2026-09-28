@@ -1,0 +1,21 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.llm_semantics",
+]
+evidence = [
+  "formal/tla/EvalEvidence.tla",
+  "formal/tla/EvalEvidence.cfg",
+  "crates/devtools/awaken-eval/src/observation_index.rs",
+  "crates/devtools/awaken-eval/src/outcome_judge.rs",
+  "scripts/ci/formal_eval_mutations.py",
+  "scripts/ci/check_formal.sh",
+]
+production_entrypoints = []
+
+[[bounds]]
+text = '''The two-case linked TLA+ model records zero, one, or two observations before scoring and defines schema validity exactly when the count is one. A semantic mutant accepting every scored case is rejected; separate reachability witnesses cover both missing and duplicate scored cases.'''
+
+[[bounds]]
+text = '''One canonical crate-private observation index is shared by Outcome, Compact, Memory, MemoryAgentBench, and public benchmark scorers. The Outcome Judge decision table crosses four observation states for each of two cases with an unexpected-id bit and calls the actual strict parser; missing, duplicate, and parser-invalid cases are classified schema-invalid. The finite native table and parser tests do not prove arbitrary allocation behavior or LLM semantic correctness.'''
