@@ -28,7 +28,6 @@ use awaken_provisioning_contract as pc;
 use crate::{
     ContainerEffectFence, ContainerEnvironment, ContainerEnvironmentCapacity,
     ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime, ContainerSandbox,
-    RestorableContainerEnvironmentProvider, RestoreTargetContainerEnvironmentProvider,
 };
 
 pub mod lease;
@@ -956,11 +955,13 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
             .await
     }
 
-    fn restore_targets(&self) -> Option<&dyn RestoreTargetContainerEnvironmentProvider> {
+    fn restore_targets(
+        &self,
+    ) -> Option<&dyn pc::RestoreTargetProvider<Arc<dyn ContainerEnvironment>>> {
         Some(self)
     }
 
-    fn restorable(&self) -> Option<&dyn RestorableContainerEnvironmentProvider> {
+    fn restorable(&self) -> Option<&dyn pc::RestorableProvider<Arc<dyn ContainerEnvironment>>> {
         // Warm capacity never changes what the inner provider can restore.
         // The inner ContainerProvider owns restore targets but not byte
         // restoration, so the pool advertises exactly that.
@@ -969,10 +970,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
 }
 
 #[async_trait]
-impl<R: ContainerRuntime + 'static> RestoreTargetContainerEnvironmentProvider
+impl<R: ContainerRuntime + 'static> pc::RestoreTargetProvider<Arc<dyn ContainerEnvironment>>
     for WarmContainerPool<R>
 {
-    async fn acquire_restore_environment(
+    async fn acquire_restore(
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
@@ -983,7 +984,7 @@ impl<R: ContainerRuntime + 'static> RestoreTargetContainerEnvironmentProvider
         self.inner.acquire_restore_environment(spec, request).await
     }
 
-    async fn dispose_restored_environment(
+    async fn dispose_restored(
         &self,
         spec: &pc::SandboxSpec,
         request: &pc::SandboxRestoreRequest,
@@ -1292,7 +1293,7 @@ mod tests {
             "R2 inner"
         );
         assert!(crate::restore_ladder_is_consistent(&pool), "R2 pool");
-        let rung: *const dyn RestoreTargetContainerEnvironmentProvider =
+        let rung: *const dyn pc::RestoreTargetProvider<Arc<dyn ContainerEnvironment>> =
             pool.restore_targets().unwrap();
         assert!(std::ptr::addr_eq(rung, &pool as *const _), "R3");
     }

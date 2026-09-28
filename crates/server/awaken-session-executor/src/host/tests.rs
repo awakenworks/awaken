@@ -1484,16 +1484,18 @@ impl awaken_container_contract::ContainerEnvironmentProvider for TerminalRecover
 
     fn restore_targets(
         &self,
-    ) -> Option<&dyn awaken_container_contract::RestoreTargetContainerEnvironmentProvider> {
+    ) -> Option<
+        &dyn pc::RestoreTargetProvider<Arc<dyn awaken_container_contract::ContainerEnvironment>>,
+    > {
         Some(self)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_container_contract::RestoreTargetContainerEnvironmentProvider
+impl pc::RestoreTargetProvider<Arc<dyn awaken_container_contract::ContainerEnvironment>>
     for TerminalRecoveryProvider
 {
-    async fn acquire_restore_environment(
+    async fn acquire_restore(
         &self,
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
@@ -1506,7 +1508,7 @@ impl awaken_container_contract::RestoreTargetContainerEnvironmentProvider
         ))
     }
 
-    async fn dispose_restored_environment(
+    async fn dispose_restored(
         &self,
         _spec: &pc::SandboxSpec,
         _request: &pc::SandboxRestoreRequest,
