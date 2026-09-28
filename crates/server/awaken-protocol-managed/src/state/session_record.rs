@@ -366,6 +366,16 @@ impl SessionRecord {
         true
     }
 
+    /// Index every appended event, so [`Self::event_positions`] answers for
+    /// the current vector without further mutation.
+    pub(super) fn refresh_event_index(&mut self) {
+        Arc::make_mut(&mut self.event_page_index).extend(
+            &self.session.id,
+            &self.events,
+            &self.event_thread_owners,
+        );
+    }
+
     pub(super) fn has_event_id(&mut self, event_id: &str) -> bool {
         Arc::make_mut(&mut self.event_page_index).extend(
             &self.session.id,

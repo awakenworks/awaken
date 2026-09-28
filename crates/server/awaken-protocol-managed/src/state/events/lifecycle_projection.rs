@@ -2,7 +2,7 @@
 //! Child lifecycle, disposition, delegation, and aggregate terminal projection.
 
 use super::*;
-use awaken_managed_session_events::{FactKey, FactProvenance, FactRole};
+use awaken_managed_session_events::{CoordinatedThread, ThreadStatus};
 
 impl ManagedState {
     pub(super) fn run_stop_reason(
@@ -20,18 +20,11 @@ impl ManagedState {
         pending: Option<&Pending>,
         await_reason: Option<&awaken_agent_contract::agent::awaiting::AwaitReason>,
     ) -> Result<StopReason, StateError> {
-        let mut reason = Self::run_stop_reason(state, pending, await_reason);
-        if let StopReason::RequiresAction { event_ids } = &mut reason {
-            let latest = record.projected_tool_index_for(owner_thread_id).latest;
-            for event_id in event_ids {
-                *event_id = latest.get(event_id).cloned().ok_or_else(|| {
-                    StateError::Run(RunError::internal(
-                        "Managed pending ticket has no answerable public tool event",
-                    ))
-                })?;
-            }
-        }
-        Ok(reason)
+        timeline_encoding::resolve_stop(
+            record,
+            owner_thread_id,
+            &awaken_managed_session_events::terminal_stop(state, pending, await_reason, false),
+        )
     }
 
     pub(super) fn child_stop_reason(
@@ -39,6 +32,24 @@ impl ManagedState {
         pending: Option<&Pending>,
     ) -> StopReason {
         Self::run_stop_reason(&event.state, pending, event.await_reason.as_ref())
+    }
+
+    /// The coordinated children as the timeline domain sees them.
+    pub(super) fn coordinated_threads(record: &SessionRecord) -> Vec<CoordinatedThread> {
+        record
+            .child_threads
+            .iter()
+            .map(|child| CoordinatedThread {
+                thread: child.id.clone(),
+                advisor: child.agent.is_advisor(),
+                status: match child.status {
+                    SessionThreadStatus::Running => ThreadStatus::Running,
+                    SessionThreadStatus::Rescheduling => ThreadStatus::Rescheduling,
+                    SessionThreadStatus::Idle => ThreadStatus::Idle,
+                    SessionThreadStatus::Terminated => ThreadStatus::Terminated,
+                },
+            })
+            .collect()
     }
 
     pub(super) fn append_child_lifecycle_projection(
@@ -52,183 +63,23 @@ impl ManagedState {
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
     ) -> Result<(), StateError> {
-        let latest_cursor_by_thread =
-            events
-                .iter()
-                .fold(std::collections::HashMap::new(), |mut latest, event| {
-                    latest.insert(event.thread_id.0.as_str(), event.cursor);
-                    latest
-                });
-        for event in events {
-            let thread_id = event.thread_id.0.as_str();
-            let Some(index) = record
-                .child_threads
-                .iter()
-                .position(|child| child.id == thread_id)
-            else {
-                continue;
-            };
-            if record.child_threads[index].status == SessionThreadStatus::Terminated {
-                continue;
-            }
-            let agent_name = record.child_threads[index].agent.display_name().to_string();
-            let is_advisor = record.child_threads[index].agent.is_advisor();
-            let at = |role| {
-                FactKey::new(
-                    thread_id,
-                    role,
-                    FactProvenance::Lifecycle {
-                        cursor: event.cursor.0,
-                    },
-                )
-            };
-            let run_terminates_thread = awaken_session_execution_contract::coordinated_thread_closed(
-                awaken_session_execution_contract::CoordinatedThreadKind::from_is_advisor(is_advisor),
-                &event.state,
-            );
-            // The contract owns the Run-boundary set; everything outside it is
-            // Running/Resumed or the Rescheduled retry receipt.
-            match awaken_session_event_contract::SessionAgentRunBoundary::of_lifecycle_kind(
-                event.kind,
-            ) {
-                None if event.kind != RunLifecycleEventKind::Rescheduled => {
-                    if record.child_threads[index].status != SessionThreadStatus::Running {
-                        record.child_threads[index].status = SessionThreadStatus::Running;
-                        record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
-                        record.push_fact(
-                            at(FactRole::LifecycleStatusRunning),
-                            OutboundKind::SessionThreadStatusRunning {
-                                session_thread_id: thread_id.to_string(),
-                                agent_name,
-                            },
-                        );
-                    }
-                }
-                None => {
-                    // Rescheduled: one committed retry receipt represents both observable
-                    // edges: the old attempt was rescheduled, then its already
-                    // claimed replacement began running. Keeping both under the
-                    // same lifecycle cursor makes warm replay and cold rebuild
-                    // converge without a protocol-owned retry registry.
-                    record.child_threads[index].status = SessionThreadStatus::Rescheduling;
-                    record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
-                    record.push_fact(
-                        at(FactRole::LifecycleStatusRescheduled),
-                        OutboundKind::SessionThreadStatusRescheduled {
-                            session_thread_id: thread_id.to_string(),
-                            agent_name: agent_name.clone(),
-                        },
-                    );
-                    record.child_threads[index].status = SessionThreadStatus::Running;
-                    record.push_fact(
-                        at(FactRole::RescheduledLifecycleStatusRunning),
-                        OutboundKind::SessionThreadStatusRunning {
-                            session_thread_id: thread_id.to_string(),
-                            agent_name,
-                        },
-                    );
-                }
-                Some(_) => {
-                    let terminal_pending = historical_pending.get(&event.cursor).or_else(|| {
-                        (latest_cursor_by_thread.get(thread_id) == Some(&event.cursor))
-                            .then(|| pending.get(thread_id))
-                            .flatten()
-                    });
-                    let budget_reached = event.await_reason.as_ref()
-                        == Some(
-                            &awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached,
-                        );
-                    if event.kind == RunLifecycleEventKind::Awaiting
-                        && terminal_pending.is_none()
-                        && !budget_reached
-                    {
-                        // A historical Awaiting fact whose ticket has already
-                        // been consumed cannot be reconstructed as an answerable
-                        // Managed idle. Emitting `requires_action([])` would be a
-                        // false public state; the later Resumed/terminal facts
-                        // still project from the same lifecycle feed.
-                        continue;
-                    }
-                    let stop_reason = Self::public_run_stop_reason(
-                        record,
-                        Some(thread_id),
-                        &event.state,
-                        terminal_pending,
-                        event.await_reason.as_ref(),
-                    )?;
-                    if let Some(error) =
-                        SessionError::from_committed_lifecycle(event, snapshots.get(thread_id))
-                            .map_err(|error| {
-                                StateError::Run(RunError::internal(error.to_string()))
-                            })?
-                    {
-                        let key = at(FactRole::LifecycleError);
-                        let id = record.fact_id(&key);
-                        record.event_thread_owners.insert(id, thread_id.to_string());
-                        record.push_fact(
-                            key,
-                            OutboundKind::SessionError {
-                                error: if is_advisor {
-                                    SessionError::classify(
-                                        "advisor_consultation_failed",
-                                        ADVISOR_FAILURE_NOTICE,
-                                    )
-                                } else {
-                                    error
-                                },
-                            },
-                        );
-                    }
-                    record
-                        .checkpoint
-                        .progress
-                        .terminal_cursors
-                        .insert(event.cursor);
-                    if run_terminates_thread && !is_advisor {
-                        // A committed Failed Run is the absorbing admission
-                        // fence for an ordinary coordinated Thread. Project the
-                        // error first and terminate directly: publishing Idle
-                        // would promise follow-up input that Runtime must reject.
-                        record.child_threads[index].status = SessionThreadStatus::Terminated;
-                        record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
-                        record.push_fact(
-                            at(FactRole::FailedLifecycleStatusTerminated),
-                            OutboundKind::SessionThreadStatusTerminated {
-                                session_thread_id: thread_id.to_string(),
-                                agent_name,
-                            },
-                        );
-                        continue;
-                    }
-                    record.child_threads[index].status = SessionThreadStatus::Idle;
-                    record.child_threads[index].updated_at = LEGACY_UNRECORDED_AT.to_string();
-                    record.push_fact(
-                        at(FactRole::LifecycleStatusIdle),
-                        OutboundKind::SessionThreadStatusIdle {
-                            session_thread_id: thread_id.to_string(),
-                            agent_name: agent_name.clone(),
-                            stop_reason,
-                        },
-                    );
-                    if run_terminates_thread {
-                        // Each consultation owns one Thread and self-terminates
-                        // after its one ordinary Run. This terminal is derived
-                        // from the durable advisor target + Run boundary, not a
-                        // generic child archive cache.
-                        record.child_threads[index].status = SessionThreadStatus::Terminated;
-                        record.child_threads[index].archived_at =
-                            Some(LEGACY_UNRECORDED_AT.to_string());
-                        record.push_fact(
-                            at(FactRole::AdvisorLifecycleStatusTerminated),
-                            OutboundKind::SessionThreadStatusTerminated {
-                                session_thread_id: thread_id.to_string(),
-                                agent_name,
-                            },
-                        );
-                    }
-                }
-            }
+        let mut threads = Self::coordinated_threads(record);
+        let projection = awaken_managed_session_events::project_child_lifecycle(
+            &mut threads,
+            events,
+            pending,
+            historical_pending,
+            snapshots,
+        )
+        .map_err(projection_error)?;
+        for fact in &projection.facts {
+            record.publish_fact(fact, None)?;
         }
+        record
+            .checkpoint
+            .progress
+            .terminal_cursors
+            .extend(projection.terminal_cursors);
         Ok(())
     }
 
@@ -236,34 +87,12 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         dispositions: &std::collections::HashMap<String, awaken_agent_contract::ThreadDisposition>,
-    ) {
-        let mut archived = Vec::new();
-        for child in &mut record.child_threads {
-            if dispositions.get(&child.id)
-                != Some(&awaken_agent_contract::ThreadDisposition::Archived)
-                || child.status == SessionThreadStatus::Terminated
-            {
-                continue;
-            }
-            let agent_name = child.agent.display_name().to_string();
-            child.status = SessionThreadStatus::Terminated;
-            child.archived_at = Some(LEGACY_UNRECORDED_AT.to_string());
-            child.updated_at = LEGACY_UNRECORDED_AT.to_string();
-            archived.push((
-                FactKey::new(
-                    child.id.clone(),
-                    FactRole::ArchivedStatusTerminated,
-                    FactProvenance::ArchivedDisposition,
-                ),
-                OutboundKind::SessionThreadStatusTerminated {
-                    session_thread_id: child.id.clone(),
-                    agent_name,
-                },
-            ));
+    ) -> Result<(), StateError> {
+        let mut threads = Self::coordinated_threads(record);
+        for fact in awaken_managed_session_events::archive_children(&mut threads, dispositions) {
+            record.publish_fact(&fact, None)?;
         }
-        for (key, kind) in archived {
-            record.push_fact(key, kind);
-        }
+        Ok(())
     }
 
     /// Project the absorbing parent Session terminal over every derived Thread.
@@ -272,63 +101,36 @@ impl ManagedState {
     /// independently persisted child dispositions. Child terminals precede the
     /// aggregate terminal so each child SSE can close while the primary stream
     /// continues until `session.status_terminated`.
-    pub(super) fn append_parent_terminal_projection(&self, record: &mut SessionRecord) {
+    pub(super) fn append_parent_terminal_projection(
+        &self,
+        record: &mut SessionRecord,
+    ) -> Result<(), StateError> {
         if record.session.status != SessionStatus::Terminated {
-            return;
-        }
-        let mut terminated = Vec::new();
-        for child in &mut record.child_threads {
-            if child.status == SessionThreadStatus::Terminated {
-                continue;
-            }
-            child.status = SessionThreadStatus::Terminated;
-            child.archived_at = record.session.archived_at.clone();
-            child.updated_at = record
-                .session
-                .archived_at
-                .clone()
-                .unwrap_or_else(|| LEGACY_UNRECORDED_AT.to_string());
-            terminated.push((
-                FactKey::new(
-                    child.id.clone(),
-                    FactRole::ParentTerminalChildStatusTerminated,
-                    FactProvenance::ParentTerminal,
-                ),
-                OutboundKind::SessionThreadStatusTerminated {
-                    session_thread_id: child.id.clone(),
-                    agent_name: child.agent.display_name().to_string(),
-                },
-            ));
-        }
-        for (key, kind) in terminated {
-            record.push_fact(key, kind);
+            return Ok(());
         }
         let session_id = record.session.id.clone();
-        let primary_terminated = FactKey::new(
+        let primary = awaken_managed_session_events::FactKey::new(
             session_id.as_str(),
-            FactRole::ParentTerminalPrimaryStatusTerminated,
-            FactProvenance::ParentTerminal,
+            awaken_managed_session_events::FactRole::ParentTerminalPrimaryStatusTerminated,
+            awaken_managed_session_events::FactProvenance::ParentTerminal,
         );
-        if !record.has_event_id(&record.fact_id(&primary_terminated)) {
-            let kind =
-                primary_thread_status_kind(record, PrimaryThreadStatusProjection::Terminated);
-            record.append_fact_once(primary_terminated, kind);
-        }
-        if record
+        let primary_published = record.has_event_id(&record.fact_id(&primary));
+        // Child and primary terminals are Thread statuses, so any aggregate
+        // terminal already published, whatever its origin, closes the Session.
+        let session_terminated_published = record
             .events
             .iter()
-            .any(|event| matches!(event.kind, OutboundKind::SessionStatusTerminated { .. }))
-        {
-            return;
+            .any(|event| matches!(event.kind, OutboundKind::SessionStatusTerminated { .. }));
+        let mut threads = Self::coordinated_threads(record);
+        for fact in awaken_managed_session_events::terminate_session(
+            &session_id,
+            &mut threads,
+            primary_published,
+            session_terminated_published,
+        ) {
+            record.publish_fact(&fact, None)?;
         }
-        record.push_fact(
-            FactKey::new(
-                session_id,
-                FactRole::ParentTerminalSessionStatusTerminated,
-                FactProvenance::ParentTerminal,
-            ),
-            OutboundKind::SessionStatusTerminated {},
-        );
+        Ok(())
     }
 
     /// Decide the aggregate Running edge from committed Session state and the
@@ -428,7 +230,6 @@ impl ManagedState {
             .retain(|child| seen.contains(&child.id));
         for (link, agent) in resolved {
             let thread_id = link.thread_id.0.clone();
-            let name = agent.display_name().to_string();
             let existing = record
                 .child_threads
                 .iter()
@@ -441,33 +242,13 @@ impl ManagedState {
             });
             record.child_threads[index].usage = usage.get(&thread_id).cloned().flatten();
             if is_new {
-                let at = |role| {
-                    FactKey::new(
-                        thread_id.as_str(),
-                        role,
-                        FactProvenance::LinkOperation {
-                            operation_id: link.created_by_operation_id.clone(),
-                        },
-                    )
-                };
-                record.push_fact(
-                    at(FactRole::LinkThreadCreated),
-                    OutboundKind::SessionThreadCreated {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                    },
-                );
-                record.push_fact(
-                    at(FactRole::LinkStatusRunning),
-                    OutboundKind::SessionThreadStatusRunning {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                    },
-                );
+                for fact in awaken_managed_session_events::link_facts(link) {
+                    record.publish_fact(&fact, None)?;
+                }
             }
             debug_assert_eq!(record.child_threads[index].id, thread_id);
         }
-        self.append_coordination_cross_posts(record, links);
+        self.append_coordination_cross_posts(record, links)?;
         for link in links {
             let thread_id = link.thread_id.0.as_str();
             let child = record
@@ -475,7 +256,6 @@ impl ManagedState {
                 .iter()
                 .find(|child| child.id == thread_id)
                 .expect("validated coordinated Thread is cached");
-            let agent_name = child.agent.display_name().to_string();
             let advisor_model = match &child.agent {
                 crate::types::SessionThreadAgentValue::Advisor(advisor) => {
                     Some(advisor.model.clone())
@@ -496,7 +276,6 @@ impl ManagedState {
                 record,
                 ChildTranscriptProjection {
                     thread_id,
-                    agent_name: &agent_name,
                     advisor_model: advisor_model.as_deref(),
                     messages: transcripts
                         .get(thread_id)
@@ -529,7 +308,7 @@ impl ManagedState {
         // historical Run lifecycle. On warm refresh it prevents later lifecycle
         // pages from reviving the child; on cold rebuild it closes the same
         // created/running/message/idle history with one terminal event.
-        self.append_child_disposition_projection(record, dispositions);
+        self.append_child_disposition_projection(record, dispositions)?;
         Ok(())
     }
 }

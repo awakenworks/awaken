@@ -100,45 +100,21 @@ impl SessionError {
     /// One classifier for committed root and child Run failures. An unknown
     /// physical result is not ordinary retry exhaustion and must not disappear
     /// behind an otherwise normal end_turn event.
+    #[cfg(test)]
     pub(crate) fn from_run_state(
         state: &awaken_agent_contract::agent::run::RunState,
     ) -> Option<Self> {
-        use awaken_agent_contract::agent::run::{EndCause, RunState};
-        match state {
-            RunState::Ended(EndCause::Error(failure)) => {
-                Some(Self::classify(failure.code(), failure.message()))
-            }
-            RunState::Ended(EndCause::Indeterminate) => Some(Self::execution_unknown()),
-            _ => None,
-        }
+        awaken_managed_session_events::run_state_fault(state).map(|fault| Self::from_fault(&fault))
     }
 
-    /// One root/child classifier over the same lifecycle and recovery prefix.
-    /// Cancellation intent never supplies physical termination evidence; later
-    /// receipts cannot rewrite an already published historical diagnosis.
-    pub(crate) fn from_committed_lifecycle(
-        terminal: &awaken_agent_contract::RunLifecycleEvent,
-        snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Option<Self>, awaken_agent_contract::agent::state::StateError> {
-        use awaken_agent_contract::agent::run::{EndCause, RunState};
-        if matches!(terminal.state, RunState::Ended(EndCause::Cancelled))
-            && let Some(snapshot) = snapshot
-        {
-            let operations =
-                awaken_runtime_contract::model_operation::ActiveModelOperation::recorded_at_commit(
-                    &snapshot.state,
-                    &snapshot.state_commit_cursors,
-                    &terminal.run_id,
-                    terminal.source_commit_cursor,
-                )?;
-            if operations
-                .iter()
-                .any(|operation| !operation.execution.permits_reentry())
-            {
-                return Ok(Some(Self::execution_unknown()));
+    /// The Managed error of one neutral Run fault.
+    pub(crate) fn from_fault(fault: &awaken_managed_session_events::RunFault) -> Self {
+        match fault {
+            awaken_managed_session_events::RunFault::Failed { code, message } => {
+                Self::classify(code, message.clone())
             }
+            awaken_managed_session_events::RunFault::ExecutionUnknown => Self::execution_unknown(),
         }
-        Ok(Self::from_run_state(&terminal.state))
     }
 
     pub(crate) fn execution_unknown() -> Self {

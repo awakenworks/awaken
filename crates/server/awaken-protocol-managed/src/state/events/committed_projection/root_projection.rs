@@ -11,8 +11,9 @@
 use super::candidate_evidence::{BudgetReachProjection, CandidateEvidence};
 use super::*;
 use awaken_managed_session_events::{
-    FactKey, FactProvenance, FactRole, TranscriptRole, interval_close_cursor,
-    interval_lifecycle_open_event, is_opening, running_interval_lifecycle_open_event,
+    FactKey, FactKind, FactProvenance, FactRole, TimelineFact, TranscriptRole,
+    interval_close_cursor, interval_lifecycle_open_event, is_opening,
+    running_interval_lifecycle_open_event,
 };
 
 /// What the root reduction decided that the aggregate close reuses.
@@ -71,19 +72,27 @@ impl ManagedState {
         if outcome_owns_failure {
             return Ok(());
         }
-        let Some(error) = SessionError::from_committed_lifecycle(terminal, snapshot)
-            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
+        let Some(fault) =
+            awaken_managed_session_events::run_fault(terminal, snapshot).map_err(projection_error)?
         else {
             return Ok(());
         };
-        let key = FactKey::new(
-            record.session.id.clone(),
-            FactRole::RootLifecycleError,
-            FactProvenance::Lifecycle {
-                cursor: terminal.cursor.0,
-            },
-        );
-        record.append_fact_once(key, OutboundKind::SessionError { error });
+        record.publish_fact_once(
+            &TimelineFact::new(
+                FactKey::new(
+                    record.session.id.clone(),
+                    FactRole::RootLifecycleError,
+                    FactProvenance::Lifecycle {
+                        cursor: terminal.cursor.0,
+                    },
+                ),
+                FactKind::RunError {
+                    fault,
+                    advisor: false,
+                },
+            ),
+            None,
+        )?;
         Ok(())
     }
 
@@ -289,34 +298,31 @@ impl ManagedState {
                         },
                     )
                 };
-                match lifecycle.kind {
-                    RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => {
-                        push_primary_thread_status(
-                            record,
-                            at(FactRole::RootLifecycleStatusRunning),
-                            PrimaryThreadStatusProjection::Running,
-                        );
-                        projected_root_opening = true;
-                    }
-                    RunLifecycleEventKind::Rescheduled => {
-                        record.push_fact(
-                            at(FactRole::RootLifecycleSessionStatusRescheduled),
-                            OutboundKind::SessionStatusRescheduled {},
-                        );
-                        push_primary_thread_status(
-                            record,
-                            at(FactRole::RootLifecycleStatusRescheduled),
-                            PrimaryThreadStatusProjection::Rescheduled,
-                        );
-                        push_primary_thread_status(
-                            record,
-                            at(FactRole::RootRescheduledLifecycleStatusRunning),
-                            PrimaryThreadStatusProjection::Running,
-                        );
-                        projected_root_opening = true;
-                    }
+                let transitions: &[(FactRole, FactKind)] = match lifecycle.kind {
+                    RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => &[(
+                        FactRole::RootLifecycleStatusRunning,
+                        FactKind::ThreadRunning,
+                    )],
+                    RunLifecycleEventKind::Rescheduled => &[
+                        (
+                            FactRole::RootLifecycleSessionStatusRescheduled,
+                            FactKind::SessionRescheduled,
+                        ),
+                        (
+                            FactRole::RootLifecycleStatusRescheduled,
+                            FactKind::ThreadRescheduled,
+                        ),
+                        (
+                            FactRole::RootRescheduledLifecycleStatusRunning,
+                            FactKind::ThreadRunning,
+                        ),
+                    ],
                     _ => unreachable!("filtered root lifecycle transition"),
+                };
+                for (role, kind) in transitions {
+                    record.publish_fact(&TimelineFact::new(at(*role), kind.clone()), None)?;
                 }
+                projected_root_opening = true;
             }
         }
         if !projected_root_opening
@@ -334,22 +340,20 @@ impl ManagedState {
             .filter(|event| event.kind == RunLifecycleEventKind::Awaiting)
             .map(|event| &event.run_id);
         let mut pending_is_in_new_message = false;
-        for message in &new_messages {
+        let folds = awaken_managed_session_events::plan_folds(
+            session_id,
+            &new_messages,
+            &evidence.root_response_coordinates,
+            historical_pending,
+            all_accepted_lifecycle,
+            root_pending_source_run_id,
+        );
+        for fold in folds {
+            let message = fold.message;
             let coordinates = evidence.root_response_coordinates.get(&message.id.0);
-            let historical_boundaries = awaken_managed_session_events::historical_message_boundaries(
-                message,
-                historical_pending,
-                all_accepted_lifecycle,
-                session_id,
-                coordinates.map(|(run, _, _)| run.as_str()),
-            );
-            let message_source_run_id = root_pending_source_run_id
-                .or_else(|| historical_boundaries.first().map(|(_, run)| *run));
+            let message_source_run_id = fold.source_run_id;
             let tool_index = record.projected_tool_index_for(None);
-            let pending_history = historical_boundaries
-                .iter()
-                .map(|(pending, _)| pending)
-                .collect::<Vec<_>>();
+            let pending_history = fold.pending_history();
             let selected = transcript_evidence.project_message(
                 message,
                 &tool_index.sources,

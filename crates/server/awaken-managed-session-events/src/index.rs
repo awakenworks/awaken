@@ -1373,4 +1373,89 @@ mod tests {
             "F1 frontier covers the prefix"
         );
     }
+
+    #[test]
+    fn tool_operation_join_uses_the_thread_qualified_fact_order() {
+        // Cause/effect graph: C1 a root Assistant message owns one exact source
+        // id; C2 another Thread names that same source id with no matching
+        // committed message; C3 the source/cursor vectors align. Effects: E1
+        // only the root call receives the Run/step operation; E2 the foreign
+        // Thread manufactures no operation; E3 the Advisor order retains the
+        // message's commit/time/block coordinate; E4 an unaligned prefix
+        // manufactures nothing.
+        let run_id = RunId("root-run".into());
+        let message = Message::new(
+            MessageId::assistant(&run_id, 2),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "root-call",
+                awaken_runtime_contract::resolved::ADVISOR_TOOL_ID,
+                serde_json::json!({}),
+            )],
+        );
+        let mut root = RunRecoverySnapshot {
+            thread_id: ThreadId(SESSION.into()),
+            claimed_run_id: run_id.clone(),
+            runs: vec![Record {
+                id: run_id.clone(),
+                thread_id: ThreadId(SESSION.into()),
+                state: RunState::Running,
+            }],
+            latest_run_id: Some(run_id.clone()),
+            messages: vec![message.clone()],
+            message_commit_cursors: vec![7],
+            commit_timestamps: [(7, 1_800_000_000_123)].into(),
+            state: vec![],
+            state_commit_cursors: vec![],
+            events: vec![],
+            resume_tickets: vec![],
+            thread_version: 1,
+            store_cursor: 7,
+            next_commit_ordinal: 1,
+        };
+        let children = HashMap::new();
+        let history = HashMap::new();
+        let child_pending = HashMap::new();
+        let expected = awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
+            &run_id,
+            2,
+            "root-call",
+        );
+        for aligned in [true, false] {
+            if !aligned {
+                root.message_commit_cursors.clear();
+            }
+            let index = OrderIndex::new(OrderEvidence {
+                session_id: SESSION,
+                batches: &[],
+                closed_intervals: &[],
+                budget_reach: &[],
+                parent_terminal: ParentTerminalEvidence::default(),
+                lifecycle: &[],
+                root: Some(&root),
+                children: &children,
+                links: &[],
+                outcomes: &[],
+                historical_pending: &history,
+                root_pending: None,
+                child_pending: &child_pending,
+            });
+            assert_eq!(
+                index.tool_operation(SESSION, &message.id.0, "root-call"),
+                aligned.then(|| expected.clone()),
+                "E1/E4"
+            );
+            assert_eq!(
+                index.tool_operation("child", &message.id.0, "root-call"),
+                None,
+                "E2"
+            );
+            let advisor = index.advisor_operation_orders();
+            assert_eq!(
+                order(advisor.get(&expected).copied()),
+                aligned.then_some((7, 50, 0, Some(1_800_000_000_123))),
+                "E3/E4"
+            );
+        }
+    }
 }
