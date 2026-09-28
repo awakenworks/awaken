@@ -1,4 +1,4 @@
-// @formal entrypoint run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
+// @formal entrypoint run_ingress.a_deadline_passes_once_it_is_reached
 // @formal entrypoint run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
 // @formal entrypoint run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
 // @formal entrypoint session_execution.pre_start_cancel_ack_requires_fresh_slot_install
@@ -25,6 +25,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
+use awaken_lease_contract::{Expiry, UtcTime};
 use awaken_runtime_contract::CredentialRealizationCapabilities;
 pub use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,

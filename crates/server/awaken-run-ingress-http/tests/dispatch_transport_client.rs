@@ -439,8 +439,9 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
 async fn remote_special_claim_uses_control_side_retry_policy_without_quarantining() {
     // Cause/effect decision table: R1 fresh or below-threshold -> special claim
     // returns None and ordinary execution may claim; R2 threshold reached but
-    // lease live (including exact expiry) -> None; R3 threshold reached and
-    // lease expired -> one ordinary Claimed epoch; R4 caller-supplied max/clock
+    // lease live (one instant before expiry) -> None; R3 threshold reached and
+    // lease expired (from its exact expiry instant) -> one ordinary Claimed
+    // epoch; R4 caller-supplied max/clock
     // disagree with Control policy -> Control clock/max still decide; R5 a
     // concurrent second special claim -> None because the first lease is live.
     // The dispatch port reads "now" from its store; mirror the service clock.
@@ -508,18 +509,18 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
             .is_some(),
         "the configured second crash recovery is admitted"
     );
-    clock.set(3_002);
-    dispatch_clock.set(3_002);
+    clock.set(3_001);
+    dispatch_clock.set(3_001);
     assert!(
         queue
             .claim_retry_exhausted("ignored", 1, 99)
             .await
             .unwrap()
             .is_none(),
-        "R2: exact lease expiry is not expired"
+        "R2: the lease is live one instant before its expiry"
     );
-    clock.set(3_003);
-    dispatch_clock.set(3_003);
+    clock.set(3_002);
+    dispatch_clock.set(3_002);
     let terminal_claim = queue
         .claim_retry_exhausted("ignored", 1, 99)
         .await

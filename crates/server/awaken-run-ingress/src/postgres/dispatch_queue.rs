@@ -537,7 +537,7 @@ impl DispatchQueue for PostgresDispatchStore {
         sqlx::query_scalar(&format!(
             "SELECT EXISTS(SELECT 1 FROM {NS}_dispatch WHERE run_id = $1 \
              AND status = 'running' AND lease_owner = $2 AND lease_epoch = $3 \
-             AND lease_until IS NOT NULL AND lease_until >= \
+             AND lease_until IS NOT NULL AND lease_until > \
              FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint)"
         ))
         .bind(&claim.run_id.0)
@@ -998,7 +998,7 @@ impl DispatchQueue for PostgresDispatchStore {
             "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested, \
              active_attempt_owner, active_attempt_epoch \
              FROM {p}_dispatch WHERE status = 'running' \
-             AND lease_until IS NOT NULL AND lease_until < $1 \
+             AND lease_until IS NOT NULL AND lease_until <= $1 \
              AND attempt_count >= $2 \
              AND (active_attempt_epoch IS NULL OR cancel_requested <> 0) FOR UPDATE"
         ))
@@ -1603,9 +1603,9 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         let depth: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
              (d.status IN ('reserved', 'reservation_running') \
-               AND d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
+               AND d.lease_until IS NOT NULL AND d.lease_until <= $1 AND {}) OR \
              (d.status = 'pending' AND {thread_available}) OR \
-             (d.status = 'running' AND d.lease_until < $1) OR \
+             (d.status = 'running' AND d.lease_until <= $1) OR \
              (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
                SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
                AND (i.available_at IS NULL OR i.available_at <= $1)\

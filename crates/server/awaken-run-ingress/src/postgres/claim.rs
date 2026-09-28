@@ -105,9 +105,9 @@ fn candidate_page_sql(local: bool) -> String {
                     {state_rank} AS state_rank \
              FROM {p}_dispatch d WHERE \
              ((d.status IN ('reserved', 'reservation_running') AND \
-               d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
+               d.lease_until IS NOT NULL AND d.lease_until <= $1) OR \
               (d.status = 'running' AND d.lease_until IS NOT NULL AND \
-               d.lease_until < $1) OR \
+               d.lease_until <= $1) OR \
               (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND \
                (pe.available_at IS NULL OR pe.available_at <= $1)))) OR \
@@ -143,9 +143,9 @@ fn candidate_deep_sql(local: bool) -> String {
                 TRUE AS thread_eligible, TRUE AS local_eligible \
          FROM {p}_dispatch d WHERE \
          ((d.status IN ('reserved', 'reservation_running') AND \
-           d.lease_until IS NOT NULL AND d.lease_until < $1 AND {reservation_peer}) OR \
+           d.lease_until IS NOT NULL AND d.lease_until <= $1 AND {reservation_peer}) OR \
           (d.status = 'running' AND d.lease_until IS NOT NULL AND \
-           d.lease_until < $1 AND {local_filter}) OR \
+           d.lease_until <= $1 AND {local_filter}) OR \
           (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
            SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND \
            (pe.available_at IS NULL OR pe.available_at <= $1))) AND \
@@ -402,7 +402,7 @@ async fn claim_exact_transaction_with_mode(
     let no_running_peer = no_running_peer(p);
     let eligibility = match mode {
         ExactClaimMode::Runnable => format!(
-            "((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
+            "((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until <= $2) \
              OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                AND (pe.available_at IS NULL OR pe.available_at <= $2))) AND {thread_available}) \
@@ -412,16 +412,16 @@ async fn claim_exact_transaction_with_mode(
         ),
         ExactClaimMode::ReservationRecovery => format!(
             "((d.status = 'reserved' AND d.lease_until IS NOT NULL \
-             AND d.lease_until < $2) \
+             AND d.lease_until <= $2) \
              OR (d.status = 'reservation_running' AND d.lease_until IS NOT NULL \
-             AND d.lease_until < $2)) AND {no_running_peer} \
+             AND d.lease_until <= $2)) AND {no_running_peer} \
              AND (d.retry_not_before IS NULL OR d.retry_not_before <= $2) \
              AND $3::bigint IS NULL"
         ),
         ExactClaimMode::TerminalRecovery => {
             format!(
                 "d.active_attempt_owner IS NULL AND d.active_attempt_epoch IS NULL AND \
-                 ((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $2) \
+                 ((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until <= $2) \
                  OR (d.status IN ('pending', 'awaiting') \
                  AND d.lease_owner IS NULL AND d.lease_until IS NULL \
                  AND {no_running_peer})) AND $3::bigint IS NULL"
@@ -429,7 +429,7 @@ async fn claim_exact_transaction_with_mode(
         }
         ExactClaimMode::RetryExhausted { .. } => {
             "d.status = 'running' AND d.lease_until IS NOT NULL \
-             AND d.lease_until < $2 AND d.attempt_count >= $3"
+             AND d.lease_until <= $2 AND d.attempt_count >= $3"
                 .to_string()
         }
     };

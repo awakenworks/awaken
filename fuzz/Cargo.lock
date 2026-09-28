@@ -65,6 +65,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-lease-contract"
+version = "1.0.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "awaken-mcp-wire"
 version = "0.1.0"
 dependencies = [
@@ -83,6 +90,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-lease-contract",
  "awaken-tenancy",
  "awaken-tool-contract",
  "futures-util",

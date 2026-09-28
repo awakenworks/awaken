@@ -1,4 +1,4 @@
-// @formal entrypoint run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
+// @formal entrypoint run_ingress.a_deadline_passes_once_it_is_reached
 // @formal entrypoint run_ingress.store_deadline_is_monotonic_saturating_and_never_wraps
 // @formal entrypoint session_run.reservation_ttl_uses_store_clock
 //! The clock at the edge of the durable host.

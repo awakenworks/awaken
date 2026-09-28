@@ -80,13 +80,14 @@ async fn uncertain_scheduled_stage_neither_launches_its_successor_nor_acknowledg
 }
 
 #[tokio::test]
-async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
+async fn failed_retry_exhaustion_commit_is_reclaimable_at_its_exact_lease_expiry() {
     // Cause/effect decision table: T1 exhausted+expired and commit fails => keep
     // the newly claimed row leased, publish no terminal/completion/quarantine;
-    // T2 retry at exact expiry => strict lease fence returns no claim; T3 retry
-    // after expiry, even though the special claim raised attempts above max =>
+    // T2 retry one instant before expiry => the live lease fences the claim; T3
+    // retry at the exact expiry instant (the Expiry law: expired from `now >=
+    // expiry` on), even though the special claim raised attempts above max =>
     // reclaim, commit Indeterminate, settle Done, publish one tombstone.
-    // Causes: retry exhaustion, exact lease time, post-expiry time, and injected
+    // Causes: retry exhaustion, pre-expiry time, exact expiry time, and injected
     // commit failure select T1-T3. Effects: T1 retains evidence, T2 fences, T3
     // completes once. Constraint/Invariant: failed terminal commit cannot consume
     // or quarantine the claim. Decision rule: execute T1, T2, then T3 in order.
@@ -132,9 +133,9 @@ async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
     );
 
     commit.set_failing(false);
-    clock.set(1_400);
+    clock.set(1_399);
     assert!(!worker.resolve_one_retry_exhausted(1).await.unwrap(), "T2");
-    clock.set(1_401);
+    clock.set(1_400);
     assert!(worker.resolve_one_retry_exhausted(1).await.unwrap(), "T3");
     assert_eq!(
         inner.committed().latest_run.unwrap().state,

@@ -31,7 +31,7 @@ pub(super) fn claim_retry_exhausted_transaction(
             &format!(
                 "SELECT run_id FROM {prefix}_dispatch \
                  WHERE status = 'running' AND lease_until IS NOT NULL \
-                 AND lease_until < ?1 AND attempt_count >= ?2 \
+                 AND lease_until <= ?1 AND attempt_count >= ?2 \
                  AND active_attempt_epoch IS NULL \
                  ORDER BY created_at LIMIT 1"
             ),
@@ -127,7 +127,7 @@ pub(super) fn claim_exact_transaction_with_mode(
     let no_running_peer = no_running_peer(prefix);
     let eligibility = match mode {
         ExactClaimMode::Runnable => format!(
-            "((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?2) \
+            "((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until <= ?2) \
              OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                SELECT 1 FROM {prefix}_pending pe WHERE pe.run_id = d.run_id \
                AND (pe.available_at IS NULL OR pe.available_at <= ?2))) AND {thread_available}) \
@@ -137,16 +137,16 @@ pub(super) fn claim_exact_transaction_with_mode(
         ),
         ExactClaimMode::ReservationRecovery => format!(
             "((d.status = 'reserved' AND d.lease_until IS NOT NULL \
-             AND d.lease_until < ?2) \
+             AND d.lease_until <= ?2) \
              OR (d.status = 'reservation_running' AND d.lease_until IS NOT NULL \
-             AND d.lease_until < ?2)) AND {no_running_peer} \
+             AND d.lease_until <= ?2)) AND {no_running_peer} \
              AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?2) \
              AND ?3 IS NULL"
         ),
         ExactClaimMode::TerminalRecovery => {
             format!(
                 "d.active_attempt_owner IS NULL AND d.active_attempt_epoch IS NULL AND \
-                 ((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?2) \
+                 ((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until <= ?2) \
                  OR (d.status IN ('pending', 'awaiting') \
                  AND d.lease_owner IS NULL AND d.lease_until IS NULL \
                  AND {no_running_peer})) AND ?3 IS NULL"
@@ -154,7 +154,7 @@ pub(super) fn claim_exact_transaction_with_mode(
         }
         ExactClaimMode::RetryExhausted { .. } => {
             "d.status = 'running' AND d.lease_until IS NOT NULL \
-             AND d.lease_until < ?2 AND d.attempt_count >= ?3"
+             AND d.lease_until <= ?2 AND d.attempt_count >= ?3"
                 .to_string()
         }
     };

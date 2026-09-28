@@ -35,7 +35,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         "SELECT lease_epoch FROM {p}_dispatch \
                      WHERE run_id = ?1 AND status = 'running' \
                      AND lease_owner = ?2 AND lease_until IS NOT NULL \
-                     AND lease_until >= ?3 AND cancel_requested = 0"
+                     AND lease_until > ?3 AND cancel_requested = 0"
                     ),
                     params![&run, &owner, crate::clock::db_millis(now_ms)],
                     |row| row.get::<_, i64>(0),
@@ -413,14 +413,14 @@ impl DispatchQueue for SqliteDispatchStore {
                 let reservation_recovery = format!(
                     "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
                      WHERE {physical_eligible} AND d.status IN ('reserved', 'reservation_running') \
-                     AND d.lease_until IS NOT NULL AND d.lease_until < ?1 AND {retry_due} \
+                     AND d.lease_until IS NOT NULL AND d.lease_until <= ?1 AND {retry_due} \
                     AND {} ORDER BY d.created_at",
                     no_running_peer(p)
                 );
                 let recovery = format!(
                     "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
                      WHERE {physical_eligible} AND d.status = 'running' AND d.lease_until IS NOT NULL \
-                     AND d.lease_until < ?1 AND {retry_due} AND {local_eligible} \
+                     AND d.lease_until <= ?1 AND {retry_due} AND {local_eligible} \
                      ORDER BY d.cancel_requested DESC, d.created_at"
                 );
                 // ADR-0022 single writer is an open-Run fence: an Awaiting Run keeps
@@ -529,8 +529,8 @@ impl DispatchQueue for SqliteDispatchStore {
             let sql = format!(
                 "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
                  ((d.status IN ('reserved', 'reservation_running') AND \
-                   d.lease_until IS NOT NULL AND d.lease_until < ?1 AND {}) OR \
-                 (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
+                   d.lease_until IS NOT NULL AND d.lease_until <= ?1 AND {}) OR \
+                 (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until <= ?1) OR \
                  (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
                    ) AND {thread_available}) OR \
@@ -1115,7 +1115,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested, \
                          active_attempt_owner, active_attempt_epoch \
                          FROM {p}_dispatch WHERE status = 'running' \
-                         AND lease_until IS NOT NULL AND lease_until < ?1 \
+                         AND lease_until IS NOT NULL AND lease_until <= ?1 \
                          AND attempt_count >= ?2 \
                          AND (active_attempt_epoch IS NULL OR cancel_requested <> 0) \
                          ORDER BY created_at"

@@ -17,7 +17,7 @@
 // @formal entrypoint session_run.recovery_claim_is_admission_only
 // @formal entrypoint session_run.reservation_ttl_uses_store_clock
 // @formal entrypoint worker.retry_preserves_pinned_binding
-// @formal evidence run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
+// @formal evidence run_ingress.a_deadline_passes_once_it_is_reached
 //! In-memory reference implementation of the durable-ingress store.
 //!
 //! It mirrors the Postgres store's behaviour exactly so the worker and ingress
@@ -881,7 +881,10 @@ impl DispatchQueue for MemoryDispatchStore {
             (row.state == DispatchState::Leased && !row.cancellation_requested)
                 .then_some(row.lease.as_ref())
                 .flatten()
-                .filter(|lease| lease.owner == owner && lease.expires_ms >= now_ms)
+                .filter(|lease| {
+                    lease.owner == owner
+                        && !crate::clock::deadline_has_passed(Some(lease.expires_ms), now_ms)
+                })
                 .map(|_| RunClaim {
                     run_id: run_id.clone(),
                     owner,
