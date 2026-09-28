@@ -255,7 +255,10 @@ async fn sqlite_writing_lease_fences_live_and_stale_owners() {
         .expect("expired writer must be atomically fenced");
     assert_eq!(
         claimed.material_fence.writer_epoch,
-        stale.material_fence.writer_epoch + 1
+        stale
+            .material_fence
+            .writer_epoch
+            .and_then(awaken_lease_contract::fence::Epoch::next)
     );
     assert_ne!(
         claimed.material_fence.writer_token,

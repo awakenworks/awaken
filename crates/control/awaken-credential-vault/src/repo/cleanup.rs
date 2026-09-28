@@ -658,7 +658,10 @@ pub(super) mod tests {
                     for exact in [false, true] {
                         let mut durable = request.clone();
                         if !exact {
-                            durable.material_fence.writer_epoch += 1;
+                            durable.material_fence.writer_epoch = durable
+                                .material_fence
+                                .writer_epoch
+                                .and_then(awaken_lease_contract::fence::Epoch::next);
                         }
                         let unpublished = if shape == 2 {
                             current.is_none()
@@ -763,7 +766,12 @@ pub(super) mod tests {
                             let mut durable = request.clone();
                             match mutation {
                                 1 => durable.operation_id.push_str("-foreign"),
-                                2 => durable.material_fence.writer_epoch += 1,
+                                2 => {
+                                    durable.material_fence.writer_epoch = durable
+                                        .material_fence
+                                        .writer_epoch
+                                        .and_then(awaken_lease_contract::fence::Epoch::next)
+                                }
                                 3 => durable.after_credential.display_name = Some("foreign".into()),
                                 _ => {}
                             }
