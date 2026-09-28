@@ -527,14 +527,14 @@ fn validate_initial_events(events: &[DeploymentInitialEvent]) -> Result<(), Wire
 fn validate_durable_resources(resources: &[ResourceInput]) -> Result<(), WireError> {
     let parsed = resources
         .iter()
-        .map(ResourceInput::to_parsed_input)
+        .map(ResourceInput::to_input_request)
         .collect::<Vec<_>>();
     let repository_paths = parsed
         .iter()
         .filter(|resource| {
             matches!(
                 resource.target,
-                crate::state::ParsedInputTarget::Repository { .. }
+                awaken_session_application::SessionInputTarget::Repository { .. }
             )
         })
         .map(|resource| resource.mount_path.as_str())

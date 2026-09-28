@@ -17,16 +17,15 @@ pub struct RepositoryAuthorizationToken(awaken_agent_contract::RedactedString);
 
 impl RepositoryAuthorizationToken {
     #[must_use]
+    pub(crate) fn into_access_token(self) -> awaken_session_application::RepositoryAccessToken {
+        awaken_session_application::RepositoryAccessToken::new(self.0)
+    }
+
+    #[must_use]
     pub(crate) fn into_credential_material(
         self,
     ) -> awaken_session_application::CredentialMaterialInput {
-        awaken_session_application::CredentialMaterialInput::structured(
-            "github",
-            awaken_credential_contract::http_basic_material(
-                awaken_agent_contract::RedactedString::new("x-access-token"),
-                self.0,
-            ),
-        )
+        self.into_access_token().into_credential_material()
     }
 }
 

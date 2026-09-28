@@ -217,8 +217,21 @@ pub use budget::BudgetSettlementOutcome;
 mod continuation;
 mod coordination;
 mod creation;
+mod creation_request;
+mod session_input;
 pub use continuation::SessionContinuationError;
 pub use creation::{CreateSessionCommand, SessionCreationError};
+pub use creation_request::{
+    CreatedSession, SessionBudgetRequest, SessionCreateProtocol, SessionCreateRequest,
+    SessionCreateRequestError, SessionModelChoice, SessionModelRequest, SessionModelSource,
+    SessionToolsOverride,
+};
+pub use session_input::{
+    InputProjectionClass, MAX_MEMORY_INSTRUCTIONS_CHARS, MAX_SESSION_FILE_RESOURCES,
+    MAX_SESSION_MEMORY_STORES, PreparedSessionInputs, RepositoryAccessToken, SessionInputRequest,
+    SessionInputTarget, admit_file_count, admit_memory_inputs, input_binding,
+    memory_mount_component, preflight_repository_mount_paths, unique_memory_mount_path,
+};
 mod credentials;
 mod event_batches;
 pub use event_batches::SessionEventBatchIdempotency;

@@ -78,10 +78,7 @@ pub(crate) use helpers::{
     durable_inbound_event_id, is_transient_event_id, lifecycle_fact, rubric_text,
     session_thread_usage_value, session_usage_value,
 };
-pub(crate) use resource::{
-    ParsedInputTarget, ParsedSessionInput, input_binding, resolved_resource_dto,
-    resource_binding_id,
-};
+pub(crate) use resource::{resolved_resource_dto, resource_binding_id};
 use session_record::{ProjectionPublishDecision, SessionRecord, decide_projection_publish};
 #[cfg(test)]
 pub(crate) use types::DelegatedRun;
