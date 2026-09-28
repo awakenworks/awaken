@@ -50,8 +50,18 @@ pub enum BrokeredInferenceError {
     ModelUnavailable,
     #[error("the Cloud balance or hard cap is exhausted")]
     InsufficientBalance,
+    /// The broker declared this identity's quota spent (`quota_exceeded`).
+    /// A hard exhaustion: `retry_after` is only when it resets.
     #[error("managed inference quota is exhausted")]
     QuotaExceeded {
+        retry_after: Option<std::time::Duration>,
+    },
+    /// The broker throttled the request (a bare 429) without declaring its
+    /// quota spent, so it may clear after `retry_after`. Kept apart from
+    /// `QuotaExceeded` so an exhausted quota is never retried in place and a
+    /// throttle still is.
+    #[error("managed inference is rate limited")]
+    RateLimited {
         retry_after: Option<std::time::Duration>,
     },
     #[error("managed inference is temporarily unavailable")]
@@ -74,8 +84,13 @@ impl BrokeredInferenceError {
                 message: self.to_string(),
                 reset_after: None,
             },
-            Self::QuotaExceeded { retry_after } => LlmError::RateLimited {
-                message: "managed inference quota is exhausted".into(),
+            // An exhausted quota cannot clear inside the retry loop.
+            Self::QuotaExceeded { retry_after } => LlmError::UsageLimit {
+                message: self.to_string(),
+                reset_after: retry_after,
+            },
+            Self::RateLimited { retry_after } => LlmError::RateLimited {
+                message: self.to_string(),
                 retry_after,
             },
             Self::TemporarilyUnavailable => LlmError::Provider(self.to_string()),
@@ -308,7 +323,7 @@ impl HttpBrokeredInferenceClient {
                 BrokeredInferenceError::ModelNotEntitled
             }
             _ if status == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-                BrokeredInferenceError::QuotaExceeded { retry_after }
+                BrokeredInferenceError::RateLimited { retry_after }
             }
             _ => BrokeredInferenceError::TemporarilyUnavailable,
         }
@@ -530,6 +545,7 @@ fn map_managed_web_error(
             awaken_ext_builtin_tools::ManagedWebRouteError::Invalid
         }
         BrokeredInferenceError::QuotaExceeded { .. }
+        | BrokeredInferenceError::RateLimited { .. }
         | BrokeredInferenceError::TemporarilyUnavailable => {
             awaken_ext_builtin_tools::ManagedWebRouteError::Unavailable
         }
@@ -1600,30 +1616,155 @@ mod tests {
 
     #[test]
     fn t4_broker_failures_keep_stable_runtime_categories() {
-        assert_eq!(
-            BrokeredInferenceError::AuthenticationRequired
-                .into_llm()
-                .code(),
-            "login_required"
-        );
-        assert_eq!(
-            BrokeredInferenceError::SubscriptionRequired
-                .into_llm()
-                .code(),
-            "unauthorized"
-        );
-        assert_eq!(
-            BrokeredInferenceError::QuotaExceeded { retry_after: None }
-                .into_llm()
-                .code(),
-            "rate_limited"
-        );
-        assert_eq!(
-            BrokeredInferenceError::TemporarilyUnavailable
-                .into_llm()
-                .code(),
-            "provider_error"
-        );
+        use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, NoDispatchProof};
+        use awaken_runtime_contract::resilience::{
+            FailureClass, RetryPolicy, RetryStop, RetryVerdict,
+        };
+        // Cause: each broker refusal of grant creation (never dispatched, as
+        // `lease` records). Effects: E1 the runtime code; E2 the failure
+        // class; E3 the retry loop's verdict for the first failed attempt.
+        // Regression row R6: an exhausted quota is a hard usage limit — not
+        // retried in place — while a bare throttle (R7) still is.
+        let hour = std::time::Duration::from_secs(3_600);
+        let reset = Some(std::time::Duration::from_secs(90));
+        let not_retryable = RetryVerdict::Stop(RetryStop::NotRetryable);
+        let rows = [
+            (
+                "R1",
+                BrokeredInferenceError::AuthenticationRequired,
+                "login_required",
+                FailureClass::Permanent,
+                Some(not_retryable),
+            ),
+            (
+                "R2",
+                BrokeredInferenceError::AccountSelectionRequired,
+                "login_required",
+                FailureClass::Permanent,
+                Some(not_retryable),
+            ),
+            (
+                "R3",
+                BrokeredInferenceError::SubscriptionRequired,
+                "unauthorized",
+                FailureClass::Permanent,
+                Some(not_retryable),
+            ),
+            (
+                "R4",
+                BrokeredInferenceError::ModelNotEntitled,
+                "unauthorized",
+                FailureClass::Permanent,
+                Some(not_retryable),
+            ),
+            (
+                "R5",
+                BrokeredInferenceError::InsufficientBalance,
+                "usage_limit",
+                FailureClass::UsageLimit { reset_after: None },
+                Some(not_retryable),
+            ),
+            (
+                "R6",
+                BrokeredInferenceError::QuotaExceeded { retry_after: reset },
+                "usage_limit",
+                FailureClass::UsageLimit { reset_after: reset },
+                Some(not_retryable),
+            ),
+            (
+                "R7",
+                BrokeredInferenceError::RateLimited { retry_after: reset },
+                "rate_limited",
+                FailureClass::RateLimited { retry_after: reset },
+                None,
+            ),
+            (
+                "R8",
+                BrokeredInferenceError::ModelUnavailable,
+                "model_not_found",
+                FailureClass::Permanent,
+                Some(not_retryable),
+            ),
+            (
+                "R9",
+                BrokeredInferenceError::TemporarilyUnavailable,
+                "provider_error",
+                FailureClass::Transient,
+                None,
+            ),
+            (
+                "R10",
+                BrokeredInferenceError::InvalidRequest,
+                "binding_rejected",
+                FailureClass::Permanent,
+                Some(not_retryable),
+            ),
+        ];
+        for (row, error, code, class, stop) in rows {
+            let error =
+                error
+                    .into_llm()
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                        NoDispatchProof::executor_resolution(),
+                    ));
+            assert_eq!(error.code(), code, "{row} E1");
+            assert_eq!(error.class(), class, "{row} E2");
+            let verdict = RetryPolicy::default().decide(
+                error.class(),
+                error.execution_evidence(),
+                0,
+                hour,
+                0,
+            );
+            match stop {
+                Some(stop) => assert_eq!(verdict, stop, "{row} E3"),
+                None => assert!(matches!(verdict, RetryVerdict::Retry { .. }), "{row} E3"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn broker_429_decodes_an_exhausted_quota_apart_from_a_throttle() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // Cause: the broker's 429 body code (quota_exceeded / none) and its
+        // Retry-After. Effects: E1 the decoded refusal; E2 the reset/retry
+        // hint survives. Rules: D1 quota_exceeded => QuotaExceeded (a hard
+        // usage limit downstream); D2 a bare 429 => RateLimited (a throttle).
+        async fn respond(body: &'static str) -> reqwest::Response {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = socket.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nretry-after: 90\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
+            let response = reqwest::get(format!("http://{address}/grant"))
+                .await
+                .unwrap();
+            server.await.unwrap();
+            response
+        }
+        let hint = Some(std::time::Duration::from_secs(90));
+        for (row, body, expected) in [
+            (
+                "D1",
+                r#"{"error":"quota_exceeded"}"#,
+                BrokeredInferenceError::QuotaExceeded { retry_after: hint },
+            ),
+            (
+                "D2",
+                "{}",
+                BrokeredInferenceError::RateLimited { retry_after: hint },
+            ),
+        ] {
+            let decoded = HttpBrokeredInferenceClient::classify(respond(body).await).await;
+            assert_eq!(decoded, expected, "{row}");
+        }
     }
 
     #[test]
