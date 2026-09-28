@@ -1426,6 +1426,12 @@ fn mount_with_managed_over_and_models(
     .merge(awaken_protocol_awaken::profiled_session_run_router(
         awaken_protocol_managed::submit_profiled_session_run,
     ))
+    .merge(awaken_protocol_awaken::profiled_session_run_events_router(
+        awaken_protocol_managed::get_profiled_session_run_events,
+    ))
+    .merge(awaken_protocol_awaken::profiled_session_run_resume_router(
+        awaken_protocol_managed::resume_profiled_session_run,
+    ))
     .merge(awaken_protocol_awaken::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
     ))

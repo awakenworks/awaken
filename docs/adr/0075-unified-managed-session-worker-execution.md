@@ -16,6 +16,47 @@
 
 ## Context
 
+### 2026-09-28: complete the profiled Run boundary
+
+Profiled Run admission commits native Messages, not Managed input Events. An
+input-envelope window in Managed history cannot identify the admitted Run, and
+Session status cannot prove that its delivery authority has settled.
+
+The Session application reuses `DispatchOperationalFeed` and its Runtime's
+exact `RunRecoverySnapshot`. Canonical Coordinator composition binds the same
+dispatch source once; absence and duplicate installation fail closed. Owner
+validation precedes either read. Bounded pages contain only the requested
+primary Run's existing facts, retain their original cursors, and derive output,
+usage and the current ticket from one committed Thread prefix read after
+observing dispatch. No state ledger or copied Managed input history is added.
+Before the first Thread commit, the existing native admission activity receipt
+proves exact Run membership. Only delivery facts are then available: committed
+state/version remain explicitly absent and the lifecycle cursor is unchanged.
+Consumers retain the `Settled(Done)` fence before projecting terminal completion.
+
+The private profiled Session boundary gains exact Run event and reply routes.
+Replies lower to the existing Session Thread reply command, activity transfer,
+transactional continuation Outbox/Inbox and committed `ResumeApplied` receipt.
+Free-form input extends that same closed reply value and reuses the native
+resume validator. Budget continuation retains its separate Session authority.
+
+Unchanged owners are Session authorization/activity CAS, committed Run state,
+dispatch operations, resume validation and continuation delivery. Modified
+owners are Session read/reply composition and the profiled protocol adapter.
+New code is limited to native transport DTOs/routes and their bounded read
+projection. The static boundary is product -> Session application -> existing
+Thread/dispatch/continuation authorities. The sequence is owner check -> exact
+native page -> caller projection; reply is owner check -> committed ticket ->
+activity transfer -> durable delivery -> Worker resume -> committed receipt.
+Dependency failure preserves the same operation; stale or foreign input is
+rejected before delivery.
+
+Test comments own the cause/effect rules for no Managed input Events,
+exact/foreign Session and Run, bounded/empty pages, original cursor replay,
+settlement fencing, terminal causes and exact/replayed/changed/stale replies.
+Real-model product delivery remains an independent acceptance requirement.
+
+
 ### Duplication review
 
 Managed Agents already defines the external execution boundary: a complete

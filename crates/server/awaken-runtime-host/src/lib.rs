@@ -181,6 +181,10 @@ pub struct ManagedHost {
 pub enum AgentCoordinationInstallError {
     #[error("Session Agent coordination application is already installed")]
     AlreadyInstalled,
+    #[error("Session dispatch observation source is unavailable")]
+    DispatchObservationUnavailable,
+    #[error("Session dispatch observation source is already installed")]
+    DispatchObservationAlreadyInstalled,
 }
 
 /// Composition failure for the one process-local background Session Run port.

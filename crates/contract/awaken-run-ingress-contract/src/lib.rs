@@ -18,7 +18,10 @@ pub mod dispatch;
 mod dispatch_transition;
 pub mod operational;
 pub mod run_dispatch;
+mod session_run_events;
 mod worker_transport;
+
+pub use session_run_events::SessionRunEventPage;
 
 pub use awaken_runtime_contract::{
     AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationPersistenceDecision,

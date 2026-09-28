@@ -92,8 +92,9 @@ pub use routes::user_profiles::user_profiles_router;
 pub use routes::vaults::{McpCredentialChoice, McpInspectionView, VaultState, vault_router};
 pub use routes::{
     close_event_admission, create_profiled_session, enforce_managed_beta,
-    get_session_execution_evidence, release_profiled_session, replace_resource_manifest, router,
-    submit_profiled_session_run, tunnels_router,
+    get_profiled_session_run_events, get_session_execution_evidence, release_profiled_session,
+    replace_resource_manifest, resume_profiled_session_run, router, submit_profiled_session_run,
+    tunnels_router,
 };
 pub use state::{ManagedState, StateError, managed_session_id_from_idempotency};
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};

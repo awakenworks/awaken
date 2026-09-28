@@ -262,11 +262,7 @@ impl SessionApplication {
         &self,
         command: SessionThreadToolReplyCommand,
     ) -> Result<(String, Option<u64>, SessionThreadToolReplyDelivery), RunError> {
-        if command.session_id.as_str().trim().is_empty()
-            || command.expected_run_id.0.trim().is_empty()
-            || command.expected_correlation_id.trim().is_empty()
-            || command.tool_use_id.trim().is_empty()
-        {
+        if !command.has_complete_coordinates() {
             return Err(RunError::bad_request(
                 "Session Thread reply requires exact Run, correlation, and tool identities",
             ));
