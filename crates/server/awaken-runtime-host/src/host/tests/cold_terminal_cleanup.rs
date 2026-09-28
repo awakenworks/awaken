@@ -55,8 +55,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         .sandbox_effect_fence("remote-terminal-create")
         .expect("R1 create fence");
     let physical = host
-        .env
-        .provider
+        .test_local_provider()
         .create_sandbox_for_effect(
             &host.sandbox_spec("remote-terminal-worker"),
             &create_fence,

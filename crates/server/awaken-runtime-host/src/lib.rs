@@ -33,6 +33,7 @@ pub struct PoolDrainFence {
 }
 
 mod authority;
+mod auxiliary_sandbox;
 mod background;
 mod background_task;
 mod cache_volume;

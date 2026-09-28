@@ -137,8 +137,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .expect("C1 create exact durable Sandbox fence");
         let spec = host.sandbox_spec(thread);
         let physical = host
-            .env
-            .provider
+            .test_local_provider()
             .create_sandbox_for_effect(
                 &spec,
                 &create_fence,
@@ -512,8 +511,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     let fence = lease.sandbox_effect_fence(intent.effect_id()).unwrap();
     let spec = host.sandbox_spec(thread);
     let physical = host
-        .env
-        .provider
+        .test_local_provider()
         .create_sandbox_for_effect(
             &spec,
             &fence,

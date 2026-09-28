@@ -23,7 +23,6 @@ use awaken_runtime_contract::terminal::{
     CommittedTerminalProjection, committed_terminal_projection, deliver_committed_terminal,
 };
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
-use awaken_sandbox_local::LocalProvider;
 #[cfg(test)]
 use awaken_sandbox_local::LocalSandbox;
 
@@ -46,7 +45,7 @@ pub(crate) enum AgentRunSandbox<'a> {
     #[cfg(test)]
     SharedLocal(&'a LocalSandbox),
     /// Create a fresh, isolated sandbox for this Agent Run via the given provider.
-    Fresh(&'a LocalProvider),
+    Fresh(&'a dyn awaken_session_environment_contract::AuxiliarySandboxProvider),
 }
 
 /// Runtime capabilities of an Agent regardless of who initiated its Run.
@@ -219,7 +218,7 @@ async fn run_configured_agent_inner(
     let created = match &sandbox {
         AgentRunSandbox::Fresh(provider) => Some(
             provider
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec(thread))
+                .create_rooted_sandbox(&crate::provisioning::agent_run_sandbox_spec(thread))
                 .await
                 .map_err(|error| AgentRunError::Provisioning(error.to_string()))?,
         ),

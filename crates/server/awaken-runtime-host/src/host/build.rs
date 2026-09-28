@@ -246,15 +246,21 @@ impl SharedHost {
         if let Some(plane) = &resources.local {
             skills.set_store(plane.skill_store.clone());
         }
-        let resource_ports =
-            capability::ResourcePorts::assemble(&llm, resources, store_dir.as_deref(), &clock);
+        let auxiliary_sandboxes = crate::auxiliary_sandbox::default_auxiliary_sandboxes();
+        let resource_ports = capability::ResourcePorts::assemble(
+            &llm,
+            resources,
+            store_dir.as_deref(),
+            &clock,
+            auxiliary_sandboxes.provider("mem"),
+        );
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
         let hub = Arc::new(ThreadEventHub::new());
         Self {
             agent: capability::AgentExecution::new(llm, model_ref, session_slots.clone()),
             exec: capability::AttemptBackends::new(&deployment),
             worker: capability::WorkerTransports::default(),
-            env: capability::EnvironmentProviders::new(sandbox_root),
+            env: capability::EnvironmentProviders::new(sandbox_root, auxiliary_sandboxes),
             tools: capability::ToolOffering::new(skills),
             resources: resource_ports,
             mcp: capability::McpRelayCapability::default(),
@@ -396,20 +402,6 @@ impl SharedHost {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_store_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
-        // A durable host must place its Workdir sandboxes under a stable root too;
-        // otherwise the dispatch row survives restart but its persisted handle
-        // points into the previous process's random temp directory.
-        let provider = LocalProvider::new(dir.join("sandboxes"));
-        if let Some(mounter) = self
-            .env
-            .memory_mounter
-            .read()
-            .expect("memory mounter lock poisoned")
-            .clone()
-        {
-            provider.install_memory_mounter(mounter);
-        }
-        self.env.provider = provider;
         std::fs::create_dir_all(&dir)
             .expect("create durable Memory extraction repository directory");
         self.resources.memory.set_extraction_repository(Arc::new(
@@ -418,6 +410,9 @@ impl SharedHost {
             )
             .expect("open durable Memory extraction repository"),
         ));
+        // A durable host must place its Workdir sandboxes under a stable root too;
+        // otherwise the dispatch row survives restart but its persisted handle
+        // points into the previous process's random temp directory.
         self.env.session_provider = self.env.session_provider.at_root(dir.join("sandboxes"));
         self.env.backend_owned_session_provider = self
             .env

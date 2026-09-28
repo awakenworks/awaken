@@ -56,6 +56,9 @@ EFFECT_METHODS: dict[str, str] = {
     "create_sandbox_for_effect": "a local/namespace sandbox root and its mounts",
     "create_sandbox": "a local/namespace sandbox root and its mounts",
     "create_sandbox_inner": "a local/namespace sandbox root and its mounts",
+    # The Runtime Host's auxiliary Agent runner reaches the Workdir provider
+    # through this port name only; without it the runner's awaits vanish.
+    "create_rooted_sandbox": "a fresh auxiliary-run sandbox root (AuxiliarySandboxProvider)",
     "realize_repository": "a repository clone inside the sandbox root",
     "realize_mount": "one realized mount inside a local sandbox root",
     "create_container_for_effect": "a container on the runtime (docker/podman/k8s)",
@@ -88,6 +91,12 @@ EFFECT_METHODS: dict[str, str] = {
 # despite matching none of the three shapes — name the owner that survives the
 # caller, so a later reader can retire the entry when the code changes.
 CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
+    # The port implementation is one delegating call; every caller that awaits
+    # `create_rooted_sandbox` stays counted under its own name above, so the
+    # ownership question is decided (and ratcheted) at those callers.
+    "crates/worker/awaken-sandbox-local/src/auxiliary.rs::create_rooted_sandbox": (
+        "delegates to LocalProvider::create_sandbox; its callers are the counted effect"
+    ),
     "crates/worker/awaken-sandbox-container/src/k8s/image_warmup.rs::reconcile_image_prewarm": (
         "Kubernetes owns the persisted DaemonSet and its Pods; the existing Worker "
         "Environment reconciliation re-observes its deterministic identity with "

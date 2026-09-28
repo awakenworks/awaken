@@ -991,7 +991,7 @@ impl SharedHost {
                         &self.agent.model_ref,
                         thread,
                         base_gate.clone(),
-                        sub_base("skill-fork"),
+                        self.env.auxiliary_sandboxes.provider("skill-fork"),
                         self.tools.skill_fork_placement,
                         commit.clone(),
                     );
@@ -1138,6 +1138,7 @@ impl SharedHost {
                             self.agent.llm.clone(),
                             snapshot,
                             commit.clone(),
+                            self.env.auxiliary_sandboxes.provider("mem-select"),
                         ))
                             as Arc<dyn awaken_ext_memory::RecallSelector>)
                     },
@@ -1241,8 +1242,12 @@ impl SharedHost {
                         compact_config.agent_instructions.as_deref(),
                     )
                     .map_err(HostError::bad_request)?;
-                    let agent_tool =
-                        build_compact_runner(self.agent.llm.clone(), snapshot, commit.clone());
+                    let agent_tool = build_compact_runner(
+                        self.agent.llm.clone(),
+                        snapshot,
+                        commit.clone(),
+                        self.env.auxiliary_sandboxes.provider("compact"),
+                    );
                     let backend =
                         build_compact_backend(agent_tool, self.resources.memory.background());
                     let plugin = CompactPlugin::new(compact_config).with_backend(thread, backend);

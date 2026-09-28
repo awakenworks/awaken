@@ -107,6 +107,7 @@ impl ResourcePorts {
         inputs: ResourceInputs,
         store_dir: Option<&std::path::Path>,
         clock: &Arc<dyn awaken_lease_contract::WallClock>,
+        memory_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     ) -> Self {
         let ResourceInputs {
             local: resources,
@@ -148,7 +149,7 @@ impl ResourcePorts {
         };
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),
-            Arc::new(LocalProvider::new(sub_base("mem"))),
+            memory_sandboxes,
             Arc::new(BackgroundRuns::new()),
             extraction_repository,
         ));

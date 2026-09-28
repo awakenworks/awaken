@@ -20,7 +20,6 @@ use awaken_ext_builtin_tools::{AuxiliaryAgentInput, invoke_auxiliary_agent};
 use awaken_ext_compact::{CompactArtifact, CompactBackend, CompactRequest};
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::tool::RawTool;
-use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
@@ -35,14 +34,12 @@ pub(crate) fn compact_runner(
     llm: Arc<dyn LlmExecutor>,
     snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
     commit: Arc<HostCommit>,
+    sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
 ) -> Arc<dyn RawTool> {
     let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
-    let base = std::env::temp_dir()
-        .join("awaken-coordinator")
-        .join(format!("{}-compact", std::process::id()));
     Arc::new(AuxAgentTool {
         llm,
-        provider: LocalProvider::new(base),
+        provider: sandboxes,
         catalog,
         execution: commit,
     })
@@ -220,6 +217,10 @@ mod tests {
                     ),
                 ),
             ))),
+            awaken_session_environment_contract::AuxiliarySandboxFactory::provider(
+                &awaken_sandbox_local::LocalAuxiliarySandboxes::in_process_temp_dir(),
+                "compact",
+            ),
         );
         // The plugin builds the seed (older slice + summarize prompt); here that is
         // 5 user messages.
@@ -261,6 +262,10 @@ mod tests {
                     ),
                 ),
             ))),
+            awaken_session_environment_contract::AuxiliarySandboxFactory::provider(
+                &awaken_sandbox_local::LocalAuxiliarySandboxes::in_process_temp_dir(),
+                "compact",
+            ),
         );
         let background = Arc::new(BackgroundRuns::new());
         let backend = compact_backend(runner, background.clone());

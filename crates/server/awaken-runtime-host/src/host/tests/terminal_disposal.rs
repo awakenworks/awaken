@@ -74,8 +74,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .sandbox_effect_fence("terminal-test-create")
         .expect("project the exact create fence");
     let physical = host
-        .env
-        .provider
+        .test_local_provider()
         .create_sandbox_for_effect(
             &host.sandbox_spec("t-end"),
             &create_fence,

@@ -15,7 +15,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 
 use awaken_agent_contract::agent::awaiting::{
     AwaitReason, AwaitTarget, PermissionDecision, ResumeTicket, ToolCallAuthority,
@@ -44,10 +45,6 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_runtime_contract::tool::ToolOutput;
-// The Workdir-tier sandbox realized through the neutral provisioning contract:
-// `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
-// (rooted tools, repos, artifacts) the host configures into each session's runtime.
-use awaken_sandbox_local::LocalProvider;
 use awaken_session_application_contract::{DelegatedRun, Pending};
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin};
@@ -64,6 +61,8 @@ use crate::hub::{ThreadEvent, ThreadEventHub};
 use crate::store::HostCommit;
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 
+/// Test fixtures mint process-unique temp roots from this sequence.
+#[cfg(test)]
 pub(crate) static BASE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// One committed-state predicate shared by Session terminal cleanup and child
@@ -96,19 +95,6 @@ pub type AttemptExecutorDecorator = Arc<
 pub struct RemoteAttemptInstallation {
     pub executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
     pub credential_realization: awaken_runtime_contract::CredentialRealizationCapabilities,
-}
-
-/// A unique temp-dir base for a sub-agent sandbox provider. `kind` tags the use
-/// (e.g. `judge`, `deleg`); empty for the host's own provider.
-fn sub_base(kind: &str) -> PathBuf {
-    let n = BASE_SEQ.fetch_add(1, Ordering::SeqCst);
-    let pid = std::process::id();
-    let name = if kind.is_empty() {
-        format!("{pid}-{n}")
-    } else {
-        format!("{pid}-{kind}-{n}")
-    };
-    std::env::temp_dir().join("awaken-coordinator").join(name)
 }
 
 /// Retain the actual pool-drain fence future until the caller's absolute

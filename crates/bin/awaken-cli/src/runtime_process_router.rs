@@ -522,7 +522,8 @@ pub(super) async fn prepare_runtime_routers(
         }
         #[cfg(not(any(test, feature = "test-support")))]
         None => unreachable!("product runtime process requires a resolved deployment"),
-    };
+    }
+    .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
     let local_dispatch = runtime_authority
         .as_ref()
         .map(|authority| authority.dispatch_store());

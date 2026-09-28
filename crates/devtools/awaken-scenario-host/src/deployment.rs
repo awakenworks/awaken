@@ -248,7 +248,8 @@ pub(crate) fn resource_host_with_deployment(
         resources.file_content_source(),
         resources.artifact_publisher(),
     )
-    .with_skill_bundle_source(resources.skill_bundle_source());
+    .with_skill_bundle_source(resources.skill_bundle_source())
+    .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
     if let Some(authority) = SCENARIO_RUNTIME_AUTHORITY.get() {
         host = host.with_runtime_authority(authority.clone());
     }

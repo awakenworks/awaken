@@ -20,6 +20,9 @@ awaken-lease-contract.workspace = true
 # The container tier (podman/docker/k8s) this composition realizes; each backend
 # is enabled by the matching feature below.
 awaken-sandbox-container.workspace = true
+# The Workdir sandboxes auxiliary Agent Runs use on every process root.
+awaken-sandbox-local.workspace = true
+awaken-session-environment-contract.workspace = true
 async-trait.workspace = true
 
 [features]

@@ -1207,6 +1207,8 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-runtime-host",
  "awaken-sandbox-container",
+ "awaken-sandbox-local",
+ "awaken-session-environment-contract",
  "tokio",
 ]
 
@@ -2323,6 +2325,7 @@ dependencies = [
  "awaken-session-application-contract",
  "awaken-session-budget-contract",
  "awaken-session-configuration-contract",
+ "awaken-session-environment-contract",
  "awaken-session-error-contract",
  "awaken-session-event-contract",
  "awaken-session-mcp-contract",
@@ -2475,6 +2478,7 @@ dependencies = [
  "awaken-sandbox-control-transport",
  "awaken-sandbox-fs",
  "awaken-sandbox-memoryd",
+ "awaken-session-environment-contract",
  "awaken-session-state-contract",
  "awaken-session-types",
  "blake3",
@@ -2742,6 +2746,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "awaken-session-environment-contract"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-provisioning-contract",
+ "awaken-tool-contract",
 ]
 
 [[package]]
