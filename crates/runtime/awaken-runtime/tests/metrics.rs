@@ -277,9 +277,13 @@ async fn a_cancelled_call_records_cancellation_as_the_outcome() {
         .with_commit(Arc::new(MemoryCommitCoordinator::new()))
         .with_cancellation(cancellation.clone());
     let run = tokio::spawn(async move { runtime.execute(activation(), context).await });
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the model call is entered before it is cancelled");
     cancellation.cancel();
-    run.await
+    tokio::time::timeout(std::time::Duration::from_secs(10), run)
+        .await
+        .expect("the cancelled run ends")
         .expect("run task")
         .expect("a cancelled run still ends");
 
