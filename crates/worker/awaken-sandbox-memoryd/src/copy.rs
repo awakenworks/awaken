@@ -722,9 +722,7 @@ mod tests {
         // detecting a racy read-then-update fallback in the contract default.
         let fs = SnapshotOnlyRepository { heads: vec![] };
         assert!(
-            matches!(fs.update_materialized("s", "/a", &awaken_resource_contract::MemoryGeneration {
-                memory_id: "id".into(), version: 1, content_sha256: "sha".into()
-            }, "edit").await,
+            matches!(fs.update_materialized("s", "/a", &awaken_resource_contract::MemoryGeneration::new("id", 1, "sha"), "edit").await,
             Err(MemErr::Storage(message)) if message.contains("unsupported"))
         );
     }

@@ -148,11 +148,7 @@ mod tests {
                 witness.content_digest().to_string(),
             )
         }
-        let generation = MemoryGeneration {
-            memory_id: "mem-1".into(),
-            version: 9,
-            content_sha256: crate::memory_sha256_hex("A"),
-        };
+        let generation = MemoryGeneration::new("mem-1", 9, crate::memory_sha256_hex("A"));
         assert_eq!(
             precondition(&generation),
             ("mem-1".to_string(), 9, crate::memory_sha256_hex("A"))

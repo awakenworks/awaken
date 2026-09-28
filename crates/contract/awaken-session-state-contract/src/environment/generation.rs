@@ -33,13 +33,21 @@ use crate::SessionId;
 ///
 /// [`SessionEnvironmentState::assign_generation`]: super::SessionEnvironmentState::assign_generation
 /// [`SessionEnvironmentOperation::new`]: super::SessionEnvironmentOperation::new
+///
+/// The coordinates are private so the id can only be the digest
+/// [`SandboxGeneration::new`] computes: no caller can assemble an id beside
+/// coordinates it was not computed from, or edit one coordinate under a kept
+/// id. The Session id is hashed into the id but is not itself a coordinate (it
+/// is the key of the record that holds the generation), so a decoded value
+/// cannot re-derive its id; the persisted Session root is only ever written
+/// from a value `new` minted.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SandboxGeneration {
-    pub id: String,
-    pub created_at_unix_ms: u64,
-    pub expires_at_unix_ms: u64,
-    pub environment_fingerprint: String,
-    pub base_image_fingerprint: String,
+    id: String,
+    created_at_unix_ms: u64,
+    expires_at_unix_ms: u64,
+    environment_fingerprint: String,
+    base_image_fingerprint: String,
 }
 
 impl SandboxGeneration {
@@ -70,8 +78,35 @@ impl SandboxGeneration {
     }
 
     #[must_use]
-    pub const fn expired_at(&self, now_unix_ms: u64) -> bool {
-        now_unix_ms >= self.expires_at_unix_ms
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[must_use]
+    pub const fn created_at_unix_ms(&self) -> u64 {
+        self.created_at_unix_ms
+    }
+
+    #[must_use]
+    pub const fn expires_at_unix_ms(&self) -> u64 {
+        self.expires_at_unix_ms
+    }
+
+    #[must_use]
+    pub fn environment_fingerprint(&self) -> &str {
+        &self.environment_fingerprint
+    }
+
+    #[must_use]
+    pub fn base_image_fingerprint(&self) -> &str {
+        &self.base_image_fingerprint
+    }
+
+    /// Expired under the one expiry law: live strictly before its deadline.
+    #[must_use]
+    pub fn expired_at(&self, now_unix_ms: u64) -> bool {
+        awaken_lease_contract::Expiry::from_unix_ms(self.expires_at_unix_ms)
+            .is_expired_at(awaken_lease_contract::UtcTime::from_epoch_ms(now_unix_ms))
     }
 }
 

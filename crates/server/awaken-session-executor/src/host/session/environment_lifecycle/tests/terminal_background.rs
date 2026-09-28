@@ -18,7 +18,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     let environment = environment(&provider, thread).await;
     let physical_id = environment.handle().sandbox_id;
     let durable_generation = generation(thread);
-    assert_ne!(physical_id, durable_generation.id, "C2");
+    assert_ne!(physical_id, durable_generation.id(), "C2");
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     host.session_slots.update(thread, |slot| {
         slot.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
@@ -33,7 +33,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     let activity_generation = host
         .resident_environment_activity_generation_id(thread, &environment)
         .expect("C1 exact Resident activity projection");
-    assert_eq!(activity_generation, durable_generation.id, "E1");
+    assert_eq!(activity_generation, durable_generation.id(), "E1");
 
     let release = Arc::new(tokio::sync::Notify::new());
     let background = host.resources.memory.background();
@@ -151,7 +151,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         ));
         let physical_id = environment.handle().sandbox_id;
         let durable_generation = generation(thread);
-        assert_ne!(physical_id, durable_generation.id, "C2");
+        assert_ne!(physical_id, durable_generation.id(), "C2");
         let binding = serde_json::to_string(&environment.handle()).unwrap();
         let identity = if durable {
             BoundSessionEnvironmentIdentity::Durable {
@@ -167,9 +167,9 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             )
         };
         let (activity_generation_id, other_generation_id) = if durable {
-            (durable_generation.id.clone(), physical_id.clone())
+            (durable_generation.id().to_owned(), physical_id.clone())
         } else {
-            (physical_id.clone(), durable_generation.id.clone())
+            (physical_id.clone(), durable_generation.id().to_owned())
         };
         let owned = BoundSessionEnvironment {
             identity,

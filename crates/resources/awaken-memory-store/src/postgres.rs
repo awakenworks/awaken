@@ -761,9 +761,9 @@ impl MemoryRepository for PostgresMemoryRepository {
             let id: String = row.get("id");
             let sha: String = row.get("sha");
             (
-                id == base.memory_id,
-                domain_version(row.get("version")).is_ok_and(|version| version == base.version),
-                sha == base.content_sha256,
+                id == base.memory_id(),
+                domain_version(row.get("version")).is_ok_and(|version| version == base.version()),
+                sha == base.content_sha256(),
             )
         }));
         match admission {
@@ -796,7 +796,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             &mut tx,
             VersionAppend {
                 store,
-                memory_id: &base.memory_id,
+                memory_id: base.memory_id(),
                 operation: MemoryVersionOperation::Deleted,
                 path,
                 content: None,
@@ -939,11 +939,11 @@ impl PostgresMemoryRepository {
              WHERE store_id = $1 AND id = $2 FOR UPDATE"
         ))
         .bind(store)
-        .bind(&base.memory_id)
+        .bind(base.memory_id())
         .fetch_optional(&mut *tx)
         .await
         .map_err(mem_err)?
-        .ok_or_else(|| MemErr::NotFound(base.memory_id.clone()))?;
+        .ok_or_else(|| MemErr::NotFound(base.memory_id().to_owned()))?;
         let (path, cur_sha, cur_content, version, created, updated): (
             String,
             String,
@@ -965,13 +965,13 @@ impl PostgresMemoryRepository {
         match HeadUpdateAdmission::new(
             expected_path.is_none_or(|expected| expected == path),
             true,
-            domain_version(version)? == base.version,
-            cur_sha == base.content_sha256,
+            domain_version(version)? == base.version(),
+            cur_sha == base.content_sha256(),
             already_current,
         ) {
             HeadUpdateAdmission::Conflict => {
                 let current = to_memory(
-                    base.memory_id.clone(),
+                    base.memory_id().to_owned(),
                     path,
                     cur_content,
                     cur_sha,
@@ -985,7 +985,7 @@ impl PostgresMemoryRepository {
             }
             HeadUpdateAdmission::Current => {
                 return to_memory(
-                    base.memory_id.clone(),
+                    base.memory_id().to_owned(),
                     path,
                     cur_content,
                     cur_sha,
@@ -1028,7 +1028,7 @@ impl PostgresMemoryRepository {
         .bind(&new_sha)
         .bind(now)
         .bind(store)
-        .bind(&base.memory_id)
+        .bind(base.memory_id())
         .execute(&mut *tx)
         .await
         .map_err(mem_err)?;
@@ -1051,7 +1051,7 @@ impl PostgresMemoryRepository {
             &mut tx,
             VersionAppend {
                 store,
-                memory_id: &base.memory_id,
+                memory_id: base.memory_id(),
                 operation: MemoryVersionOperation::Modified,
                 path: requested_path,
                 content: Some(content),
@@ -1064,7 +1064,7 @@ impl PostgresMemoryRepository {
         Ok(Memory {
             content_size: content.len() as u64,
             content: Some(content.to_string()),
-            id: base.memory_id.clone(),
+            id: base.memory_id().to_owned(),
             path: requested_path.to_string(),
             content_sha256: new_sha,
             version: next_domain_version(version)?,

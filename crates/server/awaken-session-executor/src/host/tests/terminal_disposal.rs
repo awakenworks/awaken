@@ -484,8 +484,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             size_bytes: 1,
             created_at_unix_ms: 1,
             expires_at_unix_ms: u64::MAX,
-            environment_fingerprint: generation.environment_fingerprint.clone(),
-            base_image_fingerprint: generation.base_image_fingerprint.clone(),
+            environment_fingerprint: generation.environment_fingerprint().to_owned(),
+            base_image_fingerprint: generation.base_image_fingerprint().to_owned(),
             excluded_mounts: Vec::new(),
             suspend_effect_id: suspend.effect_id,
         };
