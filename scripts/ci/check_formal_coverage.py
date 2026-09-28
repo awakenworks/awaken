@@ -79,7 +79,7 @@ formal_gate = (ROOT / "scripts/ci/check_formal.sh").read_text(encoding="utf-8")
 # is derived from the harnesses (formal_plan.py), so a harness cannot be left
 # out of strict CI by an edit to a list; it can only be left out of the plan
 # by failing to plan, which fails here.
-KANI_PLAN_RUN = re.compile(r'^  kani_plan="\$\(python3 scripts/ci/formal_plan\.py kani --tier full\)"$')
+KANI_PLAN_RUN = re.compile(r'^  kani_plan="\$\(python3 scripts/ci/formal_plan\.py kani "\$\{formal_selection\[@\]\}"\)"$')
 KANI_BATCH_RUN = re.compile(r'^    run_kani "\$\{kani_argv\[@\]\}"$')
 gate_python_self_tests: dict[str, int] = {}
 for line in formal_gate.replace("\\\n", " ").splitlines():
@@ -92,7 +92,7 @@ gate_lines = formal_gate.splitlines()
 if sum(bool(KANI_PLAN_RUN.match(line)) for line in gate_lines) != 1 or sum(
     bool(KANI_BATCH_RUN.match(line)) for line in gate_lines
 ) != 1:
-    fail("strict CI does not run the derived Kani plan exactly once (formal_plan.py kani --tier full)")
+    fail("strict CI does not run the derived Kani plan exactly once (formal_plan.py kani <selection>)")
 try:
     planned = {item.harness.name: item for item in formal_plan.harnesses(ROOT)}
 except formal_plan.PlanError as error:

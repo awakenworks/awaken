@@ -237,7 +237,22 @@ run contracts "managed-sdk-oracle" pnpm --filter @awaken/managed-sdk-oracle chec
 # fact production computes -- against the justified registry and the debts
 # tagged on harnesses, which may not outnumber those at the merge-base.
 run formal "proof-input-derivation" python3 scripts/ci/check_proof_input_derivation.py --require-complete --debt-ratchet
-run formal "formal" scripts/ci/check_formal.sh --require-tools
+# The Kani tier is the caller's: a pull request runs the pr tier, narrowed to
+# the packages its changes can alter (AWAKEN_FORMAL_TIER=pr with
+# AWAKEN_FORMAL_AFFECTED_BASE=<merge-base>); a push, a release and the
+# scheduled run keep the full tier, the only receipt a release accepts.
+formal_tier=()
+case "${AWAKEN_FORMAL_TIER:-full}" in
+  full) ;;
+  pr)
+    formal_tier=(--tier pr)
+    if [ -n "${AWAKEN_FORMAL_AFFECTED_BASE:-}" ]; then
+      formal_tier+=(--affected "$AWAKEN_FORMAL_AFFECTED_BASE")
+    fi
+    ;;
+  *) echo "AWAKEN_FORMAL_TIER must be full or pr, got ${AWAKEN_FORMAL_TIER}" >&2; exit 2 ;;
+esac
+run formal "formal" scripts/ci/check_formal.sh --require-tools "${formal_tier[@]}"
 run reliability "reliability" scripts/ci/check-reliability.sh --require-tools
 # Release completeness is strict: unavailable infrastructure is a failed gate,
 # never a successful skip. Developer-specific partial suites remain runnable by

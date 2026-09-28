@@ -399,6 +399,7 @@ class ProfileTests(unittest.TestCase):
         ):
             shell = (f"set -euo pipefail\nz3_version='{pinned_z3}'; kani_jobs=1; kani_batch_timeout_seconds=600; "
                      "CARGO_TARGET_DIR=/tmp/checked-profile-test; missing=0\n"
+                     "formal_selection=(--tier full); formal_affected=''\n"
                      "awaken_configure_kani_driver_target() { :; }\n"
                      "run_with_deadline() { printf 'CALL'; printf ' %s' \"$@\"; printf '\\n'; }\n"
                      f"python3() {{ {plan}; }}\n" + runner + z3_check + loop)

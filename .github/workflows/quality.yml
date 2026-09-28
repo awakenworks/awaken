@@ -9,6 +9,11 @@ on:
   push:
     branches:
       - main
+  # The full Kani tier includes the harnesses tagged `tier=nightly`, which a
+  # pull request's pr tier leaves out; the nightly run of the full gate below
+  # is the scheduled full formal run.
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -69,6 +74,8 @@ jobs:
     # The strict sandbox group requires Docker, unprivileged user namespaces,
     # /dev/fuse, k3d and kubectl. A named runner contract makes missing
     # substrates a scheduling failure instead of a successful test skip.
+    # On the nightly schedule this is the full formal run: every event but a
+    # pull request keeps the full Kani tier, nightly harnesses included.
     runs-on: [self-hosted, linux, x64, awaken-full-gate]
     timeout-minutes: 360
     steps:
@@ -111,6 +118,19 @@ jobs:
           pnpm install --frozen-lockfile
           npm ci --prefix e2e
           pnpm -C web exec playwright install chromium
+      - name: Narrow a pull request's Kani run to its pr tier
+        # A pull request runs the pr tier over the packages its changes can
+        # alter; a push, a release call and the schedule keep the full tier,
+        # the only formal receipt a release accepts. No merge-base fails the
+        # step rather than silently running nothing.
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          base="$(git merge-base HEAD "origin/$BASE_REF")"
+          printf 'AWAKEN_FORMAL_TIER=pr\nAWAKEN_FORMAL_AFFECTED_BASE=%s\n' "$base" >> "$GITHUB_ENV"
       - name: Run the one complete repository gate
         env:
           AWAKEN_TEST_TIMINGS_FILE: target/test-timings/check-all.tsv
@@ -126,3 +146,4 @@ jobs:
             web/test-results/
             scripts/ci/gate_record.json
           if-no-files-found: error
+

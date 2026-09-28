@@ -3,6 +3,11 @@
 This is a CI execution receipt, not an independent proof certificate. Its
 authenticity comes from the existing trusted quality workflow and release
 attestation. There is no second proof catalog: check_formal.sh remains the runner.
+
+A receipt names the plan it ran: the tier (``full`` or ``pr``), the affected
+base a ``pr`` run was narrowed to, and the digest of the derived Kani plan
+(``formal_plan``). Only a ``full``, un-narrowed receipt whose digest is the
+release source's own full plan qualifies a release.
 """
 
 from __future__ import annotations
@@ -20,7 +25,13 @@ import time
 import tomllib
 import uuid
 
+import formal_plan
+
 ROOT = Path(__file__).resolve().parents[2]
+# Schema 2 adds the plan selection and its digest to schema 1.
+RUN_SCHEMA_VERSION = 2
+# The only selection a release accepts: every harness, nothing narrowed.
+FULL_SELECTION = {"tier": "full", "affected_base": None}
 
 
 def canonical_bytes(value: object) -> bytes:
@@ -90,10 +101,29 @@ def runner_identity(repository: Path) -> dict:
     return {"path": path, "digest": committed_file_digest(repository, path)}
 
 
-def begin_record(repository: Path, strict: bool, now: int) -> dict:
+def selected_plan_digest(repository: Path, selection: dict) -> str:
+    """The digest of the Kani plan a selection derives from ``repository``."""
+
+    try:
+        affected = (
+            formal_plan.affected_packages(repository, selection["affected_base"])
+            if selection["affected_base"] is not None else None
+        )
+        return formal_plan.digest(formal_plan.batches(repository, selection["tier"], affected))
+    except formal_plan.PlanError as error:
+        raise ValueError(f"formal evidence plan cannot be derived: {error}") from error
+
+
+def begin_record(repository: Path, strict: bool, now: int, selection: dict) -> dict:
+    if (
+        set(selection) != set(FULL_SELECTION)
+        or selection["tier"] not in {"full", "pr"}
+        or (selection["affected_base"] is not None and selection["tier"] != "pr")
+    ):
+        raise ValueError("formal evidence selection is a tier, and an affected base only for a pr run")
     return {
-        "schema_version": 1, "run_id": str(uuid.uuid4()), "status": "running",
-        "strict": strict, "started_at_unix": now,
+        "schema_version": RUN_SCHEMA_VERSION, "run_id": str(uuid.uuid4()), "status": "running",
+        "strict": strict, "started_at_unix": now, "selection": dict(selection),
         "source": source_snapshot(repository),
         "proof_toolchain": proof_toolchain(repository),
         "runner": runner_identity(repository),
@@ -111,7 +141,7 @@ def finish_record(
     failure_subject: str | None = None,
     deadline_seconds: int | None = None,
 ) -> dict:
-    if record.get("status") != "running" or record.get("schema_version") != 1:
+    if record.get("status") != "running" or record.get("schema_version") != RUN_SCHEMA_VERSION:
         raise ValueError("formal evidence must finish one running invocation")
     if type(now) is not int or now < record["started_at_unix"]:
         raise ValueError("formal evidence completion precedes its start")
@@ -158,12 +188,16 @@ def finish_record(
         raise ValueError("formal evidence toolchain contract changed during execution")
     if record["runner"] != runner_identity(repository):
         raise ValueError("formal evidence runner changed during execution")
-    return dict(record, status="passed", finished_at_unix=now)
+    # The source is unchanged, so the plan derived now is the plan that ran.
+    plan_digest = selected_plan_digest(repository, record["selection"])
+    return dict(record, status="passed", finished_at_unix=now, plan_digest=plan_digest)
 
 
 def validate_record(record: dict, repository: Path, now: int | None = None) -> None:
-    if record.get("schema_version") != 1 or record.get("status") != "passed" or record.get("strict") is not True:
+    if record.get("schema_version") != RUN_SCHEMA_VERSION or record.get("status") != "passed" or record.get("strict") is not True:
         raise ValueError("formal evidence is not a completed strict run")
+    if record.get("selection") != FULL_SELECTION:
+        raise ValueError("formal evidence is not a full-tier run: a pr or narrowed run cannot qualify a release")
     started, finished = record.get("started_at_unix"), record.get("finished_at_unix")
     clock = int(time.time()) if now is None else now
     if type(started) is not int or type(finished) is not int or not 0 <= started <= finished <= clock:
@@ -177,6 +211,8 @@ def validate_record(record: dict, repository: Path, now: int | None = None) -> N
         raise ValueError("formal evidence toolchain contract mismatch")
     if record.get("runner") != runner_identity(repository):
         raise ValueError("formal evidence runner mismatch")
+    if record.get("plan_digest") != selected_plan_digest(repository, FULL_SELECTION):
+        raise ValueError("formal evidence ran another Kani plan than the release source derives")
 
 
 def write_record(path: Path, record: dict) -> None:
@@ -258,6 +294,8 @@ def main() -> None:
     parser.add_argument("--deadline-seconds", type=int)
     parser.add_argument("--strict", choices=("0", "1"), default="0")
     parser.add_argument("--missing-tools", choices=("0", "1"), default="0")
+    parser.add_argument("--tier", choices=("full", "pr"))
+    parser.add_argument("--affected", metavar="BASE")
     args = parser.parse_args()
     if args.action == "artifacts-begin":
         print(begin_artifacts(ROOT, args.parent, args.kind, args.directory))
@@ -274,7 +312,9 @@ def main() -> None:
     if args.record is None: parser.error("--record is required")
     now = int(time.time())
     if args.action == "begin":
-        record = begin_record(ROOT, args.strict == "1", now)
+        if args.tier is None:
+            parser.error("begin requires --tier full|pr")
+        record = begin_record(ROOT, args.strict == "1", now, {"tier": args.tier, "affected_base": args.affected})
     else:
         record = finish_record(
             json.loads(args.record.read_text()), ROOT, args.missing_tools == "1", now,

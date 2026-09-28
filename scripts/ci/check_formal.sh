@@ -25,16 +25,55 @@ awaken_append_repo_tools
 # mode and the release gate reported a green formal group it had never demanded
 # tools for. Admit exactly one spelling; refuse everything else before any
 # receipt is written.
+#
+# The Kani tier: `full` (the default, and the only receipt a release accepts)
+# runs every harness; `pr` leaves out the harnesses tagged `tier=nightly`, and
+# `--affected <base>` narrows a pr run to the packages a change since <base>
+# can alter (formal_plan.py). A full run is never narrowed.
+formal_usage="usage: scripts/ci/check_formal.sh [--require-tools] [--tier pr|full] [--affected <base>]"
 require_tools=0
-case "${1:-}" in
-  "") ;;
-  --require-tools) require_tools=1 ;;
-  *) echo "usage: scripts/ci/check_formal.sh [--require-tools]" >&2; exit 2 ;;
-esac
-if [ "$#" -gt 1 ]; then
-  echo "usage: scripts/ci/check_formal.sh [--require-tools]" >&2
-  echo "       (unexpected extra arguments: ${*:2})" >&2
+formal_tier=full
+formal_tier_seen=0
+formal_affected=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --require-tools)
+      [ "$require_tools" -eq 0 ] || { echo "$formal_usage" >&2; exit 2; }
+      require_tools=1
+      shift
+      ;;
+    --tier)
+      if [ "$formal_tier_seen" -ne 0 ] || [ "$#" -lt 2 ] || { [ "$2" != pr ] && [ "$2" != full ]; }; then
+        echo "$formal_usage" >&2
+        exit 2
+      fi
+      formal_tier="$2"
+      formal_tier_seen=1
+      shift 2
+      ;;
+    --affected)
+      if [ -n "$formal_affected" ] || [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "$formal_usage" >&2
+        exit 2
+      fi
+      formal_affected="$2"
+      shift 2
+      ;;
+    *)
+      echo "$formal_usage" >&2
+      echo "       (unexpected argument: $1)" >&2
+      exit 2
+      ;;
+  esac
+done
+if [ -n "$formal_affected" ] && [ "$formal_tier" != pr ]; then
+  echo "$formal_usage" >&2
+  echo "       (--affected narrows a pr run only; a full run is never narrowed)" >&2
   exit 2
+fi
+formal_selection=(--tier "$formal_tier")
+if [ -n "$formal_affected" ]; then
+  formal_selection+=(--affected "$formal_affected")
 fi
 
 # One invocation replaces any previous receipt with Running before executing.
@@ -42,7 +81,7 @@ fi
 # retains this file beside its existing exact-SHA timing evidence.
 formal_run_record="${AWAKEN_FORMAL_RUN_EVIDENCE:-target/test-timings/formal-run.json}"
 python3 scripts/ci/formal_run_evidence.py begin \
-  --record "$formal_run_record" --strict "$require_tools"
+  --record "$formal_run_record" --strict "$require_tools" "${formal_selection[@]}"
 
 missing=0
 formal_tmp_root="$(mktemp -d)"
@@ -440,14 +479,16 @@ if command -v cargo-kani >/dev/null 2>&1; then
   # The batches are derived, not listed: formal_plan.py groups every
   # `#[kani::proof]` harness by its package and by the Kani selection its own
   # `/// @kani` tag states, and selects each by its exact qualified name. The
-  # assignment keeps a planning failure fatal before any batch runs.
-  kani_plan="$(python3 scripts/ci/formal_plan.py kani --tier full)"
-  if [ -z "$kani_plan" ]; then
+  # assignment keeps a planning failure fatal before any batch runs. Only a
+  # narrowed pr run may legitimately plan nothing.
+  kani_plan="$(python3 scripts/ci/formal_plan.py kani "${formal_selection[@]}")"
+  if [ -z "$kani_plan" ] && [ -z "$formal_affected" ]; then
     echo "the derived Kani plan is empty: no #[kani::proof] harness was found" >&2
     exit 1
   fi
   mapfile -t kani_batches <<< "$kani_plan"
   for kani_batch in "${kani_batches[@]}"; do
+    [ -n "$kani_batch" ] || continue
     read -r -a kani_argv <<< "$kani_batch"
     run_kani "${kani_argv[@]}"
   done

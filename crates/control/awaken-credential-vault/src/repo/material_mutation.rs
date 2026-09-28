@@ -675,7 +675,7 @@ mod material_input_proofs {
     #[cfg(kani)]
     /// @obligation credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
     /// @obligation credential.managed_material_admission_predicate_requires_owner_and_namespace_match
-    /// @kani profile=minisat-unwind-memcmp-16-v1
+    /// @kani profile=minisat-unwind-memcmp-16-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(3)]
     fn credential_material_input_facts_without_predecessor() {
@@ -876,6 +876,7 @@ mod phase_proofs {
     }
 
     /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+    /// @kani tier=nightly
     #[kani::proof]
     #[kani::unwind(4)]
     fn credential_material_phase_transitions_preserve_exact_writer_fence() {
@@ -925,6 +926,7 @@ mod phase_proofs {
 
     /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
     /// @obligation credential.restart_recovery_compensates_unpublished_material
+    /// @kani tier=nightly
     #[kani::proof]
     #[kani::unwind(36)]
     fn credential_material_takeover_preserves_attempt_and_cannot_restore_original_writer() {

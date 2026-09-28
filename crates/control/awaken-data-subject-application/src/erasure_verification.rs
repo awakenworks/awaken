@@ -152,7 +152,7 @@ fn arbitrary_target() -> Option<ErasureTarget> {
 
 #[cfg(kani)]
 /// @obligation erasure.each_target_is_counted_once
-/// @kani profile=erasure-progress-selection-v1
+/// @kani profile=erasure-progress-selection-v1 tier=nightly
 #[kani::proof]
 #[kani::unwind(32)]
 fn erasure_progress_selects_exact_first_pending_target() {
@@ -167,7 +167,7 @@ fn erasure_progress_selects_exact_first_pending_target() {
 
 #[cfg(kani)]
 /// @obligation erasure.each_target_is_counted_once
-/// @kani profile=erasure-progress-count-v1
+/// @kani profile=erasure-progress-count-v1 tier=nightly
 #[kani::proof]
 #[kani::unwind(32)]
 fn erasure_progress_counts_selected_target_once_or_preserves_overflow() {
@@ -235,7 +235,7 @@ fn check_action(
 #[cfg(kani)]
 /// @obligation erasure.accountability_stamp_follows_all_targets
 /// @obligation erasure.completion_requires_accountability_stamp
-/// @kani profile=erasure-progress-selection-v1
+/// @kani profile=erasure-progress-selection-v1 tier=nightly
 #[kani::proof]
 #[kani::unwind(32)]
 fn erasure_checkpoint_action_requires_all_targets_and_accountability() {

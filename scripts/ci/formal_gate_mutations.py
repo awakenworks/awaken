@@ -261,7 +261,7 @@ def mutate_duplicate_harness_selection(case_root: Path) -> None:
     # obscure an ambiguous runner binding. One plan, one loop, one run.
     gate = case_root / "scripts/ci/check_formal.sh"
     source = gate.read_text()
-    needle = '  kani_plan="$(python3 scripts/ci/formal_plan.py kani --tier full)"\n'
+    needle = '  kani_plan="$(python3 scripts/ci/formal_plan.py kani "${formal_selection[@]}")"\n'
     if source.count(needle) != 1:
         raise SystemExit("mutation fixture lost the derived Kani plan assignment")
     gate.write_text(source.replace(needle, needle * 2, 1))

@@ -420,6 +420,7 @@ mod clock_proofs {
 
     #[cfg(kani)]
     /// @obligation work.exact_boundary_reclaim
+    /// @kani tier=nightly
     #[kani::proof]
     fn work_lease_deadlines_clamp_without_wrapping() {
         check_deadline(kani::any(), kani::any(), kani::any());

@@ -210,7 +210,7 @@ mod identity_proofs {
 
     #[cfg(kani)]
     /// @obligation credential.managed_rollout_event_id_replay_requires_exact_payload_and_colliding_ack_is_rejected
-    /// @kani profile=solver-minisat-v1
+    /// @kani profile=solver-minisat-v1 tier=nightly
     #[kani::proof]
     #[kani::unwind(6)]
     fn managed_rollout_identity_requires_every_payload_field() {

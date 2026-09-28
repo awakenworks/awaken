@@ -427,7 +427,7 @@ class VerificationManifestTests(unittest.TestCase):
         # Reuse the receipt fixture and production archive builder. The bytes
         # are deliberately synthetic; no real binary or proof tool is claimed.
         from test_formal_run_evidence import prepare_source_fixture
-        from formal_run_evidence import begin_record, finish_record
+        from formal_run_evidence import FULL_SELECTION, begin_record, finish_record
         from package import create_archive, write_checksum
         row = dict(id="fixture.safe", formalizable=True, claim_scope="repository_safety",
                    proof_grade="abstract_model_checked", bounds=["fixture only"], evidence=["formal/tla/Fixture.tla"])
@@ -466,6 +466,12 @@ class VerificationManifestTests(unittest.TestCase):
             "crates/server/awaken-service-lifecycle/src/release_admission_main.rs": (
                 ROOT / "crates/server/awaken-service-lifecycle/src/release_admission_main.rs"
             ).read_text(),
+            # The receipt names the Kani plan its source derives; the copied
+            # harnesses need their package and library root to be planned.
+            "crates/server/awaken-service-lifecycle/Cargo.toml": (
+                ROOT / "crates/server/awaken-service-lifecycle/Cargo.toml"
+            ).read_text(),
+            "crates/server/awaken-service-lifecycle/src/lib.rs": "pub mod release_admission;\n",
             "README.md": "fixture\n", "LICENSE": "fixture\n", "deploy/compose.yaml": "# fixture\n",
         })
         (root / "deploy/images/management").mkdir(parents=True)
@@ -473,7 +479,7 @@ class VerificationManifestTests(unittest.TestCase):
         binary.write_bytes(b"synthetic binary")
         artifact = create_archive(root, binary, binary, "x86_64-unknown-linux-gnu", "1.0.0", root / "dist", 100)
         write_checksum(artifact)
-        receipt = finish_record(begin_record(root, True, 100), root, False, 110)
+        receipt = finish_record(begin_record(root, True, 100, FULL_SELECTION), root, False, 110)
         manifest = build_manifest(artifact, profile="standard", source_commit=source_commit(root),
                                   repository=root, proof_run=receipt)
         write_manifest(manifest, artifact.with_name(artifact.name + ".verification.json"))
