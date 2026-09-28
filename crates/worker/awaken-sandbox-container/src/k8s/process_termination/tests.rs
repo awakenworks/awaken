@@ -35,6 +35,69 @@ pub(super) fn decode(pod: Value) -> Pod {
 }
 
 #[test]
+fn completed_init_is_enrolled_and_continuation_retention_stays_with_its_owner() {
+    // C1 private non-restarting init completed with an exact successful exit;
+    // C2 it is live/restarted/rebound/failed; C3 existing continuation finalizer.
+    // I1=C1+C3 => retained binding includes init + every ordinary process.
+    // I2=C2 => no binding/terminal witness. I3 changed init coordinates after
+    // admission => Unknown. Reusing retention grants no right to release the
+    // Session's harvest/PVC finalizer (stop adapter separately tests that edge).
+    let mut pod = running();
+    pod["metadata"]["finalizers"] =
+        json!([super::super::continuation::CONTINUATION_CLEANUP_FINALIZER]);
+    let mut init = pod["spec"]["containers"][0].clone();
+    init["name"] = json!("project-inputs");
+    pod["spec"]["initContainers"] = json!([init]);
+    let mut status = terminal()["status"]["containerStatuses"][0].clone();
+    status["name"] = json!("project-inputs");
+    status["containerID"] = json!("containerd://init");
+    status["state"]["terminated"]["containerID"] = json!("containerd://init");
+    status["state"]["terminated"]["reason"] = json!("Completed");
+    status["state"]["terminated"]["exitCode"] = json!(0);
+    pod["status"]["initContainerStatuses"] = json!([status]);
+    let binding = bind("ns", "worker", "uid-a", &decode(pod.clone())).unwrap();
+    assert!(binding.evidence_was_retained());
+    assert!(!binding.worker_evidence_was_retained());
+    assert_eq!(binding.init_containers.len(), 1);
+    let mut exited = terminal();
+    exited["metadata"]["finalizers"] = pod["metadata"]["finalizers"].clone();
+    exited["spec"]["initContainers"] = pod["spec"]["initContainers"].clone();
+    exited["status"]["initContainerStatuses"] = pod["status"]["initContainerStatuses"].clone();
+    assert!(matches!(
+        observe(&binding, &decode(exited.clone())),
+        PodProcessTermination::Observed(_)
+    ));
+    for (pointer, value) in [
+        ("/status/initContainerStatuses/0/restartCount", json!(1)),
+        (
+            "/status/initContainerStatuses/0/state/terminated/exitCode",
+            json!(1),
+        ),
+        (
+            "/status/initContainerStatuses/0/state/terminated/reason",
+            json!("Error"),
+        ),
+        (
+            "/status/initContainerStatuses/0/containerID",
+            json!("containerd://replacement"),
+        ),
+    ] {
+        let mut bad = exited.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert_eq!(
+            observe(&binding, &decode(bad)),
+            PodProcessTermination::Unknown,
+            "I2/I3 {pointer}"
+        );
+    }
+    pod["spec"]["initContainers"][0]["restartPolicy"] = json!("Always");
+    assert!(
+        bind("ns", "worker", "uid-a", &decode(pod)).is_err(),
+        "I2 restartable sidecar init"
+    );
+}
+
+#[test]
 fn terminal_observation_requires_exact_complete_irreversible_process_evidence() {
     // Cause/effect graph: exact frozen identity AND private non-restarting scope
     // AND exact runtime exit => local observation. Any missing conjunct =>

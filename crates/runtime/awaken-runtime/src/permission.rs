@@ -31,6 +31,9 @@ impl PermissionGate {
 
 #[async_trait]
 impl ToolGateHook for PermissionGate {
+    fn process_bound(&self) -> bool {
+        self.policy.process_bound()
+    }
     fn id(&self) -> &str {
         "permission"
     }

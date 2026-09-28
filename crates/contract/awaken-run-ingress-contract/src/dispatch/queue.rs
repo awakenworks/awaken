@@ -11,6 +11,9 @@
 /// Durable run-dispatch queue: activation opportunity, claim, lease, recovery.
 #[async_trait]
 pub trait DispatchQueue: Send + Sync {
+    /// Exact old attempt reports its closed local entry (not remote stop).
+    /// Occupancy remains and ordinary ACK/handoff are fenced thereafter.
+    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError>;
     /// Whether this adapter owns process-local queue maintenance (outbox relay,
     /// quarantine GC and global terminal scans). Database-less transports do
     /// not: the upstream Coordinator owns those operations. This is immutable
@@ -438,6 +441,12 @@ pub trait ClaimedCredentialDeliveryTransport: Send + Sync {
 /// through [`DispatchQueue::control`] rather than a failing default.
 #[async_trait]
 pub trait ControlDispatchQueue: DispatchQueue {
+    /// Trusted Coordinator-only retirement after complete independent closure
+    /// evidence. Worker transports expose only ordinary return and entry close.
+    async fn finish_attempt_closure(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError>;
     /// Read one exact persisted binding only while `claim` remains the current
     /// owner. This query grants no material and changes no delivery state.
     async fn current_credential_binding(

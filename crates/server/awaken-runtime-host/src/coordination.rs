@@ -277,6 +277,9 @@ impl HostModelRequestGate {
 
 #[async_trait::async_trait]
 impl ModelRequestGate for HostModelRequestGate {
+    fn process_bound(&self) -> bool {
+        true
+    }
     async fn admit_model_request(
         &self,
         request: ModelRequestAdmissionRequest,

@@ -43,7 +43,7 @@ pub const CURRENT_CONTRACT_VERSION: u32 = 1;
 /// request-relative Session leases, but still ACKed individual scheduled stages.
 /// A v3 peer cannot execute safely against whole-claim retirement semantics.
 /// Manifest/dispatch envelope versions remain independent and unchanged.
-pub const CURRENT_RUNTIME_PROTOCOL_VERSION: u32 = 4;
+pub const CURRENT_RUNTIME_PROTOCOL_VERSION: u32 = 5;
 
 /// Inclusive protocol-version range supported by a worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

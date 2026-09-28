@@ -71,6 +71,7 @@ pub fn awaken_tool_contract::tool::RawToolRegistry::start_task<'life0, 'life1, '
 impl awaken_tool_contract::tool::ToolExecutor for awaken_tool_contract::tool::RawToolRegistry
 pub fn awaken_tool_contract::tool::RawToolRegistry::concurrency(&self, &str, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::tool::RawToolRegistry::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskExecutor>
+pub fn awaken_tool_contract::tool::RawToolRegistry::execution_domain<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_tool_contract::tool::ToolRecoveryCapability
 pub struct awaken_tool_contract::tool::ToolCall
@@ -151,6 +152,7 @@ pub fn awaken_tool_contract::tool::DurableTaskTool::start_task<'life0, 'async_tr
 pub trait awaken_tool_contract::tool::RawTool: core::marker::Send + core::marker::Sync
 pub fn awaken_tool_contract::tool::RawTool::concurrency(&self, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::tool::RawTool::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskTool>
+pub fn awaken_tool_contract::tool::RawTool::execution_domain(&self) -> awaken_tool_contract::tool_batch::ToolExecutionDomain
 pub fn awaken_tool_contract::tool::RawTool::execution_target(&self) -> awaken_tool_contract::tool::ToolExecutionTarget
 pub fn awaken_tool_contract::tool::RawTool::id(&self) -> &str
 pub fn awaken_tool_contract::tool::RawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -171,14 +173,17 @@ pub trait awaken_tool_contract::tool::ToolExecutionPermit: core::marker::Send
 pub trait awaken_tool_contract::tool::ToolExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_tool_contract::tool::ToolExecutor::concurrency(&self, &str, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::tool::ToolExecutor::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskExecutor>
+pub fn awaken_tool_contract::tool::ToolExecutor::execution_domain<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::ToolExecutor::recovery_capability(&self, &str) -> awaken_tool_contract::tool::ToolRecoveryCapability
 impl awaken_tool_contract::tool::ToolExecutor for awaken_tool_contract::tool::RawToolRegistry
 pub fn awaken_tool_contract::tool::RawToolRegistry::concurrency(&self, &str, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::tool::RawToolRegistry::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskExecutor>
+pub fn awaken_tool_contract::tool::RawToolRegistry::execution_domain<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_tool_contract::tool::ToolRecoveryCapability
 pub trait awaken_tool_contract::tool::ToolOutputSpiller: core::marker::Send + core::marker::Sync
+pub fn awaken_tool_contract::tool::ToolOutputSpiller::execution_domain<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_tool_contract::tool::ToolOutputSpiller::spill<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_tool_contract::tool::current_tool_execution_facts(&awaken_tool_contract::tool::ToolCall) -> core::result::Result<awaken_tool_contract::tool::ToolExecutionFacts, awaken_tool_contract::tool::ToolError>
 pub fn awaken_tool_contract::tool::current_tool_operation_context() -> core::option::Option<awaken_tool_contract::tool::ToolOperationContext>
@@ -237,6 +242,16 @@ pub awaken_tool_contract::tool_batch::ToolCallPhase::Indeterminate::reason: allo
 pub awaken_tool_contract::tool_batch::ToolCallPhase::Requested
 impl awaken_tool_contract::tool_batch::ToolCallPhase
 pub fn awaken_tool_contract::tool_batch::ToolCallPhase::is_terminal(&self) -> bool
+pub enum awaken_tool_contract::tool_batch::ToolExecutionDomain
+pub awaken_tool_contract::tool_batch::ToolExecutionDomain::ControlledProcess
+pub awaken_tool_contract::tool_batch::ToolExecutionDomain::ControlledProcess::execution_ref: alloc::string::String
+pub awaken_tool_contract::tool_batch::ToolExecutionDomain::ControlledProcess::provider_ref: alloc::string::String
+pub awaken_tool_contract::tool_batch::ToolExecutionDomain::Opaque
+pub awaken_tool_contract::tool_batch::ToolExecutionDomain::Worker
+impl awaken_tool_contract::tool_batch::ToolExecutionDomain
+pub fn awaken_tool_contract::tool_batch::ToolExecutionDomain::validate(&self) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
+impl core::default::Default for awaken_tool_contract::tool_batch::ToolExecutionDomain
+pub fn awaken_tool_contract::tool_batch::ToolExecutionDomain::default() -> Self
 pub enum awaken_tool_contract::tool_batch::ToolRecoveryAction
 pub awaken_tool_contract::tool_batch::ToolRecoveryAction::Entered
 pub awaken_tool_contract::tool_batch::ToolRecoveryAction::Entered::attempt: u16
@@ -247,6 +262,8 @@ pub awaken_tool_contract::tool_batch::ToolWaitKind::ExternalResult
 pub awaken_tool_contract::tool_batch::ToolWaitKind::ScheduledAction
 pub awaken_tool_contract::tool_batch::ToolWaitKind::ToolPermission
 pub struct awaken_tool_contract::tool_batch::ActiveToolBatch
+impl awaken_tool_contract::tool_batch::ActiveToolBatch
+pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::recorded_execution_domains(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<alloc::vec::Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>, awaken_tool_contract::tool_batch::ToolBatchError>
 impl awaken_agent_contract::agent::state::StateKey for awaken_tool_contract::tool_batch::ActiveToolBatch
 pub type awaken_tool_contract::tool_batch::ActiveToolBatch::Value = core::option::Option<awaken_tool_contract::tool_batch::ToolBatch>
 pub const awaken_tool_contract::tool_batch::ActiveToolBatch::KEY: &'static str
@@ -254,11 +271,16 @@ pub const awaken_tool_contract::tool_batch::ActiveToolBatch::MERGE: awaken_agent
 pub const awaken_tool_contract::tool_batch::ActiveToolBatch::SCOPE: awaken_agent_contract::agent::state::Scope
 pub struct awaken_tool_contract::tool_batch::DurableToolCall
 pub awaken_tool_contract::tool_batch::DurableToolCall::call: awaken_tool_contract::tool::ToolCall
+pub awaken_tool_contract::tool_batch::DurableToolCall::execution_domain: core::option::Option<awaken_tool_contract::tool_batch::ToolExecutionDomain>
+pub awaken_tool_contract::tool_batch::DurableToolCall::materialization_domain: core::option::Option<awaken_tool_contract::tool_batch::ToolExecutionDomain>
 pub awaken_tool_contract::tool_batch::DurableToolCall::phase: awaken_tool_contract::tool_batch::ToolCallPhase
 pub awaken_tool_contract::tool_batch::DurableToolCall::recovery_policy: awaken_tool_contract::tool::ToolRecoveryPolicy
 pub awaken_tool_contract::tool_batch::DurableToolCall::result_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_tool_contract::tool_batch::DurableToolCall::result_state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub struct awaken_tool_contract::tool_batch::ToolBatch
+impl awaken_tool_contract::tool_batch::ToolBatch
+pub fn awaken_tool_contract::tool_batch::ToolBatch::bind_materialization_domain(&mut self, &str, awaken_tool_contract::tool_batch::ToolExecutionDomain) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_executing_in_domain(&mut self, &str, core::option::Option<awaken_tool_contract::tool_batch::ToolExecutionDomain>) -> core::result::Result<u16, awaken_tool_contract::tool_batch::ToolBatchError>
 impl awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::calls(&self) -> &[awaken_tool_contract::tool_batch::DurableToolCall]
 pub fn awaken_tool_contract::tool_batch::ToolBatch::complete(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
@@ -380,6 +402,8 @@ pub awaken_tool_contract::ToolWaitKind::ExternalResult
 pub awaken_tool_contract::ToolWaitKind::ScheduledAction
 pub awaken_tool_contract::ToolWaitKind::ToolPermission
 pub struct awaken_tool_contract::ActiveToolBatch
+impl awaken_tool_contract::tool_batch::ActiveToolBatch
+pub fn awaken_tool_contract::tool_batch::ActiveToolBatch::recorded_execution_domains(&[awaken_agent_contract::agent::state::Command], &awaken_agent_contract::agent::run::Id) -> core::result::Result<alloc::vec::Vec<awaken_tool_contract::tool_batch::ToolExecutionDomain>, awaken_tool_contract::tool_batch::ToolBatchError>
 impl awaken_agent_contract::agent::state::StateKey for awaken_tool_contract::tool_batch::ActiveToolBatch
 pub type awaken_tool_contract::tool_batch::ActiveToolBatch::Value = core::option::Option<awaken_tool_contract::tool_batch::ToolBatch>
 pub const awaken_tool_contract::tool_batch::ActiveToolBatch::KEY: &'static str
@@ -397,9 +421,13 @@ pub fn awaken_tool_contract::tool::RawToolRegistry::start_task<'life0, 'life1, '
 impl awaken_tool_contract::tool::ToolExecutor for awaken_tool_contract::tool::RawToolRegistry
 pub fn awaken_tool_contract::tool::RawToolRegistry::concurrency(&self, &str, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::tool::RawToolRegistry::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskExecutor>
+pub fn awaken_tool_contract::tool::RawToolRegistry::execution_domain<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_tool_contract::tool::ToolRecoveryCapability
 pub struct awaken_tool_contract::ToolBatch
+impl awaken_tool_contract::tool_batch::ToolBatch
+pub fn awaken_tool_contract::tool_batch::ToolBatch::bind_materialization_domain(&mut self, &str, awaken_tool_contract::tool_batch::ToolExecutionDomain) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
+pub fn awaken_tool_contract::tool_batch::ToolBatch::mark_executing_in_domain(&mut self, &str, core::option::Option<awaken_tool_contract::tool_batch::ToolExecutionDomain>) -> core::result::Result<u16, awaken_tool_contract::tool_batch::ToolBatchError>
 impl awaken_tool_contract::tool_batch::ToolBatch
 pub fn awaken_tool_contract::tool_batch::ToolBatch::calls(&self) -> &[awaken_tool_contract::tool_batch::DurableToolCall]
 pub fn awaken_tool_contract::tool_batch::ToolBatch::complete(&mut self, awaken_tool_contract::tool::ToolOutput) -> core::result::Result<(), awaken_tool_contract::tool_batch::ToolBatchError>
@@ -507,6 +535,7 @@ pub fn awaken_tool_contract::DurableTaskTool::start_task<'life0, 'async_trait>(&
 pub trait awaken_tool_contract::RawTool: core::marker::Send + core::marker::Sync
 pub fn awaken_tool_contract::RawTool::concurrency(&self, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::RawTool::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskTool>
+pub fn awaken_tool_contract::RawTool::execution_domain(&self) -> awaken_tool_contract::tool_batch::ToolExecutionDomain
 pub fn awaken_tool_contract::RawTool::execution_target(&self) -> awaken_tool_contract::tool::ToolExecutionTarget
 pub fn awaken_tool_contract::RawTool::id(&self) -> &str
 pub fn awaken_tool_contract::RawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -525,11 +554,13 @@ pub trait awaken_tool_contract::ToolExecutionPermit: core::marker::Send
 pub trait awaken_tool_contract::ToolExecutor: core::marker::Send + core::marker::Sync
 pub fn awaken_tool_contract::ToolExecutor::concurrency(&self, &str, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::ToolExecutor::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskExecutor>
+pub fn awaken_tool_contract::ToolExecutor::execution_domain<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::ToolExecutor::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::ToolExecutor::recovery_capability(&self, &str) -> awaken_tool_contract::tool::ToolRecoveryCapability
 impl awaken_tool_contract::tool::ToolExecutor for awaken_tool_contract::tool::RawToolRegistry
 pub fn awaken_tool_contract::tool::RawToolRegistry::concurrency(&self, &str, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
 pub fn awaken_tool_contract::tool::RawToolRegistry::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskExecutor>
+pub fn awaken_tool_contract::tool::RawToolRegistry::execution_domain<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::recovery_capability(&self, &str) -> awaken_tool_contract::tool::ToolRecoveryCapability
 pub async fn awaken_tool_contract::start_executor_task(&dyn awaken_tool_contract::tool::ToolExecutor, &awaken_tool_contract::tool::ToolCall) -> core::result::Result<awaken_tool_contract::tool::ToolTaskStart, awaken_tool_contract::tool::ToolError>

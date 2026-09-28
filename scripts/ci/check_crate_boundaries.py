@@ -1474,7 +1474,7 @@ def selftest_composite_identity_is_stated() -> None:
 # door per module rather than deprecated: `#[deprecated]` would turn several
 # hundred fixture literals into build failures for no reachable refusal.
 UNVALIDATED_MODEL_BINDING_PRODUCER = re.compile(r"\bModelBinding::new\s*\(")
-UNVALIDATED_MODEL_BINDING_BASELINE = 405
+UNVALIDATED_MODEL_BINDING_BASELINE = 404
 # The one place `ModelBinding::new` is the subject rather than a producer: the
 # round-trip property asserts that every binding `new` builds also decodes,
 # which is the invariant whose absence let a constructible binding stall a run

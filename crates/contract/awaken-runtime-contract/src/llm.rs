@@ -69,6 +69,9 @@ impl ChatRequest {
 /// returned request must contain no unresolved provider-visible references.
 #[async_trait]
 pub trait ModelContentMaterializer: Send + Sync {
+    fn process_bound(&self) -> bool {
+        false
+    }
     async fn materialize(&self, request: ChatRequest) -> Result<ChatRequest>;
 }
 
@@ -288,6 +291,11 @@ pub enum ModelRequestAdmission {
 /// the current decision and never caches it.
 #[async_trait]
 pub trait ModelRequestGate: Send + Sync {
+    /// No independent governed execution survives the returned admission.
+    /// Accounting receipts remain owned by their application authority.
+    fn process_bound(&self) -> bool {
+        false
+    }
     async fn admit_model_request(
         &self,
         request: ModelRequestAdmissionRequest,
@@ -639,6 +647,13 @@ pub trait DeltaSink: Send + Sync {
 /// Unknown. Adapters must not hide unconfirmed retries behind a later success.
 #[async_trait]
 pub trait LlmExecutor: Send + Sync {
+    /// Implementation capability, not authored model metadata or a stop
+    /// receipt. Unknown/custom adapters remain opaque. Wrappers may forward
+    /// only the exact selected transport's request-dependent capability.
+    fn effect_scope(&self, _request: &ChatRequest) -> crate::model_operation::ModelEffectScope {
+        crate::model_operation::ModelEffectScope::Opaque
+    }
+
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse>;
 
     /// Stream the response's text to `sink` as it arrives, returning the same

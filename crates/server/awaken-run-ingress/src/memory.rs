@@ -119,6 +119,7 @@ struct Row {
     active_attempt: Option<RunClaim>,
     active_attempt_binding: Option<AttemptExecutionBinding>,
     retired_attempt_epoch: u64,
+    active_attempt_closing: bool,
 }
 
 fn guarded_claim_row(
@@ -738,6 +739,7 @@ fn enqueue_new_local(
             active_attempt: None,
             active_attempt_binding: None,
             retired_attempt_epoch: 0,
+            active_attempt_closing: false,
         },
     );
     state.order.push(run_id);
@@ -1325,24 +1327,12 @@ impl DispatchQueue for MemoryDispatchStore {
             .await
     }
 
+    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        self.close_physical_attempt(claim).await
+    }
+
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        let Some(row) = state.rows.get_mut(&claim.run_id) else {
-            return Ok(SettleOutcome::Fenced);
-        };
-        let slot = match row.active_attempt.as_ref() {
-            None => PhysicalAttemptSlot::Empty,
-            Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
-            Some(_) => PhysicalAttemptSlot::OtherClaim,
-        };
-        let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(slot)?;
-        if transition == PhysicalAttemptTransition::Clear {
-            row.active_attempt = None;
-            row.active_attempt_binding = None;
-            row.retired_attempt_epoch = claim.epoch;
-        }
-        Ok(outcome)
+        self.finish_physical_attempt_with(claim, false).await
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1562,6 +1552,13 @@ impl DispatchQueue for MemoryDispatchStore {
 
 #[async_trait]
 impl ControlDispatchQueue for MemoryDispatchStore {
+    async fn finish_attempt_closure(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        self.finish_physical_attempt_with(claim, true).await
+    }
+
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -1816,6 +1813,7 @@ impl ControlDispatchQueue for MemoryDispatchStore {
                 binding: row.active_attempt_binding.clone(),
                 thread_id: Some(row.request.thread_id().clone()),
                 session_thread_id: row.request.session_thread_id.clone(),
+                closing: row.active_attempt_closing,
             })
         }))
     }

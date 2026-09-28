@@ -74,6 +74,38 @@ pub(super) fn deletion_incarnation(
 
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
+    async fn owned_process_binding(
+        &self,
+        container_id: &str,
+        handle: Option<&crate::ContainerContinuationHandle>,
+    ) -> Result<Option<String>, RuntimeError> {
+        let Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 { pod_uid, .. }) =
+            handle
+        else {
+            return Ok(None);
+        };
+        let pod = self.pods().get(container_id).await.map_err(backend)?;
+        if pod.metadata.uid.as_deref() != Some(pod_uid)
+            || pod
+                .metadata
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get("awaken-egress"))
+                .map(String::as_str)
+                != Some(egress_label(&crate::NetworkMode::None))
+        {
+            return Ok(None);
+        }
+        self.network_policy_attestation
+            .refresh(&self.clients.control, &self.namespace)
+            .await?;
+        let observer = PodProcessObserver::new(self.clients.control.clone(), &self.namespace)?;
+        let binding = observer.bind_pod_process(container_id, pod_uid).await?;
+        if !binding.evidence_was_retained() {
+            return Ok(None);
+        }
+        serde_json::to_string(&binding).map(Some).map_err(backend)
+    }
     async fn prewarm_images(&self, images: &[String]) -> Result<(), RuntimeError> {
         self.reconcile_image_prewarm(images).await
     }

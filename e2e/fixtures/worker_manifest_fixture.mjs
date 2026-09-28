@@ -28,11 +28,11 @@ export function workdirWorkerManifestFixture({ buildDigest, capabilities }) {
     },
     sandbox_backends: [],
     dispatch_contract: { min: 1, max: 1 },
-    // V4 adds whole-claim retirement and typed renewal outcomes to V3's
-    // request-relative Session leases. Seed drivers only claim/commit; shipped
+    // V5 adds exact physical-entry closure to V4's whole-claim retirement.
+    // Seed drivers only claim/commit and never claim closure; shipped
     // Workers own execution and final ACK. Keep this reviewed range explicit;
     // worker_manifest_fixture.test.mjs detects drift against the Rust contract.
-    runtime_protocol: { min: 4, max: 4 },
+    runtime_protocol: { min: 5, max: 5 },
     checkpoint_formats: ['stream-v1'],
     capacity: { max_concurrent: 1, resources: {} },
   };

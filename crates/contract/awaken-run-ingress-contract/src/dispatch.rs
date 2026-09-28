@@ -1331,6 +1331,9 @@ mod tests {
 
     #[async_trait]
     impl DispatchQueue for CapturingQueue {
+        async fn close_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+            Self::unsupported()
+        }
         async fn resolve_claimed_session_run_reservation(
             &self,
             _claim: &RunClaim,

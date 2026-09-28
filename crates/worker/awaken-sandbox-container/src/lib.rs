@@ -1219,6 +1219,12 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R> {
+    async fn owned_process_binding(&self) -> Result<Option<String>, pc::SandboxError> {
+        self.runtime
+            .owned_process_binding(&self.container_id, self.runtime_handle.as_ref())
+            .await
+            .map_err(pc::SandboxError::from)
+    }
     async fn checkpoint_upload(
         &self,
         access: ContainerCheckpointAccess<'_>,

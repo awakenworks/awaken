@@ -1000,6 +1000,12 @@ impl FlakyDispatchStore {
 #[async_trait::async_trait]
 #[cfg(feature = "test-support")]
 impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
+    async fn close_attempt(
+        &self,
+        claim: &awaken_run_ingress::RunClaim,
+    ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
+        self.inner.close_attempt(claim).await
+    }
     fn owns_local_maintenance(&self) -> bool {
         self.local_maintenance
     }
@@ -1317,6 +1323,12 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
 #[cfg(feature = "test-support")]
 #[async_trait::async_trait]
 impl awaken_run_ingress::ControlDispatchQueue for FlakyDispatchStore {
+    async fn finish_attempt_closure(
+        &self,
+        claim: &awaken_run_ingress::RunClaim,
+    ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
+        self.inner.finish_attempt_closure(claim).await
+    }
     async fn current_credential_binding(
         &self,
         claim: &awaken_run_ingress::RunClaim,

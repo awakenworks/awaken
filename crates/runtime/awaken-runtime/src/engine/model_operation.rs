@@ -27,10 +27,16 @@ fn verify_reentry(
             "model operation evidence unavailable: {error}"
         ))
     })?;
-    if !context.physical_quiescence.permits_execution()
-        || !ModelOperation::permits_reentry(previous.as_ref(), recovering_checkpoint)
-    {
-        context.physical_quiescence.mark_uncertain();
+    let previous_unknown =
+        !ModelOperation::permits_reentry(previous.as_ref(), recovering_checkpoint);
+    if previous_unknown {
+        context.physical_quiescence.mark_model_uncertain(
+            previous
+                .as_ref()
+                .map_or(Default::default(), |operation| operation.effect_scope),
+        );
+    }
+    if !context.physical_quiescence.permits_execution() || previous_unknown {
         return Err(awaken_runtime_contract::llm::Error::Provider(
             "attempt participants or previous model invocation lack termination evidence".into(),
         ));
@@ -68,11 +74,13 @@ pub(super) async fn recover_checkpoint(
     let mut store = store_from_run_commands(committed_state, run_id);
     let observation = match recorded {
         Ok(recorded) => {
-            if recorded
+            for operation in recorded
                 .iter()
-                .any(|operation| !operation.execution.permits_reentry())
+                .filter(|operation| !operation.execution.permits_reentry())
             {
-                context.physical_quiescence.mark_uncertain();
+                context
+                    .physical_quiescence
+                    .mark_model_uncertain(operation.effect_scope);
             }
             if let Some(latest) = recorded.last() {
                 store.apply(&ActiveModelOperation::write(&Some(latest.clone())));
@@ -91,7 +99,9 @@ async fn observe_checkpoint(
     thread_id: &ThreadId,
 ) -> Result<RecoveryObservation> {
     let uncertain = || {
-        context.physical_quiescence.mark_uncertain();
+        if context.physical_quiescence.permits_execution() {
+            context.physical_quiescence.mark_uncertain();
+        }
         if context.is_cancelled() {
             EndCause::Cancelled
         } else {
@@ -197,10 +207,12 @@ impl<'a> ModelOperationJournal<'a> {
     pub async fn enter(
         &mut self,
         binding: &ModelBinding,
+        effect_scope: awaken_runtime_contract::model_operation::ModelEffectScope,
     ) -> awaken_runtime_contract::llm::Result<Option<ModelOperationContext>> {
         let previous = self.verify_reentry(false)?;
-        let next = ModelOperation::next(previous.as_ref(), binding.clone())
+        let mut next = ModelOperation::next(previous.as_ref(), binding.clone())
             .ok_or_else(|| self.reject("model operation ordinal exhausted"))?;
+        next.effect_scope = effect_scope;
         // An ephemeral direct Runtime can still infer, but its in-memory
         // ordinal cannot masquerade as a committed, reconstructible identity.
         let identity = self

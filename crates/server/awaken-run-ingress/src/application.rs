@@ -102,7 +102,7 @@ pub enum WorkerProcessStopStatus {
 /// ```
 pub struct ClosedAttemptExecution {
     attempt: crate::PhysicalAttempt,
-    process_exit: ObservedWorkerProcessExit,
+    process_exit: Option<ObservedWorkerProcessExit>,
 }
 
 impl ClosedAttemptExecution {
@@ -110,8 +110,20 @@ impl ClosedAttemptExecution {
         &self.attempt
     }
 
-    pub fn process_exit(&self) -> &ObservedWorkerProcessExit {
-        &self.process_exit
+    pub fn process_exit(&self) -> Option<&ObservedWorkerProcessExit> {
+        self.process_exit.as_ref()
+    }
+
+    pub fn local_evidence_ref(&self) -> String {
+        self.process_exit.as_ref().map_or_else(
+            || {
+                format!(
+                    "dispatch-entry-closed:{}:{}",
+                    self.attempt.claim.run_id.0, self.attempt.claim.epoch
+                )
+            },
+            |receipt| receipt.evidence_ref().to_owned(),
+        )
     }
 
     /// Trusted provider assertion, NOT a test for local completion. Call only
@@ -126,17 +138,43 @@ impl ClosedAttemptExecution {
         &self,
         evidence_ref: impl Into<String>,
     ) -> Result<AttemptStopStatus, ApplicationError> {
-        let evidence_ref = evidence_ref.into();
-        if evidence_ref.trim().is_empty() {
+        self.observed_closure(AttemptClosureKind::AllExecutionStopped, evidence_ref.into())
+    }
+
+    /// Prove closure of all governed effects after exact Worker closure, with
+    /// complete pre-effect scope enrollment. Response-only provider computation
+    /// may remain unknown; no business outcome or provider stop is fabricated.
+    pub fn observed_execution_domain_closed(
+        &self,
+        evidence_ref: impl Into<String>,
+    ) -> Result<AttemptStopStatus, ApplicationError> {
+        self.observed_closure(
+            AttemptClosureKind::ControlledExecutionClosed,
+            evidence_ref.into(),
+        )
+    }
+    fn observed_closure(
+        &self,
+        kind: AttemptClosureKind,
+        evidence_ref: String,
+    ) -> Result<AttemptStopStatus, ApplicationError> {
+        if !self.attempt.closing || evidence_ref.trim().is_empty() {
             return Err(ApplicationError::invalid(
-                "complete attempt termination requires provider evidence",
+                "complete closure requires a durably closed entry and provider evidence",
             ));
         }
         Ok(AttemptStopStatus::Stopped(Box::new(ObservedAttemptStop {
             attempt: self.attempt.clone(),
             evidence_ref,
+            kind,
         })))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptClosureKind {
+    AllExecutionStopped,
+    ControlledExecutionClosed,
 }
 
 /// Subject-bound assertion from the trusted stop source, never deserialized
@@ -146,9 +184,13 @@ impl ClosedAttemptExecution {
 pub struct ObservedAttemptStop {
     attempt: crate::PhysicalAttempt,
     evidence_ref: String,
+    kind: AttemptClosureKind,
 }
 
 impl ObservedAttemptStop {
+    pub fn kind(&self) -> AttemptClosureKind {
+        self.kind
+    }
     pub fn attempt(&self) -> &crate::PhysicalAttempt {
         &self.attempt
     }
@@ -186,14 +228,11 @@ pub trait WorkerExecutionStopSource: Send + Sync {
         Ok(())
     }
 
-    /// Read complete termination evidence from independent providers, after
-    /// verified local exit. This is READ ONLY: a concurrent durable handoff may
-    /// transfer the remote operation after this observation subject was built.
-    /// Therefore this method cannot cancel/close remote operations, submit work,
-    /// or mutate Dispatch. Backend owners control their own stop protocol;
-    /// this source composes their terminal/no-restart facts. Missing capability
-    /// or historical enrollment remains Unknown, including after local exit.
-    async fn observe_attempt_termination(
+    /// Close/observe the exact governed domains after durable local entry
+    /// closure. The persisted closing phase prevents handoff and ordinary ACK
+    /// from releasing them during IO. Adapters must target frozen bindings;
+    /// absent enrollment/capability remains Unknown, with no initiating replay.
+    async fn close_attempt_execution(
         &self,
         _execution: &ClosedAttemptExecution,
         _recovery: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
@@ -206,7 +245,7 @@ pub trait WorkerExecutionStopSource: Send + Sync {
 /// recovery queue or a second copy of slot state. The caller bounds provider IO
 /// and retries through ordinary admission. `None` means no stop was authorized.
 /// The returned observation remains LOCAL only. Retirement additionally requires
-/// a separate complete assertion from `observe_attempt_termination`; the existing
+/// a separate complete assertion from `close_attempt_execution`; the existing
 /// Dispatch slot is the sole retirement authority, not this return value.
 pub async fn stop_expired_predecessor(
     dispatch: &dyn ControlDispatchQueue,
@@ -223,29 +262,121 @@ pub async fn stop_expired_predecessor(
     {
         return Ok(None);
     }
-    let Some(predecessor) = dispatch
+    let Some(mut predecessor) = dispatch
         .load_physical_attempt(&successor.run_id)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?
     else {
         return Ok(None);
     };
-    // Never kill the current caller's shared process for a per-Run conflict.
-    if predecessor.claim.owner == successor.owner {
+    let Some(binding) = predecessor.binding.clone() else {
         return Ok(None);
-    }
-    let Some(binding) = &predecessor.binding else {
-        return Ok(None); // Historical absence cannot be backfilled into proof.
     };
     binding
         .validate_for(&predecessor.claim)
         .map_err(|error| ApplicationError::internal(error.to_string()))?;
+    let process_exit = if predecessor.closing {
+        persisted_worker_exit(directory, &binding).await?
+    } else {
+        if predecessor.claim.owner == successor.owner {
+            return Ok(None);
+        }
+        let observation = independently_close_worker(
+            dispatch,
+            directory,
+            source,
+            &predecessor,
+            &binding,
+            successor,
+            now_ms,
+        )
+        .await?;
+        let exit = match observation {
+            Some(WorkerProcessStopStatus::Exited(exit)) => exit,
+            Some(WorkerProcessStopStatus::Unknown) => {
+                return Ok(Some(WorkerProcessStopStatus::Unknown));
+            }
+            None => return Ok(None),
+        };
+        if dispatch
+            .close_attempt(&predecessor.claim)
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            != crate::SettleOutcome::Applied
+        {
+            return Ok(Some(WorkerProcessStopStatus::Exited(exit)));
+        }
+        predecessor.closing = true;
+        Some(exit)
+    };
+    let observation = process_exit
+        .as_ref()
+        .map_or(WorkerProcessStopStatus::Unknown, |exit| {
+            WorkerProcessStopStatus::Exited(exit.clone())
+        });
+    if dispatch
+        .load_physical_attempt(&successor.run_id)
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        .as_ref()
+        != Some(&predecessor)
+    {
+        return Ok(Some(observation));
+    }
+    let (Some(recovery), Some(thread_id)) = (recovery, predecessor.thread_id.as_ref()) else {
+        return Ok(Some(observation));
+    };
+    let session_thread_id = predecessor.session_thread_id.as_ref().unwrap_or(thread_id);
+    let snapshot = recovery
+        .recovery_snapshot_in_session(session_thread_id, thread_id, &predecessor.claim.run_id)
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+    if snapshot.thread_id != *thread_id || snapshot.claimed_run_id != predecessor.claim.run_id {
+        return Err(ApplicationError::internal(
+            "recovery source returned another physical attempt subject",
+        ));
+    }
+    let stopped = source
+        .close_attempt_execution(
+            &ClosedAttemptExecution {
+                attempt: predecessor.clone(),
+                process_exit,
+            },
+            &snapshot,
+        )
+        .await?;
+    if let AttemptStopStatus::Stopped(receipt) = &stopped {
+        if receipt.attempt() != &predecessor {
+            return Err(ApplicationError::internal(
+                "closure evidence names another physical attempt",
+            ));
+        }
+        // The closing phase denies normal return/handoff during provider IO.
+        // Exact Coordinator closure still cannot clear a successor's slot.
+        let retirement = dispatch
+            .finish_attempt_closure(&predecessor.claim)
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+        tracing::debug!(?retirement, kind = ?receipt.kind(), "independently closed physical attempt");
+    }
+    Ok(Some(observation))
+}
+
+async fn independently_close_worker(
+    dispatch: &dyn ControlDispatchQueue,
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    predecessor: &crate::PhysicalAttempt,
+    binding: &crate::AttemptExecutionBinding,
+    successor: &crate::RunClaim,
+    now_ms: u64,
+) -> Result<Option<WorkerProcessStopStatus>, ApplicationError> {
     let expiry = directory
         .expire_incarnation(binding.worker(), now_ms)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
-    if expiry != crate::RegistryMutation::Applied {
-        let closed = directory
+    if expiry != crate::RegistryMutation::Applied
+        && !directory
             .incarnation(binding.worker())
             .await
             .map_err(|error| ApplicationError::unavailable(error.to_string()))?
@@ -254,130 +385,92 @@ pub async fn stop_expired_predecessor(
                     record.snapshot.state,
                     crate::WorkerState::Quiesced | crate::WorkerState::Dead
                 )
-            });
-        if !closed {
-            return Ok(None);
-        }
+            })
+    {
+        return Ok(None);
     }
-    // The Registry transaction is over before any provider IO. A concurrent
-    // normal ACK/handoff must not retarget this command to the successor slot.
     if dispatch
         .load_physical_attempt(&successor.run_id)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?
         .as_ref()
-        != Some(&predecessor)
+        != Some(predecessor)
     {
         return Ok(None);
     }
     let closed = ClosedWorkerExecution {
         binding: binding.clone(),
     };
-    let persisted = directory
+    let observation = if let Some(exit) = persisted_worker_exit(directory, binding).await? {
+        WorkerProcessStopStatus::Exited(exit)
+    } else {
+        source.stop_closed_worker(&closed).await?
+    };
+    let WorkerProcessStopStatus::Exited(exit) = observation else {
+        return Ok(Some(WorkerProcessStopStatus::Unknown));
+    };
+    if exit.binding() != binding {
+        return Err(ApplicationError::internal(
+            "Worker exit names another execution",
+        ));
+    }
+    let receipt = crate::WorkerProcessExit::new(
+        binding.provider_id(),
+        binding.execution_ref(),
+        exit.evidence_ref(),
+    )
+    .map_err(|error| ApplicationError::internal(error.to_string()))?;
+    if directory
+        .record_process_exit(binding.worker(), receipt.clone())
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        != crate::RegistryMutation::Applied
+    {
+        return Err(ApplicationError::internal(
+            "Worker exit could not be committed",
+        ));
+    }
+    let committed = directory
         .incarnation(binding.worker())
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?
         .and_then(|record| record.process_exit);
-    let observation = if let Some(receipt) = persisted {
-        if receipt.provider_id() != binding.provider_id()
-            || receipt.execution_ref() != binding.execution_ref()
-        {
-            return Err(ApplicationError::internal(
-                "persisted Worker process exit names another execution",
-            ));
-        }
-        closed.observed_exit(receipt.evidence_ref())?
-    } else {
-        source.stop_closed_worker(&closed).await?
-    };
-    if let WorkerProcessStopStatus::Exited(receipt) = &observation
-        && receipt.binding() != binding
-    {
+    if committed.as_ref() != Some(&receipt) {
         return Err(ApplicationError::internal(
-            "provider exit observation names another execution",
+            "Worker exit readback did not match",
         ));
     }
-    if let WorkerProcessStopStatus::Exited(process_exit) = &observation {
-        let receipt = crate::WorkerProcessExit::new(
-            binding.provider_id(),
-            binding.execution_ref(),
-            process_exit.evidence_ref(),
-        )
-        .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        if directory
-            .record_process_exit(binding.worker(), receipt.clone())
-            .await
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-            != crate::RegistryMutation::Applied
-        {
-            return Err(ApplicationError::internal(
-                "Worker process exit could not be committed to its closed incarnation",
-            ));
-        }
-        let committed = directory
-            .incarnation(binding.worker())
-            .await
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-            .and_then(|record| record.process_exit);
-        if committed.as_ref() != Some(&receipt) {
-            return Err(ApplicationError::internal(
-                "Worker process exit readback did not match the committed receipt",
-            ));
-        }
-        source.release_closed_worker_evidence(&closed).await?;
-        // Do not query a superseded subject after a late process observation.
-        // Recheck after local IO, without holding a transaction over
-        // the next provider call. A subsequent race is handled by exact finish.
-        if dispatch
-            .load_physical_attempt(&successor.run_id)
-            .await
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-            .as_ref()
-            != Some(&predecessor)
-        {
-            return Ok(Some(observation));
-        }
-        let (Some(recovery), Some(thread_id)) = (recovery, predecessor.thread_id.as_ref()) else {
-            return Ok(Some(observation));
-        };
-        let session_thread_id = predecessor.session_thread_id.as_ref().unwrap_or(thread_id);
-        let snapshot = recovery
-            .recovery_snapshot_in_session(session_thread_id, thread_id, &predecessor.claim.run_id)
-            .await
-            .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
-        if snapshot.thread_id != *thread_id || snapshot.claimed_run_id != predecessor.claim.run_id {
-            return Err(ApplicationError::internal(
-                "recovery source returned another physical attempt subject",
-            ));
-        }
-        let stopped = source
-            .observe_attempt_termination(
-                &ClosedAttemptExecution {
-                    attempt: predecessor.clone(),
-                    process_exit: process_exit.clone(),
-                },
-                &snapshot,
-            )
-            .await?;
-        if let AttemptStopStatus::Stopped(receipt) = &stopped {
-            if receipt.attempt() != &predecessor {
-                return Err(ApplicationError::internal(
-                    "provider termination evidence names another physical attempt",
-                ));
-            }
-            // Reuse the aggregate's exact owner/epoch transaction and retired
-            // watermark. Never clear by Run/Thread/Worker alone. A concurrent
-            // ACK, handoff or successor admission can only fence this old clear.
-            let retirement = dispatch
-                .finish_attempt(&predecessor.claim)
-                .await
-                .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
-            tracing::debug!(?retirement, evidence_ref = receipt.evidence_ref(),
-                run_id = %predecessor.claim.run_id.0, epoch = predecessor.claim.epoch,
-                "independent complete attempt termination observed");
-        }
+    source.release_closed_worker_evidence(&closed).await?;
+    Ok(Some(WorkerProcessStopStatus::Exited(exit)))
+}
+
+async fn persisted_worker_exit(
+    directory: &dyn crate::WorkerDirectory,
+    binding: &crate::AttemptExecutionBinding,
+) -> Result<Option<ObservedWorkerProcessExit>, ApplicationError> {
+    let receipt = directory
+        .incarnation(binding.worker())
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        .and_then(|record| record.process_exit);
+    let Some(receipt) = receipt else {
+        return Ok(None);
+    };
+    if receipt.provider_id() != binding.provider_id()
+        || receipt.execution_ref() != binding.execution_ref()
+    {
+        return Err(ApplicationError::internal(
+            "persisted Worker exit names another execution",
+        ));
     }
-    Ok(Some(observation))
+    let closed = ClosedWorkerExecution {
+        binding: binding.clone(),
+    };
+    let WorkerProcessStopStatus::Exited(exit) = closed.observed_exit(receipt.evidence_ref())?
+    else {
+        unreachable!()
+    };
+    Ok(Some(exit))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -602,6 +695,7 @@ mod tests {
         let binding =
             crate::AttemptExecutionBinding::new(worker.clone(), "provider", "instance").unwrap();
         let attempt = crate::PhysicalAttempt {
+            closing: true,
             claim: crate::RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("run".into()),
                 owner: worker.lease_owner(),
@@ -613,10 +707,10 @@ mod tests {
         };
         let command = ClosedAttemptExecution {
             attempt: attempt.clone(),
-            process_exit: ObservedWorkerProcessExit {
+            process_exit: Some(ObservedWorkerProcessExit {
                 binding,
                 evidence_ref: "local-exit".into(),
-            },
+            }),
         };
         assert!(command.observed_all_execution_stopped("\n\t").is_err());
         let AttemptStopStatus::Stopped(receipt) =

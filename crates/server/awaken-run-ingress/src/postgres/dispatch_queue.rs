@@ -36,7 +36,7 @@ impl PostgresDispatchStore {
         let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
         let current = sqlx::query(&format!(
             "SELECT status, lease_owner, lease_epoch, lease_until, \
-             active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment \
+             active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment, active_attempt_closing \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
@@ -82,8 +82,15 @@ impl PostgresDispatchStore {
             "SELECT EXISTS (SELECT 1 FROM {p}_dispatch WHERE thread_id = $1
              AND run_id <> $2 AND (active_attempt_owner IS NOT NULL OR active_attempt_epoch IS NOT NULL))"
         )).bind(&thread).bind(&claim.run_id.0).fetch_one(&mut *tx).await.map_err(store_error)?;
-        let (transition, admission) =
-            crate::dispatch::decide_physical_attempt_admission(live, slot, handoff, peer_occupied)?;
+        let (transition, admission) = crate::dispatch::decide_physical_attempt_admission(
+            live,
+            slot,
+            handoff,
+            peer_occupied,
+            current
+                .try_get("active_attempt_closing")
+                .map_err(store_error)?,
+        )?;
         let stored = crate::dispatch::decode_physical_attempt(
             &claim.run_id,
             active_owner,
@@ -107,7 +114,7 @@ impl PostgresDispatchStore {
         ) {
             sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET active_attempt_owner = $2, \
-                     active_attempt_epoch = $3, active_attempt_binding = $4 WHERE run_id = $1"
+                     active_attempt_epoch = $3, active_attempt_binding = $4, active_attempt_closing = FALSE WHERE run_id = $1"
             ))
             .bind(&claim.run_id.0)
             .bind(&claim.owner)
@@ -809,52 +816,11 @@ impl DispatchQueue for PostgresDispatchStore {
         self.admit_physical_attempt(claim, true, _binding).await
     }
 
+    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        self.close_physical_attempt(claim).await
+    }
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        let p = NS;
-        let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let current = sqlx::query(&format!(
-            "SELECT active_attempt_owner, active_attempt_epoch \
-             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
-        ))
-        .bind(&claim.run_id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let Some(current) = current else {
-            let _ = tx.rollback().await;
-            return Ok(SettleOutcome::Fenced);
-        };
-        let active_owner: Option<String> = current
-            .try_get("active_attempt_owner")
-            .map_err(store_error)?;
-        let active_epoch = current
-            .try_get::<Option<i64>, _>("active_attempt_epoch")
-            .map_err(store_error)?
-            .map(|value| durable_u64("dispatch attempt epoch", value))
-            .transpose()?;
-        let slot = PhysicalAttemptSlot::from_facts(
-            active_owner.is_some(),
-            active_epoch.is_some(),
-            active_owner.as_deref() == Some(&claim.owner),
-            active_epoch == Some(claim.epoch),
-        );
-        let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(slot)?;
-        if transition == PhysicalAttemptTransition::Clear {
-            sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
-                     active_attempt_epoch = NULL, active_attempt_binding = NULL, retired_attempt_epoch = $3 WHERE run_id = $1 \
-                     AND active_attempt_owner = $2 AND active_attempt_epoch = $3"
-            ))
-            .bind(&claim.run_id.0)
-            .bind(&claim.owner)
-            .bind(epoch)
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?;
-        }
-        tx.commit().await.map_err(store_error)?;
-        Ok(outcome)
+        self.finish_physical_attempt_with(claim, false).await
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1320,6 +1286,13 @@ impl DispatchQueue for PostgresDispatchStore {
 
 #[async_trait]
 impl ControlDispatchQueue for PostgresDispatchStore {
+    async fn finish_attempt_closure(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        self.finish_physical_attempt_with(claim, true).await
+    }
+
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -1654,13 +1627,14 @@ impl ControlDispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<PhysicalAttempt>, DispatchError> {
         let p = NS;
         let row = sqlx::query(&format!(
-            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request FROM {p}_dispatch WHERE run_id = $1"
+            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = $1"
         )).bind(&run_id.0).fetch_optional(&self.pool).await.map_err(store_error)?;
         let Some(row) = row else {
             return Ok(None);
         };
         let epoch: Option<i64> = row.try_get("active_attempt_epoch").map_err(store_error)?;
         let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+        let closing: bool = row.try_get("active_attempt_closing").map_err(store_error)?;
         crate::dispatch::decode_physical_attempt(
             run_id,
             row.try_get("active_attempt_owner").map_err(store_error)?,
@@ -1671,6 +1645,7 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         )
         .map(|attempt| {
             attempt.map(|mut attempt| {
+                attempt.closing = closing;
                 attempt.thread_id = Some(request.thread_id().clone());
                 attempt.session_thread_id = request.session_thread_id.clone();
                 attempt
@@ -1726,5 +1701,104 @@ impl ControlDispatchQueue for PostgresDispatchStore {
             .read_dispatch_summaries(Some(run_id.0.clone()))
             .await?
             .pop())
+    }
+}
+
+impl PostgresDispatchStore {
+    pub(super) async fn finish_physical_attempt_with(
+        &self,
+        claim: &RunClaim,
+        closure_evidence: bool,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let p = NS;
+        let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let current = sqlx::query(&format!(
+            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_closing \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&claim.run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(current) = current else {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        };
+        let active_owner: Option<String> = current
+            .try_get("active_attempt_owner")
+            .map_err(store_error)?;
+        let active_epoch = current
+            .try_get::<Option<i64>, _>("active_attempt_epoch")
+            .map_err(store_error)?
+            .map(|value| durable_u64("dispatch attempt epoch", value))
+            .transpose()?;
+        let slot = PhysicalAttemptSlot::from_facts(
+            active_owner.is_some(),
+            active_epoch.is_some(),
+            active_owner.as_deref() == Some(&claim.owner),
+            active_epoch == Some(claim.epoch),
+        );
+        let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(
+            slot,
+            current
+                .try_get("active_attempt_closing")
+                .map_err(store_error)?,
+            closure_evidence,
+        )?;
+        if transition == PhysicalAttemptTransition::Clear {
+            sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
+                     active_attempt_epoch = NULL, active_attempt_binding = NULL, active_attempt_closing = FALSE, retired_attempt_epoch = $3 WHERE run_id = $1 \
+                     AND active_attempt_owner = $2 AND active_attempt_epoch = $3"
+            ))
+            .bind(&claim.run_id.0)
+            .bind(&claim.owner)
+            .bind(epoch)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(outcome)
+    }
+}
+
+impl PostgresDispatchStore {
+    pub(super) async fn close_physical_attempt(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let row = sqlx::query(&format!("SELECT active_attempt_owner, active_attempt_epoch FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"))
+            .bind(&claim.run_id.0).fetch_optional(&mut *tx).await.map_err(store_error)?;
+        let Some(row) = row else {
+            return Ok(SettleOutcome::Fenced);
+        };
+        let owner: Option<String> = row.try_get("active_attempt_owner").map_err(store_error)?;
+        let epoch = row
+            .try_get::<Option<i64>, _>("active_attempt_epoch")
+            .map_err(store_error)?
+            .map(|value| durable_u64("physical attempt epoch", value))
+            .transpose()?;
+        let slot = PhysicalAttemptSlot::from_facts(
+            owner.is_some(),
+            epoch.is_some(),
+            owner.as_deref() == Some(&claim.owner),
+            epoch == Some(claim.epoch),
+        );
+        let outcome = crate::dispatch::decide_physical_attempt_close(slot)?;
+        if outcome == SettleOutcome::Applied {
+            sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET active_attempt_closing = TRUE WHERE run_id = $1"
+            ))
+            .bind(&claim.run_id.0)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(outcome)
     }
 }

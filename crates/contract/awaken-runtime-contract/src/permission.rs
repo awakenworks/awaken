@@ -267,6 +267,11 @@ impl ToolPermissionVerdict {
 /// external system; it returns only a decision, never executes the tool.
 #[async_trait]
 pub trait ToolPermissionPolicy: Send + Sync {
+    /// Trusted implementation containment. Default/custom policies may perform
+    /// external effects; a fixed local policy may explicitly close this scope.
+    fn process_bound(&self) -> bool {
+        false
+    }
     /// The verdict together with the authored policy that produced it.
     ///
     /// One method, so a verdict and who reached it cannot be answered
@@ -324,6 +329,9 @@ impl DenyAllTools {
 
 #[async_trait]
 impl ToolPermissionPolicy for DenyAllTools {
+    fn process_bound(&self) -> bool {
+        true
+    }
     async fn evaluate(&self, _call: &ToolCall) -> ToolPermissionRuling {
         ToolPermissionRuling::run_narrowing(ToolPermissionVerdict::Deny {
             reason: self.reason.clone(),
@@ -505,6 +513,9 @@ mod kani_proofs {
 /// restrict but never widen what permission allows (G21).
 #[async_trait]
 pub trait ToolGateHook: Send + Sync {
+    fn process_bound(&self) -> bool {
+        false
+    }
     /// Stable id, used to bound a plugin-contributed gate under its
     /// `CapabilityBound` (G30). A host-wired gate that is not a plugin
     /// contribution keeps the default.

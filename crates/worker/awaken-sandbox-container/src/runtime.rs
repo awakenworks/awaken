@@ -1740,6 +1740,14 @@ pub trait ContainerRuntime: Send + Sync {
         Ok(None)
     }
 
+    async fn owned_process_binding(
+        &self,
+        _container_id: &str,
+        _handle: Option<&crate::ContainerContinuationHandle>,
+    ) -> Result<Option<String>, RuntimeError> {
+        Ok(None)
+    }
+
     /// Observe the exact immutable physical incarnation named by a durable
     /// handle. Not-found/terminal is a typed result; backend, authorization,
     /// timeout, and parse failures remain errors and can never authorize rebuild.

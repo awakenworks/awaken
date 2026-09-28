@@ -21,6 +21,9 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::num::NonZeroU16;
 
+mod execution_domain;
+pub use execution_domain::ToolExecutionDomain;
+
 use crate::tool::{
     ToolCall, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy,
 };
@@ -95,6 +98,12 @@ pub struct DurableToolCall {
     pub call: ToolCall,
     pub recovery_policy: ToolRecoveryPolicy,
     pub phase: ToolCallPhase,
+    /// Pre-effect containment of the latest executor entry. Historical entries
+    /// stay in ThreadCommit; absent legacy metadata proves no containment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_domain: Option<ToolExecutionDomain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization_domain: Option<ToolExecutionDomain>,
     /// Ordered model-visible messages for this call (the tool result followed by
     /// any durable reminders). Kept behind the batch publication barrier.
     #[serde(default)]
@@ -485,6 +494,8 @@ impl ToolBatch {
             .map(|(call, recovery_policy)| DurableToolCall {
                 call,
                 recovery_policy,
+                execution_domain: None,
+                materialization_domain: None,
                 phase: ToolCallPhase::Requested,
                 result_messages: Vec::new(),
                 result_state: Vec::new(),
@@ -572,6 +583,12 @@ impl ToolBatch {
         let mut ids = std::collections::BTreeSet::new();
         let mut awaiting_calls = 0_u8;
         for entry in &self.calls {
+            if let Some(domain) = &entry.execution_domain {
+                domain.validate()?;
+            }
+            if let Some(domain) = &entry.materialization_domain {
+                domain.validate()?;
+            }
             let call_id = &entry.call.call_id;
             if !ids.insert(call_id) {
                 return Err(ToolBatchError::DuplicateCall(call_id.clone()));
@@ -622,16 +639,7 @@ impl ToolBatch {
     }
 
     pub fn mark_executing(&mut self, call_id: &str) -> Result<u16, ToolBatchError> {
-        self.ensure_open()?;
-        let call = self.call_mut(call_id)?;
-        let phase = phase_view(&call.phase);
-        let attempt = next_execution_attempt(
-            phase,
-            call.recovery_policy.max_attempts(),
-            ExecutionRequest::StartOrRetry,
-        )?;
-        call.phase = ToolCallPhase::Executing { attempt };
-        Ok(attempt)
+        self.mark_executing_in_domain(call_id, None)
     }
 
     /// Apply the complete recovery policy to one unfinished durable call.
@@ -986,9 +994,10 @@ pub fn store_from_run_commands(commands: Vec<StateCommand>, run_id: &RunId) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use awaken_agent_contract::agent::awaiting::{PauseReason, PendingTool};
 
-    fn batch() -> ToolBatch {
+    pub(super) fn batch() -> ToolBatch {
         ToolBatch::for_step(
             RunId("r".into()),
             0,

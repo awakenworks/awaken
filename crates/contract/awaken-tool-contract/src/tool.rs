@@ -620,6 +620,16 @@ pub enum ToolError {
 /// use the stable result address supplied here.
 #[async_trait]
 pub trait ToolOutputSpiller: Send + Sync {
+    /// Prepare only containment, never write the result. Inline transformations
+    /// may return Worker; an external write must publish its exact domain.
+    async fn execution_domain(
+        &self,
+        _run_id: &RunId,
+        _call_id: &str,
+        _content: &str,
+    ) -> Result<crate::tool_batch::ToolExecutionDomain, ToolError> {
+        Ok(Default::default())
+    }
     async fn spill(
         &self,
         run_id: &RunId,
@@ -883,6 +893,11 @@ pub trait RawTool: Send + Sync {
     fn recovery_capability(&self) -> ToolRecoveryCapability {
         ToolRecoveryCapability::NonRecoverable
     }
+    /// Trusted effect containment, independent of replay capability. Custom
+    /// tools remain opaque; Worker means no effect can outlive that Worker.
+    fn execution_domain(&self) -> crate::tool_batch::ToolExecutionDomain {
+        Default::default()
+    }
     /// Optionally narrow the default parallel execution for this invocation.
     /// Stateful tools declare `Serial` or their exact resource accesses.
     fn concurrency(&self, _arguments: &serde_json::Value) -> ToolConcurrency {
@@ -991,12 +1006,87 @@ pub async fn invoke_raw_tool(
 ) -> Result<ToolOutput, ToolError> {
     match cancellation {
         Some(token) => {
+            if token.is_cancelled() {
+                return Err(ToolError::UnavailableBeforeDispatch(
+                    "tool invocation cancelled before entry".into(),
+                ));
+            }
             tokio::select! {
+                biased;
                 result = tool.invoke(call) => result,
-                _ = token.cancelled() => Err(ToolError::DefinitiveFailure("tool invocation cancelled".into())),
+                _ = token.cancelled() => Err(ToolError::Indeterminate(
+                    "tool observation cancelled after entry".into(),
+                )),
             }
         }
         None => tool.invoke(call).await,
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct EnteredTool {
+        entries: AtomicUsize,
+        cancellation: tokio_util::sync::CancellationToken,
+        returns: bool,
+    }
+
+    #[async_trait]
+    impl RawTool for EnteredTool {
+        fn id(&self) -> &str {
+            "entered"
+        }
+
+        async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+            self.entries.fetch_add(1, Ordering::SeqCst);
+            self.cancellation.cancel();
+            if self.returns {
+                Ok(ToolOutput::ok(call.call_id, "returned"))
+            } else {
+                std::future::pending().await
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_classification_depends_on_actual_executor_entry() {
+        // C1 cancellation before first poll; C2 invocation returns in the same
+        // poll as cancellation; C3 entered invocation remains pending.
+        // R1=C1 => no entry + UnavailableBeforeDispatch. R2=!C1+C2 => original
+        // result wins, not invented uncertainty. R3=!C1+C3 => Indeterminate,
+        // not DefinitiveFailure. A cancelled observation is not a stop receipt.
+        for (pre_cancel, returns) in [(true, false), (false, true), (false, false)] {
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            if pre_cancel {
+                cancellation.cancel();
+            }
+            let tool = EnteredTool {
+                entries: AtomicUsize::new(0),
+                cancellation: cancellation.clone(),
+                returns,
+            };
+            let call = ToolCall {
+                call_id: "call".into(),
+                tool_id: tool.id().into(),
+                arguments: serde_json::json!({}),
+            };
+            let result = invoke_raw_tool(&tool, call, Some(&cancellation)).await;
+            assert_eq!(
+                tool.entries.load(Ordering::SeqCst),
+                usize::from(!pre_cancel)
+            );
+            match (pre_cancel, returns) {
+                (true, _) => assert!(matches!(
+                    result,
+                    Err(ToolError::UnavailableBeforeDispatch(_))
+                )),
+                (false, true) => assert_eq!(result.unwrap().text(), "returned"),
+                (false, false) => assert!(matches!(result, Err(ToolError::Indeterminate(_)))),
+            }
+        }
     }
 }
 
@@ -1078,6 +1168,14 @@ pub fn render_tool_output<O: Serialize>(output: &O) -> Result<String, ToolError>
 /// (the orchestration layer above), not the runtime core.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    /// Prepare a concrete containment binding before executor entry. This may
+    /// realize an existing Sandbox but must not invoke the requested tool.
+    async fn execution_domain(
+        &self,
+        _call: &ToolCall,
+    ) -> Result<crate::tool_batch::ToolExecutionDomain, ToolError> {
+        Ok(Default::default())
+    }
     /// Trusted recovery capability of the concrete executor for `tool_id`.
     /// Remote/general executors fail closed unless they explicitly advertise one.
     fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {

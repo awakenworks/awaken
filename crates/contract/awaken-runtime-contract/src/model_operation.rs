@@ -365,6 +365,27 @@ pub struct ModelOperation {
     pub phase: ModelOperationPhase,
     #[serde(default)]
     pub execution: ModelExecutionEvidence,
+    /// Trusted adapter scope frozen in the entry commit. Legacy calls retain
+    /// Opaque; neither a response nor a later deployment may upgrade it.
+    #[serde(default, skip_serializing_if = "ModelEffectScope::is_opaque")]
+    pub effect_scope: ModelEffectScope,
+}
+
+/// Independent of provider termination and of the business result. A
+/// ResponseOnly adapter owns its response consumer, sends no provider-hosted
+/// actions, and cannot retain tool/state authority after that consumer closes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelEffectScope {
+    #[default]
+    Opaque,
+    ResponseOnly,
+}
+
+impl ModelEffectScope {
+    pub const fn is_opaque(&self) -> bool {
+        matches!(self, Self::Opaque)
+    }
 }
 
 impl ModelOperation {
@@ -385,6 +406,7 @@ impl ModelOperation {
             binding,
             phase: ModelOperationPhase::Entered,
             execution: ModelExecutionEvidence::Unknown,
+            effect_scope: ModelEffectScope::Opaque,
         })
     }
 }
@@ -554,7 +576,7 @@ impl ActiveModelOperation {
             })?;
             if !fold_recorded_operation(&mut recorded, operation) {
                 return Err(invalid_history(
-                    "model invocation ordinal changed its binding",
+                    "model invocation ordinal changed its binding or effect scope",
                 ));
             }
         }
@@ -627,7 +649,9 @@ fn invalid_history(detail: &str) -> awaken_agent_contract::agent::state::StateEr
 fn fold_recorded_operation(recorded: &mut Vec<ModelOperation>, operation: ModelOperation) -> bool {
     match recorded.binary_search_by_key(&operation.ordinal, |record| record.ordinal) {
         Ok(index) => {
-            if recorded[index].binding != operation.binding {
+            if recorded[index].binding != operation.binding
+                || recorded[index].effect_scope != operation.effect_scope
+            {
                 return false;
             }
             recorded[index] = operation;
@@ -722,6 +746,7 @@ fn model_execution_reentry_requires_positive_evidence() {
     let recovering_checkpoint: bool = kani::any();
     let phase_selector: u8 = kani::any();
     let operation = ModelOperation {
+        effect_scope: Default::default(),
         ordinal: NonZeroU64::MIN,
         binding: ModelBinding::proof_representative(false),
         phase: match phase_selector % 3 {
@@ -758,6 +783,7 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
             // string tuple isolation and task-local propagation use Rust tests.
             // This does not prove the fingerprint or any provider-side effect.
             let operation = ModelOperation {
+                effect_scope: Default::default(),
                 ordinal: next,
                 binding: ModelBinding::proof_representative(false),
                 phase: ModelOperationPhase::Entered,
@@ -794,14 +820,21 @@ fn model_operation_history_preserves_distinct_subjects() {
     let second: u64 = kani::any();
     kani::assume(first > 0 && second > 0);
     let same_binding: bool = kani::any();
+    let same_scope: bool = kani::any();
     let evidence = any_evidence(kani::any());
     let original = ModelOperation {
+        effect_scope: ModelEffectScope::ResponseOnly,
         ordinal: NonZeroU64::new(first).unwrap(),
         binding: ModelBinding::proof_representative(false),
         phase: ModelOperationPhase::Entered,
         execution: ModelExecutionEvidence::Unknown,
     };
     let incoming = ModelOperation {
+        effect_scope: if same_scope {
+            ModelEffectScope::ResponseOnly
+        } else {
+            ModelEffectScope::Opaque
+        },
         ordinal: NonZeroU64::new(second).unwrap(),
         binding: ModelBinding::proof_representative(!same_binding),
         phase: ModelOperationPhase::Returned,
@@ -810,9 +843,16 @@ fn model_operation_history_preserves_distinct_subjects() {
     let mut recorded = vec![original.clone()];
     let accepted = fold_recorded_operation(&mut recorded, incoming.clone());
     if first == second {
-        assert_eq!(accepted, same_binding);
+        assert_eq!(accepted, same_binding && same_scope);
         assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0], if same_binding { incoming } else { original });
+        assert_eq!(
+            recorded[0],
+            if same_binding && same_scope {
+                incoming
+            } else {
+                original
+            }
+        );
     } else {
         assert!(accepted);
         assert_eq!(recorded.len(), 2);
@@ -828,7 +868,7 @@ fn model_operation_history_preserves_distinct_subjects() {
         recorded
             .iter()
             .all(|operation| operation.execution.permits_reentry()),
-        first == second && same_binding && evidence.permits_reentry(),
+        first == second && same_binding && same_scope && evidence.permits_reentry(),
     );
     assert_eq!(recorded.last().unwrap().ordinal.get(), first.max(second));
 }
@@ -836,6 +876,45 @@ fn model_operation_history_preserves_distinct_subjects() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_scope_is_frozen_before_entry_and_legacy_scope_is_opaque() {
+        // C1 first scope opaque/response-only; C2 same/different later scope;
+        // C3 legacy field absent. R1=C1+same => accepted observation update;
+        // R2=different => reject (including a positive later receipt); R3=C3
+        // => opaque, never retroactively infer data-only from provider naming.
+        let run = awaken_agent_contract::agent::run::Id("run".into());
+        for scope in [ModelEffectScope::Opaque, ModelEffectScope::ResponseOnly] {
+            let mut original =
+                ModelOperation::next(None, fixture_binding("p", "m", "native")).unwrap();
+            original.effect_scope = scope;
+            for later in [ModelEffectScope::Opaque, ModelEffectScope::ResponseOnly] {
+                let mut updated = original.clone();
+                updated.effect_scope = later;
+                updated.phase = ModelOperationPhase::Returned;
+                updated.execution = ModelExecutionEvidence::Terminated(
+                    TerminalReceipt::from_response_envelope(ResponseEnvelope::CompleteBody),
+                );
+                let commands = [original.clone(), updated].map(|value| {
+                    let mut command = ActiveModelOperation::write(&Some(value));
+                    command.run_id = Some(run.clone());
+                    command
+                });
+                assert_eq!(
+                    ActiveModelOperation::recorded(&commands, &run).is_ok(),
+                    scope == later
+                );
+            }
+            let mut legacy = serde_json::to_value(original).unwrap();
+            legacy.as_object_mut().unwrap().remove("effect_scope");
+            assert_eq!(
+                serde_json::from_value::<ModelOperation>(legacy)
+                    .unwrap()
+                    .effect_scope,
+                ModelEffectScope::Opaque
+            );
+        }
+    }
 
     /// Simulate a provider receipt through the one public door an adapter
     /// uses. There is deliberately no test-only backdoor: a fixture that
@@ -1118,6 +1197,7 @@ mod tests {
         // larger 1024-record case exercises lookup beyond the proof's two-record
         // bound without claiming an asymptotic benchmark or provider truth.
         let make = |ordinal| ModelOperation {
+            effect_scope: Default::default(),
             ordinal: NonZeroU64::new(ordinal).unwrap(),
             binding: fixture_binding("p", "m", "b"),
             phase: ModelOperationPhase::Entered,
@@ -1452,6 +1532,7 @@ mod tests {
                 ModelOperationPhase::TimedOut,
             ] {
                 let prior = NonZeroU64::new(previous).map(|ordinal| ModelOperation {
+                    effect_scope: Default::default(),
                     ordinal,
                     binding: binding.clone(),
                     phase,

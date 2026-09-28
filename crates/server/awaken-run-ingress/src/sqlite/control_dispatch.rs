@@ -8,6 +8,13 @@
 // SQLite control-only Dispatch authority. Included beside DispatchQueue.
 #[async_trait]
 impl ControlDispatchQueue for SqliteDispatchStore {
+    async fn finish_attempt_closure(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        self.finish_physical_attempt_with(claim, true).await
+    }
+
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -433,15 +440,16 @@ impl ControlDispatchQueue for SqliteDispatchStore {
     ) -> Result<Option<PhysicalAttempt>, DispatchError> {
         let run_id = run_id.clone();
         self.with_conn(move |conn, p| {
-            let row: Option<(Option<String>, Option<i64>, Option<String>, String)> = conn.query_row(
-                &format!("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request FROM {p}_dispatch WHERE run_id = ?1"),
-                params![run_id.0], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            let row: Option<(Option<String>, Option<i64>, Option<String>, String, bool)> = conn.query_row(
+                &format!("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = ?1"),
+                params![run_id.0], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             ).optional().map_err(store_error)?;
-            let Some((owner, epoch, binding, request_json)) = row else { return Ok(None); };
+            let Some((owner, epoch, binding, request_json, closing)) = row else { return Ok(None); };
             let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
             crate::dispatch::decode_physical_attempt(
                 &run_id, owner, epoch.map(|v| durable_u64("dispatch attempt epoch", v)).transpose()?, binding,
             ).map(|attempt| attempt.map(|mut attempt| {
+                attempt.closing = closing;
                 attempt.thread_id = Some(request.thread_id().clone());
                 attempt.session_thread_id = request.session_thread_id.clone();
                 attempt

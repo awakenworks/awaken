@@ -291,6 +291,16 @@ impl ResolvedExecutionEnv {
             && self.dynamic_tools.is_empty()
     }
 
+    /// Ordinary dynamic tools are journalled by ToolBatch. Untracked async
+    /// hooks/actions/guards and effectful gates retain the unsupported profile.
+    pub fn is_journalled_execution_surface(&self) -> bool {
+        self.phase_hooks.is_empty()
+            && self.action_kinds.is_empty()
+            && self.run_end_guards.is_empty()
+            && self.tool_gates.iter().all(|gate| gate.process_bound())
+            && self.tool_constraints.is_empty()
+    }
+
     /// Run-end continuation guards, in dependency order.
     pub fn run_end_guards(&self) -> &[Arc<dyn RunEndGuard>] {
         &self.run_end_guards

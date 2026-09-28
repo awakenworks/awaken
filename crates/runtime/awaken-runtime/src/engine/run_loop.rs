@@ -111,7 +111,17 @@ pub(crate) async fn run_agent_loop(
     // would widen that surface. Authored or Session plugins are excluded even
     // when their current contribution happens to be empty: a live capability
     // refresh must never add a tool or hook behind an older closed profile.
-    let model_only_surface = resolved.spec.tool_descriptors.is_empty()
+    let callbacks_bound = context.terminal_observers.is_empty()
+        && context
+            .model_content_materializer
+            .as_ref()
+            .is_none_or(|materializer| materializer.process_bound())
+        && context
+            .model_request_gate
+            .as_ref()
+            .is_none_or(|gate| gate.process_bound());
+    let model_only_surface = callbacks_bound
+        && resolved.spec.tool_descriptors.is_empty()
         && resolved.spec.plugin_ids.is_empty()
         && context.session_plugins.is_empty()
         && env.is_model_only_execution_surface();
@@ -120,6 +130,27 @@ pub(crate) async fn run_agent_loop(
     if installed_coverage == NativeAttemptCoverage::ModelOnlyV1 && !model_only_surface {
         return Err(Error::Execution(
             "recovered Native attempt execution surface exceeds its durable coverage".into(),
+        ));
+    }
+    // A delegated Run may share its parent's Sandbox. Closing that entire
+    // process domain cannot attest exclusive child ownership.
+    let journalled_surface = delegation_origin.is_none()
+        && callbacks_bound
+        && env.is_journalled_execution_surface()
+        && runtime.gate().is_none_or(|gate| gate.process_bound())
+        && context
+            .tool_permission_policy
+            .as_ref()
+            .is_none_or(|policy| policy.process_bound())
+        && context.provider_server_tools.is_empty()
+        && resolved
+            .spec
+            .tool_descriptors
+            .iter()
+            .all(|tool| tool.provider_server_tool.is_none());
+    if installed_coverage == NativeAttemptCoverage::JournalledV1 && !journalled_surface {
+        return Err(Error::Execution(
+            "recovered Native execution exceeds its journalled coverage".into(),
         ));
     }
 
@@ -138,16 +169,18 @@ pub(crate) async fn run_agent_loop(
     // Publish the narrow crash-recovery coverage fact in the first Running
     // commit, before any phase hook or model invocation. A recovered/legacy Run
     // may never gain this marker after effects could already have happened.
-    // Tool-bearing or plugin-bearing executions remain deliberately unsupported
-    // until those boundaries publish their own complete durable evidence.
+    // Journalled tool-bearing Runs record each effect domain before entry;
+    // unqualified callbacks and delegated/shared Sandbox Runs remain opaque.
     let fresh_run = context
         .reader
         .as_ref()
         .is_some_and(|reader| reader.run(&run_id).is_none());
-    let seed_state = if fresh_run && model_only_surface {
-        vec![ActiveNativeAttemptCoverage::write(
-            &NativeAttemptCoverage::ModelOnlyV1,
-        )]
+    let seed_state = if fresh_run && (model_only_surface || journalled_surface) {
+        vec![ActiveNativeAttemptCoverage::write(&if model_only_surface {
+            NativeAttemptCoverage::ModelOnlyV1
+        } else {
+            NativeAttemptCoverage::JournalledV1
+        })]
     } else {
         Vec::new()
     };

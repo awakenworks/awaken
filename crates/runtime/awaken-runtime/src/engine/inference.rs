@@ -407,8 +407,11 @@ async fn infer_with_retry_inner(
             logical_deadline,
         )
         .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?;
+        let effect_scope = llm.effect_scope(&attempt_request);
         let operation = if let Some(journal) = journal.as_deref_mut() {
-            let identity = journal.enter(&attempt_request.model_binding).await?;
+            let identity = journal
+                .enter(&attempt_request.model_binding, effect_scope)
+                .await?;
             // Persistence may have waited past a lease boundary. The original
             // ownership port remains the only permission to enter the executor.
             awaken_runtime_contract::execution::verify_attempt_ownership(ownership)
@@ -454,16 +457,25 @@ async fn infer_with_retry_inner(
         // a Thread commit port: abort its hung call immediately and let the
         // return observer veto reuse as Unknown. Both paths keep the original
         // absolute provider deadline; neither invents a terminal result.
+        let consumer_closed = tokio_util::sync::CancellationToken::new();
+        let consumer_guard = consumer_closed.clone().drop_guard();
+        let response_sink = ResponseConsumerSink {
+            inner: &sink,
+            closed: &consumer_closed,
+        };
         let read = tokio::time::timeout_at(
             timing.watchdog_deadline(),
             awaken_runtime_contract::model_operation::with_model_invocation_context(
                 operation,
                 timing,
-                quiescence.observe_return(llm.infer_streaming(attempt_request, &sink)),
+                quiescence.observe_model_return(
+                    effect_scope,
+                    llm.infer_streaming(attempt_request, &response_sink),
+                ),
             ),
         );
         let outcome = if journal.as_ref().is_some_and(|journal| {
-            journal.context.commit.is_some()
+            effect_scope.is_opaque() && journal.context.commit.is_some()
                 && journal.context.model_cancellation_observation
                     == awaken_runtime_contract::runtime_context::ModelCancellationObservation::RetainClaimedUntilReceipt
         }) {
@@ -471,6 +483,9 @@ async fn infer_with_retry_inner(
         } else {
             model_read(cancellation, read).await
         };
+        // Close the same borrowed output consumer before any result handling,
+        // commit or physical ACK. Dropping this scope also closes it on unwind.
+        drop(consumer_guard);
         let Some(outcome) = outcome else {
             return Err(awaken_runtime_contract::llm::Error::Cancelled(
                 "model observation cancelled".into(),
@@ -492,7 +507,7 @@ async fn infer_with_retry_inner(
         // The outer return observer cannot detect that abandonment. Latch the
         // explicit evidence before any awaited commit, retry or checkpoint work.
         if !execution.permits_reentry() {
-            quiescence.mark_uncertain();
+            quiescence.mark_model_uncertain(effect_scope);
         }
         if let Some(journal) = journal.as_deref_mut() {
             journal.returned(outcome.is_err(), execution).await?;
@@ -694,6 +709,32 @@ struct Snapshot {
 /// arguments arrive as de-accumulated suffix fragments (see `on_tool_call_delta`)
 /// which are appended into raw JSON text; whether it parses later decides
 /// completed-vs-in-flight.
+struct ResponseConsumerSink<'a> {
+    inner: &'a dyn DeltaSink,
+    closed: &'a tokio_util::sync::CancellationToken,
+}
+
+#[async_trait]
+impl DeltaSink for ResponseConsumerSink<'_> {
+    async fn on_text(&self, chunk: &str) {
+        if !self.closed.is_cancelled() {
+            self.inner.on_text(chunk).await;
+        }
+    }
+    async fn on_reasoning(&self, chunk: &str) {
+        if !self.closed.is_cancelled() {
+            self.inner.on_reasoning(chunk).await;
+        }
+    }
+    async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {
+        if !self.closed.is_cancelled() {
+            self.inner
+                .on_tool_call_delta(call_id, tool_id, args_delta)
+                .await;
+        }
+    }
+}
+
 struct ContinuationSink<'a> {
     inner: &'a dyn DeltaSink,
     text: std::sync::Mutex<String>,

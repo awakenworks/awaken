@@ -41,6 +41,9 @@ impl ResourceModelContentMaterializer {
 
 #[async_trait::async_trait]
 impl ModelContentMaterializer for ResourceModelContentMaterializer {
+    fn process_bound(&self) -> bool {
+        true
+    }
     async fn materialize(&self, mut request: ChatRequest) -> Result<ChatRequest, Error> {
         let mut ids = BTreeSet::new();
         for message in &request.messages {

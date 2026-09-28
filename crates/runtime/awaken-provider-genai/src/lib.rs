@@ -31,9 +31,11 @@ use genai::chat::{
 pub use genai::adapter::AdapterKind;
 
 mod anthropic_content;
+mod effect_scope;
 mod error_classification;
 mod inference_budget;
 mod inference_options;
+pub use effect_scope::provider_model_effect_scope;
 mod model_discovery;
 pub use error_classification::classify_error;
 use error_classification::classify_genai_error;
@@ -171,6 +173,22 @@ impl GenaiExecutor {
 
 #[async_trait]
 impl LlmExecutor for GenaiExecutor {
+    fn effect_scope(
+        &self,
+        request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        provider_model_effect_scope(
+            self.provider_kind.as_deref().unwrap_or(""),
+            "open_ai_chat",
+            if self.adapter == Some(AdapterKind::OpenAI) {
+                "openai"
+            } else {
+                ""
+            },
+            request,
+        )
+    }
+
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse> {
         self.infer_non_streaming(request, None).await
     }

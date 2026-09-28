@@ -261,6 +261,13 @@ struct PinnedModelExecutor {
 
 #[async_trait]
 impl LlmExecutor for PinnedModelExecutor {
+    fn effect_scope(
+        &self,
+        request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        self.inner.effect_scope(request)
+    }
+
     async fn infer(&self, mut request: ChatRequest) -> Result<ChatResponse, LlmError> {
         request.model_binding = request.project_upstream_model(&self.upstream_model)?;
         self.inner.infer(request).await
@@ -322,6 +329,30 @@ impl PinnedCandidateExecutor {
 
 #[async_trait]
 impl LlmExecutor for PinnedCandidateExecutor {
+    fn effect_scope(
+        &self,
+        request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        let candidate = self
+            .candidates
+            .iter()
+            .find(|candidate| candidate.binding() == &request.model_binding);
+        match candidate.map(|candidate| candidate.provisioning()) {
+            Some(awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+                access_kind: ProviderAccessKind::Direct,
+                provider_ref,
+                endpoint,
+                ..
+            }) => awaken_provider_genai::provider_model_effect_scope(
+                provider_ref,
+                &endpoint.api_dialect,
+                &endpoint.adapter_kind,
+                request,
+            ),
+            _ => Default::default(),
+        }
+    }
+
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
         self.executor_for(&request.model_binding)
             .await

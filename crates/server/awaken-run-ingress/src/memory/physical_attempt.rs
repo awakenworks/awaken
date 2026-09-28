@@ -48,6 +48,7 @@ impl MemoryDispatchStore {
             slot,
             handoff,
             peer_occupied,
+            row.active_attempt_closing,
         )?;
         crate::dispatch::verify_physical_attempt_binding(
             transition,
@@ -63,7 +64,61 @@ impl MemoryDispatchStore {
             let row = state.rows.get_mut(&claim.run_id).expect("locked row");
             row.active_attempt = Some(claim.clone());
             row.active_attempt_binding = binding.cloned();
+            row.active_attempt_closing = false;
         }
         Ok(admission)
+    }
+}
+
+impl MemoryDispatchStore {
+    pub(super) async fn finish_physical_attempt_with(
+        &self,
+        claim: &RunClaim,
+        closure_evidence: bool,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let Some(row) = state.rows.get_mut(&claim.run_id) else {
+            return Ok(SettleOutcome::Fenced);
+        };
+        let slot = match row.active_attempt.as_ref() {
+            None => PhysicalAttemptSlot::Empty,
+            Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
+            Some(_) => PhysicalAttemptSlot::OtherClaim,
+        };
+        let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(
+            slot,
+            row.active_attempt_closing,
+            closure_evidence,
+        )?;
+        if transition == PhysicalAttemptTransition::Clear {
+            row.active_attempt = None;
+            row.active_attempt_binding = None;
+            row.active_attempt_closing = false;
+            row.retired_attempt_epoch = claim.epoch;
+        }
+        Ok(outcome)
+    }
+
+    pub(super) async fn close_physical_attempt(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let Some(row) = state.rows.get_mut(&claim.run_id) else {
+            return Ok(SettleOutcome::Fenced);
+        };
+        let slot = match row.active_attempt.as_ref() {
+            None => PhysicalAttemptSlot::Empty,
+            Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
+            Some(_) => PhysicalAttemptSlot::OtherClaim,
+        };
+        let outcome = crate::dispatch::decide_physical_attempt_close(slot)?;
+        if outcome != SettleOutcome::Applied {
+            return Ok(outcome);
+        }
+        row.active_attempt_closing = true;
+        Ok(SettleOutcome::Applied)
     }
 }

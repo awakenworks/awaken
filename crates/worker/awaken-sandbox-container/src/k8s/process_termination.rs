@@ -35,6 +35,20 @@ pub struct PodProcessBinding {
     /// adding a finalizer after the original admission.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     retained: bool,
+    #[serde(
+        default = "worker_evidence_finalizer",
+        skip_serializing_if = "is_worker_evidence_finalizer"
+    )]
+    retention_finalizer: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    init_containers: Vec<ContainerProcessBinding>,
+}
+
+fn worker_evidence_finalizer() -> String {
+    WORKER_PROCESS_EVIDENCE_FINALIZER.into()
+}
+fn is_worker_evidence_finalizer(value: &str) -> bool {
+    value == WORKER_PROCESS_EVIDENCE_FINALIZER
 }
 
 impl PodProcessBinding {
@@ -46,6 +60,9 @@ impl PodProcessBinding {
 
     pub fn evidence_was_retained(&self) -> bool {
         self.retained
+    }
+    pub fn worker_evidence_was_retained(&self) -> bool {
+        self.retained && self.retention_finalizer == WORKER_PROCESS_EVIDENCE_FINALIZER
     }
 }
 
@@ -144,7 +161,6 @@ fn process_statuses(pod: &Pod) -> Option<Vec<&ContainerStatus>> {
     if spec.restart_policy.as_deref() != Some("Never")
         || has_forbidden_sandbox_namespace_shape(spec)
         || spec.containers.is_empty()
-        || spec.init_containers.as_ref().is_some_and(|v| !v.is_empty())
         || spec
             .volumes
             .as_ref()
@@ -153,14 +169,11 @@ fn process_statuses(pod: &Pod) -> Option<Vec<&ContainerStatus>> {
         return None;
     }
     let status = pod.status.as_ref()?;
+    completed_init_bindings(pod)?;
     if status
-        .init_container_statuses
+        .ephemeral_container_statuses
         .as_ref()
         .is_some_and(|v| !v.is_empty())
-        || status
-            .ephemeral_container_statuses
-            .as_ref()
-            .is_some_and(|v| !v.is_empty())
     {
         return None;
     }
@@ -170,17 +183,7 @@ fn process_statuses(pod: &Pod) -> Option<Vec<&ContainerStatus>> {
     }
     let mut result = Vec::with_capacity(statuses.len());
     for container in &spec.containers {
-        let security = container.security_context.as_ref()?;
-        let capabilities = security.capabilities.as_ref()?;
-        if container.name.is_empty()
-            || container.restart_policy.is_some()
-            || security.privileged == Some(true)
-            || security.allow_privilege_escalation != Some(false)
-            || !capabilities
-                .drop
-                .as_ref()
-                .is_some_and(|v| v.iter().any(|v| v == "ALL"))
-            || capabilities.add.as_ref().is_some_and(|v| !v.is_empty())
+        if !private_container(container)
             || result
                 .iter()
                 .any(|prior: &&ContainerStatus| prior.name == container.name)
@@ -204,12 +207,101 @@ fn coordinate(value: Option<&str>) -> Option<String> {
     value.filter(|value| !value.is_empty()).map(str::to_owned)
 }
 
+fn retention_finalizer(pod: &Pod) -> Option<&str> {
+    let finalizers = pod.metadata.finalizers.as_ref()?;
+    [
+        WORKER_PROCESS_EVIDENCE_FINALIZER,
+        super::continuation::CONTINUATION_CLEANUP_FINALIZER,
+    ]
+    .into_iter()
+    .find(|candidate| finalizers.iter().any(|value| value == candidate))
+}
 fn evidence_is_retained(pod: &Pod) -> bool {
-    pod.metadata.finalizers.as_ref().is_some_and(|values| {
-        values
+    retention_finalizer(pod).is_some()
+}
+fn binding_retention_is_present(binding: &PodProcessBinding, pod: &Pod) -> bool {
+    matches!(
+        binding.retention_finalizer.as_str(),
+        WORKER_PROCESS_EVIDENCE_FINALIZER | super::continuation::CONTINUATION_CLEANUP_FINALIZER
+    ) && pod
+        .metadata
+        .finalizers
+        .as_ref()
+        .is_some_and(|values| values.contains(&binding.retention_finalizer))
+}
+
+fn private_container(container: &k8s_openapi::api::core::v1::Container) -> bool {
+    let Some(security) = &container.security_context else {
+        return false;
+    };
+    let Some(capabilities) = &security.capabilities else {
+        return false;
+    };
+    !container.name.is_empty()
+        && container.restart_policy.is_none()
+        && security.privileged != Some(true)
+        && security.allow_privilege_escalation == Some(false)
+        && capabilities
+            .drop
+            .as_ref()
+            .is_some_and(|values| values.iter().any(|value| value == "ALL"))
+        && capabilities
+            .add
+            .as_ref()
+            .is_none_or(|values| values.is_empty())
+}
+
+fn completed_init_bindings(pod: &Pod) -> Option<Vec<ContainerProcessBinding>> {
+    let spec = pod.spec.as_ref()?;
+    let containers = spec.init_containers.as_deref().unwrap_or_default();
+    let statuses = pod
+        .status
+        .as_ref()?
+        .init_container_statuses
+        .as_deref()
+        .unwrap_or_default();
+    if containers.len() != statuses.len() {
+        return None;
+    }
+    let mut bindings = Vec::new();
+    for container in containers {
+        if !private_container(container)
+            || bindings
+                .iter()
+                .any(|prior: &ContainerProcessBinding| prior.name == container.name)
+        {
+            return None;
+        }
+        let mut matches = statuses
             .iter()
-            .any(|value| value == WORKER_PROCESS_EVIDENCE_FINALIZER)
-    })
+            .filter(|status| status.name == container.name);
+        let status = matches.next()?;
+        if matches.next().is_some() || status.restart_count != 0 {
+            return None;
+        }
+        let state = status.state.as_ref()?;
+        if state.running.is_some() || state.waiting.is_some() {
+            return None;
+        }
+        let exit = state.terminated.as_ref()?;
+        if exit.reason.as_deref() != Some("Completed")
+            || exit.exit_code != 0
+            || exit.finished_at.as_ref()? < exit.started_at.as_ref()?
+        {
+            return None;
+        }
+        let id = coordinate(status.container_id.as_deref())?;
+        if exit.container_id.as_deref() != Some(&id) {
+            return None;
+        }
+        bindings.push(ContainerProcessBinding {
+            name: status.name.clone(),
+            container_id: id,
+            started_at: exit.started_at.clone()?,
+        });
+    }
+    bindings.sort_by(|left, right| left.name.cmp(&right.name));
+    Some(bindings)
 }
 
 fn bind(
@@ -249,6 +341,10 @@ fn bind(
             node: coordinate(pod.spec.as_ref()?.node_name.as_deref())?,
             containers,
             retained: evidence_is_retained(pod),
+            retention_finalizer: retention_finalizer(pod)
+                .unwrap_or(WORKER_PROCESS_EVIDENCE_FINALIZER)
+                .into(),
+            init_containers: completed_init_bindings(pod)?,
         })
     })();
     binding.ok_or_else(|| backend("Pod has no exact non-restarting private process binding"))
@@ -260,6 +356,9 @@ fn matching_statuses<'a>(
     binding: &PodProcessBinding,
     pod: &'a Pod,
 ) -> Option<Vec<&'a ContainerStatus>> {
+    if completed_init_bindings(pod)? != binding.init_containers {
+        return None;
+    }
     let statuses = process_statuses(pod)?;
     if pod.metadata.namespace.as_deref() != Some(binding.namespace.as_str())
         || pod.metadata.name.as_deref() != Some(binding.name.as_str())

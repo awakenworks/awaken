@@ -691,6 +691,9 @@ impl RuleBasedToolPermissionPolicy {
 
 #[async_trait]
 impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
+    fn process_bound(&self) -> bool {
+        true
+    }
     async fn evaluate(&self, call: &ToolCall) -> ToolPermissionRuling {
         // Resolution order, outermost first: a matching `deny` rule is absolute;
         // otherwise the most specific rule the author wrote decides; only where

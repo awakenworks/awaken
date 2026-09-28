@@ -306,6 +306,12 @@ mod realization_context_tests {
 /// Object-safe live container environment owned by one Session.
 #[async_trait]
 pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
+    /// Exact, retained process containment from the owning runtime. Absence is
+    /// unsupported containment, not absence of effects. The tool owner persists
+    /// this opaque reference before invoking an executable.
+    async fn owned_process_binding(&self) -> Result<Option<String>, pc::SandboxError> {
+        Ok(None)
+    }
     /// Persist/replay the exact upload within this provider's physical owner.
     /// Does not capture bytes, upload objects, dispose, or commit Session state.
     async fn checkpoint_upload(

@@ -67,8 +67,9 @@ struct RelinquishReq {
 }
 
 use run_dispatch_endpoints::{
-    begin_attempt, claim, claim_new_run, claim_retry_exhausted, claim_run, deliver_and_claim,
-    enqueue, finish_attempt, handoff_attempt, relinquish, renew, resolve_session_run_reservation,
+    begin_attempt, claim, claim_new_run, claim_retry_exhausted, claim_run, close_attempt,
+    deliver_and_claim, enqueue, finish_attempt, handoff_attempt, relinquish, renew,
+    resolve_session_run_reservation,
 };
 use session_coordination::{
     session_agent_send, session_agent_settle, session_agents_list, session_model_request_admit,
@@ -578,6 +579,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/dispatch/attempt/begin", post(begin_attempt))
         .route("/v1/worker/dispatch/attempt/handoff", post(handoff_attempt))
         .route("/v1/worker/dispatch/attempt/finish", post(finish_attempt))
+        .route("/v1/worker/dispatch/attempt/close", post(close_attempt))
         .route("/v1/worker/dispatch/relinquish", post(relinquish))
         .route(
             "/v1/worker/dispatch/reservation/resolve",

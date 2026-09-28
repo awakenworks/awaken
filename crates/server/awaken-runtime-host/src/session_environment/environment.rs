@@ -41,6 +41,18 @@ pub(crate) enum SessionEnvironment {
 }
 
 impl SessionEnvironment {
+    pub(crate) async fn tool_execution_domain(
+        &self,
+    ) -> Result<awaken_runtime_contract::tool_batch::ToolExecutionDomain, pc::SandboxError> {
+        match self {
+            Self::Workdir {
+                hand: Some(hand), ..
+            }
+            | Self::Namespace { hand, .. }
+            | Self::Container { hand, .. } => hand.contained_execution_domain().await,
+            Self::Workdir { hand: None, .. } => Ok(Default::default()),
+        }
+    }
     /// Resolve the same directory interpretation used by Skill materialization
     /// and discovery. Workdir's lexical root and an isolated workspace are
     /// different physical layouts; neither may be inferred from a model's cwd.

@@ -738,14 +738,12 @@ multi-Run/same-Thread exclusion coverage. Conditional liveness has a separate
 one-epoch slice: once all work stopped in a closed domain, fair receipt delivery
 and exact retirement suffice. It never assumes an opaque provider will stop.
 
-This is a design-level evidence composition, not implemented Native recovery.
-Complete enrollment before effects, authenticated provider truth and remote
-no-restart terminal semantics are explicit trusted boundaries. Current Native
-model records do not enumerate all independent tool/child work or provide a
-post-crash provider query; a terminal tool-batch phase may contain Indeterminate.
-Consequently none of those projections alone may authorize production clearing.
-No new receipt database, Worker-writable proof or alternative Dispatch transition
-is introduced by this verification. The per-model-operation ordinal, sequential
+This is bounded design evidence, not universal Rust refinement. Complete
+pre-effect enrollment, adapter scope honesty and authenticated provider truth
+remain trusted boundaries. Native governed-domain implementation is specified
+in D6 below; opaque child/tool work and missing legacy enrollment remain Unknown.
+A terminal business phase can contain Indeterminate and never proves closure.
+No receipt database or second Dispatch authority is introduced. The per-model-operation ordinal, sequential
 retries inside an attempt and opaque SDK retries remain outside this abstraction.
 The Native watchdog regression
 separately enables retry, failover and outer tolerance at the actual Runtime
@@ -756,6 +754,70 @@ The Managed adapter projects committed Indeterminate through its existing
 Root and child histories use one Run-state classifier; repeated and cold reads
 keep the same deterministic error identity. This reports a logical outcome,
 not physical quiescence, and adds no Awaken recovery field to the standard wire.
+
+### D6: Controlled execution closure and unknown provider results
+
+The physical slot excludes concurrent governed execution. Provider computation
+and billing may remain unobserved after a response-only consumer closes; that
+fact never becomes a successful model result or a provider termination receipt.
+`ModelOperation.effect_scope` is supplied by the exact concrete adapter and
+frozen in the entry commit. Legacy/custom/hosted-action calls remain opaque.
+Only the qualified DeepSeek mappings without server tools are response-only.
+Unknown invocations still cannot be retried or consumed as complete responses.
+
+Static ownership remains:
+
+| Owner | Authority |
+| --- | --- |
+| ThreadCommit | Model operation scope/evidence, ToolBatch execution and output-materialization domains, pre-effect Native coverage |
+| AttemptQuiescence | One local entry barrier and TaskTracker; result-only uncertainty vetoes continuation independently of effect uncertainty |
+| Dispatch row | Exact physical owner/epoch, closing phase and retired watermark |
+| Worker Registry / Sandbox provider | Independent process identity, retained exit evidence and process containment |
+| Session application | Activity settlement, terminal intent and resource cleanup |
+
+`JournalledV1` covers ordinary model/tool boundaries only. Untracked hooks,
+actions, guards, terminal observers, effectful permission gates and unknown
+content/admission callbacks exclude that profile. Domain metadata is committed
+before executor or output-spill entry. ToolBatch retains the history of every
+batch and cannot upgrade an entered scope through a later result. A tool's
+replay policy remains independent of containment. Worker-local data transforms
+need no independent process stop; a retained restricted Kubernetes Sandbox
+requires the exact ordinary-container and completed-init process set to stop.
+Opaque effects retain Unknown even when an ordinary output exists.
+
+The same Dispatch row records irreversible local entry closure. A signed current
+protocol Worker may report it only after its entry barrier closes and all local
+participants drain. Independently observed Worker exit can establish the same
+fact after a hard crash. The closing phase prevents both continuation handoff
+and late ordinary ACK from freeing/replacing the old scope during provider IO.
+Coordinator-only `finish_attempt_closure` reuses the same exact-slot finish
+kernel after complete trusted evidence. It grants no Thread write or replay.
+
+```text
+unknown result -> committed Indeterminate (or cancellation)
+  -> owned consumer closes; local entries drain, or exact Worker exit is proven
+  -> close original physical slot atomically
+  -> stop/observe frozen controlled domains; never reissue the initiating effect
+  -> missing/opaque evidence: retain closing slot and existing retry backoff
+  -> complete evidence: exact closure ACK -> retired watermark
+  -> ordinary Dispatch/Session settlement -> idle -> standard archive
+```
+
+Kubernetes containment reuses existing process observation and continuation
+retention. Completed nonrestartable init containers are frozen; live/restarted
+init, extra/privileged participants, UID/name reuse, synthetic node-loss status
+and missing history cannot produce a receipt. The process observer never removes
+a Session continuation/PVC harvest finalizer; its Resource owner retains cleanup.
+A closing Worker entry does not require killing that healthy shared Worker.
+
+Internal Worker protocol v5 carries this return/closure distinction. Control and
+Worker deploy together; older execution is not admitted through an unversioned
+fallback. Standard Managed Sessions, events, AI SDK and Files do not change.
+Historical missing enrollment remains unsupported. Tests own the cause/effect
+rules and exercise exact close, response loss, cold reopen, handoff/ACK races,
+result-only uncertainty and provider identity/scope mismatches. External provider
+honesty, CNI enforcement and unrestricted/custom adapter behavior remain TCB;
+no claim of universal remote termination or report-semantic correctness follows.
 
 ## Dynamic behavior
 

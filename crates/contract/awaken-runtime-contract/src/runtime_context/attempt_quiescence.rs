@@ -22,6 +22,7 @@ struct Barrier {
     tasks: TaskTracker,
     entry: Mutex<()>,
     uncertainty: CancellationToken,
+    model_result_unknown: CancellationToken,
 }
 
 /// Attempt-local evidence shared with inline children. A parent return cannot
@@ -36,6 +37,7 @@ pub struct AttemptQuiescence {
 struct PendingReturn<'a> {
     quiescence: &'a AttemptQuiescence,
     returned: bool,
+    response_only: bool,
     _participant: TaskTrackerToken,
 }
 
@@ -43,7 +45,11 @@ impl Drop for PendingReturn<'_> {
     fn drop(&mut self) {
         // Report the veto BEFORE the tracker token drops and wakes the parent.
         if !self.returned {
-            self.quiescence.mark_uncertain();
+            self.quiescence.mark_model_uncertain(if self.response_only {
+                crate::model_operation::ModelEffectScope::ResponseOnly
+            } else {
+                crate::model_operation::ModelEffectScope::Opaque
+            });
         }
     }
 }
@@ -53,6 +59,29 @@ impl AttemptQuiescence {
     /// before polling the supplied effect. Normal return disarms only this
     /// observer; Future drop/unwind retains uncertainty in the same barrier.
     pub async fn observe_return<T>(&self, future: impl std::future::Future<Output = T>) -> T {
+        self.observe_participant(future, false).await
+    }
+
+    /// Data-only response observation uses the same entry/count/drain owner.
+    /// Dropping its consumer vetoes continuation, but is not an assertion that
+    /// provider computation stopped or a veto from an unknown tool effect.
+    pub async fn observe_model_return<T>(
+        &self,
+        scope: crate::model_operation::ModelEffectScope,
+        future: impl std::future::Future<Output = T>,
+    ) -> T {
+        self.observe_participant(
+            future,
+            scope == crate::model_operation::ModelEffectScope::ResponseOnly,
+        )
+        .await
+    }
+
+    async fn observe_participant<T>(
+        &self,
+        future: impl std::future::Future<Output = T>,
+        response_only: bool,
+    ) -> T {
         let participant = {
             let _entry = self.barrier.entry.lock().expect("attempt barrier poisoned");
             entry_is_open(self.barrier.tasks.is_closed()).then(|| self.barrier.tasks.token())
@@ -62,6 +91,7 @@ impl AttemptQuiescence {
         let mut pending = PendingReturn {
             quiescence: self,
             returned: false,
+            response_only,
             _participant: participant,
         };
         let result = future.await;
@@ -74,11 +104,22 @@ impl AttemptQuiescence {
         self.barrier.uncertainty.cancel();
     }
 
+    pub fn mark_model_uncertain(&self, scope: crate::model_operation::ModelEffectScope) {
+        match scope {
+            crate::model_operation::ModelEffectScope::Opaque => self.mark_uncertain(),
+            crate::model_operation::ModelEffectScope::ResponseOnly => {
+                self.barrier.model_result_unknown.cancel()
+            }
+        }
+    }
+
     /// Continuation differs from return: nested execution inside an observed
     /// child is legal until closure/uncertainty. This grants no Dispatch claim.
     #[must_use]
     pub fn permits_execution(&self) -> bool {
-        entry_is_open(self.barrier.tasks.is_closed()) && !self.barrier.uncertainty.is_cancelled()
+        entry_is_open(self.barrier.tasks.is_closed())
+            && !self.barrier.uncertainty.is_cancelled()
+            && !self.barrier.model_result_unknown.is_cancelled()
     }
 
     /// Read-only observation; Dispatch must close entry before its exact ACK.
@@ -88,6 +129,13 @@ impl AttemptQuiescence {
             self.barrier.tasks.len(),
             self.barrier.uncertainty.is_cancelled(),
         )
+    }
+
+    /// A signed Worker may durably report only this local fact. It proves no
+    /// remote stop and grants no retirement; Coordinator closes contained
+    /// process domains while the original Dispatch slot remains occupied.
+    pub fn local_entry_closed(&self) -> bool {
+        self.barrier.tasks.is_closed() && self.barrier.tasks.is_empty()
     }
 
     /// Close entry and drain owned participants. Uncertainty vetoes ACK even if
@@ -112,6 +160,39 @@ mod quiescence_tests {
     use crate::runtime_context::RuntimeRunContext;
     use futures_util::FutureExt;
     use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn discarded_response_closes_continuation_without_erasing_effect_uncertainty() {
+        use crate::model_operation::ModelEffectScope;
+        // Decision table: C1 data-only/opaque adapter; C2 independent tool
+        // uncertainty absent/present. Drop the entered consumer in every row.
+        // R1=data-only+!C2 => unknown result, zero new execution, local closed
+        // return may ACK. R2=opaque|C2 => retained physical veto. No row claims
+        // provider termination or permits replay of the discarded invocation.
+        for scope in [ModelEffectScope::ResponseOnly, ModelEffectScope::Opaque] {
+            for tool_unknown in [false, true] {
+                let barrier = AttemptQuiescence::default();
+                assert!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(1),
+                        barrier.observe_model_return(scope, std::future::pending::<()>())
+                    )
+                    .await
+                    .is_err()
+                );
+                if tool_unknown {
+                    barrier.mark_uncertain();
+                }
+                assert!(!barrier.permits_execution());
+                let ack = barrier.close_and_wait().await;
+                assert!(barrier.local_entry_closed());
+                assert_eq!(
+                    ack,
+                    scope == ModelEffectScope::ResponseOnly && !tool_unknown
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn only_an_entered_unreturned_future_vetoes_acknowledgement() {
