@@ -60,10 +60,10 @@ fn disposal_authorization(
     .unwrap();
     let current = awaken_provisioning_contract::SandboxEffectFence::new(
         preparation.operation_id().unwrap(),
-        prepared.owner,
-        prepared.runtime_incarnation,
-        prepared.epoch,
-        prepared.expires_at_unix_ms,
+        prepared.owner(),
+        prepared.runtime_incarnation(),
+        prepared.epoch(),
+        prepared.expires_at_unix_ms(),
     )
     .unwrap();
     preparation.authorize(current).unwrap()

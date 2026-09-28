@@ -10,34 +10,23 @@ use super::McpGenerationRef;
 use awaken_session_mcp_contract::{McpAttachmentContentDigest, McpAttachmentId, McpGeneration};
 
 /// Whether the current exact-generation fence is the asserted fence or a
-/// monotonic lease extension of it. Logical generation, owner incarnation, and
-/// epoch remain immutable; only expiry may advance. Under a live root lease,
-/// Control uses this relation to retain completed predecessor evidence without
-/// repeating a physical effect merely because authority duration increased.
+/// monotonic lease extension of it. Session, logical generation, owner
+/// incarnation, and epoch remain immutable; only expiry may advance. Under a
+/// live root lease, Control uses this relation to retain completed predecessor
+/// evidence without repeating a physical effect merely because authority
+/// duration increased.
 ///
-/// The attachment identity is not a separate equality: it is one of the three
-/// coordinates the complete generation witness already compares.
+/// This is exactly a renewal under the one fence law: the Session and the
+/// complete generation witness are the lease's subject, so a fence for another
+/// Session or generation is never a successor, and a higher epoch is a
+/// reassignment that does not authorize an assertion made under its
+/// predecessor.
 #[must_use]
 pub fn realization_generation_authorizes(
     current: &McpGenerationRef,
     asserted: &McpGenerationRef,
 ) -> bool {
-    use awaken_provisioning_contract::{FenceSuccession, fence_succession};
-    // Same Session and generation, and the current lease is a renewal of the
-    // asserted one under the one fence succession law.
-    current.session_id == asserted.session_id
-        && awaken_resource_contract::generation_matches(&current.generation, &asserted.generation)
-        && matches!(
-            fence_succession(
-                asserted.lease_epoch,
-                asserted.lease_expires_at_unix_ms,
-                current.lease_epoch,
-                current.lease_expires_at_unix_ms,
-                current.runtime_incarnation == asserted.runtime_incarnation
-                    && current.lease_epoch == asserted.lease_epoch,
-            ),
-            Some(FenceSuccession::Renewal)
-        )
+    asserted.succession(current) == Some(awaken_lease_contract::fence::FenceSuccession::Renewal)
 }
 
 #[cfg(kani)]
@@ -48,46 +37,55 @@ pub fn realization_generation_authorizes(
 fn realization_generation_authority_requires_every_axis() {
     // G1-G64: all combinations of the immutable identity equalities and expiry
     // ordering. Strings and the content digest use two one-byte representatives
-    // of equality; expiry,
-    // epoch, and the generation's version/digest retain arbitrary values. The
-    // attachment identity is now a coordinate of the complete generation
-    // witness, so it varies inside `generation` rather than beside it. Live
-    // root authority is a separate precondition, not a claim of this predicate.
+    // of equality; expiry, epoch, and the generation's version retain
+    // arbitrary values (epochs are nonzero because no lease grants zero). The
+    // attachment identity is a coordinate of the complete generation witness,
+    // so it varies inside `generation` rather than beside it. Live root
+    // authority is a separate precondition, not a claim of this predicate.
     let same_session: bool = kani::any();
     let same_attachment: bool = kani::any();
     let same_digest: bool = kani::any();
     let same_incarnation: bool = kani::any();
-    let current = McpGenerationRef {
-        session_id: "a".into(),
-        generation: McpGeneration::new(
+    let current_version: u64 = kani::any();
+    let asserted_version: u64 = kani::any();
+    let current_epoch: u64 = kani::any();
+    let asserted_epoch: u64 = kani::any();
+    kani::assume(current_epoch != 0 && asserted_epoch != 0);
+    let current_expiry: u64 = kani::any();
+    let asserted_expiry: u64 = kani::any();
+    let current = McpGenerationRef::from_persisted(
+        "a".into(),
+        McpGeneration::new(
             McpAttachmentId("a".into()),
-            kani::any(),
+            current_version,
             McpAttachmentContentDigest::proof_representative(true),
         ),
-        runtime_incarnation: "a".into(),
-        lease_epoch: kani::any(),
-        lease_expires_at_unix_ms: kani::any(),
-    };
-    let asserted = McpGenerationRef {
-        session_id: if same_session { "a" } else { "b" }.into(),
-        generation: McpGeneration::new(
+        "a".into(),
+        current_epoch,
+        current_expiry,
+    )
+    .unwrap();
+    let asserted = McpGenerationRef::from_persisted(
+        if same_session { "a" } else { "b" }.into(),
+        McpGeneration::new(
             McpAttachmentId(if same_attachment { "a" } else { "b" }.into()),
-            kani::any(),
+            asserted_version,
             McpAttachmentContentDigest::proof_representative(same_digest),
         ),
-        runtime_incarnation: if same_incarnation { "a" } else { "b" }.into(),
-        lease_epoch: kani::any(),
-        lease_expires_at_unix_ms: kani::any(),
-    };
+        if same_incarnation { "a" } else { "b" }.into(),
+        asserted_epoch,
+        asserted_expiry,
+    )
+    .unwrap();
     assert_eq!(
         realization_generation_authorizes(&current, &asserted),
         same_session
             && same_attachment
             && same_digest
             && same_incarnation
-            && current.generation.version() == asserted.generation.version()
-            && current.lease_epoch == asserted.lease_epoch
-            && current.lease_expires_at_unix_ms >= asserted.lease_expires_at_unix_ms
+            && current_version == asserted_version
+            && current_epoch == asserted_epoch
+            && current_expiry >= asserted_expiry
     );
 }
 
@@ -96,10 +94,29 @@ mod tests {
     use super::*;
     use crate::McpGenerationRef;
 
-    /// Generation-fence cause/effect graph: C1 logical generation identity,
-    /// owner incarnation, and epoch match; C2 current expiry is equal/later.
-    /// E1 retains completed evidence under separately verified live authority;
-    /// E2 rejects replacement, regression, or cross-generation input.
+    fn fence(
+        session: &str,
+        attachment: &str,
+        version: u64,
+        incarnation: &str,
+        epoch: u64,
+        expiry: u64,
+    ) -> McpGenerationRef {
+        McpGenerationRef::from_persisted(
+            session.into(),
+            crate::mcp_attachment::test_generation(attachment, version, "https://browser.test/mcp"),
+            incarnation.into(),
+            epoch,
+            expiry,
+        )
+        .expect("nonzero epoch")
+    }
+
+    /// Generation-fence cause/effect graph: C1 Session, logical generation
+    /// identity, owner incarnation, and epoch match; C2 current expiry is
+    /// equal/later. E1 retains completed evidence under separately verified
+    /// live authority; E2 rejects replacement, regression, or cross-generation
+    /// input.
     ///
     /// | Rule | C1 | C2 | Effect |
     /// |---|---|---|---|
@@ -109,44 +126,26 @@ mod tests {
     /// | G4 replacement | no | any | E2 |
     #[test]
     fn realization_generation_authorization_decision_table() {
-        let asserted = McpGenerationRef {
-            session_id: "session-a".into(),
-            generation: crate::mcp_attachment::test_generation(
-                "browser",
-                1,
-                "https://browser.test/mcp",
-            ),
-            runtime_incarnation: "worker-a/boot-1".into(),
-            lease_epoch: 3,
-            lease_expires_at_unix_ms: 10,
-        };
+        let asserted = fence("session-a", "browser", 1, "worker-a/boot-1", 3, 10);
         // G5 every feasible equality combination (64 rows) independently
         // binds all six axes; G1-G4 below retain readable boundary examples.
         for mask in 0_u8..64 {
-            let mut candidate = asserted.clone();
-            if mask & 1 != 0 {
-                candidate.session_id = "foreign".into();
-            }
-            if mask & 2 != 0 {
-                candidate.generation = crate::mcp_attachment::test_generation(
-                    "foreign",
-                    candidate.generation.version(),
-                    "https://browser.test/mcp",
-                );
-            }
-            if mask & 4 != 0 {
-                candidate.generation =
-                    crate::mcp_attachment::test_generation_at_version(&candidate.generation, 2);
-            }
-            if mask & 8 != 0 {
-                candidate.runtime_incarnation = "foreign".into();
-            }
-            if mask & 16 != 0 {
-                candidate.lease_epoch += 1;
-            }
-            if mask & 32 != 0 {
-                candidate.lease_expires_at_unix_ms -= 1;
-            }
+            let candidate = fence(
+                if mask & 1 != 0 {
+                    "foreign"
+                } else {
+                    "session-a"
+                },
+                if mask & 2 != 0 { "foreign" } else { "browser" },
+                if mask & 4 != 0 { 2 } else { 1 },
+                if mask & 8 != 0 {
+                    "foreign"
+                } else {
+                    "worker-a/boot-1"
+                },
+                if mask & 16 != 0 { 4 } else { 3 },
+                if mask & 32 != 0 { 9 } else { 10 },
+            );
             assert_eq!(
                 realization_generation_authorizes(&candidate, &asserted),
                 mask == 0,
@@ -157,27 +156,17 @@ mod tests {
             ("G1", asserted.clone(), true),
             (
                 "G2",
-                McpGenerationRef {
-                    lease_expires_at_unix_ms: 20,
-                    ..asserted.clone()
-                },
+                fence("session-a", "browser", 1, "worker-a/boot-1", 3, 20),
                 true,
             ),
             (
                 "G3",
-                McpGenerationRef {
-                    lease_expires_at_unix_ms: 9,
-                    ..asserted.clone()
-                },
+                fence("session-a", "browser", 1, "worker-a/boot-1", 3, 9),
                 false,
             ),
             (
                 "G4",
-                McpGenerationRef {
-                    lease_epoch: 4,
-                    lease_expires_at_unix_ms: 20,
-                    ..asserted.clone()
-                },
+                fence("session-a", "browser", 1, "worker-a/boot-1", 4, 20),
                 false,
             ),
         ] {
@@ -196,17 +185,7 @@ mod tests {
         // (a renewal); R2 shortened expiry => refused; R3 a higher epoch is a
         // *reassignment* under the shared succession law and must not
         // authorize an assertion made under the previous generation.
-        let asserted = McpGenerationRef {
-            session_id: "session-a".into(),
-            generation: crate::mcp_attachment::test_generation(
-                "browser",
-                1,
-                "https://browser.test/mcp",
-            ),
-            runtime_incarnation: "worker-a/boot-1".into(),
-            lease_epoch: 3,
-            lease_expires_at_unix_ms: 10,
-        };
+        let asserted = fence("session-a", "browser", 1, "worker-a/boot-1", 3, 10);
         for (epoch, expiry, expected, rule) in [
             (3, 9, false, "R2 shortened"),
             (3, 10, true, "R1 equal"),
@@ -214,9 +193,7 @@ mod tests {
             (4, 11, false, "R3 reassignment"),
             (4, 10, false, "R3 reassignment equal expiry"),
         ] {
-            let mut current = asserted.clone();
-            current.lease_epoch = epoch;
-            current.lease_expires_at_unix_ms = expiry;
+            let current = fence("session-a", "browser", 1, "worker-a/boot-1", epoch, expiry);
             assert_eq!(
                 realization_generation_authorizes(&current, &asserted),
                 expected,

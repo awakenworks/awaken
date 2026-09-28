@@ -1032,18 +1032,8 @@ mod tests {
             std::sync::Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
         ));
-        let generation = awaken_session_mcp_contract::McpGenerationRef {
-            session_id: "unpolled-staging".into(),
-            generation: awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                awaken_session_mcp_contract::McpAttachmentId("docs".into()),
-                1,
-                &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                    .unwrap(),
-            ),
-            runtime_incarnation: "runtime-1".into(),
-            lease_epoch: 1,
-            lease_expires_at_unix_ms: u64::MAX,
-        };
+        let generation =
+            crate::test_mcp::mcp_fence("unpolled-staging", "docs", 1, "runtime-1", 1, u64::MAX);
         let request = awaken_session_mcp_contract::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation.clone(),

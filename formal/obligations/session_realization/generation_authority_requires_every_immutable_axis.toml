@@ -6,4 +6,4 @@ evidence = []
 production_entrypoints = []
 
 [[bounds]]
-text = '''Two one-byte equality representatives for each string identity; arbitrary u64 generation, epoch and expiry. A live root lease is a separately verified precondition.'''
+text = '''Two one-byte equality representatives for each string identity; arbitrary u64 generation and expiry, arbitrary nonzero epoch (the fence decodes through McpGenerationRef::from_persisted, which refuses a zero epoch). The predicate is Lease::succession over the McpRealization tenure, so the harness runs the shared fence kernel. A live root lease is a separately verified precondition.'''

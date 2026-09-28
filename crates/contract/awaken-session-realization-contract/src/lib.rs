@@ -50,11 +50,4 @@ mod mcp_attachment {
             &awaken_session_mcp_contract::McpTarget::parse_http(url).unwrap(),
         )
     }
-
-    pub(crate) fn test_generation_at_version(
-        generation: &awaken_session_mcp_contract::McpGeneration,
-        version: u64,
-    ) -> awaken_session_mcp_contract::McpGeneration {
-        generation.at_version(version)
-    }
 }

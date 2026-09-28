@@ -88,15 +88,15 @@ fn fence(operation_id: &str) -> pc::SandboxEffectFence {
 }
 
 fn authorization(prepared: &pc::SandboxEffectFence) -> pc::SandboxDisposalAuthorization {
-    let fingerprint = format!("session-recovery-preparation:{}", prepared.operation_id);
+    let fingerprint = format!("session-recovery-preparation:{}", prepared.operation_id());
     let preparation = pc::SandboxDisposalPreparation::new(prepared.clone(), fingerprint).unwrap();
     let operation_id = preparation.operation_id().unwrap();
     let successor = pc::SandboxEffectFence::new(
         operation_id,
-        prepared.owner.clone(),
-        prepared.runtime_incarnation.clone(),
-        prepared.epoch,
-        prepared.expires_at_unix_ms,
+        prepared.owner(),
+        prepared.runtime_incarnation(),
+        prepared.epoch(),
+        prepared.expires_at_unix_ms(),
     )
     .unwrap();
     preparation.authorize(successor).unwrap()

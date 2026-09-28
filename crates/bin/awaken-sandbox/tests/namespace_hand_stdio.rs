@@ -62,15 +62,15 @@ fn effect_fence(operation_id: &str) -> pc::SandboxEffectFence {
 fn disposal_authorization(prepared: &pc::SandboxEffectFence) -> pc::SandboxDisposalAuthorization {
     let preparation = pc::SandboxDisposalPreparation::new(
         prepared.clone(),
-        format!("namespace-hand-preparation:{}", prepared.operation_id),
+        format!("namespace-hand-preparation:{}", prepared.operation_id()),
     )
     .expect("typed Namespace Hand disposal preparation");
     let successor = pc::SandboxEffectFence::new(
         preparation.operation_id().expect("preparation operation"),
-        prepared.owner.clone(),
-        prepared.runtime_incarnation.clone(),
-        prepared.epoch,
-        prepared.expires_at_unix_ms,
+        prepared.owner(),
+        prepared.runtime_incarnation(),
+        prepared.epoch(),
+        prepared.expires_at_unix_ms(),
     )
     .expect("typed Namespace Hand disposal successor");
     preparation

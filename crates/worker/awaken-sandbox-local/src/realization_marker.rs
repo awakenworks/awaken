@@ -20,7 +20,6 @@ use std::path::{Component, Path, PathBuf};
 use crate::FilesystemHandleCodec as _;
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_fs::{DirectoryIdentity, PathEntry};
-use pc::FenceToken;
 use serde::{Deserialize, Serialize};
 
 const MARKER_SCHEMA: u8 = 2;
@@ -757,7 +756,6 @@ fn validate_marker_disposal_authorization(
         return Ok(());
     };
     authorization.validate()?;
-    marker_effect_fence.validate_identity()?;
     if !matches!(
         phase,
         RealizationPhase::Removing | RealizationPhase::Removed
@@ -778,7 +776,7 @@ fn validate_marker_disposal_authorization(
     if marker_effect_fence != prepared
         && marker_effect_fence != latest
         && !(latest.authorizes_successor(marker_effect_fence)
-            && marker_effect_fence.operation_id == latest.operation_id)
+            && marker_effect_fence.operation_id() == latest.operation_id())
     {
         return Err(pc::SandboxError::conflict(
             "filesystem disposal authorization conflicts with the marker effect",
@@ -1134,7 +1132,6 @@ pub(crate) fn begin(
     source: Option<RebuildSource<'_>>,
     restore_input_fingerprint: Option<&str>,
 ) -> Result<CreationGuard, pc::SandboxError> {
-    effect_fence.validate_identity()?;
     let lock = acquire(root)?;
     let Some(mut observed) = read_marker_locked(root, &lock)? else {
         if source.is_some() {
@@ -1183,7 +1180,7 @@ pub(crate) fn begin(
                     "incomplete sandbox creation belongs to another effect",
                 ));
             }
-            if effect_fence.expires_at_unix_ms > observed.effect_fence.expires_at_unix_ms {
+            if effect_fence.expires_at_unix_ms() > observed.effect_fence.expires_at_unix_ms() {
                 let previous = observed.clone();
                 observed.effect_fence = effect_fence.clone();
                 replace_marker_locked(root, &lock, &previous, &observed)?;
@@ -1232,7 +1229,7 @@ pub(crate) fn begin(
                     ));
                 }
             }
-            if effect_fence.expires_at_unix_ms > observed.effect_fence.expires_at_unix_ms {
+            if effect_fence.expires_at_unix_ms() > observed.effect_fence.expires_at_unix_ms() {
                 let previous = observed.clone();
                 observed.effect_fence = effect_fence.clone();
                 replace_marker_locked(root, &lock, &previous, &observed)?;
@@ -1504,8 +1501,6 @@ fn begin_ready_operation_with_authorization(
     operation_effect_fence: &pc::SandboxEffectFence,
     authorization_effect_fence: &pc::SandboxEffectFence,
 ) -> Result<ReadyOperationGuard, pc::SandboxError> {
-    operation_effect_fence.validate_identity()?;
-    authorization_effect_fence.validate_identity()?;
     // Admission and receipt lookup are read-only; expiry is checked at every
     // WAL/store mutation boundary by the guard methods below.
     let lock = acquire(root)?;
@@ -1548,10 +1543,6 @@ pub(crate) fn begin_terminal_takeover(
     // Both production entrances hold current Worker/Session authority across
     // this synchronous function. Control expiry is an identity/order coordinate,
     // never a value to compare with this machine's UTC.
-    terminal_effect_fence.validate_identity()?;
-    if let Some(expected) = expected_effect_fence {
-        expected.validate_identity()?;
-    }
     let lock = acquire(root)?;
     let observed = read_marker_locked(root, &lock)?;
     observation::validate_terminal_preflight(expected_preflight, observed.as_ref())?;

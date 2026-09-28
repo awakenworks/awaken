@@ -90,7 +90,7 @@ type CriticalSection<'g> = PhantomData<(fn(&'g ()) -> &'g (), *const ())>;
 /// # }
 /// use awaken_provisioning_contract::{SandboxEffectGuard, SandboxError, with_current_sandbox_effect};
 /// fn remove_root(admitted: &SandboxEffectGuard<'_>) -> Result<u64, SandboxError> {
-///     Ok(admitted.fence().epoch)
+///     Ok(admitted.fence().epoch())
 /// }
 /// let fence = SandboxEffectFence::new("op", "owner", "boot", 1, 100).unwrap();
 /// let epoch = with_current_sandbox_effect(&fence, &Current(fence.clone()), remove_root).unwrap();
@@ -183,7 +183,6 @@ impl<'g> SandboxEffectGuard<'g> {
         &self,
         recorded: &crate::SandboxEffectFence,
     ) -> Result<(), crate::SandboxError> {
-        use crate::FenceToken as _;
         if recorded.authorizes_successor(self.current) {
             Ok(())
         } else {
@@ -214,7 +213,7 @@ pub fn with_current_sandbox_effect<T>(
 /// The same-effect admission rule: the port's current fence must be the
 /// asserted effect (operation, owner, incarnation and epoch identical), must
 /// not regress the asserted expiry, and must leave a positive local budget.
-/// This is deliberately stricter than [`crate::FenceToken::authorizes_successor`]:
+/// This is deliberately stricter than [`awaken_lease_contract::fence::FenceToken::authorizes_successor`]:
 /// a successor lease is not the admitted effect.
 fn admits_current_effect(
     asserted: &crate::SandboxEffectFence,
@@ -223,7 +222,7 @@ fn admits_current_effect(
 ) -> bool {
     !remaining.is_zero()
         && asserted.same_effect_identity(current)
-        && current.expires_at_unix_ms >= asserted.expires_at_unix_ms
+        && current.expires_at_unix_ms() >= asserted.expires_at_unix_ms()
 }
 
 fn with_checked_effect<T, A: CurrentExecutionAuthority + ?Sized>(
@@ -231,7 +230,6 @@ fn with_checked_effect<T, A: CurrentExecutionAuthority + ?Sized>(
     authority: &A,
     apply: impl FnOnce(&SandboxEffectGuard<'_>) -> Result<T, crate::SandboxError>,
 ) -> Result<T, crate::SandboxError> {
-    asserted.validate_identity()?;
     let mut apply = Some(apply);
     let mut result = None;
     let mut effect_error = None;
@@ -327,9 +325,13 @@ mod tests {
             ("error_after", 100, false, 1, 1, true, false, 1),
         ] {
             let mut fence = initial.clone();
-            fence.expires_at_unix_ms = expiry;
+            fence = fence
+                .with_persisted(|w| w.expires_at_unix_ms = expiry)
+                .unwrap();
             if foreign {
-                fence.operation_id = "other".into();
+                fence = fence
+                    .with_persisted(|w| w.operation_id = "other".into())
+                    .unwrap();
             }
             let port = Port {
                 fence,
@@ -398,7 +400,6 @@ mod tests {
         // | G5   | higher-epoch successor| renewed   | >0   | E2     |
         // | G6   | same-lease other op   | renewed   | >0   | E2     |
         // | G7   | foreign lease         | renewed   | >0   | E2     |
-        use crate::FenceToken as _;
         struct Port(crate::SandboxEffectFence, Duration);
         impl CurrentExecutionAuthority for Port {
             fn with_current(

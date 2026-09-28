@@ -102,10 +102,26 @@ fn rebuilt_result_converges_without_relaxing_source_or_effect_fences() {
             "fingerprint" => value.fingerprint = None,
             "adoption" => value.adoption_fingerprint = None,
             "incarnation" => value.incarnation.identity.clear(),
-            "owner" => value.fence.as_mut().unwrap().owner = "foreign".into(),
-            "runtime" => value.fence.as_mut().unwrap().runtime_incarnation = "foreign".into(),
-            "epoch" => value.fence.as_mut().unwrap().epoch += 1,
-            "expiry" => value.fence.as_mut().unwrap().expires_at_unix_ms += 1,
+            "owner" => {
+                let fence = value.fence.as_mut().unwrap();
+                *fence = fence
+                    .with_persisted(|w| w.owner = "foreign".into())
+                    .unwrap();
+            }
+            "runtime" => {
+                let fence = value.fence.as_mut().unwrap();
+                *fence = fence
+                    .with_persisted(|w| w.runtime_incarnation = "foreign".into())
+                    .unwrap();
+            }
+            "epoch" => {
+                let fence = value.fence.as_mut().unwrap();
+                *fence = fence.with_persisted(|w| w.epoch += 1).unwrap();
+            }
+            "expiry" => {
+                let fence = value.fence.as_mut().unwrap();
+                *fence = fence.with_persisted(|w| w.expires_at_unix_ms += 1).unwrap();
+            }
             "missing-fence" => value.fence = None,
             _ => unreachable!(),
         }

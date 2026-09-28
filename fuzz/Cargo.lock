@@ -68,6 +68,7 @@ dependencies = [
 name = "awaken-lease-contract"
 version = "1.0.0"
 dependencies = [
+ "serde",
  "tokio",
 ]
 

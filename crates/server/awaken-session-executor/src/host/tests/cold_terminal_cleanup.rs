@@ -76,12 +76,12 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         "remote-terminal-environment",
         "remote-terminal-image",
     );
-    let environment_effect_id = create_fence.operation_id.clone();
+    let environment_effect_id = create_fence.operation_id();
     // A changed aggregate Environment is a new root-CAS snapshot.
     projection.revision.0 += 1;
     projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding,
-        effect_id: Some(environment_effect_id.clone()),
+        effect_id: Some(environment_effect_id.to_owned()),
         generation: Some(environment_generation.clone()),
         idle_since_unix_ms: None,
     };
@@ -98,7 +98,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         "remote-terminal-worker",
         &candidate,
         crate::session_slot::BoundSessionEnvironmentIdentity::Durable {
-            effect_id: environment_effect_id,
+            effect_id: environment_effect_id.to_owned(),
             generation: environment_generation,
         },
     )
@@ -163,7 +163,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
             disposals[0]
                 .provider_disposal
                 .prepared_effect_fence()
-                .operation_id,
+                .operation_id(),
             command.effect_id,
             "R1/E3",
         );
@@ -733,7 +733,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         disposals[0]
             .provider_disposal
             .prepared_effect_fence()
-            .operation_id,
+            .operation_id(),
         command.effect_id,
         "C2/E3",
     );

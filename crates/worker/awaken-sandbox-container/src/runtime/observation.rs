@@ -12,7 +12,6 @@ use super::{
     ExistingRealization, ExistingRealizationPhase, ExistingRealizationRecovery, RuntimeError,
 };
 use awaken_provisioning_contract as pc;
-use pc::FenceToken as _;
 
 /// Project one adapter observation into the provider-neutral adoption result.
 ///

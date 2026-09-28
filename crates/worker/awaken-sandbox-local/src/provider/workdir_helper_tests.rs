@@ -118,6 +118,7 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
     // neither returned bytes nor an optional empty file nor Ready is published.
     // Renewal -> success. Exact admitted retry writes once; Ready replay does
     // not resolve again. Synthetic credentials only, not local credential E2E.
+    use awaken_provisioning_contract::test_support::FenceTamper as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     struct PausedSource {
@@ -233,20 +234,15 @@ async fn creation_resource_responses_require_current_authority_before_writing() 
                     match change {
                         "revoke" => *authority.current.lock().unwrap() = None,
                         "replace" => {
-                            authority.current.lock().unwrap().as_mut().unwrap().0.epoch += 1
+                            let mut guard = authority.current.lock().unwrap();
+                            guard.as_mut().unwrap().0.reassign();
                         }
                         "exhaust" => {
                             authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
                         }
                         "renew" => {
-                            authority
-                                .current
-                                .lock()
-                                .unwrap()
-                                .as_mut()
-                                .unwrap()
-                                .0
-                                .expires_at_unix_ms += 1
+                            let mut guard = authority.current.lock().unwrap();
+                            guard.as_mut().unwrap().0.renew();
                         }
                         _ => {}
                     }

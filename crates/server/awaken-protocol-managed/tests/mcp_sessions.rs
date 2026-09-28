@@ -1169,7 +1169,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for HotRuntime {
     ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
         let durable = self
             .repo
-            .get(&request.generation.session_id)
+            .get(request.generation.session_id())
             .await
             .expect("stage follows durable claim");
         let mut state = self.state.lock().unwrap();
@@ -1182,8 +1182,9 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for HotRuntime {
         let receipt_fingerprint = request.fingerprint();
         let mut generation = request.generation;
         if matches!(mode, HotStageMode::MismatchNext) {
-            let next = generation.generation.version() + 1;
-            generation.generation = generation.generation.at_version(next);
+            let mut w = generation.to_wire();
+            w.generation = w.generation.at_version(w.generation.version() + 1);
+            generation = w.try_into().unwrap();
         }
         Ok(awaken_session_mcp_contract::McpRealizationReceipt {
             generation,
@@ -2127,7 +2128,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     {
         let state = h.state.lock().unwrap();
         assert_eq!(state.staged.len(), 1, "H2");
-        assert_eq!(state.staged[0].generation.generation.version(), 1, "H2");
+        assert_eq!(state.staged[0].generation.generation().version(), 1, "H2");
         assert_eq!(state.published.len(), 1, "H2");
         assert_eq!(
             state.durable_at_stage[0].mcp.attachments[0].state,
@@ -2178,17 +2179,13 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     assert_eq!(replaced["agent"]["mcp_servers"], json!([server_b]), "H3");
     {
         let state = h.state.lock().unwrap();
-        assert_eq!(
-            state.staged.last().unwrap().generation.generation.version(),
-            2,
-            "H3"
-        );
-        assert_eq!(
-            state.published.last().unwrap().generation.version(),
-            2,
-            "H3"
-        );
-        assert_eq!(state.drained.last().unwrap().generation.version(), 1, "H3");
+        let version = |fence: Option<&awaken_session_mcp_contract::McpGenerationRef>| {
+            fence.map(|f| f.generation().version())
+        };
+        let staged = state.staged.last().map(|request| &request.generation);
+        assert_eq!(version(staged), Some(2), "H3 staged");
+        assert_eq!(version(state.published.last()), Some(2), "H3 published");
+        assert_eq!(version(state.drained.last()), Some(1), "H3 drained");
     }
     let durable = h.repo.get(&SessionId::from(id)).await.expect("H3 durable");
     assert_eq!(durable.visible_mcp_servers().len(), 1, "H3");
@@ -2219,7 +2216,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
             .drained
             .last()
             .unwrap()
-            .generation
+            .generation()
             .version(),
         2,
         "H4"
@@ -2288,7 +2285,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
             .last()
             .unwrap()
             .generation
-            .generation
+            .generation()
             .version(),
         3,
         "H6"

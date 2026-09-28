@@ -269,19 +269,25 @@ fn pod_effect_fence_projection_decision_table_is_total() {
     let fence =
         pc::SandboxEffectFence::new("operation-1", "owner-1", "runtime-1", 7, 9_999).unwrap();
     let complete = std::collections::BTreeMap::from([
-        (SANDBOX_EFFECT_ANNOTATION.into(), fence.operation_id.clone()),
-        (SANDBOX_EFFECT_OWNER_ANNOTATION.into(), fence.owner.clone()),
+        (
+            SANDBOX_EFFECT_ANNOTATION.into(),
+            fence.operation_id().to_owned(),
+        ),
+        (
+            SANDBOX_EFFECT_OWNER_ANNOTATION.into(),
+            fence.owner().to_owned(),
+        ),
         (
             SANDBOX_EFFECT_RUNTIME_ANNOTATION.into(),
-            fence.runtime_incarnation.clone(),
+            fence.runtime_incarnation().to_owned(),
         ),
         (
             SANDBOX_EFFECT_EPOCH_ANNOTATION.into(),
-            fence.epoch.to_string(),
+            fence.epoch().to_string(),
         ),
         (
             SANDBOX_EFFECT_EXPIRY_ANNOTATION.into(),
-            fence.expires_at_unix_ms.to_string(),
+            fence.expires_at_unix_ms().to_string(),
         ),
     ]);
     assert_eq!(

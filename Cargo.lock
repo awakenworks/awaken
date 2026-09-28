@@ -1669,6 +1669,8 @@ name = "awaken-lease-contract"
 version = "1.0.0"
 dependencies = [
  "proptest",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -2091,6 +2093,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-lease-contract",
  "awaken-resource-contract",
  "awaken-sandbox-control",
  "serde",
@@ -2908,6 +2911,7 @@ version = "1.0.0"
 dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-lease-contract",
  "awaken-resource-contract",
  "awaken-session-types",
  "serde",
@@ -2980,6 +2984,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-lease-contract",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-session-types",
@@ -2997,6 +3002,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-environment-contract",
+ "awaken-lease-contract",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-session-budget-contract",

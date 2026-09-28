@@ -6,7 +6,6 @@
 //! the calling codec/store; Session remains the only lifecycle authority.
 
 use awaken_provisioning_contract as pc;
-use pc::FenceToken as _;
 
 /// Immutable original upload evidence and an independently current grant.
 /// The source fence may have expired; only `authority` grants an effect.
@@ -19,10 +18,10 @@ pub struct ContainerCheckpointAccess<'a> {
 }
 
 impl ContainerCheckpointAccess<'_> {
-    /// Admit this access: a valid original fence, a non-empty request, an exact
-    /// successor fence, and the current authority for that successor.
+    /// Admit this access: a non-empty request, an exact successor of the
+    /// original fence (valid by construction), and the current authority for
+    /// that successor.
     pub fn admit(&self) -> Result<(), pc::SandboxError> {
-        self.source_effect_fence.validate_identity()?;
         if self.request_fingerprint.trim().is_empty()
             || !self
                 .source_effect_fence
@@ -39,7 +38,7 @@ impl ContainerCheckpointAccess<'_> {
     /// operation than the one that began it.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        self.source_effect_fence.operation_id != self.effect_fence.operation_id
+        self.source_effect_fence.operation_id() != self.effect_fence.operation_id()
     }
 }
 

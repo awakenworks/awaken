@@ -56,7 +56,6 @@ impl SecretWritebackEffect {
                 "Secret write-back requires a non-empty physical Sandbox incarnation",
             ));
         }
-        authorization.validate_identity()?;
         let writeback_id = awaken_agent_contract::stable_fingerprint(&(
             "sandbox-secret-writeback-v1",
             reference.as_str(),

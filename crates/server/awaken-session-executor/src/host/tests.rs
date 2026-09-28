@@ -1396,7 +1396,6 @@ impl awaken_container_contract::ContainerEnvironmentProvider for TerminalRecover
                 "non-live terminal recovery fixture cannot be ordinarily adopted",
             ));
         }
-        effect_fence.validate_identity()?;
         pc::with_current_sandbox_effect(effect_fence, authority, |_| {
             self.events.lock().unwrap().push("adopt-live-memory");
             Ok(())

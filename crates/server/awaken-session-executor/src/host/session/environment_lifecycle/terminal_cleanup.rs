@@ -418,8 +418,8 @@ impl SharedHost {
                     &retirement.cause,
                     SessionEnvironmentRetirementCause::Terminal { effect_id }
                         if matches!(retirement.owned, RetiringEnvironmentOwner::Bound(_))
-                            || effect_id == &authorization.prepared_effect_fence().operation_id
-                            || effect_id == &authorization.effect_fence().operation_id
+                            || effect_id == authorization.prepared_effect_fence().operation_id()
+                            || effect_id == authorization.effect_fence().operation_id()
                 ) {
                     return Err(HostError::unavailable_classified(
                         "session_terminal_environment_preparation_changed",

@@ -17,7 +17,6 @@ use super::completion::canonical_thread_artifact_receipt_fingerprint;
 use super::state::SessionCleanupState;
 use super::*;
 use crate::SessionId;
-use awaken_provisioning_contract::FenceToken;
 use awaken_resource_contract::ArtifactPublicationReceipt;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -178,9 +177,6 @@ impl SessionCleanupPreparation {
         let asserted_effect_fence = effect
             .sandbox_effect_fence()
             .map_err(|_| SessionCleanupError::PreparationReceiptMismatch)?;
-        provider_prepared_effect_fence
-            .validate_identity()
-            .map_err(|_| SessionCleanupError::PreparationReceiptMismatch)?;
         if !asserted_effect_fence.same_realization_lease(&provider_prepared_effect_fence)
             || !(asserted_effect_fence.authorizes_effect_successor(&provider_prepared_effect_fence)
                 || provider_prepared_effect_fence
@@ -224,9 +220,6 @@ impl SessionCleanupPreparation {
     fn verify(&self, effect: &SessionTerminalCleanupEffect) -> Result<(), SessionCleanupError> {
         let asserted_effect_fence = effect
             .sandbox_effect_fence()
-            .map_err(|_| SessionCleanupError::PreparationReceiptMismatch)?;
-        self.provider_prepared_effect_fence
-            .validate_identity()
             .map_err(|_| SessionCleanupError::PreparationReceiptMismatch)?;
         if !asserted_effect_fence.same_realization_lease(&self.provider_prepared_effect_fence)
             || !(asserted_effect_fence

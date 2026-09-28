@@ -3,7 +3,6 @@
 
 use super::super::foundation::{MemoryMaterializationEvidence, SandboxError};
 use super::SandboxEffectFence;
-use crate::FenceToken;
 use crate::{SandboxEffectGuard, with_current_sandbox_effect};
 
 #[derive(Debug)]
@@ -307,9 +306,17 @@ mod tests {
             match self.0 {
                 "omitted" => return Ok(()),
                 "zero" => remaining = Duration::ZERO,
-                "operation" => current.operation_id.push('x'),
-                "generation" => current.epoch += 1,
-                "expiry" => current.expires_at_unix_ms -= 1,
+                "operation" => {
+                    current = current
+                        .with_persisted(|w| w.operation_id.push('x'))
+                        .unwrap()
+                }
+                "generation" => current = current.with_persisted(|w| w.epoch += 1).unwrap(),
+                "expiry" => {
+                    current = current
+                        .with_persisted(|w| w.expires_at_unix_ms -= 1)
+                        .unwrap()
+                }
                 "twice" | "after-effect-error" => {}
                 _ => unreachable!(),
             }
