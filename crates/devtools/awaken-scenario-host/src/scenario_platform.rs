@@ -165,7 +165,7 @@ pub(super) fn mount_with_environments_and_agent_source(
     let local_workspace = host.local_workspace().to_owned();
     let catalog = resources.authorities().resource_registry();
     let (environment_authoring, environment_execution) =
-        awaken_protocol_managed_testkit::environment_components();
+        awaken_protocol_managed_testkit::environment_components(host.clock());
     let managed = match agent_source {
         Some(source) => awaken_coordinator::local_managed_state_with_environments_and_agent_source(
             host.clone(),

@@ -48,8 +48,11 @@ struct Harness {
 fn harness() -> Harness {
     let clock = Arc::new(ManualClock::new(CREATED_MS));
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let state = VaultState::new(Arc::new(InMemorySecretStore::new()), credentials.clone())
-        .with_clock(clock.clone());
+    let state = VaultState::new(
+        Arc::new(InMemorySecretStore::new()),
+        credentials.clone(),
+        clock.clone(),
+    );
     Harness {
         app: vault_router(Arc::new(state)),
         clock,

@@ -1,5 +1,5 @@
 // @formal evidence session_resources.repository_rotation_requires_original_live_generation
-// awaken-file-limit-ceiling: 7630 (legacy oversized test file: split, never grow)
+// awaken-file-limit-ceiling: 7620 (legacy oversized test file: split, never grow)
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
 //! Managed Agents contract, while whole-manifest replacement is explicitly owned
 //! by `/v1/awaken/sessions/{id}/resources`: only `file` attaches to a live Session;
@@ -1705,7 +1705,9 @@ async fn publication_backend_is_the_only_session_backend_authority() {
 #[tokio::test]
 async fn agent_default_environment_requires_the_exact_revision() {
     let (environment_authoring, environment_execution) =
-        awaken_protocol_managed_testkit::environment_components();
+        awaken_protocol_managed_testkit::environment_components(
+            awaken_lease_contract::system_clock(),
+        );
     let environment_id = environment_authoring
         .application()
         .create(awaken_environment_contract::CreateEnvironmentCommand {
@@ -3038,10 +3040,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         .put(source)
         .await
         .expect("pin published MCP credential revision");
-    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
-        secrets,
-        credentials,
-    ));
+    let vaults = std::sync::Arc::new(support::vault(secrets, credentials));
     let state = support::state_with_mcp(runtime)
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
         .with_vaults(vaults)
@@ -3216,7 +3215,7 @@ async fn session_mcp_override_replaces_the_published_set() {
 async fn app_with_session() -> (Router, String) {
     let credential_repo =
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
+    let vaults = std::sync::Arc::new(support::vault(
         std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         credential_repo,
     ));
@@ -3942,7 +3941,7 @@ async fn repository_access_compiler_follows_the_decision_table() {
             &("repository-a", 1_u64, &target),
             &usage,
         );
-        let vaults = awaken_protocol_managed::VaultState::new(secrets, credentials);
+        let vaults = support::vault(secrets, credentials);
         let actual = vaults
             .credential_access_for_source(
                 &source_id,
@@ -4158,10 +4157,7 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
     let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials =
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
-        secrets.clone(),
-        credentials.clone(),
-    ));
+    let vaults = std::sync::Arc::new(support::vault(secrets.clone(), credentials.clone()));
     let catalog = resource_registry().await;
     let repository = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
@@ -5429,7 +5425,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
     // existing secret-free pin under the Session aggregate.
     let credential_repo =
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
+    let vaults = std::sync::Arc::new(support::vault(
         std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
         credential_repo,
     ));
@@ -5629,10 +5625,7 @@ async fn repository_rotation_slot_case(slot: &str) {
     let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials =
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
-        secrets.clone(),
-        credentials.clone(),
-    ));
+    let vaults = std::sync::Arc::new(support::vault(secrets.clone(), credentials.clone()));
     let storage = tempfile::tempdir().unwrap();
     let database = storage.path().join("credential-root.sqlite");
     let session_store = std::sync::Arc::new(

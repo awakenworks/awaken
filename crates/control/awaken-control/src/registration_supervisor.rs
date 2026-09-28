@@ -285,7 +285,9 @@ mod tests {
         let agents = Arc::new(AgentRecovery {
             fail: AtomicBool::new(true),
         });
-        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let registrar = Arc::new(EnvironmentRegistrar::default());
         let environments = Arc::new(EnvironmentApplication::new(envs, registrar, None));
         let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
@@ -359,7 +361,9 @@ mod tests {
         // | S3 | T | success | Pending only |
         // Constraints/invariants: only a complete successful All pass crosses
         // the recovery boundary; wakes never create an alternate work-list owner.
-        let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new(
+            awaken_lease_contract::system_clock(),
+        ));
         registry
             .create_once(awaken_environment_contract::CreateEnvironmentCommand {
                 command_id: "supervisor-state".into(),

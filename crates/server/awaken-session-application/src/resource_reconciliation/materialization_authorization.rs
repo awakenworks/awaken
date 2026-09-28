@@ -1,6 +1,7 @@
 // @formal entrypoint session_resources.external_io_requires_durable_prepared_state
 //! Session-root authorization for ordinary Resource materialization.
 
+use awaken_lease_contract::WallClockExt as _;
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionResourceMaterializationIntent,
 };
@@ -27,7 +28,7 @@ impl SessionApplication {
             awaken_session_realization_contract::realization_lease_authorizes(
                 current,
                 intent.lease(),
-                self.now_unix_ms(),
+                self.clock.now_ms(),
             )
         }) {
             return Err(SessionRealizationControlFailure::StaleOwnership);

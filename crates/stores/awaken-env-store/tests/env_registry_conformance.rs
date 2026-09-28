@@ -24,12 +24,15 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 
 #[test]
 fn in_memory_backend_conforms() {
-    block(run_suite(InMemoryEnvRegistry::with_clock));
+    block(run_suite(
+        awaken_lease_contract::system_clock(),
+        InMemoryEnvRegistry::new,
+    ));
 }
 
 #[test]
 fn sqlite_backend_conforms() {
-    block(run_suite(|clock| {
+    block(run_suite(awaken_lease_contract::system_clock(), |clock| {
         SqliteEnvRegistry::open_in_memory(clock).expect("sqlite in-memory registry")
     }));
 }

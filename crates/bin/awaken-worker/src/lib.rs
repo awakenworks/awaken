@@ -1069,6 +1069,7 @@ fn configured_container_acp_capability_source(
     if targets.is_empty() {
         return Ok(None);
     }
+    let clock = host.clock();
     let negotiator = Arc::new(awaken_session_executor::SessionAcpCapabilityNegotiator::new(
         host,
         // Some native adapters perform image-local plugin discovery before
@@ -1082,6 +1083,7 @@ fn configured_container_acp_capability_source(
             targets,
             negotiator,
             std::path::PathBuf::from(awaken_provisioning_contract::WorkspaceLayout::ROOT),
+            clock,
         ),
     )))
 }
@@ -1413,7 +1415,7 @@ impl WorkerNode {
         // them off this boundary prevents an unavailable Sandbox backend from
         // making the Worker itself permanently Starting while claim admission
         // still fails closed for any Run that needs their evidence.
-        let environment_proof_started = std::time::Instant::now();
+        let environment_proof_started = awaken_lease_contract::mono::now();
         if let Some(provider) = &lifecycle.session_environment_provider {
             tokio::time::timeout(startup_timing.request_timeout(), provider.probe_ready())
                 .await
@@ -1606,7 +1608,7 @@ impl WorkerNode {
                 // discards the only owner able to acknowledge physical return.
                 // Unknown external effects still retain their Dispatch slot.
                 let deadline =
-                    tokio::time::Instant::now() + lifecycle::WORKER_REVOCATION_BUDGET;
+                    awaken_lease_contract::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET;
                 cleanup = Box::pin(lifecycle::revoke_worker_session_authority_before(
                     &lifecycle,
                     deadline,
@@ -1627,7 +1629,7 @@ impl WorkerNode {
         // revocation ran, its original absolute deadline remains the one owner
         // for this final effect; an exhausted deadline becomes Unconfirmed.
         let deadline = cleanup_deadline
-            .unwrap_or_else(|| tokio::time::Instant::now() + lifecycle::WORKER_REVOCATION_BUDGET);
+            .unwrap_or_else(|| awaken_lease_contract::mono::now() + lifecycle::WORKER_REVOCATION_BUDGET);
         cleanup = lifecycle::shutdown_worker_capacity_before(&lifecycle, deadline, cleanup).await;
         // A timeout carries no authority to publish quiescence, even when the
         // instantaneous process-local counter happens to read zero.

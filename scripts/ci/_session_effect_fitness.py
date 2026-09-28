@@ -524,7 +524,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     errors.extend(_require_ordered_function(
         sources, APPLICATION_RESOURCE_RECONCILIATION,
         "require_current_live_terminal_generation",
-        ("current.expires_at_unix_ms", "self.now_unix_ms()"),
+        ("current.expires_at_unix_ms", "self.clock.now_ms()"),
         "terminal generation consumes the installed application clock",
     ))
 
@@ -1110,7 +1110,7 @@ fn drive_local_terminal_cleanup() {
     canonical[APPLICATION_RESOURCE_RECONCILIATION] = """
 fn terminal_cleanup_projection() { session.terminal_cleanup_work_action(); }
 fn require_current_live_terminal_generation(&self, session: &PersistedSession) {
-    realization_lease_is_live_at(current.expires_at_unix_ms, self.now_unix_ms());
+    realization_lease_is_live_at(current.expires_at_unix_ms, self.clock.now_ms());
 }
 fn authorize_terminal_cleanup_effect_from_root() {
     repository.get(&effect.command.session_id);
@@ -1314,7 +1314,7 @@ fn recover_terminal_receipts() {
     clock_mutant = dict(canonical)
     clock_mutant[APPLICATION_RESOURCE_RECONCILIATION] = clock_mutant[
         APPLICATION_RESOURCE_RECONCILIATION
-    ].replace("self.now_unix_ms()", "SystemClock.now_ms()", 1)
+    ].replace("self.clock.now_ms()", "SystemClock.now_ms()", 1)
     assert session_effect_violations(clock_mutant), "ambient terminal clock rejected"
 
     # projecting root preparation/disposal; C3 the Host deadline decorator

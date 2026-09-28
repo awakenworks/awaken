@@ -293,7 +293,7 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
     // store and their secret is sealed in the vault, so a webhook needs the config
     // plane. The plain mount has neither, so it wires no sink — a bare host emits no
     // webhooks (identical to an unconfigured plane before).
-    let catalog = ephemeral_resource_registry();
+    let catalog = ephemeral_resource_registry(host.clock());
     let state = local_managed_state(host.clone(), catalog.clone());
     mount_with_managed_and_resource_registry_and_dreams(host, state, catalog, None).0
 }
@@ -423,8 +423,9 @@ pub fn local_managed_state_with_environments_and_agent_source(
 /// with the built-in local Environment. The Coordinator composes these stores
 /// itself rather than borrowing them through the Managed adapter.
 #[cfg(feature = "test-support")]
-fn volatile_environment_execution()
--> Arc<awaken_environment_execution_application::EnvironmentExecutionApplication> {
+fn volatile_environment_execution(
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> Arc<awaken_environment_execution_application::EnvironmentExecutionApplication> {
     let catalog =
         Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
     catalog
@@ -432,7 +433,7 @@ fn volatile_environment_execution()
         .expect("install built-in local Environment");
     Arc::new(
         awaken_environment_execution_application::EnvironmentExecutionApplication::new(
-            Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
+            Arc::new(awaken_work_store::InMemoryWorkQueue::new(clock)),
             catalog,
         ),
     )
@@ -461,6 +462,7 @@ fn local_managed_state_over(
     let vaults = Arc::new(awaken_protocol_managed::VaultState::new(
         secrets.clone(),
         credentials.clone(),
+        clock.clone(),
     ));
     // Keep the Session aggregate and its extraction intents in the same concrete
     // repository. The two application SPIs remain separate, while their local
@@ -496,7 +498,8 @@ fn local_managed_state_over(
         awaken_session_application::SessionExecutionPlacement::RegisteredWorker
     };
     let local_realization_owner = host.dispatch_owner().to_string();
-    let environments = environments.unwrap_or_else(volatile_environment_execution);
+    let environments =
+        environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
     let repository_bindings = Arc::new(
         awaken_resource_application::RegistryRepositoryBindingVerifier::new(catalog.clone()),
     );
@@ -558,10 +561,11 @@ fn local_managed_state_over(
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 #[cfg(feature = "test-support")]
 pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: ScenarioManagedState) -> Router {
+    let registry = ephemeral_resource_registry(host.clock());
     mount_with_managed_over(
         host,
         managed_state,
-        ephemeral_resource_registry(),
+        registry,
         ApplicationAccessMount::ExplicitlyUnguardedTest,
         awaken_service_lifecycle::ServiceLifecycle::new(),
         None,
@@ -570,8 +574,10 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: ScenarioManagedS
 }
 
 #[cfg(feature = "test-support")]
-fn ephemeral_resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
-    awaken_resource_persistence::ephemeral(awaken_lease_contract::system_clock())
+fn ephemeral_resource_registry(
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
+    awaken_resource_persistence::ephemeral(clock)
         .expect("open ephemeral Resources application")
         .authorities()
         .resource_registry()
@@ -751,6 +757,8 @@ pub fn mount_with_managed_and_application_access_and_models(
     let lifecycle_host = host.clone();
     let remote_worker_required = !host.runs_local_dispatch_pool();
     let dream_process_store = scenario_dream_process_store(host.as_ref());
+    // The Worker transport judges assertions on the Scenario Host's clock.
+    let worker_clock = host.clock();
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_registry.clone());
     let supervised_state = managed_state.clone();
@@ -789,7 +797,7 @@ pub fn mount_with_managed_and_application_access_and_models(
             repository_transport_authorizer: None,
             worker_directory: test_worker_directory(),
             ai_sdk_browser_cors: AiSdkBrowserCors::default(),
-            worker_clock: awaken_lease_contract::system_clock(),
+            worker_clock,
         },
     )
     .expect("test-support Worker transport must assemble");
@@ -1171,6 +1179,8 @@ fn mount_with_managed_over(
     // Dreams share the concrete sessions.db aggregate in product startup; keep
     // crash/recovery fixtures on that same ownership boundary.
     let dream_process_store = scenario_dream_process_store(host.as_ref());
+    // The Worker transport judges assertions on the Scenario Host's clock.
+    let worker_clock = host.clock();
     let supervised_state = managed_state.clone();
     let session_application = managed_state.sessions;
     let (resources, memory_stores) =
@@ -1209,7 +1219,7 @@ fn mount_with_managed_over(
                 repository_transport_authorizer: None,
                 worker_directory: test_worker_directory(),
                 ai_sdk_browser_cors: AiSdkBrowserCors::default(),
-                worker_clock: awaken_lease_contract::system_clock(),
+                worker_clock,
             },
         )
         .expect("test-support Worker transport must assemble");
@@ -1687,9 +1697,9 @@ fn resource_management_router_from_host(
     Router,
     Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
 ) {
-    // The Scenario composition's Resources clock: registration commands, the
-    // Files API and the registry read one timeline.
-    let clock = awaken_lease_contract::system_clock();
+    // The Host's clock: registration commands, the Files API and the registry
+    // read the Scenario Host's one timeline.
+    let clock = host.clock();
     let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> =
         Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
             host.resource_reclamation()

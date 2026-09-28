@@ -2,6 +2,7 @@
 //! Terminal resource reclamation through the Session aggregate's one durable
 //! cleanup operation.
 
+use awaken_lease_contract::WallClockExt as _;
 use std::{future::Future, pin::Pin};
 
 use awaken_session_error_contract::RunError;
@@ -267,7 +268,7 @@ impl SessionApplication {
                     .await?;
                 Ok(lease)
             },
-            || self.now_unix_ms(),
+            || self.clock.now_ms(),
         )
         .await
     }

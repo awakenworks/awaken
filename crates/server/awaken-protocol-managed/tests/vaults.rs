@@ -53,7 +53,7 @@ struct Harness {
 fn harness() -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let state = Arc::new(VaultState::new(secrets.clone(), credentials.clone()));
+    let state = Arc::new(support::vault(secrets.clone(), credentials.clone()));
     let app = vault_router(state.clone());
     Harness {
         app,
@@ -293,7 +293,7 @@ impl CredentialRefreshExchange for FakeExchange {
 fn harness_with_probe(probe: Arc<FakeProbe>) -> Harness {
     let secrets = Arc::new(InMemorySecretStore::new());
     let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let state = Arc::new(VaultState::new(secrets.clone(), credentials.clone()).with_probe(probe));
+    let state = Arc::new(support::vault(secrets.clone(), credentials.clone()).with_probe(probe));
     let app = vault_router(state.clone());
     Harness {
         app,
@@ -636,7 +636,7 @@ async fn replacement_control_instance_reads_the_same_vault_authority() {
         .await
         .unwrap();
 
-    let replacement = Arc::new(VaultState::new(h.secrets.clone(), h.credentials.clone()));
+    let replacement = Arc::new(support::vault(h.secrets.clone(), h.credentials.clone()));
     let replacement_app = vault_router(replacement.clone());
     let retrieved = call(
         &replacement_app,
@@ -1764,7 +1764,7 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
 
     // A fresh protocol state has no in-memory projection cache to rely on. It
     // must reconstruct the exact required response fields from the durable row.
-    let recovered = vault_router(Arc::new(VaultState::new(
+    let recovered = vault_router(Arc::new(support::vault(
         h.secrets.clone(),
         h.credentials.clone(),
     )));
@@ -2358,7 +2358,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     use awaken_credential_vault::repo::CredentialRepo;
     let source_workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
     let issuer = Arc::new(RecordingEnvelopeIssuer::default());
-    let state = VaultState::new(h.secrets.clone(), h.credentials.clone()).with_material_delivery(
+    let state = support::vault(h.secrets.clone(), h.credentials.clone()).with_material_delivery(
         awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(issuer.clone()),
     );
     let holder =
@@ -2538,7 +2538,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         AdversarialEnvelopeResponse::SubstitutedPayload,
         AdversarialEnvelopeResponse::Failure,
     ] {
-        let adversarial = VaultState::new(h.secrets.clone(), h.credentials.clone())
+        let adversarial = support::vault(h.secrets.clone(), h.credentials.clone())
             .with_material_delivery(
                 awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(
                     Arc::new(AdversarialEnvelopeIssuer(response)),
@@ -2584,7 +2584,7 @@ async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
     use awaken_credential_vault::repo::CredentialRepo;
     let workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
     let custodian = Arc::new(RecordingCustodian::default());
-    let state = VaultState::new(h.secrets.clone(), h.credentials.clone()).with_material_delivery(
+    let state = support::vault(h.secrets.clone(), h.credentials.clone()).with_material_delivery(
         awaken_credential_contract::CredentialMaterialDelivery::ExternalCustody(custodian.clone()),
     );
     let holder =
@@ -2651,7 +2651,7 @@ async fn external_custody_never_observes_an_unowned_plaintext_path() {
         usage: awaken_credential_contract::CredentialUsage::ProviderAdapter,
         published: Mutex::new(0),
     });
-    let state = VaultState::new(h.secrets.clone(), h.credentials.clone()).with_material_delivery(
+    let state = support::vault(h.secrets.clone(), h.credentials.clone()).with_material_delivery(
         awaken_credential_contract::CredentialMaterialDelivery::ExternalCustody(custodian.clone()),
     );
     let profile = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native();
@@ -3257,7 +3257,7 @@ async fn validate_refresh_follows_the_exchange_decision_table() {
         let secrets = Arc::new(InMemorySecretStore::new());
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let mut state =
-            VaultState::new(secrets.clone(), credentials.clone()).with_probe(probe.clone());
+            support::vault(secrets.clone(), credentials.clone()).with_probe(probe.clone());
         let exchange = row.exchange.map(|(outcome, issued)| {
             Arc::new(FakeExchange {
                 outcome,
@@ -3413,7 +3413,7 @@ async fn credential_validation_wire_matches_the_sdk_declaration() {
         seen: Mutex::new(Vec::new()),
     });
     let state = Arc::new(
-        VaultState::new(secrets.clone(), credentials.clone())
+        support::vault(secrets.clone(), credentials.clone())
             .with_probe(probe)
             .with_refresh_exchange(exchange),
     );

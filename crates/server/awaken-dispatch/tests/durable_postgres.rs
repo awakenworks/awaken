@@ -17,6 +17,7 @@
 
 mod harness;
 
+use awaken_lease_contract::system_clock;
 use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -622,7 +623,7 @@ async fn durable_submit_awaits_then_delivered_decision_resumes_on_postgres() {
             .await
             .expect("dispatch"),
     );
-    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
 
     // Durable submit awaits on the gate; the tool has not run.
     let state = ingress
@@ -758,7 +759,7 @@ async fn postgres_append_is_idempotent_and_stale_input_is_dropped() {
             .await
             .expect("dispatch"),
     );
-    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
 
     assert_eq!(
         ingress

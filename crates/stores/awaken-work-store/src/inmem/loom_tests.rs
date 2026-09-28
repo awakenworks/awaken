@@ -54,7 +54,7 @@ fn release_and_reacquire_preserve_one_complete_authority() {
     // active. No schedule may expose active Work with absent lease authority,
     // nor may the old release clear a successor installed after its check.
     check_interleavings(|| {
-        let queue = Arc::new(InMemoryWorkQueue::new());
+        let queue = Arc::new(InMemoryWorkQueue::new(awaken_lease_contract::system_clock()));
         let lease = complete(queue.acquire_session("env", &SessionId::from("session"), "owner", 0))
             .unwrap()
             .unwrap();
@@ -89,7 +89,7 @@ fn token_authentication_never_borrows_a_replacement_epoch() {
     // expiry/reclaim minting T2 for B/epoch two. R1 auth before reclaim -> A/1;
     // R2 auth after reclaim -> None. Mixed T1 + B/2 is never a valid snapshot.
     check_interleavings(|| {
-        let queue = Arc::new(InMemoryWorkQueue::new());
+        let queue = Arc::new(InMemoryWorkQueue::new(awaken_lease_contract::system_clock()));
         complete(queue.enqueue_session("env", &SessionId::from("session"))).unwrap();
         let claim = complete(queue.claim_with_session_access(
             "env",
@@ -140,7 +140,7 @@ fn owner_teardown_cannot_clear_an_intervening_reclaim() {
     // R1 teardown first -> queued then B/2; R2 reclaim first -> teardown(A)
     // affects zero rows. Both orders leave B/2 active with its fresh token.
     check_interleavings(|| {
-        let queue = Arc::new(InMemoryWorkQueue::new());
+        let queue = Arc::new(InMemoryWorkQueue::new(awaken_lease_contract::system_clock()));
         complete(queue.enqueue_session("env", &SessionId::from("session"))).unwrap();
         complete(queue.claim_with_session_access(
             "env",
@@ -186,7 +186,7 @@ fn renewal_and_reclaim_return_complete_lease_snapshots() {
     // R2 reclaim first -> B/2 with 2*TTL, and A observes B without extending it.
     // A stale snapshot must not overwrite B's expiry with the shorter A lease.
     check_interleavings(|| {
-        let queue = Arc::new(InMemoryWorkQueue::new());
+        let queue = Arc::new(InMemoryWorkQueue::new(awaken_lease_contract::system_clock()));
         complete(queue.acquire_session("env", &SessionId::from("session"), "owner-a", 0))
             .unwrap()
             .unwrap();

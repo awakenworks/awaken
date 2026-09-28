@@ -6,6 +6,7 @@
 
 mod harness;
 
+use awaken_lease_contract::system_clock;
 use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -48,17 +49,10 @@ fn pending(message_id: &str, run: &str, result: ResumeResult) -> PendingInput {
 #[tokio::test]
 async fn service_drains_submitted_runs_and_shuts_down() {
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
-    let service = ingress.spawn_service(
-        awaken_lease_contract::system_clock(),
-        DispatchServiceConfig::default(),
-    );
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
+    let service = ingress.spawn_service(system_clock(), DispatchServiceConfig::default());
 
     // Submit and let the daemon pick it up — the test never drives the worker.
     service.submit(activation("run-1")).await.expect("submit");
@@ -78,17 +72,10 @@ async fn service_drains_submitted_runs_and_shuts_down() {
 #[tokio::test]
 async fn service_resumes_an_awaiting_run_on_delivery() {
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
-    let service = ingress.spawn_service(
-        awaken_lease_contract::system_clock(),
-        DispatchServiceConfig::default(),
-    );
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone(), system_clock());
+    let service = ingress.spawn_service(system_clock(), DispatchServiceConfig::default());
 
     // The daemon runs the submission until it awaits on the gate.
     service.submit(activation("run-1")).await.expect("submit");
@@ -122,10 +109,8 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
     // the daemon polls with, so the recovery boundary stays exact.
     let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
 
     // Simulate a crashed worker: a claimed run with a held lease, nothing run.
     store
@@ -166,17 +151,10 @@ async fn service_recovers_a_crashed_lease_on_its_clock() {
 #[tokio::test]
 async fn shutdown_is_clean_with_no_work() {
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let ingress = DispatchTestHarness::new(runtime, store, commit);
-    let service = ingress.spawn_service(
-        awaken_lease_contract::system_clock(),
-        DispatchServiceConfig::default(),
-    );
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store, commit, system_clock());
+    let service = ingress.spawn_service(system_clock(), DispatchServiceConfig::default());
     // No work submitted: shutdown still returns promptly.
     service.shutdown().await;
 }
@@ -196,10 +174,8 @@ async fn service_fires_a_scheduled_delivery_when_due() {
     // so it must read the same hand-driven reading the daemon polls with.
     let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone(), system_clock());
     let service = ingress.spawn_service(
         clock.clone(),
         DispatchServiceConfig {
@@ -253,17 +229,10 @@ async fn service_fires_a_scheduled_delivery_when_due() {
 async fn service_relays_a_cross_thread_send() {
     // The daemon relays staged cross-thread deliveries each tick (M3b).
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
-    let service = ingress.spawn_service(
-        awaken_lease_contract::system_clock(),
-        DispatchServiceConfig::default(),
-    );
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone(), system_clock());
+    let service = ingress.spawn_service(system_clock(), DispatchServiceConfig::default());
 
     service.submit(activation("run-1")).await.expect("submit");
     assert!(
@@ -297,10 +266,8 @@ async fn service_commits_retry_exhaustion_and_settles_done() {
     // reading the daemon polls with.
     let clock = Arc::new(ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone(), system_clock());
 
     // Drive two crash-recoveries by hand so attempt_count reaches the budget.
     store
@@ -358,15 +325,11 @@ async fn daemon_runs_with_worker_owned_renewal_and_ttl_gc_enabled() {
     // Renewal is owned by the worker's exact drive; this exercises that common
     // path through the daemon together with the daemon-owned ttl-GC branch.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let commit = Arc::new(MemoryCommitCoordinator::new(
-        awaken_lease_contract::system_clock(),
-    ));
-    let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+    let ingress = DispatchTestHarness::new(runtime, store, commit.clone(), system_clock());
     let service = ingress.spawn_service(
-        awaken_lease_contract::system_clock(),
+        system_clock(),
         DispatchServiceConfig {
             poll_interval: Duration::from_millis(5),
             dead_letter_ttl: Some(Duration::from_millis(1)),

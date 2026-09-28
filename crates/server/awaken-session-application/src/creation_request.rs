@@ -15,6 +15,7 @@
 //! participants and their compensation, budget pricing, and whether the root
 //! is accepted or awaited — is decided here once for every protocol.
 
+use awaken_lease_contract::WallClockExt as _;
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
@@ -597,7 +598,7 @@ impl SessionApplication {
                 let snapshot = self
                     .resolve_managed_list_price_snapshot(
                         awaken_session_budget_contract::ManagedListPriceRequest {
-                            occurred_at_unix_ms: self.now_unix_ms(),
+                            occurred_at_unix_ms: self.clock.now_ms(),
                             model_refs,
                         },
                     )

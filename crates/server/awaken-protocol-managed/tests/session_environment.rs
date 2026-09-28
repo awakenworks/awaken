@@ -420,7 +420,9 @@ async fn call(
 
 async fn app() -> (Router, String) {
     let (environment_authoring, environment_execution) =
-        awaken_protocol_managed_testkit::environment_components();
+        awaken_protocol_managed_testkit::environment_components(
+            awaken_lease_contract::system_clock(),
+        );
     let environment = environment_authoring
         .application()
         .create(awaken_environment_contract::CreateEnvironmentCommand {

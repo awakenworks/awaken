@@ -18,7 +18,6 @@ use awaken_environment_contract::{
     EnvironmentSandboxPolicyRef, EnvironmentStoreError, InvalidEnvironmentConfig,
 };
 use awaken_lease_contract::WallClock;
-use awaken_lease_contract::system_clock;
 use awaken_lease_contract::utc::epoch_millis_to_rfc3339;
 use awaken_lease_testkit::ManualClock;
 use std::sync::Arc;
@@ -774,8 +773,14 @@ pub async fn environment_instants_are_the_injected_clock<R: EnvRegistry>(
     );
 }
 
-pub async fn run_suite<R: EnvRegistry>(fresh_with: impl Fn(Arc<dyn WallClock>) -> R) {
-    let fresh = || fresh_with(system_clock());
+/// Run the whole contract. The factory takes the clock so the observation rules
+/// can name the instants they expect; `clock` is the caller's timeline for every
+/// rule that does not.
+pub async fn run_suite<R: EnvRegistry>(
+    clock: Arc<dyn WallClock>,
+    fresh_with: impl Fn(Arc<dyn WallClock>) -> R,
+) {
+    let fresh = || fresh_with(clock.clone());
     unique_ids(&fresh()).await;
     archive_preserves_authoritative_history(&fresh()).await;
     missing_id_fails_closed(&fresh()).await;

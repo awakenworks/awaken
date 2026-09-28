@@ -31,11 +31,13 @@ impl ManagedState {
     pub fn new(
         runtime: impl awaken_session_execution_contract::CompleteSessionRuntime + 'static,
     ) -> Self {
+        let clock = awaken_lease_contract::system_clock();
         Self::from_fixture_parts(
             Arc::new(runtime),
             None,
             awaken_protocol_managed_testkit::ephemeral_session_repository(),
-            awaken_protocol_managed_testkit::environment_fixture().execution,
+            awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
+            clock,
         )
     }
 
@@ -50,11 +52,13 @@ impl ManagedState {
             + 'static,
     {
         let runtime = Arc::new(runtime);
+        let clock = awaken_lease_contract::system_clock();
         Self::from_fixture_parts(
             runtime.clone(),
             Some(runtime),
             awaken_protocol_managed_testkit::ephemeral_session_repository(),
-            awaken_protocol_managed_testkit::environment_fixture().execution,
+            awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
+            clock,
         )
     }
 
@@ -168,16 +172,15 @@ impl ManagedState {
         environments: Arc<
             awaken_environment_execution_application::EnvironmentExecutionApplication,
         >,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
-        // A volatile ManagedState fixture is its own composition: it chooses
-        // the host clock for its Session application here.
         Self::from_application(
             Arc::new(SessionApplication::new(
                 runtime,
                 mcp_realizer.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
                 sessions_repo,
                 environments.clone(),
-                awaken_lease_contract::system_clock(),
+                clock,
             )),
             environments,
         )
