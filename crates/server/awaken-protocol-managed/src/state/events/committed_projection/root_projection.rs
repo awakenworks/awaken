@@ -11,9 +11,8 @@
 use super::candidate_evidence::{BudgetReachProjection, CandidateEvidence};
 use super::*;
 use awaken_managed_session_events::{
-    FactKey, FactKind, FactProvenance, FactRole, TimelineFact, TranscriptRole,
-    interval_close_cursor, interval_lifecycle_open_event, is_opening,
-    running_interval_lifecycle_open_event,
+    FactKey, FactKind, FactProvenance, FactRole, TimelineFact, TranscriptRole, is_opening,
+    period_opening,
 };
 
 /// What the root reduction decided that the aggregate close reuses.
@@ -173,55 +172,28 @@ impl ManagedState {
         // every reopen.
         let is_root_opening =
             |event: &&RunLifecycleEvent| event.thread_id.0 == session_id && is_opening(event.kind);
-        let latest_interval_opening = persisted
-            .running_interval
-            .as_ref()
-            .and_then(|interval| {
-                let prior_close = persisted
-                    .closed_runtime_intervals
-                    .iter()
-                    .filter_map(interval_close_cursor)
-                    .max()
-                    .unwrap_or_default();
-                running_interval_lifecycle_open_event(
-                    &record.session.id,
-                    interval,
-                    prior_close,
-                    &persisted.event_batches,
-                    all_accepted_lifecycle,
-                )
-            })
-            .or_else(|| {
-                let (latest, preceding) = persisted.closed_runtime_intervals.split_last()?;
-                let prior_close = preceding
-                    .iter()
-                    .filter_map(interval_close_cursor)
-                    .max()
-                    .unwrap_or_default();
-                interval_lifecycle_open_event(
-                    &record.session.id,
-                    latest,
-                    prior_close,
-                    &persisted.event_batches,
-                    all_accepted_lifecycle,
-                )
-            });
+        let latest_interval_opening =
+            awaken_managed_session_events::latest_interval_opening(persisted, all_accepted_lifecycle);
         let aggregate_running_key = latest_interval_opening
             .or_else(|| {
-                root_terminal.and_then(|terminal| {
-                    // The opening may have been consumed by an earlier refresh
-                    // while Session activity was not yet Running. A later terminal
-                    // must still recover that exact bracket from the complete
-                    // accepted prefix. Select the latest opening of this same Run:
-                    // one Run can Await and Resume more than once.
-                    all_accepted_lifecycle
-                        .iter()
-                        .rev()
-                        .filter(is_root_opening)
-                        .find(|event| event.run_id == terminal.run_id)
-                })
+                root_terminal
+                    .and_then(|terminal| {
+                        // The opening may have been consumed by an earlier refresh
+                        // while Session activity was not yet Running. A later terminal
+                        // must still recover that exact bracket from the complete
+                        // accepted prefix. Start from the latest opening of this same
+                        // Run: one Run can Await and Resume more than once.
+                        all_accepted_lifecycle
+                            .iter()
+                            .rev()
+                            .filter(is_root_opening)
+                            .find(|event| event.run_id == terminal.run_id)
+                    })
+                    .or_else(|| accepted_lifecycle.iter().rev().find(is_root_opening))
+                    // The aggregate opens at the first commit of that period, not
+                    // at whichever later Rescheduled commit this read saw last.
+                    .map(|latest| period_opening(latest, 0, all_accepted_lifecycle))
             })
-            .or_else(|| accepted_lifecycle.iter().rev().find(is_root_opening))
             .map(|event| {
                 FactKey::new(
                     record.session.id.clone(),
