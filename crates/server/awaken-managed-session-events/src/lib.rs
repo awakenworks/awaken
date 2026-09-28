@@ -33,7 +33,10 @@ mod usage;
 
 pub use acceptance::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
 pub use activation::activation_failure_fact;
-pub use aggregate::{IntervalAggregatePlan, IntervalStep, IntervalUsage, plan_interval_aggregate};
+pub use aggregate::{
+    IntervalAggregatePlan, IntervalStep, IntervalUsage, latest_interval_opening,
+    plan_interval_aggregate,
+};
 pub use coordination::{
     CoordinationReceipts, IssuedToolEvent, SEND_MESSAGE_TOOL_ID, coordination_orders, cross_posts,
     is_coordination_send, link_facts,
@@ -52,7 +55,8 @@ pub use index::{
 };
 pub use interval::{
     budget_reach_close_cursor, budget_reach_projection_close_cursor, interval_close_cursor,
-    interval_lifecycle_open_event, is_opening, running_interval_lifecycle_open_event,
+    interval_lifecycle_open_event, is_opening, period_opening,
+    running_interval_lifecycle_open_event,
 };
 pub use key::{FactKey, FactProvenance};
 pub use lifecycle::{

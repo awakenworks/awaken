@@ -4,7 +4,9 @@
 //! interval, where its usage/idle pair closes) and the canonical order.
 
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
-use awaken_session_event_contract::{SessionEventBatch, SessionEventCommand};
+use awaken_session_event_contract::{
+    SessionAgentRunBoundary, SessionEventBatch, SessionEventCommand,
+};
 use awaken_session_state_contract::{
     PersistedSession, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
     SessionRuntimeIntervalStart,
@@ -75,7 +77,65 @@ pub fn is_opening(kind: RunLifecycleEventKind) -> bool {
     )
 }
 
+/// The opening that began the execution period `opening` belongs to: the
+/// first opening of the same Run on the same Thread after that Run's latest
+/// boundary before `opening`, and after `floor`. A `Rescheduled` or repeated
+/// `Running` commit continues its period; only an Awaiting or terminal
+/// boundary ends one, so a `Resumed` after it begins the next.
+///
+/// The aggregate opens once per period, at this commit. Selecting the latest
+/// opening instead made the aggregate key depend on how much of the period a
+/// reader happened to see: a warm reader keyed it at `Running`, a cold one at
+/// the later `Rescheduled`, and a warm reader that saw both published it twice.
+#[must_use]
+pub fn period_opening<'a>(
+    opening: &'a RunLifecycleEvent,
+    floor: u64,
+    lifecycle_events: &'a [RunLifecycleEvent],
+) -> &'a RunLifecycleEvent {
+    let same_run = |event: &&'a RunLifecycleEvent| {
+        event.thread_id == opening.thread_id && event.run_id == opening.run_id
+    };
+    let last_boundary = lifecycle_events
+        .iter()
+        .filter(same_run)
+        .filter(|event| SessionAgentRunBoundary::is_boundary(event.kind))
+        .filter(|event| lifecycle_opening_order(event, &opening).is_lt())
+        .max_by(lifecycle_opening_order);
+    lifecycle_events
+        .iter()
+        .filter(same_run)
+        .filter(|event| is_opening(event.kind) && event.source_commit_cursor > floor)
+        .filter(|event| lifecycle_opening_order(event, &opening).is_le())
+        .filter(|event| {
+            last_boundary.is_none_or(|boundary| lifecycle_opening_order(event, &boundary).is_gt())
+        })
+        .min_by(lifecycle_opening_order)
+        .unwrap_or(opening)
+}
+
 fn select_interval_opening<'a>(
+    session_id: &str,
+    opened_revision: awaken_session_types::SessionRevision,
+    activity_epoch: u64,
+    observations: &[SessionRuntimeIntervalObservation],
+    (prior_close, close): (u64, Option<u64>),
+    batches: &[SessionEventBatch],
+    lifecycle_events: &'a [RunLifecycleEvent],
+) -> Option<&'a RunLifecycleEvent> {
+    select_latest_period_opening(
+        session_id,
+        opened_revision,
+        activity_epoch,
+        observations,
+        (prior_close, close),
+        batches,
+        lifecycle_events,
+    )
+    .map(|opening| period_opening(opening, prior_close, lifecycle_events))
+}
+
+fn select_latest_period_opening<'a>(
     session_id: &str,
     opened_revision: awaken_session_types::SessionRevision,
     activity_epoch: u64,
@@ -359,6 +419,92 @@ mod tests {
                     events.reverse();
                 }
             }
+        }
+    }
+
+    #[test]
+    fn period_opening_is_the_first_opening_since_the_runs_last_boundary() {
+        // Decision table over one Run's lifecycle, starting from its latest
+        // opening. P1 a lone Running is its own period; P2 a Rescheduled
+        // continues the Running period; P3 an Awaiting boundary ends a period,
+        // so the Resumed after it (and its Rescheduled) open the next; P4 the
+        // floor excludes a predecessor interval's commits; P5 another Run or
+        // Thread never extends the period; P6 array order is irrelevant.
+        use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+        use awaken_agent_contract::agent::thread::Id as ThreadId;
+        let event = |cursor, thread: &str, run: &str, kind| RunLifecycleEvent {
+            cursor: awaken_agent_contract::encode_run_lifecycle_cursor(cursor, 0).unwrap(),
+            source_commit_cursor: cursor,
+            thread_id: ThreadId(thread.into()),
+            run_id: RunId(run.into()),
+            kind,
+            state: RunState::Running,
+            await_reason: None,
+        };
+        use RunLifecycleEventKind::{Awaiting, Rescheduled, Resumed, Running};
+        let cases: [(&str, Vec<RunLifecycleEvent>, u64, u64, u64); 6] = [
+            ("P1", vec![event(1, "s", "r", Running)], 0, 1, 1),
+            (
+                "P2",
+                vec![event(1, "s", "r", Running), event(2, "s", "r", Rescheduled)],
+                0,
+                2,
+                1,
+            ),
+            (
+                "P3",
+                vec![
+                    event(1, "s", "r", Running),
+                    event(2, "s", "r", Awaiting),
+                    event(3, "s", "r", Resumed),
+                    event(4, "s", "r", Rescheduled),
+                ],
+                0,
+                4,
+                3,
+            ),
+            (
+                "P4",
+                vec![event(1, "s", "r", Running), event(2, "s", "r", Rescheduled)],
+                1,
+                2,
+                2,
+            ),
+            (
+                "P5",
+                vec![
+                    event(1, "s", "other", Running),
+                    event(1, "child", "r", Running),
+                    event(2, "s", "r", Running),
+                    event(3, "s", "r", Rescheduled),
+                ],
+                0,
+                3,
+                2,
+            ),
+            (
+                "P6",
+                vec![
+                    event(4, "s", "r", Rescheduled),
+                    event(3, "s", "r", Resumed),
+                    event(2, "s", "r", Awaiting),
+                    event(1, "s", "r", Running),
+                ],
+                0,
+                4,
+                3,
+            ),
+        ];
+        for (rule, events, floor, from, expected) in cases {
+            let latest = events
+                .iter()
+                .find(|event| event.source_commit_cursor == from && event.thread_id.0 == "s")
+                .unwrap();
+            assert_eq!(
+                period_opening(latest, floor, &events).source_commit_cursor,
+                expected,
+                "{rule}"
+            );
         }
     }
 }
