@@ -145,9 +145,10 @@ mod terminal_reconciliation;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::{MemoryHostModel, test_resource_validator};
-#[cfg(test)]
-pub(crate) use tests::{RemoteTerminalCleanupControl, install_test_memory_mounter};
+pub(crate) use tests::fixtures::{
+    MemoryHostModel, RemoteTerminalCleanupControl, install_test_memory_mounter,
+    test_resource_validator,
+};
 mod types;
 mod worker_resolver;
 
