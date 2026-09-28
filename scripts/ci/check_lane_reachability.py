@@ -4,7 +4,7 @@
 Three k3d end-to-end runners sat in `e2e/k3d/` for months with the executable
 bit set, a cleanup trap, and assertions about cross-node failover — and no lane
 invoked any of them. One of them, `distributed_control_contract_test.sh`, is
-named in `formal/coverage.json` as the evidence for a proved requirement. So a
+named in the formal obligation ledger as the evidence for a proved requirement. So a
 proof ledger cited a script that had not run, and nothing said so: a gate that
 passes because it never observed its subject.
 
@@ -17,7 +17,7 @@ the reason written down and the coverage it is not providing named.
 
   L1  every executable under e2e/**, scripts/** and deploy/** is reachable from
       a lane root, or appears in UNSELECTED_EXECUTABLES with a reason.
-  L2  every evidence path in formal/coverage.json that is an executable must be
+  L2  every evidence path in the obligation ledger that is an executable must be
       selected by a lane. A registry entry cannot excuse this one: the ledger
       claims the script is what makes a requirement true.
   L3  a registry entry that names a file which is now selected, or which no
@@ -38,6 +38,8 @@ import os
 import re
 import sys
 from pathlib import Path
+
+import formal_ledger
 
 # Every file this checker reads: the lane roots whose closure it walks and the
 # executables it accounts for.
@@ -65,7 +67,7 @@ WORKFLOW_GLOB = ".github/workflows/*.yml"
 SUBJECT_DIRECTORIES = ("e2e", "scripts", "deploy")
 SKIPPED_PARTS = frozenset({"node_modules", "__pycache__", "target", ".git"})
 
-COVERAGE = "formal/coverage.json"
+COVERAGE = "the formal obligation ledger"
 
 # Key: repository-relative path. Value: why no lane runs it, and what does cover
 # the behaviour instead. An entry is a decision someone made and can be argued
@@ -260,7 +262,7 @@ def evidence_errors(root: Path, reached: set[str], paths: set[str]) -> list[str]
         if relative in reached:
             continue
         errors.append(
-            f"{COVERAGE}: cites {relative} as evidence, but no lane runs it, so the ledger "
+            f"{COVERAGE} cites {relative} as evidence, but no lane runs it, so the ledger "
             "claims a requirement is true on the strength of a script that never executes. "
             "A registry entry cannot excuse this: either select it from a lane or stop citing it."
         )
@@ -276,11 +278,12 @@ def validate(root: Path) -> list[str]:
     if not present:
         return ["no executables found under e2e/, scripts/ or deploy/; the corpus collapsed"]
     errors = unselected_errors(reached, present)
-    coverage = root / COVERAGE
-    if coverage.is_file():
-        errors += evidence_errors(
-            root, reached, evidence_paths(json.loads(coverage.read_text(encoding="utf-8")))
-        )
+    if formal_ledger.present(root):
+        try:
+            ledger = formal_ledger.load(root)
+        except formal_ledger.LedgerError as error:
+            return errors + [str(error)]
+        errors += evidence_errors(root, reached, evidence_paths(ledger))
     return errors
 
 

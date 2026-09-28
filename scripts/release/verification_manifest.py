@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/ci"))
+import formal_ledger
 from formal_profile import profile_result
 from formal_run_evidence import canonical_bytes, committed_file_digest, digest_bytes, digest_file, proof_toolchain, validate_record
 
@@ -150,7 +151,10 @@ def build_manifest(
         raise ContractError(f"unknown profile {profile!r}")
     if re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
         raise ContractError("source commit must be 40 lowercase hexadecimal characters")
-    coverage = load_json(repository / "formal/coverage.json")
+    try:
+        coverage = formal_ledger.load(repository)
+    except formal_ledger.LedgerError as error:
+        raise ContractError(str(error)) from error
     features = load_json(repository / "formal/features.json")
     assumptions = load_json(repository / "formal/assumptions.json")
     boundaries = load_json(repository / "formal/proof-boundaries.json")
