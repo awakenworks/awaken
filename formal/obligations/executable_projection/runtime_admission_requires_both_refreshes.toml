@@ -1,0 +1,31 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ExecutableProjectionRefreshProof.tla",
+  "crates/contract/awaken-session-application-contract/src/executable_projection.rs",
+  "crates/bin/awaken-cli/src/executable_projection_refresh.rs",
+  "crates/bin/awaken-cli/src/runtime_process_router.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "executable_projection_admission_requires_both_ordered_refreshes",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-application-contract/src/executable_projection.rs",
+  "crates/bin/awaken-cli/src/executable_projection_refresh.rs",
+  "crates/bin/awaken-cli/src/runtime_process_router.rs",
+]
+
+[[bounds]]
+text = '''The contract-owned ExecutableProjectionRefresh is the sole durable pair. Its two distinct typed fields make a partial durable pair unrepresentable, and its non-overridable refresh method calls Agent then Environment before the private constructors mint ExecutableProjectionAdmission. CLI startup accepts exactly both durable adapters or the explicit process-local AllInOne absence; mixed presence fails before routing.'''
+
+[[bounds]]
+text = '''The assumption-free Kani harness exhausts both Result outcomes for both domains through the exact production capability constructors and handler-entry method. Admission enters exactly for Agent-success plus Environment-success; either error has no capability and cannot call enter. Fixed Kani 0.67.0 with the qualified CBMC/CaDiCaL backend completed 40 checks with zero failures in 0.026846092 solver seconds and 34.23 guarded seconds, at 117716 KiB peak aggregate RSS under one job, empty RUSTC_WRAPPER, 600 seconds and 12 GiB.'''
+
+[[bounds]]
+text = '''The linked TLAPS theorem remains the unbounded protocol proof. AllInOne uses the explicit process-local admission constructor because registration and consumption share the same catalog allocations. Adapter truth, database range semantics, Tokio polling and scheduling, cancellation or panic between awaits, and universal Rust-to-TLA refinement remain outside the direct capability kernel.'''

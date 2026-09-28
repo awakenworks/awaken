@@ -1,0 +1,19 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/ResourceReclamation.tla",
+  "crates/contract/awaken-resource-contract/src/lifecycle.rs",
+  "crates/server/awaken-resource-reclaimer/src/lib.rs",
+]
+proof_harnesses = [
+  "stale_resource_purge_claim_cannot_commit_receipt",
+]
+production_entrypoints = [
+  "crates/contract/awaken-resource-contract/src/lifecycle.rs",
+  "crates/server/awaken-resource-reclaimer/src/lib.rs",
+]
+
+[[bounds]]
+text = '''The closed production claim-admission domain over claimed status, exact owner, exact generation and a live half-open lease. Durable field reads, wall-clock correctness and repository revision CAS remain runtime TCB; every receipt attachment crosses this kernel through ResourcePurgeIntent::complete.'''

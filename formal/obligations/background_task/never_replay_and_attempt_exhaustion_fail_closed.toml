@@ -1,0 +1,47 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/BackgroundTask.tla",
+  "formal/tla/BackgroundTask.cfg",
+  "crates/runtime/awaken-ext-background-task/src/model.rs",
+  "crates/runtime/awaken-ext-background-task/src/plugin.rs",
+  "crates/runtime/awaken-ext-background-task/tests/state_machine.rs",
+  "crates/runtime/awaken-runtime/tests/background_task_state.rs",
+  "crates/runtime/awaken-runtime/src/engine/progress.rs",
+  "crates/contract/awaken-agent-contract/src/agent/state.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "never_replay_recovery_requires_a_durable_remote_continuation",
+  "expired_reclaim_plan_advances_epoch_or_terminates",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-ext-background-task/src/model.rs",
+  "crates/runtime/awaken-ext-background-task/src/plugin.rs",
+  "crates/runtime/awaken-runtime/src/engine/progress.rs",
+  "crates/contract/awaken-agent-contract/src/agent/state.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+]
+
+[[bounds]]
+text = '''The two named Kani harnesses consume the sole production expired-attempt predicates and reclaim_mutation_plan. Across all four recovery modes, remote/cancellation facts, u64 epochs, u16 attempt budgets, five lifecycle phases, attempt presence, u64 lease times, revisions and successor leases, an expired local NeverReplay attempt cannot acquire a replacement, an exhausted replayable local attempt ends AttemptsExhausted, and every rejected admission yields no plan.'''
+
+[[bounds]]
+text = '''The fixed Kani 0.67.0 batch completed 215 checks with zero failures for both named harnesses under one job, an empty RUSTC_WRAPPER, a 600-second deadline and a 12 GiB cgroup memory ceiling.'''
+
+[[bounds]]
+text = '''BackgroundTask::reclaim supplies facts from the complete typed aggregate and applies one returned plan. The native aggregate decision table crosses both terminal classes with all phase, recovery, remote, expiry, budget and revision partitions; no second lifecycle or persistence owner is introduced.'''
+
+[[bounds]]
+text = '''The required SQLite test commits the initial Running aggregate through the ordinary Thread State command, forces the complete terminal commit to fail at a real read-only transaction, reopens to require the exact prior Running truth, recomputes the same terminal decision, commits it under a fresh Run, and reopens again to require the exact terminal aggregate without an attempt. This cross-checks rejection, retry and restart through the existing StateCell, ThreadCommit and SQLite owners.'''
+
+[[bounds]]
+text = '''Kani proves the production scalar decisions, not Rust String or heap behavior, serde/JSON framing, StateCell materialization, ThreadCommit validation, SQLite transaction/durability semantics, Tokio scheduling, clock truth, process termination or arbitrary external tool effects. Those remain native evidence or declared database/async TCB. The finite TLA+ model remains complementary evidence and is not claimed as a universal Rust refinement.'''

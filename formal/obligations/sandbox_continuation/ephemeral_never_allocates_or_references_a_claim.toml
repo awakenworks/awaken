@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.container_and_kernel_isolation",
+]
+evidence = [
+  "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s/creation.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s.rs",
+]
+proof_harnesses = [
+  "continuation_claim_selection_is_total_exact_and_non_widening",
+  "disabled_continuation_has_no_claim_api_obligation_without_durable_evidence",
+]
+production_entrypoints = [
+  "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s/creation.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

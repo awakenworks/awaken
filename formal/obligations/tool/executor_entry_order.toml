@@ -1,0 +1,39 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ThreadCommitProjectionProof.tla",
+  "formal/runtime-refinement-manifest.json",
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+  "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
+  "crates/runtime/awaken-runtime/src/engine/resume.rs",
+  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
+  "crates/runtime/awaken-runtime/tests/per_step_commit.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "executor_entry_admission_requires_exactly_executing_phase",
+]
+production_entrypoints = [
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+  "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
+  "crates/runtime/awaken-runtime/src/engine/resume.rs",
+]
+
+[[bounds]]
+text = '''ActiveToolBatch remains the sole foreground tool lifecycle and operation-identity owner. Its borrowed ToolExecutionAdmission has private fields and is produced only for the exact Executing call; fresh sequential, compatible parallel-wave and replay-safe recovery paths request that value only after persist_batch returns, while approval resume requests it only after the Awaiting-to-Executing ThreadCommit returns. Every regular ToolExecutor entry consumes this admission and the batch-owned operation identity, eliminating the former resume-only identity path.'''
+
+[[bounds]]
+text = '''Direct Kani exhausts every durable phase class and every u16 Executing attempt through the production executor_entry_attempt kernel: 37 checks, zero failures, one harness. Qualified Kani 0.67 with the pinned patched compiler and patched CBMC/CaDiCaL completed in 26.19 guarded seconds at 133496 KiB peak aggregate RSS and 50052360 KiB minimum available memory under the 600-second, 12-GiB RSS, 12-GiB MemAvailable and single-job guards, with RUSTC_WRAPPER empty and no assumptions, stubs or domain reduction.'''
+
+[[bounds]]
+text = '''Executed MemoryCommitCoordinator traces assert the committed Executing phase and exact batch-owned operation identity at actual regular-tool entry. The response-loss recovery scenario distinguishes every durable attempt. Existing fresh sequential, parallel-wave and recovery persist-removal mutants plus a resume-identity mutant are killed at the executor boundary.'''
+
+[[bounds]]
+text = '''The direct proof covers the local phase admission consumed by foreground regular ToolExecutor invocation. It does not prove ThreadCommit or database durability, the async await ordering, executor effects, delegation service entry, detached background start/poll/cancel lifecycle, external idempotency or universal Rust-to-TLA refinement; those remain explicit executable/model evidence and TCB.'''

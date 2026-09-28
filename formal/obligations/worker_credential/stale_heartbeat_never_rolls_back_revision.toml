@@ -1,0 +1,25 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/WorkerCredentialLiveness.tla",
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/server/awaken-worker-registry/src/memory.rs",
+  "crates/server/awaken-worker-registry/src/transition.rs",
+  "crates/server/awaken-coordinator/tests/worker_control_http.rs",
+]
+proof_harnesses = [
+  "worker_replacement_and_heartbeat_share_one_non_resurrection_boundary",
+]
+production_entrypoints = [
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/server/awaken-worker-registry/src/transition.rs",
+]
+
+[[bounds]]
+text = '''The production closed heartbeat-admission domain over record presence, exact incarnation identity, half-open lease validity, monotonic sequence and Worker state; registry lock or transaction serialization remains adapter TCB.'''

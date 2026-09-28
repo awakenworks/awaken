@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteAttempt.tla",
+  "crates/server/awaken-run-executor-a2a/src/message_identity.rs",
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/lib.rs",
+]
+proof_harnesses = [
+  "a2a_message_identity_rejects_only_resume_without_committed_correlation",
+]
+production_entrypoints = [
+  "crates/server/awaken-run-executor-a2a/src/message_identity.rs",
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+]
+
+[[bounds]]
+text = '''The sole outbound A2A message identity generator, using a domain-separated structured fingerprint over Run identity and optional committed resume correlation. Kani proves the closed initial/resume admission rule; executable tests establish deterministic replay, phase separation, coordinate sensitivity and delimiter safety. Hash collision resistance, serialization, remote idempotency, transport delivery and external orchestration remain implementation or external evidence.'''

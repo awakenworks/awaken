@@ -1,0 +1,27 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/SessionResourceActivation.tla",
+  "formal/tla/SessionResourceActivation.cfg",
+  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
+  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
+  "crates/server/awaken-session-application/src/tests/resource_resume.rs",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+]
+proof_harnesses = [
+  "resource_retry_reuses_exact_pending_revision",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
+  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
+]
+
+[[bounds]]
+text = '''Kani exhaustively checks the production pending-retry selector for both durable pending states and every u64 generation watermark: retry authority exists exactly when pending exists and returns that persisted revision unchanged. SessionResourceState::start_attempt consumes this selector and increments only Prepared activation records at the selected revision.'''
+
+[[bounds]]
+text = '''A file-backed SQLite application test closes and reopens the Session authority after a retryable first attempt, exercises the canonical reconciliation scan and Runtime apply path, and checks that the same generation becomes active with one existing activation record and an incremented attempt count. The proof does not establish SQLite engine correctness, arbitrary heap or serialized-structure integrity, root CAS linearizability, Runtime effect idempotency, or all asynchronous crash schedules.'''

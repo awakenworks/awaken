@@ -16,7 +16,7 @@ mod model;
 /// set, and nothing more. Production persists a `BTreeSet<u64>`; the bounded
 /// two-admission proofs substitute [`model::TwoSlotMembers`], because
 /// symbolically executing the real B-tree twice does not fit in memory
-/// (see the owning obligation's `bounds` in `formal/coverage.json`). A test in
+/// (see the owning obligation's `bounds` under `formal/obligations/`). A test in
 /// this module checks the model against the real set on two-admission traces.
 pub(super) trait ActivityMembers {
     /// Add a member; `true` iff it was absent.

@@ -1,0 +1,22 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "model_linked"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/ToolSchedule.tla",
+  "formal/tla/ToolSchedule.cfg",
+  "crates/contract/awaken-tool-contract/src/tool.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+]
+proof_harnesses = [
+  "same_resource_conflict_is_symmetric_and_exactly_one_write_or_more",
+  "tool_wave_extension_requires_every_exact_guard",
+  "tool_wave_extension_never_crosses_the_positive_bound_or_admits_serial",
+]
+production_entrypoints = [
+  "crates/contract/awaken-tool-contract/src/tool.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

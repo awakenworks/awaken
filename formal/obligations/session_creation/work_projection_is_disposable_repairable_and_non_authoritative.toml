@@ -1,0 +1,36 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.eventual_network_delivery",
+]
+evidence = [
+  "formal/tla/SessionRootProof.tla",
+  "formal/tla/SessionStartProtocol.tla",
+  "crates/server/awaken-session-application/src/application.rs",
+  "crates/server/awaken-session-application/src/tests/creation.rs",
+  "formal/tla/SessionStartRootProof.tla",
+  "formal/tla/SessionStartProtocolReachability.cfg",
+]
+proof_harnesses = [
+  "work_projection_is_derived_only_from_durable_session_truth",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/application.rs",
+]
+
+[[bounds]]
+text = '''SessionStartRootProof reuses the exact canonical SessionRootProof instance and proves acceptance implies a complete durable root, accepted activation failure remains queryable, complete root precedes projections, and Work row/root authority agree over unbounded abstract traces. It does not prove all Event/Work safety or recovery liveness.'''
+
+[[bounds]]
+text = '''The original SessionStartProtocol safety configuration checks two workers, MaxRevision 4, MaxEpoch 3, MaxHeartbeat 1 and MaxTime 2; the original fault-free reachability configuration checks eventual settlement under its weak-fairness assumption. Four semantic mutants and four positive witnesses qualify the root-authority invariants without narrowing these configurations.'''
+
+[[bounds]]
+text = '''The application test executes four file-SQLite cold-reopen histories: initial batch absent/present crossed with first recovery scan success/failure. It checks complete durable root/owner/create receipt, original ordered events and wake, supervisor-only local recovery, exact replay and root/outbox/runtime frames. The existing process-crash time-assurance test remains separate evidence. Arbitrary SQL histories, external realization schedules and universal Rust-to-model refinement remain outside the proof.'''
+
+[[bounds]]
+text = '''Kani exhausts the production Work projection decision over absent/local/external frozen baseline and nonterminal/terminal root truth: enqueue is reachable only for a frozen nonterminal self-hosted Session. The create fast path and reconciliation scan both call the same dispatch_session_work owner, so no process-local projection becomes authoring truth.'''
+
+[[bounds]]
+text = '''TLAPS retains the unbounded aggregate invariant and executable tests cover failed enqueue, restart repair, idempotent replay and terminal exclusion. WorkQueue transaction durability, executor availability and eventual reconciliation scheduling remain adapter or deployment evidence outside this scalar production decision.'''

@@ -1,0 +1,30 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/Delegation.tla",
+  "crates/contract/awaken-runtime-contract/src/delegation.rs",
+  "crates/runtime/awaken-runtime/src/engine/delegation.rs",
+  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "child_result_is_consumed_only_from_ready",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/delegation.rs",
+  "crates/runtime/awaken-runtime/src/engine/delegation.rs",
+]
+
+[[bounds]]
+text = '''The named Kani harness exhausts all four production delivery phases without assumptions: Consume has one applied Consumed successor exactly from Ready, while Absent, Consumed and Discarded have no consume successor.'''
+
+[[bounds]]
+text = '''ChildRunResultInbox::consume removes the exact stable DelegationId and consumes this sole delivery kernel. The production parent path removes that envelope in the same staged ThreadCommit that completes the relationship and installs the terminal ToolBatch result. The crash-recovery decision table commits one child result, fails the parent after durable delivery, reconstructs from committed truth, consumes it without reinvoking the child and observes an empty inbox.'''
+
+[[bounds]]
+text = '''Kani proves the heap-free phase kernel, not Rust String/BTreeMap/serde behavior, ThreadCommit encoding, database isolation or durability, arbitrary async schedules, executor behavior or universal Rust-to-TLA refinement; those remain native evidence or explicit runtime/database TCB.'''

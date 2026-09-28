@@ -6,7 +6,7 @@ machine-linked obligations. The original 28 remain unchanged. Those additional
 below raises the historical total to 92; transactional hardening raises it to
 97; and the production-completion batch raises that historical milestone to
 107. The current count is deliberately not duplicated here:
-`formal/coverage.json` is the authority and `check_formal_coverage.py` prints the
+The obligation ledger under `formal/obligations/` is the authority and `check_formal_coverage.py` prints the
 current proved/formalizable ratio on every strict gate run.
 
 ## No distributed-architecture change required
@@ -184,7 +184,7 @@ transaction-participating capability.
 
 `check_formal_coverage.py --require-verified-profile` reports every P0
 repository-safety obligation that lacks a *direct* grade. At the time of writing
-that is 31 of 445; `formal/coverage.json` remains the authority for the current
+that is 31 of 445; the obligation ledger under `formal/obligations/` remains the authority for the current
 count. This section records why those 31 sit where they do, so the number is read
 as a claim boundary rather than as a backlog of unwritten proofs.
 

@@ -1,0 +1,44 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/StoreHistory.tla",
+  "formal/tla/StoreHistory.cfg",
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/stores/awaken-store-fs/tests/recovery.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "formal/runtime-refinement-manifest.json",
+  "scripts/ci/render_runtime_refinement_traces.py",
+  "scripts/ci/check_formal_mutations.py",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+]
+proof_harnesses = [
+  "recovery_replay_preserves_complete_entry_and_time",
+  "operation_identity_replays_only_the_same_run_and_payload",
+  "applied_receipt_is_exact_and_names_one_successor_record",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+]
+
+[[bounds]]
+text = '''At most three committed records, two Threads/Runs/operations/payloads/time values, legacy unknown observations and disposable recovery prefixes. Rejection/retry use the existing stuttering relation. OS power loss is outside the model.'''
+
+[[bounds]]
+text = '''Executed production observations are checked against the same model relations; mandatory decision-rule coverage and independent real-trace mutations gate this evidence. This is finite trace correspondence, not universal Rust refinement.'''
+
+[[bounds]]
+text = '''The filesystem recovery owner consumes one typed plan carrying the complete decoded commit/operation and its exact Option<u64> committed time; no recovery clock or reconstructed identity branch exists. Kani proves that hand-off over every entry byte and optional u64 time. Operation replay then verifies the rebuilt receipt against the original durable operation through the contract-owned identity kernel before open succeeds. Existing exhaustive byte-cut and reopen tests cover old/new durable prefixes, exact timestamps and receipt replay across real filesystem decoding.'''
+
+[[bounds]]
+text = '''Legacy records retain unknown time as None. Serialization/decoding, hash collision resistance, filesystem append/fsync and database recovery durability remain TCB or executable evidence; the proof does not claim OS power-loss behavior beyond the documented committed-prefix protocol.'''

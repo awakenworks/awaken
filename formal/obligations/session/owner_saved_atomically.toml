@@ -1,0 +1,39 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionOwnership.tla",
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+  "crates/stores/awaken-session-store/src/postgres.rs",
+  "crates/stores/awaken-session-store/src/sqlite.rs",
+  "formal/tla/SessionOwnership.cfg",
+  "formal/tla/SessionOwnershipProof.tla",
+  "formal/tla/SessionRootProof.tla",
+  "crates/stores/awaken-session-store/src/lib.rs",
+]
+proof_harnesses = [
+  "session_identity_and_create_shapes_require_one_owned_live_row",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/stores/awaken-session-store/src/postgres.rs",
+  "crates/stores/awaken-session-store/src/sqlite.rs",
+  "crates/stores/awaken-session-store/src/lib.rs",
+]
+
+[[bounds]]
+text = '''SessionOwnership is an observation wrapper of the sole SessionRootKernel; the old independent SaveOwned writer is removed. TLAPS reuses SessionRootProof and proves visible owner/revision coherence, exact read tuple capture, and immutable owner binding for arbitrary owner/payload domains and any permitted natural revision/realization bounds over unbounded traces.'''
+
+[[bounds]]
+text = '''The abstraction selects one Session identity; operations on unrelated identities stutter. Reads have a model-only completion pulse so an incorrect empty result cannot masquerade as no observation. A previous coherent read may survive subsequent root changes or tombstoning. TLC covers two owners/two payloads, MaxRevision 4 and MaxRealizationEpoch 1, with semantic mutation and read-reachability checks.'''
+
+[[bounds]]
+text = '''Production SQLite and PostgreSQL create insert scope_id, revision and aggregate_json in the same existing transaction; their SQL evaluation, concurrent multi-identity driver behavior, corruption admission and universal Rust-to-model refinement remain outside this abstract theorem. This is not a direct implementation-proof promotion.'''
+
+[[bounds]]
+text = '''The shared production create validator used by both SQLite and PostgreSQL rejects every empty or whitespace owner before either adapter opens its one create transaction. Kani exhausts all six create-shape facts and proves admission is exactly their conjunction; the adapters then persist scope_id and aggregate_json in the same managed_session INSERT. Shared adapter conformance proves valid create/replay visibility and absence after each invalid-owner row.'''
+
+[[bounds]]
+text = '''Kani constrains the directly called Rust shape decision, not SQL execution. Statement and transaction atomicity, schema enforcement, serialization, database engine crash durability and PostgreSQL service availability remain TCB; the grade does not claim those external semantics are model checked.'''

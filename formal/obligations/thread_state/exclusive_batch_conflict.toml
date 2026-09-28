@@ -1,0 +1,20 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "model_linked"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/ThreadState.tla",
+  "crates/contract/awaken-agent-contract/src/agent/state.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
+  "crates/runtime/awaken-runtime/tests/g13_commit_boundary.rs",
+]
+proof_harnesses = [
+  "exclusive_state_conflict_requires_every_exact_precondition",
+]
+production_entrypoints = [
+  "crates/contract/awaken-agent-contract/src/agent/state.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

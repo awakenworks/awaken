@@ -7,7 +7,7 @@ and cites executable or machine-checked evidence. Re-reading the same metric
 does not count as another round.
 
 The review is intentionally incomplete until all 100 rows are present. The
-formal coverage percentage in `coverage.json` measures versioned safety
+formal coverage percentage of the obligation ledger (`obligations/`) measures versioned safety
 obligations; it is not a substitute for these repeated review rounds.
 
 | Round | Current boundary / review lens | Formalizable coverage | Not formally coverable | Finding and disposition | Verification evidence |

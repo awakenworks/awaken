@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/control/awaken-control/src/authz/roles.rs",
+  "crates/control/awaken-control/src/authz/profiles.rs",
+  "crates/control/awaken-control/src/authz_management_profile_tests.rs",
+]
+proof_harnesses = [
+  "hosted_admin_role_contains_exactly_its_seven_workspace_authorities",
+  "hosted_builder_role_has_writes_without_apikey_or_model_administration",
+  "workspace_member_role_contains_exactly_read_only_workspace_authorities",
+  "runtime_member_role_contains_exactly_run_read",
+]
+production_entrypoints = [
+  "crates/control/awaken-control/src/authz/roles.rs",
+  "crates/control/awaken-control/src/authz/profiles.rs",
+  "crates/control/awaken-control/src/authz_management_profile_tests.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

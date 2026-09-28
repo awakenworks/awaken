@@ -1,0 +1,20 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/contract/awaken-resource-contract/src/registry.rs",
+  "crates/stores/awaken-resource-store/src/sqlite_registry.rs",
+  "crates/stores/awaken-resource-store/src/postgres_registry.rs",
+]
+proof_harnesses = [
+  "resource_lifecycle_timestamps_project_the_exact_transition",
+]
+production_entrypoints = [
+  "crates/contract/awaken-resource-contract/src/registry.rs",
+  "crates/stores/awaken-resource-store/src/sqlite_registry.rs",
+  "crates/stores/awaken-resource-store/src/postgres_registry.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

@@ -1,0 +1,60 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionNetworkPolicy.tla",
+  "formal/tla/SessionNetworkPolicy.cfg",
+  "formal/tla/SessionNetworkPolicyProof.tla",
+  "crates/contract/awaken-session-configuration-contract/src/network_policy.rs",
+  "crates/server/awaken-session-application/src/run_admission.rs",
+  "crates/server/awaken-session-application/src/tests/creation.rs",
+  "crates/contract/awaken-session-configuration-contract/src/network_policy/collection_tests.rs",
+  "scripts/ci/check_formal_mutations.py",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "session_network_normalization_none_partition",
+  "session_network_normalization_unrestricted_partition",
+  "session_network_normalization_empty_partition",
+  "session_network_normalization_one_ascii_host_partition",
+  "session_network_normalization_two_ascii_hosts_partition",
+  "session_network_intersection_two_by_two_ascii_hosts_partition",
+  "session_network_intersection_none_by_none_partition",
+  "session_network_intersection_none_by_unrestricted_partition",
+  "session_network_intersection_none_by_empty_partition",
+  "session_network_intersection_none_by_one_ascii_host_partition",
+  "session_network_intersection_none_by_two_ascii_hosts_partition",
+  "session_network_intersection_unrestricted_by_none_partition",
+  "session_network_intersection_unrestricted_by_unrestricted_partition",
+  "session_network_intersection_unrestricted_by_empty_partition",
+  "session_network_intersection_unrestricted_by_one_ascii_host_partition",
+  "session_network_intersection_unrestricted_by_two_ascii_hosts_partition",
+  "session_network_intersection_empty_by_none_partition",
+  "session_network_intersection_empty_by_unrestricted_partition",
+  "session_network_intersection_empty_by_empty_partition",
+  "session_network_intersection_empty_by_one_ascii_host_partition",
+  "session_network_intersection_empty_by_two_ascii_hosts_partition",
+  "session_network_intersection_one_ascii_host_by_none_partition",
+  "session_network_intersection_one_ascii_host_by_unrestricted_partition",
+  "session_network_intersection_one_ascii_host_by_empty_partition",
+  "session_network_intersection_one_ascii_host_by_one_ascii_host_partition",
+  "session_network_intersection_one_ascii_host_by_two_ascii_hosts_partition",
+  "session_network_intersection_two_ascii_hosts_by_none_partition",
+  "session_network_intersection_two_ascii_hosts_by_unrestricted_partition",
+  "session_network_intersection_two_ascii_hosts_by_empty_partition",
+  "session_network_intersection_two_ascii_hosts_by_one_ascii_host_partition",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-configuration-contract/src/network_policy.rs",
+  "crates/server/awaken-session-application/src/run_admission.rs",
+]
+
+[[bounds]]
+text = '''TLAPS proves canonical meet algebra over arbitrary host sets and six indexed-sequence selection properties: source membership, exact intersection, canonical hosts, exact canonical meet, order and uniqueness. Complete source-position selection, increasing positions and injectivity are explicit mathematical premises; three witnesses show that incomplete, reordered or duplicate selection breaks the corresponding result. This is not checked universal refinement of Rust library calls.'''
+
+[[bounds]]
+text = '''TLC explores three canonical host identities plus a non-host blank sentinel; an 84-case sequence oracle qualifies content binding, completeness, ordering and injectivity. Five model mutants and eight production mutants are rejected. Native normalization exhausts 16,515 policies with zero to two one-byte ASCII hosts; intersection covers 25,281 ordered pairs over twelve representative bytes. Unicode property tests and SQLite Session readback also exercise production normalization.'''
+
+[[bounds]]
+text = '''Direct Kani calls the actual normalization and safe_intersection kernels: five normalization partitions cover all 16,515 raw policies; 25 disjoint intersection partitions cover all 272,745,225 ordered pairs. Each raw policy is None, Unrestricted or an allowlist of zero to two one-byte ASCII strings, with every occupied byte independently ranging over 0..127. Real String/Vec sorting, deduplication, blank removal with retain, binary search, intersection filtering and owned Drop run with unwind 3 and default checks, without stubs or proof cuts. Exact result bitmap, enum representation, strict order and uniqueness are checked. Input construction is independently exhausted, 144 native size/order cases extend to 257 hosts, and actual Kani no-fold, no-dedup and widening mutants fail the intended semantic assertions. Empty-string host inputs, multi-byte strings, lists longer than two, arbitrary String/Vec refinement, DNS semantics, persistence and physical network enforcement are outside this bounded production-kernel grade.'''

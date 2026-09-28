@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteAttempt.tla",
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
+  "crates/server/awaken-run-executor-a2a/src/lib.rs",
+]
+proof_harnesses = [
+  "task_reference_admission_requires_complete_fields_and_required_identity_matches",
+]
+production_entrypoints = [
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
+]
+
+[[bounds]]
+text = '''The production reattachment/cancellation admission kernel over complete Accepted task-reference fields plus exact task and context identity. Both tasks/get and tasks/cancel are addressed by the currently Accepted task id; Prepared has no addressable task and cannot fall back to its predecessor. A mismatched fetch response is rejected before terminal/no-op classification. Kani proves the closed identity predicate; transport routing, peer honesty, delivery and external orchestration remain executable or external evidence.'''

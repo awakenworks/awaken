@@ -1,0 +1,26 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "crates/server/awaken-worker-registry/tests/conformance.rs",
+  "formal/tla/WorkerReplacement.tla",
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/server/awaken-worker-registry/src/transition.rs",
+  "crates/server/awaken-worker-registry/src/memory.rs",
+]
+proof_harnesses = [
+  "worker_replacement_and_heartbeat_share_one_non_resurrection_boundary",
+]
+production_entrypoints = [
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/server/awaken-worker-registry/src/transition.rs",
+  "crates/server/awaken-worker-registry/src/memory.rs",
+]
+
+[[bounds]]
+text = '''Production exact-incarnation expiry, replacement and heartbeat admission across all Worker states and u64 deadlines; Kani proves the scalar admission kernel, Loom explores the three-command mutation-lock schedules, and shared Memory/SQLite/PostgreSQL tests exercise adapter serialization. This does not prove physical stop, external termination or Dispatch retirement.'''

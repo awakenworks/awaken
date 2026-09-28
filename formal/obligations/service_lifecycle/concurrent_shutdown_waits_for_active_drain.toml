@@ -1,0 +1,35 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.performance_and_long_run_stability",
+]
+evidence = [
+  "formal/tla/ServiceLifecycle.tla",
+  "formal/tla/ServiceLifecycleProof.tla",
+  "crates/server/awaken-service-lifecycle/src/lib.rs",
+  "crates/server/awaken-service-lifecycle/tests/service_lifecycle.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "concurrent_shutdown_admission_waits_for_the_active_drain",
+]
+production_entrypoints = [
+  "crates/server/awaken-service-lifecycle/src/lib.rs",
+]
+
+[[bounds]]
+text = '''The linked unbounded TLAPS theorem independently proves that an abstract follower entering while an owner drains moves only to waiting and cannot return or replace that owner; no Rust-to-model refinement is inferred.'''
+
+[[bounds]]
+text = '''TaskRegistry is now the sole production registration, drain-phase and completion-result owner under the existing std::sync::Mutex. Its exact phase is Accepting, Draining, or Complete(result): the first shutdown caller alone transfers the complete task set, every caller admitted during Draining receives only Wait, and only finish_shutdown can store Complete. The watch unit channel carries no state or result and is used only to wake callers so there is no synchronized second lifecycle truth.'''
+
+[[bounds]]
+text = '''The assumption-free Kani harness invokes this exact generic production owner with two arbitrary u8 tasks and an arbitrary u8 completion result, and exhausts both follower placements around finish_shutdown. It completed 492 checks with zero failures and five compiler/library unreachable checks in 0.3978279 solver seconds. Together with the registration harness, the fixed Kani 0.67.0 and qualified CBMC/CaDiCaL batch completed in 6.882 guarded seconds at 423204 KiB peak aggregate RSS, one job and empty RUSTC_WRAPPER under the 600-second and 12-GiB guards.'''
+
+[[bounds]]
+text = '''The native cause/effect gates cross timeout and cooperative leader outcomes, two simultaneous followers, and cancellation of the initiating shutdown Future while a task is held. The unique independently spawned drain retains the transferred handles after caller cancellation; followers remain blocked until it publishes completion. The established API remains exact: only the initiating caller receives its timeout diagnostic, while followers and repeated calls first observe completion and then return Ok.'''
+
+[[bounds]]
+text = '''The direct proof covers production phase admission and result publication topology over the stated u8 witnesses, not the production Arc<Result> clone implementation, std::sync::Mutex poisoning/exclusion, Tokio task spawning or scheduling, watch delivery, cancellation implementation, clock/timeout delivery, AbortHandle or JoinHandle semantics, opaque work termination, or universal Rust-to-TLA refinement.'''

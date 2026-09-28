@@ -1,0 +1,20 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/server/awaken-service-lifecycle/src/lib.rs",
+  "crates/bin/awaken-cli/src/config/role.rs",
+  "crates/bin/awaken-cli/src/runtime_process_router.rs",
+]
+proof_harnesses = [
+  "local_managed_mount_is_exactly_the_local_worker_component",
+]
+production_entrypoints = [
+  "crates/server/awaken-service-lifecycle/src/lib.rs",
+  "crates/bin/awaken-cli/src/config/role.rs",
+  "crates/bin/awaken-cli/src/runtime_process_router.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

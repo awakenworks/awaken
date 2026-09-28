@@ -1,0 +1,43 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ErasureSaga.tla",
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
+  "crates/stores/awaken-data-subject-store/src/postgres.rs",
+  "crates/control/awaken-data-subject-application/src/erasure_verification.rs",
+  "crates/control/awaken-data-subject-application/src/tests.rs",
+  "crates/stores/awaken-data-subject-store/tests/repo_conformance.rs",
+  "formal/tla/ErasureSaga.cfg",
+  "scripts/ci/check_formal_mutations.py",
+]
+proof_harnesses = [
+  "erasure_checkpoint_successor_preserves_all_completed_targets",
+]
+production_entrypoints = [
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
+  "crates/stores/awaken-data-subject-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''The existing ErasureProgress::follows is the sole directly proved checkpoint successor relation: observed row presence/revision must match the caller expectation, creation starts at zero, a present revision advances exactly once without overflow, and the candidate contains every old target. Duplicate/reordered entries have set semantics; count and terminal flags are not additional relation claims.'''
+
+[[bounds]]
+text = '''Direct bounded Kani proof erasure_checkpoint_successor_preserves_all_completed_targets passes 862 checks (11 unreachable, zero failures) in 10.21 seconds on the 2026-09-22 qualification run. It retains independent old/new 0..2-slot Coordinator/Resources lists, including empty/duplicate/reordered rows; every u64 old/new/expected revision and both independent presence choices; all x86_64 usize counts and independent accountability/complete flags. The complete ordered frame is captured as scalar fields, length and both optional entries instead of cloning heap allocations solely for the oracle. No assumptions filter regressive or exhausted inputs.'''
+
+[[bounds]]
+text = '''The erasure-checkpoint-successor-v1 profile retains its audited exact loop pins and CaDiCaL solver. The harness global unwind is 3, sufficient for two rows/flags plus loop exit, with all unwinding assertions, safety checks, allocations and real Drop enabled. An insufficient bound is a proof failure, not input truncation. The production follows relation is unchanged. The former global 32 plus cloned oracle frames exceeded the 1800-second gate budget; partition experiments were discarded in favor of this single full-input harness. SQL and unbounded target vectors remain outside the proof.'''
+
+[[bounds]]
+text = '''SQLite reads old JSON and indexed revision in BEGIN IMMEDIATE, PostgreSQL on the same transaction connection with SELECT FOR UPDATE; both reject JSON/column inconsistency and retain final insert-only/expected-revision SQL fences. Memory and the application fixture consume the same relation under their original Mutex guard. Native tests cover fresh-but-regressive/stale/equal/jump rejection with the entire checkpoint frame, accepted set semantics, and same-base create/update competition. SQLite independent connections/reopen and malformed JSON/revision mismatch/signed exhaustion cases actually pass. PostgreSQL compiles and passes Clippy but its native test is explicitly skipped because the existing endpoint is unavailable; no live PostgreSQL PASS is claimed.'''
+
+[[bounds]]
+text = '''ErasureSaga checks both erasers and replicas with fresh regressive proposals against its existing checkpoint relation: baseline passes 16889 generated / 2116 distinct states, depth 12; two semantic mutants violate CheckpointNeverForgets and the NoFreshRegressiveProposal witness is reached. Seven native semantic mutants independently reject relation and adapter bypass defects. These finite executable/model controls complement the direct kernel; they do not prove Rust-to-model refinement.'''
+
+[[bounds]]
+text = '''SQL predicate interpretation, row locking/isolation and transaction atomicity, JSON encoding/decoding, column consistency, durability/crashes, asynchronous resolver/CAS/reload schedules and physical erasure effects remain DB TCB or executable evidence outside the direct relation proof. No universal database one-winner, unbounded target-vector or whole-saga refinement claim is made; count/terminal semantics retain their separate production owners.'''

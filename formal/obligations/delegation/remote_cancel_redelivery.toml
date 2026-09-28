@@ -1,0 +1,32 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.eventual_network_delivery",
+]
+evidence = [
+  "formal/tla/Delegation.tla",
+  "formal/tla/Delegation.cfg",
+  "scripts/ci/formal_delegation_mutations.py",
+  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
+  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
+  "crates/runtime/awaken-runtime/tests/delegation.rs",
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/lib.rs",
+  "scripts/ci/check_formal.sh",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+]
+
+[[bounds]]
+text = '''Delegation.cfg finitely checks durable cancellation for one remote and three local/cycle/depth identities with two owners and child epochs through two. Mutants prove cancellation delivery cannot precede durable CancelRequested identity and that duplicate requests cannot change the relationship count; a negative remote-delivery invariant proves the configured remote cancellation schedule is reachable. The model records successful delivery as a Boolean and does not model network failure counts or universally refine Rust.'''
+
+[[bounds]]
+text = '''The production registry table proves EndParent projects the exact relationship, child, target and adapter execution reference; serde reconstruction and repeated pending_cancellations calls reproduce that command, while Completed clears the reference and is excluded. The runtime test crosses one committed parent terminal transaction, process-local delivery, cold Runtime reconstruction and redelivery from the same committed RunDelegations state.'''
+
+[[bounds]]
+text = '''The A2A fault test injects a failed cancel response and nonterminal exact observation, then constructs a fresh executor that reloads the committed Accepted task reference, sends no second message, retries cancellation against the same task id and requires an exact terminal observation. It proves this scripted failure window, not arbitrary peer behavior, store durability, Tokio schedules, transport fairness or eventual cancellation success.'''

@@ -1,0 +1,35 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/Delegation.tla",
+  "formal/tla/Delegation.cfg",
+  "scripts/ci/formal_delegation_mutations.py",
+  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
+  "crates/runtime/awaken-runtime/src/engine/delegation.rs",
+  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "child_invocation_requires_one_exact_open_relationship",
+]
+production_entrypoints = [
+  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
+  "crates/runtime/awaken-runtime/src/engine/delegation.rs",
+]
+
+[[bounds]]
+text = '''The named Kani harness exhausts relationship presence, all six exact identity facts and every DelegationStatus without assumptions. Only one present, exact Open relationship admits the external child invocation; missing, conflicting and closed rows fail closed.'''
+
+[[bounds]]
+text = '''DelegationRegistry projects those facts from its sole durable relationship and call indexes. Exact request replay uses the same identity-fact owner, and production invoke_delegation reloads RunDelegations and consumes the read-only gate immediately before executor.start. Native cause/effect tables cross real String and BTreeMap identities, prove rejection stutters, and show a committed Completed relationship cannot re-enter the child executor during recovery.'''
+
+[[bounds]]
+text = '''The fixed Kani 0.67.0 run completed 27 checks with zero failures for the named harness under one job, an empty RUSTC_WRAPPER, a 600-second deadline and a 12 GiB cgroup memory ceiling.'''
+
+[[bounds]]
+text = '''Kani proves the heap-free admission classifier, not collision freedom for arbitrary Rust String values, allocation/equality, BTreeMap or serde behavior, ThreadCommit encoding, database isolation or durability, arbitrary async schedules, executor behavior, or universal Rust-to-TLA refinement. Those remain native evidence or external runtime/database TCB.'''

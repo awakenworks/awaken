@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/DeploymentCAS.tla",
+  "formal/tla/DeploymentCAS.cfg",
+  "crates/contract/awaken-deployment-contract/src/lib.rs",
+  "crates/stores/awaken-session-store/src/deployments.rs",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+  "crates/server/awaken-deployment-application/src/lib.rs",
+  "scripts/ci/check_formal.sh",
+  "scripts/ci/pg_tests.sh",
+  "docs/design/managed-deployments.md",
+]
+production_entrypoints = [
+  "crates/stores/awaken-session-store/src/deployments.rs",
+  "crates/server/awaken-deployment-application/src/lib.rs",
+]
+
+[[bounds]]
+text = '''DeploymentCAS checks two Deployments, two replicas, revisions through three and ScheduledCapacity one. Create and Write are enabled only when the complete candidate frame leaves ScheduledCount at or below one, so ScheduledCapacityNeverExceeded is a finite abstract invariant; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''DeploymentRepository::write_deployment is the sole durable capacity linearization port. DeploymentApplication performs a process-local early check, then publishes its working projection only after Applied. ScheduledCapacityReached from the repository is mapped to the exact command error and leaves the candidate unpublished.'''
+
+[[bounds]]
+text = '''SQLite counts scheduled, non-archived rows and conditionally writes the candidate plus lifecycle fact inside one BEGIN IMMEDIATE transaction. PostgreSQL takes one cooperative transaction advisory lock before the same count, conditional write and lifecycle insertion. Capacity rejection rolls back before any candidate row or fact can commit.'''
+
+[[bounds]]
+text = '''The canonical shared conformance decision table races three distinguishable scheduled creates and lifecycle facts through three independent repository clients at limit one. It requires exactly one Applied, two ScheduledCapacityReached outcomes, one exact winner row/fact pair, no loser row or fact, and the same winner from every client. SQLite closes all handles and reopens the database later in the table; configured PostgreSQL executes the same rule through three clients in pg_tests.sh. The application table separately races two DeploymentApplication instances backed by independent SQLite clients, requires the exact loser error, converged projections and the exact winner after a fresh connection.'''
+
+[[bounds]]
+text = '''These executions sample concrete adapter and Tokio schedules; they are not a universal database proof. SQLite locking, PostgreSQL advisory-lock and transaction semantics, JSON predicate decoding, rollback/durability, process crashes, arbitrary client counts and scheduling remain executable or TCB boundaries. A PostgreSQL test skipped because no endpoint is configured is not a live PostgreSQL pass. Direct Kani over the count comparison would not prove transaction isolation or database effects.'''

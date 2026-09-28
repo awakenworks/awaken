@@ -1,0 +1,27 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/ObservationReconcileProof.tla",
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/contract/awaken-worker-contract/src/lib.rs",
+  "crates/server/awaken-worker-registry/src/transition.rs",
+  "crates/bin/awaken-cli/src/observation_reconcile.rs",
+]
+proof_harnesses = [
+  "changed_worker_observation_always_mints_a_strictly_fresh_fence",
+  "observation_publication_fence_is_success_owned_exact_and_failure_stable",
+]
+production_entrypoints = [
+  "crates/contract/awaken-worker-contract/src/registry.rs",
+  "crates/server/awaken-worker-registry/src/transition.rs",
+  "crates/bin/awaken-cli/src/observation_reconcile.rs",
+]
+
+[[bounds]]
+text = '''The contract-owned production projection preserves the observation fence for unchanged heartbeats and admits changed credential/ACP evidence only with a strictly greater heartbeat sequence. Worker Registry uses that projection for every admitted heartbeat, and the sole publication fingerprint includes the resulting observation sequence before crossing the mutex-owned reconciliation gate. Kani proves the full u64 x u64 x bool projection, so A -> B -> A cannot reuse A's numeric fence; an inconsistent nonincreasing durable fence fails closed. Fingerprint collision resistance, registry transaction integrity, source-list consistency, Tokio mutex correctness, publication I/O and external orchestration remain executable or TCB evidence.'''

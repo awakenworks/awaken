@@ -1,0 +1,16 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc/wire.rs",
+]
+proof_harnesses = [
+  "acp_read_ahead_admission_never_overflows_or_exceeds_either_bound",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc/wire.rs",
+]
+
+[[bounds]]
+text = '''Kani checks the actual count/byte admission predicate over all usize inputs. Allocation, JSON parsing, async I/O and operating-system progress remain outside this numeric proof.'''

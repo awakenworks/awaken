@@ -1,0 +1,12 @@
+metric = "formalizable safety obligations with checked formal evidence"
+minimum_ratio = 0.7
+
+[verified_profile]
+schema_version = 1
+id = "awaken-verified-v1"
+claim = "Under the declared input bounds and TCB assumptions, every repository-controlled P0 safety transition is directly production-kernel proved or implementation refined."
+conditional_liveness = "Progress claims require the liveness assumptions in formal/assumptions.json and never imply unconditional success."
+required_proof_grades = [
+  "production_kernel_proved",
+  "implementation_refined",
+]

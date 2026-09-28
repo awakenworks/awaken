@@ -1,0 +1,36 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/SessionRuntimeProjection.tla",
+  "formal/tla/SessionRuntimeProjection.cfg",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
+  "formal/tla/ManagedProjectionPublish.tla",
+  "formal/tla/ManagedProjectionPublish.cfg",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/tests/refresh_failure.rs",
+  "scripts/ci/formal_dispatch_mutations.py",
+]
+proof_harnesses = [
+  "projection_refresh_failure_stutters_and_success_preserves_one_pair",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/refresh_entrypoint.rs",
+]
+
+[[bounds]]
+text = '''The sole async reducer now returns one typed Error, changed-prefix Retry, or Complete candidate to the canonical publication owner. Kani exhausts those variants with arbitrary warm and candidate result/checkpoint bytes: Error preserves the exact error and exposes no publish effect, Retry stutters, and only Complete transfers one owned pair. Production builds exclusively on a cloned SessionRecord and consumes this kernel before entering the existing cache CAS; the cause/effect regression compares the complete warm projection before and after a late correlation failure.'''
+
+[[bounds]]
+text = '''Repository and Runtime read consistency, async cancellation/unwind, serde and projection-helper correctness, Mutex behavior and broadcast delivery remain executable/runtime TCB. The proof establishes the production pre-publication effect boundary and whole-value install, not correctness of every async source read or external store.'''
+
+[[bounds]]
+text = '''The same obligation retains its existing elapsed-budget entrypoint, ManagedProjectionPublish model and full-frame native read-cut table. The 48 cut/writer schedules and stable/error/continuous-advance/stalled-I/O budget cases are complementary executable evidence; the timeout encloses refresh attempts after ensure_session_record, and neither the scheduler nor a strict end-to-end two-second deadline is proved by the candidate-publication kernels. Historical native mutation qualifications remain tied to their archived production source rather than being requalified by this ledger-link repair.'''

@@ -1,0 +1,27 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.mcp_busy_acp_revocation_propagation_and_process_termination",
+]
+evidence = [
+  "formal/tla/AcpBoundary.tla",
+  "formal/tla/AcpBoundary.cfg",
+  "crates/server/awaken-protocol-acp/src/lib.rs",
+  "crates/server/awaken-protocol-acp/src/tests/cleanup.rs",
+  "crates/server/awaken-run-executor-acp/src/cleanup.rs",
+  "crates/server/awaken-run-executor-acp/src/lib.rs",
+  "crates/server/awaken-run-executor-acp/src/tests.rs",
+  "scripts/ci/check_formal_mutations.py",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-acp/src/lib.rs",
+  "crates/server/awaken-run-executor-acp/src/cleanup.rs",
+  "crates/server/awaken-run-executor-acp/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in AcpBoundary.cfg; the returned-TERM-error branch keeps same-handle KILL enabled before cleanup expiry. Three cleanup semantic mutants and two reachable failed-TERM escalation and timeout-then-exit witnesses qualify that model slice. Protocol cleanup tests cover 56 entry/signal/evidence cases; executor tests retain the same process and duplex channel across failed cleanup, compose real LocalProcess exit evidence, and cover owner drop and independent quiescence vetoes. Every production source-open call is wrapped by the canonical AttemptQuiescence return observer: cancellation before the typed AgentSession handoff vetoes acknowledgement, while normal return transfers that exact process/channel owner to CleanupScope.'''
+
+[[bounds]]
+text = '''The original owner must survive for late-exit recovery. Agent Cancelled/TimedOut reasons, signal success, EOF and timeout are not exit receipts. No Rust-to-model refinement, remote provider recovery, historical unbound attempt release, process-tree quiescence or unbounded liveness is implied.'''

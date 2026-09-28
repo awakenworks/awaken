@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/AuditCommit.tla",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/control/awaken-agent-config/src/store.rs",
+  "formal/tla/AuditCommit.cfg",
+  "crates/control/awaken-config-store/src/schema.rs",
+  "crates/control/awaken-config-store/tests/support/audit_identity.rs",
+  "crates/control/awaken-config-store/tests/integration.rs",
+  "crates/control/awaken-config-store/tests/postgres.rs",
+]
+proof_harnesses = [
+  "management_audit_admission_requires_exact_intent_and_closed_state",
+]
+production_entrypoints = [
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/control/awaken-agent-config/src/store.rs",
+]
+
+[[bounds]]
+text = '''The single production audit admission returns Replay exactly for an existing equal record in committed state 1 and returns no business-write authority for every replay/conflict begin result. Kani exhausts presence/equality, every i64 durable state, every begin-result class and business success without solver assumptions or stubs.'''
+
+[[bounds]]
+text = '''Fixed Kani 0.67.0 with the qualified patched CBMC/CaDiCaL backend completes the one existing combined harness with 126 checks, zero failures and 0.061794713 solver seconds in 1.339 guarded seconds, under one job, empty RUSTC_WRAPPER, a 600-second deadline and 12-GiB cgroup memory ceiling.'''
+
+[[bounds]]
+text = '''Both SQLite and PostgreSQL return Replayed before revision planning, canonicalization, effect enqueue, business-row mutation or audit update. The shared backend decision table replays with stale, exhausted and out-of-storage-range revision tokens and observes the exact config revision/content unchanged; the bounded AuditCommit model independently checks committed replay is a single write.'''
+
+[[bounds]]
+text = '''Record equality, JSON decoding, SQL row selection/locking, transaction isolation and durability remain executable evidence or database TCB. The direct proof covers the production replay admission and adapter branch, not arbitrary SQL histories or identity/hash correctness.'''

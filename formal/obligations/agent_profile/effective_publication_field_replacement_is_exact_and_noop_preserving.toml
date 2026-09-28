@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/contract/awaken-session-realization-contract/src/session_realization/agent_publication_projection.rs",
+  "crates/server/awaken-session-application/src/tests/creation.rs",
+]
+proof_harnesses = [
+  "effective_publication_field_replacement_is_exact_and_noop_preserving",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-realization-contract/src/session_realization/agent_publication_projection.rs",
+]
+
+[[bounds]]
+text = '''Kani directly invokes the generic production field updater over all u64 initial/incoming values and proves exact change classification, exact replacement and no-op replay. Default checks retained; 0 of 22 failed.'''
+
+[[bounds]]
+text = '''The sole effective-publication projector uses this updater for the primary model, candidate roster, inference, instructions and Skill selection and hashes only after actual changes. Native complete-snapshot rules independently exercise equal overrides, combined no-ops and primary/roster/inference changes; existing prompt/Skill/property and durable profiled-creation cases cover actual consumers.'''
+
+[[bounds]]
+text = '''The generic equality representative proof does not prove arbitrary String/Vec equality implementations, hashing, metadata/codec validation, durable source honesty or universal composed projector refinement. Those remain native evidence or explicit TCB; the historical source token is retained only for unchanged trusted content.'''

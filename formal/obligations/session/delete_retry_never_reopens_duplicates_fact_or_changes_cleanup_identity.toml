@@ -1,0 +1,69 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/SessionDeletion.tla",
+  "formal/tla/SessionDeletion.cfg",
+  "formal/tla/SessionDeletionUnconfirmed.cfg",
+  "crates/server/awaken-session-application/src/terminal.rs",
+  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+  "crates/server/awaken-session-application/src/resource_reconciliation/terminal_cleanup.rs",
+  "crates/server/awaken-session-application/src/tests/authority.rs",
+  "crates/server/awaken-session-application/src/tests/observation_refinement.rs",
+  "formal/runtime-refinement-manifest.json",
+  "scripts/ci/render_runtime_refinement_traces.py",
+  "scripts/ci/formal_session_deletion_mutations.py",
+  "scripts/ci/check_formal_mutations.py",
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/disposition.rs",
+  "crates/contract/awaken-session-state-contract/src/terminal_cleanup.rs",
+  "crates/server/awaken-session-application/src/mutation.rs",
+  "crates/server/awaken-session-application/src/tests/mod.rs",
+  "crates/contract/awaken-session-state-contract/src/terminal_cleanup/state.rs",
+  "crates/contract/awaken-agent-contract/src/fingerprint.rs",
+  "scripts/ci/formal_kani_options.py",
+  "scripts/ci/test_formal_profile.py",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "session_delete_request_plan_is_exact_hidden_terminal_and_idempotent",
+  "session_cleanup_phase_advances_only_not_requested_fenced_requested_completed",
+  "fnv_hex_output_preserves_every_u64",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/terminal.rs",
+  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/disposition.rs",
+  "crates/contract/awaken-session-state-contract/src/terminal_cleanup/state.rs",
+]
+
+[[bounds]]
+text = '''The existing SessionDeletion model reuses SessionCleanupKernel with MaxRevision = 5 and MaxCleanupFailures = 2. Active and Archived roots reach the first DELETE; Archived Fenced, Requested and Completed cleanup frames survive that fence. Replay preserves the complete modeled state; historical deleted-fact count remains one while delivery acknowledgement independently clears pending state. Normal recovery and permanently unconfirmed cleanup retain their separate configurations.'''
+
+[[bounds]]
+text = '''The existing production SQLite authority test executes eight complete histories: four initial disposition/cleanup classes crossed with normal first commit or commit_then_conflict_once injecting Conflict after the real SQL commit to force authoritative reread (not arbitrary network/storage errors), application reconstruction, pre/post-ack retries, failed cleanup, failed tombstone CAS and typed NotFound after deletion. Thirty-eight measured fence/retry observations use the SAME model relations; retry equality retains serialized full root, cleanup and outbox bytes. Returned owner and full root are bound to the durable receipt, and typed absence requires existing owner-scoped retained tombstone evidence with the exact deleted revision; it is not inferred from NotFound alone. Ten reversible production mutants include wrong receipt owner/root, post-ack same-ID re-enqueue and omitted tombstone persistence. Semantic model mutants, reachable archive-phase/acknowledged-tombstone witnesses, observation-effect mutants and rule-coverage mutants reject vacuous or weakened bindings.'''
+
+[[bounds]]
+text = '''The application cause/effect test performs a second independently timestamped Delete command before cleanup, proving that the durable revision, serialized cleanup identity and single outbox fact remain byte-for-byte unchanged; tombstone completion emits no later fact. Session-root CAS, outbox atomicity, serialization and database durability remain adapter TCB rather than facts inferred from the decision kernel. Contract decision tables also bind native lowering of the private fact plan to the exact ManagedLifecycleFact.'''
+
+[[bounds]]
+text = '''The application now preserves the canonical Applied/Replayed outcome instead of reporting transitioned=true for a replayed SQL mutation. The sole snapshot idempotency compiler is shared by the session-only and outcome-preserving wrappers; the existing with-record boundary still owns repository receipt interpretation and authoritative reread. Thirty-two real concurrent Delete schedules cross four initial cleanup classes and both deterministic command-time orderings: equal candidates reach actual SQLite Replayed, an intervening root write causes actual Conflict and winner reread, delivery acknowledgement remains absent after a late replay, and a completed tombstone causes typed NotFound on replay reload. Complete winner lifecycle facts, returned owner/root, cleanup progress and post-race outbox/tombstone frames are asserted, with 64 additional observations using the same DeleteObservation relation at quiescent cuts. These executable Rust/SQLite paths strengthen the combination evidence; they are not a direct proof of the whole async retry, serialization or database transaction.'''
+
+[[bounds]]
+text = '''The aggregate-owned production Delete plan is the only disposition classifier consumed by PersistedSession::request_delete. Kani exhausts the four disposition variants crossed with both execution-terminal values and arbitrary i64 request times. Active and Archived compile one private Commit carrying the exact terminalization decision, Session-bound typed cleanup identity and Session/owner/time-bound lifecycle-fact plan; Deleting and Deleted compile an effect-free Replay. The application receives only the aggregate-authored optional fact and cannot construct a cleanup identity or Delete decision.'''
+
+[[bounds]]
+text = '''PersistedSession directly consumes that plan before changing disposition: exact cleanup identity applies once or stutters, a canonical identity for another Session and a foreign asserted identity both reject without mutation, and Fenced, Requested and Completed cleanup phases retain their installed operation identity. The cleanup phase harness separately proves monotonic, absorbing cleanup progression.'''
+
+[[bounds]]
+text = '''The production kernel proof covers the complete safety decision and typed effect identities, not SQL transaction linearizability or async execution. Session-root CAS, root-plus-outbox atomicity, serialization, database durability/isolation, asynchronous scheduling and external provider cleanup remain TCB/executable evidence; no whole-system atomicity is inferred from Kani.'''
+
+[[bounds]]
+text = '''An auxiliary Kani proof checks the canonical fingerprint owner's final fnv1a64: encoding over every u64: eight big-endian digest bytes become exactly sixteen lowercase digits, including leading zeros, with the exact prefix, byte order, safe UTF-8 conversion and real allocation/Drop. Its independent inverse-nibble oracle is shared with native previous-format compatibility cases. The checked fingerprint-fnv-hex-v1 profile fixes Z3, global unwind 18 and UTF-8/align loop bounds 2/9/9/5 with all default safety and unwinding assertions enabled. This strengthens the shared formatter consumed by cleanup_effect_id; it does not prove FNV collision freedom, JSON serialization, request_exact histories, arbitrary Session identities or aggregate/SQL composition. The original complete cleanup request proof remains separate; no proof-grade promotion is made.'''

@@ -1,0 +1,16 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/runtime/awaken-provider-genai/src/stop_reason.rs",
+]
+proof_harnesses = [
+  "unclassified_provider_stop_reason_fails_closed",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-provider-genai/src/stop_reason.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the shared six-class production stop projection: five known classes map to their exact neutral result and Unclassified has no result. The same production owner maps both the genai SDK enum and OpenAI Responses terminal status/reason vocabulary into that projection; executable decision tables cover raw wire mappings, while provider raw-string parsing, final diagnostic allocation, SDK correctness and automatic whole-program Rust refinement are not claimed.'''

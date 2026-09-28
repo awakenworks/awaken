@@ -1,0 +1,40 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/AggregateCAS.tla",
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+  "crates/control/awaken-data-subject-application/src/tests.rs",
+  "crates/stores/awaken-data-subject-store/src/memory.rs",
+  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
+  "crates/stores/awaken-data-subject-store/src/postgres.rs",
+  "crates/stores/awaken-data-subject-store/tests/repo_conformance.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "stale_data_subject_writer_is_never_admitted",
+]
+production_entrypoints = [
+  "crates/control/awaken-data-subject-application/src/lib.rs",
+  "crates/stores/awaken-data-subject-store/src/memory.rs",
+  "crates/stores/awaken-data-subject-store/src/sqlite.rs",
+  "crates/stores/awaken-data-subject-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''DataSubject::follows_revision is the sole revision-admission owner used by the application test repository and the Memory, SQLite and PostgreSQL adapters. A replacement is admitted only when the row revision read under the adapter lock or transaction equals the caller expectation and the candidate is its exact checked successor; missing, stale, future, equal, skipped and wrapping candidates are rejected.'''
+
+[[bounds]]
+text = '''Kani exhausts every independent u64 caller expectation, stored revision and candidate revision without input assumptions. stale_data_subject_writer_is_never_admitted completed 612 checks (600 successful, 12 unreachable, zero failures) with fixed Kani e43ae2c, patched CBMC cdee49/CaDiCaL, -j1 and RUSTC_WRAPPER empty in 29.79 seconds at 570276 KiB peak aggregate RSS under the 600-second, 12582912-KiB RSS and 12582912-KiB available-memory guards.'''
+
+[[bounds]]
+text = '''Memory evaluates the same relation while holding its subject-map Mutex. SQLite uses BEGIN IMMEDIATE and PostgreSQL SELECT FOR UPDATE, checks serialized and indexed revisions agree, invokes the production relation, and retains a final expected-revision UPDATE predicate in the same transaction. The SQL predicate remains a defensive publication fence after the direct admission decision.'''
+
+[[bounds]]
+text = '''Application tests pass 32 cases. Store tests pass five unit and five conformance cases across volatile memory, SQLite and a live PostgreSQL endpoint, including absent/current/stale/future writers, equal/jump candidates, corrupt serialized/indexed revisions, malformed current data and durable reopen. Two exact source mutants that ignore the current revision or strict successor are rejected by the focused in-memory conformance rule and restore byte-identically.'''
+
+[[bounds]]
+text = '''The direct proof establishes the repository-controlled admission relation over the complete u64 revision domain. Database predicate interpretation, row-locking/isolation, transaction atomicity, serialization, durability/crash behavior, scheduler progress and arbitrary application retry schedules remain explicit TCB or executable evidence; no Rust-to-TLA refinement or universal database-engine proof is claimed.'''

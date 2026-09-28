@@ -1,0 +1,54 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/SessionRuntimeProjection.tla",
+  "formal/tla/SessionRuntimeProjection.cfg",
+  "formal/tla/ManagedProjectionPublish.tla",
+  "formal/tla/ManagedProjectionPublish.cfg",
+  "crates/server/awaken-protocol-managed/src/state/session_record.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+  "formal/tla/SessionRuntimeProjectionOpening.cfg",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/interval_aggregate_projection.rs",
+  "formal/tla/ManagedProjectionPublishInputs.cfg",
+  "formal/tla/ManagedProjectionPublishTopology.cfg",
+  "crates/server/awaken-protocol-managed/src/state/session_record/tests.rs",
+  "crates/server/awaken-protocol-managed/tests/adapter.rs",
+  "crates/server/awaken-protocol-managed/src/state/session_record/event_page_index.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/tests/pagination.rs",
+]
+proof_harnesses = [
+  "projection_refresh_failure_stutters_and_success_preserves_one_pair",
+  "projection_source_stamp_is_exact_for_the_complete_observed_thread_prefix",
+  "projection_publish_decision_is_total_exact_and_fail_closed",
+  "canonical_event_order_never_depends_on_wall_time",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-managed/src/state/session_record.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
+  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/interval_aggregate_projection.rs",
+]
+
+[[bounds]]
+text = '''The complete-candidate constructor is now the only path from committed-prefix reduction to the SessionRecord publisher and invokes the canonical source stamp before producing a publishable type. Kani exhausts arbitrary prior/observed Session, root and two-child coordinates in the production stamping kernel, then proves the production finish/install kernel transfers an arbitrary rendered result together with that observed checkpoint as one owned value. The existing publication harness exhausts cache/source/content admission, while canonical ordering and the 419904 native source-fence rows remain unchanged.'''
+
+[[bounds]]
+text = '''Lifecycle cursor and budget generation are reduced on the same private candidate before the final Session/root/child stamp and are transferred by the whole SessionRecord assignment. The regression checks the successful repaired prefix publishes the exact observed Session revision, root Thread version and lifecycle cursor, then replays without change.'''
+
+[[bounds]]
+text = '''Committed source extraction, HashMap collection/equality, the async seqlock reads, reducer/canonicalizer correctness, cache Mutex and broadcast delivery remain executable/runtime TCB. These kernels prove paired whole-value publication after a complete observed candidate; they do not claim SQL snapshot linearizability, universal async refinement or external delivery.'''
+
+[[bounds]]
+text = '''The existing opening-identity TLA+ submodel additionally explores a first public observation at input or terminal settlement, independently of warm/cold reads; its three-source-version configuration reaches 193 states. The production selector regression varies absent/input/terminal/later observations, exact versus foreign Run/Thread, missing openings, later checkpoints, array ordering and a future interval. The HTTP test observes the pre-Dispatch window, duplicate exact callbacks, and cold rehydration. These checks do not prove Dispatch settlement delivery or physical execution termination.'''
+
+[[bounds]]
+text = '''The published EventPageIndex is rebuilt from the final ordered Event/visibility-owner pair before the same whole-record installation; candidate clones share the prior immutable index and failure, stale-CAS and no-op paths retain it. Differential pagination, fixed-cardinality owner/reference/order changes, actual filter-visit counts and missing-index/full-scan mutants are executable cross-checks. The existing paired-install kernel is unchanged; this adds no proof of HashMap construction, visibility selection, cursor lookup, allocator behavior or query latency.'''

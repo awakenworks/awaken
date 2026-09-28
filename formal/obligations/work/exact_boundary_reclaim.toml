@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/WorkQueue.tla",
+  "crates/stores/awaken-work-store/tests/work_queue_conformance.rs",
+  "crates/stores/awaken-work-store/src/lib.rs",
+  "crates/stores/awaken-work-store/src/schema.rs",
+  "crates/stores/awaken-work-store/src/session_access.rs",
+]
+proof_harnesses = [
+  "work_reclaim_cutoff_is_exact_and_underflow_free",
+  "work_lease_deadlines_clamp_without_wrapping",
+]
+production_entrypoints = [
+  "crates/stores/awaken-work-store/src/lib.rs",
+  "crates/stores/awaken-work-store/src/schema.rs",
+  "crates/stores/awaken-work-store/src/session_access.rs",
+]
+
+[[bounds]]
+text = '''Kani proves the actual shared reclaim_cutoff over all u64 times and Option<u64> ages: absent or age greater than now gives None; otherwise the exact nonnegative difference is clamped to i64::MAX, preserving Some(0) at equality. An independent i128 oracle, 72 native boundary rows, and one four-rule table executed by SQLite and PostgreSQL cross-check it.'''
+
+[[bounds]]
+text = '''Kani also proves the existing db_millis, effective_ttl_seconds and lease_expiry functions over full u64 time/TTL and optional-request domains against independent u128 arithmetic: default 60 seconds, minimum requested TTL one second, and exact mathematical milliseconds capped to i64::MAX without wrapping. A 512-row native deadline table cross-checks signed/unsigned and unit-conversion boundaries. At the signed ceiling a positive TTL need not remain strictly in the future; physical-time validity is not claimed.'''
+
+[[bounds]]
+text = '''The linked TLA+ configuration remains a finite abstract model. This numeric cutoff proof does not prove SQL predicate evaluation, claim/reclaim transaction composition, clock correctness or whole-queue Rust-to-model refinement.'''
+
+[[bounds]]
+text = '''Kani proves the shared production reclaim_cutoff over all u64 times and Option<u64> ages: absent or age greater than now gives None; otherwise the exact nonnegative difference is clamped to i64::MAX, preserving Some(0) at equality. The durable SQLite and PostgreSQL adapters now apply the inclusive lease_refreshed_ms <= cutoff predicate inside the same environment-row transaction that performs lapsed reclaim, active-cap evaluation, selection, epoch advance, and claim.'''
+
+[[bounds]]
+text = '''The native boundary decision table executes the same before/equal/after cases through both durable adapters. Database predicate and transaction linearizability, wall-clock truth, and whole-queue Rust-to-model refinement remain TCB or executable evidence; the production-kernel proof covers the cutoff arithmetic and exact inclusive boundary supplied to that transaction.'''

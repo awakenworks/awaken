@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteAttempt.tla",
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/lib.rs",
+  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
+]
+proof_harnesses = [
+  "remote_operation_route_is_total_and_fail_closed",
+]
+production_entrypoints = [
+  "crates/server/awaken-run-executor-a2a/src/executor.rs",
+  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
+]
+
+[[bounds]]
+text = '''The complete finite production route over absent, Prepared and Accepted state plus exact endpoint equality. Only Accepted carries an addressable task; Prepared retains its operation identity without fabricating task acceptance. Durable state decoding, repository read order, String equality, transport behavior and external peer semantics remain runtime or external evidence.'''

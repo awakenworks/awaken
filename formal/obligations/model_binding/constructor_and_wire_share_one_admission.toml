@@ -1,0 +1,32 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs",
+  "crates/contract/awaken-runtime-contract/src/resolved.rs",
+  "scripts/ci/check_crate_boundaries.py",
+  "crates/contract/awaken-runtime-contract/src/llm.rs",
+  "crates/contract/awaken-runtime-contract/tests/model_binding_projection.rs",
+  "crates/server/awaken-credential-materializer/src/inference.rs",
+  "crates/server/awaken-credential-materializer/src/brokered_inference.rs",
+]
+proof_harnesses = [
+  "model_binding_admission_is_exactly_the_documented_rule_table",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs",
+  "crates/contract/awaken-runtime-contract/src/llm.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the unchanged production admission(AdmissionFacts) kernel over every padded, provider-empty, model-empty and backend-class combination; the selected harness passes 85 checks. The derivation from real strings and Backend::from_ref remains executable-table and proptest evidence, not a whole parser proof. A2A URL/IDNA syntax is outside the supported Kani codegen and is not claimed.'''
+
+[[bounds]]
+text = '''ModelBinding::new delegates to parse in EVERY build. Proofs that merely hold a binding use the separate proof_representative; its two coordinate triples are checked by the actual parse test. No production constructor has a cfg(kani) admission shortcut.'''
+
+[[bounds]]
+text = '''All three admitted coordinates are private for the lifetime of a value. Readonly identity() is the canonical projection. Four public-API compile-fail doctests protect literals and each post-admission member write; three restored-public-field semantic mutants fail their corresponding guards and the restored source passes. This is executed Rust compiler privacy evidence, not a universal Rust compiler or heap-string proof.'''
+
+[[bounds]]
+text = '''The sole ChatRequest::project_upstream_model re-admits a wire-only copy through parse. Its 12-rule executable table checks original preservation, exact provider/backend, licensed defaults, error stage and unchanged wire. Native and brokered adapter decision tables check zero inner inference or grant acquisition on invalid projections; they are implementation tests, not async or provider termination proofs.'''

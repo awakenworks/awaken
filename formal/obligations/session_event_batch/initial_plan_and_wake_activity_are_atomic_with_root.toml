@@ -1,0 +1,29 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionEventProtocol.tla",
+  "formal/tla/SessionStartProtocol.tla",
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/server/awaken-session-application/src/tests/creation.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+]
+proof_harnesses = [
+  "initial_event_plan_is_installed_only_on_the_complete_fresh_root",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The production initial-plan kernel exhausts arbitrary u64 root/activity epochs and both retained-collection emptiness facts. It admits only the untouched root and returns one batch admission revision and wake activity epoch, both exactly 1. The production installer validates the detached batch first and only then installs both coordinates and the batch into the same PersistedSession passed to the sole create transaction, so rejection cannot leave a partial activity mutation.'''
+
+[[bounds]]
+text = '''SessionInitialEventPlan content validation, BTreeSet/Vec mutation, serialization and SQLite/PostgreSQL insert/commit atomicity remain contract/adapter/runtime TCB. The kernel constrains the directly called create-only coordinate decision; it does not claim a scalar proof of the database engine or post-create wake delivery.'''

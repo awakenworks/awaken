@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.eventual_network_delivery",
+]
+evidence = [
+  "formal/tla/ManagementAuditIntent.tla",
+  "crates/control/awaken-config-store/tests/process_crash_audit.rs",
+  "scripts/ci/check-reliability.sh",
+  "crates/control/awaken-control/src/lib.rs",
+  "crates/control/awaken-config-service/src/management_audit.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/server/awaken-coordinator/src/control_service_boundary.rs",
+]
+production_entrypoints = [
+  "crates/control/awaken-control/src/lib.rs",
+  "crates/control/awaken-config-service/src/management_audit.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/server/awaken-coordinator/src/control_service_boundary.rs",
+]
+
+[[bounds]]
+text = '''ManagementAuditIntent model-checks the finite pending/committed audit, business, crash, restart and stable-call-id state space; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The strict reliability gate uses the shared CrashProcess owner to kill a separate child only after an acknowledged SQLite boundary, then opens a fresh store. At the post-record/pre-business boundary it observes the exact durable audit still pending with no config revision or effect; at the post-transaction/pre-response boundary it observes the exact audit committed with revision 1 and one effect. Exact retries apply pending business at most once and then replay, changed payloads conflict, and the same identity remains isolated in another scope.'''
+
+[[bounds]]
+text = '''The executable witness directly exercises the canonical ScopedConfigRegistry SQLite adapter used by ManagementAuditPlane. It does not place a scheduler hook inside the public Axum router, cover every crash instruction or management handler, execute a PostgreSQL process crash, prove WAL/fsync/kernel/storage behavior, establish atomicity between independent business and audit stores, or universally refine Rust, SQL, HTTP and async execution to the TLA+ model.'''
+
+[[bounds]]
+text = '''The split Coordinator HttpControlServiceClient implements the same ManagementAuditRepository port and forwards scoped record, lookup and commit commands. HTTP, DNS and peer reachability, retry fairness and response delivery remain under external.eventual_network_delivery; this production evidence does not raise the proof grade.'''

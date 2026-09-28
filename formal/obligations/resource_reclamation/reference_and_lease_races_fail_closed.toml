@@ -1,0 +1,28 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ResourceReclamation.tla",
+  "crates/contract/awaken-resource-contract/src/lifecycle.rs",
+  "crates/server/awaken-resource-reclaimer/src/lib.rs",
+  "crates/stores/awaken-resource-store/src/lib.rs",
+  "crates/stores/awaken-resource-store/src/sqlite_lifecycle.rs",
+  "crates/stores/awaken-resource-store/src/postgres.rs",
+]
+proof_harnesses = [
+  "reclamation_fence_admission_requires_absent_owner_and_zero_references",
+  "physical_purge_requires_zero_references_leases_and_fence",
+]
+production_entrypoints = [
+  "crates/contract/awaken-resource-contract/src/lifecycle.rs",
+  "crates/server/awaken-resource-reclaimer/src/lib.rs",
+  "crates/stores/awaken-resource-store/src/lib.rs",
+  "crates/stores/awaken-resource-store/src/sqlite_lifecycle.rs",
+  "crates/stores/awaken-resource-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''Kani exhaustively checks that an existing fence or indexed reference cannot select fence installation and that physical purge is denied unless the current fence/reference result and final guard read are both clear. Cross-process serialization, durable row reads and transaction rollback remain database-engine responsibilities; executable SQLite/Postgres and late-guard tests retain those integration boundaries.'''

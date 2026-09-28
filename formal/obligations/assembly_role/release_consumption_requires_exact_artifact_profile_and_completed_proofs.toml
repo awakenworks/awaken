@@ -1,0 +1,39 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.orchestrator_correctness",
+]
+evidence = [
+  "formal/tla/VerifiedProfileAdmission.tla",
+  "scripts/release/verification_manifest.py",
+  "crates/server/awaken-service-lifecycle/src/release_admission.rs",
+  "crates/server/awaken-service-lifecycle/src/release_admission_main.rs",
+  "scripts/ci/formal_run_evidence.py",
+  "scripts/ci/check_product_release.py",
+  ".github/workflows/release.yml",
+  "deploy/images/management/Dockerfile",
+  "scripts/e2e/management_image_e2e.sh",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "verified_release_and_tcb_admission_are_total_exact_and_fail_closed",
+]
+production_entrypoints = [
+  "scripts/release/verification_manifest.py",
+  "crates/server/awaken-service-lifecycle/src/release_admission.rs",
+  "crates/server/awaken-service-lifecycle/src/release_admission_main.rs",
+]
+
+[[bounds]]
+text = '''The two canonical workflow consumers still invoke verification_manifest.py exactly once before management extraction or final attestation. Every successful validate_manifest call now invokes the one production Rust release_admission disposition through its checked CLI bridge; missing kernel, invalid invocation, unknown output or any reject disposition fails closed, with no Python fallback or second manifest path.'''
+
+[[bounds]]
+text = '''Kani exhausts all 64 combinations of artifact-name equality, artifact-digest equality, requested-profile equality, required completed-proof presence, source-commit equality and canonical rebuilt-manifest equality without assumptions or stubs. The production disposition admits exactly the all-true row and otherwise returns the first typed failure. The fixed Kani 0.67.0 and qualified patched CBMC/CaDiCaL backend verified the one combined harness with 41 checks and zero failures in 0.085660525 seconds of solver time and 4.59 guarded seconds under one job, an empty RUSTC_WRAPPER, a 600-second deadline and a 12-GiB cgroup ceiling.'''
+
+[[bounds]]
+text = '''Successful canonical rebuild remains the precondition that validates the formal receipt and binds source, ledgers and proof inputs. Python and actual-workflow decision tables exercise missing/null/running proof evidence, wrong profile, archive mutation, orphan or changed sidecars, source/ledger/proof-input mutation, validation before extraction and validation before attestation against the same kernel-backed owner.'''
+
+[[bounds]]
+text = '''This direct proof covers only the finite final release disposition. It does not prove Python parsing or fact projection, receipt-validator correctness, archive/Git/SHA-256 behavior, Cargo/rustc correctness, subprocess integrity, workflow runner or artifact transport, signatures, Docker/OCI behavior, live deployment, validation-to-consumption TOCTOU, or universal Python/shell/Rust-to-TLA refinement.'''

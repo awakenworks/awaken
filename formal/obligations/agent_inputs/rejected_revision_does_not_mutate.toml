@@ -1,0 +1,30 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/AgentInputRevision.tla",
+  "crates/control/awaken-config-resolver/src/stores.rs",
+  "formal/tla/AgentInputRevision.cfg",
+  "crates/control/awaken-admin-config-api/src/sqlite.rs",
+  "crates/control/awaken-admin-config-api/src/postgres.rs",
+  "crates/control/awaken-admin-config-api/tests/postgres_store.rs",
+  "crates/control/awaken-admin-config-api/tests/agent_input_admission.rs",
+  "crates/control/awaken-admin-config-api/tests/support/agent_input_admission.rs",
+]
+proof_harnesses = [
+  "agent_input_revision_decision_is_exact_non_wrapping_and_replay_first",
+]
+production_entrypoints = [
+  "crates/control/awaken-config-resolver/src/stores.rs",
+  "crates/control/awaken-admin-config-api/src/sqlite.rs",
+  "crates/control/awaken-admin-config-api/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''The existing private production revision decision is the sole revision admission consumed by the opaque borrowed write plan. Kani exhausts every Option<i64> current revision, every i64 attempted revision and both aggregate-equality classes: nonpositive, stale, skipped, changed same-revision, corrupt-current and exhausted attempts return their exact typed rejection and cannot yield a write decision. The same harness already owns exact successor and replay properties; it is reused here rather than duplicating that kernel or its proof.'''
+
+[[bounds]]
+text = '''This production-kernel proof establishes rejection before a write plan exists. It does not execute a SQL driver or prove database transaction refinement. SQLite IMMEDIATE and PostgreSQL advisory-lock transactions consume the closed Replay/Write admission, while trigger-failure, exact-replay, concurrent-writer and reopen tests check that rejected or aborted writes preserve durable content. SQL predicate interpretation, serialization, locking, rollback, durability and crash behavior remain executable evidence or external.database_engine_correctness TCB.'''

@@ -216,7 +216,7 @@ millisecond domain. Out-of-calendar values saturate in presentation only.
 The direct Kani harnesses cover the production UTC clamp, all generation
 identity/expiry axes, the first processed-event observation/rejection boundary,
 and event ordering independent of time. Collection/string bounds are recorded
-in `coverage.json`; these are not proofs of database engines or arbitrary I/O.
+in the obligation ledger (`formal/obligations/`); these are not proofs of database engines or arbitrary I/O.
 `SessionRoot` and `SessionEventProtocol` retain their existing shared kernels and
 add nonmonotonic observation values. `StoreHistory` adds commit-time receipts,
 legacy unknown metadata, crash-discarded caches and exact recovered prefixes.
@@ -666,7 +666,7 @@ downstream idempotency; they are not claimed exactly once by these proofs.
 - `ResourceReclamation.tla` separates File intent/tombstone/reference commits,
   crashes, guard/fence admission, shared references/leases and receipt identity.
   The [File lifecycle design](../docs/design/file-lifecycle.md) explains recovery.
-  [coverage.json](coverage.json) owns proof bounds and assumptions; a receipt
+  The obligation ledger ([obligations/](obligations/)) owns proof bounds and assumptions; a receipt
   proves a safe purge operation, not permanent absence of shared content.
 - `LocalProcessLifecycle.tla` models the sole `awaken-local-process` spawn
   boundary, two concurrent waiters, mutex acquisition/backoff, cancellation,
@@ -904,15 +904,15 @@ implementation coverage. Mutation reports are retained as release artifacts.
 Recorded tool identities and per-check timings are release evidence, not proof
 that a check which did not execute passed.
 
-`formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
-CI gate verifies that every evidence path exists and that at least 70% of
-formalizable safety obligations have checked formal evidence. The gate prints
-the current obligation total, coverage ratio, external-assumption total, and
-the independent model-checked, model-proved, Kani-kernel-proved, and executable
-trace-refinement dimensions directly from that ledger. Those dimensions
-overlap and must not be summed. The generated gate output, rather than a second
-checkpoint count in this document, is the authority for the current totals.
-Environmental properties are listed separately and never
+`formal/obligations/` (one TOML file per obligation) is the versioned,
+claim-oriented obligation ledger. The CI gate verifies that every evidence path
+exists and that at least 70% of formalizable safety obligations have checked
+formal evidence. The gate prints the current obligation total, coverage ratio,
+external-assumption total, and the independent model-checked, model-proved,
+Kani-kernel-proved, and executable trace-refinement dimensions directly from
+that ledger. Those dimensions overlap and must not be summed. The generated gate
+output, rather than a second checkpoint count in this document, is the authority
+for the current totals. Environmental properties are listed separately and never
 silently omitted or mislabeled as model-linked merely to raise the percentage.
 
 `model_linked` deliberately means that a checked formal model and concrete Rust

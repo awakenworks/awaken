@@ -1,0 +1,28 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
+  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
+  "crates/server/awaken-protocol-managed/tests/session_resources.rs",
+  "crates/bin/awaken-cli/tests/management_surface.rs",
+]
+proof_harnesses = [
+  "repository_rotation_requires_original_live_resource_generation",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/resource_reconciliation.rs",
+]
+
+[[bounds]]
+text = '''Kani invokes the actual rotation-generation admission gate over the full u64 captured/current generation domain and every actual durable execution-state and disposition variant; terminal status is derived through the aggregate terminality law rather than supplied as a free Boolean. Archived/deleting/deleted cannot be admitted by nonterminal execution. Archive payload is not inspected by this predicate. Admission is exactly equal generations and a nonterminal root, including MAX; both positive and rejection directions are checked. Default checks retained; 0 of 104 failed, 2 unreachable checks.'''
+
+[[bounds]]
+text = '''The caller derives generations from SessionResourceState.desired_generation and terminal status from the canonical persisted root. Rotation reads and replaces the same desired slot; existing revise_unattempted_pending refuses attempted pending before Vault effects, and original input identity/configuration is rechecked after root conflicts. One real Vault plus file-SQLite/root-CAS/reopen table covers active/pending, attempted/removed/terminal and every non-Active disposition refusal, exact material crash replay, unrelated root winner, competing attempted Resource generation and archive winning after the Vault effect. The product router independently covers initially pending creation.'''
+
+[[bounds]]
+text = '''The scalar proof does not prove arbitrary input/String equality, manifest mutation, hashing/codec integrity, Vault WAL correctness, input fact derivation, ownership/authentication, SQL/async transaction refinement or remote process termination. These remain native adapter evidence or explicit TCB; no encompassing global proof grade is promoted.'''

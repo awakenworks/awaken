@@ -1,0 +1,55 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_theorem_proved"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/RuntimeImplementationProof.tla",
+  "formal/tla/RuntimeImplementation.tla",
+  "formal/tla/RuntimeImplementation.cfg",
+  "crates/contract/awaken-agent-contract/src/thread/commit/coordinator.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/tests/conformance.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-fs/tests/conformance.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/tests/checkpoint_reader.rs",
+  "crates/stores/awaken-store-sqlite/tests/failure_atomicity.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/stores/awaken-store-postgres/tests/postgres_live.rs",
+  "scripts/ci/check-reliability.sh",
+  "scripts/ci/pg_tests.sh",
+  "docs/adr/0039-runtime-persistence-port-convergence-and-store-naming.md",
+  "docs/design/commit-fact-projection-taxonomy.md",
+  "formal/README.md",
+]
+production_entrypoints = [
+  "crates/contract/awaken-agent-contract/src/thread/commit/coordinator.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/staged.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+]
+
+[[bounds]]
+text = '''RuntimeImplementationProof proves the symbolic temporal refinement RuntimeImplementation!Spec => RuntimeSystem!Spec: every Prepare and prepared crash stutters in the abstract implementation variables, while every Apply step maps to one abstract RuntimeSystem transition. This is an unbounded TLAPS theorem over behaviors satisfying the declared constants and RuntimeAssumptions, but its atomic Apply actions do not name Rust ThreadCommit fields or prove an adapter implementation.'''
+
+[[bounds]]
+text = '''ThreadCommit::assemble is the sole production constructor that binds a Run disposition and optional ResumeTicket, messages, Run-scoped state and event drafts into one validated commit plan. Coordinator::commit is the sole durable write port; CheckpointReader and RunRecoverySource expose only committed truth and one internally consistent recovery prefix.'''
+
+[[bounds]]
+text = '''The in-memory adapter validates all fallible lifecycle cursors before advancing every region under one mutex. The filesystem adapter serializes and fsyncs one complete ThreadCommit under its retained lifecycle/write lock before advancing the same in-memory read model. SQLite writes commit, message, state, event, Run, waiting and Thread-version rows in one IMMEDIATE transaction. PostgreSQL writes those regions and the Thread version in one database transaction before publishing its projection.'''
+
+[[bounds]]
+text = '''The existing shared conformance owners, recovery_snapshot_is_consistent and terminal_run_is_fenced, execute identically through the Memory, filesystem, SQLite and PostgreSQL backend bindings. The success rule commits one awaiting shape containing its exact Run fact/ticket, message, bound state and generated plus extra events, then requires the single recovery snapshot to expose every region exactly once with message/state/event cursors bound to the same commit. The rejection rule first validates a distinguishable full awaiting shape, submits it after the Run is terminal, and requires messages, state, events, Run/latest projections and ticket to stutter. No adapter-specific copy of this logic or second commit reducer is introduced.'''
+
+[[bounds]]
+text = '''SQLite process-kill, read-only and full-database tests additionally exercise rollback or complete-prefix recovery around real WAL writes; the PostgreSQL live suite injects a later event-row conflict after commit-row insertion and requires the rolled-back dense successor to be reused. check-reliability.sh owns the existing Memory/filesystem/SQLite suite invocation, and pg_tests.sh owns the configured live PostgreSQL invocation; this row adds no duplicate strict-gate command.'''
+
+[[bounds]]
+text = '''The conformance executions and backend fault cases cross-check concrete implementations but do not establish a universal Rust-to-TLA refinement. Mutex and Tokio scheduling, filesystem append/fsync and power-loss semantics, SQLite/PostgreSQL transaction isolation, rollback and durability, SQL/JSON driver correctness, process termination and arbitrary hardware faults remain executable or TCB boundaries. A PostgreSQL test that returns because no endpoint is configured is not a live PostgreSQL pass.'''

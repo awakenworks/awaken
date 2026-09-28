@@ -1,0 +1,30 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/LiveInbox.tla",
+  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
+  "crates/runtime/awaken-runtime/tests/live_inbox.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "live_inbox_closed_lifecycle_is_absorbing_for_every_mutation",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''InboxLifecycle is the sole production close/admission owner used by Offer, Wake, Remove, Replace, Reorder and Close while the existing State mutex is held. All six mutation paths share the same operation-independent admission fence. Kani exhausts the complete two-state lifecycle without user assumptions: Closed rejects mutation, Close always reaches Closed, and repeated Close remains Closed.'''
+
+[[bounds]]
+text = '''The native cause/effect table cross-checks the real queue and every public mutation: first Close returns the complete FIFO leftovers and advances the version once; every post-close API rejects or returns empty while queue, identity frontier and version stutter. Concurrent offer/close and waiter tests remain executable cross-evidence.'''
+
+[[bounds]]
+text = '''The direct proof covers the closed lifecycle and shared admission relation. It does not prove Mutex poisoning/scheduling, allocation and VecDeque behavior, Notify delivery, caller handling of leftovers, durable delivery, process replacement or the linked TLA model as a Rust refinement.'''

@@ -1,0 +1,35 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/StoreHistory.tla",
+  "formal/tla/StoreHistory.cfg",
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+]
+proof_harnesses = [
+  "operation_identity_replays_only_the_same_run_and_payload",
+  "operation_append_requires_exact_prefix_and_nonwrapping_version",
+  "applied_receipt_is_exact_and_names_one_successor_record",
+]
+production_entrypoints = [
+  "crates/stores/awaken-store-conformance/src/lib.rs",
+  "crates/runtime/awaken-store-inmem/src/lib.rs",
+  "crates/stores/awaken-store-fs/src/lib.rs",
+  "crates/stores/awaken-store-sqlite/src/lib.rs",
+  "crates/stores/awaken-store-postgres/src/lib.rs",
+  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The contract-owned production kernels partition exact receipt replay from identity conflict, admit only an exact nonwrapping Thread/Run prefix, and construct an applied receipt from the one admitted successor. Kani proves those decisions over the complete scalar domains; all stores return before mutation on replay/rejection and place record/version/time/receipt writes under one existing lock or transaction. Mutex, filesystem append/fsync, SQL transaction atomicity, codec correctness and crash durability remain executable or TCB evidence.'''

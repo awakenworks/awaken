@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import formal_ledger
 from formal_model_mutation_runner import check_tlc_model_mutations
 from formal_config_mutations import check_config_cas_model_mutant, check_config_activation_model_mutants
 from formal_worker_registration_mutations import check_worker_registration_model_mutants
@@ -103,12 +105,17 @@ def require_green_baseline(case_root: Path) -> None:
             raise SystemExit(f"formal mutation baseline failed: {checker}: {result.stderr}")
 
 
+def mutation_targets(case_root: Path) -> dict[Path, bytes]:
+    paths = [path for path in (case_root / "formal").rglob("*") if path.is_file()]
+    return {path: path.read_bytes() for path in [*paths, case_root / "scripts/ci/check_formal.sh"]}
+
+
 def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
 def mutate_removed_harness(case_root: Path) -> None:
-    ledger = json.loads((case_root / "formal" / "coverage.json").read_text())
+    ledger = formal_ledger.load(case_root)
     harness = next(row["proof_harnesses"][0] for row in ledger["obligations"] if row.get("proof_harnesses"))
     gate = case_root / "scripts" / "ci" / "check_formal.sh"
     source = gate.read_text()
@@ -121,12 +128,11 @@ def mutate_removed_harness(case_root: Path) -> None:
 
 
 def mutate_downgraded_claim(case_root: Path) -> None:
-    path = case_root / "formal" / "coverage.json"
-    ledger = json.loads(path.read_text())
+    ledger = formal_ledger.load(case_root)
     row = next(item for item in ledger["obligations"] if item["status"] == "kernel_proved")
     row["status"] = "executable_only"
     row.pop("proof_harnesses", None)
-    write_json(path, ledger)
+    formal_ledger.write(case_root, ledger)
     must_fail(case_root, "check_formal_coverage.py", "downgraded proved obligation",
               expected=f"{row['id']} production-kernel grade has no Kani harness")
 
@@ -147,19 +153,25 @@ def mutate_wrong_harness_package(case_root: Path) -> None:
     # H2: unchanged exact harness name under a different package must not earn
     # proof credit. Package ownership comes from Cargo, not directory spelling.
     gate = case_root / "scripts/ci/check_formal.sh"
-    gate.write_text(gate.read_text().replace("run_kani awaken-work-store", "run_kani awaken-config-resolver", 1))
+    source = gate.read_text()
+    batch = source[source.index("run_kani awaken-work-store"):]
+    batch = batch[:batch.index("\n  run_kani ", 1)]
+    moved = set(re.findall(r"--harness ([A-Za-z0-9_]+)", batch))
+    gate.write_text(source.replace("run_kani awaken-work-store", "run_kani awaken-config-resolver", 1))
+    # The checker reports the first moved harness in ledger order.
+    harness = next(name for row in formal_ledger.load(case_root)["obligations"]
+                   for name in row.get("proof_harnesses", []) if name in moved)
     must_fail(case_root, "check_formal_coverage.py", "Kani selection in wrong package",
-              expected="Kani harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping is selected from wrong package")
+              expected=f"Kani harness {harness} is selected from wrong package")
 
 
 def mutate_harness_name_prefix(case_root: Path) -> None:
     # H3: adding a short name that is merely a prefix of a real proof, plus a
     # comment mentioning that name, cannot manufacture a proof definition.
-    path = case_root / "formal/coverage.json"
-    ledger = json.loads(path.read_text())
+    ledger = formal_ledger.load(case_root)
     row = next(item for item in ledger["obligations"] if item["id"] == "work.persisted_epoch_is_exact_nonnegative_and_nonwrapping")
     row["proof_harnesses"].append("work_lease_epoch")
-    write_json(path, ledger)
+    formal_ledger.write(case_root, ledger)
     gate = case_root / "scripts/ci/check_formal.sh"
     gate.write_text(gate.read_text() + "\n# --harness work_lease_epoch\n")
     must_fail(case_root, "check_formal_coverage.py", "prefix is not a proof definition",
@@ -178,7 +190,7 @@ def mutate_duplicate_harness_selection(case_root: Path) -> None:
 def mutate_unchecked_model(case_root: Path) -> None:
     gate = case_root / "scripts" / "ci" / "check_formal.sh"
     source = gate.read_text()
-    ledger = json.loads((case_root / "formal" / "coverage.json").read_text())
+    ledger = formal_ledger.load(case_root)
     model = next(
         evidence
         for row in ledger["obligations"]
@@ -200,22 +212,23 @@ def mutate_commented_release_self_test(case_root: Path) -> None:
     if source.count(anchor) != 1:
         raise SystemExit("release self-test mutation anchor drifted")
     gate.write_text(source.replace(anchor, "# " + anchor))
+    # The checker reports the first owner in ledger order; name that exact row.
+    owner = next(row["id"] for row in formal_ledger.load(case_root)["obligations"]
+                 if "scripts/release/verification_manifest.py" in row["production_entrypoints"])
     must_fail(case_root, "check_formal_coverage.py", "comment-only Python self-test",
-              expected="assembly_role.verified_admission_requires_exact_fresh_tcb_fingerprint release entrypoint needs exactly one strict-CI self-test: scripts/release/verification_manifest.py")
+              expected=f"{owner} release entrypoint needs exactly one strict-CI self-test: scripts/release/verification_manifest.py")
 
 
 def mutate_missing_proof_grade(case_root: Path) -> None:
-    path = case_root / "formal" / "coverage.json"
-    ledger = json.loads(path.read_text())
+    ledger = formal_ledger.load(case_root)
     ledger["obligations"][0].pop("proof_grade")
-    write_json(path, ledger)
+    formal_ledger.write(case_root, ledger)
     must_fail(case_root, "check_formal_coverage.py", "proof grade removed",
               expected=f"{ledger['obligations'][0]['id']} has unknown or missing proof_grade None")
 
 
 def mutate_false_production_grade(case_root: Path) -> None:
-    path = case_root / "formal" / "coverage.json"
-    ledger = json.loads(path.read_text())
+    ledger = formal_ledger.load(case_root)
     row = next(
         item
         for item in ledger["obligations"]
@@ -223,7 +236,7 @@ def mutate_false_production_grade(case_root: Path) -> None:
         and not item.get("proof_harnesses")
     )
     row["proof_grade"] = "production_kernel_proved"
-    write_json(path, ledger)
+    formal_ledger.write(case_root, ledger)
     must_fail(
         case_root,
         "check_formal_coverage.py",
@@ -242,12 +255,11 @@ def mutate_missing_boundary(case_root: Path) -> None:
 
 
 def mutate_false_refinement_grade(case_root: Path) -> None:
-    path = case_root / "formal/coverage.json"
-    ledger = json.loads(path.read_text())
+    ledger = formal_ledger.load(case_root)
     row = next(item for item in ledger["obligations"] if
                "crates/runtime/awaken-runtime/tests/formal_refinement.rs" in item["evidence"])
     row["proof_grade"] = "implementation_refined"
-    write_json(path, ledger)
+    formal_ledger.write(case_root, ledger)
     must_fail(case_root, "check_formal_coverage.py", "trace relabeled as universal refinement",
               expected=f"{row['id']} implementation_refined requires a checked universal production refinement")
 
@@ -679,12 +691,14 @@ def main() -> None:
             case_root = temp_root / str(index)
             prepare_case(case_root)
             require_green_baseline(case_root)
-            # Only root ledgers and the copied gate are writable mutation
-            # targets. Restore exact bytes and prove the baseline again so a
-            # secondary fixture failure cannot count as the requested kill.
-            targets = [*sorted((case_root / "formal").glob("*.json")), case_root / "scripts/ci/check_formal.sh"]
-            original = {path: path.read_bytes() for path in targets}
+            # Only the copied formal/ tree and the copied gate are writable
+            # mutation targets. Restore exact bytes (and drop any file a
+            # mutation added) and prove the baseline again so a secondary
+            # fixture failure cannot count as the requested kill.
+            original = mutation_targets(case_root)
             mutation(case_root)
+            for path in set(mutation_targets(case_root)) - set(original):
+                path.unlink()
             for path, content in original.items():
                 path.write_bytes(content)
             require_green_baseline(case_root)

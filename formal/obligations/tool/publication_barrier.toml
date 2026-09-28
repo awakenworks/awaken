@@ -1,0 +1,39 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/RuntimeSystemProof.tla",
+  "formal/runtime-refinement-manifest.json",
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
+  "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
+  "crates/runtime/awaken-runtime/tests/permission.rs",
+]
+proof_harnesses = [
+  "only_finalized_batches_expose_staged_publication",
+]
+production_entrypoints = [
+  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
+  "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
+]
+
+[[bounds]]
+text = '''The sole ToolBatch owner exposes its borrowed ordered publication view only in Finalized. ToolBatch::finalize rejects any nonterminal call, and persisted Finalized batches pass the same completeness invariant during typed deserialization.'''
+
+[[bounds]]
+text = '''Direct Kani exhausts both ToolBatchPhase values through the production permits_publication kernel: 14 checks, zero failures, one harness, with no assumptions, stubs, or domain reduction. Canonical Kani 0.67 and patched CBMC/CaDiCaL completed in 23.821 seconds at 593068 KiB peak aggregate RSS under the 600-second, 12-GiB RSS, 12-GiB MemAvailable, and single-job guards.'''
+
+[[bounds]]
+text = '''The native cause/effect table rejects both incomplete Open and terminal-but-Open batches, then checks a two-call reverse-completion fixture yields every staged message and state command exactly once in original model order after Finalized. Fail-open publication admission, removed incomplete-finalize guard, and reversed publication order source mutants are each killed.'''
+
+[[bounds]]
+text = '''Fresh sequential, compatible concurrent, recovery, and coordinated interruption publishers consume this same borrowed view; the Runtime stages its ordered values with the Finalized ActiveToolBatch in one ThreadCommit. The permission handoff test separately observes no partial result and ordered terminal publication through the real async Runtime.'''
+
+[[bounds]]
+text = '''The Kani harness proves the local publication phase admission only. ToolBatch allocation and arbitrary lengths, iterator/compiler correctness, ThreadCommit atomicity and durability, database/crash behavior, async scheduling, and universal Rust-to-model refinement remain outside this kernel. Host coordination's explicit pre-publication read of a committed send_message result is an internal recovery observation, not model-transcript publication.'''

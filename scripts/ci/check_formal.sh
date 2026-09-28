@@ -138,6 +138,7 @@ python3 scripts/ci/check_feature_coverage.py --require-complete
 python3 scripts/ci/check_formal_coverage.py --require-complete \
   --require-guardrail G42 \
   --require-guardrail G43
+python3 scripts/ci/formal_ledger.py --self-test
 python3 scripts/ci/test_formal_profile.py
 python3 scripts/ci/test_formal_run_evidence.py
 python3 scripts/ci/test_bootstrap_kani.py

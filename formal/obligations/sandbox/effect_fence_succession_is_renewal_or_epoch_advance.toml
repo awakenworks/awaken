@@ -1,0 +1,17 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/contract/awaken-provisioning-contract/src/sandbox/fence.rs",
+  "crates/worker/awaken-sandbox-container/src/runtime/realization.rs",
+]
+proof_harnesses = [
+  "fence_succession_is_exactly_renewal_or_epoch_advance",
+]
+production_entrypoints = [
+  "crates/contract/awaken-provisioning-contract/src/sandbox/fence.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the full-width u64 epoch/expiry coordinates and the exact-lease bit of the fence_succession kernel that FenceToken::succession and authorizes_successor call: a successor is a Reassignment only for a strictly higher epoch, a Renewal only for the exact lease with non-regressed expiry, and rejected otherwise. The proof does not establish that providers compare the persisted backend fence under their own CAS (marker lock, resourceVersion, labels) or that operation identity is checked by the owning effect; those are covered by the provider decision-table tests.'''

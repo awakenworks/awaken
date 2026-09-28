@@ -1,0 +1,17 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/contract/awaken-deployment-contract/src/schedule.rs",
+]
+proof_harnesses = [
+  "minute_timestamp_projection_is_exact_and_bounded",
+  "minute_timestamp_projection_has_an_exact_input_domain",
+]
+production_entrypoints = [
+  "crates/contract/awaken-deployment-contract/src/schedule.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

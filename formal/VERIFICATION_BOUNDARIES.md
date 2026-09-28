@@ -12,7 +12,7 @@ This repository therefore keeps three evidence levels separate:
 3. **Product evidence**: tests, E2E scenarios, API snapshots, and architecture
    checks demonstrate executable behavior outside the formal model.
 
-`coverage.json` must not relabel levels 2 or 3 as an implementation proof.
+The obligation ledger (`formal/obligations/`) must not relabel levels 2 or 3 as an implementation proof.
 `proof-boundaries.json` is the machine-readable inventory of every product
 requirement that still has requirement-only production surfaces.
 

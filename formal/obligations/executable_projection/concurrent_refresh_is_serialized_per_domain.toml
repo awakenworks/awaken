@@ -1,0 +1,31 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ExecutableProjectionRefreshProof.tla",
+  "crates/server/awaken-durable-projection/src/lib.rs",
+  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
+  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "projection_refresh_domain_permit_is_exclusive",
+]
+production_entrypoints = [
+  "crates/server/awaken-durable-projection/src/lib.rs",
+  "crates/server/awaken-executable-agent-catalog/src/postgres.rs",
+  "crates/server/awaken-executable-environment-catalog/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''ProjectionRefreshDomain is now the sole shared in-process owner of both the actual Tokio mutation mutex and ProjectionCursor. Both production registrars reuse this exact type for register, withdraw and refresh; the plan read, replay, catalog install and cursor reconciliation occur while its opaque ProjectionRefreshGuard remains live. The prior duplicated per-adapter Mutex-plus-cursor fields were removed.'''
+
+[[bounds]]
+text = '''The direct Kani harness invokes the actual production Tokio mutex wrapper: first try_lock issues one guard, a second attempt while it lives fails, and dropping it permits the next guard. Fixed Kani 0.67.0 with qualified CBMC/CaDiCaL completed 1038 checks with zero failures and 21 compiler/library unreachable checks in 0.56868726 solver seconds and 10.14 guarded seconds, at 118628 KiB peak aggregate RSS under one job, empty RUSTC_WRAPPER, 600 seconds and 12 GiB. Kani treats Tokio atomics sequentially, so this proves the wrapper's permit topology rather than concurrent scheduling.'''
+
+[[bounds]]
+text = '''The unbounded TLAPS invariant and native two-task decision tables provide independent concurrency cross-evidence for both actual registrar types: while the first high-water read is held, only one task enters; after release the waiting refresh observes the advanced cursor without duplicate range replay. Tokio atomic/mutex correctness, wake scheduling, cancellation and panic, SQL snapshot/range truth, cross-process replicas, crash durability and universal Rust refinement remain outside the direct kernel.'''

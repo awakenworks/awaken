@@ -1,0 +1,32 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "crates/contract/awaken-run-ingress-contract/src/dispatch.rs",
+  "crates/contract/awaken-run-ingress-contract/src/dispatch/queue.rs",
+  "crates/server/awaken-run-ingress/src/worker/claim_renewal.rs",
+  "crates/server/awaken-run-ingress/src/memory.rs",
+  "crates/server/awaken-run-ingress/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-run-ingress/src/postgres/dispatch_queue.rs",
+  "crates/server/awaken-run-ingress/tests/harness/mod.rs",
+  "crates/server/awaken-run-ingress/tests/pool_memory.rs",
+  "e2e/remote_attempt_lifecycle_e2e.ts",
+  "crates/contract/awaken-run-ingress-contract/src/dispatch/model.rs",
+]
+proof_harnesses = [
+  "lease_renewal_observation_preserves_claim_and_attempt_fences",
+]
+production_entrypoints = [
+  "crates/contract/awaken-run-ingress-contract/src/dispatch.rs",
+  "crates/server/awaken-run-ingress/src/worker/claim_renewal.rs",
+  "crates/server/awaken-run-ingress/src/memory.rs",
+  "crates/server/awaken-run-ingress/src/sqlite/dispatch_queue.rs",
+  "crates/server/awaken-run-ingress/src/postgres/dispatch_queue.rs",
+]
+
+[[bounds]]
+text = '''The production reducer exhausts current-claim and exact-cancelled-physical-attempt facts. Backend transaction linearizability and remote A2A terminal truth remain executable or external evidence.'''

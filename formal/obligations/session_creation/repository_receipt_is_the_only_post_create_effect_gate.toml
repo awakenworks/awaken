@@ -1,0 +1,22 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/server/awaken-protocol-managed/src/state/deployment_sessions.rs",
+]
+proof_harnesses = [
+  "only_an_applied_awaited_create_may_enter_post_create_effects",
+  "nonterminal_control_failures_only_replay_the_durable_create_root",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/creation.rs",
+  "crates/server/awaken-protocol-managed/src/state/deployment_sessions.rs",
+]
+
+[[bounds]]
+text = '''Closed repository receipt kind x caller completion-mode decision table over the production post-create effect gate. Repository transaction durability and external realization effects remain outside this kernel.'''
+
+[[bounds]]
+text = '''Closed repository receipt kind x caller completion-mode decision table over the production post-create effect gate. The control-failure kernel exhausts the three contract dispositions and proves that NotReady/Retryable select exact durable-root replay plus lifecycle wake while Terminal remains fail-closed. Managed Deployment launch uses the same repository receipt gate; its wire lowering and adapter call path are executable-test evidence rather than independently proved refinement. Repository transaction durability, exact receipt read availability, aggregate terminal observation and external realization effects remain outside these kernels.'''

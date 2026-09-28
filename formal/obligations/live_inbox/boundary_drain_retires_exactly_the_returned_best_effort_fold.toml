@@ -1,0 +1,32 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/LiveInbox.tla",
+  "crates/contract/awaken-runtime-contract/src/boundary.rs",
+  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
+  "crates/runtime/awaken-runtime/tests/live_inbox.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "live_inbox_boundary_drain_retires_exactly_the_queue",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/boundary.rs",
+  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''LiveInbox::take_all_in_order is the single production drain-to-Vec owner reused by boundary drain and close. Kani checks a three-entry queue of arbitrary u8 values without assumptions: the returned batch equals the complete prior FIFO queue and the editable queue is empty.'''
+
+[[bounds]]
+text = '''evaluate_boundary remains the sole consumer of drain_at_boundary. Native cause/effect tests cross-check real Message re-identification, two-entry FIFO delivery, pause-with-input, empty input, committed delivery and the intentional best-effort outcome when the caller's ThreadCommit rejects after drain.'''
+
+[[bounds]]
+text = '''The direct proof bounds the queue to three values and proves the exact take-all kernel. It does not directly prove arbitrary queue lengths, Message re-identification/String formatting, Mutex poisoning or scheduling, caller commit/await behavior, durable delivery, process replacement, or the linked TLA model as a Rust refinement.'''

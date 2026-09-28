@@ -1,0 +1,34 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/ConfigActivation.tla",
+  "formal/tla/ConfigActivation.cfg",
+  "scripts/ci/formal_config_mutations.py",
+  "docs/adr/0071-distributed-service-boundaries-and-executable-agent-registration.md",
+  "docs/design/config-publication-lifecycle.md",
+  "crates/server/awaken-executable-agent-catalog/src/lib.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "installed_lifecycle_revision_never_rolls_back",
+]
+production_entrypoints = [
+  "crates/server/awaken-executable-agent-catalog/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Installed generation is the legacy obligation name for Coordinator's per-Agent current lifecycle revision. The private production disposition is exhausted over every Option<u64> current revision, both current availability states, every u64 incoming revision and both registration/withdrawal availability intents, with no assumptions, stubs, arithmetic or domain reduction.'''
+
+[[bounds]]
+text = '''Both register_locked and withdraw_locked consume this one disposition owner before replacing CurrentEntry. Absence and higher revisions advance; older commands retain current; an equal registration cannot revive either an available current or tombstone; an equal withdrawal advances an available current to a tombstone and replays an equal tombstone idempotently. Therefore every actual disposition either preserves the installed revision or replaces it with an equal-or-higher revision.'''
+
+[[bounds]]
+text = '''Direct Kani verifies one harness and 49 properties with fixed Kani 0.67 and the patched CBMC CaDiCaL backend. The native cause/effect decision table covers absent, available and tombstone states, both command intents, lower/equal/higher relations, zero and u64::MAX; an exact comparator mutant is rejected and the production source restored byte-identically.'''
+
+[[bounds]]
+text = '''The proof is bounded to the synchronous rebuildable catalog transition. Registration validation, exact-history and fingerprint maps, RwLock linearizability, durable command persistence, database transactions, source-CAS provenance, transport, async delivery, crash recovery and replay completeness remain executable, abstract-model or TCB evidence; this proof does not promote stale-publication admission or the complete Control-to-Coordinator chain.'''

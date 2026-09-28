@@ -1,0 +1,25 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/contract/awaken-executable-environment-contract/src/image_realization.rs",
+  "crates/server/awaken-environment-image-build/src/durable.rs",
+  "crates/server/awaken-environment-image-build/src/in_memory.rs",
+  "crates/server/awaken-environment-image-build/src/sqlite.rs",
+  "crates/server/awaken-environment-image-build/src/postgres.rs",
+]
+proof_harnesses = [
+  "environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert",
+  "environment_image_build_mutation_requires_exact_claim_and_admissible_command",
+]
+production_entrypoints = [
+  "crates/contract/awaken-executable-environment-contract/src/image_realization.rs",
+  "crates/server/awaken-environment-image-build/src/durable.rs",
+  "crates/server/awaken-environment-image-build/src/in_memory.rs",
+  "crates/server/awaken-environment-image-build/src/sqlite.rs",
+  "crates/server/awaken-environment-image-build/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

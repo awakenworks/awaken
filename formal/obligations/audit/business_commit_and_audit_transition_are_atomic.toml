@@ -1,0 +1,30 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/AuditCommit.tla",
+  "crates/control/awaken-config-store/src/lib.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/control/awaken-agent-config/src/store.rs",
+  "formal/tla/AuditCommit.cfg",
+  "crates/control/awaken-config-store/src/schema.rs",
+  "crates/control/awaken-config-store/tests/support/audit_identity.rs",
+  "crates/control/awaken-config-store/tests/integration.rs",
+  "crates/control/awaken-config-store/tests/postgres.rs",
+]
+production_entrypoints = [
+  "crates/control/awaken-config-store/src/lib.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/control/awaken-agent-config/src/store.rs",
+]
+
+[[bounds]]
+text = '''AuditCommit checks two scopes, two delimiter-colliding tool/call tuples and two request summaries under atomic SQL transaction/row-selection assumptions. It is not a Rust-to-model refinement.'''
+
+[[bounds]]
+text = '''The production kernel proves admission before both SQL adapters place the business revision and audit transition in one transaction, but it cannot prove driver/engine commit atomicity. Backend and crash tests remain executable cross-evidence, so the cross-write atomicity obligation retains abstract-model grade.'''

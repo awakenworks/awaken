@@ -1,0 +1,18 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/server/awaken-credential-materializer/src/secret_broker.rs",
+  "crates/server/awaken-credential-materializer/src/lib.rs",
+]
+proof_harnesses = [
+  "exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source",
+]
+production_entrypoints = [
+  "crates/server/awaken-credential-materializer/src/secret_broker.rs",
+  "crates/server/awaken-credential-materializer/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''

@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "crates/server/awaken-worker-transport-security/src/lib.rs",
+  "crates/bin/awaken-worker/src/bootstrap.rs",
+]
+proof_harnesses = [
+  "worker_transport_selector_admits_only_supported_exact_postures",
+  "remote_transport_never_downgrades_or_widens_identity",
+]
+production_entrypoints = [
+  "crates/server/awaken-worker-transport-security/src/lib.rs",
+  "crates/bin/awaken-worker/src/bootstrap.rs",
+]
+
+[[bounds]]
+text = '''Finite production selector: 6 endpoint x 7 credential x 6 identity postures; exactly HTTPS plus signed or Pod-bound credential verification plus exact identity is admitted. TokenReview parsing, API-server honesty, TLS implementation, deployment wiring and physical termination are outside this kernel proof.'''

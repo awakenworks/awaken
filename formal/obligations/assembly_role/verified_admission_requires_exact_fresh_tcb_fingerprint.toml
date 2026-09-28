@@ -1,0 +1,35 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.orchestrator_correctness",
+]
+evidence = [
+  "formal/tla/VerifiedProfileAdmission.tla",
+  "scripts/release/verification_manifest.py",
+  "crates/server/awaken-service-lifecycle/src/release_admission.rs",
+  "crates/server/awaken-service-lifecycle/src/release_admission_main.rs",
+  "scripts/ci/check_formal_mutations.py",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "verified_release_and_tcb_admission_are_total_exact_and_fail_closed",
+]
+production_entrypoints = [
+  "scripts/release/verification_manifest.py",
+  "crates/server/awaken-service-lifecycle/src/release_admission.rs",
+  "crates/server/awaken-service-lifecycle/src/release_admission_main.rs",
+]
+
+[[bounds]]
+text = '''The canonical validate_manifest -> validate_tcb_evidence path remains the only release and TCB admission owner. After Python has established complete unique dependency indexes and closed JSON shapes, every dependency acceptance invokes the production Rust tcb_admission disposition through the checked CLI bridge; no Python fallback can admit when the kernel rejects or is unavailable.'''
+
+[[bounds]]
+text = '''Kani uses no assumptions or stubs and exhausts every combination of exact contract, observed/target version validity and equality, observed/target configuration-digest validity and equality, evidence-digest validity, plus the complete u64 maximum-age, observation-time and current-time domains. Checked subtraction rejects future observations without underflow; zero maximum age and age greater than the inclusive bound reject. The fixed Kani 0.67.0 and qualified patched CBMC/CaDiCaL backend verified the one combined harness with 41 checks and zero failures in 0.085660525 seconds of solver time and 4.59 guarded seconds under one job, an empty RUSTC_WRAPPER, a 600-second deadline and a 12-GiB cgroup ceiling.'''
+
+[[bounds]]
+text = '''The adjacent native Rust table covers every scalar failure disposition and inclusive freshness. The existing Python decision table crosses two dependencies, complete/duplicate/unknown IDs, closed shapes, scalar syntax, exact independently supplied targets, Boolean-as-integer faults and boundary times; the actual CLI test reaches the same kernel process.'''
+
+[[bounds]]
+text = '''This direct proof covers the finite synchronous scalar disposition after Python projection. It does not prove Python parsing or fact projection, arbitrary JSON/String semantics, SHA-256 collision resistance, Cargo/rustc correctness, subprocess integrity, observer or target authentication, clock trust, validation-to-use TOCTOU, runtime revocation, database durability, orchestrator behavior, Session binding, or universal Python/Rust-to-TLA refinement.'''

@@ -1,0 +1,33 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
+  "crates/server/awaken-protocol-acp/src/jsonrpc/response.rs",
+  "crates/server/awaken-protocol-acp/src/lib.rs",
+  "docs/design/acp-harness-capability-and-tool-bridge.md",
+  "formal/verification-boundaries/acp-permission-and-process-cleanup.md",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "acp_permission_effect_plan_preserves_authority_order",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
+  "crates/server/awaken-protocol-acp/src/jsonrpc/response.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts both production permission-plan inputs without assumptions. When projection is open, the exact plan is ProjectCall then ResolveAuthority then SendResponse; after settlement closes projection, the exact plan is ResolveAuthority then SendResponse then NoEffect. answer_request iterates this allocation-free plan as the sole owner of those three local effects.'''
+
+[[bounds]]
+text = '''The adjacent six-rule native decision table observes the actual RunFactAppender, PermissionResolver and Wire writer. It covers allow, deny and Await, settlement, invalid input, append failure and response-write failure: append failure reaches neither resolver nor writer; an Await response is written as cancelled before PermissionAwait returns; invalid input sends cancelled without consulting authority.'''
+
+[[bounds]]
+text = '''Exact observed-call identity, complete input, alias consensus and same-polarity option selection remain owned by their existing production reducers and independent Kani harnesses. This obligation composes those outputs only; it does not duplicate or widen them.'''
+
+[[bounds]]
+text = '''This direct proof establishes the finite local effect plan. It does not prove Tokio polling or cancellation schedules, appender durability, resolver correctness or progress, operating-system transport, peer receipt, tool execution, remote side-effect order, process termination, or universal Rust-to-TLA refinement.'''

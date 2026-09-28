@@ -52,11 +52,11 @@ pre-commit:
     # still exists, and an obligation may cite any repository path, so this
     # command has no trigger set to narrow and runs on every commit.
     formal-ledger:
-      # >>> generated glob from check_formal_coverage.py INPUT_GLOBS — do not edit
-      # no glob: check_formal_coverage.py reads every staged file, so this command
+      # >>> generated glob from check_formal_coverage.py, formal_ledger.py INPUT_GLOBS — do not edit
+      # no glob: check_formal_coverage.py, formal_ledger.py reads every staged file, so this command
       # must keep the whole staged set as its trigger.
       # <<< generated glob
-      run: python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
+      run: python3 scripts/ci/formal_ledger.py --self-test && python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
 
     # The ledger above proves each obligation carries evidence; this one proves
     # the product still consumes it. An obligation whose prefix no requirement
@@ -77,7 +77,7 @@ pre-commit:
     # The existing formal-surface L4 test owns that decision table.
     formal-evidence:
       # >>> generated glob from check_formal_surface.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/*.json,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_formal_surface.py,scripts/ci/formal_ledger.py}"
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,formal/*.json,formal/coverage.toml,formal/obligations/**/*,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_formal_surface.py,scripts/ci/formal_ledger.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_formal_surface.py --staged {staged_files}
 
@@ -87,7 +87,7 @@ pre-commit:
     # justified/backlog lists ratchet the ones that already exist.
     proof-input-derivation:
       # >>> generated glob from check_proof_input_derivation.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,formal/coverage.json,formal/proof-input-exceptions.json,scripts/ci/check_proof_input_derivation.py}"
+      glob: "{crates/**/*.rs,formal/coverage.toml,formal/obligations/**/*,formal/proof-input-exceptions.json,scripts/ci/check_proof_input_derivation.py,scripts/ci/formal_ledger.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_proof_input_derivation.py --staged {staged_files}
 
@@ -169,11 +169,11 @@ pre-commit:
 
     # 3c-ter. An executable no lane runs still reads as coverage, still gets
     #    cited as evidence, and rots in place. Three k3d runners sat unrun for
-    #    months and one of them is named in formal/coverage.json as the proof of
+    #    months and one of them is named in the formal/obligations ledger as the proof of
     #    a requirement. Every executable is selected or registered with a reason.
     lane-reachability:
       # >>> generated glob from check_lane_reachability.py INPUT_GLOBS — do not edit
-      glob: "{deploy/**/*,e2e/**/*,formal/coverage.json,lefthook.yml,scripts/**/*}"
+      glob: "{deploy/**/*,e2e/**/*,formal/coverage.toml,formal/obligations/**/*,lefthook.yml,scripts/**/*}"
       # <<< generated glob
       run: python3 scripts/ci/check_lane_reachability.py
 

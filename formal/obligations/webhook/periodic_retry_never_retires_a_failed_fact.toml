@@ -1,0 +1,23 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.exactly_once_side_effects",
+]
+evidence = [
+  "formal/tla/WebhookOutbox.tla",
+  "crates/server/awaken-webhook-managed/src/lib.rs",
+  "crates/server/awaken-webhook-managed/tests/crud.rs",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+]
+proof_harnesses = [
+  "pending_lifecycle_fact_completes_iff_delivery_succeeds_with_the_exact_identity",
+]
+production_entrypoints = [
+  "crates/server/awaken-webhook-managed/src/lib.rs",
+]
+
+[[bounds]]
+text = '''Startup, notification and periodic ticks all invoke the same production drain_once owner. Its borrowed pending-fact decision yields no completion identity for failure, including repeated failure, so no retry trigger can retire that row through the notifier. Kani exhausts the closed settlement decision; the native interval test covers later success after repeated failure. Fair timer wakeup, Tokio mutex/scheduling, repository availability and SQL durability are not proved.'''

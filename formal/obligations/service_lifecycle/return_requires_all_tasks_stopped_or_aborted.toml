@@ -1,0 +1,25 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_theorem_proved"
+status = "model_linked"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.performance_and_long_run_stability",
+]
+evidence = [
+  "formal/tla/ServiceLifecycle.tla",
+  "formal/tla/ServiceLifecycleProof.tla",
+  "crates/server/awaken-service-lifecycle/src/lib.rs",
+  "crates/server/awaken-service-lifecycle/tests/service_lifecycle.rs",
+]
+production_entrypoints = [
+  "crates/server/awaken-service-lifecycle/src/lib.rs",
+]
+
+[[bounds]]
+text = '''The linked unbounded TLAPS theorem permits return only after the abstract drain set is empty; its Timeout action classifies the selected task as stopped. This remains an abstract theorem rather than Rust or Tokio refinement.'''
+
+[[bounds]]
+text = '''The sole production TaskRegistry transfers every handle to one independently spawned drain task, which survives cancellation of the initiating shutdown Future. That task awaits an already-finished or cooperatively completed watcher. At the shared deadline it records the exact task name, requests AbortHandle cancellation of the task, aborts the watcher, awaits that watcher, and only then stores the authoritative Complete(result). Native cause/effect rows cover cooperative completion, exact timeout names, repeated and concurrent shutdown, caller cancellation, and the timeout barrier. Exact source mutants independently omitting task abort or watcher abort fail the barrier test and are restored.'''
+
+[[bounds]]
+text = '''The timeout barrier demonstrates the intentional contract boundary: task abort is eventually observed, and watcher completion bounds shutdown even while a synchronously non-yielding task remains live. Return therefore establishes an abort request plus watcher join, not that the task Future has been dropped or that opaque physical or remote work has stopped. The async Vec loop, clocks, timeout delivery, AbortHandle and JoinHandle semantics, cancellation scheduling and process termination remain runtime TCB; the phase proof cannot establish those external semantics, so no production-kernel promotion is claimed for this row.'''

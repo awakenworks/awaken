@@ -1,0 +1,25 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/DreamCleanupBoundary.tla",
+  "formal/tla/DreamCleanupBoundary.cfg",
+  "crates/contract/awaken-session-dream-contract/src/lib.rs",
+  "crates/server/awaken-dream-application/src/lib.rs",
+  "crates/server/awaken-session-application/src/terminal.rs",
+]
+proof_harnesses = [
+  "dream_public_terminal_requires_committed_cleanup",
+  "dream_cleanup_admission_is_total_and_retries_every_pending_terminal",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-dream-contract/src/lib.rs",
+  "crates/server/awaken-dream-application/src/lib.rs",
+  "crates/server/awaken-session-application/src/terminal.rs",
+]
+
+[[bounds]]
+text = '''The production Dream status projection and cleanup admission exhaust the closed status and cleanup-pending domain, including canceled command replay; Session and artifact effects remain pending until their canonical application receipts commit.'''

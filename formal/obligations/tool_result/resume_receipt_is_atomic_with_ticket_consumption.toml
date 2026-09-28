@@ -1,0 +1,42 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.exactly_once_side_effects",
+]
+evidence = [
+  "formal/tla/ToolResultProtocol.tla",
+  "crates/runtime/awaken-runtime/src/engine/progress.rs",
+  "crates/runtime/awaken-runtime/src/engine/resume.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
+  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
+  "crates/runtime/awaken-runtime/tests/permission.rs",
+  "crates/runtime/awaken-runtime/tests/permission/recovery_evidence.rs",
+  "crates/contract/awaken-agent-contract/src/audit/run_event.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "a_resume_receipt_requires_consumption_of_the_exact_ticket",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-runtime/src/engine/progress.rs",
+  "crates/runtime/awaken-runtime/src/engine/resume.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_commands.rs",
+  "crates/runtime/awaken-runtime/src/engine/run_loop.rs",
+  "crates/runtime/awaken-runtime/src/engine/finalize.rs",
+]
+
+[[bounds]]
+text = '''The finite ToolResultProtocol model remains independent transition evidence; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''assemble_attempt_commit is the sole Runtime constructor for a commit that consumes a named non-delegation resume. One typed ResumeCommit is retained until the first successful coordinator commit; the constructor rejects a foreign Thread, foreign Run or disposition retaining the answered correlation, and places the exact ResumeApplied fact in the same ThreadCommit as the replacing disposition. Approval precommit, normal continuation, recovery terminalization and capability-bound terminalization all use this owner. Delegation continuation is outside ToolResult consumption because it retains its execution ticket.'''
+
+[[bounds]]
+text = '''Kani exhausts all eight Thread identity, Run identity and answered-ticket-retention combinations without assumptions. The final-byte harness completed its assertion with zero failures under fixed Kani 0.67.0 and patched CBMC 6.8.0/CaDiCaL, -j1 and empty RUSTC_WRAPPER; the guarded run observed 404680 KiB maximum aggregate RSS and 53175956 KiB minimum available memory under 600-second and 12582912-KiB guards. A native real-value table verifies the exact receipt and rejects all incoherent commit plans. Permission failure injection proves a rejected approval-plus-receipt commit leaves Awaiting with no visible receipt/effect/result, while a later result-commit failure leaves the already committed Running plus one exact receipt and one effect without inventing a result. Removing receipt assembly makes the table fail and the source was restored byte-for-byte.'''
+
+[[bounds]]
+text = '''The proved kernel establishes one coherent local ThreadCommit value and the native fake coordinator observes commit success/failure boundaries. Actual database transaction atomicity, durability and isolation, coordinator cancellation after an unknown commit outcome, concurrent process ownership, transport replay, Rust-to-TLA refinement and external tool side effects remain database/async/external-effect TCB; no universal backend or crash atomicity is inferred.'''

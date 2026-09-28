@@ -1,0 +1,39 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/MemoryCAS.tla",
+  "formal/tla/MemoryCAS.cfg",
+  "docs/adr/0053-memory-store-fuse-mount.md",
+  "crates/contract/awaken-resource-contract/src/lib.rs",
+  "crates/resources/awaken-memory-store/src/repository.rs",
+  "crates/resources/awaken-memory-store/src/sqlite.rs",
+  "crates/resources/awaken-memory-store/src/postgres.rs",
+  "crates/resources/awaken-memory-store/tests/common/memory_repository.rs",
+  "crates/resources/awaken-memory-store/tests/conformance.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "memory_rename_replace_preserves_source_identity",
+]
+production_entrypoints = [
+  "crates/resources/awaken-memory-store/src/repository.rs",
+  "crates/resources/awaken-memory-store/src/sqlite.rs",
+  "crates/resources/awaken-memory-store/src/postgres.rs",
+]
+
+[[bounds]]
+text = '''The linked MemoryCAS TLA+ model remains finite independent cross-evidence and is not claimed as Rust refinement.'''
+
+[[bounds]]
+text = '''rename_replace_identity is the single type-parametric identity-selection owner consumed by Volatile, SQLite and PostgreSQL rename transitions before the surviving head update, source history append and returned Memory. With no trait bound or operation on T, the production owner can only move the source identity through; destination absence, equality or a different displaced identity cannot select another survivor.'''
+
+[[bounds]]
+text = '''Kani 0.67.0 with patched CBMC 6.8.0 and CaDiCaL proved the single memory_rename_replace_preserves_source_identity harness: 1 of 1 harness verified, 0 of 9 checks failed, 0.016249035 s verification time, 4.22 s guarded elapsed, 139128 KiB peak aggregate solver RSS and 53007988 KiB minimum MemAvailable under the 600 s, 12 GiB aggregate RSS and 12 GiB MemAvailable guards, with -j1 and RUSTC_WRAPPER cleared. It exhausts the full u64 source-identity domain and both absence/presence plus the full u64 displaced-identity domain without assumptions. The generic production implementation is representation agnostic; native decision tables exercise its String instantiation through pure move, same-path, missing-source and replace-different-id repository operations. Volatile and SQLite directly reject a displaced-id mutant, and PostgreSQL runs the same replacement/orphan check when its endpoint is explicitly available.'''
+
+[[bounds]]
+text = '''This proof establishes only identity selection by the production helper. It does not prove String representation or Rust compiler/parametricity soundness, source-row lookup, path validation, mutex exclusion, SQL statements, locking/transaction atomicity, history persistence, filesystem/database durability, async cancellation/scheduling or crash recovery. Those remain native cross-evidence, implementation boundary or database/async TCB.'''

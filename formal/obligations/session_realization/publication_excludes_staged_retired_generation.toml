@@ -1,0 +1,48 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionRealizationMutex.tla",
+  "formal/tla/SessionRealizationRenewal.cfg",
+  "crates/server/awaken-session-application/src/realization/control.rs",
+  "crates/server/awaken-session-application/src/tests/realization.rs",
+  "formal/runtime-refinement-manifest.json",
+  "scripts/ci/render_runtime_refinement_traces.py",
+  "scripts/ci/check_formal_mutations.py",
+  "scripts/ci/formal_realization_trace_mutations.py",
+  "e2e/managed_mcp_recovery_e2e.ts",
+  "crates/contract/awaken-session-realization-contract/src/session_realization.rs",
+  "crates/contract/awaken-session-realization-contract/src/session_realization/model.rs",
+  "crates/contract/awaken-session-realization-contract/src/session_realization/generation_authority.rs",
+  "crates/devtools/awaken-scenario-host/src/realization_observation.rs",
+  "crates/server/awaken-session-application/src/realization/publication.rs",
+  "crates/server/awaken-session-application/src/realization/publication/collection_tests.rs",
+  "crates/contract/awaken-session-mcp-contract/src/lib.rs",
+  "crates/server/awaken-session-application/src/realization.rs",
+]
+proof_harnesses = [
+  "realization_publication_selects_only_unacknowledged_active_generation",
+  "realization_generation_authority_requires_every_axis",
+]
+production_entrypoints = [
+  "crates/server/awaken-session-application/src/realization/control.rs",
+  "crates/server/awaken-session-application/src/realization/publication.rs",
+  "crates/contract/awaken-session-mcp-contract/src/lib.rs",
+  "crates/server/awaken-session-application/src/realization.rs",
+]
+
+[[bounds]]
+text = '''Existing fair phase-driver model includes the old+new Stage receipt regression witness. Thirteen real HTTP crash/restart traces additionally check continuous legal phases, Session/incarnation/epoch identity, completed physical effects before ACK, and terminal cardinality. Counterfactuals cover every selected field and directive/call/report occurrence in all thirteen rules, including missing authority, full reference identity, event order and positive renewal/permutation controls; the invocation artifact owns the executed case counts. Other forged receipt axes remain executable/kernel evidence; no universal implementation refinement or external exactly-once effect claim.'''
+
+[[bounds]]
+text = '''Executed production observations are checked against the same model relations; mandatory decision-rule coverage and independent real-trace mutations gate this evidence. This is finite trace correspondence, not universal Rust refinement.'''
+
+[[bounds]]
+text = '''The application owns one complete post-activation publication plan, reused by Control with the existing generation selectors and receipt bijection. A 144-row native table calls actual initial/replacement constructors, claims, activation/retirement, renewal, acknowledgement and removal; it checks unique generation identities, exact receipt ownership, disjoint publish/drain collections, immutable planning and fail-closed receipt faults. Five production mutations qualify generation allocation, retirement, publication selection, receipt bijection and drain coverage. These are executable collection/state-transition evidence, not completed Kani Vec/Drop verification or universal durable/HTTP refinement; this executable composition evidence does not widen the named production-kernel proof beyond publication selection and generation authority.'''
+
+[[bounds]]
+text = '''Kani exhausts all 12 production attachment-state/acknowledgement rows and proves publication membership iff the generation is Active and unacknowledged; Requested, Realizing, Draining, Removed, Failed and acknowledged Active rows are excluded. The existing generation-authority harness independently proves every immutable generation identity axis is binding.'''
+
+[[bounds]]
+text = '''The activation caller filters staged receipts through this publication set after its root commit. Aggregate transition correctness, receipt projection, root-CAS atomicity, driver I/O, physical effects, acknowledgement and external exactly-once behavior remain executable/runtime TCB; this kernel proof does not claim them.'''

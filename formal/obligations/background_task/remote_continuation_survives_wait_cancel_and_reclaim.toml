@@ -1,0 +1,19 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/BackgroundTask.tla",
+  "formal/tla/BackgroundTask.cfg",
+  "crates/runtime/awaken-ext-background-task/src/model.rs",
+  "crates/runtime/awaken-ext-background-task/tests/state_machine.rs",
+]
+proof_harnesses = [
+  "never_replay_recovery_requires_a_durable_remote_continuation",
+]
+production_entrypoints = [
+  "crates/runtime/awaken-ext-background-task/src/model.rs",
+]
+
+[[bounds]]
+text = '''The production Kani reconnection predicate does not prove preservation of the complete remote handle through wait, cancellation and reclaim. The linked TLA configuration and aggregate regression tests cover those paths; universal Rust-to-model refinement remains open.'''

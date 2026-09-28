@@ -1,0 +1,27 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.mcp_busy_acp_revocation_propagation_and_process_termination",
+  "external.provider_revocation_propagation",
+]
+evidence = [
+  "formal/tla/CredentialInventory.tla",
+  "crates/control/awaken-credential-vault/src/repo/inventory.rs",
+  "crates/control/awaken-credential-vault/src/repo/credential_operations/tests.rs",
+  "crates/control/awaken-control/src/component.rs",
+]
+proof_harnesses = [
+  "credential_inventory_never_orphans_committed_pending_or_foreign_material",
+]
+production_entrypoints = [
+  "crates/control/awaken-credential-vault/src/repo/inventory.rs",
+  "crates/control/awaken-control/src/component.rs",
+]
+
+[[bounds]]
+text = '''The production inventory loop consumes one closed Preserve/ReportOrphan/ReportMissing classifier with no deletion outcome. Kani exhausts all sixteen combinations of namespace ownership, material presence, committed reference and pending reference; a source-only or Managed pending reference is never classified as an orphan.'''
+
+[[bounds]]
+text = '''Kani proves the scalar classification after the pending set has been constructed. Iterator and HashSet construction, decoded pending-envelope completeness, repository and SecretStore snapshot truth, serialization and database behavior remain executable evidence or TCB.'''

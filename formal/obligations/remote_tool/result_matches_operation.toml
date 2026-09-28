@@ -1,0 +1,24 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.eventual_network_delivery",
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = [
+  "formal/tla/RemoteTool.tla",
+  "crates/worker/awaken-tool-relay/src/ledger.rs",
+  "crates/worker/awaken-tool-relay/src/serve.rs",
+  "crates/worker/awaken-tool-relay/tests/relay.rs",
+]
+proof_harnesses = [
+  "ledger_completion_requires_the_exact_executing_operation_entry",
+]
+production_entrypoints = [
+  "crates/worker/awaken-tool-relay/src/ledger.rs",
+  "crates/worker/awaken-tool-relay/src/serve.rs",
+]
+
+[[bounds]]
+text = '''The exact operation-keyed Executing-entry admission used by both Hand ledgers before a result can replace local state; the filesystem ledger additionally requires its matching durable claim file before writing a completion marker. Kani proves only the closed local admission predicate; mutex/filesystem behavior, crash durability, tool semantics, network delivery, and external orchestration remain runtime or external evidence.'''

@@ -1,0 +1,26 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+]
+evidence = [
+  "formal/tla/AcpBoundary.tla",
+  "formal/tla/AcpBoundary.cfg",
+  "crates/server/awaken-protocol-acp/src/jsonrpc/wire.rs",
+  "docs/design/acp-harness-capability-and-tool-bridge.md",
+  "formal/verification-boundaries/acp-handshake-and-wire.md",
+  "scripts/ci/check_formal.sh",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc/wire.rs",
+]
+
+[[bounds]]
+text = '''The finite duplex projection has one-slot pipes, two outbound chunks, two or three inbound chunks, a two-frame queue, cancellation and overflow. Weakly fair I/O reaches an explicit terminal outcome, preserves the per-endpoint sequence and does not invent a delivered frame. This is an abstract bounded model, not an automatic Rust refinement.'''
+
+[[bounds]]
+text = '''Wire is the sole production owner of the split AgentChannel, partial line, bounded FIFO read-ahead and EOF state. One native cause/effect table crosses two distinguishable 64KiB host requests with two distinguishable 64KiB unsolicited peer frames over a 64-byte Tokio duplex, requires bounded completion and exact per-endpoint order, then observes queued frames before EOF. Adjacent tables drop a pending read inside a UTF-8 scalar, distinguish EOF from malformed frames, and require exact bounded failures for frame and read-ahead overflow. The strict formal runner executes these tests through the real-acp library suite; Kani separately proves only the admission arithmetic.'''
+
+[[bounds]]
+text = '''The executable evidence does not prove all Tokio schedules, scheduler fairness, kernel pipe behavior, real ACP CLI/process progress, arbitrary stream lengths, or universal JSON/parser refinement. Process exit remains the separate supervisor/cleanup authority; drained frames are projected only by the existing JSON-RPC caller.'''

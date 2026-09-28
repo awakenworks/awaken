@@ -1,0 +1,38 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.database_engine_correctness",
+]
+evidence = [
+  "formal/tla/ExecutableProjectionRefreshProof.tla",
+  "crates/contract/awaken-session-application-contract/src/executable_projection.rs",
+  "crates/server/awaken-coordinator/src/lib.rs",
+  "crates/server/awaken-session-application/src/application.rs",
+  "crates/server/awaken-session-application/src/run_admission.rs",
+  "crates/server/awaken-session-application/src/tests/run_admission.rs",
+  "crates/server/awaken-deployment-application/src/lib.rs",
+  "crates/server/awaken-deployment-application/src/scheduler.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "executable_projection_admission_requires_both_ordered_refreshes",
+]
+production_entrypoints = [
+  "crates/contract/awaken-session-application-contract/src/executable_projection.rs",
+  "crates/server/awaken-coordinator/src/lib.rs",
+  "crates/server/awaken-session-application/src/application.rs",
+  "crates/server/awaken-session-application/src/run_admission.rs",
+  "crates/server/awaken-deployment-application/src/lib.rs",
+  "crates/server/awaken-deployment-application/src/scheduler.rs",
+]
+
+[[bounds]]
+text = '''ExecutableProjectionAdmission::enter is the production handler boundary used after the sole paired refresh by Coordinator inventory and warmup reads, Session creation/recovery/realization paths, Managed rehydration/create paths, and Deployment resolution/scheduling. The durable-pair variant has no public constructor; only the separately named process-local AllInOne factory bypasses durable refresh, so a failed durable refresh cannot obtain it.'''
+
+[[bounds]]
+text = '''The same assumption-free Kani harness exhausts both domain Result shapes through the production capability constructors and enter method, proving the handler runs exactly when both refreshes succeeded. The fixed run completed 40 checks with zero failures in 0.026846092 solver seconds and 34.23 guarded seconds, at 117716 KiB peak aggregate RSS under the configured solver limits.'''
+
+[[bounds]]
+text = '''Strict native decision tables inject failures through the real pair and require zero downstream Coordinator source reads, Session durable mutation or dispatch, and Deployment candidate mutation or launch, followed by successful retry. These establish the named wired entrypoints, not arbitrary future consumers. Database effects, Tokio scheduling/cancellation/panic and universal async refinement remain TCB or executable evidence.'''

@@ -1,0 +1,21 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/contract/awaken-runtime-contract/src/resolved.rs",
+  "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
+]
+proof_harnesses = [
+  "advisor_never_substitutes_for_primary_model_admission",
+]
+production_entrypoints = [
+  "crates/contract/awaken-runtime-contract/src/resolved.rs",
+  "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
+]
+
+[[bounds]]
+text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''
+
+[[bounds]]
+text = '''The de-duplication fact is no longer a free bool. Whether the Advisor duplicates a published route is derived by the production kernel advisor_binding_is_duplicate over real admissible ModelBinding representatives, one of which may carry a different provider identity, so the proof constrains the binding equality the de-duplication turns on. Bounds: at most one published candidate; the fold over a longer pool is Iterator::any over that same equality and a non-empty Vec<ResolvedModelCandidate> does not complete under Kani, so multi-candidate pools remain the executable tests' claim.'''

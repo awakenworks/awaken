@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "formal/tla/SessionOwnership.tla",
+  "crates/stores/awaken-session-store/src/lib.rs",
+  "crates/stores/awaken-session-store/src/postgres.rs",
+  "crates/stores/awaken-session-store/src/sqlite.rs",
+  "formal/tla/SessionOwnership.cfg",
+  "formal/tla/SessionOwnershipProof.tla",
+  "formal/tla/SessionRootProof.tla",
+  "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
+]
+proof_harnesses = [
+  "session_identity_and_create_shapes_require_one_owned_live_row",
+]
+production_entrypoints = [
+  "crates/stores/awaken-session-store/src/lib.rs",
+  "crates/stores/awaken-session-store/src/postgres.rs",
+  "crates/stores/awaken-session-store/src/sqlite.rs",
+]
+
+[[bounds]]
+text = '''SessionOwnership is an observation wrapper of the sole SessionRootKernel; the old independent SaveOwned writer is removed. TLAPS reuses SessionRootProof and proves visible owner/revision coherence, exact read tuple capture, and immutable owner binding for arbitrary owner/payload domains and any permitted natural revision/realization bounds over unbounded traces.'''
+
+[[bounds]]
+text = '''The abstraction selects one Session identity; operations on unrelated identities stutter. Reads have a model-only completion pulse so an incorrect empty result cannot masquerade as no observation. A previous coherent read may survive subsequent root changes or tombstoning. TLC covers two owners/two payloads, MaxRevision 4 and MaxRealizationEpoch 1, with semantic mutation and read-reachability checks.'''
+
+[[bounds]]
+text = '''Production SQLite and PostgreSQL create insert scope_id, revision and aggregate_json in the same existing transaction; their SQL evaluation, concurrent multi-identity driver behavior, corruption admission and universal Rust-to-model refinement remain outside this abstract theorem. This is not a direct implementation-proof promotion.'''
+
+[[bounds]]
+text = '''Both adapters feed their single-statement live-or-tombstone identity UNION into one typed production decoder. Kani exhausts row kind, owner, revision and aggregate presence and proves a visible live identity is returned only for one same-row non-empty owner plus revision and aggregate; zero or multiple rows and mixed shapes fail closed. The same harness proves create cannot admit a blank owner, and shared conformance exercises the adapter boundary.'''
+
+[[bounds]]
+text = '''The decoder does not replace the SQL authority. Query refinement, NOT NULL constraints, transaction visibility, database engine behavior, aggregate decoding and crash durability remain TCB; production-kernel grade is limited to the directly consumed row-shape and create-admission decisions.'''

@@ -1,0 +1,35 @@
+claim_scope = "repository_safety"
+proof_grade = "abstract_model_checked"
+status = "model_linked"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.async_runtime_synchronization_and_scheduling",
+  "external.eventual_network_delivery",
+]
+evidence = [
+  "formal/tla/ManagementAuditIntent.tla",
+  "crates/control/awaken-control/src/lib.rs",
+  "crates/control/awaken-control/src/audit_tests.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/server/awaken-coordinator/src/control_service_boundary.rs",
+  "scripts/ci/check_formal.sh",
+]
+production_entrypoints = [
+  "crates/control/awaken-control/src/lib.rs",
+  "crates/control/awaken-config-store/src/sqlite.rs",
+  "crates/control/awaken-config-store/src/postgres.rs",
+  "crates/server/awaken-coordinator/src/control_service_boundary.rs",
+]
+
+[[bounds]]
+text = '''Finite constants and state constraints in the linked TLA+ model configuration; no Rust-to-model refinement is implied.'''
+
+[[bounds]]
+text = '''The strict native cross-check sends a real POST through protect_management_router into the canonical ManagementAuditPlane backed by in-memory SQLite. An authenticated Applied request executes one observable successful business handler and marks the exact scoped audit committed; a delegated completion-failure rule independently executes record, business and completion once, returns the original successful response, and leaves the exact durable audit pending and therefore ambiguous.'''
+
+[[bounds]]
+text = '''The TLA+ model and native witnesses do not prove universal Rust-to-model refinement, SQL-driver semantics, async or HTTP scheduling, database durability, the crash window between business success and completion, every mounted management route, remote repository behavior, or atomicity between independent business and audit stores. SQLite/PostgreSQL transaction and lock correctness remain TCB or adjacent executable evidence.'''
+
+[[bounds]]
+text = '''The split Coordinator HttpControlServiceClient implements the same ManagementAuditRepository port and forwards scoped record, lookup and commit commands. HTTP, DNS and peer reachability, retry fairness and response delivery remain under external.eventual_network_delivery; this production evidence does not raise the proof grade.'''

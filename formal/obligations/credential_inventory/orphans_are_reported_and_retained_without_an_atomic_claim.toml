@@ -1,0 +1,27 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.database_engine_correctness",
+  "external.mcp_busy_acp_revocation_propagation_and_process_termination",
+  "external.provider_revocation_propagation",
+]
+evidence = [
+  "formal/tla/CredentialInventory.tla",
+  "crates/control/awaken-credential-vault/src/repo/inventory.rs",
+  "crates/control/awaken-credential-vault/src/repo/credential_operations/tests.rs",
+  "crates/control/awaken-control/src/component.rs",
+]
+proof_harnesses = [
+  "credential_inventory_never_orphans_committed_pending_or_foreign_material",
+]
+production_entrypoints = [
+  "crates/control/awaken-credential-vault/src/repo/inventory.rs",
+  "crates/control/awaken-control/src/component.rs",
+]
+
+[[bounds]]
+text = '''The sole generic credential inventory classifier has exactly Preserve, ReportOrphan and ReportMissing outcomes; it exposes no delete outcome, and the compatibility report always returns an empty orphaned_deleted set. Kani exhausts all sixteen Boolean cause combinations and permits ReportOrphan exactly for a present sec:cred material that is neither committed nor pending.'''
+
+[[bounds]]
+text = '''The proof does not establish that an observed candidate remains unreferenced after the snapshot, so the generic path deliberately retains it. Namespace String matching, collection traversal, repository and SecretStore observations, logging and database behavior remain executable evidence or TCB.'''

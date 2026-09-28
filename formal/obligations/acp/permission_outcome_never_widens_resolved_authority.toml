@@ -1,0 +1,21 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/server/awaken-protocol-acp/src/lib.rs",
+  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
+  "scripts/ci/check_formal.sh",
+]
+proof_harnesses = [
+  "acp_permission_projection_is_total_exact_and_non_widening",
+]
+production_entrypoints = [
+  "crates/server/awaken-protocol-acp/src/jsonrpc/permission.rs",
+]
+
+[[bounds]]
+text = '''Kani exhausts the neutral Allow, Await and Deny consensus classes against every combination of allow-once, allow-always, reject-once and reject-always offers. The production projection selects the least-persistent same-polarity option, cancels when none exists, and never turns Await or an opposite-polarity offer into authority.'''
+
+[[bounds]]
+text = '''The proof covers the allocation-free local option projection. Request decoding, option identifiers, PermissionResolver truth, JSON serialization, async Wire delivery and remote execution are executable behavior or external boundaries rather than Kani claims.'''

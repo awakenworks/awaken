@@ -1,0 +1,37 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = []
+evidence = [
+  "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s/creation.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s/runtime_contract.rs",
+  "crates/worker/awaken-sandbox-container/src/provider.rs",
+  "crates/worker/awaken-sandbox-container/src/runtime.rs",
+  "crates/worker/awaken-sandbox-container/src/runtime/realization.rs",
+]
+proof_harnesses = [
+  "continuation_claim_deletion_requires_exact_uid_and_resource_version",
+  "absent_pod_claim_admission_is_total_and_never_starts_deletion",
+  "absent_pod_observation_never_confuses_recovery_with_completed_cleanup",
+  "rebuild_activation_requires_exact_continuation_and_effect",
+]
+production_entrypoints = [
+  "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s/creation.rs",
+  "crates/worker/awaken-sandbox-container/src/k8s/runtime_contract.rs",
+  "crates/worker/awaken-sandbox-container/src/provider.rs",
+  "crates/worker/awaken-sandbox-container/src/runtime.rs",
+  "crates/worker/awaken-sandbox-container/src/runtime/realization.rs",
+]
+
+[[bounds]]
+text = '''Production Rust deletion admission type domain under the named bounded Kani harness assumptions.'''
+
+[[bounds]]
+text = '''Absent-Pod observation classifier over the absent/exact/foreign UID quotient and all termination, effect-fence and total-absence bits for Recovery and TerminalCleanup. KPV5 and the distributed K3d node-loss scenario check production purpose routing and physical effects; the kernel proof does not establish API linearizability or storage continuity.'''
+
+[[bounds]]
+text = '''Rebuild source/result admission over 64 combinations of exact continuation, reconstructibility, source identity, exact effect identity and phase; production mapping tests cover fingerprints, immutable incarnation and lease regression. This does not prove Kubernetes API effects, UID authenticity, cross-epoch result recovery or retained filesystem bytes.'''
