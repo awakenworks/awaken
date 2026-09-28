@@ -85,6 +85,19 @@ enum TerminalEffectMode {
     RecoverOnlyAlreadyPrepared,
 }
 
+impl TerminalEffectMode {
+    /// A stopped process environment cannot supply the attached-exec file read
+    /// used by Container. Filesystem providers retain direct data access after
+    /// their marker becomes terminal. Neither row proves prior preparation.
+    const fn for_terminal_source(container: bool) -> Self {
+        if container {
+            Self::RecoverOnlyUnprepared
+        } else {
+            Self::LiveUnprepared
+        }
+    }
+}
+
 /// One exact terminal owner plus its non-durable I/O mode. This stays inside
 /// runtime-host and is never serialized, acknowledged, or used as mutation
 /// authority.
@@ -1658,7 +1671,7 @@ mod terminal_output_tests {
     #[test]
     fn terminal_effect_mode_keeps_live_recovery_and_provider_preparation_coupled() {
         /* Process-local mode table HT0. Causes: C1 provider observation is
-         * Ready/Terminal, definitive primary absence, or Disposing; C2 the
+         * Ready/filesystem-Terminal, Container-Terminal, primary absence, or Disposing; C2 the
          * exact cleanup owner may be present/absent. Effects: E1 only live mode
          * permits source reads; E2 live and unprepared-recovery require the
          * provider preparation edge; E3 only Disposing proves that source
@@ -1698,6 +1711,16 @@ mod terminal_output_tests {
                 true,
             ),
         ];
+        assert_eq!(
+            TerminalEffectMode::for_terminal_source(false),
+            TerminalEffectMode::LiveUnprepared,
+            "HT0 filesystem data remains readable"
+        );
+        assert_eq!(
+            TerminalEffectMode::for_terminal_source(true),
+            TerminalEffectMode::RecoverOnlyUnprepared,
+            "HT0 Container terminal source requires receipt-only reads and still needs preparation"
+        );
         for (prepared, live_io, provider_preparation, already_prepared) in cases {
             assert_eq!(prepared.permits_live_io(), live_io);
             assert_eq!(
