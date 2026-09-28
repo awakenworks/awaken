@@ -56,7 +56,7 @@ cargo test -p awaken-session-executor --lib \
 cargo test -p awaken-session-executor --lib \
   model_pool_working_directory_is_one_attempt_invariant
 cargo test -p awaken-session-executor --lib \
-  session_environment::tests::native_process_and_agent_channel_share_one_live_environment -- --exact
+  session_environment::tests::shared_environment::native_process_and_agent_channel_share_one_live_environment -- --exact
 cargo test -p awaken-agent-config --lib \
   backend_owned_selection_cannot_encode_an_inexact_backend_or_model
 cargo test -p awaken-run-executor-acp --lib

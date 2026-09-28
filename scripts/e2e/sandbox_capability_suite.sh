@@ -85,7 +85,7 @@ then
   run "bwrap:runtime-host-one-workspace" \
     env AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE=1 \
     cargo test -q -p awaken-session-executor --lib \
-      session_environment::tests::namespace_native_process_and_agent_channel_share_one_live_environment \
+      session_environment::tests::shared_environment::namespace_native_process_and_agent_channel_share_one_live_environment \
       -- --exact
 else
   skip "bwrap/unprivileged user namespace unavailable"
