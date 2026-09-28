@@ -346,6 +346,9 @@ impl SharedHost {
     /// capability. Resources catalog, File commands, Skill authoring, and
     /// reclamation remain outside and are injected through narrow applications.
     /// `local_workspace` is the installation's resolved platform Workspace.
+    // Assembly binds independent content/extraction ports and the shared clock
+    // in one call. Keep this explicit boundary rather than another config bag.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_runtime_resources_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -373,6 +376,9 @@ impl SharedHost {
         )
     }
 
+    // This is the single composition constructor shared by all named startup
+    // profiles; its independent capabilities are not a domain request object.
+    #[allow(clippy::too_many_arguments)]
     fn build(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,

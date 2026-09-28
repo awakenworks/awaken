@@ -42,6 +42,10 @@ impl ToolExecutionDomain {
 }
 
 impl ToolBatch {
+    pub fn mark_executing(&mut self, call_id: &str) -> Result<u16, ToolBatchError> {
+        self.mark_executing_in_domain(call_id, None)
+    }
+
     pub fn bind_materialization_domain(
         &mut self,
         call_id: &str,
