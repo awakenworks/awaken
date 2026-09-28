@@ -206,7 +206,9 @@ async fn assert_parent_return_waits_for_all_participants<S: ControlDispatch + 's
     // R3=R1+dropped child => Unknown, retained slot, no callback or replay.
     // The production Worker is used with both canonical backends; tests hold
     // actual owned futures, not a fabricated receipt or private state mutation.
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let executor = Arc::new(ParentReturnsBeforeChild {
         release: Arc::new(tokio::sync::Semaphore::new(0)),
         child: Default::default(),
