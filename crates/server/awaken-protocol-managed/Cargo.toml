@@ -160,6 +160,7 @@ name = "tenancy_required"
 required-features = ["test-support"]
 
 [dev-dependencies]
+async-trait.workspace = true
 tempfile = "3"
 awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }

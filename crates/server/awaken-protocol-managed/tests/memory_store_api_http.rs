@@ -1190,3 +1190,266 @@ async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle
         }
     }
 }
+
+// Test design: R6b -- the SDK idempotency contract across both conflict origins.
+//
+// R6 (covered above) reaches the already-current answer through the handler's
+// own pre-read: a stale precondition whose requested content and path already
+// equal the stored state answers 200. That path is only reachable when the
+// winning write landed *before* this request loaded the head.
+//
+// The interleaving R6's pre-read cannot see is two callers that observed the
+// same head. Both bind to the generation they read, the winner commits that
+// exact content first, and the loser's CAS then fails on generation staleness.
+// The store reports that as `MemErr::Conflict`, carrying the live head it
+// observed inside its own transaction -- a head whose content already equals
+// what the loser asked for. Answering 409 there contradicts R6 for a state
+// that is already achieved, and makes the public outcome depend on scheduling.
+//
+// Causes: C1 the precondition matches the head this request loaded (so this is
+// not R6's stale-precondition path); C2 a concurrent writer commits the exact
+// requested content against the same base first; C3 the requested path is
+// unchanged. Effect: 200 carrying the winner's version, and no third version
+// row -- the repository invariant that idempotent updates append nothing.
+//
+// The winner is committed by a decorator inside `update_head_as`, so the store
+// produces a genuine stale-generation Conflict rather than a fabricated error.
+struct RaceLosingRepository {
+    inner: std::sync::Arc<dyn awaken_resource_contract::MemoryRepository>,
+    interposed: std::sync::atomic::AtomicBool,
+    /// What the winning caller commits. `None` means it requested the same
+    /// content as the loser, which is the already-current row.
+    winner_content: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl awaken_resource_contract::MemoryRepository for RaceLosingRepository {
+    async fn update_head_as(
+        &self,
+        store: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        content: &str,
+        target_path: Option<&str>,
+        actor: Option<&MemoryActor>,
+    ) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr> {
+        if !self
+            .interposed
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            // The winning caller observed the same head. Its write advances the
+            // generation this call still holds, at the original path.
+            let winner = self.winner_content.as_deref().unwrap_or(content);
+            self.inner
+                .update_head_as(store, base, winner, None, actor)
+                .await?;
+        }
+        self.inner
+            .update_head_as(store, base, content, target_path, actor)
+            .await
+    }
+
+    async fn preserve_copy_conflict(
+        &self,
+        store: &str,
+        candidate: &awaken_resource_contract::MemoryCopyConflict,
+    ) -> Result<(), awaken_resource_contract::MemErr> {
+        self.inner.preserve_copy_conflict(store, candidate).await
+    }
+    async fn list_copy_conflicts(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryCopyConflict>, awaken_resource_contract::MemErr>
+    {
+        self.inner.list_copy_conflicts(store).await
+    }
+    async fn snapshot_heads(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr> {
+        self.inner.snapshot_heads(store).await
+    }
+    async fn list(
+        &self,
+        store: &str,
+        prefix: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, awaken_resource_contract::MemErr> {
+        self.inner.list(store, prefix).await
+    }
+    async fn get_by_path(
+        &self,
+        store: &str,
+        path: &str,
+    ) -> Result<Option<awaken_resource_contract::Memory>, awaken_resource_contract::MemErr> {
+        self.inner.get_by_path(store, path).await
+    }
+    async fn create_as(
+        &self,
+        store: &str,
+        path: &str,
+        content: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr> {
+        self.inner.create_as(store, path, content, actor).await
+    }
+    async fn update_materialized(
+        &self,
+        store: &str,
+        path: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        content: &str,
+    ) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr> {
+        self.inner
+            .update_materialized(store, path, base, content)
+            .await
+    }
+    async fn rename(
+        &self,
+        store: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<awaken_resource_contract::Memory, awaken_resource_contract::MemErr> {
+        self.inner.rename(store, from, to).await
+    }
+    async fn delete_by_path_as(
+        &self,
+        store: &str,
+        path: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<(), awaken_resource_contract::MemErr> {
+        self.inner.delete_by_path_as(store, path, actor).await
+    }
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, awaken_resource_contract::MemErr> {
+        self.inner
+            .delete_if_match_as(store, path, base, actor)
+            .await
+    }
+    async fn list_versions(
+        &self,
+        store: &str,
+    ) -> Result<Vec<awaken_resource_contract::MemoryVersion>, awaken_resource_contract::MemErr>
+    {
+        self.inner.list_versions(store).await
+    }
+    async fn redact_version_as(
+        &self,
+        store: &str,
+        version_id: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<Option<awaken_resource_contract::MemoryVersion>, awaken_resource_contract::MemErr>
+    {
+        self.inner.redact_version_as(store, version_id, actor).await
+    }
+    async fn purge_store(
+        &self,
+        store: &str,
+    ) -> Result<awaken_resource_contract::MemoryPurgeSummary, awaken_resource_contract::MemErr>
+    {
+        self.inner.purge_store(store).await
+    }
+}
+
+#[tokio::test]
+async fn store_found_conflicts_answer_the_contract_only_when_already_at_the_requested_state() {
+    // Decision table over the head the store observed transactionally:
+    // same content + unchanged path => 200 with the winner's version and no new
+    // row; a different head content, or a requested move away from the head's
+    // path, remains a precise 409. The third row proves the answer is not a
+    // blanket acceptance of every stale-generation conflict.
+    for (winner_content, requested_path, expected, rule) in [
+        (
+            None,
+            None,
+            StatusCode::OK,
+            "R6b already at the requested state",
+        ),
+        (
+            Some("a different edit"),
+            None,
+            StatusCode::CONFLICT,
+            "R6c a different head content is still a conflict",
+        ),
+        (
+            None,
+            Some("/moved.md"),
+            StatusCode::CONFLICT,
+            "R6d an unsatisfied path move is still a conflict",
+        ),
+    ] {
+        let resources = support::resources::ephemeral_resources();
+        let router = memory_stores_router(
+            std::sync::Arc::new(RaceLosingRepository {
+                inner: resources.authorities().memory_repository(),
+                interposed: std::sync::atomic::AtomicBool::new(false),
+                winner_content: winner_content.map(str::to_string),
+            }),
+            resources.memory_stores(),
+        );
+        let store = create_store(&router, "race-host").await;
+        let created = call(
+            &router,
+            "POST",
+            &format!("/v1/memory_stores/{store}/memories"),
+            Some(json!({ "path": "/race.md", "content": "base" })),
+        )
+        .await
+        .expect_for(StatusCode::OK, "create the contended head");
+        let mid = created["id"].as_str().unwrap().to_string();
+        let live_sha = created["content_sha256"].as_str().unwrap().to_string();
+
+        // C1 the precondition is the live head's hash, so `bind` succeeds and
+        // this request is fenced on the generation it read -- R6's pre-read
+        // path cannot fire and the conflict can only come from the store.
+        let mut body = json!({
+            "content": "same edit",
+            "precondition": { "type": "content_sha256", "content_sha256": live_sha }
+        });
+        if let Some(path) = requested_path {
+            body["path"] = json!(path);
+        }
+        let losing = call(
+            &router,
+            "POST",
+            &format!("/v1/memory_stores/{store}/memories/{mid}"),
+            Some(body),
+        )
+        .await
+        .expect_for(expected, rule);
+
+        let versions = call(
+            &router,
+            "GET",
+            &format!("/v1/memory_stores/{store}/memory_versions"),
+            None,
+        )
+        .await
+        .expect(StatusCode::OK);
+        assert_eq!(
+            versions["data"].as_array().expect("version rows").len(),
+            2,
+            "{rule}: idempotent and refused updates both append nothing"
+        );
+        if expected == StatusCode::OK {
+            // Compare against the live head rather than a row position, so the
+            // rule is asserted independently of version-log ordering.
+            let head = call(
+                &router,
+                "GET",
+                &format!("/v1/memory_stores/{store}/memories/{mid}?view=full"),
+                None,
+            )
+            .await
+            .expect(StatusCode::OK);
+            assert_eq!(
+                losing["memory_version_id"], head["memory_version_id"],
+                "{rule}: the answer carries the winner's committed version"
+            );
+            assert_eq!(head["content"], "same edit", "{rule}: the winner stands");
+        }
+    }
+}
