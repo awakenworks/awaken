@@ -548,6 +548,7 @@ struct RecordingCleanupRuntime {
     publication_intents:
         Mutex<Vec<awaken_session_state_contract::SessionRepositoryPublicationCommand>>,
     reject_publication: AtomicBool,
+    close_publication_source: AtomicBool,
     terminal_effect_order: Mutex<Vec<String>>,
     terminal_assignments:
         Mutex<Vec<awaken_session_realization_contract::SessionTerminalCleanupAssignment>>,
@@ -3954,6 +3955,36 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingClea
                 "repository_publication_transport_unavailable",
                 "injected publication transport loss",
             ));
+        }
+        if self.close_publication_source.load(Ordering::SeqCst) {
+            // Control conformance only: derive identity from the installed
+            // assignment, while the Runtime Host integration owns the physical
+            // observation. No independent source store or forged Git ref.
+            let binding = self
+                .terminal_assignments
+                .lock()
+                .unwrap()
+                .last()
+                .and_then(|assignment| {
+                    assignment
+                        .projection
+                        .environment
+                        .terminal_repository_publication_binding()
+                })
+                .map(str::to_owned)
+                .ok_or_else(|| RunError::internal("closure fixture has no exact source"))?;
+            let rejection = awaken_session_state_contract::SessionRepositoryPublicationRejection::source_closed(
+                &command,
+                &binding,
+                awaken_provisioning_contract::SandboxObservation::DefinitivelyUnavailable {
+                    physical_incarnation: None,
+                },
+            ).map_err(|error| RunError::internal(error.to_string()))?;
+            return Ok(
+                awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(
+                    rejection,
+                ),
+            );
         }
         if self.reject_publication.load(Ordering::SeqCst) {
             let rejection =

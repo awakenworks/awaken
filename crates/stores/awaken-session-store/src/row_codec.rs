@@ -672,8 +672,7 @@ mod tests {
                 )
                 .unwrap();
             session
-                .terminal_cleanup
-                .record_repository_publication_rejection(&session_id, rejection)
+                .record_repository_publication_rejection(rejection)
                 .unwrap();
         } else {
             let receipt = awaken_session_state_contract::SessionRepositoryPublicationReceipt::new(

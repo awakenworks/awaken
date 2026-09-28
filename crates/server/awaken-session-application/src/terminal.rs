@@ -385,7 +385,11 @@ impl SessionApplication {
         {
             return Err(SessionArchiveWithRepositoryPublicationError::Rejected(
                 RunError::bad_request_classified(
-                    "repository_publication_rejected",
+                    if rejection.effect_rejection.is_source_closed() {
+                        "repository_publication_source_closed"
+                    } else {
+                        "repository_publication_rejected"
+                    },
                     rejection.effect_rejection.to_string(),
                 ),
             ));
