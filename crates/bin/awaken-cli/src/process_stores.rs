@@ -11,8 +11,6 @@
 
 use std::sync::Arc;
 
-use awaken_lease_contract::system_clock;
-
 use awaken_service_lifecycle::StartupComponent;
 
 use crate::config;
@@ -25,6 +23,10 @@ pub(super) struct ProcessStores {
     pub(super) platform_workspace: String,
     pub(super) control: Option<ControlStores>,
     pub(super) coordinator: Option<CoordinatorStores>,
+    /// The process's one wall clock. Chosen once by the process composition,
+    /// used by every store opened here and handed to every component built
+    /// over these stores, so no two owners judge time on different clocks.
+    pub(super) clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 pub(super) struct ControlStores {
@@ -204,23 +206,23 @@ pub(super) async fn open_session_store_views(
 pub(super) async fn open_environment_work(
     backend: &awaken_control::StoreBackend,
     postgres_schema: PostgresSchemaMode,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<Arc<dyn awaken_session_work_contract::WorkQueue>, String> {
     use awaken_control::StoreBackend;
 
     ensure_store_parent(backend)?;
     match backend {
         StoreBackend::Sqlite(path) => Ok(Arc::new(
-            awaken_work_store::SqliteWorkQueue::open(&path.to_string_lossy(), system_clock())
+            awaken_work_store::SqliteWorkQueue::open(&path.to_string_lossy(), clock)
                 .map_err(|error| format!("open work queue SQLite: {error}"))?,
         )),
         StoreBackend::Postgres(url) => Ok(Arc::new(
             match postgres_schema {
                 PostgresSchemaMode::Migrate => {
-                    awaken_work_store::PostgresWorkQueue::connect(url, system_clock()).await
+                    awaken_work_store::PostgresWorkQueue::connect(url, clock).await
                 }
                 PostgresSchemaMode::Verify => {
-                    awaken_work_store::PostgresWorkQueue::connect_existing(url, system_clock())
-                        .await
+                    awaken_work_store::PostgresWorkQueue::connect_existing(url, clock).await
                 }
             }
             .map_err(|error| format!("connect work queue Postgres: {error}"))?,

@@ -371,6 +371,7 @@ pub(super) async fn prepare_runtime_routers(
         platform_workspace: _,
         control: control_stores,
         coordinator,
+        clock,
     } = stores;
     let CoordinatorStores {
         resources: _,
@@ -833,6 +834,7 @@ pub(super) async fn prepare_runtime_routers(
             default_workspace: platform_workspace.clone(),
             private_router,
             service_authenticator: coordinator_service_authenticator,
+            clock,
         },
     )
     .await

@@ -760,6 +760,7 @@ pub fn mount_with_managed_and_application_access_and_models(
             repository_transport_authorizer: None,
             worker_directory: test_worker_directory(),
             ai_sdk_browser_cors: AiSdkBrowserCors::default(),
+            worker_clock: awaken_lease_contract::system_clock(),
         },
     )
     .expect("test-support Worker transport must assemble");
@@ -791,6 +792,9 @@ pub struct ManagedRoutingExtensions {
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
     /// Exact browser origins admitted only to the AI SDK application router.
     pub ai_sdk_browser_cors: AiSdkBrowserCors,
+    /// The process wall clock the Worker transport judges leases, registry
+    /// freshness and signed assertions with.
+    pub worker_clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 /// Application-layer authorities mounted together by the one managed data-plane
@@ -1176,6 +1180,7 @@ fn mount_with_managed_over(
                 repository_transport_authorizer: None,
                 worker_directory: test_worker_directory(),
                 ai_sdk_browser_cors: AiSdkBrowserCors::default(),
+                worker_clock: awaken_lease_contract::system_clock(),
             },
         )
         .expect("test-support Worker transport must assemble");
@@ -1228,6 +1233,7 @@ fn mount_with_managed_over_and_models(
         repository_transport_authorizer,
         worker_directory,
         ai_sdk_browser_cors,
+        worker_clock,
     } = routing;
     // Bind the exact Coordinator Worker registry into the Session root-CAS
     // authority before any claim transport is exposed. HTTP still authenticates
@@ -1270,6 +1276,7 @@ fn mount_with_managed_over_and_models(
         environment_warmup_source,
         worker_directory.clone(),
         worker_authenticator.clone(),
+        worker_clock.clone(),
     );
     let model_inventory =
         model_inventory.map(|source| match executable_projection_refresh.clone() {
@@ -1472,6 +1479,7 @@ fn mount_with_managed_over_and_models(
             terminal_observer: host.worker_memory_settlement_observer(),
             stream_sink: host.worker_stream_sink(),
             credential_deliveries,
+            clock: worker_clock,
         },
     );
     let file_content = awaken_resource_worker_http::worker_file_content_router(Arc::new(

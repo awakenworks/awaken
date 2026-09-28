@@ -36,7 +36,7 @@ struct Fixture {
     source: Arc<BindingSource>,
     store: Arc<MemoryDispatchStore>,
     directory: Arc<TestWorkerDirectory>,
-    clock: Arc<ManualWorkerClock>,
+    clock: Arc<ManualClock>,
     /// The dispatch store's own clock, held at the same reading as `clock`.
     dispatch_clock: Arc<awaken_lease_testkit::ManualClock>,
     claim: RunClaim,
@@ -79,7 +79,7 @@ impl Fixture {
             entered: Notify::new(),
             release: Semaphore::new(0),
         });
-        let clock = Arc::new(ManualWorkerClock::new(10_000));
+        let clock = Arc::new(ManualClock::new(10_000));
         let credential = WorkerSigningCredential::new(
             "binding-http",
             "key",
@@ -87,8 +87,7 @@ impl Fixture {
             b"fixture-only-binding-secret".to_vec(),
         )
         .unwrap();
-        let auth = SignedWorkerAuthenticator::new(credential.clone())
-            .with_clock(clock.clone())
+        let auth = SignedWorkerAuthenticator::new(credential.clone(), clock.clone())
             .with_time_policy(60_000, 0);
         let service = WorkerDispatchService::new(
             store.clone(),
@@ -107,9 +106,10 @@ impl Fixture {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let upstream = WorkerUpstream::new(format!("http://{address}"))
-            .with_request_authorizer(Arc::new(
-                SignedWorkerRequestAuthorizer::new(credential).with_clock(clock.clone()),
-            ))
+            .with_request_authorizer(Arc::new(SignedWorkerRequestAuthorizer::new(
+                credential,
+                clock.clone(),
+            )))
             .with_worker_identity(identity);
         Self {
             source,

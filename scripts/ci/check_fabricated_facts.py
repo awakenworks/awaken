@@ -152,6 +152,14 @@ COMPOSITION_ROOTS: frozenset[str] = frozenset(
     {
         "crates/bin/awaken-cli/src/process_stores.rs",
         "crates/bin/awaken-cli/src/local_process_stores.rs",
+        # The Coordinator/AllInOne and Control process compositions: each
+        # chooses the process's one wall clock and hands it to every store and
+        # component it builds.
+        "crates/bin/awaken-cli/src/deployment_process.rs",
+        "crates/bin/awaken-cli/src/control.rs",
+        # The Worker daemon's bootstrap: it composes the Worker transport and
+        # chooses the clock its signed request assertions are stamped with.
+        "crates/bin/awaken-worker/src/bootstrap.rs",
     }
 )
 

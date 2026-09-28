@@ -20,6 +20,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
     ProcessStores {
         workspace_root: None,
         platform_workspace: SharedHost::mint_local_workspace(),
+        clock: awaken_lease_contract::system_clock(),
         control: Some(ControlStores {
             catalog: Arc::new(awaken_model_catalog::repo::InMemoryCatalogRepo::new()),
             credentials,
@@ -165,6 +166,7 @@ pub(super) async fn open_local_process_stores(
         seal_key: Some(key),
         role: config::Role::AllInOne,
         postgres_schema: PostgresSchemaMode::Migrate,
+        clock: awaken_lease_contract::system_clock(),
     })
     .await
 }

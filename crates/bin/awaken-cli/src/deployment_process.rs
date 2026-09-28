@@ -57,9 +57,15 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         role,
         config::Role::AllInOne | config::Role::Coordinator
     ));
-    let worker_transport =
-        worker_transport_security::select(deployment, coordinator_services.worker_authenticator)
-            .await?;
+    // The process's one wall clock: Worker assertions, stores and every
+    // Coordinator component built below judge time with this handle.
+    let clock = awaken_lease_contract::system_clock();
+    let worker_transport = worker_transport_security::select(
+        deployment,
+        coordinator_services.worker_authenticator,
+        clock.clone(),
+    )
+    .await?;
     let publish_local_workspace = installations.publishes_local_workspace();
     let platform_workspace = installations.platform_workspace_before_write()?;
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
@@ -96,6 +102,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         seal_key: key,
         role,
         postgres_schema,
+        clock,
     })
     .await?;
     // Store startup has already opened the canonical Session authority and
@@ -271,6 +278,7 @@ pub(crate) async fn migrate_deployment_schema_prepared(
             seal_key: key,
             role: deployment.role,
             postgres_schema: PostgresSchemaMode::Migrate,
+            clock: awaken_lease_contract::system_clock(),
         })
         .await
         .map(drop)?;

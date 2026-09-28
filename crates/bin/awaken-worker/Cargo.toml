@@ -69,6 +69,7 @@ awaken-protocol-acp = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
 async-trait = { workspace = true }
+awaken-lease-contract.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.2"
 serde.workspace = true
