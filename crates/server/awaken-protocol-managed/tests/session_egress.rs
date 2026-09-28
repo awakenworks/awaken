@@ -347,7 +347,10 @@ async fn session_carries_the_exact_frozen_environment_network() {
     let app = support::edge_stamped(
         awaken_protocol_managed::router(managed.clone())
             .merge(environment_authoring_router(environment_authoring))
-            .merge(environment_work_router(environment_execution)),
+            .merge(environment_work_router(
+                environment_execution,
+                awaken_lease_contract::system_clock(),
+            )),
     );
 
     // A limited-networking environment.
@@ -446,7 +449,10 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     let app = support::edge_stamped(
         awaken_protocol_managed::router(managed.clone())
             .merge(environment_authoring_router(environment_authoring))
-            .merge(environment_work_router(environment_execution)),
+            .merge(environment_work_router(
+                environment_execution,
+                awaken_lease_contract::system_clock(),
+            )),
     );
 
     async fn environment(app: &Router, networking: Value) -> String {

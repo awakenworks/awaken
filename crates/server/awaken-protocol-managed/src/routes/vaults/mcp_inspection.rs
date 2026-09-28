@@ -123,7 +123,7 @@ impl VaultState {
             McpProbeStatus::Invalid { http_status } => ("invalid", Some(http_status)),
             McpProbeStatus::Unknown => ("unknown", None),
         };
-        let checked_at = self.now_rfc3339()?;
+        let checked_at = self.clock_reading_rfc3339()?;
         Ok(McpInspectionView {
             status,
             http_status,
@@ -384,7 +384,7 @@ pub(super) async fn validate_credential(
         mcp_probe = evidence.failure.map(CredentialMcpProbe::from);
     }
     // The validation is performed now: stamp the instant its verdict settled.
-    let validated_at = state.now_rfc3339().map_err(storage_error)?;
+    let validated_at = state.clock_reading_rfc3339().map_err(storage_error)?;
     Ok(Json(CredentialValidation {
         credential_id: id,
         has_refresh_token,

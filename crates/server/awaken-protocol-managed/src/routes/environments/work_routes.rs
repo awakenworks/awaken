@@ -4,6 +4,7 @@
 // @formal reason: Managed WorkQueue command routes.
 //! Coordinator-owned Environment WorkQueue HTTP adapter.
 
+use awaken_lease_contract::WallClockExt as _;
 use std::sync::Arc;
 
 use axum::Json;
@@ -37,12 +38,20 @@ fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
     }
 }
 
+/// The Work routes' state: the execution projection and the Coordinator's wall
+/// clock, whose reading every queue operation is stamped and judged with.
+pub(crate) struct WorkRoutes {
+    pub(crate) environments: Arc<EnvironmentExecutionApplication>,
+    pub(crate) clock: Arc<dyn awaken_lease_contract::WallClock>,
+}
+
 /// `GET /v1/environments/:id/work` — the environment's work items.
 pub(super) async fn list_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(routes): State<Arc<WorkRoutes>>,
     Path(id): Path<String>,
     ManagedQuery(page): ManagedQuery<PageQuery>,
 ) -> Result<Json<PageCursor<Work>>, WireError> {
+    let state = &routes.environments;
     let data: Vec<Work> = state
         .list_work(&id)
         .await
@@ -57,11 +66,12 @@ pub(super) async fn list_work(
 /// single worker. Open-tier cap: returns `null` when an item is already `active`
 /// in this environment (one lease at a time) or the queue is empty.
 pub(super) async fn poll_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(routes): State<Arc<WorkRoutes>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Option<Work>>, WireError> {
+    let state = &routes.environments;
     let poll = parse_poll_params(raw.as_deref())?;
     // The official SDK sends worker identity in `Anthropic-Worker-ID`, not in
     // the query string. Long polling repeatedly drives the same authoritative
@@ -72,14 +82,14 @@ pub(super) async fn poll_work(
     // does not require it. When omitted, the opaque credential owner is also the
     // least-privilege liveness coordinate rather than a fabricated public ID.
     let poller_id = worker_id(&headers).unwrap_or(&lease_owner);
-    let started = tokio::time::Instant::now();
+    let started = awaken_lease_contract::mono::Stopwatch::start();
     loop {
         let claimed = state
             .claim_work_with_session_access(
                 &id,
                 &lease_owner,
                 poller_id,
-                now_ms(),
+                routes.clock.now_ms(),
                 poll.reclaim_older_than_ms,
             )
             .await
@@ -157,11 +167,12 @@ pub(crate) struct HeartbeatParams {
 
 /// `GET /v1/environments/:id/work/stats` — the queue's depth + pending count.
 pub(super) async fn work_stats(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(routes): State<Arc<WorkRoutes>>,
     Path(id): Path<String>,
 ) -> Result<Json<WorkQueueStats>, WireError> {
+    let state = &routes.environments;
     let s = state
-        .work_stats(&id, now_ms())
+        .work_stats(&id, routes.clock.now_ms())
         .await
         .map_err(map_execution_error)?;
     Ok(Json(WorkQueueStats {
@@ -174,9 +185,10 @@ pub(super) async fn work_stats(
 }
 
 pub(super) async fn retrieve_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(routes): State<Arc<WorkRoutes>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
+    let state = &routes.environments;
     let work = state
         .get_work(&id, &wid)
         .await
@@ -186,10 +198,11 @@ pub(super) async fn retrieve_work(
 }
 
 pub(super) async fn update_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(routes): State<Arc<WorkRoutes>>,
     Path((id, wid)): Path<(String, String)>,
     ManagedJson(params): ManagedJson<WorkUpdateParams>,
 ) -> Result<Json<Work>, WireError> {
+    let state = &routes.environments;
     let work = state
         .update_work_metadata(&id, &wid, params.metadata)
         .await
@@ -200,11 +213,12 @@ pub(super) async fn update_work(
 
 /// `POST …/work/:wid/ack` — the worker acknowledges it picked up the item.
 pub(super) async fn ack_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(routes): State<Arc<WorkRoutes>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
     access: Option<Extension<awaken_session_work_contract::WorkSessionAccess>>,
 ) -> Result<Json<Work>, WireError> {
+    let state = &routes.environments;
     let result = if let Some(access) = access.as_deref() {
         state.acknowledge_work_with_session_access(access).await
     } else {
@@ -218,19 +232,20 @@ pub(super) async fn ack_work(
 
 /// `POST …/work/:wid/heartbeat` — extend the lease; returns the TTL.
 pub(super) async fn heartbeat_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(routes): State<Arc<WorkRoutes>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
     access: Option<Extension<awaken_session_work_contract::WorkSessionAccess>>,
     ManagedQuery(params): ManagedQuery<HeartbeatParams>,
 ) -> Result<Json<WorkHeartbeat>, WireError> {
+    let state = &routes.environments;
     let command = LeaseHeartbeat {
         condition: crate::work_queue::HeartbeatCondition::from_wire(
             params.expected_last_heartbeat.as_deref(),
         ),
         desired_ttl_seconds: params.desired_ttl_seconds,
     };
-    let now_ms = now_ms();
+    let now_ms = routes.clock.now_ms();
     let heartbeat = if let Some(access) = access.as_deref() {
         state
             .heartbeat_work_with_session_access(access, now_ms, command)
@@ -314,24 +329,15 @@ fn environment_credential(headers: &HeaderMap) -> Option<&str> {
     })
 }
 
-/// Wall-clock now in epoch ms — read only at this HTTP edge and passed into the
-/// (clock-free) work queue, so the queue's lease/poll bookkeeping is deterministic
-/// under test while production uses real time.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// `POST …/work/:wid/stop` — request the worker stop the item.
 pub(super) async fn stop_work(
-    State(state): State<Arc<EnvironmentExecutionApplication>>,
+    State(routes): State<Arc<WorkRoutes>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
     access: Option<Extension<awaken_session_work_contract::WorkSessionAccess>>,
     body: Bytes,
 ) -> Result<Json<Work>, WireError> {
+    let state = &routes.environments;
     // The official SDK sends `{}` or `{force}`; retain the earlier empty-body
     // transport as the sole backwards-compatible alias and validate every
     // non-empty body against the exact 0.120 DTO.

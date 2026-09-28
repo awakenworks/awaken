@@ -20,6 +20,7 @@ pub use awaken_deployment_contract::{
     UpdateDeploymentCommand,
 };
 
+use awaken_lease_contract::WallClockExt as _;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -37,13 +38,6 @@ use scheduler::{next_occurrence, validate_schedule};
 use scheduler::{MAX_JITTER_BOUND_MS, execution_jitter_ms};
 
 const DEFAULT_SCHEDULED_LIMIT: usize = 1_000;
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
 
 fn timestamp(milliseconds: u64) -> String {
     awaken_session_application_contract::epoch_millis_to_rfc3339(milliseconds)
@@ -87,13 +81,9 @@ pub struct DeploymentApplication {
     executable_projection_refresh:
         Mutex<Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>>,
     scheduled_limit: usize,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl Default for DeploymentApplication {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// The composing process's wall clock: every Deployment and run fact is
+    /// stamped, and every schedule judged, on it.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl DeploymentApplication {
@@ -101,7 +91,7 @@ impl DeploymentApplication {
     /// repository through [`Self::from_repository`].
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
         Self {
             deployments: Mutex::new(BTreeMap::new()),
             runs: Mutex::new(BTreeMap::new()),
@@ -111,12 +101,14 @@ impl DeploymentApplication {
             executable_agents: Mutex::new(None),
             executable_projection_refresh: Mutex::new(None),
             scheduled_limit: DEFAULT_SCHEDULED_LIMIT,
+            clock,
         }
     }
 
     /// Restore the scheduling aggregate and append-only run history.
     pub async fn from_repository(
         repository: Arc<dyn DeploymentRepository>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Result<Self, DeploymentApplicationError> {
         let (deployments, runs) = load_projection(repository.as_ref()).await?;
         Ok(Self {
@@ -128,7 +120,15 @@ impl DeploymentApplication {
             executable_agents: Mutex::new(None),
             executable_projection_refresh: Mutex::new(None),
             scheduled_limit: DEFAULT_SCHEDULED_LIMIT,
+            clock,
         })
+    }
+
+    /// The application's wall clock, for an adapter that renders a projection
+    /// of these facts (upcoming occurrences) on the same timeline.
+    #[must_use]
+    pub fn clock(&self) -> Arc<dyn awaken_lease_contract::WallClock> {
+        self.clock.clone()
     }
 
     pub fn bind_launcher(&self, launcher: Arc<dyn DeploymentSessionLauncher>) {
@@ -266,7 +266,7 @@ impl DeploymentApplication {
         let agent = admission
             .enter(|| self.resolve_agent(&command.workspace_id, &command.agent))
             .await?;
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let record = DeploymentRecord {
             revision: 0,
             created_at: timestamp(now),
@@ -427,7 +427,7 @@ impl DeploymentApplication {
             candidate.next_fire_ms = candidate
                 .schedule
                 .as_ref()
-                .and_then(|schedule| next_occurrence(schedule, now_ms()));
+                .and_then(|schedule| next_occurrence(schedule, self.clock.now_ms()));
         }
         if let Some(change) = command.vault_ids {
             candidate.vault_ids = match change {
@@ -449,7 +449,7 @@ impl DeploymentApplication {
                 self.scheduled_limit,
             )?;
         }
-        candidate.updated_at = timestamp(now_ms());
+        candidate.updated_at = timestamp(self.clock.now_ms());
         candidate.revision = next_revision(current.revision)?;
         apply_write_outcome(
             self.persist_deployment(id, &candidate, Some(current.revision), "deployment.updated")
@@ -475,7 +475,7 @@ impl DeploymentApplication {
         let mut record = self.get_cached(workspace_id, id)?;
         if record.archived_at.is_none() {
             let expected_revision = record.revision;
-            let now = now_ms();
+            let now = self.clock.now_ms();
             record.archived_at = Some(timestamp(now));
             record.updated_at = timestamp(now);
             record.revision = next_revision(expected_revision)?;
@@ -527,7 +527,7 @@ impl DeploymentApplication {
         if record.archived_at.is_some() {
             return Err(DeploymentApplicationError::Terminal);
         }
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let expected_revision = record.revision;
         let event = if pause {
             record.status = DeploymentStatus::Paused;
@@ -573,7 +573,7 @@ impl DeploymentApplication {
         let run_id = format!("drun_{}", uuid::Uuid::new_v4().simple());
         let launch = admission.enter(|| launch_for(&deployment, id, &run_id));
         let run = DeploymentRunRecord {
-            created_at: timestamp(now_ms()),
+            created_at: timestamp(self.clock.now_ms()),
             deployment_id: id.to_string(),
             workspace_id: workspace_id.to_string(),
             agent: deployment.agent.clone(),
@@ -639,7 +639,7 @@ impl DeploymentApplication {
         agent_id: &str,
     ) -> Result<usize, DeploymentApplicationError> {
         self.refresh().await?;
-        let now = timestamp(now_ms());
+        let now = timestamp(self.clock.now_ms());
         let candidates: Vec<(String, DeploymentRecord)> = self
             .deployments
             .lock()
@@ -737,6 +737,7 @@ impl DeploymentApplication {
                 run_id,
                 &run.workspace_id,
                 event,
+                self.clock.now_ms(),
             )
         });
         self.persist_run(run_id, &run, lifecycle).await?;
@@ -760,7 +761,7 @@ impl DeploymentApplication {
                 .ok_or(DeploymentApplicationError::NotFound("deployment"))?;
             deployment.status = DeploymentStatus::Paused;
             deployment.paused_reason = Some(DeploymentPauseReason::Error { error });
-            deployment.updated_at = timestamp(now_ms());
+            deployment.updated_at = timestamp(self.clock.now_ms());
             let expected_revision = deployment.revision;
             deployment.revision = next_revision(expected_revision)?;
             apply_write_outcome(
@@ -838,6 +839,7 @@ impl DeploymentApplication {
                     id,
                     &record.workspace_id,
                     event,
+                    self.clock.now_ms(),
                 )),
             )
             .await?;
@@ -870,7 +872,7 @@ impl DeploymentApplication {
     fn with_scheduled_limit(limit: usize) -> Self {
         Self {
             scheduled_limit: limit,
-            ..Self::new()
+            ..Self::new(awaken_lease_contract::system_clock())
         }
     }
 }
@@ -984,13 +986,14 @@ fn lifecycle_fact(
     object_id: &str,
     workspace_id: &str,
     event_type: &str,
+    now_ms: u64,
 ) -> DeploymentLifecycleFact {
     DeploymentLifecycleFact {
         id: format!("{key}:{}", uuid::Uuid::new_v4().simple()),
         object_id: object_id.to_string(),
         workspace_id: workspace_id.to_string(),
         event_type: event_type.to_string(),
-        timestamp: (now_ms() / 1_000) as i64,
+        timestamp: (now_ms / 1_000) as i64,
     }
 }
 
@@ -1062,6 +1065,11 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// The tests' wall reading, on the same host clock their applications use.
+    fn now_ms() -> u64 {
+        awaken_lease_contract::system_clock().now_ms()
+    }
+
     pub(crate) fn command(schedule: bool) -> CreateDeploymentCommand {
         CreateDeploymentCommand {
             workspace_id: "workspace-a".into(),
@@ -1094,7 +1102,7 @@ mod tests {
         // E4=foreign owner is indistinguishable from absence.
         // Decision table: R1 C1+owner->E1; R2 C2+owner+archive->E2;
         // R3 C2+owner+update/run->E3; R4 any+foreign->E4.
-        let application = DeploymentApplication::new();
+        let application = DeploymentApplication::new(awaken_lease_contract::system_clock());
         let created = application.create(command(false)).await.expect("R1");
         application
             .archive("workspace-a", &created.id)
@@ -1228,7 +1236,7 @@ mod tests {
         // Rules exercised: L1 manual+created->E1/E3; L2 scheduled+persistent
         // ->E1/E2; L3 scheduled+transient->E1/E3; L4 any+indeterminate->E4;
         // L5 missing adapter->E4 without inventing UnknownError business truth.
-        let success = DeploymentApplication::new();
+        let success = DeploymentApplication::new(awaken_lease_contract::system_clock());
         success.bind_launcher(Arc::new(OutcomeLauncher {
             outcome: DeploymentLaunchOutcome::Created {
                 session_id: "session-a".into(),
@@ -1240,7 +1248,7 @@ mod tests {
         assert_eq!(run.record.session_id.as_deref(), Some("session-a"), "L1");
         assert!(run.record.error.is_none(), "L1 terminal XOR");
 
-        let missing = DeploymentApplication::new();
+        let missing = DeploymentApplication::new(awaken_lease_contract::system_clock());
         let created = missing.create(command(false)).await.unwrap();
         assert!(
             matches!(
@@ -1256,7 +1264,7 @@ mod tests {
             "L5"
         );
 
-        let unavailable = DeploymentApplication::new();
+        let unavailable = DeploymentApplication::new(awaken_lease_contract::system_clock());
         unavailable.bind_launcher(Arc::new(OutcomeLauncher {
             outcome: DeploymentLaunchOutcome::Unavailable {
                 message: "response lost".into(),
@@ -1283,7 +1291,7 @@ mod tests {
             trigger: DeploymentTrigger,
             error: DeploymentRunFailure,
         ) -> (DeploymentRunRecord, DeploymentRecord) {
-            let application = DeploymentApplication::new();
+            let application = DeploymentApplication::new(awaken_lease_contract::system_clock());
             application.bind_launcher(Arc::new(OutcomeLauncher {
                 outcome: DeploymentLaunchOutcome::Failed { error },
                 calls: Arc::new(AtomicUsize::new(0)),
@@ -1369,7 +1377,7 @@ mod tests {
         // Cascade table: A1 same Workspace+Agent -> archive; A2 other Agent ->
         // unchanged; A3 other Workspace -> unchanged; A4 replay -> zero new
         // transitions. No rule creates a DeploymentRun.
-        let application = DeploymentApplication::new();
+        let application = DeploymentApplication::new(awaken_lease_contract::system_clock());
         let same = application.create(command(false)).await.unwrap();
         let mut other_agent = command(false);
         other_agent.agent.id = "agent-b".into();
@@ -1441,9 +1449,12 @@ mod tests {
             awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
                 .unwrap(),
         );
-        let first = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
+        let first = DeploymentApplication::from_repository(
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         let deployment = first.create(command(true)).await.unwrap();
         let scheduled = 1_767_603_600_000;
         let mut record = first
@@ -1463,12 +1474,18 @@ mod tests {
             )
             .await
             .unwrap();
-        let left = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
-        let right = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
+        let left = DeploymentApplication::from_repository(
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
+        let right = DeploymentApplication::from_repository(
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         for application in [&left, &right] {
             application.bind_launcher(Arc::new(OutcomeLauncher {
@@ -1488,9 +1505,12 @@ mod tests {
             "D2/D3"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1, "D2/D3");
-        let restored = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
+        let restored = DeploymentApplication::from_repository(
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             restored.list_runs("workspace-a").await.unwrap().len(),
             1,
@@ -1537,9 +1557,12 @@ mod tests {
             DeploymentWriteOutcome::Applied,
             "D5 setup"
         );
-        let missing = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
+        let missing = DeploymentApplication::from_repository(
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         missing.bind_executable_agents(Arc::new(MissingAgentSource));
         missing.bind_launcher(Arc::new(OutcomeLauncher {
             outcome: DeploymentLaunchOutcome::Created {
@@ -1560,9 +1583,12 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1, "D5 no launch");
-        let missing_restored = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
+        let missing_restored = DeploymentApplication::from_repository(
+            repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         assert!(
             missing_restored
                 .get("workspace-a", &missing_deployment.id)
@@ -1613,13 +1639,19 @@ mod tests {
             awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
                 .unwrap(),
         );
-        let mut left = DeploymentApplication::from_repository(left_repository.clone())
-            .await
-            .unwrap();
+        let mut left = DeploymentApplication::from_repository(
+            left_repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         left.scheduled_limit = 1;
-        let mut right = DeploymentApplication::from_repository(right_repository.clone())
-            .await
-            .unwrap();
+        let mut right = DeploymentApplication::from_repository(
+            right_repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         right.scheduled_limit = 1;
         let (left_outcome, right_outcome) =
             tokio::join!(left.create(command(true)), right.create(command(true)));
@@ -1653,9 +1685,12 @@ mod tests {
             awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
                 .unwrap(),
         );
-        let restored = DeploymentApplication::from_repository(restored_repository.clone())
-            .await
-            .unwrap();
+        let restored = DeploymentApplication::from_repository(
+            restored_repository.clone(),
+            awaken_lease_contract::system_clock(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             restored.list("workspace-a").await.unwrap(),
             vec![winner],
@@ -1673,7 +1708,7 @@ mod tests {
         // aggregate. R3=scheduled tick at the ceiling -> no speculative run or
         // cursor mutation. No saturating/wrapping revision or later store
         // conversion failure may make two distinct writes share one fence value.
-        let application = DeploymentApplication::new();
+        let application = DeploymentApplication::new(awaken_lease_contract::system_clock());
         let deployment = application.create(command(false)).await.unwrap();
         application
             .deployments
@@ -1700,7 +1735,7 @@ mod tests {
             "R2 no mutation"
         );
 
-        let scheduled = DeploymentApplication::new();
+        let scheduled = DeploymentApplication::new(awaken_lease_contract::system_clock());
         let deployment = scheduled.create(command(true)).await.unwrap();
         let scheduled_at = now_ms().saturating_sub(MAX_JITTER_BOUND_MS);
         {

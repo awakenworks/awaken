@@ -11,6 +11,7 @@
 //! selected threads and survives a restart. The SDK object, immutable versions,
 //! and binary bundle share that one Workspace-scoped repository.
 
+use awaken_lease_contract::WallClockExt as _;
 use std::sync::Arc;
 
 use crate::common::headers::ManagedCapability;
@@ -41,13 +42,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use super::managed_resource_error as err;
-
-fn now_nanos() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
-        .unwrap_or_default()
-}
 
 fn timestamp(nanos: u64) -> String {
     awaken_session_application_contract::epoch_millis_to_rfc3339(nanos / 1_000_000)
@@ -115,6 +109,9 @@ fn project_version(version: &SkillVersion, surface: ManagedResourceApiSurface) -
 struct SkillsApi {
     store: Option<Arc<dyn SkillStore>>,
     purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
+    /// The Resources context's clock: version creation and purge scheduling
+    /// are stamped with it.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl SkillsApi {
@@ -186,8 +183,13 @@ impl SkillsApi {
 pub fn skills_router(
     store: Option<Arc<dyn SkillStore>>,
     purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Router {
-    let state = Arc::new(SkillsApi { store, purge });
+    let state = Arc::new(SkillsApi {
+        store,
+        purge,
+        clock,
+    });
     Router::new()
         .route("/v1/skills", post(create_skill).get(list_skills))
         .route("/v1/skills/{id}", get(retrieve_skill).delete(delete_skill))
@@ -310,6 +312,7 @@ fn build_version(
     content: &str,
     ordinal: u64,
     bundle: CanonicalSkillBundle,
+    created_unix_nanos: u64,
 ) -> SkillVersion {
     let spec = awaken_ext_skills::parse_skill_md("skill", content);
     let files = bundle.files;
@@ -324,7 +327,7 @@ fn build_version(
             .unwrap_or_else(|| skill_stem(&spec.name)),
         bundle_sha256: skill_bundle_sha256(&files),
         files,
-        created_unix_nanos: now_nanos(),
+        created_unix_nanos,
     }
 }
 
@@ -382,7 +385,13 @@ async fn create_skill(
     };
     let parsed = awaken_ext_skills::parse_skill_md("skill", &content);
     let id = skill_catalog_id(&parsed.name);
-    let version = build_version(&id, &content, 1, bundle);
+    let version = build_version(
+        &id,
+        &content,
+        1,
+        bundle,
+        state.clock.now().as_unix_nanos_u64(),
+    );
     let definition = SkillDefinition {
         id: id.clone().into(),
         workspace_id: workspace,
@@ -546,10 +555,7 @@ async fn delete_skill(
             return err(StatusCode::NOT_FOUND, format!("skill `{id}` not found"));
         }
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default();
+    let now = state.clock.now_ms();
     if let Err(error) = state
         .purge
         .schedule_purge(
@@ -623,7 +629,13 @@ async fn create_version(
         Ok(content) => content.to_string(),
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
-    let version = build_version(&id, &content, definition.last_version + 1, bundle);
+    let version = build_version(
+        &id,
+        &content,
+        definition.last_version + 1,
+        bundle,
+        state.clock.now().as_unix_nanos_u64(),
+    );
     let projected = project_version(&version, surface);
     match state.append_version(&workspace, &id, version).await {
         Some(Ok(())) => (StatusCode::OK, Json(projected)).into_response(),
@@ -1094,7 +1106,15 @@ mod tests {
             executable: false,
         }])
         .unwrap();
-        let version = build_version(id, content, 1, bundle);
+        let version = build_version(
+            id,
+            content,
+            1,
+            bundle,
+            awaken_lease_contract::system_clock()
+                .now()
+                .as_unix_nanos_u64(),
+        );
         store
             .create(
                 SkillDefinition {
@@ -1129,7 +1149,11 @@ mod tests {
             "---\nname: private\ndescription: a\n---\nsecret-a",
         )
         .await;
-        let router = skills_router(Some(store), purge_scheduler());
+        let router = skills_router(
+            Some(store),
+            purge_scheduler(),
+            awaken_lease_contract::system_clock(),
+        );
         let id = "private";
         assert_eq!(
             get_in(&router, &format!("/v1/skills/{id}"), "ws_a").await.0,
@@ -1167,7 +1191,11 @@ mod tests {
             "---\nname: Greeter\ndescription: hi\n---\nsay hello",
         )
         .await;
-        let router = skills_router(Some(store), purge_scheduler());
+        let router = skills_router(
+            Some(store),
+            purge_scheduler(),
+            awaken_lease_contract::system_clock(),
+        );
         let cid = "Greeter";
 
         // The advertised catalog id retrieves the skill via the durable fallback…

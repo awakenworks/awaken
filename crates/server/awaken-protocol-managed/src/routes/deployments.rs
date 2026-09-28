@@ -8,6 +8,7 @@
 //! and HTTP error mapping. Aggregate transitions, persistence, scheduling, and
 //! Session launch outcomes belong to `awaken-deployment-application`.
 
+use awaken_lease_contract::WallClockExt as _;
 use std::sync::Arc;
 
 use awaken_deployment_application::{
@@ -455,14 +456,9 @@ fn upcoming_occurrences(schedule: &DeploymentSchedule, after_ms: u64) -> Vec<Str
         .collect()
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
-fn project_deployment(view: DeploymentView) -> Result<Deployment, WireError> {
+/// Project one Deployment, rendering its upcoming occurrences from `now_ms`,
+/// the application clock's reading at this request.
+fn project_deployment(view: DeploymentView, now_ms: u64) -> Result<Deployment, WireError> {
     let record = view.record;
     let archived = record.archived_at.is_some();
     let last_run_at = record.last_run_at;
@@ -470,7 +466,7 @@ fn project_deployment(view: DeploymentView) -> Result<Deployment, WireError> {
         let upcoming = if archived {
             Vec::new()
         } else {
-            upcoming_occurrences(&schedule, now_ms())
+            upcoming_occurrences(&schedule, now_ms)
         };
         wire_schedule(schedule, last_run_at, upcoming)
     });
@@ -597,7 +593,7 @@ async fn create_deployment(
         .create(command)
         .await
         .map_err(wire_error)
-        .and_then(project_deployment)
+        .and_then(|view| project_deployment(view, application.clock().now_ms()))
         .map(Json)
 }
 
@@ -610,7 +606,7 @@ async fn retrieve_deployment(
         .get(&scope, &id)
         .await
         .map_err(wire_error)
-        .and_then(project_deployment)
+        .and_then(|view| project_deployment(view, application.clock().now_ms()))
         .map(Json)
 }
 
@@ -673,6 +669,7 @@ async fn list_deployments(
         ));
     }
     let page = page_query(&query.page)?;
+    let now_ms = application.clock().now_ms();
     let data = application
         .list(&scope)
         .await
@@ -694,7 +691,7 @@ async fn list_deployments(
                 )
             })
         })
-        .map(project_deployment)
+        .map(|view| project_deployment(view, now_ms))
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .filter(|deployment| {
@@ -768,7 +765,7 @@ async fn update_deployment(
         .update(&scope, &id, command)
         .await
         .map_err(wire_error)
-        .and_then(project_deployment)
+        .and_then(|view| project_deployment(view, application.clock().now_ms()))
         .map(Json)
 }
 
@@ -783,7 +780,7 @@ macro_rules! deployment_action {
                 .$method(&scope, &id)
                 .await
                 .map_err(wire_error)
-                .and_then(project_deployment)
+                .and_then(|view| project_deployment(view, application.clock().now_ms()))
                 .map(Json)
         }
     };
