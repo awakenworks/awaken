@@ -505,9 +505,11 @@ pub(super) async fn prepare_runtime_routers(
             resource_application.file_content_source(),
             resource_authorities.memory_repository(),
             memory_extractions,
-            platform_workspace.clone(),
-            deployment,
-            clock.clone(),
+            awaken_session_executor::HostProcess {
+                local_workspace: platform_workspace.clone(),
+                deployment,
+                clock: clock.clone(),
+            },
         ),
         #[cfg(any(test, feature = "test-support"))]
         None => SharedHost::new_with_resources(
