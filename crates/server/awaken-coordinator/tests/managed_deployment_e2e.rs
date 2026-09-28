@@ -33,7 +33,7 @@ use tower::ServiceExt;
 use support::wait_for_session_events;
 
 fn resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
-    awaken_resource_persistence::ephemeral()
+    awaken_resource_persistence::ephemeral(awaken_lease_contract::system_clock())
         .expect("open the Deployment test Resource application")
         .authorities()
         .resource_registry()

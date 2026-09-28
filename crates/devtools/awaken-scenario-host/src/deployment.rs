@@ -215,10 +215,12 @@ pub(crate) fn resource_host_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
 ) -> ScenarioPlatform {
+    // The Scenario process's Resources clock.
+    let clock = awaken_lease_contract::system_clock();
     let resources = match deployment.storage_dir.clone() {
-        Some(storage_dir) => awaken_resource_persistence::open_embedded(&storage_dir)
+        Some(storage_dir) => awaken_resource_persistence::open_embedded(&storage_dir, clock)
             .expect("open embedded scenario Resources application"),
-        None => awaken_resource_persistence::ephemeral()
+        None => awaken_resource_persistence::ephemeral(clock)
             .expect("open ephemeral scenario Resources application"),
     };
     // Resource durability and runtime policy are orthogonal. Even an ephemeral

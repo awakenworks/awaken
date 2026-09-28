@@ -2204,6 +2204,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         raw_host
             .resource_reclamation()
             .expect("test lifecycle repository"),
+        awaken_lease_contract::system_clock(),
     ));
     raw_host = raw_host.with_file_application(
         application.clone(),

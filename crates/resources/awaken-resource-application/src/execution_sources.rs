@@ -526,6 +526,7 @@ mod tests {
             blobs,
             catalog,
             Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+            awaken_lease_contract::system_clock(),
         ));
         let file = application
             .create(crate::CreateFileCommand {
@@ -595,6 +596,7 @@ mod tests {
                 awaken_resource_store::SqliteResourceStore::in_memory()
                     .expect("resource lifecycle"),
             ),
+            awaken_lease_contract::system_clock(),
         ));
         let publisher = super::ApplicationArtifactPublisher::new(application.clone());
         let bytes = b"durable terminal artifact".to_vec();

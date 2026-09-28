@@ -49,6 +49,7 @@ async fn resource_routes_share_one_application_without_conflicts() {
             memory_stores: resources.memory_stores(),
             skills: Some(authorities.skill_store()),
             purge: resources.purge_scheduler(),
+            clock: authorities.clock(),
         }))
         .merge(models_router(Arc::new(default_models())));
 

@@ -24,7 +24,9 @@ use crate::types::file::{
 };
 use crate::types::page::paginate_id_page;
 use crate::types::{PageCursor, PageQuery, paginate};
+use awaken_lease_contract::{Expiry, UtcTime, WallClock};
 use awaken_resource_contract::{FileApplicationService, FileRecord, ResourcePurgeError};
+use axum::Extension;
 use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
@@ -33,12 +35,16 @@ use axum::{Json, Router};
 
 use super::managed_resource_error as error;
 
-pub fn files_router(files: Arc<dyn FileApplicationService>) -> Router {
+/// `clock` is the Resources context's clock (the one the File application
+/// stamps `created_at` with): an upload's `expires_at` is minted from it and a
+/// download judges that expiry against it.
+pub fn files_router(files: Arc<dyn FileApplicationService>, clock: Arc<dyn WallClock>) -> Router {
     Router::new()
         .route("/v1/files", post(upload_file).get(list_files))
         .route("/v1/files/{id}", get(get_file).delete(delete_file))
         .route("/v1/files/{id}/content", get(download_file))
         .with_state(files)
+        .layer(Extension(clock))
 }
 
 fn ga_metadata(record: &FileRecord) -> FileMetadata {
@@ -252,6 +258,7 @@ fn valid_filename(filename: &str) -> bool {
 
 async fn upload_file(
     State(files): State<Arc<dyn FileApplicationService>>,
+    Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
@@ -323,8 +330,9 @@ async fn upload_file(
         return error(StatusCode::BAD_REQUEST, "filename is invalid");
     }
     let expires_at = expiry_seconds.map(|expiry| {
-        (chrono::Utc::now() + chrono::Duration::seconds(expiry.get() as i64))
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        Expiry::after(clock.now(), std::time::Duration::from_secs(expiry.get()))
+            .deadline()
+            .to_rfc3339_millis()
     });
     if idempotency_key.is_some() && expires_at.is_some() {
         return error(
@@ -399,6 +407,7 @@ async fn get_file(
 
 async fn delete_file(
     State(files): State<Arc<dyn FileApplicationService>>,
+    Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -407,10 +416,7 @@ async fn delete_file(
     if let Err(message) = resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Files) {
         return error(StatusCode::BAD_REQUEST, message);
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
-        .unwrap_or_default();
+    let now = clock.now().as_epoch_ms();
     match files.delete(&workspace, &id, now).await {
         Ok(Some(_)) => (
             StatusCode::OK,
@@ -427,6 +433,7 @@ async fn delete_file(
 
 async fn download_file(
     State(files): State<Arc<dyn FileApplicationService>>,
+    Extension(clock): Extension<Arc<dyn WallClock>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -441,8 +448,8 @@ async fn download_file(
         }
         Ok(Some((record, _)))
             if record.expires_at.as_deref().is_some_and(|expires_at| {
-                chrono::DateTime::parse_from_rfc3339(expires_at)
-                    .is_ok_and(|expiry| expiry <= chrono::Utc::now())
+                UtcTime::parse_rfc3339(expires_at)
+                    .is_some_and(|deadline| Expiry::at(deadline).is_expired_at(clock.now()))
             }) =>
         {
             error(StatusCode::NOT_FOUND, "file content has expired")

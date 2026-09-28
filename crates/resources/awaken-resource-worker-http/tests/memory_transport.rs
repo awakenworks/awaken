@@ -126,6 +126,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
         file_store.clone(),
         file_store,
         Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap()),
+        awaken_lease_contract::system_clock(),
     ));
     let mut file_input = memory_input("file", "unused", ResourceAccess::ReadOnly);
     file_input.source = awaken_session_resource_contract::ResolvedInputSource::File {
@@ -335,6 +336,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     );
     let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
         storage,
+        awaken_lease_contract::system_clock(),
     ));
     create_store(&catalog, "memory-rw").await;
     create_store(&catalog, "memory-ro").await;
@@ -591,6 +593,7 @@ async fn realization_memory_is_read_only_and_fenced_by_worker_and_session_root()
     );
     let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
         storage,
+        awaken_lease_contract::system_clock(),
     ));
     create_store(&catalog, "memory-realization").await;
     let dispatch = Arc::new(MemoryDispatchStore::new(
@@ -763,6 +766,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     );
     let catalog = Arc::new(awaken_resource_application::RegistryApplication::new(
         storage,
+        awaken_lease_contract::system_clock(),
     ));
     create_store(&catalog, "memory-terminal").await;
 
