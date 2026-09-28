@@ -5,11 +5,7 @@ tcb_assumptions = [
   "external.mcp_busy_acp_revocation_propagation_and_process_termination",
 ]
 evidence = [
-  "crates/server/awaken-session-executor/src/sandbox_source.rs",
   "e2e/acp_awaken_tool_bridge_e2e.mjs",
-]
-proof_harnesses = [
-  "acp_mcp_projection_has_one_exact_authority",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/sandbox_source.rs",

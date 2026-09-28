@@ -2,12 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/contract/awaken-session-execution-contract/src/session.rs",
-]
-proof_harnesses = [
-  "settled_step_has_no_parallel_observation_authority",
-]
+evidence = []
 production_entrypoints = [
   "crates/contract/awaken-session-execution-contract/src/session.rs",
 ]

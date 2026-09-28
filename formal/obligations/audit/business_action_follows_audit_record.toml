@@ -11,15 +11,11 @@ evidence = [
   "crates/control/awaken-control/src/lib.rs",
   "crates/control/awaken-config-store/src/sqlite.rs",
   "crates/control/awaken-config-store/src/postgres.rs",
-  "crates/control/awaken-agent-config/src/store.rs",
   "formal/tla/AuditCommit.cfg",
   "crates/control/awaken-config-store/src/schema.rs",
   "crates/control/awaken-config-store/tests/support/audit_identity.rs",
   "crates/control/awaken-config-store/tests/integration.rs",
   "crates/control/awaken-config-store/tests/postgres.rs",
-]
-proof_harnesses = [
-  "management_audit_admission_requires_exact_intent_and_closed_state",
 ]
 production_entrypoints = [
   "crates/control/awaken-admin-assistant/src/lib.rs",

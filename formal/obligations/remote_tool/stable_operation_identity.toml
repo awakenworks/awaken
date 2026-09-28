@@ -10,11 +10,7 @@ evidence = [
   "formal/tla/RemoteTool.tla",
   "crates/contract/awaken-tool-contract/src/tool.rs",
   "crates/worker/awaken-tool-relay/src/wire.rs",
-  "crates/worker/awaken-tool-relay/src/executor.rs",
   "crates/worker/awaken-tool-relay/tests/relay.rs",
-]
-proof_harnesses = [
-  "durable_hand_identity_requires_the_runtime_operation_token",
 ]
 production_entrypoints = [
   "crates/contract/awaken-tool-contract/src/tool.rs",

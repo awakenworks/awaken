@@ -562,6 +562,7 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// @obligation environment_image_build.single_claim_exact_reclaim_and_stale_fence
     #[kani::proof]
     fn environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert() {
         let eligible = kani::any::<bool>();
@@ -593,6 +594,7 @@ mod verification {
         }
     }
 
+    /// @obligation environment_image_build.single_claim_exact_reclaim_and_stale_fence
     #[kani::proof]
     fn environment_image_build_mutation_requires_exact_claim_and_admissible_command() {
         let owner_matches = kani::any::<bool>();

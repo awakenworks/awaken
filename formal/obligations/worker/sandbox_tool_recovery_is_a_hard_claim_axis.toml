@@ -7,15 +7,8 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/contract/awaken-worker-contract/src/lib.rs",
   "crates/contract/awaken-worker-contract/src/manifest.rs",
-  "crates/server/awaken-session-executor/src/deployment_config.rs",
   "crates/bin/awaken-worker/src/lib.rs",
-]
-proof_harnesses = [
-  "sandbox_tool_recovery_claim_axis_is_exact_and_non_widening",
-  "manifest_recovery_mapping_accepts_only_the_exact_installed_capability",
-  "container_hand_residency_recovery_mapping_is_total_exact_and_non_widening",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/lib.rs",

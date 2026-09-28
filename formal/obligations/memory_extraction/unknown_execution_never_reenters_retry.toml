@@ -11,12 +11,8 @@ evidence = [
   "scripts/ci/formal_memory_mutations.py",
   "crates/runtime/awaken-ext-memory/src/extraction.rs",
   "crates/runtime/awaken-ext-memory/src/extraction/types.rs",
-  "crates/runtime/awaken-ext-memory/src/extraction/controller.rs",
   "crates/server/awaken-session-executor/src/memory.rs",
   "crates/stores/awaken-session-store/src/extraction.rs",
-]
-proof_harnesses = [
-  "memory_extraction_unknown_is_terminal_and_never_retryable",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-ext-memory/src/extraction.rs",

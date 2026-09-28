@@ -350,6 +350,7 @@ fn equal_jitter(nominal: Duration, draw: u64) -> Duration {
 mod kani_proofs {
     use super::{RETRY_ACTIVE_STATE, RETRY_TERMINAL_STATE, RetryDecision, bounded_retry_decision};
 
+    /// @obligation runtime_resilience.retry_is_exact_bounded_terminal_and_fail_closed
     #[kani::proof]
     fn retry_is_authorized_only_inside_the_exact_bounded_budget() {
         let retryable: bool = kani::any();
@@ -367,6 +368,7 @@ mod kani_proofs {
         }
     }
 
+    /// @obligation runtime_resilience.retry_is_exact_bounded_terminal_and_fail_closed
     #[kani::proof]
     fn non_retryable_failure_is_immediately_terminal() {
         let failed_attempt: u32 = kani::any();
@@ -377,6 +379,7 @@ mod kani_proofs {
         );
     }
 
+    /// @obligation runtime_resilience.retry_is_exact_bounded_terminal_and_fail_closed
     #[kani::proof]
     fn terminal_retry_state_never_reopens() {
         let retryable: bool = kani::any();
@@ -389,6 +392,7 @@ mod kani_proofs {
         assert_eq!(second, RetryDecision::Terminal);
     }
 
+    /// @obligation runtime_resilience.retry_is_exact_bounded_terminal_and_fail_closed
     #[kani::proof]
     fn unknown_retry_state_fails_closed() {
         let state: u8 = kani::any();

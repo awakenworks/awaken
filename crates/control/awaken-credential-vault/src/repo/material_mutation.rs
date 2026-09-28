@@ -666,6 +666,9 @@ mod material_input_proofs {
     }
 
     #[cfg(kani)]
+    /// @obligation credential.managed_abort_cleanup_remains_durable_until_unpublished_material_is_removed
+    /// @obligation credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+    /// @kani profile=minisat-unwind-memcmp-16-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn credential_material_input_facts_without_predecessor() {
@@ -819,6 +822,9 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation credential.managed_material_admission_predicate_requires_owner_and_namespace_match
+/// @obligation credential.material_is_always_published_or_intent_tracked
+/// @obligation credential.visible_row_always_has_material
 #[kani::proof]
 fn credential_material_attempt_requires_owner_and_exact_physical_namespace() {
     let writing = kani::any::<bool>();
@@ -861,6 +867,7 @@ mod phase_proofs {
         }
     }
 
+    /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
     #[kani::proof]
     #[kani::unwind(4)]
     fn credential_material_phase_transitions_preserve_exact_writer_fence() {
@@ -908,6 +915,8 @@ mod phase_proofs {
         assert_eq!(input, snapshot);
     }
 
+    /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+    /// @obligation credential.restart_recovery_compensates_unpublished_material
     #[kani::proof]
     #[kani::unwind(36)]
     fn credential_material_takeover_preserves_attempt_and_cannot_restore_original_writer() {
@@ -972,6 +981,11 @@ mod phase_proofs {
         }
     }
 
+    /// @obligation credential.failed_create_compensates_material
+    /// @obligation credential.managed_creation_expired_owner_takeover_fences_abstract_transitions_and_conditionally_converges
+    /// @obligation credential.material_is_always_published_or_intent_tracked
+    /// @obligation credential.restart_recovery_compensates_unpublished_material
+    /// @obligation credential.visible_row_always_has_material
     #[kani::proof]
     fn credential_material_recovery_action_is_total_and_expiry_exact() {
         // Causes: C1 all four durable phases; C2 all eight signals; C3 arbitrary

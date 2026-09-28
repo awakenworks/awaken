@@ -6,7 +6,6 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "crates/server/awaken-dispatch/src/pool.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite/claim.rs",
   "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
@@ -15,9 +14,6 @@ evidence = [
   "crates/server/awaken-dispatch/tests/pool_memory.rs",
   "crates/server/awaken-dispatch/tests/harness/mod.rs",
   "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http.rs",
-]
-proof_harnesses = [
-  "resolution_retry_admission_matches_only_the_persisted_deadline",
 ]
 production_entrypoints = [
   "crates/server/awaken-dispatch/src/pool.rs",

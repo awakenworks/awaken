@@ -13,6 +13,7 @@ pub(super) const fn ordinary_resource_reconciliation_allowed(
 }
 
 #[cfg(kani)]
+/// @obligation session_resources.terminal_session_never_reactivates
 #[kani::proof]
 fn terminal_session_never_enters_ordinary_resource_reconciliation() {
     // Cause/effect graph: C1 the durable root is terminal; C2 execution is

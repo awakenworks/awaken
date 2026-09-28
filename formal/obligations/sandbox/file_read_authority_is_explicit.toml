@@ -5,11 +5,7 @@ tcb_assumptions = [
   "external.container_and_kernel_isolation",
 ]
 evidence = [
-  "crates/server/awaken-session-executor/src/session_environment/session_files.rs",
   "crates/server/awaken-session-executor/src/session_environment/container_files.rs",
-]
-proof_harnesses = [
-  "file_read_authority_never_changes_path_class_or_admits_unsafe_input",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/session_environment/session_files.rs",

@@ -75,6 +75,7 @@ pub fn is_legacy_derived_session_context(message: &Message) -> bool {
 }
 
 #[cfg(kani)]
+/// @obligation session.legacy_derived_context_remains_durable_but_is_hidden_from_new_model_requests
 #[kani::proof]
 fn legacy_derived_context_remains_durable_but_never_reaches_a_new_model_request() {
     let legacy_derived: bool = kani::any();
@@ -212,6 +213,7 @@ impl NormalizedModelInput {
 }
 
 #[cfg(kani)]
+/// @obligation session.transcript_prefix_is_exact_request_only_context_not_durable_truth
 #[kani::proof]
 fn transcript_prefix_is_exact_request_only_context_not_durable_truth() {
     let destination = if kani::any() {

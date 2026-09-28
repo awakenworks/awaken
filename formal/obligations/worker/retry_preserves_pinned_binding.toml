@@ -8,14 +8,10 @@ evidence = [
   "formal/tla/WorkerReplacement.tla",
   "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",
   "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/dispatch.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite/claim.rs",
   "crates/server/awaken-dispatch/src/postgres/claim.rs",
   "crates/server/awaken-dispatch-testkit/src/conformance/operations_claims.rs",
-]
-proof_harnesses = [
-  "dispatch_claim_preserves_every_frozen_binding",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",

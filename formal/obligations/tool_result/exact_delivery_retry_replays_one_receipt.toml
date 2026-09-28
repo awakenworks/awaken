@@ -5,10 +5,6 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/ToolResultProtocol.tla",
   "crates/server/awaken-session-executor/src/host/coordination.rs",
-  "crates/server/awaken-session-executor/src/host/coordination/session_reply_receipt.rs",
-]
-proof_harnesses = [
-  "resume_receipt_classification_is_exact_and_conflict_absorbing",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/host/coordination.rs",

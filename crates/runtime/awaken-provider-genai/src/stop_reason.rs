@@ -100,6 +100,7 @@ pub fn map_stop_reason(reason: &genai::chat::StopReason) -> Result<StopReason> {
 mod verification {
     use super::*;
 
+    /// @obligation model_stop.unclassified_provider_reason_fails_closed
     #[kani::proof]
     fn unclassified_provider_stop_reason_fails_closed() {
         // Cause/effect graph: C1-C5 are the five classified provider stop

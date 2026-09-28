@@ -789,6 +789,9 @@ mod tests {
 }
 
 #[cfg(kani)]
+/// @obligation worker.drain_and_replacement_races_preserve_registry_authority
+/// @obligation worker.incarnation_generation_fences_stale_processes
+/// @obligation worker_credential.stale_heartbeat_never_rolls_back_revision
 #[kani::proof]
 fn worker_replacement_and_heartbeat_share_one_non_resurrection_boundary() {
     let state = match kani::any::<u8>() % 5 {
@@ -848,6 +851,7 @@ fn worker_replacement_and_heartbeat_share_one_non_resurrection_boundary() {
 }
 
 #[cfg(kani)]
+/// @obligation sandbox.k8s_process_observation_requires_complete_exit
 #[kani::proof]
 fn worker_process_exit_receipt_requires_closed_exact_immutable_history() {
     let present = kani::any::<bool>();
@@ -871,6 +875,8 @@ fn worker_process_exit_receipt_requires_closed_exact_immutable_history() {
 }
 
 #[cfg(kani)]
+/// @obligation observation_reconcile.evidence_aba_has_fresh_fence
+/// @obligation observation_reconcile.skipped_epoch_was_published_or_superseded
 #[kani::proof]
 fn changed_worker_observation_always_mints_a_strictly_fresh_fence() {
     let current = kani::any::<u64>();
@@ -897,6 +903,10 @@ fn changed_worker_observation_always_mints_a_strictly_fresh_fence() {
 }
 
 #[cfg(kani)]
+/// @obligation observation_reconcile.evidence_aba_has_fresh_fence
+/// @obligation observation_reconcile.failed_refresh_does_not_advance_fence
+/// @obligation observation_reconcile.skipped_epoch_was_published_or_superseded
+/// @obligation observation_reconcile.unchanged_evidence_coalesces
 #[kani::proof]
 fn observation_publication_fence_is_success_owned_exact_and_failure_stable() {
     // Symbolic decision table over every u8 prior/current fingerprint and both
@@ -962,6 +972,7 @@ fn registration_history_decision_table() {
 }
 
 #[cfg(kani)]
+/// @obligation worker.incarnation_generation_fences_stale_processes
 #[kani::proof]
 fn worker_registration_never_grants_authority_to_seen_or_unknown_history() {
     // Scalar production decision only. Storage completeness, transaction

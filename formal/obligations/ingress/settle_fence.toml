@@ -12,7 +12,6 @@ evidence = [
   "docs/adr/0010-idempotent-pending-consumption.md",
   "docs/adr/0060-durable-dispatch-completion-tombstone.md",
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
   "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
@@ -20,10 +19,6 @@ evidence = [
   "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
-]
-proof_harnesses = [
-  "stale_dispatch_claim_cannot_modify_authoritative_state",
-  "exact_dispatch_settlement_is_terminal_or_awaiting_only",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",

@@ -8,14 +8,10 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/SandboxControlPublication.tla",
   "scripts/ci/check_formal_mutations.py",
-  "crates/worker/awaken-sandbox-control-transport/src/publication.rs",
   "crates/worker/awaken-sandbox-container/src/control.rs",
   "crates/worker/awaken-sandbox-local/src/namespace/control.rs",
   "crates/worker/awaken-sandbox-fs/src/unix_socket_path.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "publication_slot_directly_preserves_single_owner_stale_fence_and_absorbing_close",
 ]
 production_entrypoints = [
   "crates/worker/awaken-sandbox-control-transport/src/publication.rs",

@@ -3,11 +3,7 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/runtime/awaken-ext-compact/src/plugin.rs",
   "crates/server/awaken-session-executor/src/compact.rs",
-]
-proof_harnesses = [
-  "compaction_artifact_requires_exact_identity_coverage_and_content",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-ext-compact/src/plugin.rs",

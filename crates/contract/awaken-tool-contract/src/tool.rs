@@ -453,6 +453,8 @@ impl ToolTaskHandle {
 }
 
 #[cfg(kani)]
+/// @obligation session_execution.one_physical_attempt_per_thread
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 #[kani::unwind(4)]
 fn created_tool_handle_validation_never_invents_termination() {
@@ -1614,6 +1616,9 @@ mod recovery_tests {
 }
 
 #[cfg(kani)]
+/// @obligation tool.concurrency_resource_conflict
+/// @obligation tool_schedule.every_wave_is_pairwise_compatible
+/// @obligation tool_schedule.serial_is_singleton_and_compatible_prefixes_are_maximal
 #[kani::proof]
 fn same_resource_conflict_is_symmetric_and_exactly_one_write_or_more() {
     let left_writes: bool = kani::any();
@@ -1637,6 +1642,11 @@ fn same_resource_conflict_is_symmetric_and_exactly_one_write_or_more() {
 }
 
 #[cfg(kani)]
+/// @obligation tool_schedule.every_wave_is_pairwise_compatible
+/// @obligation tool_schedule.order_is_stable_and_conflicting_predecessors_are_never_bypassed
+/// @obligation tool_schedule.parallel_bound_is_positive_exact_and_zero_normalizes_to_one
+/// @obligation tool_schedule.partition_is_total_contiguous_and_exactly_once
+/// @obligation tool_schedule.serial_is_singleton_and_compatible_prefixes_are_maximal
 #[kani::proof]
 fn tool_wave_extension_requires_every_exact_guard() {
     let first_is_serial: bool = kani::any();
@@ -1658,6 +1668,8 @@ fn tool_wave_extension_requires_every_exact_guard() {
 }
 
 #[cfg(kani)]
+/// @obligation tool_schedule.parallel_bound_is_positive_exact_and_zero_normalizes_to_one
+/// @obligation tool_schedule.serial_is_singleton_and_compatible_prefixes_are_maximal
 #[kani::proof]
 fn tool_wave_extension_never_crosses_the_positive_bound_or_admits_serial() {
     let first_is_serial: bool = kani::any();

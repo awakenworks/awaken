@@ -240,6 +240,7 @@ impl CompactHook {
 mod artifact_verification {
     use super::*;
 
+    /// @obligation compaction.artifact_identity_coverage_and_content_fail_closed
     #[kani::proof]
     fn compaction_artifact_requires_exact_identity_coverage_and_content() {
         let scope_matches: bool = kani::any();

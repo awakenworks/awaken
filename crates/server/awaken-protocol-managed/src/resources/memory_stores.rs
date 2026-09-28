@@ -1098,7 +1098,10 @@ fn projected_time(nanos: u128) -> i128 {
     )) * 1_000_000
 }
 
+// Z3 keeps the full-width division shared in this caller-refinement proof.
 #[cfg(kani)]
+/// @obligation session_time.utc_projection_domain_is_total_exact_and_idempotent
+/// @kani profile=solver-z3-v1
 #[kani::proof]
 fn memory_time_filter_compares_visible_milliseconds_without_merging_them() {
     // Direct production-kernel proof over every u128 stored timestamp. The

@@ -105,6 +105,8 @@ const fn credential_status_allows_materialization(status: CredentialStatus) -> b
 }
 
 #[cfg(all(kani, feature = "authority"))]
+/// @obligation credential_effect.boundary_preserves_exact_materialization_authority
+/// @obligation worker.revoked_credential_blocks_new_materialization
 #[kani::proof]
 fn new_materialization_admits_only_active_credential_status() {
     // Test design — Causes: the current persisted lifecycle is Active,

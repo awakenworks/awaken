@@ -11,10 +11,6 @@ evidence = [
   "formal/tla/SessionOwnership.cfg",
   "formal/tla/SessionOwnershipProof.tla",
   "formal/tla/SessionRootProof.tla",
-  "crates/stores/awaken-session-store/src/lib.rs",
-]
-proof_harnesses = [
-  "session_identity_and_create_shapes_require_one_owned_live_row",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/session_repo.rs",

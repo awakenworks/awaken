@@ -7,16 +7,10 @@ tcb_assumptions = [
   "external.worker_host_executor_equivalence",
 ]
 evidence = [
-  "crates/contract/awaken-acp-contract/src/lib.rs",
-  "crates/contract/awaken-worker-contract/src/capability_agreement.rs",
   "crates/contract/awaken-worker-contract/src/observation.rs",
   "crates/bin/awaken-cli/src/live_runtime_capabilities.rs",
   "crates/server/awaken-session-executor/src/acp_backend.rs",
   "crates/server/awaken-session-executor/src/acp_provision.rs",
-]
-proof_harnesses = [
-  "acp_capability_is_detected_exactly_after_a_verified_observation",
-  "incompatible_capability_evidence_never_recovers_to_available",
 ]
 production_entrypoints = [
   "crates/contract/awaken-acp-contract/src/lib.rs",

@@ -4,10 +4,6 @@ status = "model_linked"
 tcb_assumptions = []
 evidence = [
   "formal/tla/RuntimeSystemProof.tla",
-  "crates/contract/awaken-agent-contract/src/agent/delegation.rs",
-]
-proof_harnesses = [
-  "every_relationship_effect_has_one_documented_precondition",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/agent/delegation.rs",

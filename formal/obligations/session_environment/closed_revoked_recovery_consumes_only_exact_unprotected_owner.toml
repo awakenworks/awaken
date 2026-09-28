@@ -5,15 +5,11 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/SessionEnvironmentProjection.tla",
   "formal/tla/SessionEnvironmentProjection.cfg",
-  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle.rs",
   "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",
   "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/tests.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/projection_synchronizer.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization.rs",
   "scripts/ci/check_formal_mutations.py",
-]
-proof_harnesses = [
-  "closed_environment_recovery_consumes_only_rebuildable_owner_classes",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/host/session/environment_lifecycle.rs",

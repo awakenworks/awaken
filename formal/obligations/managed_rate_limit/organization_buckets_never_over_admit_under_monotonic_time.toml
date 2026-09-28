@@ -4,15 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
-evidence = [
-  "crates/server/awaken-protocol-managed/src/rate_limit.rs",
-]
-proof_harnesses = [
-  "organization_bucket_refill_is_exact_and_bounded",
-  "organization_bucket_saturated_refill_is_canonical_and_bounded",
-  "organization_bucket_refill_clamp_preserves_capacity_invariant",
-  "organization_bucket_consumption_is_exact_and_non_over_admitting",
-]
+evidence = []
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/rate_limit.rs",
 ]

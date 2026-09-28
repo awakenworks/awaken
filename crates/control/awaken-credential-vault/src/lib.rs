@@ -670,6 +670,7 @@ mod verification {
     /// The canonical authorization projection has no endpoint-to-provider
     /// fallback: endpoint scope binds both axes, provider scope binds its
     /// provider, and malformed or generic shapes always deny.
+    /// @obligation credential.provider_scope_widening_requires_exact_revision_provider_and_endpoint
     #[kani::proof]
     #[kani::unwind(5)]
     fn provider_scope_never_widens_endpoint_scope() {
@@ -706,6 +707,7 @@ mod verification {
         }
     }
 
+    /// @obligation credential_pool.disabled_member_is_ineligible
     #[kani::proof]
     fn disabled_credential_pool_members_are_never_eligible() {
         let state = match kani::any::<u8>() % 3 {
@@ -718,6 +720,7 @@ mod verification {
         assert!(!member_is_eligible(false, state));
     }
 
+    /// @obligation credential_pool.cooldown_boundary_is_exact
     #[kani::proof]
     fn credential_cooldown_boundary_is_exact_and_inclusive() {
         let deadline = kani::any::<u64>();
@@ -726,6 +729,7 @@ mod verification {
         assert_eq!(state.is_available(), now >= deadline);
     }
 
+    /// @obligation credential_pool.exhausted_member_is_unavailable
     #[kani::proof]
     fn exhausted_credentials_are_unavailable_at_every_time() {
         let state = availability_at(true, Some(kani::any()), kani::any());
@@ -733,6 +737,7 @@ mod verification {
         assert!(!state.is_available());
     }
 
+    /// @obligation credential_pool.empty_eligible_set_fails_closed
     #[kani::proof]
     fn a_pool_with_no_enabled_available_member_fails_closed() {
         let enabled = [kani::any::<bool>(), kani::any(), kani::any()];

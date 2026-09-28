@@ -364,6 +364,7 @@ const fn registration_operation(archived: bool) -> EnvironmentRegistrationOperat
 mod registration_intent_proofs {
     use super::*;
 
+    /// @obligation environment.registration_intent_is_atomic_recoverable_and_idempotent
     #[kani::proof]
     fn environment_registration_intent_is_exact_idempotent_and_recoverable() {
         // Cause/effect table: C1 the committed Environment is active/archived;

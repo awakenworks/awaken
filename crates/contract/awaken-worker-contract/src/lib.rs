@@ -93,6 +93,7 @@ mod verification {
         }
     }
 
+    /// @obligation worker.accepted_protocol_version_is_inside_advertised_range
     #[kani::proof]
     fn accepted_version_is_inside_worker_range() {
         let min = kani::any::<u32>();
@@ -140,6 +141,7 @@ mod verification {
         }
     }
 
+    /// @obligation worker.non_ready_state_never_accepts_work
     #[kani::proof]
     fn non_ready_worker_never_accepts_work() {
         let state = match kani::any::<u8>() % 4 {
@@ -151,6 +153,7 @@ mod verification {
         assert!(!state.accepts_work());
     }
 
+    /// @obligation worker.sandbox_tool_recovery_is_a_hard_claim_axis
     #[kani::proof]
     fn sandbox_tool_recovery_claim_axis_is_exact_and_non_widening() {
         use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode};
@@ -179,6 +182,7 @@ mod verification {
         );
     }
 
+    /// @obligation worker.sandbox_tool_recovery_is_a_hard_claim_axis
     #[kani::proof]
     fn manifest_recovery_mapping_accepts_only_the_exact_installed_capability() {
         let advertised = symbolic_recovery_capability();
@@ -189,6 +193,7 @@ mod verification {
         );
     }
 
+    /// @obligation worker.readiness_is_probe_independent_but_dynamic_evidence_gates_claim
     #[kani::proof]
     fn dynamic_evidence_can_only_restrict_ready_worker_admission() {
         let process_and_static_eligible = kani::any::<bool>();
@@ -219,11 +224,15 @@ mod verification {
         ));
     }
 
+    /// @obligation worker.readiness_is_probe_independent_but_dynamic_evidence_gates_claim
+    /// @obligation worker_credential.probe_failure_does_not_drain_worker
     #[kani::proof]
     fn process_readiness_after_startup_is_probe_independent() {
         assert!(process_ready_after_startup(symbolic_probe_state()));
     }
 
+    /// @obligation worker_credential.dynamic_observation_requires_exact_fact_and_half_open_lease
+    /// @obligation worker_credential.expired_observation_never_executes
     #[kani::proof]
     fn worker_dynamic_observation_requires_exact_fact_and_half_open_lease() {
         let exact_verified_fact = kani::any::<bool>();
@@ -247,6 +256,7 @@ mod verification {
         }
     }
 
+    /// @obligation worker.never_replace_rejects_every_replacement
     #[kani::proof]
     fn never_replace_rejects_every_replacement() {
         let sandbox_bound = kani::any::<bool>();
@@ -256,6 +266,7 @@ mod verification {
         ));
     }
 
+    /// @obligation worker.sandbox_continuity_requires_a_binding
     #[kani::proof]
     fn sandbox_continuity_authorizes_replacement_exactly_when_bound() {
         let sandbox_bound = kani::any::<bool>();
@@ -270,6 +281,7 @@ mod verification {
         );
     }
 
+    /// @obligation worker.same_incarnation_does_not_spend_replacement_authority
     #[kani::proof]
     fn same_incarnation_never_spends_replacement_authority() {
         let recovery = match kani::any::<u8>() % 3 {
@@ -280,6 +292,7 @@ mod verification {
         assert!(assignment_recovery_rejection(false, recovery, kani::any()).is_none());
     }
 
+    /// @obligation session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
     #[kani::proof]
     fn required_worker_capability_cannot_be_omitted() {
         let requirement_present: bool = kani::any();

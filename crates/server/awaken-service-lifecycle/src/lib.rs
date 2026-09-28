@@ -772,6 +772,8 @@ mod verification {
         assert_task_prefix(&registry.tasks, expected);
     }
 
+    /// @obligation service_lifecycle.shutdown_fences_task_registration
+    /// @kani target=lib
     #[kani::proof]
     fn shutdown_registry_fences_registration_and_transfers_exactly_once() {
         // Cause/effect graph: C1 the registry is Accepting; C2 any of three
@@ -818,6 +820,8 @@ mod verification {
         assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Complete(()));
     }
 
+    /// @obligation service_lifecycle.concurrent_shutdown_waits_for_active_drain
+    /// @kani target=lib
     #[kani::proof]
     fn concurrent_shutdown_admission_waits_for_the_active_drain() {
         // Cause/effect graph: C1 the first caller transfers the production
@@ -850,6 +854,8 @@ mod verification {
         }
     }
 
+    /// @obligation service_lifecycle.startup_wiring_is_exact_for_every_service_role
+    /// @kani target=lib
     #[kani::proof]
     fn startup_wiring_is_exact_for_every_service_role() {
         let role = symbolic_role(kani::any());
@@ -865,6 +871,8 @@ mod verification {
         assert_eq!(startup_requires(role, component), expected);
     }
 
+    /// @obligation service_lifecycle.startup_wiring_requires_every_role_owned_component
+    /// @kani target=lib
     #[kani::proof]
     fn startup_wiring_requires_every_role_owned_component() {
         let role = symbolic_role(kani::any());
@@ -878,6 +886,8 @@ mod verification {
         }
     }
 
+    /// @obligation service_lifecycle.startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
+    /// @kani target=lib
     #[kani::proof]
     fn startup_wiring_fails_closed_for_unknown_missing_or_extra_authority() {
         let role_discriminant: u8 = kani::any();
@@ -891,6 +901,8 @@ mod verification {
         }
     }
 
+    /// @obligation assembly_role.process_role_projects_exact_startup_authority
+    /// @kani target=lib
     #[kani::proof]
     fn process_role_projects_exact_startup_authority() {
         let role = symbolic_process_role(kani::any());
@@ -907,6 +919,8 @@ mod verification {
         assert_eq!(role.owns_startup_component(component), expected);
     }
 
+    /// @obligation assembly_role.worker_never_acquires_service_startup_or_migration_authority
+    /// @kani target=lib
     #[kani::proof]
     fn worker_never_acquires_service_startup_or_local_mount_authority() {
         let component = symbolic_component(kani::any());
@@ -915,6 +929,8 @@ mod verification {
         assert!(!ProcessRole::Worker.mounts_managed_runtime());
     }
 
+    /// @obligation assembly_role.local_managed_mount_requires_exact_local_worker_component
+    /// @kani target=lib
     #[kani::proof]
     fn local_managed_mount_is_exactly_the_local_worker_component() {
         let role = symbolic_process_role(kani::any());

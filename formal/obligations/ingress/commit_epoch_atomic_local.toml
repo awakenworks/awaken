@@ -8,13 +8,9 @@ evidence = [
   "formal/tla/RunIngress.tla",
   "formal/tla/CommitEpochGuard.tla",
   "formal/tla/CommitEpochGuard.cfg",
-  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
   "crates/server/awaken-dispatch/src/commit_fence.rs",
   "crates/server/awaken-dispatch/tests/sqlite_dispatch.rs",
   "crates/server/awaken-dispatch/tests/durable_postgres.rs",
-]
-proof_harnesses = [
-  "commit_epoch_completion_requires_observed_release",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",

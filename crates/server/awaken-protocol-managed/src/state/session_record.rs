@@ -115,6 +115,10 @@ pub(super) fn decide_projection_publish(
 }
 
 #[cfg(kani)]
+/// @obligation session.runtime_projection_equal_source_and_content_is_a_read_without_cache_write_or_broadcast
+/// @obligation session.runtime_projection_stale_writer_never_rolls_back_visible_result
+/// @obligation session.runtime_projection_success_advances_result_and_checkpoint_to_the_observed_source_prefix
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 fn projection_publish_decision_is_total_exact_and_fail_closed() {
     // Decision table causes: C1 cache CAS matches; C2 candidate dominates every

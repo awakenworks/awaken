@@ -5,12 +5,8 @@ tcb_assumptions = [
   "external.database_engine_correctness",
 ]
 evidence = [
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
   "crates/server/awaken-session-application/src/application.rs",
   "crates/server/awaken-session-executor/src/host/session/environment_realization.rs",
-]
-proof_harnesses = [
-  "terminal_environment_receipt_is_admitted_only_during_the_fenced_join",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",

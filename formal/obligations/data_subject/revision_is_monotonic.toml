@@ -6,12 +6,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/AggregateCAS.tla",
-  "crates/control/awaken-data-subject-application/src/lib.rs",
   "crates/stores/awaken-data-subject-store/src/sqlite.rs",
   "crates/stores/awaken-data-subject-store/src/postgres.rs",
-]
-proof_harnesses = [
-  "revision_advance_is_strict_or_explicitly_exhausted",
 ]
 production_entrypoints = [
   "crates/control/awaken-data-subject-application/src/lib.rs",

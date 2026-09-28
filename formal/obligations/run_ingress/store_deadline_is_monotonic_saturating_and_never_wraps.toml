@@ -4,12 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.database_engine_correctness",
 ]
-evidence = [
-  "crates/server/awaken-dispatch/src/clock.rs",
-]
-proof_harnesses = [
-  "store_deadline_is_monotonic_saturating_and_never_wraps",
-]
+evidence = []
 production_entrypoints = [
   "crates/server/awaken-dispatch/src/clock.rs",
 ]

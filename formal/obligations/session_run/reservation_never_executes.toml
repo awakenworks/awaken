@@ -6,16 +6,11 @@ evidence = [
   "formal/tla/SessionRunProtocol.tla",
   "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",
   "crates/server/awaken-dispatch/src/dispatch.rs",
-  "crates/server/awaken-session-executor/src/host/session_ctx.rs",
   "crates/server/awaken-session-executor/src/host/session.rs",
   "crates/server/awaken-session-executor/src/managed_host_composition.rs",
   "crates/server/awaken-session-executor/src/host/tests.rs",
   "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
   "crates/server/awaken-coordinator/tests/managed_dream_e2e.rs",
-]
-proof_harnesses = [
-  "coordination_envelope_never_satisfies_execution_cache_admission",
-  "runtime_environment_admission_is_total_and_coordination_never_borrows",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/run_dispatch.rs",

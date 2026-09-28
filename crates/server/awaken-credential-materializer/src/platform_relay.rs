@@ -82,6 +82,7 @@ mod verification {
 
     /// Proves the local gate's complete product space has exactly one admitted
     /// boundary/mechanism pair, while construction preserves the opaque domain.
+    /// @obligation credential.platform_relay_requires_exact_holder_workspace_usage_and_target
     #[kani::proof]
     fn platform_relay_local_gate_admits_only_exact_platform_relay() {
         let boundary = arbitrary_boundary(kani::any());

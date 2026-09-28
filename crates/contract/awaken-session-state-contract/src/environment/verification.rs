@@ -1,5 +1,6 @@
 use super::*;
 
+/// @obligation session_environment.source_disposal_requires_a_verified_checkpoint
 #[kani::proof]
 fn source_preparation_and_disposal_require_distinct_durable_phases() {
     let phase = match kani::any::<u8>() % 4 {
@@ -32,6 +33,7 @@ fn source_preparation_and_disposal_require_distinct_durable_phases() {
     }
 }
 
+/// @obligation session_environment.quiescence_receipt_requires_exact_operation_epoch_mcp_set_and_zero_live_effects
 #[kani::proof]
 fn quiescence_receipt_requires_exact_operation_epoch_mcp_set_and_zero_live_effects() {
     let effect_matches = kani::any::<bool>();
@@ -56,6 +58,7 @@ fn quiescence_receipt_requires_exact_operation_epoch_mcp_set_and_zero_live_effec
     );
 }
 
+/// @obligation session_environment.checkpoint_receipt_requires_every_immutable_generation_axis
 #[kani::proof]
 fn checkpoint_receipt_requires_every_immutable_generation_axis() {
     let effect_matches = kani::any::<bool>();
@@ -80,6 +83,7 @@ fn checkpoint_receipt_requires_every_immutable_generation_axis() {
     );
 }
 
+/// @obligation session_environment.source_disposal_requires_a_verified_checkpoint
 #[kani::proof]
 fn source_disposal_receipt_requires_exact_binding_and_termination() {
     let effect_matches = kani::any::<bool>();
@@ -98,6 +102,7 @@ fn source_disposal_receipt_requires_exact_binding_and_termination() {
     );
 }
 
+/// @obligation session_environment.restore_receipt_requires_exact_checkpoint_and_nonempty_binding
 #[kani::proof]
 fn restore_receipt_requires_exact_checkpoint_and_nonempty_binding() {
     let effect_matches = kani::any::<bool>();

@@ -8,21 +8,10 @@ evidence = [
   "crates/server/awaken-session-application/src/creation.rs",
   "crates/server/awaken-session-application/src/event_batches.rs",
   "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/contract/awaken-session-state-contract/src/session_repo/persisted_session.rs",
-  "crates/server/awaken-session-application/src/activity.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
   "crates/contract/awaken-session-event-contract/src/lib.rs",
-  "crates/contract/awaken-session-event-contract/src/dispatch_settlement.rs",
   "crates/server/awaken-session-application/src/coordination.rs",
   "crates/server/awaken-session-application/src/tests/event_batches.rs",
   "crates/server/awaken-dispatch-http/src/worker_dispatch.rs",
-]
-proof_harnesses = [
-  "initial_event_plan_is_installed_only_on_the_complete_fresh_root",
-  "session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed",
-  "exact_dispatch_settlement_is_terminal_or_awaiting_only",
-  "user_event_processing_requires_exact_applied_dispatch_and_activity_settlement",
-  "retained_input_idling_is_exactly_settled_or_only_blocked_users",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/creation.rs",

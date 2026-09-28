@@ -172,6 +172,7 @@ pub const fn deadline_has_passed(deadline_ms: Option<u64>, now_ms: u64) -> bool 
 }
 
 #[cfg(kani)]
+/// @obligation run_ingress.a_deadline_passes_only_strictly_after_it_is_reached
 #[kani::proof]
 fn a_deadline_passes_only_strictly_after_it_is_reached() {
     // Cause/effect decision table: C1 the row carries a deadline or none;
@@ -210,6 +211,7 @@ pub const fn decide_lease_renewal(
 }
 
 #[cfg(kani)]
+/// @obligation run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
 #[kani::proof]
 fn lease_renewal_observation_preserves_claim_and_attempt_fences() {
     // Cause/effect decision table: C1=exact current mutation claim;
@@ -271,6 +273,7 @@ impl AttemptAdmission {
 }
 
 #[cfg(kani)]
+/// @obligation session_execution.pre_start_cancel_ack_requires_fresh_slot_install
 #[kani::proof]
 fn pre_start_no_effect_ack_requires_fresh_install_admission() {
     // Cause/effect decision table: C1 admission installed an empty slot; C2 it
@@ -373,6 +376,7 @@ pub const fn session_run_replacement_candidate_is_safe(state: DispatchState) -> 
 mod session_replacement_proofs {
     use super::{DispatchState, session_run_replacement_candidate_is_safe};
 
+    /// @obligation run_ingress.dispatch_transition_is_claim_fenced_exact_terminal_and_cancel_absorbing
     #[kani::proof]
     fn only_awaiting_or_already_superseded_is_replacement_safe() {
         let tag: u8 = kani::any();

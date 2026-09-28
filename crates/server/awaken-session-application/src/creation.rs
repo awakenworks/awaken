@@ -228,6 +228,10 @@ const fn session_create_effect_plan(
 mod create_effect_gate_verification {
     use super::*;
 
+    /// @obligation session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+    /// @obligation session_creation.atomic_complete_root_precedes_every_projection
+    /// @obligation session_creation.exact_replay_conflict_and_tombstone_are_closed
+    /// @obligation session_creation.repository_receipt_is_the_only_post_create_effect_gate
     #[kani::proof]
     fn only_an_applied_awaited_create_may_enter_post_create_effects() {
         // Causes: C1 repository receipt is Applied/Replayed; C2 caller awaits
@@ -262,6 +266,8 @@ mod create_effect_gate_verification {
         }
     }
 
+    /// @obligation session.internal_create_accepts_only_a_complete_durable_root_and_recovers_without_a_job_store
+    /// @obligation session_creation.repository_receipt_is_the_only_post_create_effect_gate
     #[kani::proof]
     fn nonterminal_control_failures_only_replay_the_durable_create_root() {
         // Causes: C1 contract disposition is NotReady/Retryable/Terminal.
@@ -285,6 +291,7 @@ mod create_effect_gate_verification {
         );
     }
 
+    /// @obligation session_creation.exact_replay_conflict_and_tombstone_are_closed
     #[kani::proof]
     fn create_replay_conflict_and_terminal_occupation_are_exact_and_closed() {
         // Cause/effect table: C1 crosses every durable execution state; C2 the

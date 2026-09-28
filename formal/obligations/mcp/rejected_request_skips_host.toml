@@ -4,10 +4,6 @@ status = "model_linked"
 tcb_assumptions = []
 evidence = [
   "formal/tla/McpServer.tla",
-  "crates/server/awaken-mcp-server-core/src/formal.rs",
-]
-proof_harnesses = [
-  "rejected_requests_never_enter_the_host",
 ]
 production_entrypoints = [
   "crates/server/awaken-mcp-server-core/src/formal.rs",

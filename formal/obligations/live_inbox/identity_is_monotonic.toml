@@ -4,10 +4,6 @@ status = "model_linked"
 tcb_assumptions = []
 evidence = [
   "formal/tla/LiveInbox.tla",
-  "crates/contract/awaken-runtime-contract/src/live_inbox.rs",
-]
-proof_harnesses = [
-  "live_inbox_identity_advances_strictly_or_exhausts",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/live_inbox.rs",

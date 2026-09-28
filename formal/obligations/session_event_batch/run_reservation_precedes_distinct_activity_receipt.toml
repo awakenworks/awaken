@@ -7,13 +7,7 @@ evidence = [
   "formal/tla/SessionActivityProof.tla",
   "crates/server/awaken-session-application/src/run_admission.rs",
   "crates/server/awaken-session-application/src/tests/event_batches.rs",
-  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
-  "crates/server/awaken-session-application/src/activity.rs",
   "crates/server/awaken-session-application/src/tests/run_admission.rs",
-]
-proof_harnesses = [
-  "session_run_reservation_binds_exactly_one_nonzero_activity_receipt",
-  "session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/run_admission.rs",

@@ -10,10 +10,6 @@ evidence = [
   "formal/tla/RemoteAttempt.tla",
   "crates/server/awaken-run-executor-a2a/src/executor.rs",
   "crates/server/awaken-run-executor-a2a/src/lib.rs",
-  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
-]
-proof_harnesses = [
-  "remote_operation_route_is_total_and_fail_closed",
 ]
 production_entrypoints = [
   "crates/server/awaken-run-executor-a2a/src/executor.rs",

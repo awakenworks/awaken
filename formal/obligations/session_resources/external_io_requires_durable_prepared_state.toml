@@ -7,7 +7,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/SessionResourceActivation.tla",
   "formal/tla/SessionResourceActivation.cfg",
-  "crates/contract/awaken-session-state-contract/src/resource_activation.rs",
   "crates/server/awaken-session-application/src/resource_reconciliation.rs",
   "crates/server/awaken-session-application/src/resource_reconciliation/materialization_authorization.rs",
   "crates/server/awaken-session-executor/src/managed_resource_projection.rs",
@@ -18,9 +17,6 @@ evidence = [
   "crates/resources/awaken-resource-worker-http/src/skill_bundle_transport.rs",
   "crates/server/awaken-session-application/src/tests/realization.rs",
   "crates/server/awaken-session-application/src/tests/resource_resume.rs",
-]
-proof_harnesses = [
-  "resource_materialization_selects_only_active_or_pending_root_generation",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/resource_activation.rs",

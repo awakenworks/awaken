@@ -7,10 +7,6 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/CircuitBreaker.tla",
   "crates/runtime/awaken-runtime/src/circuit_breaker.rs",
-  "crates/runtime/awaken-runtime/src/circuit_breaker/kernel.rs",
-]
-proof_harnesses = [
-  "circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-runtime/src/circuit_breaker.rs",

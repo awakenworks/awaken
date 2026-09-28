@@ -132,6 +132,8 @@ fn read_ahead_admits(frames: usize, bytes: usize, incoming: usize) -> bool {
 
 #[cfg(kani)]
 mod proofs {
+    /// @obligation acp.read_ahead_admission_is_bounded_without_arithmetic_overflow
+    /// @kani features=real-acp
     #[kani::proof]
     fn acp_read_ahead_admission_never_overflows_or_exceeds_either_bound() {
         let frames: usize = kani::any();

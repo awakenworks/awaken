@@ -4,12 +4,8 @@ status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
   "formal/tla/ToolResultProtocol.tla",
-  "crates/contract/awaken-runtime-contract/src/resume.rs",
   "crates/server/awaken-protocol-ai-sdk/src/router.rs",
   "scripts/ci/formal_event_batch_mutations.py",
-]
-proof_harnesses = [
-  "resume_validator_preserves_complete_binding_decision_table",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/resume.rs",

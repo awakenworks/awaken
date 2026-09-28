@@ -8,12 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerReplacement.tla",
-  "crates/contract/awaken-worker-contract/src/placement.rs",
   "crates/contract/awaken-worker-contract/src/lib.rs",
   "crates/server/awaken-dispatch/tests/any_store.rs",
-]
-proof_harnesses = [
-  "placement_extension_admits_only_allowed_unique_identity",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/placement.rs",

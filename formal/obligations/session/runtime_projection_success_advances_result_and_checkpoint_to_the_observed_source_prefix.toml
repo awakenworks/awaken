@@ -10,12 +10,9 @@ evidence = [
   "formal/tla/SessionRuntimeProjection.cfg",
   "formal/tla/ManagedProjectionPublish.tla",
   "formal/tla/ManagedProjectionPublish.cfg",
-  "crates/server/awaken-protocol-managed/src/state/session_record.rs",
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
   "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
   "formal/tla/SessionRuntimeProjectionOpening.cfg",
-  "crates/server/awaken-protocol-managed/src/state/events/committed_projection/canonical_order.rs",
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection/interval_aggregate_projection.rs",
   "formal/tla/ManagedProjectionPublishInputs.cfg",
   "formal/tla/ManagedProjectionPublishTopology.cfg",
@@ -23,12 +20,6 @@ evidence = [
   "crates/server/awaken-protocol-managed/tests/adapter.rs",
   "crates/server/awaken-protocol-managed/src/state/session_record/event_page_index.rs",
   "crates/server/awaken-protocol-managed/src/state/events/tests/pagination.rs",
-]
-proof_harnesses = [
-  "projection_refresh_failure_stutters_and_success_preserves_one_pair",
-  "projection_source_stamp_is_exact_for_the_complete_observed_thread_prefix",
-  "projection_publish_decision_is_total_exact_and_fail_closed",
-  "canonical_event_order_never_depends_on_wall_time",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/state/session_record.rs",

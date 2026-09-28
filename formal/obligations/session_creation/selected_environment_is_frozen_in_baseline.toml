@@ -6,10 +6,6 @@ evidence = [
   "crates/server/awaken-session-application/src/application.rs",
   "crates/server/awaken-session-application/src/run_admission.rs",
   "crates/server/awaken-session-application/src/tests/creation.rs",
-  "crates/contract/awaken-session-configuration-contract/src/baseline.rs",
-]
-proof_harnesses = [
-  "resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-application/src/application.rs",

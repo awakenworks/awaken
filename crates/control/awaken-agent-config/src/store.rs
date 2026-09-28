@@ -696,6 +696,9 @@ pub trait ScopedConfigRegistry: Send + Sync {
 }
 
 #[cfg(kani)]
+/// @obligation resource_binding.draft_audit_and_effect_are_atomic
+/// @obligation resource_binding.pending_effect_survives_until_readback
+/// @obligation resource_binding.replay_is_idempotent_and_identity_stable
 #[kani::proof]
 fn management_effect_confirmation_requires_positive_exact_readback() {
     // R1 invalid signed revision => reject even exact readback. R2 positive
@@ -711,6 +714,8 @@ fn management_effect_confirmation_requires_positive_exact_readback() {
 }
 
 #[cfg(kani)]
+/// @obligation resource_binding.draft_audit_and_effect_are_atomic
+/// @obligation resource_binding.replay_is_idempotent_and_identity_stable
 #[kani::proof]
 fn management_effect_enqueue_is_exact_replay_or_absent_insert() {
     // Causes: C1 the effect revision is positive; C2 a pending effect exists;
@@ -822,6 +827,7 @@ mod effect_receipt_tests {
 }
 
 #[cfg(kani)]
+/// @obligation audit.call_identity_is_stable
 #[kani::proof]
 fn management_audit_call_identity_is_stable_and_tuple_exact() {
     // Causes: C1 exact retry repeats both opaque coordinates; C2 only tool
@@ -844,6 +850,10 @@ fn management_audit_call_identity_is_stable_and_tuple_exact() {
 }
 
 #[cfg(kani)]
+/// @obligation audit.business_action_follows_audit_record
+/// @obligation audit.stable_call_replay_does_not_repeat_business_write
+/// @obligation management_http.no_business_write_without_durable_audit
+/// @obligation resource_binding.draft_audit_and_effect_are_atomic
 #[kani::proof]
 fn management_audit_admission_requires_exact_intent_and_closed_state() {
     // Cause/effect rules: A0 absent => reject; A1 any changed record => reject;
@@ -999,6 +1009,7 @@ mod audit_admission_tests {
 }
 
 #[cfg(kani)]
+/// @obligation config.publication_revision_is_scoped_by_execution_target_and_exact_replay
 #[kani::proof]
 fn publication_revision_decision_is_target_safe_fail_closed_and_replay_first() {
     let proposed_target: u8 = kani::any();
@@ -1044,6 +1055,7 @@ fn publication_revision_decision_is_target_safe_fail_closed_and_replay_first() {
 }
 
 #[cfg(kani)]
+/// @obligation config_activation.stale_publication_never_installs
 #[kani::proof]
 fn publication_registration_requires_exact_commit_receipt() {
     // Causes: C1 the repository returned Committed/Conflict; C2 a committed

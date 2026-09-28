@@ -6,11 +6,7 @@ evidence = [
   "formal/tla/AcpProjectedBindingUse.tla",
   "formal/tla/AcpProjectedBindingUse.cfg",
   "scripts/ci/formal_credential_mutations.py",
-  "crates/server/awaken-run-executor-acp/src/host/projected_bindings.rs",
   "crates/bin/awaken-worker/src/bootstrap.rs",
-]
-proof_harnesses = [
-  "projected_binding_use_rechecks_the_exact_projection_after_probe",
 ]
 production_entrypoints = [
   "crates/server/awaken-run-executor-acp/src/host/projected_bindings.rs",

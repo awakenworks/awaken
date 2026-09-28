@@ -100,6 +100,7 @@ pub(super) fn frozen_resource_transition_install_decision(
 }
 
 #[cfg(kani)]
+/// @obligation session_resources.install_replacement_requires_newer_or_unattempted_authority_amendment
 #[kani::proof]
 fn session_resource_replacement_requires_newer_or_authority_amended_generation() {
     use FrozenResourceTransitionInstallDecision::{Reject, Replace, Stage};

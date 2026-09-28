@@ -12,10 +12,7 @@ evidence = [
   "formal/tla/SessionRunProtocol.tla",
   "formal/tla/SessionRunProtocol.cfg",
   "docs/adr/0075-unified-managed-session-worker-execution.md",
-  "crates/contract/awaken-session-execution-contract/src/run_admission.rs",
   "crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
-  "crates/server/awaken-dispatch/src/dispatch.rs",
   "crates/server/awaken-dispatch/src/worker.rs",
   "crates/server/awaken-dispatch/src/pool.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
@@ -25,11 +22,6 @@ evidence = [
   "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
   "scripts/ci/check_formal.sh",
   "scripts/ci/pg_tests.sh",
-]
-proof_harnesses = [
-  "session_run_reservation_binds_exactly_one_nonzero_activity_receipt",
-  "dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows",
-  "dispatch_claim_preserves_every_frozen_binding",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-execution-contract/src/run_admission.rs",

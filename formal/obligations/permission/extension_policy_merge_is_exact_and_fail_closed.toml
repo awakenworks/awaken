@@ -2,15 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/runtime/awaken-ext-permission/src/lib.rs",
-]
-proof_harnesses = [
-  "retired_mode_compiles_into_one_exact_unmatched_default",
-  "matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority",
-  "a_matching_deny_decides_the_whole_fold_whatever_else_matched",
-  "the_fold_returns_a_behavior_some_matching_rule_actually_carried",
-]
+evidence = []
 production_entrypoints = [
   "crates/runtime/awaken-ext-permission/src/lib.rs",
 ]

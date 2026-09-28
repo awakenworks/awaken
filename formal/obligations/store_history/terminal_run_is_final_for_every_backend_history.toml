@@ -7,15 +7,11 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/StoreHistory.tla",
   "formal/tla/StoreHistory.cfg",
-  "crates/contract/awaken-agent-contract/src/agent/run.rs",
   "crates/stores/awaken-store-conformance/src/lib.rs",
   "crates/runtime/awaken-store-inmem/src/lib.rs",
   "crates/stores/awaken-store-fs/src/lib.rs",
   "crates/stores/awaken-store-sqlite/src/lib.rs",
   "crates/stores/awaken-store-postgres/src/lib.rs",
-]
-proof_harnesses = [
-  "ended_is_absorbing_for_every_next_state",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/agent/run.rs",

@@ -5,7 +5,6 @@ tcb_assumptions = [
   "external.async_runtime_synchronization_and_scheduling",
 ]
 evidence = [
-  "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs",
   "crates/contract/awaken-runtime-contract/src/model_operation.rs",
   "crates/runtime/awaken-runtime/src/engine/inference.rs",
   "crates/runtime/awaken-runtime/src/engine/tests.rs",
@@ -13,9 +12,6 @@ evidence = [
   "crates/runtime/awaken-provider-genai/src/lib.rs",
   "crates/runtime/awaken-provider-genai/src/openai_responses.rs",
   "crates/runtime/awaken-provider-genai/tests/stall.rs",
-]
-proof_harnesses = [
-  "model_budget_requires_positive_response_before_watchdog",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs",

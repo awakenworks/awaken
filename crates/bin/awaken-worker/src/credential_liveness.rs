@@ -187,6 +187,7 @@ impl WorkerObservationCache {
 }
 
 #[cfg(kani)]
+/// @obligation worker_credential.heartbeat_observations_are_one_atomic_batch
 #[kani::proof]
 fn observation_batch_is_single_generation_and_never_wraps() {
     // Causes: C1 a current cache generation; C2 one completed credential and

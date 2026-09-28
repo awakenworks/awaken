@@ -80,6 +80,7 @@ impl SessionRuntimeSlot {
 }
 
 #[cfg(kani)]
+/// @obligation session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
 #[kani::proof]
 fn projection_revision_admission_is_monotonic_and_exact() {
     // C1 prior receipt exists; C2 incoming root revision orders before/equal/after;

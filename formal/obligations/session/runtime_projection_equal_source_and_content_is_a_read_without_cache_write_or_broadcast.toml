@@ -5,15 +5,11 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/ManagedProjectionPublish.tla",
   "formal/tla/ManagedProjectionPublish.cfg",
-  "crates/server/awaken-protocol-managed/src/state/session_record.rs",
   "crates/server/awaken-protocol-managed/src/state/events/committed_projection/publication.rs",
   "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
   "formal/tla/ManagedProjectionPublishInputs.cfg",
   "formal/tla/ManagedProjectionPublishTopology.cfg",
   "crates/server/awaken-protocol-managed/src/state/session_record/tests.rs",
-]
-proof_harnesses = [
-  "projection_publish_decision_is_total_exact_and_fail_closed",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/state/session_record.rs",

@@ -7,7 +7,6 @@ import io
 import json
 import os
 import re
-import runpy
 import shlex
 import shutil
 import tempfile
@@ -297,203 +296,124 @@ class ProfileTests(unittest.TestCase):
             profile_result(features, coverage)
 
     def test_kani_loop_override_cannot_disable_or_redirect_checks(self):
-        # L1 each live literal positive memcmp override is admitted by the CLI
-        # parity test below. L2 independently mutate each actual run_kani command:
-        # missing opt-in, nonliteral/zero/negative bound, foreign loop, disabled
-        # check or trailing option => reject before source inventory. Another
-        # valid command must not hide a bad one. Reuse the checker's continuation
-        # normalization; multiple independent owners may use the same override.
-        root = Path(__file__).resolve().parents[2]
-        gate = root / "scripts/ci/check_formal.sh"
-        checker = root / "scripts/ci/check_formal_coverage.py"
-        source = gate.read_text().replace("\\\n", " ")
-        original_read = Path.read_text
-        override = "--cbmc-args --unwindset memcmp.0:16"
-        invocations = [line for line in source.splitlines()
-                       if line.lstrip().startswith("run_kani ") and override in line]
-        self.assertTrue(invocations)
-        for invocation in invocations:
-            self.assertEqual(invocation.count(override), 1)
-            self.assertEqual(source.count(invocation), 1)
-            candidates = [("missing-opt-in", invocation.replace("-Z unstable-options", "", 1))]
-            for replacement in (
-                "--cbmc-args --no-unwinding-checks",
-                "--cbmc-args --unwindset memcmp.0:0",
-                "--cbmc-args --unwindset memcmp.0:-1",
-                "--cbmc-args --unwindset memcmp.0:$BOUND",
-                "--cbmc-args --unwindset foreign.0:16",
-                override + " --no-assertions",
+        # L1 a harness tagged with a real memcmp profile is planned with exactly
+        # that profile's argv. L2 a tag cannot carry Kani or CBMC options: a
+        # check-disabling flag, a nonliteral/zero/foreign loop, a trailing
+        # option or an unknown key is refused before any batch exists -- the
+        # only option source is an audited profile, never the tag text.
+        import formal_plan
+        from formal_kani_options import serialize
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "crates/a/src").mkdir(parents=True)
+            (root / "crates/a/Cargo.toml").write_text('[package]\nname = "a"\nversion = "0.0.0"\n')
+            source = root / "crates/a/src/lib.rs"
+
+            def tagged(tag: str) -> None:
+                source.write_text(f"#[cfg(kani)]\n/// @obligation run.safe\n/// @kani {tag}\n#[kani::proof]\nfn proof() {{}}\n")
+
+            tagged("profile=unwind-memcmp-2-v1")
+            [batch] = formal_plan.batches(root, "full")
+            self.assertEqual(batch.argv(), ["a", *serialize("unwind-memcmp-2-v1", "a", ["--exact", "--harness", "proof"])], "L1")
+            for mutation in (
+                "profile=unwind-memcmp-2-v1 --no-unwinding-checks",
+                "profile=unwind-memcmp-2-v1 cbmc-args=--no-assertions",
+                "profile=unwind-memcmp-0-v1",
+                "profile=$PROFILE",
+                "profile=unwind-memcmp-2-v1 profile=solver-z3-v1",
+                "features=x;--no-assertions",
+                "unwindset=foreign.0:16",
             ):
-                candidates.append((replacement, invocation.replace(override, replacement, 1)))
-            for mutation, replacement in candidates:
-                candidate = source.replace(invocation, replacement, 1)
-                def read(path, *args, **kwargs):
-                    return candidate if path == gate else original_read(path, *args, **kwargs)
-                with self.subTest(package=invocation.split()[1], mutation=mutation), \
-                        mock.patch.object(Path, "read_text", read), \
-                        mock.patch.object(sys, "argv", [str(checker)]), \
-                        contextlib.redirect_stderr(io.StringIO()), \
-                        self.assertRaises(SystemExit) as raised:
-                    runpy.run_path(str(checker), run_name="__main__")
-                self.assertEqual(raised.exception.code, 1)
+                tagged(mutation)
+                with self.subTest(mutation=mutation), self.assertRaises(formal_plan.PlanError):
+                    formal_plan.batches(root, "full")
 
     def test_checked_profiles_bind_runtime_and_checker(self):
-        # Cause/effect rules: P1 known profile + exact package + nonempty unique
-        # allowed harnesses => one canonical argv, including the profile's fixed
-        # solver and each literal loop bound. P2 unknown/dynamic profile, foreign
-        # package/harness, duplicate/empty selection, appended check/solver flags
-        # or repeated profile => reject before Cargo. P3 missing opt-in, changed
-        # solver, loop, bound, order, count or flags => reject the raw argv too.
-        # P4 the new fixed-solver harness cannot drop swap/solver and escape via
-        # legacy memcmp-only acceptance, even under the wrong package. P5 qualified
-        # Activity argv and all existing nonreserved memcmp calls stay accepted.
-        # Execute the actual shell function with only its Cargo/deadline port
-        # replaced by an argument recorder: rejection must return 2, never be
-        # lost inside process substitution or launch a default solver.
+        # Cause/effect rules: P1 a known profile serializes one canonical argv
+        # around the harness filter -- `-Z unstable-options`, its fixed solver,
+        # the filter, then its literal loop bounds; a solver-only profile is
+        # the solver and the filter. P2 an unknown profile, or a
+        # package-bound profile used from another package, is refused before
+        # any Cargo call. P3 the pinned argv of every profile: a changed loop,
+        # bound, order or solver changes the digest, so it cannot drift silently.
+        # P4 the actual shell runner hands every planned batch to Cargo verbatim
+        # (only its Cargo/deadline port replaced by an argument recorder); a
+        # failing or empty plan starts no batch and fails the gate.
         import formal_kani_options as options
         root = Path(__file__).resolve().parents[2]
         gate = (root / "scripts/ci/check_formal.sh").read_text()
-        runner = gate[gate.index("  run_kani() {"):gate.index("  run_kani awaken-agent-contract")]
-        # Frozen qualified hex/main-dependency argv, all allowed harnesses sorted.
-        # Only the actual Session disambiguator changed; bounds/solver/order
-        # are retained and independently audited on all seven Activity GOTOs.
-        # Digest fixtures avoid duplicating the production loop-name catalog.
-        activity_argv = {
-            # The two-admission partitions left this profile when they moved onto
-            # the two-slot member model; only the two real-B-tree bases remain.
-            "activity-admission-height-v1": "e0d02fc78c77afaa13cc05e06786f5c85f1359626a80e02d0cf61909f81be947",
-            # The terminal proof on the real set now makes one admission, not two;
-            # the two-admission terminal table moved to the two-slot model.
-            "activity-terminal-height-v1": "e02882ed1a14cd5972dc70aac464d95f507f94376573ebe1d983cad1d0f334fd",
+        frozen = {
+            "resume-validator-empty-object-v1": "9913cf92efa0308e7a7712ae6b029b1aa989a12f389e201afc3cd6008b774e39",
+            "erasure-progress-selection-v1": "4052ded580c29bca71f8cbd73a747fa1b9d85d43c709b8006fbaf5313652012d",
+            "erasure-checkpoint-successor-v1": "012c22d237f41cee1953bc1322707632f45f88c4981c0499b1f1b49645a95d91",
+            "erasure-progress-count-v1": "caf264652cf6d73a7fb457d9ce57c1eb6a31e919c0f8722511b85e59100303f5",
+            "fingerprint-fnv-hex-v1": "999182642c04b9eeb4fdff6a51aab78f91f31203383015d1e5c044481ce8e9c3",
+            "fingerprint-sha256-hex-v1": "f92d9f7a6e8af73cb22340453f27f9f73ca1ad3eba3ce2f6fdd056649064fdf0",
+            "activity-admission-height-v1": "efd7d74749d4fae65c9f888e0b7c94f074979a1b97b497b8497e7f8b084df65f",
+            "activity-terminal-height-v1": "656be82c5090279133b890987147325ce4c38eadde056584c279713b14284a53",
+            "retained-accepted-two-replay-v1": "761f6133478b066ef75c572cab15e8a5ba03b57f69be3fb672173fc3c4626a7e",
+            "unwind-memcmp-2-v1": "7a47708ca2fa05ed3db19ffd5d390f8b60287aaff91947ce238a4c182a31530b",
+            "unwind-memcmp-64-v1": "46eaff90bd3f7b0d469920c6345f769512f3c33ea4de6b29777ecd0f5e6e6588",
+            "unwind-memcmp-65-v1": "d6e88e38c1eab25178f2325c4f55ed94596a4b02999dcdf40d05d8861d15c0d6",
+            "minisat-unwind-memcmp-16-v1": "8407b4e9522cef116eac9248c14f3bc4c8dc3283572588127627ec018b5a6de6",
+            "solver-cadical-v1": "089b9f686c4cc920ae364668d934123efed8d2c59c153b0599433eb95938dc3d",
+            "solver-kissat-v1": "300a4cc29798d5984126f705cf0ff7f13b08a4f20fa31de0e8750eab2ecea038",
+            "solver-minisat-v1": "a2ad2c3fc1b6f395326c604172d2521a1d31d7b1d3d41ad2dc8d3bf4e96cc1d4",
+            "solver-z3-v1": "62e2845cd585558b237717cd6ebc4b2eb5298b83ef95a777af5c035f07ea08ee",
         }
-        # P6 the two encoder profiles pin independently qualified solvers and
-        # exact UTF-8/align bounds; the generic P2/P3 mutations below must reject
-        # every changed bound, missing loop and solver, not just malformed names.
-        # P7 the resume profile binds actual empty-payload loops and recursion
-        # symbols; the same argument mutations must reject any changed pin,
-        # bound, solver, package or harness before invoking Cargo.
-        # P8 Erasure selection/count retain fixed default-equivalent CaDiCaL
-        # and their distinct actual-GOTO payload monomorphizations. Action reuses
-        # the exact borrowed-token selection pins; its all-harness digest fixes
-        # that added binding without allowing arbitrary harnesses. The same
-        # P2/P3 matrix rejects cross-owner harnesses, dropped/changed bounds,
-        # missing solver, and fallback to the legacy memcmp-only exception.
-        # P9 successor reuses the five common actual-GOTO loops plus the old-row
-        # all loop; its exact package/harness/default solver is subjected to every
-        # P2/P3 negative control. A digest is argv qualification, not proof PASS.
-        frozen_argv = {
-            **activity_argv,
-            "resume-validator-empty-object-v1": '4d0d7c52778ea2a3e569a5af1489e874b3e3b3fc81cc76e9d70c10060974abc0',
-            'erasure-progress-selection-v1': 'cda63519e60138de09288bea3369e018f51160195fe33a2bbe4ff1b0791992db',
-            'erasure-checkpoint-successor-v1': '6f65105a983ff7e3796ac4596398a4fe20989c684a0b377cbd924419529e9bf3',
-            'erasure-progress-count-v1': '35f9880ae0c3ae92283dbf1236f5b98e8cb851c16111f01e3b3580e1fe982f45',
-            "fingerprint-fnv-hex-v1": "714ec79c46a2150f9229bb0bf5df7335fe0126e40d244aa4bb21755b273f7816",
-            "fingerprint-sha256-hex-v1": "b9d1b5eb4b805eb197237899983eba96dc2416216d089d815525d203889e0556",
-        }
-        for profile, (package, allowed, loops, solver) in options.PROFILES.items():
-            harness = sorted(allowed)[0]
-            selected = ["--checked-loop-profile", profile, "--harness", harness]
-            expanded = options.expand_options(package, selected)
-            cut = expanded.index("--cbmc-args")
-            prefix, tail = expanded[:cut], expanded[cut:]
-            self.assertTrue(options.checked_loop_override(package, prefix, tail, True))
-            self.assertEqual(expanded[-1], ",".join(f"{name}:{bound}" for name, bound in loops))
-            self.assertEqual(prefix[:4] if solver else prefix[:2],
-                             ["-Z", "unstable-options", "--solver", solver] if solver
-                             else ["-Z", "unstable-options"])
-            for names in (sorted(allowed), sorted(allowed, reverse=True)):
-                selections = [piece for name in names for piece in ("--harness", name)]
-                all_argv = options.expand_options(package, selected[:2] + selections)
-                all_cut = all_argv.index("--cbmc-args")
-                self.assertTrue(options.checked_loop_override(
-                    package, all_argv[:all_cut], all_argv[all_cut:], True))
-                self.assertEqual(all_argv[4 if solver else 2:all_cut], selections)
-                if profile in frozen_argv and names == sorted(allowed):
-                    self.assertEqual(hashlib.sha256(json.dumps(
-                        all_argv, separators=(",", ":")).encode()).hexdigest(), frozen_argv[profile])
-            invalid = [
-                ("foreign-package", "another-package", selected),
-                ("unknown-profile", package, [selected[0], "unknown", *selected[2:]]),
-                ("dynamic-profile", package, [selected[0], "$PROFILE", *selected[2:]]),
-                ("foreign-harness", package, [*selected[:3], "foreign"]),
-                ("empty", package, selected[:2]),
-                ("duplicate-harness", package, selected + selected[2:]),
-                ("duplicate-profile", package, selected + selected[:2]),
-            ]
-            for flag in ("--no-unwinding-checks", "--no-assertions", "--solver", "--cbmc-args"):
-                invalid.append((flag, package, selected + [flag, "foreign"]))
-            for label, candidate_package, candidate in invalid:
-                with self.subTest(profile=profile, rule=label):
-                    with self.assertRaises(ValueError):
-                        options.expand_options(candidate_package, candidate)
-            entries = tail[2].split(",")
-            tail_mutations = [
-                [*tail[:2], ",".join(entries + entries[:1])],
-                [*tail[:2], ",".join(reversed(entries))],
-                tail + ["--no-assertions"],
-                ["--cbmc-args", "--no-unwinding-checks"],
-                ["foreign", *tail[1:]],
-            ]
-            for index, (loop, bound) in enumerate(loops):
-                tail_mutations.append([*tail[:2], ",".join(entries[:index] + entries[index + 1:])])
-                for replacement in (f"foreign.0:{bound}", f"{loop}:0", f"{loop}:{bound - 1}",
-                                    f"{loop}:{bound + 1}", f"{loop}:$BOUND"):
-                    changed = entries.copy()
-                    changed[index] = replacement
-                    tail_mutations.append([*tail[:2], ",".join(changed)])
-            for candidate in tail_mutations:
-                with self.subTest(profile=profile, tail=candidate):
-                    self.assertFalse(options.checked_loop_override(package, prefix, candidate, True))
-            prefix_mutations = [prefix[2:], prefix + ["--no-assertions"],
-                                prefix[:-1] + ["foreign"], prefix + ["--harness", harness],
-                                prefix + ["--solver", "z3"]]
-            if solver:
-                prefix_mutations += [prefix[:2] + prefix[4:],
-                                     prefix[:3] + ["minisat"] + prefix[4:],
-                                     prefix[:3] + ["$SOLVER"] + prefix[4:]]
-            for candidate in prefix_mutations:
-                with self.subTest(profile=profile, prefix=candidate):
-                    self.assertFalse(options.checked_loop_override(package, candidate, tail, True))
-            self.assertFalse(options.checked_loop_override("foreign-package", prefix, tail, True))
-            self.assertFalse(options.checked_loop_override(package, prefix, tail, False))
-            if solver:
-                legacy_tail = ["--cbmc-args", "--unwindset", "memcmp.0:2"]
-                for candidate_package in (package, "foreign-package"):
-                    for candidate_prefix in (prefix, prefix[:2] + prefix[4:]):
-                        self.assertFalse(options.checked_loop_override(
-                            candidate_package, candidate_prefix, legacy_tail, True), "P4")
-            # A Z3 profile runs only against the pinned solver; stand one in so
-            # this test observes argv, not the machine's solver installation.
-            pinned_z3 = re.search(r'readonly z3_version="([^"]+)"', gate).group(1)
-            solver_bin = Path(tempfile.mkdtemp())
-            self.addCleanup(shutil.rmtree, solver_bin, True)
-            (solver_bin / "z3").write_text(f"#!/bin/sh\necho '{pinned_z3}'\n")
-            (solver_bin / "z3").chmod(0o755)
-            shell = (f"z3_version='{pinned_z3}'; kani_jobs=1; kani_batch_timeout_seconds=600; CARGO_TARGET_DIR=/tmp/checked-profile-test\n"
-                     "run_with_deadline() { printf '%s\\n' \"$@\"; }\n" + runner + '\nrun_kani "$@"')
-            solver_env = dict(os.environ, PATH=f"{solver_bin}{os.pathsep}{os.environ['PATH']}")
-            good = subprocess.run(["bash", "-c", shell, "profile-test", package, *selected],
-                                  cwd=root, text=True, capture_output=True, env=solver_env)
-            self.assertEqual(good.returncode, 0, good.stderr)
-            self.assertEqual(good.stdout.splitlines()[9:], expanded)
-            for label, candidate_package, candidate in invalid:
-                with self.subTest(profile=profile, runtime=label):
-                    bad = subprocess.run(["bash", "-c", shell, "profile-test", candidate_package, *candidate],
-                                         cwd=root, text=True, capture_output=True, env=solver_env)
-                    self.assertEqual(bad.returncode, 2, bad.stderr)
-                    self.assertEqual(bad.stdout, "")
-                    self.assertIn("formal Kani options:", bad.stderr)
-        legacy_count = 0
-        for command in gate.replace("\\\n", " ").splitlines():
-            tokens = shlex.split(command, comments=True)
-            if not tokens or tokens[0] != "run_kani" or "--unwindset" not in tokens:
-                continue
-            cut = tokens.index("--cbmc-args")
-            if re.fullmatch(r"memcmp\.0:[1-9][0-9]*", tokens[-1]):
-                self.assertTrue(options.checked_loop_override(tokens[1], tokens[2:cut], tokens[cut:], True), "P5")
-                self.assertEqual(options.expand_options(tokens[1], tokens[2:]), tokens[2:])
-                legacy_count += 1
-        self.assertGreater(legacy_count, 0)
+        self.assertEqual(set(frozen), set(options.PROFILES), "P3 every profile is pinned")
+        selection = ["--exact", "--harness", "module::harness"]
+        for name, profile in options.PROFILES.items():
+            package = profile.package or "any-package"
+            with self.subTest(profile=name):
+                argv = options.serialize(name, package, selection)
+                solver = ["--solver", profile.solver] if profile.solver else []
+                if profile.loops:
+                    self.assertEqual(argv, ["-Z", "unstable-options", *solver, *selection, "--cbmc-args",
+                                            "--unwindset", ",".join(f"{loop}:{bound}" for loop, bound in profile.loops)], "P1")
+                else:
+                    self.assertEqual(argv, [*solver, *selection], "P1")
+                pinned = hashlib.sha256(json.dumps(options.serialize(name, package, []),
+                                                   separators=(",", ":")).encode()).hexdigest()
+                self.assertEqual(pinned, frozen[name], "P3")
+                if profile.package is not None:
+                    with self.assertRaisesRegex(ValueError, "is bound to package"):
+                        options.serialize(name, "foreign-package", selection)
+        with self.assertRaisesRegex(ValueError, "unknown Kani profile"):
+            options.serialize("unknown-v1", "any-package", selection)
+
+        runner = gate[gate.index("  run_kani() {"):gate.index("  # Present and exactly the pinned version")]
+        loop = gate[gate.index('  kani_plan="$('):gate.index("  done\n", gate.index('  kani_plan="$(')) + 7]
+        pinned_z3 = re.search(r'readonly z3_version="([^"]+)"', gate).group(1)
+        solver_bin = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, solver_bin, True)
+        (solver_bin / "z3").write_text(f"#!/bin/sh\necho '{pinned_z3}'\n")
+        (solver_bin / "z3").chmod(0o755)
+        z3_check = gate[gate.index("  z3_is_pinned() {"):gate.index("  }\n", gate.index("  z3_is_pinned() {")) + 4]
+        planned = ["pkg-a --exact --harness a::one --harness a::two",
+                   "pkg-b --lib --features x -Z unstable-options --solver z3 --exact --harness b --cbmc-args --unwindset memcmp.0:2"]
+        for label, plan, status in (
+            ("batches", "printf '%s\\n' " + " ".join(shlex.quote(line) for line in planned), 0),
+            ("failing plan", "return 3", 3),
+            ("empty plan", "return 0", 1),
+        ):
+            shell = (f"set -euo pipefail\nz3_version='{pinned_z3}'; kani_jobs=1; kani_batch_timeout_seconds=600; "
+                     "CARGO_TARGET_DIR=/tmp/checked-profile-test; missing=0\n"
+                     "awaken_configure_kani_driver_target() { :; }\n"
+                     "run_with_deadline() { printf 'CALL'; printf ' %s' \"$@\"; printf '\\n'; }\n"
+                     f"python3() {{ {plan}; }}\n" + runner + z3_check + loop)
+            with self.subTest(runner=label):
+                result = subprocess.run(["bash", "-c", shell], cwd=root, text=True, capture_output=True,
+                                        env=dict(os.environ, PATH=f"{solver_bin}{os.pathsep}{os.environ['PATH']}"))
+                self.assertEqual(result.returncode, status, result.stderr)
+                calls = [line for line in result.stdout.splitlines() if line.startswith("CALL ")]
+                if status:
+                    self.assertEqual(calls, [], "P4 no batch starts without a plan")
+                else:
+                    self.assertEqual(calls, [
+                        f"CALL 600 cargo kani -p {line.split()[0]} --output-format terse -j 1 "
+                        + " ".join(line.split()[1:]) for line in planned
+                    ], "P4 every planned batch reaches Cargo verbatim")
 
     def test_live_checker_and_release_consume_the_same_qualification(self):
         # One real ledger is consumed through the CLI and release imports.

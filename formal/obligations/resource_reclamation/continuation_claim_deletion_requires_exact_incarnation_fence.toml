@@ -3,19 +3,10 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",
-  "crates/worker/awaken-sandbox-container/src/k8s.rs",
   "crates/worker/awaken-sandbox-container/src/k8s/creation.rs",
   "crates/worker/awaken-sandbox-container/src/k8s/runtime_contract.rs",
   "crates/worker/awaken-sandbox-container/src/provider.rs",
   "crates/worker/awaken-sandbox-container/src/runtime.rs",
-  "crates/worker/awaken-sandbox-container/src/runtime/realization.rs",
-]
-proof_harnesses = [
-  "continuation_claim_deletion_requires_exact_uid_and_resource_version",
-  "absent_pod_claim_admission_is_total_and_never_starts_deletion",
-  "absent_pod_observation_never_confuses_recovery_with_completed_cleanup",
-  "rebuild_activation_requires_exact_continuation_and_effect",
 ]
 production_entrypoints = [
   "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs",

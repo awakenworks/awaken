@@ -8,15 +8,11 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ManagementAuditIntent.tla",
-  "crates/control/awaken-agent-config/src/store.rs",
   "crates/control/awaken-control/src/lib.rs",
   "crates/control/awaken-control/src/audit_tests.rs",
   "crates/bin/awaken-cli/tests/management_persistence.rs",
   "crates/server/awaken-coordinator/src/control_service_boundary.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "management_audit_admission_requires_exact_intent_and_closed_state",
 ]
 production_entrypoints = [
   "crates/control/awaken-agent-config/src/store.rs",

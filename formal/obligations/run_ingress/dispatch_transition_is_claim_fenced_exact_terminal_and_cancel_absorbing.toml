@@ -5,7 +5,6 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/RunIngress.tla",
   "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite/claim.rs",
   "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
@@ -14,15 +13,6 @@ evidence = [
   "crates/server/awaken-dispatch-testkit/src/conformance/reservations.rs",
   "crates/server/awaken-dispatch-testkit/src/conformance/reliability.rs",
   "crates/server/awaken-dispatch/tests/dispatch_conformance.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/model.rs",
-]
-proof_harnesses = [
-  "only_awaiting_or_already_superseded_is_replacement_safe",
-  "stale_dispatch_claim_cannot_modify_authoritative_state",
-  "exact_dispatch_settlement_is_terminal_or_awaiting_only",
-  "dispatch_cancel_revokes_old_epoch_and_is_idempotent",
-  "dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows",
-  "dispatch_maintenance_transitions_are_closed_and_exact",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch.rs",

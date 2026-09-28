@@ -270,6 +270,7 @@ mod verification {
     //! cannot become destructive authority.
     use super::*;
 
+    /// @obligation lease.credential_expiry_is_bounded
     #[kani::proof]
     fn credential_expiry_never_exceeds_lease_or_own_ttl() {
         let now = kani::any::<u64>();
@@ -281,6 +282,7 @@ mod verification {
         assert!(expiry <= now.saturating_add(ttl));
     }
 
+    /// @obligation lease.egress_fails_closed
     #[kani::proof]
     fn revoked_or_expired_lease_always_denies_egress() {
         let now = kani::any::<u64>();
@@ -294,6 +296,7 @@ mod verification {
 
     /// P1-P3: explore every timestamp/boolean combination and prove the fixed
     /// masking order while the output remains in the Keep/Fence domain.
+    /// @obligation lease.loss_only_fences
     #[kani::proof]
     fn lease_loss_obeys_fixed_fail_closed_fence_priority() {
         let now = kani::any::<u64>();
@@ -322,6 +325,7 @@ mod verification {
     }
 
     /// T1: arbitrary accepted values preserve three complete renewal windows.
+    /// @obligation lease.timing_has_three_renewal_windows
     #[kani::proof]
     fn valid_lease_timing_always_has_three_renewal_opportunities() {
         let renew = kani::any::<u64>();
@@ -335,6 +339,7 @@ mod verification {
     }
 
     /// T2: arbitrary accepted values preserve one post-TTL reconciliation tick.
+    /// @obligation lease.recovery_grace_covers_reconciliation
     #[kani::proof]
     fn valid_recovery_grace_covers_lease_and_reconciliation() {
         let renew = kani::any::<u64>();

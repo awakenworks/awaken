@@ -6,11 +6,7 @@ tcb_assumptions = [
   "external.provider_revocation_propagation",
 ]
 evidence = [
-  "crates/control/awaken-credential-vault/src/lib.rs",
   "crates/control/awaken-credential-vault/src/availability.rs",
-]
-proof_harnesses = [
-  "credential_cooldown_boundary_is_exact_and_inclusive",
 ]
 production_entrypoints = [
   "crates/control/awaken-credential-vault/src/lib.rs",

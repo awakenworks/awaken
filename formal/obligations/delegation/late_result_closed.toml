@@ -5,10 +5,6 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/Delegation.tla",
   "crates/runtime/awaken-runtime/src/engine/finalize.rs",
-  "crates/contract/awaken-runtime-contract/src/delegation.rs",
-]
-proof_harnesses = [
-  "terminal_delivery_phases_never_reopen",
 ]
 production_entrypoints = [
   "crates/runtime/awaken-runtime/src/engine/finalize.rs",

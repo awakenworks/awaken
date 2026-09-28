@@ -390,6 +390,7 @@ mod tests {
 mod verification {
     use super::*;
 
+    /// @obligation sandbox_control.single_publication_is_stale_fenced_non_wrapping_and_close_absorbing
     #[kani::proof]
     fn publication_slot_directly_preserves_single_owner_stale_fence_and_absorbing_close() {
         // Cause/effect decision table over the production slot itself:

@@ -16,7 +16,6 @@ evidence = [
   "scripts/ci/formal_dispatch_mutations.py",
   "scripts/ci/check_formal.sh",
   "docs/adr/0075-unified-managed-session-worker-execution.md",
-  "crates/contract/awaken-session-work-contract/src/lib.rs",
   "crates/contract/awaken-dispatch-contract/src/dispatch.rs",
   "crates/contract/awaken-dispatch-contract/src/worker_transport.rs",
   "crates/server/awaken-dispatch/src/commit_fence.rs",
@@ -29,9 +28,6 @@ evidence = [
   "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http.rs",
   "crates/server/awaken-dispatch-http/tests/commit_ingest_http.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
-]
-proof_harnesses = [
-  "exact_session_work_receipt_rejects_every_changed_coordinate",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-work-contract/src/lib.rs",

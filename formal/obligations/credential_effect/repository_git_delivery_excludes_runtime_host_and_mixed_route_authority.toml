@@ -6,12 +6,8 @@ tcb_assumptions = [
   "external.provider_revocation_propagation",
 ]
 evidence = [
-  "crates/contract/awaken-credential-contract/src/delivery_plan.rs",
   "crates/contract/awaken-session-resource-contract/src/resource.rs",
   "crates/server/awaken-session-executor/src/session_environment/container_repositories.rs",
-]
-proof_harnesses = [
-  "credential_effect_delivery_policy_is_total_and_never_mixes_route_authority",
 ]
 production_entrypoints = [
   "crates/contract/awaken-credential-contract/src/delivery_plan.rs",

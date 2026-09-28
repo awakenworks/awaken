@@ -9,26 +9,16 @@ evidence = [
   "formal/tla/SessionRunProtocol.tla",
   "formal/tla/SessionRunProtocol.cfg",
   "docs/adr/0075-unified-managed-session-worker-execution.md",
-  "crates/contract/awaken-session-work-contract/src/lib.rs",
-  "crates/server/awaken-session-application/src/application.rs",
   "crates/server/awaken-session-application/src/tests/authority.rs",
   "crates/server/awaken-session-application/src/tests/realization.rs",
   "crates/server/awaken-dispatch-http/src/worker_dispatch/session_realization.rs",
   "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http.rs",
-  "crates/server/awaken-session-executor/src/host/session_ctx.rs",
   "crates/server/awaken-session-executor/src/host/session.rs",
   "crates/server/awaken-session-executor/src/managed_host_composition.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_session.rs",
   "crates/server/awaken-session-executor/src/host/worker_resolver/claimed_dispatch.rs",
   "crates/server/awaken-session-executor/src/host/tests.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "session_work_effect_requires_not_required_scope_or_exact_owner",
-  "environment_owner_topology_is_exact_and_frozen",
-  "work_projection_is_derived_only_from_durable_session_truth",
-  "coordination_envelope_never_satisfies_execution_cache_admission",
-  "runtime_environment_admission_is_total_and_coordination_never_borrows",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-work-contract/src/lib.rs",

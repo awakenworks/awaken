@@ -140,6 +140,7 @@ const fn legacy_hand_protocol_version() -> u16 {
 mod verification {
     use super::*;
 
+    /// @obligation remote_tool.protocol_version_requires_stable_v2_operation_identity
     #[kani::proof]
     fn hand_protocol_requires_supported_version_and_v2_operation_identity() {
         let protocol_version = kani::any();

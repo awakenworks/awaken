@@ -8,14 +8,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/InferenceAccessPublication.tla",
-  "crates/contract/awaken-runtime-contract/src/model_routing.rs",
   "crates/contract/awaken-runtime-contract/src/resolved.rs",
   "crates/server/awaken-credential-materializer/src/inference.rs",
   "crates/server/awaken-session-executor/src/host/completion.rs",
-]
-proof_harnesses = [
-  "fallback_selection_preserves_the_complete_publication_pin",
-  "every_route_pin_axis_participates_in_exact_identity",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/model_routing.rs",

@@ -8,7 +8,6 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/contract/awaken-runtime-contract/src/terminal.rs",
   "crates/server/awaken-dispatch/src/worker.rs",
   "crates/server/awaken-dispatch/src/worker/terminal_recovery.rs",
   "crates/server/awaken-dispatch/src/worker/tests.rs",
@@ -18,9 +17,6 @@ evidence = [
   "formal/tla/SessionRunProtocol.tla",
   "formal/tla/SessionRunProtocolResolution.cfg",
   "crates/server/awaken-dispatch/tests/any_store/resolution_failure.rs",
-]
-proof_harnesses = [
-  "committed_terminal_projection_admits_only_exact_ended_identity",
 ]
 production_entrypoints = [
   "crates/contract/awaken-runtime-contract/src/terminal.rs",

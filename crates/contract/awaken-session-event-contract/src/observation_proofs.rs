@@ -1,5 +1,7 @@
 use super::*;
 
+/// @obligation session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
+/// @obligation session_time.processed_event_retains_first_time_and_rejects_atomically
 #[kani::proof]
 fn processed_event_time_is_first_observation_or_atomic_rejection() {
     // E1 pending+unset/equal anchor -> stamp; E2 processed+exact anchor -> inert,

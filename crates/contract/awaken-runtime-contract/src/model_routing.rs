@@ -60,6 +60,8 @@ mod kani_proofs {
         ResolvedModelCandidate::host(ModelBinding::new("provider", "model", "native"))
     }
 
+    /// @obligation config.inference_access_resolved_once_at_publication
+    /// @obligation model_route.fallback_preserves_the_complete_publication_pin
     #[kani::proof]
     fn fallback_selection_preserves_the_complete_publication_pin() {
         // Test design — Causes: ordinal is primary, either published fallback,
@@ -89,6 +91,8 @@ mod kani_proofs {
         std::mem::forget(fallbacks);
     }
 
+    /// @obligation config.inference_access_resolved_once_at_publication
+    /// @obligation model_route.fallback_preserves_the_complete_publication_pin
     #[kani::proof]
     fn every_route_pin_axis_participates_in_exact_identity() {
         // Test design — Causes: exactly one of provider identity, model,

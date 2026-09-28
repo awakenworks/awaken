@@ -44,6 +44,7 @@ pub(crate) fn exact_credential_realization_target<T>(request_target: &T) -> &T {
 }
 
 #[cfg(kani)]
+/// @obligation credential_effect.mcp_realization_preserves_exact_authoring_target
 #[kani::proof]
 fn mcp_credential_realization_preserves_the_request_target_exactly() {
     let request_target: u64 = kani::any();

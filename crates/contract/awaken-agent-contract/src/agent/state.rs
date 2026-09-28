@@ -316,6 +316,7 @@ mod kani_proofs {
     /// Cause/effect table: C1 scope is Run; E1 bind the carrying Run identity.
     /// Every other closed scope is E2/no binding. The four symbolic rows prove
     /// the selector total and prevent scope widening.
+    /// @obligation thread_state.run_identity_binding
     #[kani::proof]
     fn run_identity_binding_is_exactly_run_scoped() {
         let scope = any_scope(kani::any());
@@ -325,6 +326,7 @@ mod kani_proofs {
     /// Cause/effect table: C1 prior exclusive Set, C2 current policy Exclusive,
     /// C3 current action Set. Only C1+C2+C3 yields E1/conflict; all other eight
     /// Boolean/policy partitions yield E2/admit.
+    /// @obligation thread_state.exclusive_batch_conflict
     #[kani::proof]
     fn exclusive_state_conflict_requires_every_exact_precondition() {
         let prior = kani::any();
@@ -338,6 +340,7 @@ mod kani_proofs {
 
     /// Decision table covers Remove, commutative object/object merge, and the
     /// replacement complement across all policies and object-shape booleans.
+    /// @obligation thread_state.materialization_effect
     #[kani::proof]
     fn state_materialization_effect_is_total_and_exact() {
         let merge = any_merge(kani::any());

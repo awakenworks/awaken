@@ -11,14 +11,10 @@ evidence = [
   "formal/tla/ThreadCommitProjection.tla",
   "formal/runtime-refinement-manifest.json",
   "crates/contract/awaken-tool-contract/src/tool.rs",
-  "crates/contract/awaken-tool-contract/src/tool_batch.rs",
   "crates/runtime/awaken-runtime/src/engine/dispatch.rs",
   "crates/runtime/awaken-runtime/tests/formal_refinement.rs",
   "crates/runtime/awaken-runtime/tests/permission.rs",
   "crates/runtime/awaken-runtime/tests/tools.rs",
-]
-proof_harnesses = [
-  "recovery_reentry_requires_policy_capability_and_remaining_budget",
 ]
 production_entrypoints = [
   "crates/contract/awaken-tool-contract/src/tool_batch.rs",

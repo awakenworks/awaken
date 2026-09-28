@@ -22,6 +22,8 @@ pub(super) const fn logical_deletion_is_proven(
 }
 
 #[cfg(kani)]
+/// @obligation session.runtime_projection_logical_deletion_requires_positive_exact_scoped_evidence
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 fn logical_deletion_observation_requires_positive_exact_scoped_evidence() {
     // Direct production read-decision over all 64 Boolean rows. Repository

@@ -8,14 +8,8 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-  "crates/server/awaken-dispatch/src/recovery_projection.rs",
   "crates/server/awaken-dispatch/src/commit_fence.rs",
   "crates/server/awaken-dispatch/tests/recovery_projection.rs",
-]
-proof_harnesses = [
-  "operation_identity_replays_only_the_same_run_and_payload",
-  "acknowledged_projection_is_exact_monotonic_or_a_noop",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",

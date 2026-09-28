@@ -143,6 +143,7 @@ pub fn repository_git_credential_delivery(
 }
 
 #[cfg(kani)]
+/// @obligation credential_effect.repository_git_delivery_excludes_runtime_host_and_mixed_route_authority
 #[kani::proof]
 fn credential_effect_delivery_policy_is_total_and_never_mixes_route_authority() {
     // Causes: P=purpose permits this boundary, C=purpose permits this carrier,

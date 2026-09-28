@@ -6,7 +6,6 @@ evidence = [
   "formal/tla/SessionRunProtocolCancellation.cfg",
   "crates/server/awaken-dispatch/tests/durable_postgres.rs",
   "formal/tla/SessionRunProtocol.tla",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
   "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
@@ -26,12 +25,10 @@ evidence = [
   "formal/tla/SessionRunProtocolRetirement.cfg",
   "crates/server/awaken-dispatch/src/migrations/V0004__retired_attempt_epoch.sql",
   "crates/server/awaken-dispatch/tests/harness/attempt_retirement.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/attempt_binding.rs",
   "crates/server/awaken-dispatch/tests/harness/attempt_binding.rs",
   "crates/server/awaken-dispatch/src/dispatch.rs",
   "crates/server/awaken-dispatch-http/src/worker_dispatch/run_dispatch_endpoints.rs",
   "crates/server/awaken-dispatch-http/tests/signed_worker_transport_http/attempt_binding.rs",
-  "crates/contract/awaken-tool-contract/src/tool.rs",
   "crates/runtime/awaken-runtime/src/engine/tool_execution.rs",
   "crates/runtime/awaken-runtime/tests/tools.rs",
   "crates/server/awaken-session-executor/src/background_task/ownership.rs",
@@ -44,16 +41,6 @@ evidence = [
   "crates/contract/awaken-runtime-contract/src/runtime_context/attempt_quiescence.rs",
   "crates/runtime/awaken-runtime/src/ingress.rs",
   "crates/runtime/awaken-runtime/tests/run_end_guard.rs",
-]
-proof_harnesses = [
-  "thread_physical_peer_vetoes_begin_and_handoff",
-  "physical_attempt_slot_installs_and_clears_only_exact_authority",
-  "physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair",
-  "retired_epoch_cannot_admit_another_execution",
-  "physical_binding_cannot_change_on_admission_retry",
-  "created_tool_handle_validation_never_invents_termination",
-  "quarantine_admission_never_widens_settlement_or_execution",
-  "quarantined_cancelled_row_can_never_re_enter_execution",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",

@@ -464,6 +464,8 @@ fn continuation_observation_disposition(
 }
 
 #[cfg(kani)]
+/// @obligation resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
+/// @kani profile=solver-kissat-v1 features=k8s
 #[kani::proof]
 fn absent_pod_observation_never_confuses_recovery_with_completed_cleanup() {
     // KCO2 proof calls the production classifier for both purposes over every
@@ -524,6 +526,8 @@ fn continuation_claim_observation_required(
 }
 
 #[cfg(kani)]
+/// @obligation sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
+/// @kani profile=solver-kissat-v1 features=k8s
 #[kani::proof]
 fn disabled_continuation_has_no_claim_api_obligation_without_durable_evidence() {
     let continuation_configured: bool = kani::any();

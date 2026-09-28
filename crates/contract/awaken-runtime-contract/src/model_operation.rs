@@ -668,6 +668,7 @@ fn fixture_binding(
 }
 
 #[cfg(kani)]
+/// @obligation model_operation.reentry_requires_positive_execution_evidence
 #[kani::proof]
 fn no_dispatch_mints_only_reviewed_pre_call_stages() {
     // C1 the production caller chooses one of four explicit constructors;
@@ -702,6 +703,7 @@ fn no_dispatch_mints_only_reviewed_pre_call_stages() {
 }
 
 #[cfg(kani)]
+/// @obligation model_operation.reentry_requires_positive_execution_evidence
 #[kani::proof]
 fn model_execution_reentry_requires_positive_evidence() {
     // R1 unknown => deny; R2 not dispatched / terminal => only the physical
@@ -736,6 +738,7 @@ fn model_execution_reentry_requires_positive_evidence() {
 }
 
 #[cfg(kani)]
+/// @obligation model_operation.ordinal_never_wraps_or_reuses_a_coordinate
 #[kani::proof]
 fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
     // C1 previous < MAX / C2 previous == MAX; E1 exact nonzero successor /
@@ -768,6 +771,8 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
 }
 
 #[cfg(kani)]
+/// @obligation model_operation.ordinal_never_wraps_or_reuses_a_coordinate
+/// @kani profile=solver-kissat-v1
 #[kani::proof]
 // The bound covers the two-element history fold and the byte comparison of the
 // representative's longest coordinate ("native"): the binding is now a real

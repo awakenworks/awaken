@@ -8,12 +8,8 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/ServiceLifecycle.tla",
   "formal/tla/ServiceLifecycleProof.tla",
-  "crates/server/awaken-service-lifecycle/src/lib.rs",
   "crates/server/awaken-service-lifecycle/tests/service_lifecycle.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "concurrent_shutdown_admission_waits_for_the_active_drain",
 ]
 production_entrypoints = [
   "crates/server/awaken-service-lifecycle/src/lib.rs",

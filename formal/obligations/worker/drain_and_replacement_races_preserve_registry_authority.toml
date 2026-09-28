@@ -9,12 +9,8 @@ tcb_assumptions = [
 evidence = [
   "crates/server/awaken-worker-registry/tests/conformance.rs",
   "formal/tla/WorkerReplacement.tla",
-  "crates/contract/awaken-worker-contract/src/registry.rs",
   "crates/server/awaken-worker-registry/src/transition.rs",
   "crates/server/awaken-worker-registry/src/memory.rs",
-]
-proof_harnesses = [
-  "worker_replacement_and_heartbeat_share_one_non_resurrection_boundary",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/registry.rs",

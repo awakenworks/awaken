@@ -363,6 +363,8 @@ mod verification {
         }
     }
 
+    // The actual deleted resolver covers empty-inventory replay and one legacy
+    // error/frame/Drop call. Legacy replay remains open.
     // Bounded actual resolver proof: Some(empty), all u64 revisions and
     // request key/fingerprint in {empty,a,b,ab,ba}. It must return Deleted with
     // the exact revision, preserve the complete source and repeat identically.
@@ -370,6 +372,8 @@ mod verification {
     // This partition excludes legacy None and one/two retained receipts; it
     // does not prove the whole resolver or SQL codec/transaction behavior.
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-64-v1
     #[kani::proof]
     #[kani::unwind(4)]
     fn deleted_admission_resolver_preserves_empty() {
@@ -388,6 +392,8 @@ mod verification {
     // frame and real Drop. Sequential replay and two coexisting error outputs
     // remain separate unresolved allocator-path proofs, as do nonempty inputs.
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-64-v1
     #[kani::proof]
     #[kani::unwind(4)]
     fn deleted_admission_resolver_preserves_legacy_error_and_frame() {
@@ -530,12 +536,18 @@ mod verification {
     // the bound-64 qualification failed its unwinding assertion, not silently
     // truncating the error comparison. Nonerror calls use memcmp bound 2.
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_closed_none_07() {
         check_single_retained_literal::<7>(kani::any());
     }
+    // All 24 None/empty/one-ID cases plus all two-ID Absent/Conflict/Closed;
+    // full source frame and two-live-output replay/Drop (two-ID output stays open).
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_none_00() {
@@ -543,6 +555,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-65-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_conflict_none_01() {
@@ -550,6 +564,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_none_02() {
@@ -557,6 +573,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_accepted_none_03() {
@@ -564,6 +582,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_none_04() {
@@ -571,6 +591,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-65-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_conflict_none_05() {
@@ -578,12 +600,16 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_none_06() {
         check_single_retained_literal::<6>(kani::any());
     }
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_empty_08() {
@@ -591,6 +617,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-65-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_conflict_empty_09() {
@@ -598,6 +626,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_empty_10() {
@@ -605,6 +635,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_accepted_empty_11() {
@@ -612,6 +644,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_empty_12() {
@@ -619,6 +653,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-65-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_conflict_empty_13() {
@@ -626,6 +662,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_empty_14() {
@@ -633,12 +671,16 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_closed_empty_15() {
         check_single_retained_literal::<15>(kani::any());
     }
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_one_16() {
@@ -646,6 +688,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-65-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_conflict_one_17() {
@@ -653,6 +697,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_one_18() {
@@ -660,6 +706,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_accepted_one_19() {
@@ -667,6 +715,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_one_20() {
@@ -674,6 +724,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-65-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_conflict_one_21() {
@@ -681,6 +733,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_absent_one_22() {
@@ -688,12 +742,16 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_closed_one_23() {
         check_single_retained_literal::<23>(kani::any());
     }
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_absent_two_24() {
@@ -704,18 +762,23 @@ mod verification {
     // IDs and every u64 revision. Reuse the complete two-live-output oracle:
     // actual owned Clone/reverse/clear/replay/Drop and all source fields.
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=retained-accepted-two-replay-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_accepted_two_27() {
         check_single_retained_literal::<27>(kani::any());
     }
 
+    // The first-result lemma completes on the real resolver before the larger
+    // owned-mutation/replay harness; it does not substitute for that proof.
     // CASE27 first-result lemma. C1 the retained key/fingerprint match and
     // the receipt is open; C2 it carries two ordered IDs; C3 revision is any
     // u64. E1 the real resolver returns exact owned Accepted fields; E2 the
     // complete retained source is unchanged. This is the first stage of the
     // existing replay oracle, not a proof-only replacement implementation.
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_accepted_two_initial_27() {
@@ -728,6 +791,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_absent_two_28() {
@@ -735,6 +800,8 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_absent_two_30() {
@@ -742,24 +809,32 @@ mod verification {
     }
 
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_closed_two_31() {
         check_single_retained_literal::<31>(kani::any());
     }
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-2-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_absent_two_26() {
         check_single_retained_literal::<26>(kani::any());
     }
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-65-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_conflict_two_25() {
         check_single_retained_literal::<25>(kani::any());
     }
     #[cfg(kani)]
+    /// @obligation session_event_batch.final_non_admission_excludes_late_acceptance
+    /// @kani profile=unwind-memcmp-65-v1
     #[kani::proof]
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_conflict_two_29() {

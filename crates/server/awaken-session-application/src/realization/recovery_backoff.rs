@@ -82,6 +82,7 @@ mod proofs {
     };
     use std::time::Duration;
 
+    /// @obligation session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
     #[kani::proof]
     fn session_recovery_backoff_is_bounded_monotonic_and_saturating() {
         let failure_streak: u32 = kani::any();
@@ -96,6 +97,7 @@ mod proofs {
         }
     }
 
+    /// @obligation session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
     #[kani::proof]
     fn dependency_wake_never_postpones_the_single_existing_deadline() {
         let existing_seconds: u64 = kani::any();
@@ -122,6 +124,7 @@ mod proofs {
         );
     }
 
+    /// @obligation session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
     #[kani::proof]
     fn external_wake_coalescing_is_bounded_and_never_postpones_recovery() {
         let seconds: u64 = kani::any();
@@ -142,6 +145,7 @@ mod proofs {
         );
     }
 
+    /// @obligation session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
     #[kani::proof]
     fn only_an_empty_hint_driven_scan_arms_the_coalescing_window() {
         let settled: usize = kani::any();

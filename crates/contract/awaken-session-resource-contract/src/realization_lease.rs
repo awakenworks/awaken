@@ -115,6 +115,7 @@ pub fn realization_lease_generation_authorizes(
 }
 
 #[cfg(kani)]
+/// @obligation session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
 #[kani::proof]
 fn realization_renewal_never_widens_owner_epoch_or_expiry_authority() {
     let same_owner = kani::any();

@@ -6,13 +6,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/WorkerDrain.tla",
-  "crates/server/awaken-dispatch/src/pool.rs",
   "crates/server/awaken-dispatch/tests/pool_memory.rs",
   "crates/bin/awaken-worker/src/lifecycle.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "pool_draining_state_is_absorbing_and_claim_closed",
 ]
 production_entrypoints = [
   "crates/server/awaken-dispatch/src/pool.rs",

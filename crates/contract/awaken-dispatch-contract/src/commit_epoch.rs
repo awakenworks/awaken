@@ -212,6 +212,9 @@ impl CommitEpochGuard {
 }
 
 #[cfg(kani)]
+/// @obligation ingress.commit_epoch_atomic_local
+/// @obligation ingress.commit_epoch_atomic_remote_custom
+/// @obligation remote_worker.stale_epoch_never_mutates_truth
 #[kani::proof]
 fn commit_epoch_completion_requires_observed_release() {
     // Cause/effect decision table:
@@ -231,6 +234,11 @@ fn commit_epoch_completion_requires_observed_release() {
 }
 
 #[cfg(kani)]
+/// @obligation ingress.commit_epoch_atomic_remote_custom
+/// @obligation remote_worker.committed_truth_is_coordinator_owned
+/// @obligation remote_worker.execution_requires_claimed_snapshot
+/// @obligation remote_worker.single_live_claim_owner
+/// @obligation remote_worker.stale_epoch_never_mutates_truth
 #[kani::proof]
 fn commit_epoch_guard_admits_only_complete_exact_claim() {
     let row_in_required_state: bool = kani::any();

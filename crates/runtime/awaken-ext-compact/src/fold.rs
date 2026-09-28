@@ -50,6 +50,7 @@ pub fn prefetch_fold_point(
 mod verification {
     use super::*;
 
+    /// @obligation compaction.fold_preserves_suffix
     #[kani::proof]
     fn fold_point_preserves_the_requested_suffix() {
         let committed_len = kani::any::<usize>();
@@ -63,6 +64,7 @@ mod verification {
         }
     }
 
+    /// @obligation compaction.trigger_is_total
     #[kani::proof]
     fn fold_point_is_present_exactly_when_triggered_with_nonempty_prefix() {
         let committed_len = kani::any::<usize>();

@@ -5,18 +5,11 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/SessionEnvironmentProjection.tla",
   "formal/tla/SessionEnvironmentProjection.cfg",
-  "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",
   "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/tests.rs",
   "formal/tla/SessionEnvironmentConvergence.cfg",
   "formal/runtime-refinement-manifest.json",
-  "crates/server/awaken-session-executor/src/session_slot/projection_receipt.rs",
   "crates/server/awaken-session-executor/src/host/tests/projection_convergence.rs",
   "crates/server/awaken-session-executor/src/application.rs",
-]
-proof_harnesses = [
-  "durable_projection_identity_is_exact_or_a_same_physical_owner_stutter",
-  "committed_candidate_retains_effect_kind_and_rejects_identity_relabeling",
-  "projection_revision_admission_is_monotonic_and_exact",
 ]
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/host/session/environment_lifecycle/state.rs",

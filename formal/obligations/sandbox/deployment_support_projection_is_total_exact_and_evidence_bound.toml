@@ -4,12 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.container_and_kernel_isolation",
 ]
-evidence = [
-  "crates/server/awaken-session-executor/src/deployment_config.rs",
-]
-proof_harnesses = [
-  "sandbox_support_projection_is_total_exact_and_evidence_bound",
-]
+evidence = []
 production_entrypoints = [
   "crates/server/awaken-session-executor/src/deployment_config.rs",
 ]

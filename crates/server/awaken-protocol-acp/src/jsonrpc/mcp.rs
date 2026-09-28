@@ -84,6 +84,8 @@ pub(super) fn to_acp_mcp_servers(
 }
 
 #[cfg(kani)]
+/// @obligation acp.session_load_preserves_the_exact_mcp_projection
+/// @kani features=real-acp
 #[kani::proof]
 fn acp_session_load_preserves_the_exact_mcp_projection() {
     let name: u8 = kani::any();

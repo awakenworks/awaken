@@ -9,16 +9,8 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/WorkerCredentialLiveness.tla",
   "crates/contract/awaken-worker-contract/src/observation.rs",
-  "crates/contract/awaken-worker-contract/src/lib.rs",
-  "crates/contract/awaken-credential-contract/src/observation_admission.rs",
   "crates/server/awaken-dispatch/src/worker.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs",
   "crates/server/awaken-dispatch/src/worker/physical_attempt.rs",
-]
-proof_harnesses = [
-  "worker_dynamic_observation_requires_exact_fact_and_half_open_lease",
-  "worker_reference_revalidation_accepts_only_exact_available_state",
-  "physical_attempt_slot_installs_and_clears_only_exact_authority",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/observation.rs",

@@ -209,6 +209,7 @@ pub const fn session_realization_assignment(
 }
 
 #[cfg(kani)]
+/// @obligation session_realization.concurrent_drivers_preserve_one_owner_fence
 #[kani::proof]
 fn session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch() {
     let has_current = kani::any::<bool>();

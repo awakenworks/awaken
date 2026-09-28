@@ -9,25 +9,14 @@ tcb_assumptions = [
 evidence = [
   "formal/tla/CredentialEffectBoundary.tla",
   "crates/contract/awaken-credential-contract/src/http_effect.rs",
-  "crates/contract/awaken-dispatch-contract/src/dispatch/credential_admission.rs",
   "crates/server/awaken-dispatch/src/worker.rs",
   "formal/tla/CredentialEffectBoundary.cfg",
   "scripts/ci/formal_credential_mutations.py",
-  "crates/contract/awaken-runtime-contract/src/credential.rs",
-  "crates/contract/awaken-runtime-contract/src/execution.rs",
   "crates/server/awaken-dispatch/src/memory.rs",
   "crates/server/awaken-dispatch/src/sqlite/dispatch_queue.rs",
   "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs",
   "crates/server/awaken-credential-materializer/src/claimed_materialization.rs",
-  "crates/server/awaken-credential-materializer/src/lib.rs",
   "crates/server/awaken-dispatch-testkit/src/conformance/recovery_credentials.rs",
-]
-proof_harnesses = [
-  "claim_credential_operation_is_total_and_terminal_dominates",
-  "claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire",
-  "credential_realization_receipt_requires_every_exact_binding_coordinate",
-  "claim_bound_external_effect_admits_only_current_ownership",
-  "new_materialization_admits_only_active_credential_status",
 ]
 production_entrypoints = [
   "crates/contract/awaken-credential-contract/src/http_effect.rs",

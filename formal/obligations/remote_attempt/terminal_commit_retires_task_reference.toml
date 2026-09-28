@@ -10,11 +10,7 @@ evidence = [
   "formal/tla/RemoteAttempt.tla",
   "crates/server/awaken-run-executor-a2a/src/lib.rs",
   "crates/server/awaken-run-executor-a2a/src/run_commit.rs",
-  "crates/server/awaken-run-executor-a2a/src/task_state.rs",
   "e2e/remote_attempt_lifecycle_e2e.ts",
-]
-proof_harnesses = [
-  "terminal_remote_operation_command_is_exact_run_scoped_removal",
 ]
 production_entrypoints = [
   "crates/server/awaken-run-executor-a2a/src/run_commit.rs",

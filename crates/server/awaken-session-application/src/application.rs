@@ -64,6 +64,9 @@ mod environment_owner_kani_proof {
         runtime_placement_for_topology,
     };
 
+    /// @obligation runtime.backend_owned_environment_is_materialized_only_by_the_claimed_worker
+    /// @obligation session_environment.owner_topology_is_exact_and_frozen
+    /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
     #[kani::proof]
     fn environment_owner_topology_is_exact_and_frozen() {
         let registered: bool = kani::any();
@@ -89,6 +92,8 @@ mod environment_owner_kani_proof {
         ));
     }
 
+    /// @obligation session_creation.work_projection_is_disposable_repairable_and_non_authoritative
+    /// @obligation session_run.execution_requires_dispatch_work_and_realization_owner
     #[kani::proof]
     fn work_projection_is_derived_only_from_durable_session_truth() {
         // Cause/effect table: C1 root has no frozen baseline / local / external;

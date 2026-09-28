@@ -7,13 +7,9 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/ExecutableProjectionRefreshProof.tla",
-  "crates/contract/awaken-session-application-contract/src/executable_projection.rs",
   "crates/bin/awaken-cli/src/executable_projection_refresh.rs",
   "crates/bin/awaken-cli/src/runtime_process_router.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "executable_projection_admission_requires_both_ordered_refreshes",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-application-contract/src/executable_projection.rs",

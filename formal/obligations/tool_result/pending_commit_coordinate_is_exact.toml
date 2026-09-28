@@ -9,12 +9,8 @@ evidence = [
   "formal/tla/ToolResultProtocol.tla",
   "crates/server/awaken-protocol-managed/src/state/events/admission.rs",
   "crates/server/awaken-protocol-managed/src/state/events/recovery.rs",
-  "crates/server/awaken-protocol-managed/src/state/events/recovery/selection_tests.rs",
   "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
   "scripts/ci/check_formal.sh",
-]
-proof_harnesses = [
-  "managed_reply_anchor_selects_exact_fenced_commit",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-managed/src/state/events/admission.rs",

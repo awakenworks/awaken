@@ -8,11 +8,7 @@ tcb_assumptions = [
 ]
 evidence = [
   "crates/contract/awaken-worker-contract/src/observation.rs",
-  "crates/contract/awaken-worker-contract/src/lib.rs",
   "crates/server/awaken-dispatch/src/worker.rs",
-]
-proof_harnesses = [
-  "worker_dynamic_observation_requires_exact_fact_and_half_open_lease",
 ]
 production_entrypoints = [
   "crates/contract/awaken-worker-contract/src/observation.rs",

@@ -177,6 +177,7 @@ fn list_cost_overflow() -> ManagedListPriceError {
 }
 
 #[cfg(kani)]
+/// @obligation session_budget.accepted_cost_arithmetic_never_wraps
 #[kani::proof]
 fn accepted_managed_budget_cost_never_wraps() {
     let terms = [kani::any(), kani::any(), kani::any(), kani::any()];

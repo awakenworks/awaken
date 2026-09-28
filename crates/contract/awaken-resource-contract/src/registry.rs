@@ -1206,6 +1206,7 @@ mod registry_tests {
 mod registry_proofs {
     use super::*;
 
+    /// @obligation resource_catalog.config_publication_is_exact_and_never_wraps
     #[kani::proof]
     fn resource_config_publication_is_exact_and_never_wraps() {
         let current = ConfigVersion(kani::any());
@@ -1222,6 +1223,7 @@ mod registry_proofs {
         }
     }
 
+    /// @obligation resource_catalog.config_publication_is_exact_and_never_wraps
     #[kani::proof]
     fn exhausted_resource_config_versions_fail_closed() {
         let next = ConfigVersion(kani::any());
@@ -1231,6 +1233,7 @@ mod registry_proofs {
         );
     }
 
+    /// @obligation resource_catalog.aggregate_revision_is_strictly_monotonic_and_never_wraps
     #[kani::proof]
     fn portable_aggregate_revision_is_strictly_monotonic_and_never_wraps() {
         let value: u64 = kani::any();
@@ -1246,6 +1249,7 @@ mod registry_proofs {
         }
     }
 
+    /// @obligation resource_catalog.lifecycle_timestamp_projection_is_total_and_exact
     #[kani::proof]
     fn resource_lifecycle_timestamps_project_the_exact_transition() {
         let state_code: u8 = kani::any();
@@ -1272,6 +1276,7 @@ mod registry_proofs {
         );
     }
 
+    /// @obligation session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
     #[kani::proof]
     fn live_resource_binding_requires_exact_scope_active_state_and_existing_pin() {
         let workspace_matches: bool = kani::any();

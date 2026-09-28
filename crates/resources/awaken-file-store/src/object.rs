@@ -104,6 +104,8 @@ impl ObjectFileStoreConfig {
 mod kani_proofs {
     use super::{ObjectStoreConfigDecision, ObjectStoreProvider, object_store_config_decision};
 
+    /// @obligation object_store.configuration_is_secret_free_and_provider_exact
+    /// @kani features=object-store
     #[kani::proof]
     fn object_store_configuration_accepts_exactly_the_provider_compatible_shape() {
         let provider = if kani::any::<bool>() {

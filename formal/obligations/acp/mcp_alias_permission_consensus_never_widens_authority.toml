@@ -5,12 +5,8 @@ tcb_assumptions = [
   "external.mcp_busy_acp_revocation_propagation_and_process_termination",
 ]
 evidence = [
-  "crates/server/awaken-protocol-acp/src/lib.rs",
   "crates/server/awaken-run-executor-acp/src/lib.rs",
   "crates/server/awaken-run-executor-acp/src/tests.rs",
-]
-proof_harnesses = [
-  "permission_consensus_is_a_conservative_order_independent_semilattice",
 ]
 production_entrypoints = [
   "crates/server/awaken-protocol-acp/src/lib.rs",

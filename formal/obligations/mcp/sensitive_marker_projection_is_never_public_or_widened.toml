@@ -2,13 +2,7 @@ claim_scope = "repository_safety"
 proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
-evidence = [
-  "crates/runtime/awaken-ext-mcp/src/sensitive.rs",
-]
-proof_harnesses = [
-  "sensitive_marker_never_projects_payload_publicly",
-  "sensitivity_markers_can_never_widen_a_redacted_projection",
-]
+evidence = []
 production_entrypoints = [
   "crates/runtime/awaken-ext-mcp/src/sensitive.rs",
 ]

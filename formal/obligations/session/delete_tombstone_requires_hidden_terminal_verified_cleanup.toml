@@ -3,13 +3,9 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/contract/awaken-session-state-contract/src/session_repo.rs",
   "crates/stores/awaken-session-store/tests/session_repo_conformance.rs",
   "crates/stores/awaken-session-store/src/postgres.rs",
   "crates/stores/awaken-session-store/src/sqlite.rs",
-]
-proof_harnesses = [
-  "session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup",
 ]
 production_entrypoints = [
   "crates/contract/awaken-session-state-contract/src/session_repo.rs",

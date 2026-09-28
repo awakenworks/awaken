@@ -392,6 +392,7 @@ fn terminal_failure(fact: &Fact) -> Option<(String, String)> {
 mod proofs {
     use super::*;
 
+    /// @obligation ui_stream.terminal_projection_is_exact_fail_closed_and_absorbing
     #[kani::proof]
     fn ag_ui_terminal_category_mapping_is_total_and_exact() {
         let tag: u8 = kani::any();

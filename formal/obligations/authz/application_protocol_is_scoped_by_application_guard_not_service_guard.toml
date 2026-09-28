@@ -3,14 +3,10 @@ proof_grade = "production_kernel_proved"
 status = "kernel_proved"
 tcb_assumptions = []
 evidence = [
-  "crates/control/awaken-control/src/authz/roles.rs",
   "crates/control/awaken-authz-enforce/src/lib.rs",
   "crates/control/awaken-control/src/authz.rs",
   "crates/control/awaken-control/src/authz/application_protocol_tests.rs",
   "crates/server/awaken-coordinator/src/lib.rs",
-]
-proof_harnesses = [
-  "application_route_policy_never_enters_the_service_guard",
 ]
 production_entrypoints = [
   "crates/control/awaken-control/src/authz/roles.rs",

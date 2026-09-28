@@ -98,6 +98,7 @@ const fn repository_rotation_generation_is_current(
 }
 
 #[cfg(kani)]
+/// @obligation session_resources.repository_rotation_requires_original_live_generation
 #[kani::proof]
 fn repository_rotation_requires_original_live_resource_generation() {
     // Full u64 generations and every actual durable execution-state variant.

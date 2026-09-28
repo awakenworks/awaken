@@ -4,12 +4,7 @@ status = "kernel_proved"
 tcb_assumptions = [
   "external.performance_and_long_run_stability",
 ]
-evidence = [
-  "crates/control/awaken-data-subject-application/src/lib.rs",
-]
-proof_harnesses = [
-  "consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose",
-]
+evidence = []
 production_entrypoints = [
   "crates/control/awaken-data-subject-application/src/lib.rs",
 ]

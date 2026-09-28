@@ -5,13 +5,7 @@ tcb_assumptions = []
 evidence = [
   "formal/tla/ToolPermissionPolicy.tla",
   "formal/tla/ToolPermissionPolicy.cfg",
-  "crates/contract/awaken-agent-contract/src/toolset.rs",
-  "crates/contract/awaken-session-configuration-contract/src/agent_config.rs",
   "crates/server/awaken-session-executor/src/config.rs",
-]
-proof_harnesses = [
-  "managed_toolset_default_resolution_is_source_exact_and_configurable",
-  "toolset_policy_exact_override_replaces_only_the_matching_default",
 ]
 production_entrypoints = [
   "crates/contract/awaken-agent-contract/src/toolset.rs",

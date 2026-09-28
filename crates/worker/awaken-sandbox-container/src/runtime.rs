@@ -306,6 +306,7 @@ mod capability_tests {
 }
 
 #[cfg(kani)]
+/// @obligation sandbox.allowlist_claim_requires_runtime_and_issuer_evidence
 #[kani::proof]
 fn allowlist_claim_never_exceeds_its_evidence() {
     let runtime_attested: bool = kani::any();

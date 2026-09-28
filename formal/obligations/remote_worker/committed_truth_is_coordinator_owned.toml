@@ -8,18 +8,11 @@ tcb_assumptions = [
 ]
 evidence = [
   "formal/tla/RemoteWorkerProtocol.tla",
-  "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",
   "crates/server/awaken-dispatch/src/application.rs",
   "crates/server/awaken-dispatch/src/commit_fence.rs",
   "crates/server/awaken-session-executor/src/commit_ingest.rs",
   "crates/server/awaken-session-executor/src/store.rs",
   "crates/contract/awaken-agent-contract/src/thread/commit/coordinator.rs",
-  "crates/contract/awaken-agent-contract/src/thread/commit/operation.rs",
-]
-proof_harnesses = [
-  "commit_epoch_guard_admits_only_complete_exact_claim",
-  "operation_identity_replays_only_the_same_run_and_payload",
-  "operation_append_requires_exact_prefix_and_nonwrapping_version",
 ]
 production_entrypoints = [
   "crates/contract/awaken-dispatch-contract/src/commit_epoch.rs",

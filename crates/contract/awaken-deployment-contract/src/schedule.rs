@@ -137,6 +137,7 @@ impl Cron {
 }
 
 #[cfg(kani)]
+/// @obligation scheduled_work.minute_timestamp_projection_is_exact_bounded_and_in_domain
 #[kani::proof]
 fn minute_timestamp_projection_is_exact_and_bounded() {
     let minute: u64 = kani::any();
@@ -148,6 +149,7 @@ fn minute_timestamp_projection_is_exact_and_bounded() {
 }
 
 #[cfg(kani)]
+/// @obligation scheduled_work.minute_timestamp_projection_is_exact_bounded_and_in_domain
 #[kani::proof]
 fn minute_timestamp_projection_has_an_exact_input_domain() {
     let minute: u64 = kani::any();
