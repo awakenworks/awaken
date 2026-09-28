@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{
     ContentBlock, DocumentSource, ImageSource, SearchResultContent,
@@ -30,7 +28,6 @@ pub struct OpenAiResponsesExecutor {
     url: Url,
     authentication: String,
     provider_kind: String,
-    timeout: Duration,
 }
 
 impl OpenAiResponsesExecutor {
@@ -53,18 +50,11 @@ impl OpenAiResponsesExecutor {
             url,
             authentication: authentication.into(),
             provider_kind: provider_kind.into(),
-            timeout: awaken_runtime_contract::llm::DEFAULT_MODEL_RESPONSE_TIMEOUT,
         })
     }
 
-    #[must_use]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
-    }
-
     async fn execute(&self, request: &ChatRequest) -> Result<ResponsesResponse, Error> {
-        let deadline = crate::inference_budget::current_model_response_deadline(self.timeout)?;
+        let deadline = crate::inference_budget::current_attempt_timing()?.response_deadline();
         let body = request_body_for_provider(request, &self.provider_kind).map_err(|error| {
             // Nothing was encoded, so nothing reached the transport.
             error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
@@ -80,12 +70,7 @@ impl OpenAiResponsesExecutor {
                 .send()
                 .await
                 .map_err(|error| {
-                    classify_wire_failure(WireFailure {
-                        status: error.status(),
-                        headers: None,
-                        body: error.without_url().to_string().into(),
-                        complete: false,
-                    })
+                    classify_wire_failure(WireFailure::transport(&error.without_url()))
                 })?;
             let status = response.status();
             let headers = response.headers().clone();
@@ -106,6 +91,7 @@ impl OpenAiResponsesExecutor {
                 headers: Some(&headers),
                 body,
                 complete,
+                unsent: false,
             }));
         }
         let text = text.map_err(|error| Error::Provider(error.to_string()))?;

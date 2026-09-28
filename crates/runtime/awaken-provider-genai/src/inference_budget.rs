@@ -1,41 +1,24 @@
-//! Provider-side consumption of Runtime's one validated invocation budget.
+//! Provider-side reading of the one caller-declared inference budget.
+//!
+//! Adapters own no timeout of their own. Under Runtime they read the attempt
+//! timing Runtime derived from its caller's budget; a direct adapter call
+//! (no Runtime around it) runs one attempt of the default budget.
 use awaken_runtime_contract::llm::{
-    DEFAULT_MODEL_ATTEMPT_WATCHDOG, DEFAULT_MODEL_RESPONSE_TIMEOUT, Error, ModelAttemptTiming,
-    ModelInferenceBudgetError, Result,
+    Error, ModelAttemptTiming, ModelInferenceBudget, ModelInferenceClock, Result,
+    TokioModelInferenceClock,
 };
 use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, NoDispatchProof};
-use std::time::Duration;
-use tokio::time::Instant;
 
-/// All shipped provider dialects use this one pre-dispatch timing boundary.
-/// Direct adapter calls have no outer watchdog; derive its unused allowance from
-/// the default relation. Runtime calls validate the actual inherited watchdog.
-pub(super) fn current_model_response_deadline(response: Duration) -> Result<Instant> {
+/// The inherited timing of this attempt, refused before dispatch when its
+/// response deadline is already spent.
+pub(super) fn current_attempt_timing() -> Result<ModelAttemptTiming> {
+    let now = TokioModelInferenceClock.now();
     let timing = match awaken_runtime_contract::model_operation::current_model_attempt_timing() {
         Some(timing) => timing,
-        None => {
-            let allowance = DEFAULT_MODEL_ATTEMPT_WATCHDOG - DEFAULT_MODEL_RESPONSE_TIMEOUT;
-            let watchdog = response
-                .checked_add(allowance)
-                .ok_or(ModelInferenceBudgetError)
-                .map_err(ModelInferenceBudgetError::before_dispatch)?;
-            ModelAttemptTiming::start_at(
-                awaken_runtime_contract::llm::ModelInferenceClock::now(
-                    &awaken_runtime_contract::llm::TokioModelInferenceClock,
-                ),
-                watchdog,
-            )
-            .map_err(ModelInferenceBudgetError::before_dispatch)?
-        }
+        None => ModelAttemptTiming::standalone(now, ModelInferenceBudget::DEFAULT)
+            .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?,
     };
-    let deadline = timing
-        .response_deadline(response)
-        .map_err(ModelInferenceBudgetError::before_dispatch)?;
-    if deadline
-        <= awaken_runtime_contract::llm::ModelInferenceClock::now(
-            &awaken_runtime_contract::llm::TokioModelInferenceClock,
-        )
-    {
+    if timing.response_deadline() <= TokioModelInferenceClock.now() {
         return Err(
             Error::Timeout("inference budget exhausted before provider dispatch".into())
                 .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
@@ -43,5 +26,5 @@ pub(super) fn current_model_response_deadline(response: Duration) -> Result<Inst
                 )),
         );
     }
-    Ok(deadline)
+    Ok(timing)
 }

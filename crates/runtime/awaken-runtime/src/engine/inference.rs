@@ -352,6 +352,15 @@ async fn infer_with_retry_inner(
         prefix = cp.partial_text;
     }
 
+    // One logical deadline for this model request, fixed before the first
+    // attempt: every attempt's response window, every backoff pause and every
+    // journal wait spends the same caller-declared total.
+    let logical_deadline = policy
+        .budget
+        .logical_deadline(awaken_runtime_contract::llm::ModelInferenceClock::now(
+            &awaken_runtime_contract::llm::TokioModelInferenceClock,
+        ))
+        .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?;
     let mut attempt = 0;
     loop {
         if cancellation.is_some_and(|token| token.is_cancelled()) {
@@ -379,15 +388,17 @@ async fn infer_with_retry_inner(
                     "model request attempt no longer owns execution: {error}"
                 ))
             })?;
-        // Validate before committing Entered: zero or an unrepresentable budget
+        // Validate before committing Entered: an unrepresentable deadline
         // must not leave an unknown invocation that never entered an executor.
         // Durable entry writes remain uncancellable; their elapsed cost still
-        // consumes this invocation's one absolute provider response horizon.
+        // consumes this invocation's one absolute provider response horizon,
+        // which never extends past the request's logical deadline.
         let timing = awaken_runtime_contract::llm::ModelAttemptTiming::start_at(
             awaken_runtime_contract::llm::ModelInferenceClock::now(
                 &awaken_runtime_contract::llm::TokioModelInferenceClock,
             ),
-            policy.attempt_timeout,
+            policy.budget,
+            logical_deadline,
         )
         .map_err(awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch)?;
         let operation = if let Some(journal) = journal.as_deref_mut() {
@@ -490,8 +501,12 @@ async fn infer_with_retry_inner(
         }
         let attempt_result = outcome.unwrap_or_else(|_| {
             Err(awaken_runtime_contract::llm::Error::Timeout(format!(
-                "inference attempt exceeded {}ms",
-                policy.attempt_timeout.as_millis()
+                "inference attempt exceeded its {}ms watchdog",
+                policy
+                    .budget
+                    .attempt_response()
+                    .saturating_add(policy.budget.return_allowance())
+                    .as_millis()
             )))
         });
         if !quiescence.permits_execution() {
@@ -518,6 +533,11 @@ async fn infer_with_retry_inner(
                     class,
                     execution,
                     u32::try_from(attempt).unwrap_or(u32::MAX),
+                    logical_deadline.saturating_duration_since(
+                        awaken_runtime_contract::llm::ModelInferenceClock::now(
+                            &awaken_runtime_contract::llm::TokioModelInferenceClock,
+                        ),
+                    ),
                     crate::retry::jitter_draw(),
                 );
                 tracing::debug!(?class, ?verdict, "inference attempt failed");

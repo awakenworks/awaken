@@ -162,6 +162,10 @@ pub enum PreDispatchStage {
     /// provider executor, for example when cancellation arrived during the
     /// uncancellable entry commit. A resolved executor is not a dispatched call.
     RuntimeAdmission,
+    /// The transport could not establish a connection for this request (name
+    /// resolution, TCP connect or TLS handshake failed), so no byte of the
+    /// request was written to any socket.
+    TransportConnect,
     /// Restored from a journal written before proofs were recorded. Reachable
     /// only by decoding history, never by minting.
     Unrecorded,
@@ -171,8 +175,8 @@ pub enum PreDispatchStage {
 ///
 /// Unlike termination there is no remote artifact to parse — the absence of a
 /// dispatch has no wire form — so the adapter or Runtime names its exact
-/// pre-call refusal. Each mintable stage is strictly before the first byte is
-/// handed to a transport, which is the one
+/// pre-call refusal. Each mintable stage is strictly before the first request
+/// byte is written to a socket, which is the one
 /// claim a caller downstream of a send can never honestly make. The private
 /// [`Seal`] keeps this out of reach of struct literals just like a receipt;
 /// dedicated constructors cannot mint the decoder-only `Unrecorded` tag.
@@ -203,6 +207,14 @@ impl NoDispatchProof {
     #[must_use]
     pub const fn runtime_admission() -> Self {
         Self::mint(PreDispatchStage::RuntimeAdmission)
+    }
+
+    /// The transport failed while establishing its connection, before writing
+    /// any request byte. Minted only by the provider's wire classifier from
+    /// the transport's own connect-phase error.
+    #[must_use]
+    pub const fn transport_connect() -> Self {
+        Self::mint(PreDispatchStage::TransportConnect)
     }
 
     /// Which pre-send stage refused the request, for diagnostics and history.
@@ -658,28 +670,31 @@ fn fixture_binding(
 #[cfg(kani)]
 #[kani::proof]
 fn no_dispatch_mints_only_reviewed_pre_call_stages() {
-    // C1 the production caller chooses one of three explicit constructors;
+    // C1 the production caller chooses one of four explicit constructors;
     // E1 the sealed proof carries that exact pre-call stage; E2 no constructor
     // can mint decoder-only Unrecorded. Exhaust every u8 selector; this is a
     // constructor/stage proof, not transport honesty or async journal proof.
     let choice: u8 = kani::any();
-    let proof = match choice % 3 {
+    let proof = match choice % 4 {
         0 => NoDispatchProof::request_projection(),
         1 => NoDispatchProof::executor_resolution(),
-        _ => NoDispatchProof::runtime_admission(),
+        2 => NoDispatchProof::runtime_admission(),
+        _ => NoDispatchProof::transport_connect(),
     };
     assert!(matches!(
         proof.stage(),
         PreDispatchStage::RequestProjection
             | PreDispatchStage::ExecutorResolution
             | PreDispatchStage::RuntimeAdmission
+            | PreDispatchStage::TransportConnect
     ));
     assert_eq!(
         proof.stage(),
-        match choice % 3 {
+        match choice % 4 {
             0 => PreDispatchStage::RequestProjection,
             1 => PreDispatchStage::ExecutorResolution,
-            _ => PreDispatchStage::RuntimeAdmission,
+            2 => PreDispatchStage::RuntimeAdmission,
+            _ => PreDispatchStage::TransportConnect,
         }
     );
     assert_ne!(proof.stage(), PreDispatchStage::Unrecorded);
@@ -1181,9 +1196,9 @@ mod tests {
             assert_eq!(receipt.wire_fact(), fact, "R4");
             assert!(ModelExecutionEvidence::Terminated(receipt).permits_reentry());
         }
-        // D1-D3 only reviewed pre-send constructors can mint positive proof;
-        // D4 Unrecorded remains decoder-only. No general enum-taking public
-        // constructor can turn D4 into new re-entry authority.
+        // D1-D4 only reviewed pre-send constructors can mint positive proof;
+        // D5 Unrecorded remains decoder-only. No general enum-taking public
+        // constructor can turn D5 into new re-entry authority.
         for (stage, proof) in [
             (
                 PreDispatchStage::RequestProjection,
@@ -1196,6 +1211,10 @@ mod tests {
             (
                 PreDispatchStage::RuntimeAdmission,
                 NoDispatchProof::runtime_admission(),
+            ),
+            (
+                PreDispatchStage::TransportConnect,
+                NoDispatchProof::transport_connect(),
             ),
         ] {
             assert_eq!(proof.stage(), stage);
@@ -1240,6 +1259,10 @@ mod tests {
             (
                 ModelExecutionEvidence::NotDispatched(NoDispatchProof::executor_resolution()),
                 serde_json::json!({ "NotDispatched": "executor_resolution" }),
+            ),
+            (
+                ModelExecutionEvidence::NotDispatched(NoDispatchProof::transport_connect()),
+                serde_json::json!({ "NotDispatched": "transport_connect" }),
             ),
             (
                 ModelExecutionEvidence::Unknown,

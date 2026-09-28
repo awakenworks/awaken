@@ -624,7 +624,24 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
             .with_llm(model)
             .with_retry_policy(awaken_runtime::RetryPolicy {
                 max_retries: 3,
-                attempt_timeout: std::time::Duration::from_millis(if timeout { 30 } else { 5000 }),
+                // Watchdog = response window + return allowance: 30ms or 5s.
+                budget: if timeout {
+                    awaken_runtime_contract::llm::ModelInferenceBudget::new(
+                        std::time::Duration::from_millis(90),
+                        std::time::Duration::from_millis(20),
+                        std::time::Duration::from_millis(20),
+                        std::time::Duration::from_millis(10),
+                    )
+                    .unwrap()
+                } else {
+                    awaken_runtime_contract::llm::ModelInferenceBudget::new(
+                        std::time::Duration::from_millis(15000),
+                        std::time::Duration::from_millis(4990),
+                        std::time::Duration::from_millis(4990),
+                        std::time::Duration::from_millis(10),
+                    )
+                    .unwrap()
+                },
                 ..Default::default()
             })
             .with_max_consecutive_inference_failures(3);

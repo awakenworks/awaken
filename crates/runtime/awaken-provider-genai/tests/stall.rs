@@ -13,28 +13,43 @@ use awaken_runtime_contract::model_operation::{
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+mod budget;
 mod support;
+use awaken_runtime_contract::llm::{Error, ModelInferenceBudget};
+use awaken_runtime_contract::resilience::{RetryPolicy, RetryStop, RetryVerdict};
+use budget::{budget, with_budget};
+
+/// The retry loop's final word on `error` as the failed first attempt of a
+/// default-budget request (jitter at its lower bound).
+fn verdict(error: &Error) -> RetryVerdict {
+    RetryPolicy::default().decide(
+        error.class(),
+        error.execution_evidence(),
+        0,
+        ModelInferenceBudget::DEFAULT.total(),
+        0,
+    )
+}
 
 #[tokio::test]
-async fn every_native_dialect_rejects_incoherent_inherited_budget_before_http_dispatch() {
+async fn every_native_dialect_obeys_the_inherited_deadline_before_http_dispatch() {
     use awaken_provider_genai::OpenAiResponsesExecutor;
-    use awaken_runtime_contract::llm::ModelAttemptTiming;
+    use awaken_runtime_contract::llm::{
+        ModelAttemptTiming, ModelInferenceClock, TokioModelInferenceClock,
+    };
     use awaken_runtime_contract::model_operation::with_model_invocation_context;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    // B1 response=0; B2 response=watchdog; B3 response>watchdog => Binding,
-    // positive NotDispatched, zero requests. B4 0<response<watchdog => the
-    // original complete HTTP error, terminal receipt, exactly one request.
-    // Cross every rule with Anthropic/OpenAI streaming/nonstreaming and
-    // Responses. The fixture is the existing one HTTP owner, not a new path.
-    for (response_ms, watchdog_ms, valid) in [
-        (0, 100, false),
-        (100, 100, false),
-        (101, 100, false),
-        (300, 500, true),
-    ] {
+    // Adapters own no timeout, so an incoherent provider/runtime pair is no
+    // longer representable; the adapter only reads the inherited attempt
+    // timing. B1 the request's logical deadline is already spent => Timeout,
+    // positive NotDispatched, zero requests, and the retry loop stops on the
+    // deadline. B2 time remains => the original complete HTTP error, terminal
+    // receipt, exactly one request, and a permanent 400 is not retried. Cross
+    // both with Anthropic/OpenAI streaming/nonstreaming and Responses.
+    for (logical_ms, dispatched) in [(0, false), (500, true)] {
         for (kind, streaming) in [(0, false), (0, true), (1, false), (1, true), (2, false)] {
             let requests = Arc::new(AtomicUsize::new(0));
             let base = spawn_sse_server(StreamFixture::HttpFailure {
@@ -44,12 +59,10 @@ async fn every_native_dialect_rejects_incoherent_inherited_budget_before_http_di
                 requests: requests.clone(),
             })
             .await;
-            let response = Duration::from_millis(response_ms);
             let executor: Box<dyn LlmExecutor> = if kind == 2 {
                 Box::new(
                     OpenAiResponsesExecutor::from_materialized_endpoint("openai", &base, "test")
-                        .unwrap()
-                        .with_timeout(response),
+                        .unwrap(),
                 )
             } else {
                 Box::new(
@@ -62,15 +75,14 @@ async fn every_native_dialect_rejects_incoherent_inherited_budget_before_http_di
                         base,
                         "test",
                     )
-                    .unwrap()
-                    .with_timeout(response),
+                    .unwrap(),
                 )
             };
+            let started = TokioModelInferenceClock.now();
             let timing = ModelAttemptTiming::start_at(
-                awaken_runtime_contract::llm::ModelInferenceClock::now(
-                    &awaken_runtime_contract::llm::TokioModelInferenceClock,
-                ),
-                Duration::from_millis(watchdog_ms),
+                started,
+                budget(Duration::from_millis(300), Duration::from_millis(300)),
+                started + Duration::from_millis(logical_ms),
             )
             .unwrap();
             let result = with_model_invocation_context(None, timing, async {
@@ -83,27 +95,44 @@ async fn every_native_dialect_rejects_incoherent_inherited_budget_before_http_di
             .await;
             let error =
                 result.expect_err("fixture returns a complete error or pre-dispatch refusal");
+            let at = format!("{logical_ms}/{kind}/{streaming}");
             assert_eq!(
                 requests.load(Ordering::SeqCst),
-                usize::from(valid),
-                "B/{response_ms}/{watchdog_ms}/{kind}/{streaming}"
+                usize::from(dispatched),
+                "B {at}"
             );
-            if valid {
+            if dispatched {
                 assert_eq!(
                     error.execution_evidence(),
                     ModelExecutionEvidence::Terminated(TerminalReceipt::from_response_envelope(
                         ResponseEnvelope::CompleteErrorBody
                     )),
-                    "B4"
+                    "B2 {at}"
+                );
+                assert_eq!(
+                    verdict(&error),
+                    RetryVerdict::Stop(RetryStop::NotRetryable),
+                    "B2 {at}"
                 );
             } else {
-                assert_eq!(error.code(), "binding_rejected", "B1-B3");
+                assert_eq!(error.code(), "timeout", "B1 {at}");
                 assert!(
                     matches!(
                         error.execution_evidence(),
                         ModelExecutionEvidence::NotDispatched(_)
                     ),
-                    "B1-B3"
+                    "B1 {at}"
+                );
+                assert_eq!(
+                    RetryPolicy::default().decide(
+                        error.class(),
+                        error.execution_evidence(),
+                        0,
+                        Duration::ZERO,
+                        0
+                    ),
+                    RetryVerdict::Stop(RetryStop::DeadlineExhausted),
+                    "B1 {at}"
                 );
             }
         }
@@ -112,8 +141,6 @@ async fn every_native_dialect_rejects_incoherent_inherited_budget_before_http_di
 
 #[tokio::test]
 async fn credential_materialization_cannot_restart_the_inherited_response_budget() {
-    use awaken_runtime_contract::llm::ModelAttemptTiming;
-    use awaken_runtime_contract::model_operation::with_model_invocation_context;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -129,25 +156,21 @@ async fn credential_materialization_cannot_restart_the_inherited_response_budget
         requests: requests.clone(),
     })
     .await;
-    let timing = ModelAttemptTiming::start_at(
-        awaken_runtime_contract::llm::ModelInferenceClock::now(
-            &awaken_runtime_contract::llm::TokioModelInferenceClock,
-        ),
-        Duration::from_secs(5),
+    let error = with_budget(
+        budget(Duration::from_millis(10), Duration::from_millis(10)),
+        async {
+            // awaken-wait: pre-dispatch materialization intentionally consumes the
+            // entire configured 10ms response budget; this deadline is the cause.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let executor =
+                GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base, "test")
+                    .unwrap();
+            executor
+                .infer_streaming(request(), &NullSink)
+                .await
+                .unwrap_err()
+        },
     )
-    .unwrap();
-    let error = with_model_invocation_context(None, timing, async {
-        // awaken-wait: pre-dispatch materialization intentionally consumes the
-        // entire configured 10ms response budget; this deadline is the cause.
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        let executor = GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base, "test")
-            .unwrap()
-            .with_timeout(Duration::from_millis(10));
-        executor
-            .infer_streaming(request(), &NullSink)
-            .await
-            .unwrap_err()
-    })
     .await;
     assert_eq!(error.code(), "timeout", "B5 exact spent-budget error");
     assert!(
@@ -166,7 +189,7 @@ async fn credential_materialization_cannot_restart_the_inherited_response_budget
 
 #[tokio::test]
 async fn healthy_text_reasoning_and_typed_tool_progress_finish_after_the_old_ten_minute_limit() {
-    use awaken_runtime_contract::llm::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, ModelAttemptTiming};
+    use awaken_runtime_contract::llm::ModelAttemptTiming;
     use awaken_runtime_contract::model_operation::with_model_invocation_context;
     use std::sync::{
         Arc,
@@ -216,11 +239,11 @@ async fn healthy_text_reasoning_and_typed_tool_progress_finish_after_the_old_ten
         if kind == "tool" {
             request.tools = vec![support::compatibility_tool()];
         }
-        let timing = ModelAttemptTiming::start_at(
+        let timing = ModelAttemptTiming::standalone(
             awaken_runtime_contract::llm::ModelInferenceClock::now(
                 &awaken_runtime_contract::llm::TokioModelInferenceClock,
             ),
-            DEFAULT_MODEL_ATTEMPT_WATCHDOG,
+            ModelInferenceBudget::DEFAULT,
         )
         .unwrap();
         let start = tokio::time::Instant::now();
@@ -367,7 +390,7 @@ enum StreamFixture {
 #[tokio::test]
 async fn responses_complete_body_outlives_the_old_two_minute_cap_and_deadline_remains_unknown() {
     use awaken_provider_genai::OpenAiResponsesExecutor;
-    use awaken_runtime_contract::llm::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, ModelAttemptTiming};
+    use awaken_runtime_contract::llm::ModelAttemptTiming;
     use awaken_runtime_contract::model_operation::with_model_invocation_context;
     use std::sync::{
         Arc,
@@ -390,16 +413,15 @@ async fn responses_complete_body_outlives_the_old_two_minute_cap_and_deadline_re
         .await;
         let executor =
             OpenAiResponsesExecutor::from_materialized_endpoint("openai", &base, "test").unwrap();
-        let executor = if complete {
-            executor
-        } else {
-            executor.with_timeout(Duration::from_millis(100))
-        };
-        let timing = ModelAttemptTiming::start_at(
+        let timing = ModelAttemptTiming::standalone(
             awaken_runtime_contract::llm::ModelInferenceClock::now(
                 &awaken_runtime_contract::llm::TokioModelInferenceClock,
             ),
-            DEFAULT_MODEL_ATTEMPT_WATCHDOG,
+            if complete {
+                ModelInferenceBudget::DEFAULT
+            } else {
+                budget(Duration::from_millis(100), Duration::from_millis(100))
+            },
         )
         .unwrap();
         let mut inference = tokio::spawn(async move {
@@ -845,8 +867,75 @@ async fn every_dialect_classifies_http_failures_by_status_before_body() {
             let at = format!("{row}: {kind}/{streaming}");
             assert_eq!(error.code(), code, "{at} E1");
             assert_eq!(error.retry_after(), retry_after, "{at} E2");
-            assert_eq!(error.is_retryable(), retryable, "{at} E3");
+            assert_eq!(
+                matches!(verdict(&error), RetryVerdict::Retry { .. }),
+                retryable,
+                "{at} E3"
+            );
         }
+    }
+}
+
+#[tokio::test]
+async fn a_refused_connection_proves_the_request_never_left_on_every_dialect() {
+    use awaken_provider_genai::OpenAiResponsesExecutor;
+    use awaken_runtime_contract::model_operation::{NoDispatchProof, PreDispatchStage};
+    // Cause: nothing listens on the endpoint, so the connect phase fails.
+    // Effects: E1 positive NotDispatched evidence naming the transport
+    // connect stage (no request byte was written); E2 the retry loop may
+    // therefore submit the request again. Every dialect and transport path.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    for (kind, streaming) in [(0, false), (0, true), (1, false), (1, true), (2, false)] {
+        let executor: Box<dyn LlmExecutor> = match kind {
+            2 => Box::new(
+                OpenAiResponsesExecutor::from_materialized_endpoint(
+                    "openai",
+                    &format!("http://{address}/v1"),
+                    "test",
+                )
+                .unwrap(),
+            ),
+            _ => Box::new(
+                GenaiExecutor::from_materialized_endpoint(
+                    if kind == 0 {
+                        AdapterKind::Anthropic
+                    } else {
+                        AdapterKind::OpenAI
+                    },
+                    format!("http://{address}/v1"),
+                    "test",
+                )
+                .unwrap(),
+            ),
+        };
+        let error = with_budget(
+            budget(Duration::from_secs(5), Duration::from_secs(5)),
+            async {
+                if streaming {
+                    executor.infer_streaming(request(), &NullSink).await
+                } else {
+                    executor.infer(request()).await
+                }
+            },
+        )
+        .await
+        .expect_err("nothing is listening");
+        let at = format!("{kind}/{streaming}: {error}");
+        assert_eq!(
+            error.execution_evidence(),
+            ModelExecutionEvidence::NotDispatched(NoDispatchProof::transport_connect()),
+            "E1 {at}"
+        );
+        let ModelExecutionEvidence::NotDispatched(proof) = error.execution_evidence() else {
+            unreachable!()
+        };
+        assert_eq!(proof.stage(), PreDispatchStage::TransportConnect, "E1 {at}");
+        assert!(
+            matches!(verdict(&error), RetryVerdict::Retry { .. }),
+            "E2 {at}"
+        );
     }
 }
 
@@ -921,11 +1010,13 @@ async fn provider_protocol_end_not_http_eof_owns_response_success() {
                     };
                     let executor =
                         GenaiExecutor::from_materialized_endpoint(adapter, base_url, "test-key")
-                            .expect("boundary client")
-                            .with_idle_timeout(Duration::from_secs(1));
+                            .expect("boundary client");
                     let result = tokio::time::timeout(
                         Duration::from_secs(3),
-                        executor.infer_streaming(request(), &NullSink),
+                        with_budget(
+                            budget(Duration::from_secs(3), Duration::from_secs(1)),
+                            executor.infer_streaming(request(), &NullSink),
+                        ),
                     )
                     .await
                     .expect("boundary settles without a stalled read");
@@ -957,8 +1048,11 @@ async fn provider_protocol_end_not_http_eof_owns_response_success() {
                         if !broken_body {
                             assert!(error.to_string().contains("before protocol completion"));
                         }
-                        assert!(
-                            error.is_retryable(),
+                        // A truncated stream proves nothing about the remote
+                        // stop, so the retry loop may not submit it again.
+                        assert_eq!(
+                            verdict(&error),
+                            RetryVerdict::Stop(RetryStop::ExecutionUncertain),
                             "{adapter:?}, tool={tool}, broken={broken_body}: {error}"
                         );
                     }
@@ -1052,12 +1146,16 @@ async fn paused_provider_flushes_live_text_before_the_idle_error() {
     let base_url = spawn_sse_server(StreamFixture::AnthropicStall).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
-            .unwrap()
-            .with_idle_timeout(Duration::from_secs(2));
+            .unwrap();
     let sink = std::sync::Arc::new(ObservedSink::default());
     let observed = sink.clone();
-    let run =
-        tokio::spawn(async move { executor.infer_streaming(request(), observed.as_ref()).await });
+    let run = tokio::spawn(async move {
+        with_budget(
+            budget(Duration::from_secs(10), Duration::from_secs(2)),
+            executor.infer_streaming(request(), observed.as_ref()),
+        )
+        .await
+    });
     tokio::time::timeout(Duration::from_millis(700), sink.arrived.notified())
         .await
         .expect("L2/E1 visible prefix arrives before the idle error");
@@ -1085,21 +1183,27 @@ async fn stalled_stream_times_out_as_a_retryable_timeout() {
     let base_url = spawn_sse_server(StreamFixture::AnthropicStall).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
-            .expect("explicit client construction")
-            .with_idle_timeout(Duration::from_millis(300));
+            .expect("explicit client construction");
 
     // Without the idle timeout the consumption loop would hang forever; the
     // 5s guard turns that hang into a test failure.
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        executor.infer_streaming(request(), &NullSink),
+        with_budget(
+            budget(Duration::from_secs(5), Duration::from_millis(300)),
+            executor.infer_streaming(request(), &NullSink),
+        ),
     )
     .await
     .expect("the idle timeout fires instead of hanging");
     let err = result.expect_err("a stalled stream is an error, not a response");
     assert_eq!(err.code(), "timeout");
-    assert!(err.is_retryable(), "health classification is retained");
     assert_eq!(err.execution_evidence(), ModelExecutionEvidence::Unknown);
+    assert_eq!(
+        verdict(&err),
+        RetryVerdict::Stop(RetryStop::ExecutionUncertain),
+        "an unconfirmed stream is never submitted again"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1112,13 +1216,17 @@ async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
     let base_url = spawn_sse_server(StreamFixture::AnthropicHeartbeat).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
-            .expect("explicit client construction")
-            .with_timeout(Duration::from_millis(300))
-            .with_idle_timeout(Duration::from_secs(5));
+            .expect("explicit client construction");
 
+    // The silence window may not exceed the response window, so both are
+    // 300ms: the response deadline was fixed when the attempt started, before
+    // the stream opened, and therefore fires first.
     let result = tokio::time::timeout(
         Duration::from_secs(2),
-        executor.infer_streaming(request(), &NullSink),
+        with_budget(
+            budget(Duration::from_millis(300), Duration::from_millis(300)),
+            executor.infer_streaming(request(), &NullSink),
+        ),
     )
     .await
     .expect("the fixed call deadline fires instead of hanging");
@@ -1126,9 +1234,10 @@ async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
     assert_eq!(err.code(), "timeout");
     assert!(err.to_string().contains("total timeout"), "got: {err}");
     assert_eq!(err.execution_evidence(), ModelExecutionEvidence::Unknown);
-    assert!(
-        err.is_retryable(),
-        "a total stream timeout is worth retrying"
+    assert_eq!(
+        verdict(&err),
+        RetryVerdict::Stop(RetryStop::ExecutionUncertain),
+        "a dispatched stream that timed out is never submitted again"
     );
 }
 
@@ -1143,20 +1252,24 @@ async fn transport_heartbeats_do_not_count_as_model_progress() {
     let base_url = spawn_sse_server(StreamFixture::AnthropicHeartbeat).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
-            .expect("explicit client construction")
-            .with_timeout(Duration::from_secs(5))
-            .with_idle_timeout(Duration::from_millis(300));
+            .expect("explicit client construction");
 
     let result = tokio::time::timeout(
         Duration::from_secs(2),
-        executor.infer_streaming(request(), &NullSink),
+        with_budget(
+            budget(Duration::from_secs(5), Duration::from_millis(300)),
+            executor.infer_streaming(request(), &NullSink),
+        ),
     )
     .await
     .expect("raw heartbeats cannot keep inference pending");
     let error = result.expect_err("an unfinished heartbeat-only response fails");
     assert_eq!(error.code(), "timeout");
-    assert!(error.is_retryable());
     assert!(error.to_string().contains("no useful event"), "{error}");
+    assert_eq!(
+        verdict(&error),
+        RetryVerdict::Stop(RetryStop::ExecutionUncertain)
+    );
     assert_eq!(error.execution_evidence(), ModelExecutionEvidence::Unknown);
 }
 
@@ -1172,12 +1285,14 @@ async fn protocol_end_completes_without_waiting_for_transport_eof() {
     let base_url = spawn_sse_server(StreamFixture::OpenAiCompleteAfterEmptyChoices).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base_url, "test-key")
-            .expect("explicit client construction")
-            .with_idle_timeout(Duration::from_secs(5));
+            .expect("explicit client construction");
 
     let result = tokio::time::timeout(
         Duration::from_secs(2),
-        executor.infer_streaming(request(), &NullSink),
+        with_budget(
+            budget(Duration::from_secs(5), Duration::from_secs(5)),
+            executor.infer_streaming(request(), &NullSink),
+        ),
     )
     .await
     .expect("the protocol terminal event completes the turn")
@@ -1194,19 +1309,24 @@ async fn openai_empty_choice_heartbeats_do_not_defeat_the_idle_timeout() {
     let base_url = spawn_sse_server(StreamFixture::OpenAiEmptyChoiceStall).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base_url, "test-key")
-            .expect("explicit client construction")
-            .with_timeout(Duration::from_secs(5))
-            .with_idle_timeout(Duration::from_millis(300));
+            .expect("explicit client construction");
 
     let result = tokio::time::timeout(
         Duration::from_secs(2),
-        executor.infer_streaming(request(), &NullSink),
+        with_budget(
+            budget(Duration::from_secs(5), Duration::from_millis(300)),
+            executor.infer_streaming(request(), &NullSink),
+        ),
     )
     .await
     .expect("O2/E1 empty-choice traffic cannot keep inference pending");
     let error = result.expect_err("O2/E2 no-op choices are never a response");
     assert_eq!(error.code(), "timeout", "O2/E1");
-    assert!(error.is_retryable(), "O2/E1");
+    assert_eq!(
+        verdict(&error),
+        RetryVerdict::Stop(RetryStop::ExecutionUncertain),
+        "O2/E1"
+    );
     assert_eq!(error.execution_evidence(), ModelExecutionEvidence::Unknown);
 }
 
@@ -1219,15 +1339,19 @@ async fn openai_empty_terminal_response_fails_closed() {
     let base_url = spawn_sse_server(StreamFixture::OpenAiEmptyTerminal).await;
     let executor =
         GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base_url, "test-key")
-            .expect("explicit client construction")
-            .with_idle_timeout(Duration::from_secs(2));
+            .expect("explicit client construction");
 
-    let error = executor
-        .infer_streaming(request(), &NullSink)
-        .await
-        .expect_err("O3/E1 a terminal empty turn fails closed");
+    let error = with_budget(
+        budget(Duration::from_secs(5), Duration::from_secs(2)),
+        executor.infer_streaming(request(), &NullSink),
+    )
+    .await
+    .expect_err("O3/E1 a terminal empty turn fails closed");
     assert_eq!(error.code(), "provider_error", "O3/E2");
-    assert!(error.is_retryable(), "O3/E2");
+    assert!(
+        matches!(verdict(&error), RetryVerdict::Retry { .. }),
+        "O3/E2 a terminated empty turn is retried"
+    );
     // O3 also proves physical completion independently of response quality,
     // and the recorded wire fact names WHY: the streaming protocol's own end
     // frame arrived. The stall/timeout rows above stay Unknown precisely

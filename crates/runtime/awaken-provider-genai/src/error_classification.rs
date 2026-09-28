@@ -3,8 +3,9 @@
 //! Both shipped dialects (the genai-routed chat adapters and the dedicated
 //! Responses adapter) describe what the transport observed as a
 //! [`WireFailure`] and hand it to [`classify_wire_failure`]. That function is
-//! the only classifier and the only minting site of the complete-error-body
-//! execution evidence, so the two dialects cannot drift apart again.
+//! the only classifier and the only minting site of the evidence a wire
+//! failure establishes (a complete error body, or a connection that never
+//! carried the request), so the two dialects cannot drift apart again.
 //!
 //! The HTTP status decides first. A response body is provider-authored free
 //! text (it may quote a request id, a token count or another status), so body
@@ -17,7 +18,7 @@ use std::time::Duration;
 
 use awaken_runtime_contract::llm::Error;
 use awaken_runtime_contract::model_operation::{
-    ModelExecutionEvidence, ResponseEnvelope, TerminalReceipt,
+    ModelExecutionEvidence, NoDispatchProof, ResponseEnvelope, TerminalReceipt,
 };
 use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
@@ -35,6 +36,9 @@ pub(crate) struct WireFailure<'a> {
     pub(crate) body: Cow<'a, str>,
     /// The whole error body was read, so the response envelope is complete.
     pub(crate) complete: bool,
+    /// The transport failed while establishing its connection (DNS, TCP or
+    /// TLS), so no request byte was written.
+    pub(crate) unsent: bool,
 }
 
 impl WireFailure<'static> {
@@ -46,6 +50,19 @@ impl WireFailure<'static> {
             headers: None,
             body: Cow::Owned(description),
             complete: false,
+            unsent: false,
+        }
+    }
+
+    /// A failure the transport itself reported; a connect-phase failure
+    /// carried no request byte.
+    pub(crate) fn transport(error: &reqwest::Error) -> Self {
+        Self {
+            status: error.status(),
+            headers: None,
+            body: Cow::Owned(error.to_string()),
+            complete: false,
+            unsent: error.is_connect(),
         }
     }
 }
@@ -55,14 +72,16 @@ fn terminal_http_status(status: StatusCode) -> bool {
 }
 
 /// Classify one wire failure and attach the evidence it establishes. A
-/// complete 4xx/5xx error body proves the provider terminated this attempt;
-/// every other shape stays `Unknown`.
+/// complete 4xx/5xx error body proves the provider terminated this attempt; a
+/// connect-phase failure proves the request never left; every other shape
+/// stays `Unknown`.
 pub(crate) fn classify_wire_failure(failure: WireFailure<'_>) -> Error {
     let WireFailure {
         status,
         headers,
         body,
         complete,
+        unsent,
     } = failure;
     let classified = match status {
         Some(status) if terminal_http_status(status) => classify_status(
@@ -79,6 +98,10 @@ pub(crate) fn classify_wire_failure(failure: WireFailure<'_>) -> Error {
     if complete && status.is_some_and(terminal_http_status) {
         classified.with_execution_evidence(ModelExecutionEvidence::Terminated(
             TerminalReceipt::from_response_envelope(ResponseEnvelope::CompleteErrorBody),
+        ))
+    } else if unsent && status.is_none() {
+        classified.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+            NoDispatchProof::transport_connect(),
         ))
     } else {
         classified
@@ -107,9 +130,12 @@ fn genai_wire_failure(error: &genai::Error) -> Option<WireFailure<'_>> {
             // genai retains a failed body read in this sentinel string. A
             // status line alone is not a complete response envelope.
             complete: !body.starts_with("Failed to read error body:"),
+            unsent: false,
         }),
         genai::Error::WebAdapterCall { webc_error, .. }
         | genai::Error::WebModelCall { webc_error, .. } => webc_wire_failure(webc_error),
+        // The streaming client surfaces its send failure as the bare reqwest
+        // error, so a connect failure is recognized here too.
         genai::Error::WebStream { error, .. } => error
             .downcast_ref::<genai::Error>()
             .and_then(genai_wire_failure)
@@ -117,6 +143,11 @@ fn genai_wire_failure(error: &genai::Error) -> Option<WireFailure<'_>> {
                 error
                     .downcast_ref::<genai::webc::Error>()
                     .and_then(webc_wire_failure)
+            })
+            .or_else(|| {
+                error
+                    .downcast_ref::<reqwest::Error>()
+                    .map(WireFailure::transport)
             }),
         _ => None,
     }
@@ -133,15 +164,9 @@ fn webc_wire_failure(error: &genai::webc::Error) -> Option<WireFailure<'_>> {
             headers: Some(headers),
             body: Cow::Borrowed(body),
             complete: true,
+            unsent: false,
         }),
-        genai::webc::Error::Reqwest(reqwest_error) => {
-            reqwest_error.status().map(|status| WireFailure {
-                status: Some(status),
-                headers: None,
-                body: Cow::Owned(reqwest_error.to_string()),
-                complete: false,
-            })
-        }
+        genai::webc::Error::Reqwest(reqwest_error) => Some(WireFailure::transport(reqwest_error)),
         _ => None,
     }
 }
@@ -343,7 +368,6 @@ mod tests {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
     use super::{WireFailure, classify_error, classify_genai_error, classify_wire_failure};
-    use crate::DEFAULT_IDLE_TIMEOUT;
 
     fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
         pairs
@@ -661,6 +685,7 @@ mod tests {
                 headers: Some(&header_map),
                 body: body.into(),
                 complete,
+                unsent: false,
             });
             assert_eq!(error.code(), code, "{row}: E1");
             assert_eq!(
@@ -748,11 +773,6 @@ mod tests {
             "C5/E2"
         );
         assert_eq!(webc.execution_evidence(), terminated(), "C5/E1");
-    }
-
-    #[test]
-    fn default_stream_idle_window_allows_long_reasoning_prefill() {
-        assert!(DEFAULT_IDLE_TIMEOUT >= Duration::from_secs(300));
     }
 
     #[test]

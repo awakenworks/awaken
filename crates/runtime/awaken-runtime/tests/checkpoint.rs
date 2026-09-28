@@ -144,7 +144,13 @@ fn runtime_with(llm: Arc<dyn LlmExecutor>) -> Runtime {
             max_retries: 1,
             backoff_base_ms: 0,
             overloaded_backoff_base_ms: 0,
-            attempt_timeout: std::time::Duration::from_secs(5),
+            budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(
+                std::time::Duration::from_millis(15000),
+                std::time::Duration::from_millis(5000),
+                std::time::Duration::from_millis(5000),
+                std::time::Duration::from_millis(1),
+            )
+            .unwrap(),
         })
 }
 

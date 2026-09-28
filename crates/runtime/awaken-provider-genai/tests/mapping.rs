@@ -1,8 +1,6 @@
 //! The adapter maps neutral requests onto genai types and routes on the
 //! selected model binding without substituting a different model (G22).
 
-use std::time::Duration;
-
 use awaken_agent_contract::agent::content::{
     ContentBlock, DocumentSource, SearchResultCitations, SearchResultContent,
 };
@@ -808,8 +806,7 @@ fn executor_constructors_are_available() {
         "https://api.openai.com/v1",
         "explicit-test-key",
     )
-    .expect("explicit client construction")
-    .with_timeout(Duration::from_secs(5));
+    .expect("explicit client construction");
 }
 
 #[test]

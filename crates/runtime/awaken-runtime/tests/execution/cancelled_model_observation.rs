@@ -208,7 +208,14 @@ async fn retained_cancelled_call_expires_at_its_original_deadline_without_reentr
         .with_llm(model.clone())
         .with_retry_policy(awaken_runtime::RetryPolicy {
             max_retries: 3,
-            attempt_timeout: std::time::Duration::from_secs(1),
+            // Watchdog = 900ms response window + 100ms return allowance = 1s.
+            budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(
+                std::time::Duration::from_millis(3000),
+                std::time::Duration::from_millis(900),
+                std::time::Duration::from_millis(900),
+                std::time::Duration::from_millis(100),
+            )
+            .unwrap(),
             ..Default::default()
         })
         .with_max_consecutive_inference_failures(3);

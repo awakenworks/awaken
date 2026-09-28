@@ -18,7 +18,7 @@
 
 use std::time::Duration;
 
-use crate::llm::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, Error};
+use crate::llm::{Error, ModelInferenceBudget};
 use crate::model_operation::ModelExecutionEvidence;
 
 /// The routing vocabulary lives beneath every contract that classifies
@@ -178,7 +178,6 @@ const MAX_BACKOFF: Duration = Duration::from_secs(8);
 /// base from the configured generic base so zero-delay tests remain hermetic.
 const RATE_LIMIT_BACKOFF_MULTIPLIER: u64 = 30;
 const RATE_LIMIT_MAX_BACKOFF: Duration = Duration::from_secs(60);
-const RATE_LIMIT_MIN_RETRIES: usize = 12;
 
 /// A server `Retry-After` longer than the computed backoff is adopted verbatim,
 /// but never beyond this cap.
@@ -197,6 +196,9 @@ pub enum RetryStop {
     ExecutionUncertain,
     /// The class is retryable but the attempt budget is spent.
     AttemptsExhausted,
+    /// The pause plus the shortest useful attempt no longer fits before the
+    /// request's logical deadline.
+    DeadlineExhausted,
 }
 
 /// The one retry decision for a failed attempt.
@@ -212,17 +214,20 @@ pub enum RetryVerdict {
 /// [`decide`](Self::decide); tests inject a fast policy to keep suites quick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {
-    /// Extra attempts after the first failure (2 means up to 3 calls). A
-    /// nonzero budget enables the bounded rate-limit-specific floor; zero
-    /// remains an absolute disable.
+    /// Extra attempts after the first failure (2 means up to 3 calls). A rate
+    /// limit is bounded by the budget's total time instead of this count,
+    /// because a throttle clears with time, not with attempts; zero remains an
+    /// absolute disable for every class.
     pub max_retries: usize,
     /// Exponential backoff base for a generic retryable error.
     pub backoff_base_ms: u64,
     /// Backoff base when the provider reports overload — deliberately longer,
     /// since hammering an overloaded provider extends the outage.
     pub overloaded_backoff_base_ms: u64,
-    /// Hard ceiling for one provider attempt, including its complete stream.
-    pub attempt_timeout: Duration,
+    /// The caller-declared time budget of one model request: its logical
+    /// deadline across retries, each attempt's response window, the stream
+    /// silence window and the watchdog's return allowance.
+    pub budget: ModelInferenceBudget,
 }
 
 impl Default for RetryPolicy {
@@ -231,7 +236,7 @@ impl Default for RetryPolicy {
             max_retries: 2,
             backoff_base_ms: 500,
             overloaded_backoff_base_ms: 2_000,
-            attempt_timeout: DEFAULT_MODEL_ATTEMPT_WATCHDOG,
+            budget: ModelInferenceBudget::DEFAULT,
         }
     }
 }
@@ -239,19 +244,23 @@ impl Default for RetryPolicy {
 impl RetryPolicy {
     /// Decide what follows failed attempt number `failed_attempt` (0-based).
     ///
-    /// Rules, in order: an attempt without reentry evidence stops
-    /// (`ExecutionUncertain`); a class that cannot clear in place stops
-    /// (`NotRetryable`); the bounded kernel admits the attempt budget
-    /// (`AttemptsExhausted` otherwise); the pause is the class's jittered
-    /// exponential backoff, or the provider's requested pause when longer
-    /// (capped). `jitter` is one uniform random draw, supplied by the caller
-    /// so the decision itself is pure.
+    /// Rules, in order: a cancelled run stops (`Cancelled`); an attempt
+    /// without reentry evidence stops (`ExecutionUncertain`); a class that
+    /// cannot clear in place stops (`NotRetryable`); the bounded kernel admits
+    /// the attempt count (`AttemptsExhausted` otherwise); the pause is the
+    /// class's jittered exponential backoff, or the provider's requested pause
+    /// when longer (capped); and the pause plus one silence window — the
+    /// shortest attempt that can show any progress — must fit in `remaining`,
+    /// the time left before the request's logical deadline
+    /// (`DeadlineExhausted` otherwise). `jitter` is one uniform random draw,
+    /// supplied by the caller so the decision itself is pure.
     #[must_use]
     pub fn decide(
         &self,
         class: FailureClass,
         evidence: ModelExecutionEvidence,
         failed_attempt: u32,
+        remaining: Duration,
         jitter: u64,
     ) -> RetryVerdict {
         if class == FailureClass::Cancelled {
@@ -263,23 +272,29 @@ impl RetryPolicy {
         if !class.is_retryable() {
             return RetryVerdict::Stop(RetryStop::NotRetryable);
         }
-        let limit = u32::try_from(self.retry_limit(class)).unwrap_or(u32::MAX);
-        match bounded_retry_decision(RETRY_ACTIVE_STATE, true, failed_attempt, limit) {
-            RetryDecision::Retry => RetryVerdict::Retry {
-                after: self.pause(class, failed_attempt, jitter),
-            },
-            RetryDecision::Terminal => RetryVerdict::Stop(RetryStop::AttemptsExhausted),
+        if bounded_retry_decision(
+            RETRY_ACTIVE_STATE,
+            true,
+            failed_attempt,
+            self.retry_limit(class),
+        ) == RetryDecision::Terminal
+        {
+            return RetryVerdict::Stop(RetryStop::AttemptsExhausted);
         }
+        let after = self.pause(class, failed_attempt, jitter);
+        if after.saturating_add(self.budget.idle()) > remaining {
+            return RetryVerdict::Stop(RetryStop::DeadlineExhausted);
+        }
+        RetryVerdict::Retry { after }
     }
 
-    /// Keep the caller's explicit zero as an absolute retry disable. Otherwise
-    /// an exact rate-limit response gets a longer bounded availability budget;
-    /// all other classes retain the configured generic budget.
-    fn retry_limit(&self, class: FailureClass) -> usize {
-        if self.max_retries > 0 && matches!(class, FailureClass::RateLimited { .. }) {
-            self.max_retries.max(RATE_LIMIT_MIN_RETRIES)
-        } else {
-            self.max_retries
+    /// Keep the caller's explicit zero as an absolute retry disable. A rate
+    /// limit is otherwise bounded only by the logical deadline; every other
+    /// class keeps the configured count.
+    fn retry_limit(&self, class: FailureClass) -> u32 {
+        match class {
+            FailureClass::RateLimited { .. } if self.max_retries > 0 => u32::MAX,
+            _ => u32::try_from(self.max_retries).unwrap_or(u32::MAX),
         }
     }
 
@@ -513,14 +528,16 @@ mod tests {
     #[test]
     fn retry_verdict_decision_table() {
         // Causes: C1 class (+ provider pause), C2 execution evidence, C3
-        // failed attempt index, C4 policy budget, C5 jitter draw. Effect: the
-        // verdict. Rules: R0 a cancelled run => Cancelled, whatever else
-        // holds; R1 no reentry evidence => ExecutionUncertain; R2 a
-        // class that cannot clear in place => NotRetryable; R3 budget spent
-        // => AttemptsExhausted (a throttle gets at least 12 retries unless the
-        // caller disabled retries); R4 otherwise retry after the equal-jitter
-        // exponential backoff (8s cap; throttle 30x base, 60s cap) or the
-        // provider's longer pause (60s cap).
+        // failed attempt index, C4 policy (count budget), C5 time left before
+        // the logical deadline, C6 jitter draw. Effect: the verdict. Rules:
+        // R0 a cancelled run => Cancelled, whatever else holds; R1 no reentry
+        // evidence => ExecutionUncertain; R2 a class that cannot clear in
+        // place => NotRetryable; R3 count spent => AttemptsExhausted (a
+        // throttle has no count, only the deadline, unless the caller disabled
+        // retries); R5 pause + one silence window (default 300s) beyond the
+        // time left => DeadlineExhausted; R4 otherwise retry after the
+        // equal-jitter exponential backoff (8s cap; throttle 30x base, 60s
+        // cap) or the provider's longer pause (60s cap).
         let policy = RetryPolicy::default();
         let fast = RetryPolicy {
             max_retries: 50,
@@ -532,209 +549,62 @@ mod tests {
         };
         let not_dispatched =
             ModelExecutionEvidence::NotDispatched(NoDispatchProof::runtime_admission());
+        let unknown = ModelExecutionEvidence::Unknown;
+        let transient = FailureClass::Transient;
         let throttle = |retry_after| FailureClass::RateLimited { retry_after };
         let overload = |retry_after| FailureClass::Overloaded { retry_after };
         let ms = Duration::from_millis;
         let retry = |after| RetryVerdict::Retry { after };
         let stop = RetryVerdict::Stop;
-        type Row<'a> = (
-            &'static str,
-            &'a RetryPolicy,
-            FailureClass,
-            ModelExecutionEvidence,
-            u32,
-            u64,
-            RetryVerdict,
-        );
-        let rows: &[Row<'_>] = &[
-            (
-                "R1 unknown evidence",
-                &policy,
-                FailureClass::Transient,
-                ModelExecutionEvidence::Unknown,
-                0,
-                0,
-                stop(RetryStop::ExecutionUncertain),
-            ),
-            (
-                "R0 cancelled, unknown evidence",
-                &policy,
-                FailureClass::Cancelled,
-                ModelExecutionEvidence::Unknown,
-                0,
-                0,
-                stop(RetryStop::Cancelled),
-            ),
-            (
-                "R0 cancelled with budget left",
-                &fast,
-                FailureClass::Cancelled,
-                terminated(),
-                0,
-                0,
-                stop(RetryStop::Cancelled),
-            ),
-            (
-                "R1 beats a throttle",
-                &policy,
-                throttle(Some(SECOND)),
-                ModelExecutionEvidence::Unknown,
-                0,
-                0,
-                stop(RetryStop::ExecutionUncertain),
-            ),
-            (
-                "R2 permanent",
-                &policy,
-                FailureClass::Permanent,
-                terminated(),
-                0,
-                0,
-                stop(RetryStop::NotRetryable),
-            ),
-            (
-                "R2 usage limit",
-                &policy,
-                FailureClass::UsageLimit {
-                    reset_after: Some(SECOND),
-                },
-                terminated(),
-                0,
-                0,
-                stop(RetryStop::NotRetryable),
-            ),
-            (
-                "R4 first transient, low draw",
-                &policy,
-                FailureClass::Transient,
-                terminated(),
-                0,
-                0,
-                retry(ms(250)),
-            ),
-            (
-                "R4 first transient, high draw",
-                &policy,
-                FailureClass::Transient,
-                terminated(),
-                0,
-                250,
-                retry(ms(500)),
-            ),
-            (
-                "R4 not dispatched",
-                &policy,
-                FailureClass::Transient,
-                not_dispatched,
-                1,
-                0,
-                retry(ms(500)),
-            ),
-            (
-                "R3 transient budget spent",
-                &policy,
-                FailureClass::Transient,
-                terminated(),
-                2,
-                0,
-                stop(RetryStop::AttemptsExhausted),
-            ),
-            (
-                "R4 generic cap",
-                &fast,
-                FailureClass::Transient,
-                terminated(),
-                40,
-                4_000,
-                retry(ms(8_000)),
-            ),
-            (
-                "R4 overload base",
-                &policy,
-                overload(None),
-                terminated(),
-                0,
-                0,
-                retry(ms(1_000)),
-            ),
-            (
-                "R4 longer pause wins",
-                &policy,
-                overload(Some(30 * SECOND)),
-                terminated(),
-                0,
-                0,
-                retry(30 * SECOND),
-            ),
-            (
-                "R4 pause is capped",
-                &policy,
-                overload(Some(600 * SECOND)),
-                terminated(),
-                0,
-                0,
-                retry(60 * SECOND),
-            ),
-            (
-                "R4 shorter pause loses",
-                &policy,
-                overload(Some(ms(1))),
-                terminated(),
-                0,
-                0,
-                retry(ms(1_000)),
-            ),
-            (
-                "R4 throttle base",
-                &policy,
-                throttle(None),
-                terminated(),
-                0,
-                0,
-                retry(ms(7_500)),
-            ),
-            (
-                "R4 throttle cap",
-                &policy,
-                throttle(None),
-                terminated(),
-                8,
-                30_000,
-                retry(ms(60_000)),
-            ),
-            (
-                "R3 throttle floor admits 12",
-                &policy,
-                throttle(None),
-                terminated(),
-                11,
-                0,
-                retry(ms(30_000)),
-            ),
-            (
-                "R3 throttle floor spent",
-                &policy,
-                throttle(None),
-                terminated(),
-                12,
-                0,
-                stop(RetryStop::AttemptsExhausted),
-            ),
-            (
-                "R3 explicit zero disables",
-                &disabled,
-                throttle(None),
-                terminated(),
-                0,
-                0,
-                stop(RetryStop::AttemptsExhausted),
-            ),
+        let idle = ModelInferenceBudget::DEFAULT.idle();
+        let hour = 3_600 * SECOND;
+        struct Row<'a> {
+            name: &'static str,
+            policy: &'a RetryPolicy,
+            class: FailureClass,
+            evidence: ModelExecutionEvidence,
+            attempt: u32,
+            remaining: Duration,
+            jitter: u64,
+            verdict: RetryVerdict,
+        }
+        #[rustfmt::skip]
+        let rows = [
+            Row { name: "R0 cancelled, unknown evidence", policy: &policy, class: FailureClass::Cancelled, evidence: unknown, attempt: 0, remaining: hour, jitter: 0, verdict: stop(RetryStop::Cancelled) },
+            Row { name: "R0 cancelled, budget left", policy: &fast, class: FailureClass::Cancelled, evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: stop(RetryStop::Cancelled) },
+            Row { name: "R1 unknown evidence", policy: &policy, class: transient, evidence: unknown, attempt: 0, remaining: hour, jitter: 0, verdict: stop(RetryStop::ExecutionUncertain) },
+            Row { name: "R1 beats a throttle", policy: &policy, class: throttle(Some(SECOND)), evidence: unknown, attempt: 0, remaining: hour, jitter: 0, verdict: stop(RetryStop::ExecutionUncertain) },
+            Row { name: "R2 permanent", policy: &policy, class: FailureClass::Permanent, evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: stop(RetryStop::NotRetryable) },
+            Row { name: "R2 usage limit", policy: &policy, class: FailureClass::UsageLimit { reset_after: Some(SECOND) }, evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: stop(RetryStop::NotRetryable) },
+            Row { name: "R4 first transient, low draw", policy: &policy, class: transient, evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: retry(ms(250)) },
+            Row { name: "R4 first transient, high draw", policy: &policy, class: transient, evidence: terminated(), attempt: 0, remaining: hour, jitter: 250, verdict: retry(ms(500)) },
+            Row { name: "R4 not dispatched", policy: &policy, class: transient, evidence: not_dispatched, attempt: 1, remaining: hour, jitter: 0, verdict: retry(ms(500)) },
+            Row { name: "R3 transient count spent", policy: &policy, class: transient, evidence: terminated(), attempt: 2, remaining: hour, jitter: 0, verdict: stop(RetryStop::AttemptsExhausted) },
+            Row { name: "R4 generic cap", policy: &fast, class: transient, evidence: terminated(), attempt: 40, remaining: hour, jitter: 4_000, verdict: retry(ms(8_000)) },
+            Row { name: "R4 overload base", policy: &policy, class: overload(None), evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: retry(ms(1_000)) },
+            Row { name: "R4 longer pause wins", policy: &policy, class: overload(Some(30 * SECOND)), evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: retry(30 * SECOND) },
+            Row { name: "R4 pause is capped", policy: &policy, class: overload(Some(600 * SECOND)), evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: retry(60 * SECOND) },
+            Row { name: "R4 shorter pause loses", policy: &policy, class: overload(Some(ms(1))), evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: retry(ms(1_000)) },
+            Row { name: "R4 throttle base", policy: &policy, class: throttle(None), evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: retry(ms(7_500)) },
+            Row { name: "R4 throttle cap", policy: &policy, class: throttle(None), evidence: terminated(), attempt: 8, remaining: hour, jitter: 30_000, verdict: retry(ms(60_000)) },
+            Row { name: "R3 throttle has no count", policy: &policy, class: throttle(None), evidence: terminated(), attempt: 1_000, remaining: hour, jitter: 0, verdict: retry(ms(30_000)) },
+            Row { name: "R3 explicit zero disables", policy: &disabled, class: throttle(None), evidence: terminated(), attempt: 0, remaining: hour, jitter: 0, verdict: stop(RetryStop::AttemptsExhausted) },
+            Row { name: "R5 pause + silence fits exactly", policy: &policy, class: throttle(Some(60 * SECOND)), evidence: terminated(), attempt: 0, remaining: 60 * SECOND + idle, jitter: 0, verdict: retry(60 * SECOND) },
+            Row { name: "R5 pause + silence overruns", policy: &policy, class: throttle(Some(60 * SECOND)), evidence: terminated(), attempt: 0, remaining: 60 * SECOND + idle - ms(1), jitter: 0, verdict: stop(RetryStop::DeadlineExhausted) },
+            Row { name: "R5 deadline spent", policy: &policy, class: transient, evidence: not_dispatched, attempt: 0, remaining: Duration::ZERO, jitter: 0, verdict: stop(RetryStop::DeadlineExhausted) },
         ];
-        for (row, policy, class, evidence, attempt, jitter, verdict) in rows.iter().copied() {
+        for row in rows {
             assert_eq!(
-                policy.decide(class, evidence, attempt, jitter),
-                verdict,
-                "{row}"
+                row.policy.decide(
+                    row.class,
+                    row.evidence,
+                    row.attempt,
+                    row.remaining,
+                    row.jitter
+                ),
+                row.verdict,
+                "{}",
+                row.name
             );
         }
     }

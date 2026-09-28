@@ -66,10 +66,10 @@
     },
     "awaken-runtime-contract": {
       "depth": 2,
-      "production_lines": 7932,
+      "production_lines": 7994,
       "catch_all_errors": 7,
       "growth_reasons": {
-        "production_lines": "Cancellation became its own inference error (Error::Cancelled, FailureClass::Cancelled, RetryStop::Cancelled) instead of being reported as Unauthorized, so metrics, spans and the retry decision name it; ten lines of vocabulary, no new port. AttemptQuiescence is the existing backend-neutral live handle in RuntimeRunContext, shared by Native, ACP and A2A. Its 49-line closure extension reuses pinned Tokio TaskTracker and CancellationToken instead of a custom counter; putting the concrete handle in Runtime would create a contract-to-implementation cycle. No contract graph, backend vocabulary, persisted state or wire surface is added."
+        "production_lines": "The caller-declared ModelInferenceBudget (total, attempt response, idle, return allowance) replaces three separately owned timeout constants and the provider-owned timeout/idle fields; ModelAttemptTiming now carries absolute response/watchdog deadlines under one logical deadline, and the transport-connect no-dispatch proof is minted beside the other pre-send stages. AttemptQuiescence is the existing backend-neutral live handle in RuntimeRunContext, shared by Native, ACP and A2A. Its 49-line closure extension reuses pinned Tokio TaskTracker and CancellationToken instead of a custom counter; putting the concrete handle in Runtime would create a contract-to-implementation cycle. No contract graph, backend vocabulary, persisted state or wire surface is added."
       }
     },
     "awaken-sandbox-control": {
