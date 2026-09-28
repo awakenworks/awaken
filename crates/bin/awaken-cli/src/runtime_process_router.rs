@@ -762,6 +762,7 @@ pub(super) async fn prepare_runtime_routers(
     let managed_state = Arc::new(managed_state);
     awaken_coordinator::install_managed_lifecycle_delivery_with_deployments(
         &managed_state,
+        &session_application,
         Some(webhook_delivery),
         deployment_application.as_ref(),
         &process.service_lifecycle,

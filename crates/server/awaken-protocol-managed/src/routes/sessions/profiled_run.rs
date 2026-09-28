@@ -41,8 +41,9 @@ pub async fn submit_profiled_session_run(
             crate::routes::extractors::managed_json_message(rejection.body_text()),
         )))
     })?;
-    let application = state.session_application();
-    let projection = application
+    let projection = state
+        .roles
+        .projection
         .read_session_projection(&id, Some(&owner_scope))
         .await
         .map_err(session_projection_error)?
@@ -61,7 +62,7 @@ pub async fn submit_profiled_session_run(
     }
 
     let run_id = body.run_id.clone();
-    let admitted = Box::pin(application.admit_session_run_for_owner(
+    let admitted = Box::pin(state.roles.profiled.admit_session_run_for_owner(
         &owner_scope,
         awaken_session_execution_contract::AdmitSessionRun {
             session_id: awaken_session_types::SessionId::from(&id),
@@ -78,7 +79,7 @@ pub async fn submit_profiled_session_run(
     .await
     .map_err(|error| error_response(StateError::Run(error)))?;
     let receipt = exact_receipt(&id, &run_id, &admitted)?;
-    Box::pin(application.activate_admitted_session_run(admitted))
+    Box::pin(state.roles.profiled.activate_admitted_session_run(admitted))
         .await
         .map_err(|error| error_response(StateError::Run(error)))?;
     Ok(Json(receipt))

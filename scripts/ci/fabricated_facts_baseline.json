@@ -75,7 +75,6 @@
         "crates/server/awaken-protocol-managed/src/routes/deployments.rs": 1,
         "crates/server/awaken-protocol-managed/src/routes/environments/work_routes.rs": 2,
         "crates/server/awaken-protocol-managed/src/state/events/committed_projection.rs": 2,
-        "crates/server/awaken-protocol-managed/src/state/sessions.rs": 1,
         "crates/server/awaken-protocol-managed/src/work_session_access.rs": 1,
         "crates/server/awaken-run-executor-acp/src/host/capability_probe.rs": 1,
         "crates/server/awaken-run-executor-acp/src/host/mod.rs": 1,

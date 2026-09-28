@@ -70,7 +70,8 @@ pub async fn get_session_execution_evidence(
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
 ) -> Result<Json<awaken_protocol_awaken::SessionExecutionEvidence>, WireErr> {
     let observation = state
-        .session_application()
+        .roles
+        .observation
         .session_execution_observation(&owner_scope, &awaken_session_types::SessionId::from(id))
         .await
         .map_err(session_projection_error)?;

@@ -44,7 +44,8 @@ impl ManagedState {
         // same private candidate as Runtime facts so GET cannot publish a stale
         // preparing/idle status or a torn cross-source projection.
         let persisted = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(session_id))
             .await
             .map_err(StateError::from)?;
@@ -139,7 +140,8 @@ impl ManagedState {
             // scoped tombstone observer. A retained root must not close SSE as
             // mere Terminated before its actual Delete fact is delivered.
             let owner = self
-                .application
+                .roles
+                .roots
                 .owner(&awaken_session_types::SessionId::from(session_id))
                 .await
                 .map_err(Self::map_application_mutation_error)?;

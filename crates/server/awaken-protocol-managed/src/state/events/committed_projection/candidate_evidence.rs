@@ -9,6 +9,7 @@
 
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
+use awaken_lease_contract::WallClockExt as _;
 use awaken_managed_session_events::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
 use std::collections::{HashMap, HashSet};
 
@@ -101,7 +102,8 @@ impl CandidateEvidence {
             lifecycle,
             timings,
         } = state
-            .application
+            .roles
+            .projection
             .read_projection_evidence(persisted, started)
             .await
             .map_err(StateError::Run)?;
@@ -178,7 +180,7 @@ impl CandidateEvidence {
                         ),
                     )
                 }),
-            state.application.now_unix_ms(),
+            state.roles.clock.now_ms(),
         );
         let primary_thread_usage = usage_projection::project_committed_thread_usage(
             root.as_ref(),

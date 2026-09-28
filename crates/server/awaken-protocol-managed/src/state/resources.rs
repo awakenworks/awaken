@@ -14,9 +14,11 @@
 use super::*;
 
 impl ManagedState {
-    /// ResourceReclaimer entry point. Session owners call this after durable
-    /// stores and the Runtime Host are wired. It scans only Session application
-    /// state; authorization principals and policy objects never cross this seam.
+    /// Fixture driver for one Resource activation sweep followed by the wire
+    /// refresh of every settled Session. Product composition runs the same
+    /// sweep in the Session application's lifecycle supervisor, whose committed
+    /// facts reach this adapter through lifecycle delivery.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn reconcile_resource_activations(&self) -> usize {
         let report = self.application.reconcile_resource_activations().await;
         for session in &report.settled {
@@ -57,16 +59,20 @@ impl ManagedState {
         &self,
         owner_scope: &str,
         binding_id: String,
-        parsed: &ParsedSessionInput,
+        parsed: &awaken_session_application::SessionInputRequest,
     ) -> Result<awaken_session_resource_contract::ResolvedInput, StateError> {
-        debug_assert!(matches!(parsed.target, ParsedInputTarget::File(_)));
-        let binding = input_binding(binding_id, parsed, None);
+        debug_assert!(matches!(
+            parsed.target,
+            awaken_session_application::SessionInputTarget::File(_)
+        ));
+        let binding = awaken_session_application::input_binding(binding_id, parsed, None);
         let attachment = awaken_session_resource_contract::SessionInputAttachment {
             binding,
             replaces: None,
         };
         let (mut inputs, _) = self
-            .application
+            .roles
+            .resources
             .resolve_session_inputs(owner_scope, &[], &[attachment])
             .await
             .map_err(StateError::Run)?
@@ -92,42 +98,36 @@ impl ManagedState {
         let current = session.resources.desired();
         let mut parsed = resources
             .iter()
-            .map(crate::types::resource::ResourceInput::to_parsed_input)
+            .map(crate::types::resource::ResourceInput::to_input_request)
             .collect::<Vec<_>>();
         // Validate the entire authored Repository set before even a preceding
         // implicit MemoryStore can read its definition. Later phases reuse the
         // same shared rule at the aggregate and provider effect boundaries.
-        super::resource::preflight_repository_mount_paths(&parsed)?;
-        if parsed
-            .iter()
-            .filter(|input| matches!(input.target, ParsedInputTarget::File(_)))
-            .count()
-            > super::resource::MAX_SESSION_FILE_RESOURCES
-        {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "a Session supports at most {} files",
-                super::resource::MAX_SESSION_FILE_RESOURCES
-            ))));
-        }
+        awaken_session_application::preflight_repository_mount_paths(&parsed)
+            .map_err(StateError::Run)?;
+        awaken_session_application::admit_file_count(&parsed).map_err(StateError::Run)?;
 
         // Derive all paths and validate the complete set before Repository/Vault
         // side effects. This is the atomic command's fail-fast boundary.
         let mut used_mounts = parsed
             .iter()
-            .filter(|resource| !resource.implicit_memory_mount)
+            .filter(|resource| !resource.derived_memory_mount)
             .map(|resource| resource.mount_path.trim_start_matches('/').to_string())
             .collect::<std::collections::BTreeSet<_>>();
         for resource in &mut parsed {
-            if resource.implicit_memory_mount {
-                let ParsedInputTarget::MemoryStore(memory_store_id) = &resource.target else {
+            if resource.derived_memory_mount {
+                let awaken_session_application::SessionInputTarget::MemoryStore(memory_store_id) =
+                    &resource.target
+                else {
                     unreachable!("only MemoryStore inputs derive a Managed mount path")
                 };
                 let definition = self
-                    .application
+                    .roles
+                    .resources
                     .session_memory_store(owner_scope, memory_store_id.as_str())
                     .await
                     .map_err(StateError::Run)?;
-                resource.mount_path = super::resource::unique_memory_mount_path(
+                resource.mount_path = awaken_session_application::unique_memory_mount_path(
                     &definition.name,
                     memory_store_id.as_str(),
                     &used_mounts,
@@ -139,11 +139,14 @@ impl ManagedState {
             .iter()
             .enumerate()
             .map(|(index, input)| {
-                input_binding(
+                awaken_session_application::input_binding(
                     format!("manifest-validation-{index}"),
                     input,
-                    matches!(input.target, ParsedInputTarget::Repository { .. })
-                        .then(|| awaken_resource_contract::RepositoryId::from("validation")),
+                    matches!(
+                        input.target,
+                        awaken_session_application::SessionInputTarget::Repository { .. }
+                    )
+                    .then(|| awaken_resource_contract::RepositoryId::from("validation")),
                 )
             })
             .collect::<Vec<_>>();
@@ -153,7 +156,8 @@ impl ManagedState {
                 &[],
             )
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.application
+        self.roles
+            .resources
             .validate_persisted_session_resource_layout(owner_scope, session, effective_bindings)
             .map_err(StateError::Run)?;
 
@@ -169,25 +173,27 @@ impl ManagedState {
             let normalized_mount = input.mount_path.trim_start_matches('/');
             let same_mount = current.inputs().iter().find(|existing| {
                 existing.mount_path.trim_start_matches('/') == normalized_mount
-                    && super::resource::parsed_projection_class(&input.target)
-                        == super::resource::resolved_projection_class(&existing.source)
+                    && awaken_session_application::InputProjectionClass::of_request(&input.target)
+                        == awaken_session_application::InputProjectionClass::of_resolved(
+                            &existing.source,
+                        )
             });
             let reusable = same_mount.filter(|existing| match (&input.target, &existing.source) {
                 (
-                    ParsedInputTarget::File(requested),
+                    awaken_session_application::SessionInputTarget::File(requested),
                     awaken_session_resource_contract::ResolvedInputSource::File { file_id },
                 ) => requested == file_id,
                 (
-                    ParsedInputTarget::MemoryStore(requested),
+                    awaken_session_application::SessionInputTarget::MemoryStore(requested),
                     awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
                         memory_store_id,
                         ..
                     },
                 ) => requested == memory_store_id,
                 (
-                    ParsedInputTarget::Repository {
+                    awaken_session_application::SessionInputTarget::Repository {
                         remote_url,
-                        authorization_token,
+                        access_token,
                         initial_branch,
                         initial_commit,
                     },
@@ -196,7 +202,7 @@ impl ManagedState {
                         ..
                     },
                 ) => {
-                    authorization_token.is_none()
+                    access_token.is_none()
                         && remote_url == &config.remote_url
                         && initial_branch == &config.initial_branch
                         && initial_commit == &config.initial_commit
@@ -222,83 +228,94 @@ impl ManagedState {
                     {
                         awaken_agent_contract::stable_fingerprint(&(
                             normalized_mount,
-                            super::resource::parsed_projection_class(&input.target),
+                            awaken_session_application::InputProjectionClass::of_request(
+                                &input.target,
+                            ),
                         ))
                     } else {
                         awaken_agent_contract::stable_fingerprint(&normalized_mount)
                     };
                     format!("session:{session_id}:manifest:{}", fingerprint)
                 });
-            let repository_id = if let ParsedInputTarget::Repository {
-                remote_url,
-                authorization_token,
-                initial_branch,
-                initial_commit,
-            } = &input.target
-            {
-                let id = format!(
-                    "managed:{session_id}:repository:{}",
-                    awaken_agent_contract::stable_fingerprint(&(
-                        normalized_mount,
-                        remote_url,
-                        initial_branch,
-                        initial_commit,
-                    ))
-                );
-                let configured = match self
-                    .application
-                    .configure_session_repository(
-                        awaken_session_application::SessionRepositoryResourceInput {
-                            id,
-                            workspace_id: owner_scope.to_string(),
-                            name: format!("Session repository at /{normalized_mount}"),
-                            description: "Managed Session resource manifest input".into(),
-                            remote_url: remote_url.clone(),
-                            credential_material: authorization_token
-                                .clone()
-                                .map(|token| token.into_credential_material()),
-                            credential: None,
-                            mount_path: input.mount_path.clone(),
-                            initial_branch: initial_branch.clone(),
-                            initial_commit: initial_commit.clone(),
-                        },
-                    )
-                    .await
+            let repository_id =
+                if let awaken_session_application::SessionInputTarget::Repository {
+                    remote_url,
+                    access_token,
+                    initial_branch,
+                    initial_commit,
+                } = &input.target
                 {
-                    Ok(configured) => configured,
-                    Err(first) => {
-                        if !self
-                            .application
-                            .abort_unadopted_session_repositories(&repository_configurations)
-                            .await
-                        {
-                            tracing::warn!(
-                                session = %session_id,
-                                "Resource Manifest Repository compensation remains pending after lowering failure"
-                            );
+                    let id = format!(
+                        "managed:{session_id}:repository:{}",
+                        awaken_agent_contract::stable_fingerprint(&(
+                            normalized_mount,
+                            remote_url,
+                            initial_branch,
+                            initial_commit,
+                        ))
+                    );
+                    let configured = match self
+                        .roles
+                        .resources
+                        .configure_session_repository(
+                            awaken_session_application::SessionRepositoryResourceInput {
+                                id,
+                                workspace_id: owner_scope.to_string(),
+                                name: format!("Session repository at /{normalized_mount}"),
+                                description: "Managed Session resource manifest input".into(),
+                                remote_url: remote_url.clone(),
+                                credential_material: access_token
+                                    .clone()
+                                    .map(|token| token.into_credential_material()),
+                                credential: None,
+                                mount_path: input.mount_path.clone(),
+                                initial_branch: initial_branch.clone(),
+                                initial_commit: initial_commit.clone(),
+                            },
+                        )
+                        .await
+                    {
+                        Ok(configured) => configured,
+                        Err(first) => {
+                            if !self
+                                .roles
+                                .resources
+                                .abort_unadopted_session_repositories(&repository_configurations)
+                                .await
+                            {
+                                tracing::warn!(
+                                    session = %session_id,
+                                    "Resource Manifest Repository compensation remains pending after lowering failure"
+                                );
+                            }
+                            return Err(StateError::Run(first));
                         }
-                        return Err(StateError::Run(first));
-                    }
+                    };
+                    let repository_id = configured.repository_id.clone();
+                    repository_configurations.push(configured);
+                    Some(repository_id)
+                } else {
+                    None
                 };
-                let repository_id = configured.repository_id.clone();
-                repository_configurations.push(configured);
-                Some(repository_id)
-            } else {
-                None
-            };
             let attachment = awaken_session_resource_contract::SessionInputAttachment {
-                binding: input_binding(binding_id, &input, repository_id),
+                binding: awaken_session_application::input_binding(
+                    binding_id,
+                    &input,
+                    repository_id,
+                ),
                 replaces: None,
             };
             let (mut resolved, _) = match self
-                .application
+                .roles
+                .resources
                 .resolve_session_inputs(owner_scope, &[], &[attachment])
                 .await
             {
                 Ok(resources) => resources.into_parts(),
                 Err(first) => {
                     if !self
-                        .application
+                        .roles
+                        .resources
                         .abort_unadopted_session_repositories(&repository_configurations)
                         .await
                     {
@@ -315,7 +332,8 @@ impl ManagedState {
                     "resolved resource manifest input is empty",
                 ));
                 if !self
-                    .application
+                    .roles
+                    .resources
                     .abort_unadopted_session_repositories(&repository_configurations)
                     .await
                 {
@@ -336,7 +354,8 @@ impl ManagedState {
             Err(error) => {
                 let first = StateError::Run(RunError::bad_request(error.to_string()));
                 if !self
-                    .application
+                    .roles
+                    .resources
                     .abort_unadopted_session_repositories(&repository_configurations)
                     .await
                 {
@@ -362,7 +381,8 @@ impl ManagedState {
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         if let Some(key) = idempotency_key.as_deref()
             && let Some(outcome) = self
-                .application
+                .roles
+                .resources
                 .replay_session_resource_manifest(
                     &awaken_session_types::SessionId::from(id),
                     key,
@@ -375,7 +395,8 @@ impl ManagedState {
             return Ok(Self::resource_manifest_view(&outcome.session));
         }
         let persisted = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
@@ -459,7 +480,7 @@ impl ManagedState {
         command: awaken_session_application::ReplaceSessionResourceManifest,
         repository_configurations: &[awaken_session_application::ConfiguredSessionRepository],
     ) -> Result<awaken_session_application::SessionResourceManifestOutcome, StateError> {
-        match Box::pin(self.application.replace_session_resource_manifest(
+        match Box::pin(self.roles.resources.replace_session_resource_manifest(
             &awaken_session_types::SessionId::from(session_id),
             command,
         ))
@@ -481,7 +502,8 @@ impl ManagedState {
             Err(error) => {
                 let first = Self::map_resource_manifest_error(error);
                 if !self
-                    .application
+                    .roles
+                    .resources
                     .abort_unadopted_session_repositories(repository_configurations)
                     .await
                 {
@@ -535,17 +557,18 @@ impl ManagedState {
         id: &str,
         body: crate::types::resource::ResourceAddParams,
     ) -> Result<crate::types::resource::SessionResource, StateError> {
-        let parsed = body.into_resource_input().to_parsed_input();
+        let parsed = body.into_resource_input().to_input_request();
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let persisted = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;
         let read_revision = persisted.resources.revision;
         let current = persisted.resources.desired().clone();
         let normalized_mount = parsed.mount_path.trim_start_matches('/');
-        if let ParsedInputTarget::File(requested_file) = &parsed.target
+        if let awaken_session_application::SessionInputTarget::File(requested_file) = &parsed.target
             && let Some(existing) = current.inputs().iter().find(|input| {
                 input.mount_path.trim_start_matches('/') == normalized_mount
                     && matches!(
@@ -583,22 +606,24 @@ impl ManagedState {
                 ))
             });
         }
-        if matches!(parsed.target, ParsedInputTarget::File(_))
-            && current
-                .inputs()
-                .iter()
-                .filter(|input| {
-                    matches!(
-                        input.source,
-                        awaken_session_resource_contract::ResolvedInputSource::File { .. }
-                    )
-                })
-                .count()
-                >= super::resource::MAX_SESSION_FILE_RESOURCES
+        if matches!(
+            parsed.target,
+            awaken_session_application::SessionInputTarget::File(_)
+        ) && current
+            .inputs()
+            .iter()
+            .filter(|input| {
+                matches!(
+                    input.source,
+                    awaken_session_resource_contract::ResolvedInputSource::File { .. }
+                )
+            })
+            .count()
+            >= awaken_session_application::MAX_SESSION_FILE_RESOURCES
         {
             return Err(StateError::Run(RunError::bad_request(format!(
                 "a Session supports at most {} files",
-                super::resource::MAX_SESSION_FILE_RESOURCES
+                awaken_session_application::MAX_SESSION_FILE_RESOURCES
             ))));
         }
         let mut suffix = current.inputs().len();
@@ -619,7 +644,8 @@ impl ManagedState {
         let desired = current
             .attach(input.clone())
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.application
+        self.roles
+            .resources
             .validate_persisted_session_resource_layout(
                 &owner_scope,
                 &persisted,
@@ -669,7 +695,8 @@ impl ManagedState {
         let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
-            .application
+            .roles
+            .resources
             .rotate_repository_credential(
                 &awaken_session_types::SessionId::from(id),
                 &owner_scope,
@@ -693,7 +720,8 @@ impl ManagedState {
         self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
-            .application
+            .roles
+            .roots
             .session(&awaken_session_types::SessionId::from(id))
             .await
             .map_err(StateError::from)?;

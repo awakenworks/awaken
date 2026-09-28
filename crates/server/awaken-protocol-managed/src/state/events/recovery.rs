@@ -234,7 +234,8 @@ impl ManagedState {
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
         StateError,
     > {
-        self.application
+        self.roles
+            .projection
             .projection_thread_snapshot(
                 &awaken_session_types::SessionId::from(session_id),
                 thread_id,
@@ -256,7 +257,8 @@ impl ManagedState {
         ),
         StateError,
     > {
-        self.application
+        self.roles
+            .projection
             .projection_coordinated_prefix(
                 &awaken_session_types::SessionId::from(session_id),
                 observed_root,

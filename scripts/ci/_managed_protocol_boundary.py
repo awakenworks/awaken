@@ -97,10 +97,20 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
         errors.append(
             "awaken-session-application: missing the authoritative Session Run command or adapter"
         )
+    # The Coordinator builds the one public Run adapter over the Session
+    # application its composition root injected; the Managed adapter holds only
+    # narrowed roles and is never the source of that application.
     coordinator = sources.get("crates/server/awaken-coordinator/src/lib.rs", "")
-    if "managed_state.session_application()" not in coordinator:
+    if "awaken_session_application::SessionRunApplication::new(" not in coordinator:
         errors.append(
             "awaken-coordinator: public Run protocols are not wired to SessionApplication admission"
+        )
+    if "managed_state.session_application()" in _crate_boundary_workspace.production_rust(
+        coordinator
+    ):
+        errors.append(
+            "awaken-coordinator: the Session application is read back out of the Managed "
+            "adapter; take it from the composition root"
         )
     return errors
 
@@ -268,13 +278,21 @@ def selftest() -> None:
             "pub struct SessionRunApplication; "
             "impl RunApplication for SessionRunApplication {}",
         "crates/server/awaken-coordinator/src/lib.rs":
-            "managed_state.session_application()",
+            "awaken_session_application::SessionRunApplication::new(runs, sessions)",
         "crates/server/awaken-protocol-managed/src/state/sessions.rs": "",
     }
     assert session_admission_ownership_violations(valid) == [], "A1/E8/E9"
     missing = dict(valid)
     missing["crates/server/awaken-session-application/src/run_admission.rs"] = ""
     assert session_admission_ownership_violations(missing), "A2/E10"
+    unwired = dict(valid)
+    unwired["crates/server/awaken-coordinator/src/lib.rs"] = ""
+    assert session_admission_ownership_violations(unwired), "A4/!E9"
+    read_back = dict(valid)
+    read_back["crates/server/awaken-coordinator/src/lib.rs"] += (
+        "; let sessions = managed_state.session_application();"
+    )
+    assert session_admission_ownership_violations(read_back), "A5/!E9"
     duplicate = dict(valid)
     duplicate["crates/server/awaken-protocol-managed/src/state/sessions.rs"] = (
         "fn prepare_protocol_session() {}"

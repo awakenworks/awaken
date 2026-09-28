@@ -2411,10 +2411,10 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent_case() {
     assert!(forced.session.is_terminal(), "L6/E5");
     assert!(forced.session.active_activity_epochs.is_empty(), "L6/E5");
 
-    let deleted = app
-        .delete_session(SessionDeleteCommand::new("delete-live"))
-        .await
-        .expect("L7");
+    let deleted =
+        SessionApplication::delete_session(&app, SessionDeleteCommand::new("delete-live"))
+            .await
+            .expect("L7");
     let transition = deleted.clone();
     app.release_terminal_resources(&transition.owner_scope, "delete-live")
         .await
