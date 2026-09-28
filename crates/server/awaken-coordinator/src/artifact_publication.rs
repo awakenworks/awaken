@@ -476,9 +476,9 @@ mod tests {
             },
         );
         let dispatch = Arc::new(AnyDispatchStore::from_dispatch(
-            Arc::new(MemoryDispatchStore::new(Arc::new(
-                awaken_dispatch::SystemClock,
-            ))) as Arc<dyn Dispatch>,
+            Arc::new(MemoryDispatchStore::new(
+                awaken_lease_contract::system_clock(),
+            )) as Arc<dyn Dispatch>,
         ));
         let publisher_for = |asserted_effect, current_lease| {
             let inner = Arc::new(RecordingPublisher::default());
@@ -716,7 +716,7 @@ mod tests {
             // Lease liveness is judged by the store's own clock now, so the
             // expired case mints its claim in the distant past and then returns
             // the clock to the present.
-            let clock = Arc::new(awaken_dispatch::ManualClock::new(artifact_now_ms()));
+            let clock = Arc::new(awaken_lease_testkit::ManualClock::new(artifact_now_ms()));
             let queue = Arc::new(MemoryDispatchStore::new(clock.clone()));
             let mut dispatch =
                 awaken_dispatch::RunDispatch::new(support::activation("capture-local"));
@@ -868,9 +868,9 @@ mod tests {
             );
             let inner = Arc::new(RecordingPublisher::default());
             let queue = Arc::new(AnyDispatchStore::from_dispatch(
-                Arc::new(MemoryDispatchStore::new(Arc::new(
-                    awaken_dispatch::SystemClock,
-                ))) as Arc<dyn Dispatch>,
+                Arc::new(MemoryDispatchStore::new(
+                    awaken_lease_contract::system_clock(),
+                )) as Arc<dyn Dispatch>,
             ));
             let peer = ClaimFencedArtifactPublisher::new(inner.clone(), queue);
             if cause != "unavailable" {

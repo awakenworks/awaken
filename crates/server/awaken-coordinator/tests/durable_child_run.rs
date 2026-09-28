@@ -107,9 +107,9 @@ fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
 
 async fn durable_child_run_scenario() {
     let storage = tempfile::tempdir().expect("storage");
-    let memory = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let memory = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let dispatch = Arc::new(AnyDispatchStore::from_durable_dispatch(memory.clone()));
 
     let assistant = test_snapshot("assistant", vec![AgentId("researcher".into())]);

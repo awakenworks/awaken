@@ -151,9 +151,9 @@ mod tests {
             .model(ModelBinding::new("test", "model", "native"))
             .build();
         let store = Arc::new(
-            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(std::sync::Arc::new(
-                awaken_dispatch::SystemClock,
-            ))
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(
+                awaken_lease_contract::system_clock(),
+            )
             .expect("dispatch store"),
         );
         let host = Arc::new(

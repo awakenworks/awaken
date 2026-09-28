@@ -61,9 +61,9 @@ async fn duplicate_submit_same_run_id_drives_exactly_once() {
     // the second enqueue is a no-op, so exactly one dispatch row exists and the
     // model is driven exactly once.
     let (runtime, infers) = counting_text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
@@ -162,9 +162,9 @@ async fn unbound_inbox_input_is_delivered_once_and_consumed_on_settle() {
     // fresh run's activation, reaches the model, and is removed on settle. It is
     // consumed on settle (not on read), so a crash before settle would re-deliver.
     let runtime = input_echo_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     // An unbound idle-thread message (empty run + correlation) waits for the thread.
@@ -231,9 +231,9 @@ async fn a_non_input_unbound_row_does_not_desync_the_drain() {
     // the insert index past the activation's end. Before the fix, two skipped rows
     // ahead of an input pushed `Vec::insert` out of bounds and panicked.
     let runtime = input_echo_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     // Two non-Input unbound rows precede one unbound Input, all on the idle thread.
@@ -315,9 +315,9 @@ async fn fresh_continuations_on_one_thread_receive_only_their_bound_input() {
     // Run while the shared Thread fence serializes writers. Decision rule: execute
     // R2 then R3; R1 remains owned by the preceding unbound-input test.
     let runtime = input_echo_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     let mut first = RunDispatch::new(activation("run-bound-first"));
@@ -423,9 +423,9 @@ async fn stale_correlation_input_is_dropped_and_the_run_stays_awaiting() {
     // NOT match that ticket is dropped without delivery — the tool never runs and
     // the run stays awaiting — until the correctly-correlated input arrives.
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
     let run = RunId("run-1".to_string());

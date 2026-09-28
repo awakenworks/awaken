@@ -9,21 +9,22 @@
 //! than two.
 
 use super::*;
+use awaken_lease_contract::WallClockExt;
 
 /// Postgres persistence for the environment registry (distributed deployments).
 pub struct PostgresEnvRegistry {
     pub(super) pool: PgPool,
     /// The one source of every observation timestamp this registry writes.
-    clock: Arc<dyn Clock>,
+    clock: Arc<dyn WallClock>,
 }
 
 impl PostgresEnvRegistry {
-    pub async fn connect(url: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub async fn connect(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
         Self::with_pool(pool, clock).await
     }
 
-    pub async fn with_pool(pool: PgPool, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub async fn with_pool(pool: PgPool, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         let bundle = env_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(|e| e.to_string())?
@@ -33,7 +34,7 @@ impl PostgresEnvRegistry {
         Ok(Self { pool, clock })
     }
 
-    pub async fn connect_existing(url: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub async fn connect_existing(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
         let bundle = env_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)

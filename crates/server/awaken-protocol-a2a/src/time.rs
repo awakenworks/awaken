@@ -1,13 +1,13 @@
-//! Small RFC 3339 helpers kept dependency-free for the protocol boundary.
+//! RFC 3339 helpers for the protocol boundary. Rendering and the calendar are
+//! the wall-clock port's one codec; parsing stays here because A2A accepts
+//! numeric UTC offsets the persisted `...Z` vocabulary does not.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use awaken_lease_contract::utc::{days_from_civil, days_in_month};
 
 pub(crate) fn now_rfc3339() -> String {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before Unix epoch")
-        .as_secs() as i64;
-    format_epoch(seconds)
+    awaken_lease_contract::system_clock()
+        .now()
+        .to_rfc3339_secs()
 }
 
 pub(crate) fn parse_rfc3339(value: &str) -> Option<i64> {
@@ -65,51 +65,6 @@ pub(crate) fn is_after(value: Option<&str>, after: Option<i64>) -> bool {
     })
 }
 
-fn format_epoch(seconds: i64) -> String {
-    let days = seconds.div_euclid(86_400);
-    let remaining = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        remaining / 3_600,
-        (remaining / 60) % 60,
-        remaining % 60
-    )
-}
-
-fn days_in_month(year: i64, month: u32) -> u32 {
-    match month {
-        4 | 6 | 9 | 11 => 30,
-        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
-        2 => 28,
-        _ => 31,
-    }
-}
-
-// Howard Hinnant's public-domain civil calendar algorithms.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (year + i64::from(month <= 2), month, day)
-}
-
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let year = year - i64::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let yoe = year - era * 400;
-    let shifted_month = month as i64 + if month > 2 { -3 } else { 9 };
-    let doy = (153 * shifted_month + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,7 +78,13 @@ mod tests {
     }
 
     #[test]
-    fn epoch_format_is_canonical_utc() {
-        assert_eq!(format_epoch(0), "1970-01-01T00:00:00Z");
+    fn rendered_timestamps_parse_back_to_the_same_second() {
+        // The rendering is the codec's whole-second spelling, and this parser
+        // reads it back to the same Unix second.
+        let now = now_rfc3339();
+        assert_eq!(now.len(), 20, "{now}");
+        let seconds = parse_rfc3339(&now).expect("rendered timestamp parses");
+        assert!(seconds > 0);
+        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
     }
 }

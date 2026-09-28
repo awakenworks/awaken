@@ -26,15 +26,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::run::RunState;
-use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::agent::{run::Id as RunId, run::RunState, thread::Id as ThreadId};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_lease_contract::{WallClock, system_clock};
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
+    CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
     DispatchReconciler, DispatchServiceConfig, DispatchSettlementError, DispatchSettlementObserver,
-    DispatchWorker, Error, Inbox, LocalWakeSignal, ManualClock, MemoryDispatchStore, PendingInput,
-    RunClaim, RunDispatch, SessionChildAdmission, SystemClock, WakeSignal, WorkerResolver,
+    DispatchWorker, Error, Inbox, LocalWakeSignal, MemoryDispatchStore, PendingInput, RunClaim,
+    RunDispatch, SessionChildAdmission, WakeSignal, WorkerResolver,
 };
 use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime::Runtime;
@@ -530,7 +530,7 @@ async fn service_shutdown_joins_current_attempt_but_does_not_drain_the_backlog()
     // This fails the old run_until_idle loop even with a finite backlog.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, _ran, entered) = blocking_tool_runtime_with_entry_signal(release.clone());
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     for index in 0..70 {
         store
             .enqueue(RunDispatch::new(activation(&format!("backlog-{index:03}"))))
@@ -543,7 +543,7 @@ async fn service_shutdown_joins_current_attempt_but_does_not_drain_the_backlog()
             store.clone(),
             Arc::new(MemoryCommitCoordinator::new()),
         ),
-        Arc::new(SystemClock),
+        system_clock(),
         DispatchServiceConfig::default(),
     );
     tokio::time::timeout(Duration::from_secs(10), entered.notified())
@@ -654,12 +654,12 @@ async fn worker_capacity_starts_at_physical_admission_not_claim_resolution() {
     let resolver_entered = Arc::new(tokio::sync::Notify::new());
     let runtime_release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(runtime_release.clone());
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(runtime, store.clone(), commit.clone());
     let pool = DispatchPool::spawn(
         store,
-        Arc::new(SystemClock),
+        system_clock(),
         "physical-capacity",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -1174,7 +1174,7 @@ async fn idle_pool_uses_one_fallback_poller_independent_of_execution_capacity() 
     // | P3 | present | >1 | successful claim | peer permit scales execution |
     // P3 is covered by the existing two-thread routing test; P1/P2 prevent idle
     // queue traffic from being multiplied by the execution-capacity setting.
-    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    let store = Arc::new(FlakyDispatchStore::new(0, system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(DispatchWorker::new(
         text_runtime(),
@@ -1185,7 +1185,7 @@ async fn idle_pool_uses_one_fallback_poller_independent_of_execution_capacity() 
     let interval = Duration::from_secs(1);
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "idle-pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -1215,7 +1215,7 @@ async fn queue_depth_sampling_is_independent_of_pool_width_and_fallback_poll() {
     // Decision table: R1=C1+C2+!C3 -> E1+E2; R2=C1+C2+C3 -> E3. A remote
     // adapter's maintenance-disabled partition is covered by the existing
     // maintenance ownership test; the sampled gauge owns no queue state.
-    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    let store = Arc::new(FlakyDispatchStore::new(0, system_clock()));
     let worker = Arc::new(DispatchWorker::new(
         text_runtime(),
         store.clone(),
@@ -1224,7 +1224,7 @@ async fn queue_depth_sampling_is_independent_of_pool_width_and_fallback_poll() {
     ));
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "depth-pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -1263,7 +1263,7 @@ async fn hosted_pool_does_not_duplicate_its_depth_observer() {
     // Effects: E1 the pool still probes Dispatch; E2 it never invokes the
     // optional exact depth query. Rule P1=C1+C2+C3 -> E1+E2. The store remains
     // the sole queue authority and hosted scaling reads that same store.
-    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    let store = Arc::new(FlakyDispatchStore::new(0, system_clock()));
     let worker = Arc::new(DispatchWorker::new(
         text_runtime(),
         store.clone(),
@@ -1272,7 +1272,7 @@ async fn hosted_pool_does_not_duplicate_its_depth_observer() {
     ));
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "hosted-depth-pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -1316,7 +1316,7 @@ async fn settled_predecessor_rearms_a_same_thread_successor_after_a_peer_consume
     // only a liveness hint and cannot bypass same-Thread exclusion.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    let store = Arc::new(FlakyDispatchStore::new(0, system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(DispatchWorker::new(
         runtime,
@@ -1332,7 +1332,7 @@ async fn settled_predecessor_rearms_a_same_thread_successor_after_a_peer_consume
     store.enqueue(RunDispatch::new(second)).await.unwrap();
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "settlement-rearm",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -1454,7 +1454,7 @@ async fn assert_recovered_claim_thread_concurrency(same_thread: bool) {
     // and no external wake prevent timers from disguising a lost handoff.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let store = Arc::new(FlakyDispatchStore::new(1, Arc::new(SystemClock)));
+    let store = Arc::new(FlakyDispatchStore::new(1, system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(DispatchWorker::new(
         runtime,
@@ -1472,7 +1472,7 @@ async fn assert_recovered_claim_thread_concurrency(same_thread: bool) {
     }
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -1537,7 +1537,7 @@ async fn failed_post_commit_observation_relinquishes_and_self_retries() {
     // | Rule | commit | observer | physical slot | Effect |
     // | R1 | terminal | fails | quiesced | E1+E2+E3 |
     // | R2 | terminal | succeeds | quiesced | E4 |
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let observer = Arc::new(FailOnceObserver(AtomicUsize::new(0)));
     let (runtime, infers) = counting_text_runtime();
@@ -1557,7 +1557,7 @@ async fn failed_post_commit_observation_relinquishes_and_self_retries() {
     let wake = Arc::new(LocalWakeSignal::new());
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "observer-worker",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -1617,7 +1617,7 @@ async fn unavailable_settlement_observer_does_not_starve_an_independent_thread()
     // | R1 | unavailable | absent | retain and retry after local deadline |
     // | R2 | unavailable | present | E1+E2+E3 |
     // | R3 | infrastructure/store fault | any | shared fault gate (separate tests) |
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let observer = Arc::new(UnavailableObserver(AtomicUsize::new(0)));
     let (runtime, infers) = counting_text_runtime();
@@ -1643,7 +1643,7 @@ async fn unavailable_settlement_observer_does_not_starve_an_independent_thread()
         .expect("enqueue unrelated run");
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "observer-isolation",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -2540,7 +2540,7 @@ async fn pool_cancellation_is_admitted_then_drained_by_the_frozen_claim() {
     // Cancelled and settles once. Constraint/Invariant: cancellation uses the
     // same resolver/queue path as normal work, never a per-Session worker path.
     // Decision rule: exercise C1+C2+C3 and require one terminal commit.
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -2548,7 +2548,7 @@ async fn pool_cancellation_is_admitted_then_drained_by_the_frozen_claim() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -2622,7 +2622,7 @@ impl WorkerResolver<MemoryDispatchStore> for RecordingResolver {
 /// `root_agent_id = "agent-1"`.
 #[tokio::test]
 async fn the_pool_forwards_a_claimed_runs_agent_to_the_resolver() {
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2634,7 +2634,7 @@ async fn the_pool_forwards_a_claimed_runs_agent_to_the_resolver() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -2666,7 +2666,7 @@ async fn the_pool_forwards_a_claimed_runs_agent_to_the_resolver() {
 /// whichever drain task happened to claim it.
 #[tokio::test]
 async fn routing_drives_each_run_on_its_own_threads_runtime() {
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit_a = Arc::new(MemoryCommitCoordinator::new());
     let commit_b = Arc::new(MemoryCommitCoordinator::new());
     let worker_a = worker_over(text_runtime(), store.clone(), commit_a.clone());
@@ -2680,7 +2680,7 @@ async fn routing_drives_each_run_on_its_own_threads_runtime() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -2734,7 +2734,7 @@ async fn pool_uses_the_injected_wake_signal() {
         }
     }
 
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -2747,7 +2747,7 @@ async fn pool_uses_the_injected_wake_signal() {
 
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -2782,7 +2782,7 @@ async fn pool_uses_the_injected_wake_signal() {
 /// and commit the run to the SAME terminal state the wake-driven path reaches.
 #[tokio::test]
 async fn a_lost_wake_still_drains_through_the_poll_fallback_to_the_same_outcome() {
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -2791,7 +2791,7 @@ async fn a_lost_wake_still_drains_through_the_poll_fallback_to_the_same_outcome(
 
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -2845,7 +2845,7 @@ async fn pool_signals_completion_sink_on_settle() {
         }
     }
 
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -2855,7 +2855,7 @@ async fn pool_signals_completion_sink_on_settle() {
 
     let pool = DispatchPool::spawn_with_completion(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -2888,7 +2888,7 @@ async fn pool_signals_completion_sink_on_settle() {
 /// poll cadence. A lost wake only delays a run to the poll; it never loses it.
 #[tokio::test]
 async fn dropped_wake_still_drains_via_poll() {
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -2896,7 +2896,7 @@ async fn dropped_wake_still_drains_via_poll() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -2985,13 +2985,13 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
     // attempts do not duplicate the stable message id.
     // Constraint/Invariant: the Outbox row is the sole relay authority. Decision rule:
     // make the timer unusable as an explanation, then require prompt delivery.
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let resolver = Arc::new(MapResolver {
         workers: HashMap::new(),
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -3047,7 +3047,7 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
 /// a later run on a mapped thread still drains.
 #[tokio::test]
 async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let good_worker = worker_over(text_runtime(), store.clone(), commit.clone());
     // Only "thread-good" resolves; a run on "orphan-thread" has no worker.
@@ -3056,7 +3056,7 @@ async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -3135,7 +3135,7 @@ async fn concurrency_drives_distinct_runs_in_parallel() {
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (rt_a, ran_a) = multi_tool_blocking_runtime(release.clone(), 2);
     let (rt_b, ran_b) = multi_tool_blocking_runtime(release.clone(), 2);
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit_a = Arc::new(MemoryCommitCoordinator::new());
     let commit_b = Arc::new(MemoryCommitCoordinator::new());
     let worker_a = worker_over(rt_a, store.clone(), commit_a.clone());
@@ -3148,7 +3148,7 @@ async fn concurrency_drives_distinct_runs_in_parallel() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -3220,7 +3220,7 @@ async fn concurrency_two_never_enters_two_attempts_for_one_thread() {
     // capacity 2 still permits genuine parallelism where it is safe.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, calls, active, maximum) = concurrency_tracking_tool_runtime(release.clone());
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(runtime, store.clone(), commit);
     let resolver = Arc::new(MapResolver {
@@ -3228,7 +3228,7 @@ async fn concurrency_two_never_enters_two_attempts_for_one_thread() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -3294,7 +3294,7 @@ async fn duplicated_exact_claim_never_enters_the_executor_twice() {
         .await
         .expect("D1 claim query")
         .expect("D1 exact claim");
-    let clock: Arc<dyn Clock> = manual;
+    let clock: Arc<dyn WallClock> = manual;
     let first = tokio::spawn({
         let worker = worker.clone();
         let claimed = claimed.clone();
@@ -3338,7 +3338,7 @@ async fn shutdown_awaits_an_in_flight_drive() {
 
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(runtime, store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -3346,7 +3346,7 @@ async fn shutdown_awaits_an_in_flight_drive() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -3414,7 +3414,7 @@ async fn completion_sink_is_signalled_for_an_awaiting_run() {
     }
 
     let (runtime, _ran) = tool_runtime(); // awaits on the suspend gate
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(runtime, store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -3423,7 +3423,7 @@ async fn completion_sink_is_signalled_for_an_awaiting_run() {
     let sink = Arc::new(RecordingSink::default());
     let pool = DispatchPool::spawn_with_completion(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -3459,7 +3459,7 @@ async fn completion_sink_is_signalled_for_an_awaiting_run() {
 async fn every_drive_renews_its_exact_claim_until_settlement() {
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, _ran, entered) = blocking_tool_runtime_with_entry_signal(release.clone());
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "pool").with_lease_ms(100),
@@ -3467,7 +3467,7 @@ async fn every_drive_renews_its_exact_claim_until_settlement() {
     let resolver = Arc::new(MapResolver {
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
-    let clock = Arc::new(SystemClock);
+    let clock = system_clock();
     // A short lease proves the worker derives a safe renewal cadence for the
     // exact drive; the pool owns no parallel heartbeat.
     let lease_ms = 100;
@@ -3709,7 +3709,7 @@ async fn assert_resolution_failure_isolation(failing_priority: i64) {
         }
     }
 
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     store
         .enqueue_with(
             RunDispatch::new(activation_on("unresolved", "unresolved-thread")),
@@ -3728,7 +3728,7 @@ async fn assert_resolution_failure_isolation(failing_priority: i64) {
     let rejected = Arc::new(AtomicUsize::new(0));
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "resolution-isolation",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -3783,7 +3783,7 @@ async fn many_equal_priority_resolution_failures_do_not_accumulate_global_backof
     }
 
     const UNRESOLVED: usize = 16;
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     for index in 0..UNRESOLVED {
         store
             .enqueue(RunDispatch::new(activation_on(
@@ -3805,7 +3805,7 @@ async fn many_equal_priority_resolution_failures_do_not_accumulate_global_backof
     let rejected = Arc::new(AtomicUsize::new(0));
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "bulk-resolution-isolation",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -3859,7 +3859,7 @@ async fn session_work_backpressure_defers_only_that_request_then_retries() {
     // Worker failures. Holding the lease instead would starve the rightful next
     // owner, so the canonical pool releases the claim and durably defers only
     // that request.
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     store
         .enqueue(RunDispatch::new(activation("session-work-pressure")))
         .await
@@ -3867,7 +3867,7 @@ async fn session_work_backpressure_defers_only_that_request_then_retries() {
     let calls = Arc::new(AtomicUsize::new(0));
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "waiting-owner",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -4026,7 +4026,7 @@ async fn session_work_backpressure_rearms_one_retry_after_the_floor() {
     // |---|---|---|---|---|
     // | N1 | yes | no | no | exactly one attempt |
     // | N2 | yes | no | yes | E2 one rate-limited retry |
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     store
         .enqueue(RunDispatch::new(activation("session-work-rearm")))
         .await
@@ -4034,7 +4034,7 @@ async fn session_work_backpressure_rearms_one_retry_after_the_floor() {
     let calls = Arc::new(AtomicUsize::new(0));
     let pool = DispatchPool::spawn_with_wake(
         store,
-        Arc::new(SystemClock),
+        system_clock(),
         "waiting-owner",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -4103,7 +4103,7 @@ async fn returned_resolution_failure_commits_and_settles_when_resolver_owns_that
         }
     }
 
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let calls = Arc::new(AtomicUsize::new(0));
@@ -4117,7 +4117,7 @@ async fn returned_resolution_failure_commits_and_settles_when_resolver_owns_that
     }
     let pool = DispatchPool::spawn_with_completion(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "settling-owner",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -4352,7 +4352,7 @@ where
 /// stays queued — so the worker can be scaled in while its in-flight runs finish.
 #[tokio::test]
 async fn begin_drain_stops_claiming_new_work() {
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -4360,7 +4360,7 @@ async fn begin_drain_stops_claiming_new_work() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -4412,7 +4412,7 @@ async fn authority_suspension_is_reversible_but_drain_is_absorbing() {
     // In-flight execution is intentionally not cancelled by A1; the claim gate
     // only linearizes admission. Existing cancellation/renewal tests own that
     // orthogonal behavior.
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
@@ -4420,7 +4420,7 @@ async fn authority_suspension_is_reversible_but_drain_is_absorbing() {
     });
     let pool = DispatchPool::spawn(
         store.clone(),
-        Arc::new(SystemClock),
+        system_clock(),
         "pool-authority",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
@@ -4472,12 +4472,12 @@ async fn authority_suspension_does_not_cancel_an_in_flight_run() {
     // cancellation is intentionally a different command/state transition.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(runtime, store.clone(), commit.clone());
     let pool = DispatchPool::spawn(
         store,
-        Arc::new(SystemClock),
+        system_clock(),
         "pool-in-flight-authority",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),

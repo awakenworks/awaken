@@ -27,7 +27,6 @@
         "crates/bin/awaken-worker/src/lib.rs": 3,
         "crates/bin/awaken-worker/src/lifecycle.rs": 9,
         "crates/bin/awaken-worker/src/lifecycle/environment_evidence.rs": 3,
-        "crates/contract/awaken-agent-contract/src/clock.rs": 1,
         "crates/contract/awaken-agent-contract/src/id.rs": 1,
         "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs": 1,
         "crates/control/awaken-admin-config-api/src/provider_connection.rs": 1,
@@ -133,7 +132,6 @@
       "expires": "2026-12-31",
       "reason": "Each context declared its own wall-clock port before awaken-lease-contract owned one: agent-contract Clock, WorkerClock, RegistryClock, DataSubjectClock, WarmLeaseClock and the runtime ModelInferenceClock. Each is retired by taking awaken_lease_contract::WallClock; the count may only fall.",
       "files": {
-        "crates/contract/awaken-agent-contract/src/clock.rs": 1,
         "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs": 1,
         "crates/control/awaken-data-subject-application/src/lib.rs": 1,
         "crates/resources/awaken-resource-application/src/registry.rs": 1,
@@ -147,7 +145,6 @@
       "reason": "Constructors that pick the real clock themselves (Arc::new(System*Clock), system_clock() below the root). Each is retired by making the clock a required constructor argument that the composition root supplies once; the count may only fall.",
       "files": {
         "crates/bin/awaken-cli/src/lib.rs": 3,
-        "crates/contract/awaken-agent-contract/src/clock.rs": 1,
         "crates/control/awaken-data-subject-application/src/lib.rs": 1,
         "crates/resources/awaken-resource-application/src/registry.rs": 1,
         "crates/server/awaken-coordinator/src/runtime_authority.rs": 1,
@@ -174,7 +171,6 @@
       "expires": "2026-12-31",
       "reason": "Private fn now*() helpers that read time without a port, plus the now methods of the per-context clock traits. Each is retired by reading the injected WallClock (WallClockExt::now_ms/observed_at) or by retiring its trait; the count may only fall.",
       "files": {
-        "crates/contract/awaken-agent-contract/src/clock.rs": 3,
         "crates/contract/awaken-runtime-contract/src/llm/inference_budget.rs": 2,
         "crates/control/awaken-admin-config-api/src/router.rs": 1,
         "crates/control/awaken-authz-enforce/src/lib.rs": 1,

@@ -1,0 +1,25 @@
+[package]
+name = "awaken-lease-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+layer = "contract"
+# ADR-0081 §1 interface kinds this crate may hold (types | spi | api | remote | ext).
+kinds = ["types", "spi"]
+authority = "time-bounded-ownership"
+
+# A depth-0 contract leaf: no awaken dependency may be added here (see the
+# crate documentation for why the clock, the expiry law and the fence kernel
+# share this one crate).
+[dependencies]
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
+
+[lints]
+workspace = true

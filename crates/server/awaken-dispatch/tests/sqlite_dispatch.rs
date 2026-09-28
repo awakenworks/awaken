@@ -280,8 +280,8 @@ async fn sqlite_epoch_guard_blocks_reclaim_until_commit_returns() {
 
 #[tokio::test]
 async fn append_is_idempotent() {
-    let store = SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
-        .expect("open");
+    let store =
+        SqliteDispatchStore::open_in_memory(awaken_lease_contract::system_clock()).expect("open");
     let input = pending("msg-1", TICKET, true);
     assert!(
         store.append(input.clone()).await.unwrap(),
@@ -303,7 +303,7 @@ async fn durable_loop_runs_entirely_on_sqlite() {
     // partitions through the SQLite adapters.
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(
-        SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
+        SqliteDispatchStore::open_in_memory(awaken_lease_contract::system_clock())
             .expect("dispatch"),
     );
     let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
@@ -340,15 +340,15 @@ async fn durable_loop_runs_entirely_on_sqlite() {
 
 #[tokio::test]
 async fn pending_revision_cas_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
-        .expect("open");
+    let store =
+        SqliteDispatchStore::open_in_memory(awaken_lease_contract::system_clock()).expect("open");
     harness::assert_pending_revision_cas(&store).await;
 }
 
 #[tokio::test]
 async fn cross_thread_outbox_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
-        .expect("open");
+    let store =
+        SqliteDispatchStore::open_in_memory(awaken_lease_contract::system_clock()).expect("open");
     harness::assert_cross_thread_outbox(&store).await;
 }
 
@@ -427,10 +427,7 @@ async fn legacy_completion_without_dispatch_identity_fails_closed() {
     ));
     let path = path.to_string_lossy().into_owned();
     let _ = std::fs::remove_file(&path);
-    drop(
-        SqliteDispatchStore::open(&path, Arc::new(awaken_dispatch::SystemClock))
-            .expect("migrate"),
-    );
+    drop(SqliteDispatchStore::open(&path, awaken_lease_contract::system_clock()).expect("migrate"));
     let connection = rusqlite::Connection::open(&path).expect("open legacy fixture");
     connection
         .execute(
@@ -441,7 +438,7 @@ async fn legacy_completion_without_dispatch_identity_fails_closed() {
         .expect("insert historical tombstone");
     drop(connection);
 
-    let store = SqliteDispatchStore::open(&path, Arc::new(awaken_dispatch::SystemClock))
+    let store = SqliteDispatchStore::open(&path, awaken_lease_contract::system_clock())
         .expect("reopen migrated store");
     assert!(
         store
@@ -478,7 +475,7 @@ async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
 
     {
         let store =
-            SqliteDispatchStore::open(&dispatch_path, Arc::new(awaken_dispatch::SystemClock))
+            SqliteDispatchStore::open(&dispatch_path, awaken_lease_contract::system_clock())
                 .expect("first process store");
         store
             .enqueue(RunDispatch::new(activation("cancel-after-restart")))
@@ -489,7 +486,7 @@ async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
     }
 
     let store = Arc::new(
-        SqliteDispatchStore::open(&dispatch_path, Arc::new(awaken_dispatch::SystemClock))
+        SqliteDispatchStore::open(&dispatch_path, awaken_lease_contract::system_clock())
             .expect("restarted store"),
     );
     let commit = Arc::new(SqliteCommitCoordinator::open(&commit_path).expect("commit store"));
@@ -525,8 +522,8 @@ fn latest_schema_removes_the_obsolete_delegation_table() {
     ));
     let path = path.to_str().unwrap().to_string();
     let _ = std::fs::remove_file(&path);
-    let store = SqliteDispatchStore::open(&path, Arc::new(awaken_dispatch::SystemClock))
-        .expect("migrate");
+    let store =
+        SqliteDispatchStore::open(&path, awaken_lease_contract::system_clock()).expect("migrate");
     drop(store);
 
     let connection = rusqlite::Connection::open(&path).expect("inspect");
@@ -616,7 +613,7 @@ async fn defer_claim_is_request_local_on_sqlite() {
 
 #[tokio::test]
 async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_sqlite() {
-    let clock = Arc::new(awaken_dispatch::ManualClock::new(100));
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
     let store = SqliteDispatchStore::open_in_memory(clock.clone()).expect("open");
     harness::assert_defer_claim_deadline_edge(&store, &clock).await;
 }

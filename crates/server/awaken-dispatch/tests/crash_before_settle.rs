@@ -42,9 +42,10 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::lifecycle::{
     CheckpointRunLifecycleFeed, RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed,
 };
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, ManualClock, MemoryDispatchStore,
-    RunDispatch, SettleOutcome, SqliteDispatchStore,
+    DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch,
+    SettleOutcome, SqliteDispatchStore,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -122,7 +123,7 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     // R1 exercises the crash window and proves one delivery, ordered
     // reschedule, and no third claim.
     let (runtime, ran) = tool_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-1".to_string());
@@ -412,7 +413,7 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
     // owner drains and delivers it exactly once, and it is NOT re-delivered to a
     // later fresh run on the same thread once a settle has consumed it.
     let runtime = input_echo_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
@@ -550,7 +551,7 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
     // a row IS consumed iff its message id appears in the committed transcript.
     awaken_observability::init(&awaken_observability::ObservabilityConfig::default());
     let runtime = input_echo_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
@@ -761,7 +762,7 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
     // (its message id is absent from the committed transcript — it arrived after the
     // terminal commit) must be LEFT in the inbox on recovery, not swept away. No loss.
     let runtime = input_echo_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let thread = ThreadId(THREAD.to_string());
@@ -862,7 +863,7 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
     let (fence, messages, state) = {
         let (runtime, ran) = tool_runtime();
         let store = Arc::new(
-            SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
+            SqliteDispatchStore::open_in_memory(awaken_lease_contract::system_clock())
                 .expect("dispatch"),
         );
         let commit = Arc::new(SqliteCommitCoordinator::open(&path).expect("commit"));

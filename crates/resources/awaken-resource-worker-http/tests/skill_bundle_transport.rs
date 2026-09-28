@@ -105,9 +105,9 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
         .await
         .unwrap();
     let (directory, identity) = support::ready_worker("worker-skill").await;
-    let dispatch = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let dispatch = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let claim = claimed_dispatch(&dispatch, &frozen, &identity.lease_owner()).await;
     let service = Arc::new(
         WorkerSkillBundleService::new(

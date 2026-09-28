@@ -539,7 +539,7 @@ mod tests {
             .expect("production root dispatch decoration");
 
         let queue = Arc::new(
-            AnyDispatchStore::open_sqlite_in_memory(Arc::new(awaken_dispatch::SystemClock))
+            AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
                 .expect("durable dispatch store"),
         );
         let host = Arc::new(
@@ -705,7 +705,7 @@ mod tests {
                 && host.session_slots.read(child_thread, |_| ()).is_none(),
             "R1-R5/C6 target starts cold"
         );
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let queue = Arc::new(MemoryDispatchStore::new(clock.clone()));
         queue
             .enqueue(request)

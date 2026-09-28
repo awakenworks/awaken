@@ -11,6 +11,7 @@
 //! the two durable adapters.
 
 use super::*;
+use awaken_lease_contract::WallClockExt;
 
 impl SqliteWorkQueue {
     /// Open (or create) the work-queue database at `path` and apply migrations.
@@ -18,7 +19,7 @@ impl SqliteWorkQueue {
     /// The wall clock is a constructor argument, not something the queue reaches
     /// for: every `*_at` this backend writes is a reading of exactly this clock,
     /// so a test can name the instant a record must carry.
-    pub fn open(path: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub fn open(path: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         Self::from_connection(
             awaken_sqlite_pool::SqliteConnectionFactory::file(path)
                 .open()
@@ -27,7 +28,10 @@ impl SqliteWorkQueue {
         )
     }
 
-    pub(super) fn from_connection(conn: Connection, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub(super) fn from_connection(
+        conn: Connection,
+        clock: Arc<dyn WallClock>,
+    ) -> Result<Self, String> {
         apply_sqlite_migrations(&conn)?;
         Ok(Self {
             conn: SharedSqliteConnection::new(conn),
@@ -137,7 +141,7 @@ impl SqliteWorkQueue {
 
 impl PostgresWorkQueue {
     /// Connect and apply the work-queue migrations under the `work_queue` namespace.
-    pub async fn connect(url: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub async fn connect(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|error| error.to_string())?;
@@ -145,7 +149,7 @@ impl PostgresWorkQueue {
     }
 
     /// Build from an existing pool and apply the work-queue migrations.
-    pub async fn with_pool(pool: PgPool, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub async fn with_pool(pool: PgPool, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         apply_postgres_migrations(&pool).await?;
         Ok(Self {
             pool,
@@ -155,7 +159,7 @@ impl PostgresWorkQueue {
     }
 
     /// Connect only when the published schema is already present and exact.
-    pub async fn connect_existing(url: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub async fn connect_existing(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|error| error.to_string())?;

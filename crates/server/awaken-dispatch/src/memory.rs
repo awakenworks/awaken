@@ -77,6 +77,7 @@ mod physical_attempt;
 mod selection;
 mod settlement;
 mod store;
+use awaken_lease_contract::WallClockExt;
 use selection::select_where;
 pub use store::MemoryDispatchStore;
 

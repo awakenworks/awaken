@@ -8,15 +8,16 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_agent_contract::clock::Clock;
-#[cfg(test)]
-use awaken_agent_contract::clock::system_clock;
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
     EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRegistrationIntent,
     EnvironmentRegistrationIntentFilter, EnvironmentRegistrationOperation, EnvironmentRevision,
     EnvironmentSandboxPolicyRef, EnvironmentStoreError,
 };
+use awaken_lease_contract::WallClock;
+use awaken_lease_contract::WallClockExt;
+#[cfg(test)]
+use awaken_lease_contract::system_clock;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_sqlite_pool::{SharedSqliteConnection, SqliteConnectionFactory};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -297,11 +298,11 @@ fn pg_row(row: &PgRow) -> Result<EnvItem, EnvironmentStoreError> {
 pub struct SqliteEnvRegistry {
     conn: SharedSqliteConnection,
     /// The one source of every observation timestamp this registry writes.
-    clock: Arc<dyn Clock>,
+    clock: Arc<dyn WallClock>,
 }
 
 impl SqliteEnvRegistry {
-    pub fn open(path: &str, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub fn open(path: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         Self::from_connection(
             SqliteConnectionFactory::file(path)
                 .open()
@@ -311,7 +312,7 @@ impl SqliteEnvRegistry {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn open_in_memory(clock: Arc<dyn Clock>) -> Result<Self, String> {
+    pub fn open_in_memory(clock: Arc<dyn WallClock>) -> Result<Self, String> {
         Self::from_connection(
             SqliteConnectionFactory::memory()
                 .open()
@@ -320,7 +321,7 @@ impl SqliteEnvRegistry {
         )
     }
 
-    fn from_connection(conn: Connection, clock: Arc<dyn Clock>) -> Result<Self, String> {
+    fn from_connection(conn: Connection, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         let bundle = env_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|e| e.to_string())?
@@ -875,7 +876,7 @@ mod tests {
             for (created, updated) in stamps {
                 assert_eq!(created, updated, "M4 {table} backfill is one reading");
                 assert!(
-                    awaken_agent_contract::clock::utc::rfc3339_to_epoch_millis(&created)
+                    awaken_lease_contract::utc::rfc3339_to_epoch_millis(&created)
                         .is_some_and(|millis| millis > 0),
                     "M4 {table} backfilled a real instant, got {created:?}"
                 );
@@ -1297,8 +1298,8 @@ mod tests {
         // only `updated_at`; archive -> `archived_at` == `updated_at`), and it
         // must persist them rather than recompute on read.
         {
-            use awaken_agent_contract::clock::ManualClock;
-            use awaken_agent_contract::clock::utc::epoch_millis_to_rfc3339;
+            use awaken_lease_contract::utc::epoch_millis_to_rfc3339;
+            use awaken_lease_testkit::ManualClock;
 
             const CREATED: u64 = 1_700_000_000_000;
             const UPDATED: u64 = CREATED + 4_000;

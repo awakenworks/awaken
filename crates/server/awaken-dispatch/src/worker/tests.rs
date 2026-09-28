@@ -469,7 +469,9 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
     // local ownership and both remote ticket partitions.
     let worker = DispatchWorker::new(
         Arc::new(Runtime::new()),
-        Arc::new(MemoryDispatchStore::new(Arc::new(crate::SystemClock))),
+        Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        )),
         Arc::new(MemoryCommitCoordinator::new()),
         "worker",
     );
@@ -614,9 +616,9 @@ async fn terminal_recovery_rejects_conflicting_committed_identity_before_settlem
     );
     // The store's own clock is the dispatch authority now; freeze it at the
     // same t=0 this fixture always used.
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(crate::ManualClock::new(
-        0,
-    ))));
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_lease_testkit::ManualClock::new(0),
+    )));
     store
         .enqueue(crate::RunDispatch::new(activation))
         .await
@@ -680,9 +682,9 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
     // | R1 | present | present and current | E1,E2,E3,E4 |
     // Decision rule: R1 is the only valid inherited-parent/claimed-child
     // product; assert every authority port resolves to the child claim.
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(crate::ManualClock::new(
-        0,
-    ))));
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_lease_testkit::ManualClock::new(0),
+    )));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let activation = |run: &str, thread: &str| {
         RunActivation::new(
@@ -820,9 +822,9 @@ async fn worker_rejects_unmatched_claim_delivery_without_panicking() {
     // |---|---|---|---|
     // | R1 | yes | yes | E1 (covered by contract and HTTP integration tests) |
     // | R2 | yes | no  | E2 |
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(crate::ManualClock::new(
-        0,
-    ))));
+    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
+        awaken_lease_testkit::ManualClock::new(0),
+    )));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let claimed = store
         .claim_new_run(

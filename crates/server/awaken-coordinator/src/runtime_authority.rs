@@ -324,7 +324,7 @@ async fn open_dispatch(
             std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
             let store = AnyDispatchStore::open_sqlite(
                 &root.join("dispatch.db").to_string_lossy(),
-                Arc::new(awaken_dispatch::SystemClock),
+                awaken_lease_contract::system_clock(),
             )?;
             Ok((Arc::new(store), None))
         }

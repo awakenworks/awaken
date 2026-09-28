@@ -26,7 +26,6 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 
-use crate::clock::SystemClock;
 use crate::worker::DispatchWorker;
 
 /// Errors produced by [`LiveRunControlService`] operations.
@@ -96,7 +95,7 @@ impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
                 // renewal, ownership verification and settlement are judged by the
                 // store that owns the row; this source times only what the attempt
                 // itself reads, so the control edge never introduces a second one.
-                .tick_run(&run_id, Arc::new(SystemClock))
+                .tick_run(&run_id, awaken_lease_contract::system_clock())
                 .await
                 .map_err(|error| Error::Dispatch(error.to_string()))?;
             return match driven {
@@ -185,11 +184,13 @@ mod tests {
     use tokio::sync::Notify;
 
     use crate::worker::DispatchWorker;
-    use crate::{DispatchQueue, MemoryDispatchStore, RunDispatch, SystemClock};
+    use crate::{DispatchQueue, MemoryDispatchStore, RunDispatch};
 
     fn make_service() -> LiveRunControlService<MemoryDispatchStore> {
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+        let store = Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let worker = Arc::new(DispatchWorker::new(
             runtime,
@@ -265,7 +266,9 @@ mod tests {
         use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+        let store = Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let worker = Arc::new(DispatchWorker::new(
             runtime,
@@ -293,7 +296,9 @@ mod tests {
     #[tokio::test]
     async fn cancellation_claim_uses_wall_time_and_cannot_be_immediately_reclaimed() {
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+        let store = Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let worker = Arc::new(DispatchWorker::new(
             runtime,
@@ -357,7 +362,9 @@ mod tests {
         // the same Runtime registry, never an ingress-private pause map.
         // Decision rules: P1=C1+C2=>E1; P2=C3=>E2.
         let runtime = Arc::new(Runtime::new());
-        let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+        let store = Arc::new(MemoryDispatchStore::new(
+            awaken_lease_contract::system_clock(),
+        ));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let worker = Arc::new(DispatchWorker::new(
             runtime.clone(),

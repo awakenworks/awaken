@@ -156,7 +156,7 @@ impl SharedHost {
             .unwrap_or_else(|| Arc::new(awaken_dispatch::LocalWakeSignal::new()));
         let reconciler = awaken_dispatch::DispatchReconciler::spawn(
             store,
-            Arc::new(awaken_dispatch::SystemClock),
+            awaken_lease_contract::system_clock(),
             wake,
             self.deployment.dispatch_service_config(),
             resolver,
@@ -693,7 +693,7 @@ mod tests {
     #[tokio::test]
     async fn host_reconciles_only_exact_committed_terminals_without_opening_sessions() {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
-        use awaken_dispatch::{Clock, DispatchQueue};
+        use awaken_dispatch::DispatchQueue;
 
         let mut local_pool = SharedHost::new(Arc::new(AdoptionModel), "stub");
         local_pool.deployment.durable = true;
@@ -704,8 +704,8 @@ mod tests {
         );
 
         let storage = tempfile::tempdir().expect("storage");
-        let now = awaken_dispatch::SystemClock.now_ms();
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(now));
+        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(now));
         let store = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
                 .expect("dispatch store"),
@@ -828,11 +828,11 @@ mod tests {
         // | A2 | Leased | no | expired | coordinator scan | E1 leave recovery to Worker |
         // | A3 | Leased | no | expired | Worker B | E2 reclaim epoch + 1 |
         // | A4 | Leased | no | superseded | Worker A | E3 fenced |
-        use awaken_dispatch::{Clock, DispatchQueue, SettleOutcome};
+        use awaken_dispatch::{DispatchQueue, SettleOutcome};
 
         let storage = tempfile::tempdir().expect("storage");
-        let now = awaken_dispatch::SystemClock.now_ms();
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
                 .expect("dispatch store"),
@@ -953,11 +953,11 @@ mod tests {
         // Cause/effect table: H1 expired+exhausted exact claim -> boundary Worker
         // commits Indeterminate and Done; H2 no Session/Environment exists -> no
         // realization is attempted; H3 current epoch -> one completion tombstone.
-        use awaken_dispatch::{Clock, DispatchQueue, WorkerResolver};
+        use awaken_dispatch::{DispatchQueue, WorkerResolver};
 
         let storage = tempfile::tempdir().expect("storage");
-        let now = awaken_dispatch::SystemClock.now_ms();
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
                 .expect("dispatch store"),
@@ -1033,11 +1033,11 @@ mod tests {
         // created. Rule P1=C1+C2+C3=>E1+E2+E3. An implementation that opens the
         // queue Thread before claiming leaves the row Awaiting on FS/SQLite.
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
-        use awaken_dispatch::{Clock, DispatchQueue, SessionChildAdmission};
+        use awaken_dispatch::{DispatchQueue, SessionChildAdmission};
 
         let storage = tempfile::tempdir().expect("storage");
-        let now = awaken_dispatch::SystemClock.now_ms();
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let now = awaken_lease_contract::system_clock().now().as_epoch_ms();
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
                 .expect("dispatch store"),

@@ -1301,7 +1301,7 @@ mod tests {
                     transcript_prefix: None,
                 },
             );
-            let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+            let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
             let dispatch = Arc::new(
                 awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
                     .expect("coordinated Resource dispatch store"),

@@ -769,9 +769,7 @@ fn generated_session(id: &str) -> PersistedSession {
         // Generation/checkpoint retention uses the explicit continuation test
         // clock. The independent Session lease is read by the real Control
         // receipt publisher, so its live fixture uses that authority's clock.
-        expires_at_unix_ms: awaken_agent_contract::clock::Clock::now_ms(
-            &awaken_agent_contract::clock::SystemClock,
-        ) + 300_000,
+        expires_at_unix_ms: awaken_lease_contract::system_clock().now().as_epoch_ms() + 300_000,
     });
     session
 }

@@ -21,11 +21,11 @@ use awaken_runtime_contract::control::Error as ControlError;
 use awaken_runtime_contract::execution::{Error as ExecError, Result as ExecResult};
 
 use crate::Error;
-use crate::clock::Clock;
 use crate::dispatch::{DispatchSummary, PendingInput, SubmitOptions};
 use crate::live_control::LiveRunControlService;
 use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
+use awaken_lease_contract::WallClock;
 use awaken_dispatch_contract::RunDispatch;
 
 /// Feature-gated synchronous harness over one Worker and its committed reader.
@@ -241,7 +241,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     /// submitted to the daemon all flow through one queue.
     pub fn spawn_service(
         &self,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
         config: DispatchServiceConfig,
     ) -> DispatchService<S> {
         DispatchService::spawn(self.worker.clone(), clock, config)
@@ -266,7 +266,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
             .await?;
         let processed = self
             .worker
-            .run_until_idle(Arc::new(crate::clock::SystemClock))
+            .run_until_idle(awaken_lease_contract::system_clock())
             .await?;
         state_of(&processed, &run_id).ok_or_else(|| {
             Error::from(ExecError::Execution(
@@ -296,7 +296,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     pub async fn deliver_resume(
         &self,
         input: PendingInput,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<RunState, Error> {
         let run_id = input.run_id.clone();
         self.worker.store().append(input).await?;
@@ -308,7 +308,10 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
 
     /// Reclaim and re-run any dispatch whose lease expired (crash recovery), plus
     /// any work that became runnable. Returns each processed run and its state.
-    pub async fn recover(&self, clock: Arc<dyn Clock>) -> Result<Vec<(RunId, RunState)>, Error> {
+    pub async fn recover(
+        &self,
+        clock: Arc<dyn WallClock>,
+    ) -> Result<Vec<(RunId, RunState)>, Error> {
         let mut processed = self.reconcile_committed_terminals(256).await?;
         processed.extend(self.worker.run_until_idle(clock).await?);
         Ok(processed)
@@ -337,7 +340,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     /// drive any run that became wakeable. Returns each processed run and state.
     pub async fn relay_outbox(
         &self,
-        clock: Arc<dyn Clock>,
+        clock: Arc<dyn WallClock>,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         self.worker.store().relay().await?;
         self.worker.run_until_idle(clock).await
@@ -393,7 +396,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
         };
         let driven = self
             .worker
-            .tick_run(run_id, Arc::new(crate::clock::SystemClock))
+            .tick_run(run_id, awaken_lease_contract::system_clock())
             .await?;
         Ok(!matches!(
             driven,
@@ -432,7 +435,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
             .map_err(|err| ExecError::Execution(err.to_string()))?;
         let processed = self
             .worker
-            .run_until_idle(Arc::new(crate::clock::SystemClock))
+            .run_until_idle(awaken_lease_contract::system_clock())
             .await
             .map_err(exec_error)?;
         state_of(&processed, &run_id)
@@ -477,9 +480,9 @@ mod tests {
         // rule: replace once and assert pointer identity plus weak-handle release.
         let ingress = DispatchTestHarness::new(
             Arc::new(Runtime::new()),
-            Arc::new(crate::MemoryDispatchStore::new(Arc::new(
-                crate::SystemClock,
-            ))),
+            Arc::new(crate::MemoryDispatchStore::new(
+                awaken_lease_contract::system_clock(),
+            )),
             Arc::new(MemoryCommitCoordinator::new()),
         );
         let provisional = Arc::downgrade(&ingress.reader);

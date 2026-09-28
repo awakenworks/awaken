@@ -17,6 +17,8 @@ awaken-dispatch-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-types.workspace = true
 async-trait.workspace = true
+awaken-lease-contract.workspace = true
+awaken-lease-testkit.workspace = true
 axum.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "time"] }

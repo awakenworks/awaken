@@ -389,6 +389,7 @@ dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-preset",
+ "awaken-lease-contract",
  "awaken-tenancy",
  "axum",
  "proptest",
@@ -465,6 +466,8 @@ dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-installation-workspace",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
@@ -643,6 +646,7 @@ dependencies = [
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
+ "awaken-lease-contract",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-outbound-http",
@@ -723,6 +727,8 @@ dependencies = [
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-model-catalog",
  "awaken-observability",
  "awaken-outbound-http",
@@ -804,6 +810,8 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-dispatch",
  "awaken-dispatch-contract",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-outbound-http",
  "awaken-runtime-contract",
  "awaken-session-configuration-contract",
@@ -992,6 +1000,8 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-dispatch-contract",
  "awaken-dispatch-testkit",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-observability",
  "awaken-reliability-testkit",
  "awaken-runtime",
@@ -1053,6 +1063,8 @@ dependencies = [
  "awaken-dispatch-testkit",
  "awaken-environment-contract",
  "awaken-file-store",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-memory-store",
  "awaken-observability",
  "awaken-provisioning-contract",
@@ -1097,6 +1109,8 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-dispatch-contract",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-runtime-contract",
  "awaken-session-execution-contract",
  "awaken-session-types",
@@ -1136,6 +1150,8 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-environment-contract",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-sqlite-pool",
@@ -1596,6 +1612,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-lease-contract"
+version = "1.0.0"
+dependencies = [
+ "proptest",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-lease-testkit"
+version = "1.0.0"
+dependencies = [
+ "awaken-lease-contract",
+]
+
+[[package]]
 name = "awaken-local-process"
 version = "1.0.0"
 dependencies = [
@@ -1733,6 +1764,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential",
  "awaken-credential-contract",
+ "awaken-lease-contract",
  "awaken-outbound-http",
  "awaken-runtime-contract",
  "awaken-session-application-contract",
@@ -1857,6 +1889,8 @@ dependencies = [
  "awaken-ext-builtin-tools",
  "awaken-ext-skills",
  "awaken-file-store",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-observability",
@@ -2091,6 +2125,8 @@ dependencies = [
  "awaken-dispatch-testkit",
  "awaken-environment-contract",
  "awaken-file-store",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-memory-store",
  "awaken-provisioning-contract",
  "awaken-resource-application",
@@ -2517,6 +2553,8 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-contract",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
  "awaken-resource-contract",
@@ -2554,6 +2592,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-lease-contract",
  "awaken-runtime-contract",
  "awaken-session-budget-contract",
  "awaken-session-error-contract",
@@ -2561,7 +2600,6 @@ dependencies = [
  "awaken-session-state-contract",
  "awaken-session-types",
  "awaken-session-work-contract",
- "proptest",
  "serde",
  "serde_json",
  "tokio",
@@ -2682,6 +2720,8 @@ dependencies = [
  "awaken-ext-skills",
  "awaken-ext-state-machine",
  "awaken-file-store",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-memory-store",
  "awaken-observability",
  "awaken-outbound-http",
@@ -2873,6 +2913,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-lease-contract",
  "awaken-session-types",
  "proptest",
  "serde",
@@ -2926,6 +2967,8 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-deployment-contract",
  "awaken-environment-contract",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-session-application-contract",
@@ -2948,6 +2991,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-lease-contract",
  "awaken-reliability-testkit",
  "awaken-sandbox-fs",
  "awaken-store-conformance",
@@ -2964,6 +3008,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-lease-contract",
  "awaken-store-conformance",
  "serde_json",
  "tokio",
@@ -3096,6 +3141,7 @@ dependencies = [
  "awaken-authz-enforce",
  "awaken-config-resolver",
  "awaken-credential-vault",
+ "awaken-lease-contract",
  "awaken-service-lifecycle",
  "awaken-session-application-contract",
  "awaken-session-repository-contract",
@@ -3116,6 +3162,8 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-types",

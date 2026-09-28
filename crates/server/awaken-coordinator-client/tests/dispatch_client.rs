@@ -120,12 +120,12 @@ struct TransportState {
 async fn spawn_transport_server() -> (
     String,
     Arc<MemoryDispatchStore>,
-    Arc<awaken_dispatch::ManualClock>,
+    Arc<awaken_lease_testkit::ManualClock>,
     Arc<AtomicUsize>,
 ) {
     // The server's dispatch authority now answers from its own clock, so the
     // test's server clock is the store's clock.
-    let now_ms = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let now_ms = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(now_ms.clone()));
     let stream_calls = Arc::new(AtomicUsize::new(0));
     let holder = awaken_runtime_contract::PlaintextHolder::new(
@@ -1147,7 +1147,7 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
     // M4 the same erasure must not disable a genuine local store's maintenance.
     assert!(
         awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(
-            Arc::new(awaken_dispatch::SystemClock)
+            awaken_lease_contract::system_clock()
         )))
         .owns_local_maintenance()
     );
@@ -1221,7 +1221,7 @@ async fn any_dispatch_store_exposes_the_control_rung_only_when_its_inner_handle_
         other => panic!("R1 expected a typed refusal, got {other:?}"),
     }
     let durable = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(
-        MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock)),
+        MemoryDispatchStore::new(awaken_lease_contract::system_clock()),
     ));
     assert!(durable.control().is_some(), "R2 store keeps its rung");
 }
@@ -1246,7 +1246,7 @@ fn any_dispatch_store_preserves_the_claimed_recovery_transport() {
     );
 
     let local = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(
-        MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock)),
+        MemoryDispatchStore::new(awaken_lease_contract::system_clock()),
     ));
     assert!(
         local.claimed_checkpoint_transport().is_none(),

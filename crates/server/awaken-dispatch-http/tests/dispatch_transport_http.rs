@@ -357,7 +357,7 @@ async fn foreign_session_work_defers_only_its_dispatch_and_leaves_other_sessions
     // unavailable and retains the row. Decision table:
     // R1 C1 -> E1; R2 C1+C2 -> E2; R3 C1+C3(before) -> no claim;
     // R4 C1+C3(due)+available Work -> E3; R5 C4 -> E4.
-    let clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     for (run, session) in [("busy-run", "busy-session"), ("ready-run", "ready-session")] {
         store
@@ -610,9 +610,9 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
     // Constraint: the receipt comes from claim admission and recovery may never
     // self-sign the latest owner/epoch. The read-count assertion makes the
     // validation-before-Thread-read ordering observable.
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let run_id = RunId("work-epoch-recovery-run".into());
     let session_id = ThreadId("work-epoch-session".into());
     let request = RunDispatch::new(activation(&run_id.0, &session_id.0))
@@ -746,9 +746,9 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     // as `signed_worker_transport_http.rs` legitimately does, because there the
     // store does judge a deadline — would add machinery here that decides
     // nothing.
-    let mem = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let mem = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let clock = Arc::new(ManualWorkerClock::new(0));
     let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
         mem as Arc<dyn ControlDispatchQueue>,

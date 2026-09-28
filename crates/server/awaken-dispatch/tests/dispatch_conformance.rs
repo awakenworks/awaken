@@ -9,9 +9,8 @@
 // @formal evidence session_run.reservation_ttl_uses_store_clock
 use std::sync::Arc;
 
-use awaken_dispatch::{
-    ManualClock, MemoryDispatchStore, PostgresDispatchStore, SqliteDispatchStore,
-};
+use awaken_lease_testkit::ManualClock;
+use awaken_dispatch::{MemoryDispatchStore, PostgresDispatchStore, SqliteDispatchStore};
 use awaken_dispatch_testkit::{
     AuthoritativeWallClock, ConformanceCapabilities, assert_atomic_report_continuation_conformance,
     assert_dispatch_conformance, assert_dispatch_conformance_with_clock,
@@ -67,7 +66,7 @@ async fn memory_session_reply_activity_rotation_conforms() {
     // exercised. Effects: E1-E10 are inherited from that helper. Constraint/
     // Invariant: activity rotation is atomic with the existing row. Decision
     // rule: matrix row M1 delegates once to the canonical AR0-AR9 table.
-    let store = MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock));
+    let store = MemoryDispatchStore::new(awaken_lease_contract::system_clock());
     assert_session_reply_activity_rotation_conformance(&store, "conformance-memory-reply").await;
 }
 
@@ -114,7 +113,7 @@ async fn sqlite_session_reply_activity_rotation_conforms() {
     // exercised. Effects: E1-E10 and durable replay follow the helper. Constraint/
     // Invariant: rotation and staged input share one SQL transaction. Decision
     // rule: matrix row S1 delegates once to the canonical AR0-AR9 table.
-    let store = SqliteDispatchStore::open_in_memory(Arc::new(awaken_dispatch::SystemClock))
+    let store = SqliteDispatchStore::open_in_memory(awaken_lease_contract::system_clock())
         .expect("open sqlite reply conformance store");
     assert_session_reply_activity_rotation_conformance(&store, "conformance-sqlite-reply").await;
 }

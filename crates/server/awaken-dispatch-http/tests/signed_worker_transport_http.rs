@@ -886,7 +886,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let authenticator: Arc<dyn WorkerRequestAuthenticator> = Arc::new(authenticator);
     let directory = Arc::new(TestWorkerDirectory::default());
     // The dispatch port reads "now" from its store; mirror the service clock.
-    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let session_control = Arc::new(RecordingSessionControl {
         clock: Some(clock.clone()),
@@ -2793,7 +2793,7 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
     // callable: protocol denial cannot remove the existing retirement route.
     let directory = Arc::new(TestWorkerDirectory::default());
     // The dispatch port reads "now" from its store; mirror the service clock.
-    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let service =
         WorkerDispatchService::local(Arc::new(MemoryDispatchStore::new(dispatch_clock.clone())))
             .with_worker_directory(directory.clone(), 30_000);
@@ -2938,7 +2938,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
     // A real queued v1 request must remain pending after every denial; an
     // empty queue would not expose accidentally claiming before rejection.
     // The dispatch port reads "now" from its store; mirror the service clock.
-    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     dispatch
         .enqueue(standard_worker_dispatch(activation()))
@@ -3185,7 +3185,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
 #[tokio::test]
 async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
     // The dispatch port reads "now" from its store; mirror the service clock.
-    let dispatch_clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+    let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
     let session_control = Arc::new(RecordingSessionControl::default());
     *session_control.projection.lock().unwrap() = Some(frozen_projection());

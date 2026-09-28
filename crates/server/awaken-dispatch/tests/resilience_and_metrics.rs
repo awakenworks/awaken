@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
     ControlDispatchQueue, DispatchQueue, DispatchService, DispatchServiceConfig, DispatchWorker,
-    MemoryDispatchStore, RunDispatch, SystemClock,
+    MemoryDispatchStore, RunDispatch,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -43,7 +43,10 @@ async fn a_transient_store_error_is_swallowed_and_the_daemon_recovers() {
     // The daemon's drain tick treats a store error as transient: it logs and retries
     // on the next tick rather than dying. A store whose first two claims fail must
     // still drain the run once the injected failures are spent.
-    let store = Arc::new(FlakyDispatchStore::new(2, Arc::new(SystemClock)));
+    let store = Arc::new(FlakyDispatchStore::new(
+        2,
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(DispatchWorker::new(
         text_runtime(),
@@ -53,7 +56,7 @@ async fn a_transient_store_error_is_swallowed_and_the_daemon_recovers() {
     ));
     let service = DispatchService::spawn(
         worker,
-        Arc::new(SystemClock),
+        awaken_lease_contract::system_clock(),
         DispatchServiceConfig {
             poll_interval: Duration::from_millis(5),
             ..Default::default()
@@ -86,7 +89,10 @@ async fn queue_depth_is_sampled_by_the_process_not_each_drive() {
     // table: R1=C1 -> E1; R2=C1+C2 -> E2; R3=C1+C2+C3 -> E3.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    let store = Arc::new(FlakyDispatchStore::new(
+        0,
+        awaken_lease_contract::system_clock(),
+    ));
     for run in ["sample-1", "sample-2"] {
         store
             .enqueue(RunDispatch::new(activation(run)))
@@ -101,7 +107,7 @@ async fn queue_depth_is_sampled_by_the_process_not_each_drive() {
     ));
     let service = DispatchService::spawn(
         worker,
-        Arc::new(SystemClock),
+        awaken_lease_contract::system_clock(),
         DispatchServiceConfig {
             poll_interval: Duration::from_secs(60),
             terminal_reconciliation_interval: None,
@@ -142,7 +148,10 @@ async fn hosted_depth_owner_disables_only_the_open_sampler() {
     // observer reads the same queue through its existing ControlDispatch port;
     // this flag grants no execution or fact authority.
     let metrics = Arc::new(RecordingMetrics::default());
-    let store = Arc::new(FlakyDispatchStore::new(0, Arc::new(SystemClock)));
+    let store = Arc::new(FlakyDispatchStore::new(
+        0,
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(DispatchWorker::new(
         text_runtime_with_metrics(metrics.clone() as Arc<_>),
@@ -152,7 +161,7 @@ async fn hosted_depth_owner_disables_only_the_open_sampler() {
     ));
     let service = DispatchService::spawn(
         worker,
-        Arc::new(SystemClock),
+        awaken_lease_contract::system_clock(),
         DispatchServiceConfig {
             poll_interval: Duration::from_secs(60),
             terminal_reconciliation_interval: None,
@@ -193,7 +202,8 @@ async fn blocked_depth_observation_cannot_delay_a_run_or_shutdown() {
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let store = Arc::new(
-        FlakyDispatchStore::new(0, Arc::new(SystemClock)).with_depth_gate(entered.clone(), release),
+        FlakyDispatchStore::new(0, awaken_lease_contract::system_clock())
+            .with_depth_gate(entered.clone(), release),
     );
     store
         .enqueue(RunDispatch::new(activation("depth-blocked-run")))
@@ -208,7 +218,7 @@ async fn blocked_depth_observation_cannot_delay_a_run_or_shutdown() {
     ));
     let service = DispatchService::spawn(
         worker,
-        Arc::new(SystemClock),
+        awaken_lease_contract::system_clock(),
         DispatchServiceConfig {
             poll_interval: Duration::from_secs(60),
             terminal_reconciliation_interval: None,
@@ -254,7 +264,9 @@ async fn held_worker_drives_count_only_current_executions_not_queued_runs() {
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, entered) =
         all_calls_blocking_tool_runtime_with_metrics(release.clone(), metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     for index in 0..4 {
         store
@@ -319,7 +331,9 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
     // and assert its complete metric vector.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
@@ -367,7 +381,9 @@ async fn an_awaiting_drive_meters_one_claim_one_drive_and_one_awaiting_settle() 
     // and assert its vector against the terminal control above.
     let metrics = Arc::new(RecordingMetrics::default());
     let (runtime, _ran) = tool_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
     store
@@ -412,7 +428,9 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
     // one drive.duration (the RAII timer fires on every exit), and one done settle.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(SystemClock)));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-1".to_string());
 
@@ -472,7 +490,7 @@ async fn an_expired_lease_reclaim_is_reported_as_recovery() {
     // compare the initial recovered=false claim with C3's recovered drive.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
@@ -510,7 +528,7 @@ async fn a_stale_settlement_increments_the_fenced_metric() {
     // mint old/current claims, settle old, and assert the fenced vector.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 

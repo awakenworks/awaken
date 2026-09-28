@@ -96,7 +96,7 @@ mod revision_tests {
         // I3 an edit requests new bytes; I4 exact retract. Effects: R1 I1+I3
         // rejects without changing bytes/revision (and never poisons the lock);
         // R2 I2=>Mismatch; R3 I1+I4 removes the row without incrementing it.
-        let store = MemoryDispatchStore::new(Arc::new(crate::clock::ManualClock::new(0)));
+        let store = MemoryDispatchStore::new(Arc::new(awaken_lease_testkit::ManualClock::new(0)));
         let thread = ThreadId("revision-limit-thread".into());
         store
             .append(PendingInput {

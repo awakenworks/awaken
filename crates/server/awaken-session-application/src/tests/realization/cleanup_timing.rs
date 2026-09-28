@@ -1,7 +1,7 @@
 //! Cold cleanup timing exercised through the real Registry and Session root.
 
 use super::*;
-use awaken_agent_contract::clock::{Clock, ManualClock};
+use awaken_lease_testkit::ManualClock;
 use awaken_worker_contract::{
     RegistryMutation, WorkerDirectory, WorkerHeartbeat, WorkerRegistration,
 };

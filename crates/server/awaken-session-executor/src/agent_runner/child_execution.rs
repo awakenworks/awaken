@@ -14,9 +14,8 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_dispatch::{
-    AnyDispatchStore, ClaimedRunCommit, Clock, DispatchWorker, PendingInput, SystemClock,
-};
+use awaken_lease_contract::WallClock;
+use awaken_dispatch::{AnyDispatchStore, ClaimedRunCommit, DispatchWorker, PendingInput};
 use awaken_runtime::RunInput;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
@@ -359,7 +358,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
             // The foreground child scheduler and every later ownership operation
             // retain this one edge clock. The Worker never substitutes another time
             // source after the queue grants the claim.
-            let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+            let clock: Arc<dyn WallClock> = awaken_lease_contract::system_clock();
             let runtime = Arc::new(runtime);
             let attempt_executor = child_attempt_executor(
                 runtime.clone(),
@@ -518,7 +517,7 @@ mod tests {
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
     // Lifecycle and recovery fixtures: no deadline, so wall time.
-    use awaken_dispatch::{AnyDispatchStore, SystemClock};
+    use awaken_dispatch::AnyDispatchStore;
     use awaken_runtime_contract::CancellationToken;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
@@ -1114,7 +1113,8 @@ mod tests {
             let commit = Arc::new(MemoryCommitCoordinator::new());
             let scheduler = durable.then(|| RunScheduler {
                 store: Arc::new(
-                    AnyDispatchStore::open_sqlite_in_memory(Arc::new(SystemClock)).unwrap(),
+                    AnyDispatchStore::open_sqlite_in_memory(awaken_lease_contract::system_clock())
+                        .unwrap(),
                 ),
                 commit: commit.clone(),
                 reader: commit.clone(),
@@ -1233,8 +1233,11 @@ mod tests {
         let dispatch_path = dispatch_path.to_string_lossy().to_string();
         let scheduler = RunScheduler {
             store: Arc::new(
-                AnyDispatchStore::open_sqlite(&dispatch_path, Arc::new(SystemClock))
-                    .expect("child dispatch store"),
+                AnyDispatchStore::open_sqlite(
+                    &dispatch_path,
+                    awaken_lease_contract::system_clock(),
+                )
+                .expect("child dispatch store"),
             ),
             commit: commit.clone(),
             reader: commit.clone(),
@@ -1298,8 +1301,11 @@ mod tests {
         // runtime object from committed truth; no child handle crosses this seam.
         let replacement = RunScheduler {
             store: Arc::new(
-                AnyDispatchStore::open_sqlite(&dispatch_path, Arc::new(SystemClock))
-                    .expect("reopen child dispatch"),
+                AnyDispatchStore::open_sqlite(
+                    &dispatch_path,
+                    awaken_lease_contract::system_clock(),
+                )
+                .expect("reopen child dispatch"),
             ),
             commit: commit.clone(),
             reader: commit.clone(),
@@ -1363,8 +1369,11 @@ mod tests {
             Arc::new(PermissionModel),
             execution(RunScheduler {
                 store: Arc::new(
-                    AnyDispatchStore::open_sqlite(&dispatch_path, Arc::new(SystemClock))
-                        .expect("reopen terminal child dispatch"),
+                    AnyDispatchStore::open_sqlite(
+                        &dispatch_path,
+                        awaken_lease_contract::system_clock(),
+                    )
+                    .expect("reopen terminal child dispatch"),
                 ),
                 commit: commit.clone(),
                 reader: commit.clone(),

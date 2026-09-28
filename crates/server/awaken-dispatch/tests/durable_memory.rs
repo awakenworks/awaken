@@ -19,12 +19,12 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as AuditKind;
+use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::PlacementRequirements;
 use awaken_dispatch::{
     ContinuationAdmission, DEFAULT_LEASE_MS, DispatchOutcome, DispatchQueue,
     DispatchSettlementError, DispatchSettlementObserver, DispatchTestHarness, DispatchWorker,
-    Inbox, ManualClock, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
-    SessionChildAdmission,
+    Inbox, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, SessionChildAdmission,
 };
 use awaken_dispatch_contract::SessionContinuationOutbox as _;
 use awaken_dispatch_testkit::ConformanceClock as _;
@@ -108,7 +108,7 @@ async fn coordinated_settlement_observer_follows_the_durable_boundary_decision_t
     // retry evidence; no observer receipt or completion task is authoritative.
     // Decision rule: S1-S5 cover epoch presence, both boundaries, observer
     // success/failure, recovery, and cancellation.
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let ordinary_store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let ordinary_observer = Arc::new(RecordingSettlementObserver::new(1));
     let ordinary = DispatchWorker::new(
@@ -317,7 +317,7 @@ async fn stale_coordinated_settlement_uses_the_canonical_fenced_metric_exit() {
     // metrics test.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let observer = Arc::new(RecordingSettlementObserver::new(0));
     let worker = DispatchWorker::new(
@@ -444,9 +444,9 @@ async fn an_unclaimable_parent_mediated_run_remains_scheduled_for_a_compatible_w
     // Constraint/Invariant: inability to claim locally cannot delete or fork the
     // one durable dispatch. Decision rule: execute R2 and its idempotent retry R3;
     // R1 remains covered by the named local-routing test.
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let worker = DispatchWorker::new(
         text_runtime(),
         store.clone(),
@@ -877,9 +877,9 @@ async fn durable_submit_persists_then_runs_to_completion() {
     // commit and dispatch removal. R1=C1+C2 requires all four commits; the
     // evidence phases distinguish durable observation from duplicate execution.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -915,9 +915,9 @@ async fn durable_submit_persists_then_runs_to_completion() {
 
 #[tokio::test]
 async fn installed_attempt_executor_drives_a_fresh_durable_run() {
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(text_runtime(), store, commit);
     let selected = Arc::new(RecordingAttemptExecutor::default());
@@ -1049,9 +1049,9 @@ async fn a_worker_routes_inference_through_the_resolved_model_executor() {
         }
     }
 
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let resolver: awaken_dispatch::InferenceMaterializerFn =
         Arc::new(|_activation, _context| Ok(Some(Arc::new(Labeled) as Arc<dyn LlmExecutor>)));
@@ -1112,9 +1112,9 @@ async fn a_secretless_worker_reads_the_snapshot_pinned_access() {
                 Some(activation.snapshot.resolved_spec.model_binding.clone());
             Ok(Some(Arc::new(Gateway) as Arc<dyn LlmExecutor>))
         });
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let holder = awaken_runtime_contract::PlaintextHolder::new(
         awaken_runtime_contract::PlaintextBoundary::Worker,
@@ -1194,9 +1194,9 @@ async fn a_per_run_model_override_routes_the_worker_to_the_overridden_model() {
         }
     }
 
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let resolver: awaken_dispatch::InferenceMaterializerFn =
         Arc::new(
@@ -1258,9 +1258,9 @@ async fn durable_worker_opens_one_fresh_live_inbox_per_physical_attempt() {
     use awaken_runtime_contract::live_inbox::{MessageOrigin, Offer};
 
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = Arc::new(DispatchTestHarness::new(
         runtime.clone(),
@@ -1362,9 +1362,9 @@ async fn durable_submit_is_idempotent_per_run() {
     // or commit of any kind. Compare the observed prefix instead of equating
     // number of infrastructure evidence commits with number of executions.
     let (runtime, calls) = counting_text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit.clone());
 
@@ -1402,9 +1402,9 @@ async fn awaiting_run_resumes_through_delivered_input() {
     // ticket identity, not queue presence alone, admits resume. Decision rule:
     // cover pre-input Awaiting and matching-input terminal transitions.
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -1463,9 +1463,9 @@ async fn installed_attempt_executor_drives_the_durable_resume_path() {
     // execute one attempt before and one after replacement, then distinguish
     // execute versus resume counters.
     let (runtime, _) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store, commit);
 
@@ -1497,7 +1497,7 @@ async fn installed_attempt_executor_drives_the_durable_resume_path() {
 
 #[tokio::test]
 async fn duplicate_pending_delivery_is_idempotent() {
-    let store = MemoryDispatchStore::new(Arc::new(awaken_dispatch::SystemClock));
+    let store = MemoryDispatchStore::new(awaken_lease_contract::system_clock());
     let input = pending("msg-1", "run-1", ResumeResult::Input("hi".to_string()));
     assert!(
         store.append(input.clone()).await.unwrap(),
@@ -1568,7 +1568,7 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
     // request audit facts remain the sole evidence. Decision rule: R1 is the
     // crash-before-first-commit partition and must yield E1-E4 exactly once.
     let runtime = text_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
@@ -1681,7 +1681,7 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
     // settles. The dispatch is left 'running' with the pending input still
     // present and the ticket already cleared. Recovery must NOT re-run the tool.
     let (runtime, ran) = tool_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime.clone(), store.clone(), commit.clone());
@@ -1757,7 +1757,7 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
 #[tokio::test]
 async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
     let (runtime, ran) = tool_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime.clone(), store.clone(), commit.clone());
@@ -1864,9 +1864,9 @@ async fn reconciliation_repairs_released_pending_terminal_without_execution() {
     // |---|---|---|---|
     // | terminal | Pending | empty | E1 + E2 + E3 |
     let (runtime, infers) = counting_text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
     let activation = activation_on("released-terminal", "released-terminal-thread");
@@ -1906,9 +1906,9 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
     // it is dropped without delivery, and the run stays awaiting until the right
     // input arrives.
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit);
 
@@ -1955,17 +1955,17 @@ async fn input_for_a_superseded_ticket_is_not_delivered(/* M1 */) {
 #[tokio::test]
 async fn pending_edit_and_retract_are_revision_guarded() {
     // M3a: the in-memory store is the spec for revision-guarded pending ops.
-    harness::assert_pending_revision_cas(&MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )))
+    harness::assert_pending_revision_cas(&MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ))
     .await;
 }
 
 #[tokio::test]
 async fn cross_thread_outbox_store_spec() {
-    harness::assert_cross_thread_outbox(&MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )))
+    harness::assert_cross_thread_outbox(&MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ))
     .await;
 }
 
@@ -1986,9 +1986,9 @@ async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
     // M3b end to end: an awaiting run is resumed by a cross-thread delivery that is
     // staged in the outbox and relayed to its pending input.
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -2054,9 +2054,9 @@ async fn cancel_store_spec() {
 #[tokio::test]
 async fn cancel_durable_commits_cancelled_for_an_awaiting_run() {
     let (runtime, ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -2099,9 +2099,9 @@ async fn cancel_durable_commits_cancelled_for_an_awaiting_run() {
 #[tokio::test]
 async fn dispatch_harness_cancel_is_durable_for_a_queued_run() {
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 
@@ -2139,9 +2139,9 @@ async fn durable_cancel_invokes_the_selected_executor_before_terminal_commit() {
     // commit together; E3 the model is never needed. This integration guards
     // the Worker wiring; Runtime's control suite owns the commit primitive.
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
     let selected = Arc::new(RecordingAttemptExecutor::default());
@@ -2188,7 +2188,7 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
     // makes the generic pool route, rather than the dedicated terminal scanner,
     // own the replacement claim.
     let runtime = text_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("cancel-crash".to_string());
@@ -2242,9 +2242,9 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
 
 #[tokio::test]
 async fn cancellation_does_not_materialize_model_provider_credentials() {
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let materializations = Arc::new(AtomicUsize::new(0));
     let seen = materializations.clone();
@@ -2303,7 +2303,7 @@ async fn authenticated_remote_cancellation_receives_only_its_current_claim_bindi
     // Constraint: credential material remains behind the A2A resolver. This
     // Worker test observes only the same claim-bound projection that resolver
     // consumes; it cannot create an anonymous transport fallback.
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let executor = Arc::new(CredentialCheckingCancelExecutor::default());
@@ -2461,9 +2461,9 @@ async fn daemon_performs_a_scheduled_action_to_completion() {
     // tool awaits on a committed ScheduledAction; the worker performs it in-process
     // (no external input) and the run settles Done.
     let (runtime, ran) = schedule_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit);
 
@@ -2496,7 +2496,7 @@ async fn a_recovered_scheduled_action_is_performed() {
     // before performing it (dispatch left 'running' with an expired lease) is
     // recovered by another worker and performed from the committed request.
     let (runtime, ran) = schedule_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
@@ -2555,9 +2555,9 @@ async fn fresh_continuation_identity_is_stable_without_a_parallel_message_comman
     // Constraint: `Outbox::relay_and_enqueue` is the sole atomic continuation
     // authority. The Thread-owned SEND_MESSAGE command supplies its canonical
     // PendingInput; run-ingress owns no generic sender or identity algorithm.
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let continuation = |run: &str| {
         let mut request = RunDispatch::new(activation(run));
         request.activation.input.clear();
@@ -2760,9 +2760,9 @@ async fn submit_superseding_abandons_prior_thread_work() {
     // cannot leave the old Awaiting Run wakeable. Decision rule: R1 covers the
     // only same-Thread superseding branch and requires E1-E3.
     let (runtime, _ran) = tool_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime, store.clone(), commit.clone());
 

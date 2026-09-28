@@ -25,7 +25,7 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_dispatch::{DispatchOutcome, RunDispatch};
 
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone())
             .expect("failed follow-up race dispatch"),

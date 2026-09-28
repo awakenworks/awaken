@@ -513,7 +513,7 @@ pub(crate) async fn claim(
     run: &str,
     owner: &str,
     now: u64,
-    clock: &awaken_dispatch::ManualClock,
+    clock: &awaken_lease_testkit::ManualClock,
 ) -> awaken_dispatch::Claimed {
     use awaken_dispatch::DispatchQueue;
     store

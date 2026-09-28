@@ -9,7 +9,7 @@ use super::State;
 pub struct MemoryDispatchStore {
     pub(super) state: Mutex<State>,
     pub(super) authority: Arc<tokio::sync::Mutex<()>>,
-    pub(super) clock: Arc<dyn crate::Clock>,
+    pub(super) clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl std::fmt::Debug for MemoryDispatchStore {
@@ -32,7 +32,7 @@ impl MemoryDispatchStore {
     /// but it does make it impossible to make *silently*: a caller that wants
     /// wall time now says so.
     #[must_use]
-    pub fn new(clock: Arc<dyn crate::Clock>) -> Self {
+    pub fn new(clock: Arc<dyn awaken_lease_contract::WallClock>) -> Self {
         Self {
             state: Mutex::new(State::default()),
             authority: Arc::new(tokio::sync::Mutex::new(())),

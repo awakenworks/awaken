@@ -54,7 +54,7 @@ async fn native_worker_freezes_binding_before_tool_entry_and_clears_on_return() 
     // Worker ACK clears it. B19 wrong incarnation => zero tool entry, no slot.
     // Provider truth and independent post-crash stopping are not asserted here.
     for valid in [false, true] {
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
         let commit = Arc::new(MemoryCommitCoordinator::new());
         let (directory, identity) =
@@ -368,7 +368,7 @@ async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
     // E1+E2. R2=C1+Stutter -> E1+E3. R3=C1+Replace -> E1+E3.
     let fresh_token = tokio_util::sync::CancellationToken::new();
     fresh_token.cancel();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let fresh_store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let fresh_commit = Arc::new(MemoryCommitCoordinator::new());
     let fresh_executor = Arc::new(ContinuationOnlyAttemptExecutor {
@@ -557,7 +557,7 @@ async fn a_returned_unknown_tool_result_cannot_release_the_durable_physical_slot
     }
     let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let runtime = harness::tool_until_result_runtime(Arc::new(UnknownTool(effects.clone())), 1);
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("returned-unknown".into());
@@ -778,7 +778,7 @@ async fn replacement_claim_defers_until_predecessor_quiescence_before_model_entr
     // owns W3 as a durable state transition, avoiding a hanging test while still
     // proving lease expiry alone never clears the slot.
     let (runtime, model_calls) = counting_text_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     store
@@ -874,7 +874,7 @@ async fn expired_lease_is_reclaimed_and_driven_exactly_once() {
     // A claims D at t=0 and dies without settling (simulated: claim, never drive).
     // After the lease expires, B MUST reclaim, drive, and settle exactly once.
     let (runtime, infers) = counting_text_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
@@ -948,7 +948,7 @@ async fn expired_opaque_acp_claim_is_indeterminate_without_prompt_replay() {
     // Decision rule: execute A1 here; A2 and A3 are the adjacent terminal/native
     // recovery tests, while A4 remains the executor suite's fresh-run owner.
     let (runtime, infers) = counting_text_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-acp".to_string());
@@ -1198,7 +1198,7 @@ async fn committed_terminal_truth_dominates_opaque_acp_recovery() {
     // policy. Decision rule: execute A2 and assert the exact terminal remains,
     // no inference occurs, and the dispatch settles.
     let (runtime, infers) = counting_text_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let mut acp = activation("run-acp-committed");
@@ -1261,7 +1261,7 @@ async fn stale_reclaim_of_a_completed_run_settles_without_re_executing() {
     // settles the dispatch (the crash window between commit and settle). A stale
     // reclaim by B must settle Done from committed truth WITHOUT re-executing.
     let (runtime, infers) = counting_text_runtime();
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
 
@@ -1398,7 +1398,7 @@ async fn reclaim_after_process_bound_attempt_quiesces_applies_never_replay_polic
     // result and continues without entering the external tool a second time.
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-1".to_string());
@@ -1587,9 +1587,9 @@ async fn fresh_claim_drives_a_run_to_completion() {
     // A minimal end-to-end sanity check that the worker under test drives a freshly
     // claimed run to a terminal state on a single owner (no contention).
     let runtime = text_runtime();
-    let store = Arc::new(MemoryDispatchStore::new(Arc::new(
-        awaken_dispatch::SystemClock,
-    )));
+    let store = Arc::new(MemoryDispatchStore::new(
+        awaken_lease_contract::system_clock(),
+    ));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     store
         .enqueue(RunDispatch::new(activation("run-1")))
@@ -1622,7 +1622,7 @@ async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen(
     const MODE: &str = "AWAKEN_PHYSICAL_CRASH_ROOT";
     if let Ok(root) = std::env::var(MODE) {
         let root = std::path::Path::new(&root);
-        let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let dispatch = Arc::new(
             SqliteDispatchStore::open(root.join("dispatch.db").to_str().unwrap(), clock.clone())
                 .unwrap(),
@@ -1662,7 +1662,7 @@ async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen(
     .run()
     .unwrap();
     assert!(!status.success());
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         SqliteDispatchStore::open(
             root.path().join("dispatch.db").to_str().unwrap(),
@@ -1740,7 +1740,7 @@ async fn native_cancelled_external_future_does_not_acknowledge_physical_return()
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, calls, entered) =
         harness::blocking_tool_runtime_with_entry_signal(release.clone());
-    let clock = std::sync::Arc::new(awaken_dispatch::ManualClock::new(0));
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     store
