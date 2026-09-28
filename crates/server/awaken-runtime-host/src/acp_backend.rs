@@ -454,36 +454,15 @@ impl crate::host::SharedHost {
                 )? {
                 provider
             } else {
-                let hand_factory = hand_factory
-                    .ok_or("container Session environments require a hand executor factory")?;
-                let realization_namespace =
-                    awaken_sandbox_container::ContainerRealizationNamespace::from_stable_parts([
-                        "direct-host-installation",
-                        host.local_workspace(),
-                    ])
-                    .map_err(|error| format!("configure Session container identity: {error}"))?;
-                let components =
-                    crate::container_environment::build_container_environment_for_realization(
-                        realization_namespace,
-                        tier,
-                        deployment.container_image.as_deref(),
-                        &deployment.sandbox,
-                    )
-                    .await
-                    .map_err(|error| format!("configure the Session sandbox tier: {error}"))?;
-                if let Some(initializer) = components.cache_volume_initializer {
-                    host.env.cache_volume_prewarmer =
-                        crate::cache_volume::CacheVolumePrewarmer::new(initializer);
-                }
-                crate::session_environment::SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
-                components.provider,
-                components.capacity,
-                components.extra_mounts,
-                hand_factory,
-                deployment.sandbox.container_hand_bin.clone(),
-                std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
-                deployment.sandbox.container_hand_residency,
-            )
+                // The container tiers are assembled by the worker-plane
+                // composition (`awaken-execution-composition`), which installs
+                // their provider before this selection runs. Reaching here means
+                // a process root skipped it; fail closed instead of running the
+                // Session outside its configured isolation.
+                return Err(format!(
+                    "configure the Session sandbox tier: the {tier:?} container tier is installed \
+                     by the execution composition, which this process did not run"
+                ));
             };
             host.env.session_provider_explicit = true;
         }

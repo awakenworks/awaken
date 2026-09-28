@@ -369,19 +369,6 @@ fn namespace_degrades_to_local(fallback_optin: bool) -> bool {
     fallback_optin
 }
 
-/// The image a container tier requires, or a fail-closed error naming the config var.
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-pub(crate) fn container_image(image: Option<&str>) -> Result<String, String> {
-    image
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "a container sandbox tier requires AWAKEN_CONTAINER_IMAGE".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     mod attached;

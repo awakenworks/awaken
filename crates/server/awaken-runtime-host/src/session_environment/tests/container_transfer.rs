@@ -2,7 +2,7 @@
 
 use super::*;
 
-#[cfg(feature = "container-docker")]
+#[cfg(feature = "docker-tests")]
 // Container Repository transfer rules: C1 a non-default Agent work branch
 // has one committed change -> publish that exact branch without changing
 // the base branch; C2 replay the unchanged container state -> no second

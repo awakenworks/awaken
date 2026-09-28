@@ -82,6 +82,14 @@ impl SharedHost {
         self.deployment.sandbox_tier
     }
 
+    /// The typed Deployment this Host was constructed from. Startup
+    /// compositions read it (they never re-read process configuration) to
+    /// select the environment tier they install.
+    #[must_use]
+    pub fn deployment_config(&self) -> &crate::DeploymentConfig {
+        &self.deployment
+    }
+
     /// The process wall clock this Host drives its Workers on.
     #[must_use]
     pub fn clock(&self) -> Arc<dyn awaken_lease_contract::WallClock> {

@@ -371,9 +371,6 @@ pub struct SandboxSettings {
     pub warm_pool_idle_ttl_secs: u64,
     /// Optional HTTP(S) proxy used by the container provider.
     pub container_forward_proxy: Option<String>,
-    /// Capability-authenticated proxy used only when the container runtime has
-    /// independently attested a no-bypass allowlist network boundary.
-    pub container_allowlist_proxy: Option<awaken_sandbox_container::AllowlistProxy>,
     /// Externally reachable origin for the Runtime Host's exact-generation MCP
     /// relay. This is transport configuration only: it neither installs nor
     /// proves secret substitution or no-bypass provider capabilities.
@@ -382,9 +379,6 @@ pub struct SandboxSettings {
     pub k8s_namespace: String,
     /// Existing namespace-local Secrets used by kubelet for private image pulls.
     pub k8s_image_pull_secrets: Vec<String>,
-    /// Public CA and exact host alias for the hosted private Repository Gateway.
-    /// This is transport trust, not a credential or Repository authority.
-    pub k8s_repository_gateway_trust: Option<awaken_sandbox_container::K8sRepositoryGatewayTrust>,
     /// Optional retained active-filesystem PVC policy. Association is derived
     /// from the existing Session Sandbox realization; this is provisioning
     /// policy, not a second lifecycle registry.
@@ -439,11 +433,9 @@ impl Default for SandboxSettings {
             warm_pool_total_size: 16,
             warm_pool_idle_ttl_secs: 300,
             container_forward_proxy: None,
-            container_allowlist_proxy: None,
             container_mcp_relay: None,
             k8s_namespace: "default".to_owned(),
             k8s_image_pull_secrets: Vec::new(),
-            k8s_repository_gateway_trust: None,
             k8s_continuation_volume: None,
             k8s_image_prewarm: None,
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
