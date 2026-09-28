@@ -192,8 +192,8 @@ impl MemoryExtractionIntent {
                     .resolved_spec
                     .model_binding
                     .binding()
-                    .model_ref
-                    .as_str(),
+                    .identity()
+                    .1,
             ),
         ] {
             if value.trim().is_empty() {

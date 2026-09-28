@@ -1785,8 +1785,8 @@ mod completion_tests {
     #[test]
     fn coordinator_admission_requires_exact_acp_and_generic_a2a_capabilities() {
         let mut models = host_models();
-        let mut binding = models.model_binding.binding().clone();
-        binding.backend_ref = "acp:claude".to_string();
+        let (provider, model, _) = models.model_binding.identity();
+        let binding = ModelBinding::parse(provider, model, "acp:claude").unwrap();
         models.model_binding = ResolvedModelCandidate::host(binding);
         let remote = ResolvedModelCandidate::try_remote(
             ModelBinding::new("agent", "", "a2a:https://agent.example"),

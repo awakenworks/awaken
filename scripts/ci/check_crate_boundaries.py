@@ -1454,18 +1454,19 @@ def selftest_composite_identity_is_stated() -> None:
 
 
 # The producer half of the same class, ratcheted the same way. A
-# `ModelBinding` has one *validating* constructor, `ModelBinding::parse`, which
+# `ModelBinding` has one admission owner, `ModelBinding::parse`, which
 # refuses the coordinates that make two bindings on different provider accounts
-# compare equal. `ModelBinding::new` asserts them instead and panics where
-# `parse` would refuse. The count may fall and may not rise, so a new producer
-# cannot skip the admission even while the old ones are still being moved.
+# compare equal. `ModelBinding::new` delegates to it and panics on refusal.
+# The count may fall and may not rise, so a new producer must use the fallible
+# entry even while the old fixture assertions are still being moved.
 #
-# Two of the three surfaces this ratchet was standing in for are now closed by
+# The ingress and mutation surfaces are now closed by
 # the compiler rather than by this count: the durable ingress decodes through
 # `#[serde(try_from)]` (proved by
 # `the_durable_ingress_refuses_every_under_specified_binding`), and a
-# `ModelBinding` literal is unwritable outside its module (a `compile_fail`
-# doctest on the type). What this count still guards is the remaining producers
+# `ModelBinding` literal and its admitted coordinates are unwritable outside
+# its module (four `compile_fail` doctests on the type). What this count still
+# guards is the remaining panic-based producers
 # themselves -- and a 2026-09-19 sweep of every one of them found no production
 # call site whose coordinates come from runtime data: each is a compile-time
 # literal in a fixture, a Kani proof, a doc example or a test, where a panic is
@@ -1473,7 +1474,7 @@ def selftest_composite_identity_is_stated() -> None:
 # door per module rather than deprecated: `#[deprecated]` would turn several
 # hundred fixture literals into build failures for no reachable refusal.
 UNVALIDATED_MODEL_BINDING_PRODUCER = re.compile(r"\bModelBinding::new\s*\(")
-UNVALIDATED_MODEL_BINDING_BASELINE = 407
+UNVALIDATED_MODEL_BINDING_BASELINE = 405
 # The one place `ModelBinding::new` is the subject rather than a producer: the
 # round-trip property asserts that every binding `new` builds also decodes,
 # which is the invariant whose absence let a constructible binding stall a run
@@ -1501,7 +1502,7 @@ def _enclosing_fn(text: str, offset: int) -> str:
 
 
 def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> list[str]:
-    """`ModelBinding::new` performs no admission; its call sites may only shrink."""
+    """Panic-based `ModelBinding::new` producers may only shrink; parse is fallible."""
     sites: list[str] = []
     for root in (repo_root / "crates", repo_root / "e2e"):
         if not root.is_dir():
@@ -1519,8 +1520,8 @@ def check_model_binding_producers_are_ratcheted(repo_root: Path = REPO_ROOT) -> 
         return [
             f"{len(sites)} ModelBinding::new call sites, baseline "
             f"{UNVALIDATED_MODEL_BINDING_BASELINE}: "
-            f"{len(sites) - UNVALIDATED_MODEL_BINDING_BASELINE} new producer(s) skip the "
-            "completeness admission. Use ModelBinding::parse, which returns "
+            f"{len(sites) - UNVALIDATED_MODEL_BINDING_BASELINE} new producer(s) use "
+            "panic-based admission. Use ModelBinding::parse, which returns "
             "Result<_, InvalidModelBinding>."
         ]
     if len(sites) < UNVALIDATED_MODEL_BINDING_BASELINE:

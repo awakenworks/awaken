@@ -101,8 +101,8 @@ pub(crate) fn empty_frozen_projection_for_snapshot(
     snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let primary = snapshot.resolved_spec.model_binding.clone();
-    let runtime = primary.binding().backend_ref.clone();
-    let model = primary.binding().model_ref.clone();
+    let runtime = primary.binding().identity().2.to_owned();
+    let model = primary.binding().identity().1.to_owned();
     let model_override = awaken_session_configuration_contract::SessionModelOverride {
         publication: Some(Box::new(
             awaken_session_configuration_contract::SessionModelPublication {

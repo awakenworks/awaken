@@ -292,7 +292,9 @@ impl ResolvedSpec {
         let selected = model_ref_override.filter(|model| !model.is_empty());
         (0..=self.model_candidates.len())
             .filter_map(|ordinal| self.pinned_model_candidate_at(ordinal))
-            .filter(|candidate| selected.is_none_or(|model| candidate.binding.model_ref == model))
+            .filter(|candidate| {
+                selected.is_none_or(|model| candidate.binding.identity().1 == model)
+            })
             .collect()
     }
 
@@ -363,7 +365,7 @@ impl ResolvedSpec {
     pub fn candidate_for_model(&self, model_ref: &str) -> Option<&ResolvedModelCandidate> {
         std::iter::once(&self.model_binding)
             .chain(self.model_candidates.iter())
-            .find(|candidate| candidate.binding.model_ref == model_ref)
+            .find(|candidate| candidate.binding.identity().1 == model_ref)
     }
 
     /// Select the ordered subset for one model from this ephemeral resolved view.
@@ -376,7 +378,7 @@ impl ResolvedSpec {
     pub fn select_execution_model(&mut self, model_ref: &str) -> bool {
         let mut selected = std::iter::once(&self.model_binding)
             .chain(self.model_candidates.iter())
-            .filter(|candidate| candidate.binding.model_ref == model_ref)
+            .filter(|candidate| candidate.binding.identity().1 == model_ref)
             .cloned()
             .collect::<Vec<_>>();
         if selected.is_empty() {
@@ -880,7 +882,7 @@ impl ResolvedModelCandidate {
             !value.is_empty() && value.trim() == value
         }
 
-        let backend = Backend::from_ref(&binding.backend_ref);
+        let backend = binding.backend();
         match &provisioning {
             ModelProvisioning::HostExecutor => {}
             ModelProvisioning::BackendOwned {
@@ -893,17 +895,16 @@ impl ResolvedModelCandidate {
                         "backend-owned provisioning requires an exact ACP backend",
                     ));
                 }
-                if !canonical_nonempty(&binding.provider_identity_ref)
-                    || !canonical_nonempty(&credential.id)
+                if !canonical_nonempty(binding.identity().0) || !canonical_nonempty(&credential.id)
                 {
                     return Err(InvalidResolvedModelCandidate(
                         "backend-owned provisioning requires exact identity and credential references",
                     ));
                 }
                 let coherent_model = match model_selection {
-                    BackendModelSelection::Default => binding.model_ref.is_empty(),
+                    BackendModelSelection::Default => binding.identity().1.is_empty(),
                     BackendModelSelection::Exact => {
-                        ExactModelRef::parse(binding.model_ref.clone()).is_ok()
+                        ExactModelRef::parse(binding.identity().1.to_owned()).is_ok()
                     }
                 };
                 if !coherent_model {
@@ -928,8 +929,8 @@ impl ResolvedModelCandidate {
                 acp,
                 ..
             } => {
-                if !canonical_nonempty(&binding.provider_identity_ref)
-                    || !canonical_nonempty(&binding.model_ref)
+                if !canonical_nonempty(binding.identity().0)
+                    || !canonical_nonempty(binding.identity().1)
                     || !canonical_nonempty(provider_ref)
                     || !canonical_nonempty(route_ref)
                     || !canonical_nonempty(&endpoint.adapter_kind)
@@ -968,7 +969,7 @@ impl ResolvedModelCandidate {
                 security_fingerprint,
                 ..
             } => {
-                if !matches!(backend, Backend::Remote(_)) || !binding.model_ref.is_empty() {
+                if !matches!(backend, Backend::Remote(_)) || !binding.identity().1.is_empty() {
                     return Err(InvalidResolvedModelCandidate(
                         "remote provisioning requires an exact A2A backend and no local model",
                     ));

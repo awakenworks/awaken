@@ -47,7 +47,7 @@ fn resolve_returns_plan_when_fingerprints_match() {
 
     let resolved = runtime.resolve(&snapshot("catalog-a")).expect("resolves");
     assert_eq!(resolved.snapshot_id.0, "snapshot-1");
-    assert_eq!(resolved.spec.model_binding.model_ref, "model-1");
+    assert_eq!(resolved.spec.model_binding.identity().1, "model-1");
 }
 
 #[test]

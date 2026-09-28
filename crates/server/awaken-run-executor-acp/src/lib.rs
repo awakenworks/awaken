@@ -670,8 +670,7 @@ impl AcpRunExecutor {
         &self,
         activation: &RunActivation,
     ) -> Option<(SessionHomeKey, SessionHomePlan)> {
-        let Backend::Acp(backend) =
-            Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref)
+        let Backend::Acp(backend) = activation.snapshot.resolved_spec.model_binding.backend()
         else {
             return None;
         };
@@ -758,14 +757,16 @@ impl AcpRunExecutor {
             .snapshot
             .resolved_spec
             .model_binding
-            .model_ref
-            .clone();
+            .identity()
+            .1
+            .to_owned();
         let backend_ref = activation
             .snapshot
             .resolved_spec
             .model_binding
-            .backend_ref
-            .clone();
+            .identity()
+            .2
+            .to_owned();
         let mut prompt = initial_prompt(&activation, &context.request_context);
         // `RunActivation::input` is a durable Run fact, not merely transport
         // prompt material. Commit it with the external Agent's facts so ACP and

@@ -210,7 +210,7 @@ mod tests {
                 mcp_authoring: Default::default(),
                 agent_id: root.root_agent_id.0.clone(),
                 agent_revision: None,
-                model: binding.model_ref.clone(),
+                model: binding.identity().1.to_owned(),
                 model_override: Some(
                     awaken_session_configuration_contract::SessionModelOverride {
                         publication: Some(Box::new(
@@ -222,7 +222,7 @@ mod tests {
                         inference: Default::default(),
                     },
                 ),
-                runtime: Some(binding.backend_ref.clone()),
+                runtime: Some(binding.identity().2.to_owned()),
                 delegate_ids: Vec::new(),
                 toolsets: Vec::new(),
                 mounts: Vec::new(),

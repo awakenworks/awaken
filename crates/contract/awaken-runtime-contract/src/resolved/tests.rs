@@ -372,7 +372,7 @@ fn backend_typed_view_distinguishes_native_and_acp() {
 
     // The binding's stored `backend_ref` parses to the same typed backend.
     assert!(matches!(
-        Backend::from_ref(&ModelBinding::new("p", "m", "acp:codex").backend_ref),
+        Backend::from_ref(ModelBinding::new("p", "m", "acp:codex").identity().2),
         Backend::Acp(cli) if cli.cli() == "codex"
     ));
 
@@ -449,7 +449,7 @@ fn execution_model_selection_is_limited_to_the_published_pool() {
     );
 
     assert!(spec.select_execution_model("fallback"));
-    assert_eq!(spec.model_binding.provider_identity_ref, "fallback-id");
+    assert_eq!(spec.model_binding.identity().0, "fallback-id");
     assert!(spec.model_candidates.is_empty());
 }
 

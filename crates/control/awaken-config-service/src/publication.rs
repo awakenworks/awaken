@@ -196,8 +196,8 @@ pub(crate) async fn prepare_agent_publication(
     };
     if let Some(backend_ref) = config.model_binding.backend_default_ref() {
         let valid = !backend_ref.trim().is_empty()
-            && models.primary.binding().backend_ref == backend_ref
-            && models.primary.binding().model_ref.is_empty()
+            && models.primary.binding().identity().2 == backend_ref
+            && models.primary.binding().identity().1.is_empty()
             && matches!(
                 models.primary.provisioning(),
                 awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
@@ -214,8 +214,8 @@ pub(crate) async fn prepare_agent_publication(
         }
     }
     if let Some((backend_ref, model_ref)) = config.model_binding.backend_exact() {
-        let valid = models.primary.binding().backend_ref == backend_ref
-            && models.primary.binding().model_ref == model_ref
+        let valid = models.primary.binding().identity().2 == backend_ref
+            && models.primary.binding().identity().1 == model_ref
             && matches!(
                 models.primary.provisioning(),
                 awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
@@ -269,7 +269,7 @@ pub(crate) async fn prepare_agent_publication(
     if config
         .model_binding
         .resolved()
-        .is_some_and(|binding| binding.backend_ref.starts_with("acp:"))
+        .is_some_and(|binding| binding.identity().2.starts_with("acp:"))
     {
         config
             .plugin_config
@@ -300,7 +300,7 @@ pub(crate) async fn prepare_agent_publication(
             id: config
                 .model_binding
                 .resolved()
-                .map(|binding| binding.model_ref.clone())
+                .map(|binding| binding.identity().1.to_owned())
                 .unwrap_or_default(),
             version: awaken_runtime_contract::ResolvedInputVersion::ContentHash(
                 awaken_runtime_contract::content_fingerprint(&model_bytes)

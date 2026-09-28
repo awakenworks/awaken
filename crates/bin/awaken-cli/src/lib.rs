@@ -1073,7 +1073,7 @@ fn resolve_model_services(
         }
         #[cfg(any(test, feature = "test-support"))]
         PublicationModelSupply::Host { executor, binding } => {
-            let model_ref = binding.model_ref.clone();
+            let model_ref = binding.identity().1.to_owned();
             ResolvedModelServices {
                 publication_resolver: Arc::new(ExactHostModelPublicationResolver { binding }),
                 runtime: RuntimeModelServices::Host {

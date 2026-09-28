@@ -13,9 +13,8 @@ impl CatalogModelPublicationResolver {
             source.status == CredentialStatus::Active
                 && source.kind == CredentialKind::WorkerLocal
                 && source.worker_local_binding.as_ref().is_some_and(|local| {
-                    local.driver_id == binding.backend_ref
-                        && (binding.provider_identity_ref.is_empty()
-                            || binding.provider_identity_ref == source.id.0)
+                    local.driver_id == binding.identity().2
+                        && (binding.identity().0.is_empty() || binding.identity().0 == source.id.0)
                 })
         });
         let source =
@@ -25,7 +24,7 @@ impl CatalogModelPublicationResolver {
                     binding: binding.clone(),
                     reason: format!(
                         "no active Worker-local binding is registered for {}",
-                        binding.backend_ref
+                        binding.identity().2
                     ),
                 })?;
         if matches.next().is_some() {
@@ -33,7 +32,7 @@ impl CatalogModelPublicationResolver {
                 binding: binding.clone(),
                 reason: format!(
                     "multiple Worker-local bindings are registered for {}; select an exact identity",
-                    binding.backend_ref
+                    binding.identity().2
                 ),
             });
         }
@@ -47,17 +46,21 @@ impl CatalogModelPublicationResolver {
                     source.id.0
                 ),
             })?;
-        let mut resolved_binding = binding;
-        resolved_binding
-            .provider_identity_ref
-            .clone_from(&source.id.0);
+        let (_, model, backend) = binding.identity();
+        let resolved_binding =
+            ModelBinding::parse(source.id.0.as_str(), model, backend).map_err(|error| {
+                PublicationResolutionError::CandidateUnavailable {
+                    binding: binding.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
         let required_credential = awaken_worker_contract::WorkerCredentialRevision {
             id: source.id.0.clone(),
             revision,
         };
         let (capability_adapter_version, capability_fingerprint, negotiated) = self
             .verified_acp_capability(
-                &resolved_binding.backend_ref,
+                resolved_binding.identity().2,
                 Some(&required_credential),
                 wall_clock_ms(),
             )
@@ -77,7 +80,7 @@ impl CatalogModelPublicationResolver {
         )
         .map(|candidate| {
             candidate.with_acp_tool_alias_support(self.acp_capabilities.iter().any(|row| {
-                row.backend_ref == error_binding.backend_ref && row.supports_tool_aliases
+                row.backend_ref == error_binding.identity().2 && row.supports_tool_aliases
             }))
         })
         .map_err(|error| PublicationResolutionError::CandidateUnavailable {

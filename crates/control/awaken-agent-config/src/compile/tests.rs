@@ -341,7 +341,7 @@ fn model_candidates_compile_into_the_resolved_pool_and_enter_the_fingerprint() {
     // The pool is carried onto the resolved spec: primary + one fallback.
     assert_eq!(spec.model_candidates.len(), 1);
     assert_eq!(spec.candidate_bindings().len(), 2);
-    assert_eq!(spec.candidate_bindings()[1].model_ref, "fallback");
+    assert_eq!(spec.candidate_bindings()[1].identity().1, "fallback");
 
     // A pool enters the content address (a different pool is a different snapshot);
     // an empty pool (the default) leaves the fingerprint byte-identical.

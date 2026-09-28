@@ -419,7 +419,7 @@ impl SharedHost {
             })
             .is_some_and(|snapshot| {
                 awaken_runtime_contract::resolved::Backend::from_ref(
-                    &snapshot.resolved_spec.model_binding.backend_ref,
+                    snapshot.resolved_spec.model_binding.identity().2,
                 )
                 .is_acp()
             });

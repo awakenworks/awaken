@@ -1273,7 +1273,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
         restored_session_id(
             &context,
             &activation.thread_id,
-            &activation.snapshot.resolved_spec.model_binding.backend_ref,
+            activation.snapshot.resolved_spec.model_binding.identity().2,
         )
         .expect("C1 absent state is valid"),
         None
@@ -1302,7 +1302,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
             restored_session_id(
                 &context,
                 &activation.thread_id,
-                &activation.snapshot.resolved_spec.model_binding.backend_ref,
+                activation.snapshot.resolved_spec.model_binding.identity().2,
             )
             .expect("C1/C3 are valid non-resume states"),
             None
@@ -1315,7 +1315,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
         &activation.thread_id,
         &TokenUsage::default(),
         "model",
-        &activation.snapshot.resolved_spec.model_binding.backend_ref,
+        activation.snapshot.resolved_spec.model_binding.identity().2,
         Some("session-7"),
     )
     .expect("C2 fixture serializes");
@@ -1332,7 +1332,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
         restored_session_id(
             &context,
             &activation.thread_id,
-            &activation.snapshot.resolved_spec.model_binding.backend_ref,
+            activation.snapshot.resolved_spec.model_binding.identity().2,
         )
         .expect("C2 exact identity is valid"),
         Some("session-7".into())
@@ -1365,7 +1365,7 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
             restored_session_id(
                 &context,
                 &activation.thread_id,
-                &activation.snapshot.resolved_spec.model_binding.backend_ref,
+                activation.snapshot.resolved_spec.model_binding.identity().2,
             )
             .is_err(),
             "C4 malformed durable identity must fail closed"

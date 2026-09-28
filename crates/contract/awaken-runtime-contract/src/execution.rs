@@ -350,8 +350,9 @@ impl AttemptExecutorRegistry {
         &self,
         activation: &crate::activation::RunActivation,
     ) -> Result<Arc<dyn RunAttemptExecutor>> {
-        let backend_ref = &activation.snapshot.resolved_spec.model_binding.backend_ref;
-        match Backend::from_ref(backend_ref) {
+        let binding = &activation.snapshot.resolved_spec.model_binding;
+        let backend_ref = binding.identity().2;
+        match binding.backend() {
             Backend::Native => self.native.clone().ok_or_else(|| {
                 Error::Resolution(format!(
                     "no native attempt executor is registered for {backend_ref}"

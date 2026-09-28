@@ -823,6 +823,10 @@ impl BrokeredCandidateExecutor {
         mut request: ChatRequest,
         sink: Option<&dyn DeltaSink>,
     ) -> Result<ChatResponse, LlmError> {
+        // Validate the wire-only copy before acquiring a grant. Authorization
+        // still names the original publication binding, and a projection error
+        // creates neither a remote model request nor a grant needing closure.
+        let upstream_binding = request.project_upstream_model(&self.model)?;
         let lease = self.lease(&request.model_binding).await.map_err(|error| {
             // The egress lease could not be acquired, so nothing was sent.
             error.with_execution_evidence(
@@ -832,7 +836,7 @@ impl BrokeredCandidateExecutor {
                 ),
             )
         })?;
-        request.model_binding.model_ref.clone_from(&self.model);
+        request.model_binding = upstream_binding;
         let result = match self.executor(&lease) {
             Ok(executor) => match sink {
                 Some(sink) => executor.infer_streaming(request, sink).await,
@@ -1278,6 +1282,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_wire_model_projection_never_acquires_a_grant() {
+        // B1 current exact operation/ownership + C1 empty/padded pinned wire
+        // model + C2 streaming/nonstreaming => Binding with RequestProjection
+        // proof, zero create_grant, zero close_grant, original request intact.
+        // The existing valid wire/grant tests below own B2 (admitted copy ->
+        // authorized original binding -> one grant -> one exact close). A local
+        // projection failure must not leak a grant or relabel it as a send.
+        use awaken_runtime_contract::model_operation::{
+            ModelExecutionEvidence, NoDispatchProof, with_model_operation_context,
+        };
+        for alias in ["", " gpt-5", "gpt-5 "] {
+            for streaming in [false, true] {
+                let client = Arc::new(RecordingClient::default());
+                let mut model = executor(client.clone(), Some(Arc::new(CurrentOwnership)));
+                model.model = alias.into(); // Inject a malformed endpoint pin, not a binding.
+                let operation = model_operation(7);
+                let request = ChatRequest {
+                    model_binding: operation.binding().clone(),
+                    inference: Default::default(),
+                    messages: vec![],
+                    tools: vec![],
+                };
+                let original = request.clone();
+                let error = with_model_operation_context(Some(operation), async {
+                    if streaming {
+                        model
+                            .infer_streaming(request.clone(), &crate::NoopDeltaSink)
+                            .await
+                    } else {
+                        model.infer(request.clone()).await
+                    }
+                })
+                .await
+                .unwrap_err();
+                assert!(matches!(error.classification(), LlmError::Binding(_)), "B1");
+                assert_eq!(
+                    error.execution_evidence(),
+                    ModelExecutionEvidence::NotDispatched(NoDispatchProof::request_projection(),),
+                    "B1 exact pre-effect stage"
+                );
+                assert!(client.requests.lock().unwrap().is_empty(), "B1 zero grants");
+                assert!(
+                    client.closed.lock().unwrap().is_empty(),
+                    "B1 no resource to close"
+                );
+                assert_eq!(request, original, "B1 original authorization input");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn rematerialized_candidates_must_not_reuse_another_invocations_grant_key() {
         // G1 the pinned wrapper materializes a fresh candidate per invocation;
         // G2 both invocations belong to the same Run and target. Distinct durable
@@ -1325,11 +1380,6 @@ mod tests {
         assert!(client.requests.lock().unwrap().is_empty());
         // T3 at both model-port entries: missing authority => no model send,
         // hence NotDispatched (the broker control operation is a separate effect).
-        struct Sink;
-        #[async_trait]
-        impl DeltaSink for Sink {
-            async fn on_text(&self, _: &str) {}
-        }
         let request = ChatRequest {
             model_binding: awaken_runtime_contract::resolved::ModelBinding::new("p", "m", "b"),
             inference: Default::default(),
@@ -1339,7 +1389,9 @@ mod tests {
         let model = executor(client.clone(), None);
         for streaming in [false, true] {
             let error = if streaming {
-                model.infer_streaming(request.clone(), &Sink).await
+                model
+                    .infer_streaming(request.clone(), &crate::NoopDeltaSink)
+                    .await
             } else {
                 model.infer(request.clone()).await
             }
@@ -1387,11 +1439,6 @@ mod tests {
             async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
                 self.0.lock().unwrap().clone()
             }
-        }
-        struct Sink;
-        #[async_trait]
-        impl DeltaSink for Sink {
-            async fn on_text(&self, _: &str) {}
         }
 
         for (rule, after_grant, fail_close) in [
@@ -1441,7 +1488,7 @@ mod tests {
                     tokio::join!(
                         with_model_operation_context(Some(operation), async {
                             if streaming {
-                                model.infer_streaming(request, &Sink).await
+                                model.infer_streaming(request, &crate::NoopDeltaSink).await
                             } else {
                                 model.infer(request).await
                             }
@@ -1512,8 +1559,13 @@ mod tests {
         let operation = model_operation(7);
         let binding = operation.binding().clone();
         assert!(model.lease(&binding).await.is_err());
-        let mut foreign_binding = binding.clone();
-        foreign_binding.model_ref = "foreign-model".into();
+        let (provider, _, backend) = binding.identity();
+        let foreign_binding = awaken_runtime_contract::resolved::ModelBinding::parse(
+            provider,
+            "foreign-model",
+            backend,
+        )
+        .unwrap();
         assert!(
             with_model_operation_context(Some(operation.clone()), model.lease(&foreign_binding))
                 .await

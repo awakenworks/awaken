@@ -1409,8 +1409,8 @@ async fn install_complete_test_session(
         },
         |publication| publication.resolved_spec.model_binding.clone(),
     );
-    let published_model = primary.binding().model_ref.clone();
-    let published_runtime = primary.binding().backend_ref.clone();
+    let published_model = primary.binding().identity().1.to_owned();
+    let published_runtime = primary.binding().identity().2.to_owned();
     let model_override = Some(
         awaken_session_configuration_contract::SessionModelOverride {
             publication: Some(Box::new(
@@ -7067,9 +7067,9 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
                 mcp_authoring: Default::default(),
                 agent_id: "local-codex".into(),
                 agent_revision: None,
-                model: candidate.binding().model_ref.clone(),
+                model: candidate.binding().identity().1.to_owned(),
                 model_override: Some(model_override()),
-                runtime: Some(candidate.binding().backend_ref.clone()),
+                runtime: Some(candidate.binding().identity().2.to_owned()),
                 delegate_ids: Vec::new(),
                 toolsets: Vec::new(),
                 mounts,

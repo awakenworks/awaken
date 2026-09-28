@@ -122,7 +122,7 @@ pub(super) fn validate_backends<'a>(
     for candidate in candidates {
         use awaken_runtime_contract::resolved::{Backend, ModelProvisioning};
         if matches!(
-            Backend::from_ref(&candidate.binding().backend_ref),
+            candidate.binding().backend(),
             Backend::Acp(_) | Backend::Remote(_)
         ) {
             let aliases =

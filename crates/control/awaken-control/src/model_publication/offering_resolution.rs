@@ -10,9 +10,8 @@ pub(super) fn offering_for<'a>(
     binding: &ModelBinding,
 ) -> Result<&'a Offering, PublicationResolutionError> {
     let target = ModelTarget {
-        model_id: binding.model_ref.clone(),
-        provider_id: (!binding.provider_identity_ref.is_empty())
-            .then(|| binding.provider_identity_ref.clone()),
+        model_id: binding.identity().1.to_owned(),
+        provider_id: (!binding.identity().0.is_empty()).then(|| binding.identity().0.to_owned()),
         api_dialect: None,
         protocol_endpoint_id: None,
         endpoint_name: None,

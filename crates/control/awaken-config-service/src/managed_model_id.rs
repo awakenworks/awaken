@@ -211,30 +211,30 @@ fn render_model_and_executor(
 }
 
 fn render_binding(binding: &ModelBinding) -> Result<String, ManagedModelIdError> {
-    match Backend::from_ref(&binding.backend_ref) {
-        Backend::Native if binding.model_ref.is_empty() => {
+    match Backend::from_ref(binding.identity().2) {
+        Backend::Native if binding.identity().1.is_empty() => {
             Err(ManagedModelIdError::UnsupportedSelection)
         }
         Backend::Native => {
-            let mut rendered = encode_component(&binding.model_ref);
-            if !binding.provider_identity_ref.is_empty() {
-                push_qualifier(&mut rendered, "provider", &binding.provider_identity_ref);
+            let mut rendered = encode_component(binding.identity().1);
+            if !binding.identity().0.is_empty() {
+                push_qualifier(&mut rendered, "provider", binding.identity().0);
             }
             Ok(rendered)
         }
-        Backend::Acp(_) if binding.model_ref.is_empty() => {
-            render_executor_only(&binding.backend_ref)
+        Backend::Acp(_) if binding.identity().1.is_empty() => {
+            render_executor_only(binding.identity().2)
         }
         Backend::Acp(backend) => {
-            let mut rendered = encode_component(&binding.model_ref);
-            if !binding.provider_identity_ref.is_empty() {
-                push_qualifier(&mut rendered, "provider", &binding.provider_identity_ref);
+            let mut rendered = encode_component(binding.identity().1);
+            if !binding.identity().0.is_empty() {
+                push_qualifier(&mut rendered, "provider", binding.identity().0);
             }
             push_qualifier(&mut rendered, "executor", &format!("acp:{backend}"));
             Ok(rendered)
         }
         Backend::Remote(endpoint)
-            if binding.provider_identity_ref.is_empty() && binding.model_ref.is_empty() =>
+            if binding.identity().0.is_empty() && binding.identity().1.is_empty() =>
         {
             Ok(format!(
                 "executor={}",

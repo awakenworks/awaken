@@ -398,17 +398,17 @@ impl SessionAttemptExecutor {
                 .into_iter()
                 .map(|candidate| candidate.binding())
         }) {
-            let executor = match Backend::from_ref(&binding.backend_ref) {
+            let executor = match Backend::from_ref(binding.identity().2) {
                 Backend::Native => continue,
                 Backend::Acp(_) => acp.clone(),
                 Backend::Remote(_) => a2a.clone(),
                 Backend::Invalid(_) => continue,
             };
             if let Some(executor) = executor
-                && !registry.supports(&binding.backend_ref)
+                && !registry.supports(binding.identity().2)
             {
                 registry
-                    .register(binding.backend_ref.clone(), executor)
+                    .register(binding.identity().2.to_owned(), executor)
                     .expect("resolved backend_ref is an exact ACP/A2A route");
             }
         }
@@ -481,7 +481,7 @@ impl SharedHost {
         let mut bindings = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for candidate in &candidates {
-            let backend = Backend::from_ref(&candidate.binding().backend_ref);
+            let backend = Backend::from_ref(candidate.binding().identity().2);
             // Each route is admitted only by the resolver/provider that will
             // execute that exact candidate. Unioning evidence across fallback
             // candidates would let one ACP route authorize another route.
@@ -990,8 +990,13 @@ mod tests {
     fn resolved_with(backend_refs: &[&str]) -> awaken_runtime_contract::resolved::ResolvedSpec {
         let mut resolved = activation(backend_refs[0]).snapshot.resolved_spec;
         for backend_ref in &backend_refs[1..] {
-            let mut binding = resolved.model_binding.binding().clone();
-            binding.backend_ref = (*backend_ref).to_string();
+            let (provider, model, _) = resolved.model_binding.identity();
+            let binding = awaken_runtime_contract::resolved::ModelBinding::parse(
+                provider,
+                model,
+                *backend_ref,
+            )
+            .unwrap();
             resolved
                 .model_candidates
                 .push(awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding));

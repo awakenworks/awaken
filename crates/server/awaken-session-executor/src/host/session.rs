@@ -385,7 +385,7 @@ impl SharedHost {
                 || {
                     let frozen_model_ref =
                         installed.as_ref().map_or(self.model_ref.as_str(), |root| {
-                            root.resolved_spec.model_binding.model_ref.as_str()
+                            root.resolved_spec.model_binding.identity().1
                         });
                     self.inference_routing.model_ref(thread, frozen_model_ref)
                 },
@@ -482,7 +482,7 @@ impl SharedHost {
             }
             let published_backend_ref = model_candidate
                 .as_ref()
-                .map(|candidate| candidate.binding().backend_ref.clone());
+                .map(|candidate| candidate.binding().identity().2.to_owned());
             let provisioning = model_candidate
                 .as_ref()
                 .map(awaken_runtime_contract::resolved::ResolvedModelCandidate::provisioning)

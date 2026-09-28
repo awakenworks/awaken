@@ -145,7 +145,7 @@ pub(super) struct ObservedModelRequest {
         otel.kind = "client",
         gen_ai.operation.name = "chat",
         gen_ai.provider.name = "awaken",
-        gen_ai.request.model = %request.model_binding.model_ref,
+        gen_ai.request.model = %request.model_binding.identity().1,
         gen_ai.response.finish_reasons = tracing::field::Empty,
         gen_ai.usage.input_tokens = tracing::field::Empty,
         gen_ai.usage.output_tokens = tracing::field::Empty,
@@ -179,14 +179,14 @@ pub(super) async fn infer_with_retry_observed(
     let span = tracing::Span::current();
     // The routing model id, captured before `request` moves into the retry loop —
     // it labels both the span and the metric (structure only, never content).
-    let model_id = request.model_binding.model_ref.clone();
+    let model_id = request.model_binding.identity().1.to_owned();
     let started = awaken_runtime_contract::llm::ModelInferenceClock::now(
         &awaken_runtime_contract::llm::TokioModelInferenceClock,
     );
     // OTel GenAI span name is the templated `{operation} {model}` (SHOULD).
     span.record(
         "otel.name",
-        format!("chat {}", request.model_binding.model_ref).as_str(),
+        format!("chat {}", request.model_binding.identity().1).as_str(),
     );
     // Content telemetry (ADR-0050): gated + scrubbed; before the request moves.
     model_read(
@@ -333,7 +333,7 @@ async fn infer_with_retry_inner(
     if let Some(journal) = journal.as_deref_mut() {
         journal.verify_reentry(resume.is_some())?;
     }
-    let model = request.model_binding.model_ref.clone();
+    let model = request.model_binding.identity().1.to_owned();
     let sink = ContinuationSink::new(sink);
     // Text confirmed from prior interrupted attempts; grows as continuation
     // proceeds. Empty means "start (or restart) clean".

@@ -466,7 +466,9 @@ async fn restored_model_history_rejects_damage_hidden_by_a_valid_latest_value() 
                 3 => broken.action = Action::Remove,
                 _ => {
                     let mut changed = first.clone();
-                    changed.binding.model_ref.push('x');
+                    let (provider, model, backend) = changed.binding.identity();
+                    changed.binding =
+                        ModelBinding::parse(provider, format!("{model}x"), backend).unwrap();
                     broken = ActiveModelOperation::write(&Some(changed));
                 }
             }
@@ -1102,7 +1104,7 @@ impl LlmExecutor for PrimaryFailureThenTextLlm {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let model = request.model_binding.model_ref;
+        let model = request.model_binding.identity().1.to_owned();
         self.models.lock().unwrap().push(model.clone());
         if model == "model-1" {
             return Err(awaken_runtime_contract::llm::Error::Provider(
@@ -1264,7 +1266,8 @@ impl LlmExecutor for AdvisorThenTextLlm {
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         assert_eq!(
-            request.model_binding.model_ref, "model-1",
+            request.model_binding.identity().1,
+            "model-1",
             "M12/K1: Runtime must never sample the advisor provider directly"
         );
         let output = if self.primary_calls.fetch_add(1, Ordering::SeqCst) == 0 {

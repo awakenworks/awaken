@@ -219,7 +219,7 @@ mod tests {
             .resolved_spec
             .clone();
         // The binding selects the passed model ref.
-        assert_eq!(spec.model_binding.model_ref, "some-model");
+        assert_eq!(spec.model_binding.identity().1, "some-model");
         // The config carries the coding descriptors (ids match the executable tools).
         let tool_ids: Vec<&str> = spec
             .tool_descriptors

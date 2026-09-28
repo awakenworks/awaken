@@ -762,8 +762,10 @@ async fn expired_opaque_acp_claim_is_indeterminate_without_prompt_replay() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let run = RunId("run-acp".to_string());
     let mut acp = activation("run-acp");
-    let mut binding = acp.snapshot.resolved_spec.model_binding.binding().clone();
-    binding.backend_ref = "acp:claude".to_string();
+    let (provider, model, _) = acp.snapshot.resolved_spec.model_binding.identity();
+    let binding =
+        awaken_runtime_contract::resolved::ModelBinding::parse(provider, model, "acp:claude")
+            .unwrap();
     acp.snapshot.resolved_spec.model_binding =
         awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
 
@@ -851,13 +853,10 @@ async fn assert_occupied_attempt_terminal_recovery<
     let mut request = activation("occupied-recovery");
     let run = request.run_id.clone();
     if acp_backend {
-        let mut binding = request
-            .snapshot
-            .resolved_spec
-            .model_binding
-            .binding()
-            .clone();
-        binding.backend_ref = "acp:claude".into();
+        let (provider, model, _) = request.snapshot.resolved_spec.model_binding.identity();
+        let binding =
+            awaken_runtime_contract::resolved::ModelBinding::parse(provider, model, "acp:claude")
+                .unwrap();
         request.snapshot.resolved_spec.model_binding =
             awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
     }
@@ -1012,8 +1011,10 @@ async fn committed_terminal_truth_dominates_opaque_acp_recovery() {
     let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let mut acp = activation("run-acp-committed");
-    let mut binding = acp.snapshot.resolved_spec.model_binding.binding().clone();
-    binding.backend_ref = "acp:claude".to_string();
+    let (provider, model, _) = acp.snapshot.resolved_spec.model_binding.identity();
+    let binding =
+        awaken_runtime_contract::resolved::ModelBinding::parse(provider, model, "acp:claude")
+            .unwrap();
     acp.snapshot.resolved_spec.model_binding =
         awaken_runtime_contract::resolved::ResolvedModelCandidate::host(binding);
 

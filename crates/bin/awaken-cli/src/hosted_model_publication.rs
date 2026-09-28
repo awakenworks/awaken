@@ -176,7 +176,7 @@ mod tests {
                 .resolved()
                 .cloned()
                 .ok_or(PublicationResolutionError::MissingPrimary)?;
-            if binding.provider_identity_ref != self.admitted_provider {
+            if binding.identity().0 != self.admitted_provider {
                 return Err(PublicationResolutionError::CandidateUnavailable {
                     binding,
                     reason: "owned by the other model-supply authority".into(),
