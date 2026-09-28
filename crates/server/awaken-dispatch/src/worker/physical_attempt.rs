@@ -204,7 +204,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                 while state == RunState::Awaiting
                     && !claimed.cancellation_requested
                     && !cancellation.is_cancelled()
-                    && quiescence.can_acknowledge_return()
+                    && quiescence.permits_execution()
                 {
                     let Some(ticket) = self.reader.resume_ticket(&claim.run_id) else {
                         break;
@@ -237,7 +237,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                 }
             }
         };
-        if !quiescence.can_acknowledge_return() {
+        if !quiescence.close_and_wait().await {
             tracing::warn!(run_id = %claim.run_id.0, owner = %claim.owner,
                 lease_epoch = claim.epoch, phase = "physical_quiescence",
                 "Executor returned without physical termination evidence; retaining attempt slot");

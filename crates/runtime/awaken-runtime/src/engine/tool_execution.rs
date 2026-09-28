@@ -314,63 +314,70 @@ pub(crate) async fn gate_decision(
     state: &Store,
     context: &RuntimeRunContext,
 ) -> GatedCall {
-    // Audit the decision of a real (policy-backed) gate (ADR-0030).
-    let audited = runtime.gate().is_some() || context.tool_permission_policy.is_some();
-    let decided = |decision: GateDecision| GatedCall {
-        // The decision label is the permission-relevant view of the outcome;
-        // who decided, the policy and the reason are the authority the deciding
-        // gate stated, never inferred from the label.
-        audit: audited.then(|| decision.audit_fact(call).into()),
-        outcome: decision.outcome,
-    };
-    if context.tool_capability_narrowing
-        == awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
-    {
-        return decided(GateDecision::run_narrowing(GateOutcome::Block {
-            reason: "tools are disabled for this Run".into(),
-        }));
-    }
-    let ctx = ToolCall {
-        tool_id: call.tool_id.clone(),
-        call_id: call.call_id.clone(),
-        arguments: call.arguments.clone(),
-    };
-    let mut allowed_on: Option<GateAuthority> = None;
-    if let Some(narrowing) = &context.tool_permission_policy {
-        let decision = narrowing.evaluate(&ctx).await.into_gate_decision();
-        if !matches!(decision.outcome, GateOutcome::Allow) {
-            return decided(decision);
-        }
-        allowed_on = Some(decision.authority);
-    }
-    if let Some(gate) = runtime.gate() {
-        let host = gate.gate(&ctx, state).await;
-        if !matches!(host.outcome, GateOutcome::Allow) {
-            return decided(host);
-        }
-        allowed_on = Some(match allowed_on {
-            Some(policy @ GateAuthority::Policy(_)) => policy,
-            _ => host.authority,
-        });
-    }
-    for gate in env.tool_gates() {
-        let decision = gate.gate(&ctx, state).await;
-        if !matches!(decision.outcome, GateOutcome::Allow) {
-            return decided(decision);
-        }
-    }
-    match allowed_on {
-        Some(authority) => decided(GateDecision {
-            outcome: GateOutcome::Allow,
-            authority,
-        }),
-        // Neither a host gate nor a per-Run policy is installed: `audited` is
-        // false, so there is no decider to name and nothing to record.
-        None => GatedCall {
-            outcome: GateOutcome::Allow,
-            audit: None,
-        },
-    }
+    // Gates may await independent work. They enter the same participant barrier
+    // as executors; cancelling a pending gate cannot masquerade as full return.
+    context
+        .physical_quiescence
+        .observe_return(async {
+            // Audit the decision of a real (policy-backed) gate (ADR-0030).
+            let audited = runtime.gate().is_some() || context.tool_permission_policy.is_some();
+            let decided = |decision: GateDecision| GatedCall {
+                // The decision label is the permission-relevant view of the outcome;
+                // who decided, the policy and the reason are the authority the deciding
+                // gate stated, never inferred from the label.
+                audit: audited.then(|| decision.audit_fact(call).into()),
+                outcome: decision.outcome,
+            };
+            if context.tool_capability_narrowing
+                == awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
+            {
+                return decided(GateDecision::run_narrowing(GateOutcome::Block {
+                    reason: "tools are disabled for this Run".into(),
+                }));
+            }
+            let ctx = ToolCall {
+                tool_id: call.tool_id.clone(),
+                call_id: call.call_id.clone(),
+                arguments: call.arguments.clone(),
+            };
+            let mut allowed_on: Option<GateAuthority> = None;
+            if let Some(narrowing) = &context.tool_permission_policy {
+                let decision = narrowing.evaluate(&ctx).await.into_gate_decision();
+                if !matches!(decision.outcome, GateOutcome::Allow) {
+                    return decided(decision);
+                }
+                allowed_on = Some(decision.authority);
+            }
+            if let Some(gate) = runtime.gate() {
+                let host = gate.gate(&ctx, state).await;
+                if !matches!(host.outcome, GateOutcome::Allow) {
+                    return decided(host);
+                }
+                allowed_on = Some(match allowed_on {
+                    Some(policy @ GateAuthority::Policy(_)) => policy,
+                    _ => host.authority,
+                });
+            }
+            for gate in env.tool_gates() {
+                let decision = gate.gate(&ctx, state).await;
+                if !matches!(decision.outcome, GateOutcome::Allow) {
+                    return decided(decision);
+                }
+            }
+            match allowed_on {
+                Some(authority) => decided(GateDecision {
+                    outcome: GateOutcome::Allow,
+                    authority,
+                }),
+                // Neither a host gate nor a per-Run policy is installed: `audited` is
+                // false, so there is no decider to name and nothing to record.
+                None => GatedCall {
+                    outcome: GateOutcome::Allow,
+                    audit: None,
+                },
+            }
+        })
+        .await
 }
 
 /// Fold a resumed tool result into `(messages, state)` off a throwaway store copy
@@ -520,7 +527,7 @@ async fn execute_tool_action(
     // Admission may have waited behind another Run. Recheck the claim fence at
     // the actual effect boundary rather than trusting ownership from before it.
     verify_attempt_ownership(context.ownership.as_deref()).await?;
-    if !context.physical_quiescence.can_acknowledge_return() {
+    if !context.physical_quiescence.permits_execution() {
         return Err(Error::Indeterminate);
     }
     let started = std::time::Instant::now();

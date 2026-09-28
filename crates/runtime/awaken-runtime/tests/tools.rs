@@ -1954,3 +1954,71 @@ async fn a_tool_call_streams_to_the_live_sink() {
         serde_json::json!({"text": "ping"})
     );
 }
+
+#[tokio::test]
+async fn permission_gate_participation_counts_pending_and_preserves_unknown_on_drop() {
+    struct ProbeGate {
+        entered: Arc<tokio::sync::Notify>,
+        mode: u8,
+    }
+    #[async_trait::async_trait]
+    impl ToolGateHook for ProbeGate {
+        fn id(&self) -> &str {
+            "probe"
+        }
+        async fn gate(&self, _: &ToolCall, _: &Store) -> GateDecision {
+            self.entered.notify_one();
+            match self.mode {
+                0 => GateDecision::plugin_gate(GateOutcome::Allow),
+                1 => std::future::pending().await,
+                _ => panic!("gate failure after entry"),
+            }
+        }
+    }
+    // C1 gate returns/pends/unwinds; C2 the tool has not entered yet. R1 normal
+    // return => one tool and natural end. R2 pending => active participant, no
+    // ACK, but nested execution remains admitted until closure. R3 drop/unwind
+    // => Unknown and zero tool effects. Covers the actual fresh Native gate,
+    // not merely direct calls to AttemptQuiescence.
+    for mode in 0..3 {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let tools = Arc::new(AtomicUsize::new(0));
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(ToolThenText::new()))
+            .with_tool(Arc::new(EchoTool { ran: tools.clone() }))
+            .with_gate(Arc::new(ProbeGate {
+                entered: entered.clone(),
+                mode,
+            }));
+        let context = RuntimeRunContext::new();
+        let evidence = context.physical_quiescence.clone();
+        let task = tokio::spawn(async move { runtime.execute(activation(), context).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        if mode == 1 {
+            assert!(!evidence.can_acknowledge_return(), "R2 pending gate");
+            assert!(evidence.permits_execution(), "R2 pending is not Unknown");
+            task.abort();
+        }
+        let result = task.await;
+        match mode {
+            0 => assert_eq!(
+                result.unwrap().unwrap(),
+                RunState::Ended(EndCause::NaturalEnd)
+            ),
+            1 => assert!(result.unwrap_err().is_cancelled()),
+            _ => assert!(result.unwrap_err().is_panic()),
+        }
+        assert_eq!(
+            tools.load(Ordering::SeqCst),
+            usize::from(mode == 0),
+            "R1/R3 tool effects"
+        );
+        assert_eq!(
+            evidence.close_and_wait().await,
+            mode == 0,
+            "R1/R3 return proof"
+        );
+    }
+}
