@@ -39,6 +39,7 @@ async fn every_native_dialect_rejects_incoherent_inherited_budget_before_http_di
             let requests = Arc::new(AtomicUsize::new(0));
             let base = spawn_sse_server(StreamFixture::HttpFailure {
                 status: 400,
+                body: "{}",
                 complete_body: true,
                 requests: requests.clone(),
             })
@@ -123,6 +124,7 @@ async fn credential_materialization_cannot_restart_the_inherited_response_budget
     let requests = Arc::new(AtomicUsize::new(0));
     let base = spawn_sse_server(StreamFixture::HttpFailure {
         status: 400,
+        body: "{}",
         complete_body: true,
         requests: requests.clone(),
     })
@@ -344,6 +346,7 @@ enum StreamFixture {
     },
     HttpFailure {
         status: u16,
+        body: &'static str,
         complete_body: bool,
         requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     },
@@ -498,14 +501,15 @@ async fn spawn_sse_server(fixture: StreamFixture) -> String {
                 }
                 if let StreamFixture::HttpFailure {
                     status,
+                    body,
                     complete_body,
                     requests,
                 } = &fixture
                 {
                     requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let declared_length = if *complete_body { 2 } else { 102 };
+                    let declared_length = body.len() + if *complete_body { 0 } else { 100 };
                     let response = format!(
-                        "HTTP/1.1 {status} Failure\r\nlocation: http://{addr}/repeated\r\nretry-after: 0\r\ncontent-length: {declared_length}\r\nconnection: close\r\n\r\n{{}}"
+                        "HTTP/1.1 {status} Failure\r\nlocation: http://{addr}/repeated\r\nretry-after: 0\r\ncontent-length: {declared_length}\r\nconnection: close\r\n\r\n{body}"
                     );
                     socket
                         .write_all(response.as_bytes())
@@ -663,6 +667,7 @@ async fn production_model_clients_do_not_redirect_or_retry_ambiguous_http_respon
             let requests = Arc::new(AtomicUsize::new(0));
             let base = spawn_sse_server(StreamFixture::HttpFailure {
                 status,
+                body: "{}",
                 complete_body: true,
                 requests: requests.clone(),
             })
@@ -732,6 +737,7 @@ async fn truncated_http_error_bodies_never_mint_termination_evidence() {
         let requests = Arc::new(AtomicUsize::new(0));
         let base = spawn_sse_server(StreamFixture::HttpFailure {
             status: 503,
+            body: "{}",
             complete_body: false,
             requests: requests.clone(),
         })
@@ -770,6 +776,77 @@ async fn truncated_http_error_bodies_never_mint_termination_evidence() {
             ModelExecutionEvidence::Unknown,
             "R1/E2: {kind}/{streaming}"
         );
+    }
+}
+
+#[tokio::test]
+async fn every_dialect_classifies_http_failures_by_status_before_body() {
+    use awaken_provider_genai::OpenAiResponsesExecutor;
+    use std::sync::{Arc, atomic::AtomicUsize};
+    // Causes: C1 HTTP status, C2 provider-authored body (the fixture always
+    // sends `retry-after: 0`), C3 each production dialect/transport path.
+    // Effects: E1 the contract code, E2 the Retry-After hint, E3 retry
+    // eligibility. R1 is the regression: a 500 whose body quotes 413 stays a
+    // retryable provider failure on every path, never a context overflow.
+    type Row = (
+        &'static str,
+        u16,
+        &'static str,
+        &'static str,
+        Option<Duration>,
+        bool,
+    );
+    let rows: &[Row] = &[
+        (
+            "R1",
+            500,
+            r#"{"error":{"message":"upstream replied 413 twice"}}"#,
+            "provider_error",
+            None,
+            true,
+        ),
+        ("R2", 429, "{}", "rate_limited", Some(Duration::ZERO), true),
+        ("R3", 503, "{}", "overloaded", Some(Duration::ZERO), true),
+        ("R4", 413, "{}", "context_overflow", None, false),
+    ];
+    for (row, status, body, code, retry_after, retryable) in rows.iter().copied() {
+        for (kind, streaming) in [(0, false), (0, true), (1, false), (1, true), (2, false)] {
+            let base = spawn_sse_server(StreamFixture::HttpFailure {
+                status,
+                body,
+                complete_body: true,
+                requests: Arc::new(AtomicUsize::new(0)),
+            })
+            .await;
+            let executor: Box<dyn LlmExecutor> = match kind {
+                2 => Box::new(
+                    OpenAiResponsesExecutor::from_materialized_endpoint("openai", &base, "test")
+                        .unwrap(),
+                ),
+                _ => Box::new(
+                    GenaiExecutor::from_materialized_endpoint(
+                        if kind == 0 {
+                            AdapterKind::Anthropic
+                        } else {
+                            AdapterKind::OpenAI
+                        },
+                        base,
+                        "test",
+                    )
+                    .unwrap(),
+                ),
+            };
+            let error = if streaming {
+                executor.infer_streaming(request(), &NullSink).await
+            } else {
+                executor.infer(request()).await
+            }
+            .expect_err("HTTP failure cannot complete inference");
+            let at = format!("{row}: {kind}/{streaming}");
+            assert_eq!(error.code(), code, "{at} E1");
+            assert_eq!(error.retry_after(), retry_after, "{at} E2");
+            assert_eq!(error.is_retryable(), retryable, "{at} E3");
+        }
     }
 }
 

@@ -16,6 +16,8 @@ async-trait.workspace = true
 base64 = "0.22"
 futures = "0.3"
 genai.workspace = true
+# Parses the RFC 9110 HTTP-date form of a provider's Retry-After.
+httpdate = "1"
 # Match the pinned genai transport so both dialects use one explicit retry policy.
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 serde.workspace = true
