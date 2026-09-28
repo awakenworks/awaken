@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
-use awaken_runtime::{CircuitBreakerConfig, LlmRetryPolicy, Runtime};
+use awaken_runtime::{CircuitBreakerConfig, RetryPolicy, Runtime};
 use awaken_runtime_contract::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -30,12 +30,19 @@ use awaken_runtime_contract::snapshot::{
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
 /// A retry policy that keeps test suites fast without changing retry counts.
-fn fast_retries(max_retries: usize) -> LlmRetryPolicy {
-    LlmRetryPolicy {
+fn fast_retries(max_retries: usize) -> RetryPolicy {
+    RetryPolicy {
         max_retries,
+        throttled_max_retries: 12,
         backoff_base_ms: 1,
         overloaded_backoff_base_ms: 1,
-        attempt_timeout: std::time::Duration::from_secs(5),
+        budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(
+            std::time::Duration::from_millis(15000),
+            std::time::Duration::from_millis(5000),
+            std::time::Duration::from_millis(5000),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap(),
     }
 }
 

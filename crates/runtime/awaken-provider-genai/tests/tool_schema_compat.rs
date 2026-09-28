@@ -13,6 +13,8 @@ use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, LlmExecutor};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+mod budget;
+use budget::{budget, with_budget};
 
 fn generated_read_descriptor() -> ToolDescriptor {
     builtin_tools()
@@ -100,16 +102,17 @@ async fn capture_one_request() -> (String, tokio::sync::oneshot::Receiver<Value>
 async fn provider_payload(adapter: AdapterKind) -> Value {
     let (base_url, payload) = capture_one_request().await;
     let executor = GenaiExecutor::from_materialized_endpoint(adapter, base_url, "fixture-secret")
-        .expect("explicit client construction")
-        .with_timeout(Duration::from_secs(5));
+        .expect("explicit client construction");
     let model = if adapter == AdapterKind::Vertex {
         "gemini-2.5-flash"
     } else {
         "deepseek-v4-pro"
     };
-    let result = executor
-        .infer(request(model, generated_read_descriptor()))
-        .await;
+    let result = with_budget(
+        budget(Duration::from_secs(5), Duration::from_secs(5)),
+        executor.infer(request(model, generated_read_descriptor())),
+    )
+    .await;
     tokio::time::timeout(Duration::from_secs(5), payload)
         .await
         .unwrap_or_else(|_| panic!("provider request was sent; adapter returned {result:?}"))
@@ -139,13 +142,20 @@ async fn frozen_deepseek_chat_reasoning_policy_reaches_the_streaming_wire() {
                 "fixture-secret",
                 policy,
             )
-            .expect("explicit client construction")
-            .with_timeout(Duration::from_secs(5));
+            .expect("explicit client construction");
             let request = request("deepseek-v4-pro", generated_read_descriptor());
             if streaming {
-                let _ = executor.infer_streaming(request, &NoopSink).await;
+                let _ = with_budget(
+                    budget(Duration::from_secs(5), Duration::from_secs(5)),
+                    executor.infer_streaming(request, &NoopSink),
+                )
+                .await;
             } else {
-                let _ = executor.infer(request).await;
+                let _ = with_budget(
+                    budget(Duration::from_secs(5), Duration::from_secs(5)),
+                    executor.infer(request),
+                )
+                .await;
             }
             let body = tokio::time::timeout(Duration::from_secs(5), payload)
                 .await
@@ -211,8 +221,7 @@ async fn deepseek_tool_history_serializes_empty_reasoning_on_the_actual_wire() {
                 "fixture-secret",
                 UnspecifiedReasoning::ProviderDefault,
             )
-            .unwrap()
-            .with_timeout(Duration::from_secs(5));
+            .unwrap();
             let mut request = request("deepseek-v4-pro", generated_read_descriptor());
             let mut content = reasoning
                 .map(ContentBlock::thinking)
@@ -240,7 +249,11 @@ async fn deepseek_tool_history_serializes_empty_reasoning_on_the_actual_wire() {
                     )],
                 });
             }
-            let _ = executor.infer(request).await;
+            let _ = with_budget(
+                budget(Duration::from_secs(5), Duration::from_secs(5)),
+                executor.infer(request),
+            )
+            .await;
             let body = tokio::time::timeout(Duration::from_secs(5), payload)
                 .await
                 .unwrap()
@@ -304,8 +317,7 @@ async fn discovered_tool_reference_survives_nested_tool_result_on_provider_wire(
             let (base_url, payload) = capture_one_request().await;
             let executor =
                 GenaiExecutor::from_materialized_endpoint(adapter, base_url, "fixture-secret")
-                    .unwrap()
-                    .with_timeout(Duration::from_secs(5));
+                    .unwrap();
             let mut req = request("deepseek-v4-pro", generated_read_descriptor());
             req.messages.push(ChatMessage {
                 role: Role::Assistant,
@@ -324,7 +336,11 @@ async fn discovered_tool_reference_survives_nested_tool_result_on_provider_wire(
                 role: Role::Tool,
                 content: vec![ContentBlock::tool_result("search-1", content)],
             });
-            let _ = executor.infer(req).await;
+            let _ = with_budget(
+                budget(Duration::from_secs(5), Duration::from_secs(5)),
+                executor.infer(req),
+            )
+            .await;
             let body = tokio::time::timeout(Duration::from_secs(5), payload)
                 .await
                 .unwrap()

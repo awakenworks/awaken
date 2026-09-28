@@ -649,6 +649,7 @@ pub use awaken_runtime_contract::llm::TokenUsage
 pub use awaken_runtime_contract::llm::ToolCall
 pub enum awaken_runtime_contract::llm::Error
 pub awaken_runtime_contract::llm::Error::Binding(alloc::string::String)
+pub awaken_runtime_contract::llm::Error::Cancelled(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContentFiltered(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContextOverflow(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::InvalidRequest(alloc::string::String)
@@ -670,6 +671,8 @@ pub awaken_runtime_contract::llm::Error::Unauthorized(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::UsageLimit
 pub awaken_runtime_contract::llm::Error::UsageLimit::message: alloc::string::String
 pub awaken_runtime_contract::llm::Error::UsageLimit::reset_after: core::option::Option<core::time::Duration>
+impl awaken_runtime_contract::llm::Error
+pub fn awaken_runtime_contract::llm::Error::class(&self) -> awaken_runtime_contract::resilience::FailureClass
 impl awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::classification(&self) -> &Self
 pub fn awaken_runtime_contract::llm::Error::code(&self) -> &'static str
@@ -719,15 +722,21 @@ impl awaken_runtime_contract::llm::ChatResponse
 pub const fn awaken_runtime_contract::llm::ChatResponse::terminal_receipt(&self) -> awaken_runtime_contract::model_operation::TerminalReceipt
 pub struct awaken_runtime_contract::llm::ModelAttemptTiming
 impl awaken_runtime_contract::llm::ModelAttemptTiming
-pub fn awaken_runtime_contract::llm::ModelAttemptTiming::response_deadline(self, core::time::Duration) -> core::result::Result<tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudgetError>
-pub fn awaken_runtime_contract::llm::ModelAttemptTiming::start_at(tokio::time::instant::Instant, core::time::Duration) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::idle(self) -> core::time::Duration
+pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::response_deadline(self) -> tokio::time::instant::Instant
+pub fn awaken_runtime_contract::llm::ModelAttemptTiming::standalone(tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudget) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub fn awaken_runtime_contract::llm::ModelAttemptTiming::start_at(tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudget, tokio::time::instant::Instant) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
 pub const fn awaken_runtime_contract::llm::ModelAttemptTiming::watchdog_deadline(self) -> tokio::time::instant::Instant
 pub struct awaken_runtime_contract::llm::ModelInferenceBudget
 impl awaken_runtime_contract::llm::ModelInferenceBudget
-pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::attempt_watchdog(self) -> core::time::Duration
-pub fn awaken_runtime_contract::llm::ModelInferenceBudget::new(core::time::Duration, core::time::Duration) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
-pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::response_timeout(self) -> core::time::Duration
-pub fn awaken_runtime_contract::llm::ModelInferenceBudget::return_allowance(self) -> core::time::Duration
+pub const awaken_runtime_contract::llm::ModelInferenceBudget::DEFAULT: Self
+pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::attempt_response(self) -> core::time::Duration
+pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::connect_timeout(self) -> core::time::Duration
+pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::idle(self) -> core::time::Duration
+pub fn awaken_runtime_contract::llm::ModelInferenceBudget::logical_deadline(self, tokio::time::instant::Instant) -> core::result::Result<tokio::time::instant::Instant, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub fn awaken_runtime_contract::llm::ModelInferenceBudget::new(core::time::Duration, core::time::Duration, core::time::Duration, core::time::Duration) -> core::result::Result<Self, awaken_runtime_contract::llm::ModelInferenceBudgetError>
+pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::return_allowance(self) -> core::time::Duration
+pub const fn awaken_runtime_contract::llm::ModelInferenceBudget::total(self) -> core::time::Duration
 pub struct awaken_runtime_contract::llm::ModelInferenceBudgetError
 impl awaken_runtime_contract::llm::ModelInferenceBudgetError
 pub fn awaken_runtime_contract::llm::ModelInferenceBudgetError::before_dispatch(self) -> awaken_runtime_contract::llm::Error
@@ -751,8 +760,6 @@ pub const awaken_runtime_contract::llm::ThreadUsageKey::SCOPE: awaken_agent_cont
 pub struct awaken_runtime_contract::llm::TokioModelInferenceClock
 impl awaken_runtime_contract::llm::ModelInferenceClock for awaken_runtime_contract::llm::TokioModelInferenceClock
 pub fn awaken_runtime_contract::llm::TokioModelInferenceClock::now(&self) -> tokio::time::instant::Instant
-pub const awaken_runtime_contract::llm::DEFAULT_MODEL_ATTEMPT_WATCHDOG: core::time::Duration
-pub const awaken_runtime_contract::llm::DEFAULT_MODEL_RESPONSE_TIMEOUT: core::time::Duration
 pub const awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY: &str
 pub trait awaken_runtime_contract::llm::DeltaSink: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::llm::DeltaSink::on_reasoning<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -833,6 +840,7 @@ pub enum awaken_runtime_contract::model_operation::PreDispatchStage
 pub awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution
 pub awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection
 pub awaken_runtime_contract::model_operation::PreDispatchStage::RuntimeAdmission
+pub awaken_runtime_contract::model_operation::PreDispatchStage::TransportConnect
 pub awaken_runtime_contract::model_operation::PreDispatchStage::Unrecorded
 pub enum awaken_runtime_contract::model_operation::ResponseEnvelope
 pub awaken_runtime_contract::model_operation::ResponseEnvelope::CompleteBody
@@ -876,6 +884,7 @@ pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::executor
 pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::request_projection() -> Self
 pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::runtime_admission() -> Self
 pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::stage(self) -> awaken_runtime_contract::model_operation::PreDispatchStage
+pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::transport_connect() -> Self
 pub struct awaken_runtime_contract::model_operation::TerminalReceipt
 impl awaken_runtime_contract::model_operation::TerminalReceipt
 pub const fn awaken_runtime_contract::model_operation::TerminalReceipt::from_response_envelope(awaken_runtime_contract::model_operation::ResponseEnvelope) -> Self
@@ -1196,9 +1205,44 @@ pub const fn awaken_runtime_contract::plugin::plugin_activation_decision(bool, b
 pub mod awaken_runtime_contract::resilience
 pub use awaken_runtime_contract::resilience::Classify
 pub use awaken_runtime_contract::resilience::Disposition
+pub enum awaken_runtime_contract::resilience::FailureClass
+pub awaken_runtime_contract::resilience::FailureClass::Cancelled
+pub awaken_runtime_contract::resilience::FailureClass::Overloaded
+pub awaken_runtime_contract::resilience::FailureClass::Overloaded::retry_after: core::option::Option<core::time::Duration>
+pub awaken_runtime_contract::resilience::FailureClass::Permanent
+pub awaken_runtime_contract::resilience::FailureClass::RateLimited
+pub awaken_runtime_contract::resilience::FailureClass::RateLimited::retry_after: core::option::Option<core::time::Duration>
+pub awaken_runtime_contract::resilience::FailureClass::Transient
+pub awaken_runtime_contract::resilience::FailureClass::UsageLimit
+pub awaken_runtime_contract::resilience::FailureClass::UsageLimit::reset_after: core::option::Option<core::time::Duration>
+impl awaken_runtime_contract::resilience::FailureClass
+pub const fn awaken_runtime_contract::resilience::FailureClass::disposition(self) -> awaken_agent_contract::resilience::Disposition
+pub const fn awaken_runtime_contract::resilience::FailureClass::is_retryable(self) -> bool
+pub const fn awaken_runtime_contract::resilience::FailureClass::reset_after(self) -> core::option::Option<core::time::Duration>
+pub const fn awaken_runtime_contract::resilience::FailureClass::retry_after(self) -> core::option::Option<core::time::Duration>
 pub enum awaken_runtime_contract::resilience::RetryDecision
 pub awaken_runtime_contract::resilience::RetryDecision::Retry
 pub awaken_runtime_contract::resilience::RetryDecision::Terminal
+pub enum awaken_runtime_contract::resilience::RetryStop
+pub awaken_runtime_contract::resilience::RetryStop::AttemptsExhausted
+pub awaken_runtime_contract::resilience::RetryStop::Cancelled
+pub awaken_runtime_contract::resilience::RetryStop::DeadlineExhausted
+pub awaken_runtime_contract::resilience::RetryStop::ExecutionUncertain
+pub awaken_runtime_contract::resilience::RetryStop::NotRetryable
+pub enum awaken_runtime_contract::resilience::RetryVerdict
+pub awaken_runtime_contract::resilience::RetryVerdict::Retry
+pub awaken_runtime_contract::resilience::RetryVerdict::Retry::after: core::time::Duration
+pub awaken_runtime_contract::resilience::RetryVerdict::Stop(awaken_runtime_contract::resilience::RetryStop)
+pub struct awaken_runtime_contract::resilience::RetryPolicy
+pub awaken_runtime_contract::resilience::RetryPolicy::backoff_base_ms: u64
+pub awaken_runtime_contract::resilience::RetryPolicy::budget: awaken_runtime_contract::llm::ModelInferenceBudget
+pub awaken_runtime_contract::resilience::RetryPolicy::max_retries: usize
+pub awaken_runtime_contract::resilience::RetryPolicy::overloaded_backoff_base_ms: u64
+pub awaken_runtime_contract::resilience::RetryPolicy::throttled_max_retries: usize
+impl awaken_runtime_contract::resilience::RetryPolicy
+pub fn awaken_runtime_contract::resilience::RetryPolicy::decide(&self, awaken_runtime_contract::resilience::FailureClass, awaken_runtime_contract::model_operation::ModelExecutionEvidence, u32, core::time::Duration, u64) -> awaken_runtime_contract::resilience::RetryVerdict
+impl core::default::Default for awaken_runtime_contract::resilience::RetryPolicy
+pub fn awaken_runtime_contract::resilience::RetryPolicy::default() -> Self
 pub const awaken_runtime_contract::resilience::RETRY_ACTIVE_STATE: u8
 pub const awaken_runtime_contract::resilience::RETRY_TERMINAL_STATE: u8
 pub const fn awaken_runtime_contract::resilience::bounded_retry_decision(u8, bool, u32, u32) -> awaken_runtime_contract::resilience::RetryDecision

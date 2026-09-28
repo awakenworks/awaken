@@ -622,9 +622,26 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
         });
         let runtime = Runtime::new()
             .with_llm(model)
-            .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+            .with_retry_policy(awaken_runtime::RetryPolicy {
                 max_retries: 3,
-                attempt_timeout: std::time::Duration::from_millis(if timeout { 30 } else { 5000 }),
+                // Watchdog = response window + return allowance: 30ms or 5s.
+                budget: if timeout {
+                    awaken_runtime_contract::llm::ModelInferenceBudget::new(
+                        std::time::Duration::from_millis(90),
+                        std::time::Duration::from_millis(20),
+                        std::time::Duration::from_millis(20),
+                        std::time::Duration::from_millis(10),
+                    )
+                    .unwrap()
+                } else {
+                    awaken_runtime_contract::llm::ModelInferenceBudget::new(
+                        std::time::Duration::from_millis(15000),
+                        std::time::Duration::from_millis(4990),
+                        std::time::Duration::from_millis(4990),
+                        std::time::Duration::from_millis(10),
+                    )
+                    .unwrap()
+                },
                 ..Default::default()
             })
             .with_max_consecutive_inference_failures(3);
@@ -728,14 +745,15 @@ async fn provider_operation_context_follows_committed_invocations_across_retry_a
             commit: commit.clone(),
             seen: Default::default(),
         });
-        let runtime = Runtime::new().with_llm(model.clone()).with_retry_policy(
-            awaken_runtime::LlmRetryPolicy {
-                max_retries: 1,
-                backoff_base_ms: 0,
-                overloaded_backoff_base_ms: 0,
-                ..Default::default()
-            },
-        );
+        let runtime =
+            Runtime::new()
+                .with_llm(model.clone())
+                .with_retry_policy(awaken_runtime::RetryPolicy {
+                    max_retries: 1,
+                    backoff_base_ms: 0,
+                    overloaded_backoff_base_ms: 0,
+                    ..Default::default()
+                });
         let result = runtime
             .execute(
                 activation("catalog-a"),
@@ -847,7 +865,7 @@ async fn returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance(
         commit_terminated_model(&durable).await;
         let runtime = Runtime::new()
             .with_llm(model.clone())
-            .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+            .with_retry_policy(awaken_runtime::RetryPolicy {
                 max_retries: 2,
                 backoff_base_ms: 0,
                 overloaded_backoff_base_ms: 0,
@@ -1734,7 +1752,7 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
             "model-2",
             "backend-2",
         )));
-    let no_retries = awaken_runtime::LlmRetryPolicy {
+    let no_retries = awaken_runtime::RetryPolicy {
         max_retries: 0,
         ..Default::default()
     };
@@ -1764,7 +1782,7 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
     let retry_gate = Arc::new(SequencedModelRequestGate::new([
         ModelRequestAdmission::Admit,
     ]));
-    let one_retry = awaken_runtime::LlmRetryPolicy {
+    let one_retry = awaken_runtime::RetryPolicy {
         max_retries: 1,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,

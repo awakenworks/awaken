@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_runtime::{LlmRetryPolicy, Runtime};
+use awaken_runtime::{RetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -87,6 +87,20 @@ impl LlmExecutor for UnauthorizedLlm {
     }
 }
 
+/// A provider call that stays in flight until the run is cancelled; it
+/// announces entry so the test cancels a call that is actually pending.
+struct PendingLlm(Arc<tokio::sync::Notify>);
+#[async_trait::async_trait]
+impl LlmExecutor for PendingLlm {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.0.notify_one();
+        std::future::pending().await
+    }
+}
+
 fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
     RunActivation {
@@ -125,12 +139,19 @@ fn activation() -> RunActivation {
     }
 }
 
-fn no_retries() -> LlmRetryPolicy {
-    LlmRetryPolicy {
+fn no_retries() -> RetryPolicy {
+    RetryPolicy {
         max_retries: 0,
+        throttled_max_retries: 0,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,
-        attempt_timeout: std::time::Duration::from_secs(5),
+        budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(
+            std::time::Duration::from_millis(15000),
+            std::time::Duration::from_millis(5000),
+            std::time::Duration::from_millis(5000),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap(),
     }
 }
 
@@ -238,4 +259,31 @@ async fn a_permanent_failure_records_the_error_class_as_the_outcome() {
     // A failure reports no usage.
     assert_eq!(*input, None);
     assert_eq!(*output, None);
+}
+
+/// Cause C1: the run is cancelled while its model call is in flight. Effect
+/// E1: the inference metric records the stable `cancelled` class — a
+/// cancellation is neither an authorization failure nor a provider fault.
+#[tokio::test]
+async fn a_cancelled_call_records_cancellation_as_the_outcome() {
+    let spy = Arc::new(SpyRecorder::default());
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(PendingLlm(entered.clone())))
+        .with_metrics(spy.clone())
+        .with_retry_policy(no_retries());
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let context = RuntimeRunContext::new()
+        .with_commit(Arc::new(MemoryCommitCoordinator::new()))
+        .with_cancellation(cancellation.clone());
+    let run = tokio::spawn(async move { runtime.execute(activation(), context).await });
+    entered.notified().await;
+    cancellation.cancel();
+    run.await
+        .expect("run task")
+        .expect("a cancelled run still ends");
+
+    let inferences = spy.inferences.lock().unwrap();
+    assert_eq!(inferences.len(), 1, "C1/E1");
+    assert_eq!(inferences[0].1, "cancelled", "C1/E1");
 }

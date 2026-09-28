@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::model_request::ModelRequestObservation;
-use awaken_runtime::{LlmRetryPolicy, Runtime};
+use awaken_runtime::{RetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -198,12 +198,19 @@ fn activation(primary: &str, fallbacks: &[&str]) -> RunActivation {
 }
 
 /// No backoff, no retries — failover, not per-model retry, is under test.
-fn no_retries() -> LlmRetryPolicy {
-    LlmRetryPolicy {
+fn no_retries() -> RetryPolicy {
+    RetryPolicy {
         max_retries: 0,
+        throttled_max_retries: 0,
         backoff_base_ms: 0,
         overloaded_backoff_base_ms: 0,
-        attempt_timeout: std::time::Duration::from_secs(5),
+        budget: awaken_runtime_contract::llm::ModelInferenceBudget::new(
+            std::time::Duration::from_millis(15000),
+            std::time::Duration::from_millis(5000),
+            std::time::Duration::from_millis(5000),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap(),
     }
 }
 

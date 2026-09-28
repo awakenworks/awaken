@@ -1,10 +1,14 @@
-//! One validated composition budget for a provider response and its Runtime watchdog.
+//! The caller-declared inference budget and the per-attempt timing derived from it.
 //!
-//! This is invocation-local timing, never durable identity, a lease or terminal evidence.
+//! [`ModelInferenceBudget`] is the one value a caller (a Runtime host, a
+//! credential probe, a test) declares; it replaces the separately owned
+//! response timeout, idle window and Runtime watchdog constants. Runtime turns
+//! it into one logical deadline for the whole invocation (every retry
+//! included) and one [`ModelAttemptTiming`] per attempt; provider adapters only
+//! read that timing. This is invocation-local timing, never durable identity,
+//! a lease or terminal evidence.
 
 use super::Error;
-#[cfg(test)]
-use super::{DEFAULT_MODEL_ATTEMPT_WATCHDOG, DEFAULT_MODEL_RESPONSE_TIMEOUT};
 use crate::model_operation::{ModelExecutionEvidence, NoDispatchProof};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -28,86 +32,167 @@ impl ModelInferenceClock for TokioModelInferenceClock {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "inference requires a positive response budget strictly before a representable watchdog deadline"
+    "inference requires 0 < idle <= attempt response <= total, a positive return allowance and representable deadlines"
 )]
 pub struct ModelInferenceBudgetError;
 
-/// The positive gap is the caller's explicit return/journal allowance. The
-/// default composition reserves 30 seconds; overrides must configure both layers.
+/// One caller-declared inference budget.
+///
+/// - `total`: the logical deadline of one model request, across every retry
+///   and backoff pause;
+/// - `attempt_response`: how long one provider attempt may take to open and
+///   consume its complete response;
+/// - `idle`: how long a streaming response may go without useful progress
+///   (and how long connection establishment may take);
+/// - `return_allowance`: how long past its response deadline Runtime waits
+///   for an attempt to return its own typed observation before its watchdog
+///   abandons it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelInferenceBudget {
-    response: Duration,
-    watchdog: Duration,
+    total: Duration,
+    attempt_response: Duration,
+    idle: Duration,
+    return_allowance: Duration,
 }
 
-const fn budget_is_coherent(response_ns: u128, watchdog_ns: u128) -> bool {
-    response_ns > 0 && response_ns < watchdog_ns
+/// The constructor predicate, over nanoseconds so Kani can exhaust it.
+const fn budget_is_coherent(
+    total_ns: u128,
+    attempt_response_ns: u128,
+    idle_ns: u128,
+    return_allowance_ns: u128,
+) -> bool {
+    idle_ns > 0
+        && idle_ns <= attempt_response_ns
+        && attempt_response_ns <= total_ns
+        && return_allowance_ns > 0
 }
 
 impl ModelInferenceBudget {
+    /// The default composition. One attempt may reason for twenty minutes
+    /// before its complete response; a stream may stay silent for five
+    /// (long-context prefill and reasoning emit nothing for minutes); the
+    /// whole request, retries included, gets three attempts' worth of time;
+    /// the Runtime watchdog waits thirty seconds for a late typed return.
+    pub const DEFAULT: Self = Self {
+        total: Duration::from_secs(3 * 1_200),
+        attempt_response: Duration::from_secs(1_200),
+        idle: Duration::from_secs(300),
+        return_allowance: Duration::from_secs(30),
+    };
+
     pub fn new(
-        response: Duration,
-        watchdog: Duration,
+        total: Duration,
+        attempt_response: Duration,
+        idle: Duration,
+        return_allowance: Duration,
     ) -> std::result::Result<Self, ModelInferenceBudgetError> {
-        if !budget_is_coherent(response.as_nanos(), watchdog.as_nanos()) {
+        if !budget_is_coherent(
+            total.as_nanos(),
+            attempt_response.as_nanos(),
+            idle.as_nanos(),
+            return_allowance.as_nanos(),
+        ) || attempt_response.checked_add(return_allowance).is_none()
+        {
             return Err(ModelInferenceBudgetError);
         }
-        Ok(Self { response, watchdog })
-    }
-
-    #[must_use]
-    pub const fn response_timeout(self) -> Duration {
-        self.response
-    }
-    #[must_use]
-    pub const fn attempt_watchdog(self) -> Duration {
-        self.watchdog
-    }
-    #[must_use]
-    pub fn return_allowance(self) -> Duration {
-        self.watchdog - self.response
-    }
-}
-
-/// Runtime starts this once before committing entry. Provider adapters inherit
-/// the same start through entry and credential/materialization awaits instead of restarting
-/// their response clock after those waits.
-#[derive(Debug, Clone, Copy)]
-pub struct ModelAttemptTiming {
-    started: Instant,
-    watchdog: Duration,
-    deadline: Instant,
-}
-
-impl ModelAttemptTiming {
-    pub fn start_at(
-        started: Instant,
-        watchdog: Duration,
-    ) -> std::result::Result<Self, ModelInferenceBudgetError> {
-        let deadline = started
-            .checked_add(watchdog)
-            .filter(|_| !watchdog.is_zero())
-            .ok_or(ModelInferenceBudgetError)?;
         Ok(Self {
-            started,
-            watchdog,
-            deadline,
+            total,
+            attempt_response,
+            idle,
+            return_allowance,
         })
     }
 
     #[must_use]
-    pub const fn watchdog_deadline(self) -> Instant {
-        self.deadline
+    pub const fn total(self) -> Duration {
+        self.total
+    }
+    #[must_use]
+    pub const fn attempt_response(self) -> Duration {
+        self.attempt_response
+    }
+    #[must_use]
+    pub const fn idle(self) -> Duration {
+        self.idle
+    }
+    #[must_use]
+    pub const fn return_allowance(self) -> Duration {
+        self.return_allowance
     }
 
-    pub fn response_deadline(
+    /// Connection establishment produces no response progress, so it is
+    /// bounded by the same silence window as a stalled stream.
+    #[must_use]
+    pub const fn connect_timeout(self) -> Duration {
+        self.idle
+    }
+
+    /// The logical deadline of one model request started at `started`.
+    pub fn logical_deadline(
         self,
-        response: Duration,
+        started: Instant,
     ) -> std::result::Result<Instant, ModelInferenceBudgetError> {
-        let budget = ModelInferenceBudget::new(response, self.watchdog)?;
-        self.started
-            .checked_add(budget.response_timeout())
+        started
+            .checked_add(self.total)
             .ok_or(ModelInferenceBudgetError)
+    }
+}
+
+/// The timing of one provider attempt. Runtime starts it once before
+/// committing entry; provider adapters inherit it through entry and
+/// credential/materialization awaits instead of restarting a clock, and only
+/// read it.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelAttemptTiming {
+    response_deadline: Instant,
+    watchdog_deadline: Instant,
+    idle: Duration,
+}
+
+impl ModelAttemptTiming {
+    /// The attempt must return its complete response by
+    /// `min(started + attempt_response, logical_deadline)`; Runtime's
+    /// watchdog abandons it `return_allowance` later.
+    pub fn start_at(
+        started: Instant,
+        budget: ModelInferenceBudget,
+        logical_deadline: Instant,
+    ) -> std::result::Result<Self, ModelInferenceBudgetError> {
+        let response_deadline = started
+            .checked_add(budget.attempt_response)
+            .ok_or(ModelInferenceBudgetError)?
+            .min(logical_deadline);
+        let watchdog_deadline = response_deadline
+            .checked_add(budget.return_allowance)
+            .ok_or(ModelInferenceBudgetError)?;
+        Ok(Self {
+            response_deadline,
+            watchdog_deadline,
+            idle: budget.idle,
+        })
+    }
+
+    /// A single attempt with no Runtime around it (a direct adapter call):
+    /// its logical deadline is the budget's own total.
+    pub fn standalone(
+        started: Instant,
+        budget: ModelInferenceBudget,
+    ) -> std::result::Result<Self, ModelInferenceBudgetError> {
+        Self::start_at(started, budget, budget.logical_deadline(started)?)
+    }
+
+    #[must_use]
+    pub const fn response_deadline(self) -> Instant {
+        self.response_deadline
+    }
+    #[must_use]
+    pub const fn watchdog_deadline(self) -> Instant {
+        self.watchdog_deadline
+    }
+    #[must_use]
+    pub const fn idle(self) -> Duration {
+        self.idle
     }
 }
 
@@ -123,20 +208,36 @@ impl ModelInferenceBudgetError {
 #[kani::proof]
 fn model_budget_requires_positive_response_before_watchdog() {
     // Actual constructor predicate over the full u128 domain (a superset of
-    // Duration nanoseconds). Clock representability, async scheduling, transport
-    // and journal return are explicit TCB, not consequences of this scalar law.
-    let response: u128 = kani::any();
-    let watchdog: u128 = kani::any();
-    let admitted = budget_is_coherent(response, watchdog);
-    assert_eq!(admitted, response != 0 && watchdog > response);
+    // Duration nanoseconds). Clock representability, async scheduling,
+    // transport and journal return are explicit TCB, not consequences of this
+    // scalar law.
+    let total: u128 = kani::any();
+    let attempt: u128 = kani::any();
+    let idle: u128 = kani::any();
+    let allowance: u128 = kani::any();
+    let admitted = budget_is_coherent(total, attempt, idle, allowance);
+    assert_eq!(
+        admitted,
+        idle != 0 && idle <= attempt && attempt <= total && allowance != 0
+    );
     if admitted {
-        assert!(watchdog - response > 0);
+        // A positive response budget strictly precedes the watchdog, and no
+        // stream silence window outlives its attempt or the whole request.
+        assert!(attempt > 0);
+        assert!(
+            attempt
+                .checked_add(allowance)
+                .is_none_or(|watchdog| watchdog > attempt)
+        );
+        assert!(idle <= total);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MS: Duration = Duration::from_millis(1);
 
     #[tokio::test]
     async fn ephemeral_invocation_timing_is_scoped_and_identity_only_calls_mask_it() {
@@ -148,9 +249,9 @@ mod tests {
         // durable operation identity. S2 an explicit nested identity-only None
         // scope masks both outer facts. S3 return restores/removes exactly the
         // original scope. The one task-local remains the sole invocation owner.
-        let timing = ModelAttemptTiming::start_at(
+        let timing = ModelAttemptTiming::standalone(
             ModelInferenceClock::now(&TokioModelInferenceClock),
-            Duration::from_secs(10),
+            ModelInferenceBudget::DEFAULT,
         )
         .unwrap();
         assert!(current_model_attempt_timing().is_none(), "S3 outside");
@@ -180,75 +281,99 @@ mod tests {
     }
 
     #[test]
-    fn budget_decision_table_requires_positive_ordered_representable_deadlines() {
-        // Causes: C1 response positive; C2 watchdog strictly later; C3 absolute
-        // clock addition representable. T1 !C1 or !C2=>configuration refusal;
-        // T2 C1+C2=>exact unchanged budgets and positive allowance;
-        // T3 !C3=>typed refusal, never clock panic. Default T2 retains 30s.
-        for (response, watchdog, accepted) in [
-            (0, 0, false),
-            (0, 1, false),
-            (1, 0, false),
-            (1, 1, false),
-            (2, 1, false),
-            (1, 2, true),
-            (u64::MAX - 1, u64::MAX, true),
+    fn budget_decision_table_requires_ordered_positive_windows() {
+        // Causes: total T, attempt response A, idle I, return allowance R.
+        // Effect: admitted or refused. Rule: admitted <=> 0 < I <= A <= T and
+        // R > 0 and A + R representable; an admitted budget keeps its exact
+        // windows.
+        let max = Duration::MAX;
+        for (row, total, attempt, idle, allowance, admitted) in [
+            ("zero idle", 3, 2, 0, 1, false),
+            ("idle beyond attempt", 3, 2, 3, 1, false),
+            ("attempt beyond total", 1, 2, 1, 1, false),
+            ("zero allowance", 3, 2, 1, 0, false),
+            ("minimal", 1, 1, 1, 1, true),
+            ("ordered", 9, 3, 2, 1, true),
         ] {
-            let budget = ModelInferenceBudget::new(
-                Duration::from_nanos(response),
-                Duration::from_nanos(watchdog),
-            );
-            assert_eq!(budget.is_ok(), accepted, "T1/T2 {response}/{watchdog}");
+            let budget =
+                ModelInferenceBudget::new(total * MS, attempt * MS, idle * MS, allowance * MS);
+            assert_eq!(budget.is_ok(), admitted, "{row}");
             if let Ok(budget) = budget {
-                assert_eq!(budget.response_timeout(), Duration::from_nanos(response));
-                assert_eq!(budget.attempt_watchdog(), Duration::from_nanos(watchdog));
                 assert_eq!(
-                    budget.return_allowance(),
-                    Duration::from_nanos(watchdog - response)
+                    (
+                        budget.total(),
+                        budget.attempt_response(),
+                        budget.idle(),
+                        budget.return_allowance(),
+                    ),
+                    (total * MS, attempt * MS, idle * MS, allowance * MS),
+                    "{row}"
                 );
             }
         }
-        let default = ModelInferenceBudget::new(
-            DEFAULT_MODEL_RESPONSE_TIMEOUT,
-            DEFAULT_MODEL_ATTEMPT_WATCHDOG,
-        )
-        .unwrap();
-        // T4 a caller supplies a named clock sample => the value preserves that
-        // exact origin, rather than reading another clock in its constructor.
-        struct FixedClock(Instant);
-        impl ModelInferenceClock for FixedClock {
-            fn now(&self) -> Instant {
-                self.0
-            }
+        assert!(
+            ModelInferenceBudget::new(max, max, MS, MS).is_err(),
+            "unrepresentable watchdog span"
+        );
+    }
+
+    #[test]
+    fn default_budget_relations() {
+        // The default keeps these relations, not particular numbers: the whole
+        // request spans three attempts; a complete response outlasts four
+        // silence windows (long reasoning prefill); the watchdog waits a
+        // positive allowance past the response deadline; connection
+        // establishment is bounded by the silence window.
+        let default = ModelInferenceBudget::DEFAULT;
+        assert_eq!(
+            ModelInferenceBudget::new(
+                default.total(),
+                default.attempt_response(),
+                default.idle(),
+                default.return_allowance()
+            ),
+            Ok(default),
+            "DEFAULT is itself admitted"
+        );
+        assert_eq!(default.total(), default.attempt_response() * 3);
+        assert!(default.idle() * 4 <= default.attempt_response());
+        assert!(!default.return_allowance().is_zero());
+        assert_eq!(default.connect_timeout(), default.idle());
+    }
+
+    #[test]
+    fn attempt_timing_decision_table() {
+        // Causes: attempt start S, budget (A, R), logical deadline L. Effects:
+        // response deadline = min(S + A, L); watchdog = response + R; idle is
+        // the budget's; an unrepresentable instant is a typed refusal, never a
+        // clock panic.
+        let start = TokioModelInferenceClock.now();
+        let budget = ModelInferenceBudget::new(100 * MS, 10 * MS, 5 * MS, 2 * MS).unwrap();
+        for (row, logical, response) in [
+            ("attempt window first", 100, 10),
+            ("logical deadline first", 4, 4),
+            ("logical deadline already spent", 0, 0),
+        ] {
+            let timing = ModelAttemptTiming::start_at(start, budget, start + logical * MS).unwrap();
+            assert_eq!(timing.response_deadline(), start + response * MS, "{row}");
+            assert_eq!(
+                timing.watchdog_deadline(),
+                start + (response + 2) * MS,
+                "{row}"
+            );
+            assert_eq!(timing.idle(), 5 * MS, "{row}");
         }
-        let clock = FixedClock(TokioModelInferenceClock.now());
-        let timing = ModelAttemptTiming::start_at(clock.now(), Duration::from_secs(10)).unwrap();
+        let standalone = ModelAttemptTiming::standalone(start, budget).unwrap();
         assert_eq!(
-            timing.watchdog_deadline(),
-            clock.now() + Duration::from_secs(10),
-            "T4"
+            standalone.response_deadline(),
+            start + 10 * MS,
+            "standalone"
         );
-        assert_eq!(
-            timing.response_deadline(Duration::from_secs(9)).unwrap(),
-            clock.now() + Duration::from_secs(9),
-            "T4"
-        );
-        assert_eq!(default.return_allowance(), Duration::from_secs(30), "T2");
+        let huge = ModelInferenceBudget::new(Duration::MAX, Duration::MAX / 2, MS, MS).unwrap();
         assert!(
-            ModelAttemptTiming::start_at(
-                ModelInferenceClock::now(&TokioModelInferenceClock),
-                Duration::ZERO
-            )
-            .is_err(),
-            "T1"
+            ModelAttemptTiming::standalone(start, huge).is_err(),
+            "unrepresentable"
         );
-        assert!(
-            ModelAttemptTiming::start_at(
-                ModelInferenceClock::now(&TokioModelInferenceClock),
-                Duration::MAX
-            )
-            .is_err(),
-            "T3"
-        );
+        assert!(huge.logical_deadline(start).is_err(), "unrepresentable");
     }
 }
