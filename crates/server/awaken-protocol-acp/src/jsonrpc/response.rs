@@ -31,9 +31,10 @@ pub(super) async fn pump_prompt(
     sink: &mut dyn RunFactAppender,
     seq: &mut u64,
     resolver: &dyn PermissionResolver,
+    tool_aliases: &std::collections::BTreeMap<String, String>,
     settle_deadline: std::time::Duration,
 ) -> Result<serde_json::Value, AcpError> {
-    let mut context = PermissionContext::for_session(session_id);
+    let mut context = PermissionContext::for_session(session_id, tool_aliases);
     let outcome = pump_response_in_context(wire, ID_PROMPT, sink, seq, resolver, &mut context)
         .await
         .and_then(RpcResponse::into_result);
@@ -192,7 +193,7 @@ async fn project_notification(
         sink.append(*seq, &event).await?;
         permission_context.observe(&event);
     }
-    if let Some(event) = project_update(&notification.update) {
+    if let Some(event) = permission_context.project_update(&notification.update) {
         // A provider HARD-quota banner can arrive as assistant TEXT ("You've hit
         // your weekly limit · resets …") rather than a structured error — the case
         // where the CLI then hangs. Consult the detector before committing: a
@@ -325,6 +326,7 @@ mod tests {
                     &mut sink,
                     &mut 0,
                     &resolver,
+                    &Default::default(),
                     std::time::Duration::from_millis(100),
                 ),
             )
@@ -447,6 +449,7 @@ mod tests {
                 &mut sink,
                 &mut seq,
                 &Ask,
+                &Default::default(),
                 std::time::Duration::from_secs(1),
             )
             .await;
