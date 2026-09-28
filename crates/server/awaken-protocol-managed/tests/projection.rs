@@ -114,7 +114,7 @@ type CompletedDispatches =
 
 fn app_with_runtime(runtime: ScriptFake) -> (Arc<ManagedState>, Router, CompletedDispatches) {
     let completions = runtime.completions.clone();
-    let state = Arc::new(ManagedState::new(runtime));
+    let state = Arc::new(support::state(runtime));
     let app = router(state.clone());
     (state, app, completions)
 }
@@ -1851,7 +1851,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
     // selects only its stated effect and preserves the authority constraint.
     let runtime = CoordinatedRuntimeFake::default();
     let completions = runtime.completed_user_dispatches();
-    let state = Arc::new(ManagedState::new(runtime));
+    let state = Arc::new(support::state(runtime));
     let app = router(state.clone());
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -2074,7 +2074,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
 // Decision table: omitted=preserve; null=clear where allowed; value=replace; invalid/terminal=reject.
 #[tokio::test]
 async fn updating_a_session_commits_a_session_updated_event() {
-    let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
+    let app = router(Arc::new(support::state(ScriptFake::new(|| {
         ended(vec![assistant_text("a", "hi")])
     }))));
     let id = create(&app).await;
@@ -2158,7 +2158,7 @@ async fn updating_a_session_commits_a_session_updated_event() {
 /// projection and replay may neither reopen it nor mint another terminal fact.
 #[tokio::test]
 async fn archiving_commits_a_terminal_event_and_fences_writes() {
-    let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
+    let app = router(Arc::new(support::state(ScriptFake::new(|| {
         ended(vec![assistant_text("a", "hi")])
     }))));
     let id = create(&app).await;

@@ -120,16 +120,6 @@ KNOWN_INVERSIONS: dict[tuple[str, str], str] = {
             "awaken-webhook",
         )
     },
-    **{
-        ("awaken-protocol-managed", target): "protocol-managed reads another context's persistence directly; move the projection into the session application and depend on its repository contract"
-        for target in (
-            "awaken-env-store",
-            "awaken-executable-environment-catalog",
-            "awaken-sandbox-policy-store",
-            "awaken-session-store",
-            "awaken-work-store",
-        )
-    },
 }
 
 

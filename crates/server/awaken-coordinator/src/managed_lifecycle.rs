@@ -94,6 +94,8 @@ fn install_managed_lifecycle_delivery_inner(
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+
+    use awaken_protocol_managed_testkit::ManagedStateFixture as _;
     use std::time::Duration;
 
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};

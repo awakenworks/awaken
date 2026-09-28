@@ -1,5 +1,5 @@
 // @formal evidence session_resources.repository_rotation_requires_original_live_generation
-// awaken-file-limit-ceiling: 7631 (legacy oversized test file: split, never grow)
+// awaken-file-limit-ceiling: 7630 (legacy oversized test file: split, never grow)
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
 //! Managed Agents contract, while whole-manifest replacement is explicitly owned
 //! by `/v1/awaken/sessions/{id}/resources`: only `file` attaches to a live Session;
@@ -463,7 +463,7 @@ async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
         let repo = std::sync::Arc::new(
             SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
         );
-        let state = ManagedState::new(runtime)
+        let state = support::state(runtime)
             .with_config_source(std::sync::Arc::new(skill_graph_source(
                 root_count,
                 child_count,
@@ -994,7 +994,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     // Effects cover the public model echo, execution model/backend, persisted
     // secret-free publication, resolver inputs, and terminal failure class.
     let equal_runtime = AcceptingFake::default();
-    let equal_state = ManagedState::new(equal_runtime.clone())
+    let equal_state = support::state(equal_runtime.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPublishedModel));
     let equal_created = equal_state
         .create_session(
@@ -1055,7 +1055,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     );
     let calls: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
     let resolved_runtime = AcceptingFake::default();
-    let resolved_state = ManagedState::new(resolved_runtime.clone())
+    let resolved_state = support::state(resolved_runtime.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPublishedModel))
         .with_model_publication_resolver(std::sync::Arc::new(FixedSessionModelResolver {
             result: Ok(
@@ -1141,7 +1141,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     );
 
     let unavailable_runtime = AcceptingFake::default();
-    let unavailable_state = ManagedState::new(unavailable_runtime.clone())
+    let unavailable_state = support::state(unavailable_runtime.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPublishedModel));
     let error = unavailable_state
         .create_session(
@@ -1157,7 +1157,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     );
 
     let invalid_runtime = AcceptingFake::default();
-    let invalid_state = ManagedState::new(invalid_runtime.clone())
+    let invalid_state = support::state(invalid_runtime.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPublishedModel))
         .with_model_publication_resolver(std::sync::Arc::new(FixedSessionModelResolver {
             result: Err(
@@ -1422,7 +1422,7 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
         );
         let prices = std::sync::Arc::new(RecordingListPriceProvider::default());
         let credential_ingress = std::sync::Arc::new(CountingCredentialMaterialIngress::default());
-        let mut state = ManagedState::new(runtime.clone())
+        let mut state = support::state(runtime.clone())
             .with_config_source(std::sync::Arc::new(rule.roster))
             .with_session_repo(repo.clone())
             .with_managed_list_price_provider(prices.clone())
@@ -1568,7 +1568,7 @@ async fn workspace_inference_geo_policy_is_rechecked_before_create_and_each_run(
     // rejected before an inbound receipt/event can be appended.
     let runtime = AcceptingFake::default();
     let policy = std::sync::Arc::new(MutableInferenceGeoPolicy::new(false));
-    let state = ManagedState::new(runtime.clone())
+    let state = support::state(runtime.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPublishedModel))
         .with_inference_geo_policy(policy.clone());
     let app = router(std::sync::Arc::new(state));
@@ -1666,7 +1666,7 @@ async fn publication_backend_is_the_only_session_backend_authority() {
         let repo = std::sync::Arc::new(
             SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
         );
-        let mut state = ManagedState::new(runtime.clone()).with_session_repo(repo.clone());
+        let mut state = support::state(runtime.clone()).with_session_repo(repo.clone());
         if let Some(backend_ref) = published {
             state = state.with_config_source(std::sync::Arc::new(AgentWithBackend(backend_ref)));
         }
@@ -1708,7 +1708,7 @@ async fn publication_backend_is_the_only_session_backend_authority() {
 #[tokio::test]
 async fn agent_default_environment_requires_the_exact_revision() {
     let (environment_authoring, environment_execution) =
-        awaken_protocol_managed::test_support::environment_components();
+        awaken_protocol_managed_testkit::environment_components();
     let environment_id = environment_authoring
         .application()
         .create(awaken_environment_contract::CreateEnvironmentCommand {
@@ -1734,7 +1734,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
         .revision
         .0;
     let runtime = AcceptingFake::default();
-    let state = ManagedState::new(runtime.clone())
+    let state = support::state(runtime.clone())
         .with_environments(environment_execution.clone())
         .with_config_source(std::sync::Arc::new(AgentWithEnvironment {
             environment_id: environment_id.clone(),
@@ -1767,7 +1767,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
         environment_id
     );
 
-    let stale = ManagedState::new(AcceptingFake::default())
+    let stale = support::state(AcceptingFake::default())
         .with_environments(environment_execution)
         .with_config_source(std::sync::Arc::new(AgentWithEnvironment {
             environment_id: environment_id.clone(),
@@ -2946,7 +2946,7 @@ async fn session_projects_exact_published_client_tool_contract() {
     // | published descriptor | host projection | expected Session tool |
     // | absent | present | host capability |
     // | present | absent/equal-name | exact published client descriptor |
-    let state = ManagedState::new(AcceptingFake::default())
+    let state = support::state(AcceptingFake::default())
         .with_config_source(std::sync::Arc::new(AgentWithClientTool));
     let app = router(std::sync::Arc::new(state));
 
@@ -3045,7 +3045,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         secrets,
         credentials,
     ));
-    let state = ManagedState::new_with_mcp(runtime)
+    let state = support::state_with_mcp(runtime)
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
         .with_vaults(vaults)
         .with_session_repo(repo.clone());
@@ -3179,7 +3179,7 @@ async fn session_mcp_override_replaces_the_published_set() {
     let repo = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
     );
-    let state = ManagedState::new_with_mcp(runtime)
+    let state = support::state_with_mcp(runtime)
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
         .with_session_repo(repo.clone());
     let app = router(std::sync::Arc::new(state));
@@ -3224,7 +3224,7 @@ async fn app_with_session() -> (Router, String) {
         credential_repo,
     ));
     let app = router(std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
+        support::state(AcceptingFake::default())
             .with_vaults(vaults)
             .with_resource_registry(resource_registry().await),
     ));
@@ -3241,8 +3241,7 @@ async fn app_with_session() -> (Router, String) {
 #[tokio::test]
 async fn create_time_resources_are_backfilled_and_addressable() {
     let app = router(std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
-            .with_resource_registry(resource_registry().await),
+        support::state(AcceptingFake::default()).with_resource_registry(resource_registry().await),
     ));
 
     let session = call(
@@ -3307,7 +3306,7 @@ async fn implicit_memory_mounts_use_catalog_names_and_disambiguate_collisions() 
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_registry(resource_registry().await),
+        support::state(runtime).with_resource_registry(resource_registry().await),
     ));
     let session = call(
         &app,
@@ -3366,7 +3365,7 @@ async fn memory_store_attachment_count_and_instruction_length_use_inclusive_limi
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_registry(resource_registry().await),
+        support::state(runtime).with_resource_registry(resource_registry().await),
     ));
     let resources = (1..=8)
         .map(|index| {
@@ -3437,7 +3436,7 @@ async fn memory_store_attachment_count_and_instruction_length_use_inclusive_limi
 
 #[tokio::test]
 async fn published_agent_resources_are_visible_as_effective_session_inputs() {
-    let state = ManagedState::new(AcceptingFake::default())
+    let state = support::state(AcceptingFake::default())
         .with_config_source(std::sync::Arc::new(AgentWithResources));
     let app = router(std::sync::Arc::new(state));
 
@@ -3476,7 +3475,7 @@ async fn session_get_projects_the_durable_activity_lifecycle() {
     // participates.
     let runtime = CoordinatedRuntimeFake::default();
     runtime.hold_next_user_run_activation();
-    let state = std::sync::Arc::new(ManagedState::new(runtime.clone()));
+    let state = std::sync::Arc::new(support::state(runtime.clone()));
     let app = router(state.clone());
     let session = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" })))
         .await
@@ -3564,7 +3563,7 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
     let runtime = CoordinatedRuntimeFake::default();
     runtime.hold_next_user_run_activation();
     let state =
-        std::sync::Arc::new(ManagedState::new(runtime.clone()).with_config_source(source.clone()));
+        std::sync::Arc::new(support::state(runtime.clone()).with_config_source(source.clone()));
     let app = router(state.clone());
 
     let session = call(
@@ -3663,7 +3662,7 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
     // Decision rule: C1+C2+C3 => E1+E2+E3.
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
-    let state = ManagedState::new(runtime)
+    let state = support::state(runtime)
         .with_config_source(std::sync::Arc::new(WorkspaceScopedAgent))
         .with_resource_registry(resource_registry().await);
     let app = router(std::sync::Arc::new(state));
@@ -3713,7 +3712,7 @@ async fn resource_config_publication_only_affects_later_sessions() {
     let prepared = runtime.prepared.clone();
     let catalog = resource_registry().await;
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_registry(catalog.clone()),
+        support::state(runtime).with_resource_registry(catalog.clone()),
     ));
     let request = || {
         json!({
@@ -3997,7 +3996,7 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
     let repo = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
     );
-    let state = ManagedState::new(AcceptingFake::default())
+    let state = support::state(AcceptingFake::default())
         .with_resource_registry(catalog.clone())
         .with_session_repo(repo.clone());
     let request = serde_json::from_value(with_session_environment(json!({
@@ -4066,7 +4065,7 @@ async fn terminal_profiled_session_retires_its_marked_repository_definition() {
     let repository = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
     );
-    let state = ManagedState::new(AcceptingFake::default())
+    let state = support::state(AcceptingFake::default())
         .with_session_repo(repository)
         .with_resource_registry(catalog.clone());
     let application = state.session_application();
@@ -4171,7 +4170,7 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
     );
     let state = std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
+        support::state(AcceptingFake::default())
             .with_vaults(vaults)
             .with_resource_registry(catalog.clone())
             .with_session_repo(repository.clone()),
@@ -4264,7 +4263,7 @@ async fn platform_repository_default_is_shared_and_replaceable_without_a_false_p
         })
         .await
         .expect("register platform Repository");
-    let state = ManagedState::new(AcceptingFake::default())
+    let state = support::state(AcceptingFake::default())
         .with_resource_registry(catalog.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPlatformRepository));
     let request = serde_json::from_value(with_session_environment(json!({
@@ -4326,7 +4325,7 @@ async fn platform_repository_default_is_shared_and_replaceable_without_a_false_p
 async fn duplicate_session_mount_paths_fail_closed_before_runtime() {
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
-    let app = router(std::sync::Arc::new(ManagedState::new(runtime)));
+    let app = router(std::sync::Arc::new(support::state(runtime)));
 
     let _error = call(
         &app,
@@ -4365,7 +4364,7 @@ async fn invalid_repository_path_preflights_the_whole_create_before_resource_eff
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let credentials = std::sync::Arc::new(CountingCredentialMaterialIngress::default());
-    let state = ManagedState::new(runtime.clone())
+    let state = support::state(runtime.clone())
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
         .with_session_repo(sessions.clone())
         .with_resource_registry(resource_registry().await)
@@ -4450,7 +4449,7 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
     let repo = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
     );
-    let state = ManagedState::new(runtime)
+    let state = support::state(runtime)
         .with_session_repo(repo.clone())
         .with_resource_registry(resource_registry().await);
     let request =
@@ -4518,7 +4517,7 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
     let repo = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
     );
-    let state = ManagedState::new(runtime).with_session_repo(repo.clone());
+    let state = support::state(runtime).with_session_repo(repo.clone());
     let id = state
         .create_session(
             serde_json::from_value(with_session_environment(json!({"agent": "a"}))).unwrap(),
@@ -4644,7 +4643,7 @@ async fn assert_resource_root_cas_rule(index: usize, rule: ResourceCasRule) {
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
     );
     let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
-    let state = ManagedState::new(runtime)
+    let state = support::state(runtime)
         .with_session_repo(repo.clone())
         .with_resource_registry(resource_registry().await);
     let request =
@@ -4771,7 +4770,7 @@ async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races(
     );
     let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime.clone())
+        support::state(runtime.clone())
             .with_session_repo(repo.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -4859,7 +4858,7 @@ async fn github_repository_live_attach_is_rejected_without_runtime_effect() {
     let runtime = AcceptingFake::default();
     let applied = runtime.applied.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_registry(resource_registry().await),
+        support::state(runtime).with_resource_registry(resource_registry().await),
     ));
     let session = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"})))
         .await
@@ -4936,7 +4935,7 @@ async fn repository_item_delete_uses_durable_manifest_retirement() {
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let app = router(std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
+        support::state(AcceptingFake::default())
             .with_session_repo(sessions.clone())
             .with_resource_registry(catalog.clone()),
     ));
@@ -5012,7 +5011,7 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let app = router(std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
+        support::state(AcceptingFake::default())
             .with_session_repo(sessions.clone())
             .with_resource_registry(catalog.clone()),
     ));
@@ -5098,7 +5097,7 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     let runtime = AcceptingFake::default();
     let applied = runtime.applied.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_registry(resource_registry().await),
+        support::state(runtime).with_resource_registry(resource_registry().await),
     ));
     let session = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" })))
         .await
@@ -5228,7 +5227,7 @@ async fn whole_manifest_resource_loser_compensates_its_applied_repository() {
     );
     let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
     let catalog = resource_registry().await;
-    let state = ManagedState::new(runtime)
+    let state = support::state(runtime)
         .with_session_repo(repo.clone())
         .with_resource_registry(catalog.clone());
     let request =
@@ -5319,7 +5318,7 @@ async fn whole_manifest_rebases_over_unrelated_root_revision_changes() {
         SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
     );
     let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
-    let state = ManagedState::new(runtime)
+    let state = support::state(runtime)
         .with_session_repo(repo.clone())
         .with_resource_registry(resource_registry().await);
     let request =
@@ -5391,7 +5390,7 @@ async fn failed_manifest_realization_keeps_active_and_exposes_durable_desired() 
         SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
     );
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime)
+        support::state(runtime)
             .with_session_repo(repo.clone())
             .with_resource_registry(resource_registry().await),
     ));
@@ -5441,7 +5440,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
         SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
     );
     let app = router(std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
+        support::state(AcceptingFake::default())
             .with_session_repo(repo.clone())
             .with_vaults(vaults)
             .with_resource_registry(resource_registry().await),
@@ -5535,7 +5534,7 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
     let applied = runtime.applied.clone();
     let prepared = runtime.prepared.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime).with_resource_registry(resource_registry().await),
+        support::state(runtime).with_resource_registry(resource_registry().await),
     ));
 
     let _ = call(
@@ -5648,7 +5647,7 @@ async fn repository_rotation_slot_case(slot: &str) {
     let prepared = runtime.prepared.clone();
     let applied = runtime.applied.clone();
     let app = router(std::sync::Arc::new(
-        ManagedState::new(runtime)
+        support::state(runtime)
             .with_vaults(vaults)
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry().await),
@@ -6148,7 +6147,7 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime.clone())
+        support::state(runtime.clone())
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -6222,7 +6221,7 @@ async fn execution_evidence_http_reads_the_owned_frozen_root_without_mutation() 
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime)
+        support::state(runtime)
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -6308,7 +6307,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
         SqliteManagedSessionRepository::open_in_memory().expect("seed Session repository"),
     );
     let seed_state = std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
+        support::state(AcceptingFake::default())
             .with_session_repo(seed_sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -6353,7 +6352,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
         .stall_projection_install
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime.clone())
+        support::state(runtime.clone())
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -6450,7 +6449,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
         .await
         .unwrap();
     let running_state = std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
+        support::state(AcceptingFake::default())
             .with_session_repo(running_sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -6483,7 +6482,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
         .await
         .unwrap();
     let terminal_state = std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
+        support::state(AcceptingFake::default())
             .with_session_repo(terminal_sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -6538,7 +6537,7 @@ async fn profiled_repository_binding_wire_preserves_the_historical_derivation() 
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime.clone())
+        support::state(runtime.clone())
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -6658,7 +6657,7 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
         SqliteManagedSessionRepository::open_in_memory().expect("seed Session repository"),
     );
     let seed_state = std::sync::Arc::new(
-        ManagedState::new(AcceptingFake::default())
+        support::state(AcceptingFake::default())
             .with_session_repo(seed_sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -6705,7 +6704,7 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
     let runtime = AcceptingFake::default();
     let target_registry = resource_registry().await;
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime.clone())
+        support::state(runtime.clone())
             .with_session_repo(sessions.clone())
             .with_resource_registry(target_registry.clone()),
     );
@@ -6759,7 +6758,7 @@ async fn profiled_release_projects_one_durable_repository_publication() {
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime.clone())
+        support::state(runtime.clone())
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -6988,7 +6987,7 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime.clone())
+        support::state(runtime.clone())
             .with_session_repo(sessions)
             .with_resource_registry(resource_registry().await),
     );
@@ -7170,7 +7169,7 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime.clone())
+        support::state(runtime.clone())
             .with_session_repo(sessions)
             .with_resource_registry(resource_registry().await),
     );
@@ -7350,7 +7349,7 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
         SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
     );
     let state = std::sync::Arc::new(
-        ManagedState::new(runtime.clone())
+        support::state(runtime.clone())
             .with_session_repo(sessions.clone())
             .with_resource_registry(resource_registry().await),
     );
@@ -7510,7 +7509,7 @@ async fn resource_reads_use_durable_root_without_runtime_history_or_cache_rehydr
     let reject = runtime.reject_recovery_reads.clone();
     let applied = runtime.applied.clone();
     let repo = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
-    let warm = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
+    let warm = Arc::new(support::state(runtime.clone()).with_session_repo(repo.clone()));
     let session = warm
         .create_session(
             serde_json::from_value(with_session_environment(json!({"agent":"a"}))).unwrap(),
@@ -7531,7 +7530,7 @@ async fn resource_reads_use_durable_root_without_runtime_history_or_cache_rehydr
         .unwrap();
     let expected = serde_json::to_value(resource).unwrap();
     let resource_id = expected["id"].as_str().unwrap();
-    let cold = Arc::new(ManagedState::new(runtime).with_session_repo(repo.clone()));
+    let cold = Arc::new(support::state(runtime).with_session_repo(repo.clone()));
     let warm_app = router(warm.clone());
     let cold_app = router(cold.clone());
     reject.store(true, Ordering::SeqCst);

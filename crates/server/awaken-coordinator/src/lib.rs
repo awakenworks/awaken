@@ -405,6 +405,26 @@ pub fn local_managed_state_with_environments_and_agent_source(
     )
 }
 
+/// The volatile Environment execution projection test/scenario startup uses
+/// when the caller supplies none: one in-memory WorkQueue and a catalog seeded
+/// with the built-in local Environment. The Coordinator composes these stores
+/// itself rather than borrowing them through the Managed adapter.
+#[cfg(feature = "test-support")]
+fn volatile_environment_execution()
+-> Arc<awaken_environment_execution_application::EnvironmentExecutionApplication> {
+    let catalog =
+        Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
+    catalog
+        .install_seed(awaken_environment_application::default_environment_registration())
+        .expect("install built-in local Environment");
+    Arc::new(
+        awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+            Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
+            catalog,
+        ),
+    )
+}
+
 #[cfg(feature = "test-support")]
 fn local_managed_state_over(
     host: Arc<SharedHost>,
@@ -460,8 +480,7 @@ fn local_managed_state_over(
         awaken_session_application::SessionExecutionPlacement::RegisteredWorker
     };
     let local_realization_owner = host.dispatch_owner().to_string();
-    let environments = environments
-        .unwrap_or_else(|| awaken_protocol_managed::test_support::environment_components().1);
+    let environments = environments.unwrap_or_else(volatile_environment_execution);
     let repository_bindings = Arc::new(
         awaken_resource_application::RegistryRepositoryBindingVerifier::new(catalog.clone()),
     );

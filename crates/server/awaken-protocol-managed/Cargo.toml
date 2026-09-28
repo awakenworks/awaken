@@ -15,17 +15,10 @@ authority = "protocol-managed"
 [features]
 schema = ["dep:schemars", "awaken-session-configuration-contract/schema"]
 # Ephemeral convenience constructors are intentionally absent from product builds.
+# Store fixtures live in awaken-protocol-managed-testkit and reach this adapter
+# behind their ports; enabling this feature pulls in no concrete store.
 test-support = [
     "awaken-deployment-application/test-support",
-    "dep:awaken-executable-environment-catalog",
-    "dep:awaken-work-store",
-    "dep:awaken-sandbox-policy-store",
-    "awaken-sandbox-policy-store/test-support",
-    "dep:awaken-env-store",
-    "awaken-env-store/test-support",
-    "dep:awaken-session-store",
-    "awaken-session-store/test-support",
-    "awaken-work-store/test-support",
     "awaken-dream-application/test-support",
     "awaken-credential-vault/test-support",
     "awaken-model-catalog/test-support",
@@ -36,7 +29,6 @@ awaken-data-subject-application.workspace = true
 awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
-awaken-executable-environment-catalog = { workspace = true, optional = true }
 # The neutral session-runtime ports + vocab (extracted contract/ leaf). This adapter
 # owns the wire DTOs + the neutral→wire encoder and re-exports each moved port via a
 # shim so consumers stay unchanged until flipped to the contract directly.
@@ -66,11 +58,6 @@ awaken-credential-contract.workspace = true
 # ACL to lower wire resources before Session resolution. No IAM policy lives here.
 awaken-resource-contract.workspace = true
 awaken-resource-application.workspace = true
-# Volatile fixture stores are opt-in test support, never a product dependency.
-awaken-work-store = { workspace = true, optional = true }
-awaken-env-store = { workspace = true, optional = true }
-awaken-sandbox-policy-store = { workspace = true, optional = true }
-awaken-session-store = { workspace = true, optional = true }
 # Tenancy as an edge aspect (ADR-0051): the opaque `ScopeId` the `ScopedRepo`
 # decorator binds so session persistence is tenant-isolable while the core stays
 # tenancy-agnostic (the engine never reads a scope).
@@ -161,6 +148,8 @@ required-features = ["test-support"]
 
 [dev-dependencies]
 async-trait.workspace = true
+# Store fixtures behind their ports; also re-exported for integration tests.
+awaken-protocol-managed-testkit.workspace = true
 tempfile = "3"
 awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }

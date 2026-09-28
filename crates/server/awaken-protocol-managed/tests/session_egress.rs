@@ -332,10 +332,10 @@ async fn realize_accepted_sessions(managed: &ManagedState) {
 #[tokio::test]
 async fn session_carries_the_exact_frozen_environment_network() {
     let (environment_authoring, environment_execution) =
-        awaken_protocol_managed::test_support::environment_components();
+        awaken_protocol_managed_testkit::environment_components();
     let egress = Arc::new(Mutex::new(Vec::new()));
     let managed = Arc::new(
-        ManagedState::new_with_mcp(CapturingFake {
+        support::state_with_mcp(CapturingFake {
             egress: egress.clone(),
         })
         .with_environments(environment_execution.clone()),
@@ -429,10 +429,10 @@ async fn session_carries_the_exact_frozen_environment_network() {
 #[tokio::test]
 async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     let (environment_authoring, environment_execution) =
-        awaken_protocol_managed::test_support::environment_components();
+        awaken_protocol_managed_testkit::environment_components();
     let egress = Arc::new(Mutex::new(Vec::new()));
     let managed = Arc::new(
-        ManagedState::new_with_mcp(CapturingFake {
+        support::state_with_mcp(CapturingFake {
             egress: egress.clone(),
         })
         .with_environments(environment_execution.clone()),

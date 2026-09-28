@@ -408,7 +408,7 @@ mod tests {
         let restored_runtimes = runtime.restored_runtimes.clone();
         let restored_inputs = runtime.restored.clone();
         let runtime = Arc::new(runtime);
-        let environments = crate::test_support::environment_components().1;
+        let environments = awaken_protocol_managed_testkit::environment_fixture().execution;
         let application = awaken_session_application::SessionApplication::new_with_configuration(
             runtime.clone(),
             runtime,

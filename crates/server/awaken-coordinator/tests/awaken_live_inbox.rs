@@ -3,6 +3,7 @@
 //! the session's in-flight queue, and the error mapping (404 unknown message,
 //! 409 stale order, 410 inactive queue, 404 unknown session).
 
+use awaken_protocol_managed_testkit::ManagedStateFixture as _;
 use awaken_session_types::SessionId;
 use std::collections::HashMap;
 use std::sync::Arc;
