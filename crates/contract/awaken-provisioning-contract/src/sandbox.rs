@@ -14,9 +14,7 @@ mod restore_wire;
 mod runtime;
 
 pub use checkpoint_upload::SandboxCheckpointUpload;
-pub use fence::{
-    FenceSuccession, FenceToken, SandboxEffectFence, fence_is_live_at, fence_succession,
-};
+pub use fence::SandboxEffectFence;
 pub use foundation::*;
 pub use handle::*;
 pub use repository_publication::{
@@ -48,6 +46,7 @@ mod tests {
     use crate::SandboxRealizationFingerprint;
     use crate::spec::{Command, SandboxSpec};
     use crate::vocab::NetworkPolicy;
+    use awaken_lease_contract::fence::FenceToken as _;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 

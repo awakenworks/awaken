@@ -3,8 +3,8 @@
 
 use super::super::foundation::{MemoryMaterializationEvidence, SandboxError};
 use super::SandboxEffectFence;
-use crate::FenceToken;
 use crate::{SandboxEffectGuard, with_current_sandbox_effect};
+use awaken_lease_contract::fence::FenceToken;
 
 #[derive(Debug)]
 struct AppliedMemoryReconciliation {

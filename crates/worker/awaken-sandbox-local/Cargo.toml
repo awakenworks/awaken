@@ -33,6 +33,7 @@ awaken-sandbox-control-transport.workspace = true
 blake3 = "1"
 getrandom = "0.2"
 awaken-ext-builtin-tools = { workspace = true }
+awaken-lease-contract.workspace = true
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

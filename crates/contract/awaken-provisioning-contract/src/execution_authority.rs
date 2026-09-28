@@ -183,7 +183,7 @@ impl<'g> SandboxEffectGuard<'g> {
         &self,
         recorded: &crate::SandboxEffectFence,
     ) -> Result<(), crate::SandboxError> {
-        use crate::FenceToken as _;
+        use awaken_lease_contract::fence::FenceToken as _;
         if recorded.authorizes_successor(self.current) {
             Ok(())
         } else {
@@ -214,7 +214,7 @@ pub fn with_current_sandbox_effect<T>(
 /// The same-effect admission rule: the port's current fence must be the
 /// asserted effect (operation, owner, incarnation and epoch identical), must
 /// not regress the asserted expiry, and must leave a positive local budget.
-/// This is deliberately stricter than [`crate::FenceToken::authorizes_successor`]:
+/// This is deliberately stricter than [`awaken_lease_contract::fence::FenceToken::authorizes_successor`]:
 /// a successor lease is not the admitted effect.
 fn admits_current_effect(
     asserted: &crate::SandboxEffectFence,
@@ -398,7 +398,7 @@ mod tests {
         // | G5   | higher-epoch successor| renewed   | >0   | E2     |
         // | G6   | same-lease other op   | renewed   | >0   | E2     |
         // | G7   | foreign lease         | renewed   | >0   | E2     |
-        use crate::FenceToken as _;
+        use awaken_lease_contract::fence::FenceToken as _;
         struct Port(crate::SandboxEffectFence, Duration);
         impl CurrentExecutionAuthority for Port {
             fn with_current(

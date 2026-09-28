@@ -4,6 +4,7 @@
 //! Kubernetes realization of one retained active-filesystem volume.
 
 use crate::ContainerContinuationHandle;
+use awaken_lease_contract::fence::FenceToken as _;
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
     PersistentVolumeClaim, PersistentVolumeClaimSpec, Pod, VolumeResourceRequirements,
@@ -12,7 +13,6 @@ use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::Api;
 use kube::api::{DeleteParams, PostParams, Preconditions};
-use pc::FenceToken as _;
 
 use super::error::api_not_found;
 use super::finalizer::{ExactFinalizerReleaseAdmission, release_exact_pod_finalizer};

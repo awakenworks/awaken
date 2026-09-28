@@ -17,7 +17,7 @@ use super::completion::canonical_thread_artifact_receipt_fingerprint;
 use super::state::SessionCleanupState;
 use super::*;
 use crate::SessionId;
-use awaken_provisioning_contract::FenceToken;
+use awaken_lease_contract::fence::FenceToken;
 use awaken_resource_contract::ArtifactPublicationReceipt;
 use serde::{Deserialize, Deserializer, Serialize};
 

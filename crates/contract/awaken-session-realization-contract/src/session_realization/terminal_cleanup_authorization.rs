@@ -12,7 +12,7 @@
 //! root remains the sole lifecycle authority, and the parent module re-exports
 //! the unchanged public contract consumed by Control and Runtime adapters.
 
-use awaken_provisioning_contract::FenceToken;
+use awaken_lease_contract::fence::FenceToken;
 
 use super::{FrozenSessionProjection, SessionRealizationControlFailure};
 

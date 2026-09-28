@@ -22,7 +22,7 @@ pub fn realization_generation_authorizes(
     current: &McpGenerationRef,
     asserted: &McpGenerationRef,
 ) -> bool {
-    use awaken_provisioning_contract::{FenceSuccession, fence_succession};
+    use awaken_lease_contract::fence::{FenceSuccession, fence_succession};
     // Same Session and generation, and the current lease is a renewal of the
     // asserted one under the one fence succession law.
     current.session_id == asserted.session_id

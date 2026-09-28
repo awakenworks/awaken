@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{SandboxEffectFence, SandboxError};
-use crate::FenceToken;
+use awaken_lease_contract::fence::FenceToken;
 
 /// Immutable half of an aggregate-derived Sandbox disposal authorization.
 ///

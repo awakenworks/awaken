@@ -5,8 +5,8 @@
 //! Physical checkpoint participant access. Archive and object custody stay at
 //! the calling codec/store; Session remains the only lifecycle authority.
 
+use awaken_lease_contract::fence::FenceToken as _;
 use awaken_provisioning_contract as pc;
-use pc::FenceToken as _;
 
 /// Immutable original upload evidence and an independently current grant.
 /// The source fence may have expired; only `authority` grants an effect.
