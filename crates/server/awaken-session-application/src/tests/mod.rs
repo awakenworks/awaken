@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 5239 (legacy oversized test file: split, never grow)
 use awaken_session_types::SessionId;
 mod observation_refinement;
 mod observed_commit;

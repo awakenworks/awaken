@@ -1,3 +1,4 @@
+// awaken-file-limit-ceiling: 3326 (legacy oversized test file: split, never grow)
 //! Conformance suite for [`CredentialRepo`]: the same behavioral assertions run
 //! against the in-memory repo and (feature `sqlite`) the sqlite repo, so both
 //! backends keep identical semantics — workspace-scoped lists, upsert puts, and
