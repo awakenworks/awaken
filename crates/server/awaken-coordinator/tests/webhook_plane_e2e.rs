@@ -149,6 +149,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     let delivery = webhooks::loopback_lifecycle_delivery(store.clone(), secrets.clone(), None);
     awaken_coordinator::install_managed_lifecycle_delivery_with_deployments(
         &state,
+        &state.session_application(),
         Some(delivery),
         deployments.as_ref(),
         &service_lifecycle,

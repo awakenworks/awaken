@@ -67,6 +67,8 @@ impl ManagedState {
         >,
     ) -> Self {
         Self {
+            roles: super::SessionApplicationRoles::of(&application),
+            #[cfg(any(test, feature = "test-support"))]
             application,
             environments,
             sessions: Mutex::new(HashMap::new()),
@@ -90,8 +92,10 @@ impl ManagedState {
         self
     }
 
-    /// Canonical protocol-independent Session application used by private
-    /// Worker transports and internal services.
+    /// The fixture composition's Session application, for tests that drive it
+    /// beside this adapter. Product composition owns its application and hands
+    /// it to every other consumer itself; this adapter holds only its roles.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn session_application(&self) -> Arc<SessionApplication> {
         self.application.clone()
@@ -107,21 +111,50 @@ impl ManagedState {
         self.environments.clone()
     }
 
+    /// Finish configuring the fixture application before it is shared. The
+    /// roles are clones of the same `Arc`, so they are released first and
+    /// narrowed again from the configured application.
     #[cfg(any(test, feature = "test-support"))]
-    fn application_mut(&mut self) -> &mut SessionApplication {
-        Arc::get_mut(&mut self.application)
-            .expect("ManagedState builders must finish before the application is shared")
+    fn configure_application(self, configure: impl FnOnce(&mut SessionApplication)) -> Self {
+        let Self {
+            roles,
+            mut application,
+            environments,
+            sessions,
+            owners,
+            session_seq,
+            event_seq,
+            live,
+            inference_geo_policy,
+        } = self;
+        drop(roles);
+        configure(
+            Arc::get_mut(&mut application)
+                .expect("ManagedState builders must finish before the application is shared"),
+        );
+        Self {
+            roles: super::SessionApplicationRoles::of(&application),
+            application,
+            environments,
+            sessions,
+            owners,
+            session_seq,
+            event_seq,
+            live,
+            inference_geo_policy,
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn with_executable_projection_refresh(
-        mut self,
+        self,
         refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
     ) -> Self {
-        self.application_mut()
-            .set_executable_projection_refresh(refresh)
-            .expect("ManagedState fixture executable projection refresh binds once");
-        self
+        self.configure_application(|application| {
+            application
+                .set_executable_projection_refresh(refresh)
+                .expect("ManagedState fixture executable projection refresh binds once");
+        })
     }
 
     /// Store-agnostic volatile constructor: the caller supplies the Session
@@ -154,11 +187,12 @@ impl ManagedState {
     /// facts fan out to workspace-scoped subscribers (ADR-0048). Default: none.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_lifecycle_notifier(mut self, notifier: Arc<dyn LifecycleFactNotifier>) -> Self {
-        self.application_mut()
-            .set_lifecycle_notifier(notifier)
-            .expect("ManagedState fixture lifecycle notifier is bound once");
-        self
+    pub fn with_lifecycle_notifier(self, notifier: Arc<dyn LifecycleFactNotifier>) -> Self {
+        self.configure_application(|application| {
+            application
+                .set_lifecycle_notifier(notifier)
+                .expect("ManagedState fixture lifecycle notifier is bound once");
+        })
     }
 
     /// Wire the environments surface, so `POST /v1/sessions` resolves the session's
@@ -167,15 +201,18 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_environments(
-        mut self,
+        self,
         environments: Arc<
             awaken_environment_execution_application::EnvironmentExecutionApplication,
         >,
     ) -> Self {
-        self.application_mut()
-            .replace_environment_source(environments.clone());
-        self.environments = environments;
-        self
+        let this = self.configure_application(|application| {
+            application.replace_environment_source(environments.clone());
+        });
+        Self {
+            environments,
+            ..this
+        }
     }
 
     /// Replace the already-explicit Session repository. This is primarily useful
@@ -183,11 +220,12 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_session_repo(
-        mut self,
+        self,
         repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     ) -> Self {
-        self.application_mut().replace_repository(repo);
-        self
+        self.configure_application(|application| {
+            application.replace_repository(repo);
+        })
     }
 
     /// Inject the sole versioned Managed reference-price authority. Budgeted
@@ -195,12 +233,12 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_managed_list_price_provider(
-        mut self,
+        self,
         provider: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
     ) -> Self {
-        self.application_mut()
-            .set_managed_list_price_provider(provider);
-        self
+        self.configure_application(|application| {
+            application.set_managed_list_price_provider(provider);
+        })
     }
 
     /// Wire recoverable physical cleanup scheduling. Authorization has already
@@ -208,12 +246,12 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_resource_purge_scheduler(
-        mut self,
+        self,
         scheduler: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
     ) -> Self {
-        self.application_mut()
-            .set_resource_purge_scheduler(scheduler);
-        self
+        self.configure_application(|application| {
+            application.set_resource_purge_scheduler(scheduler);
+        })
     }
 
     /// Supply the selected Resource authorities' durable reference index and File
@@ -222,13 +260,13 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_resource_reference_authority(
-        mut self,
+        self,
         references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
         files: Arc<dyn awaken_resource_contract::FileCatalog>,
     ) -> Self {
-        self.application_mut()
-            .set_resource_reference_authority(references, files);
-        self
+        self.configure_application(|application| {
+            application.set_resource_reference_authority(references, files);
+        })
     }
 
     /// Wire the vault surface, so `POST /v1/sessions` binds each requested MCP
@@ -237,11 +275,11 @@ impl ManagedState {
     /// routes see different credentials.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_vaults(mut self, vaults: Arc<VaultState>) -> Self {
-        self.application_mut().set_credential_source(vaults.clone());
-        self.application_mut()
-            .set_credential_material_ingress(vaults);
-        self
+    pub fn with_vaults(self, vaults: Arc<VaultState>) -> Self {
+        self.configure_application(|application| {
+            application.set_credential_source(vaults.clone());
+            application.set_credential_material_ingress(vaults);
+        })
     }
 
     /// Wire a split-service implementation of generic write-only Credential
@@ -249,21 +287,22 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_credential_material_ingress(
-        mut self,
+        self,
         ingress: Arc<dyn CredentialMaterialIngress>,
     ) -> Self {
-        self.application_mut()
-            .set_credential_material_ingress(ingress);
-        self
+        self.configure_application(|application| {
+            application.set_credential_material_ingress(ingress);
+        })
     }
 
     /// Wire the same secret-free credential selection through either the
     /// local VaultState adapter or the authenticated split-service adapter.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_credential_source(mut self, source: Arc<dyn SessionCredentialSource>) -> Self {
-        self.application_mut().set_credential_source(source);
-        self
+    pub fn with_credential_source(self, source: Arc<dyn SessionCredentialSource>) -> Self {
+        self.configure_application(|application| {
+            application.set_credential_source(source);
+        })
     }
 
     /// Wire the config-plane agent projection source so a session inherits a
@@ -273,11 +312,12 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_config_source(
-        mut self,
+        self,
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) -> Self {
-        self.application_mut().set_config_source(source);
-        self
+        self.configure_application(|application| {
+            application.set_config_source(source);
+        })
     }
 
     /// Wire the same canonical model-publication authority used by Agent
@@ -286,12 +326,12 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_model_publication_resolver(
-        mut self,
+        self,
         resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     ) -> Self {
-        self.application_mut()
-            .set_model_publication_resolver(resolver);
-        self
+        self.configure_application(|application| {
+            application.set_model_publication_resolver(resolver);
+        })
     }
 
     /// Wire the platform Resource Registry used to resolve Memory/Repository
@@ -299,10 +339,11 @@ impl ManagedState {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_resource_registry(
-        mut self,
+        self,
         catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     ) -> Self {
-        self.application_mut().set_resource_registry(catalog);
-        self
+        self.configure_application(|application| {
+            application.set_resource_registry(catalog);
+        })
     }
 }

@@ -6,6 +6,7 @@
 //! or protocol logic lives here. Errors map to HTTP status; live stream output is
 //! a projection of committed events (SSE replay).
 
+use awaken_lease_contract::WallClockExt as _;
 use std::sync::Arc;
 
 use std::collections::HashSet;
@@ -897,7 +898,8 @@ async fn stream_thread_events(
     let primary = project_thread == id;
     let thread_preview = if previews.any() && !thread.agent.is_advisor() {
         state
-            .session_application()
+            .roles
+            .observation
             .subscribe_session_thread_live(
                 &awaken_session_types::SessionId::from(&id),
                 &project_thread,
@@ -1099,7 +1101,8 @@ pub async fn create_profiled_session(
         })
         .collect();
     let session = state
-        .session_application()
+        .roles
+        .profiled
         .accept_profiled_session(awaken_session_application::CreateProfiledSessionCommand {
             owner_scope,
             session_id: body.session_id,
@@ -1177,32 +1180,26 @@ pub async fn release_profiled_session(
         ))));
     }
 
-    let observed_at = state.session_application().now_unix_ms();
+    let observed_at = state.roles.clock.now_ms();
     let binding_id = publication.binding_id;
-    let outcome = Box::pin(
-        state
-            .session_application()
-            .archive_with_repository_publication(
-                awaken_session_application::SessionArchiveWithRepositoryPublicationCommand {
-                    owner_scope: owner_scope.clone(),
-                    session_id: awaken_session_types::SessionId::from(&id),
-                    archived_at: awaken_session_application_contract::epoch_millis_to_rfc3339(
-                        observed_at,
-                    ),
-                    lifecycle_fact: lifecycle_fact(
-                        format!("session:{id}:terminated"),
-                        &id,
-                        Some(owner_scope),
-                        lifecycle_event::SESSION_TERMINATED,
-                        observed_at,
-                    ),
-                    repository: awaken_session_application::SessionRepositoryPublicationSelector {
-                        binding_id: awaken_resource_contract::BindingId::new(binding_id.clone()),
-                        expectation: publication.expectation,
-                    },
-                },
+    let outcome = Box::pin(state.roles.termination.archive_with_repository_publication(
+        awaken_session_application::SessionArchiveWithRepositoryPublicationCommand {
+            owner_scope: owner_scope.clone(),
+            session_id: awaken_session_types::SessionId::from(&id),
+            archived_at: awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at),
+            lifecycle_fact: lifecycle_fact(
+                format!("session:{id}:terminated"),
+                &id,
+                Some(owner_scope),
+                lifecycle_event::SESSION_TERMINATED,
+                observed_at,
             ),
-    )
+            repository: awaken_session_application::SessionRepositoryPublicationSelector {
+                binding_id: awaken_resource_contract::BindingId::new(binding_id.clone()),
+                expectation: publication.expectation,
+            },
+        },
+    ))
     .await
     .map_err(profiled_release_error_response)?;
 
@@ -1361,7 +1358,8 @@ async fn stream_events(
         .map_err(error_response)?;
     let thread_preview = if previews.any() {
         state
-            .session_application()
+            .roles
+            .observation
             .subscribe_session_thread_live(&awaken_session_types::SessionId::from(&id), &id)
             .await
             .map_err(StateError::Run)

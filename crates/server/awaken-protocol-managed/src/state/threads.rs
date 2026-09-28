@@ -473,7 +473,8 @@ impl ManagedState {
         if status != SessionThreadStatus::Idle {
             return Err(StateError::Conflict);
         }
-        self.application
+        self.roles
+            .termination
             .archive_session_thread(
                 &awaken_session_types::SessionId::from(id),
                 &internal_thread_id,

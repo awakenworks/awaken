@@ -19,7 +19,8 @@ impl DreamSessionSource for crate::ManagedState {
         // wire cache: a Session warm only on another replica is still Dream
         // input, and the neutral root status is the same one GET projects.
         let persisted = self
-            .session_application()
+            .roles
+            .roots
             .sessions_by_owner(workspace_id)
             .await
             .map_err(|error| format!("Workspace Sessions are unreadable: {error}"))?;
@@ -42,7 +43,8 @@ impl DreamSessionSource for crate::ManagedState {
             return Ok(None);
         }
         let usage = self
-            .session_application()
+            .roles
+            .observation
             .session_usage(session_id, None)
             .await
             .map_err(|error| format!("Session usage is unreadable: {error}"))?;

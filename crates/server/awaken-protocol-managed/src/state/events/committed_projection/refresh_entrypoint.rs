@@ -79,15 +79,15 @@ impl ManagedState {
         owner_scope: &str,
     ) -> Result<Option<Event>, StateError> {
         let read = async {
-            let repository = self.application.session_repository_handle();
+            let roots = &self.roles.roots;
             let id = awaken_session_types::SessionId::from(session_id);
-            let deleted = match repository.get(&id).await {
+            let deleted = match roots.session(&id).await {
                 Ok(root) => {
                     let id_matches = root.session_id == session_id;
                     let hidden = root.is_hidden();
                     let terminal = root.is_terminal();
                     let owner_matches = if id_matches && hidden && terminal {
-                        repository.owner(&id).await.map_err(|error| {
+                        roots.owner(&id).await.map_err(|error| {
                             StateError::Run(RunError::unavailable(error.to_string()))
                         })? == owner_scope
                     } else {
@@ -103,7 +103,7 @@ impl ManagedState {
                     )
                 }
                 Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
-                    let tombstone = repository
+                    let tombstone = roots
                         .deleted_event_admissions(owner_scope, &id)
                         .await
                         .map_err(|error| StateError::Run(RunError::unavailable(error.to_string())))?

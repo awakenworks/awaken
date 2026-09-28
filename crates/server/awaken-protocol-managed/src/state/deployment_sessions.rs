@@ -33,7 +33,8 @@ impl ManagedState {
             payload_hash: launch_fingerprint.to_owned(),
         };
         if let Some(persisted) = self
-            .application
+            .roles
+            .creation
             .replay_session_create(
                 &workspace_id,
                 &awaken_session_types::SessionId::from(&session_id),

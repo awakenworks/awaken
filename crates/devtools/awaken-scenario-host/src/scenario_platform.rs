@@ -181,7 +181,7 @@ pub(super) fn mount_with_environments_and_agent_source(
     };
     let work_session_access = awaken_protocol_managed::ManagedWorkSessionAccess::new(
         environment_execution.clone(),
-        managed.clone(),
+        managed.managed.clone(),
     );
     // Environment routes are composed outside the Coordinator's already-layered
     // Managed router. Give that one adjacent sub-router the same scenario ingress

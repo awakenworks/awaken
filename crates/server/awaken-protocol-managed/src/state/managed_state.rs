@@ -10,14 +10,59 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast;
 
-use awaken_session_application::SessionApplication;
+use awaken_lease_contract::WallClock;
+use awaken_session_application::{
+    DeploymentSessionEnvironment, ProfiledSessionCommands, SessionApplication, SessionCreation,
+    SessionEventBatches, SessionObservation, SessionProjectionReads, SessionResourceCommands,
+    SessionRootReads, SessionTermination, SessionUpdates,
+};
 
 use crate::types::Event;
 
 use super::SessionRecord;
 
+/// The Session application roles this adapter calls, each held as its own
+/// port. Product composition hands over the one canonical application and the
+/// adapter keeps only these narrowed views of it.
+pub(crate) struct SessionApplicationRoles {
+    pub(crate) creation: Arc<dyn SessionCreation<super::sessions::ManagedCreateProjection>>,
+    pub(crate) roots: Arc<dyn SessionRootReads>,
+    pub(crate) projection: Arc<dyn SessionProjectionReads>,
+    pub(crate) events: Arc<dyn SessionEventBatches>,
+    pub(crate) profiled: Arc<dyn ProfiledSessionCommands>,
+    pub(crate) termination: Arc<dyn SessionTermination>,
+    pub(crate) updates: Arc<dyn SessionUpdates>,
+    pub(crate) resources: Arc<dyn SessionResourceCommands>,
+    pub(crate) observation: Arc<dyn SessionObservation>,
+    pub(crate) deployments: Arc<dyn DeploymentSessionEnvironment>,
+    /// The application's injected clock, so wire observations share its time line.
+    pub(crate) clock: Arc<dyn WallClock>,
+}
+
+impl SessionApplicationRoles {
+    pub(super) fn of(application: &Arc<SessionApplication>) -> Self {
+        Self {
+            creation: application.clone(),
+            roots: application.clone(),
+            projection: application.clone(),
+            events: application.clone(),
+            profiled: application.clone(),
+            termination: application.clone(),
+            updates: application.clone(),
+            resources: application.clone(),
+            observation: application.clone(),
+            deployments: application.clone(),
+            clock: application.clock(),
+        }
+    }
+}
+
 /// Disposable Managed wire projections over the canonical Session application.
 pub struct ManagedState {
+    pub(crate) roles: SessionApplicationRoles,
+    /// The fixture composition's own application, kept so tests can drive it
+    /// directly and builders can finish configuring it before it is shared.
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) application: Arc<SessionApplication>,
     /// Exact Coordinator Environment application shared by Session compilation
     /// and the authenticated Worker warmup projection. Keeping the concrete

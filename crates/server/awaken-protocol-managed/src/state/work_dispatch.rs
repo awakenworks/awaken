@@ -7,7 +7,9 @@
 use super::ManagedState;
 
 impl ManagedState {
-    /// Trigger the application-owned durable Session-to-WorkQueue projection.
+    /// Fixture driver for the application-owned durable Session-to-WorkQueue
+    /// projection. Product composition runs it in the lifecycle supervisor.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn reconcile_work_dispatches(&self) -> usize {
         let report = self.application.reconcile_work_dispatches().await;
         for failure in report.failures {

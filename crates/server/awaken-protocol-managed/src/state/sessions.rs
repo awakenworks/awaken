@@ -3,8 +3,8 @@
 //! Session lifecycle for [`ManagedState`]: create, rehydrate, get/list,
 //! update, delete, and archive.
 
-use super::application::initial_mcp_candidates;
 use super::*;
+use awaken_lease_contract::WallClockExt as _;
 
 use super::session_mcp_projection::typed_mcp_servers;
 
@@ -108,14 +108,15 @@ impl ManagedState {
             let resolved = delegate
                 .source_revision
                 .and_then(|revision| {
-                    self.application.session_profile_at_revision(
+                    self.roles.projection.session_profile_at_revision(
                         workspace_id,
                         &delegate.agent_id,
                         revision,
                     )
                 })
                 .or_else(|| {
-                    self.application
+                    self.roles
+                        .projection
                         .session_profile(workspace_id, &delegate.agent_id)
                 });
             let child = match resolved {
@@ -306,7 +307,8 @@ impl ManagedState {
         req: &SessionCreateParams,
     ) -> Result<(), StateError> {
         if let Some(vault_id) = self
-            .application
+            .roles
+            .creation
             .missing_vault(workspace_id, &req.vault_ids)
             .await
             .map_err(StateError::Run)?
@@ -342,7 +344,9 @@ impl ManagedState {
 
     /// One create owner for Session and Deployment wire unions. `Some` carries
     /// the already-lowered Deployment union; ordinary Session create uses the
-    /// request's narrower `initial_events` field.
+    /// request's narrower `initial_events` field. The adapter validates and
+    /// lowers the wire request; the Session application orders every check,
+    /// effect and the durable insert.
     pub(super) async fn create_session_with_identity_from(
         &self,
         mut req: SessionCreateParams,
@@ -370,615 +374,118 @@ impl ManagedState {
                 .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
             req.initial_events.clone()
         };
-        let owner_scope = owner_scope.to_owned();
-        // Resource-path admission is the first domain operation after the edge
-        // authorization check. Parse and validate the complete explicit
-        // Repository set before refreshing catalogs or invoking model,
-        // Environment, MCP, Skill, File, Vault, Registry, Runtime, or Git ports.
-        const MAX_SESSION_MEMORY_STORES: usize = 8;
-        const MAX_MEMORY_INSTRUCTIONS_CHARS: usize = 4_096;
-        let memory_resources = req.resources.iter().filter_map(|resource| match resource {
-            crate::types::resource::ResourceInput::MemoryStore { instructions, .. } => {
-                Some(instructions)
-            }
-            _ => None,
-        });
-        let mut memory_count = 0usize;
-        for instructions in memory_resources {
-            memory_count += 1;
-            if instructions.as_ref().is_some_and(|instructions| {
-                instructions.chars().count() > MAX_MEMORY_INSTRUCTIONS_CHARS
-            }) {
-                return Err(StateError::Run(RunError::bad_request(format!(
-                    "memory store instructions support at most {MAX_MEMORY_INSTRUCTIONS_CHARS} characters"
-                ))));
-            }
-        }
-        if memory_count > MAX_SESSION_MEMORY_STORES {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "a Session supports at most {MAX_SESSION_MEMORY_STORES} memory stores"
-            ))));
-        }
-        let resources = std::mem::take(&mut req.resources)
-            .iter()
-            .map(crate::types::resource::ResourceInput::to_parsed_input)
-            .collect::<Vec<_>>();
-        super::resource::preflight_repository_mount_paths(&resources)?;
-        if resources
-            .iter()
-            .filter(|resource| matches!(resource.target, ParsedInputTarget::File(_)))
-            .count()
-            > super::resource::MAX_SESSION_FILE_RESOURCES
-        {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "a Session supports at most {} files",
-                super::resource::MAX_SESSION_FILE_RESOURCES
-            ))));
-        }
-        let admission = self
-            .application
-            .refresh_executable_projections()
-            .await
-            .map_err(|error| {
-                StateError::Run(RunError::unavailable_classified(
-                    "executable_projection_refresh_failed",
-                    format!("Executable projections could not be refreshed: {error}"),
-                ))
-            })?;
-        // Mint from the process-incarnation namespace so active-active peers and
-        // restarted processes cannot choose the same Session id. The repository
-        // check remains the final collision fence; `ensure_session` is still the
-        // only path that may reattach to a caller-supplied existing thread.
-        let id = admission
-            .enter(|| async {
-                match explicit_id {
-                    Some(id) => Ok(id),
-                    None => loop {
-                        let sequence = self.session_seq.fetch_add(1, Ordering::SeqCst);
-                        let candidate = format!(
-                            "sesn_{}",
-                            awaken_agent_contract::stable_fingerprint(&(
-                                "managed-session",
-                                &self.application.runtime_incarnation(),
-                                sequence,
-                            ))
-                        );
-                        let repository_absent = match self
-                            .application
-                            .session(&awaken_session_types::SessionId::from(&candidate))
-                            .await
-                        {
-                            Err(
-                                awaken_session_state_contract::SessionRepositoryError::NotFound,
-                            ) => true,
-                            Ok(_) => false,
-                            Err(error) => return Err(StateError::from(error)),
-                        };
-                        if !self
-                            .application
-                            .runtime_owns_thread(&candidate)
-                            .await
-                            .map_err(StateError::Run)?
-                            && repository_absent
-                        {
-                            break Ok(candidate);
-                        }
-                    },
-                }
-            })
-            .await?;
-        let agent_id = req.agent.id().to_string();
-        let initial_events =
-            crate::types::initial_event::compile_session_initial_event_plan(&id, &initial_events)
-                .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
-        let requested_agent_version = req.agent.version();
-        let config_view = requested_agent_version
-            .and_then(|version| {
-                self.application
-                    .session_profile_at_revision(&owner_scope, &agent_id, version)
-            })
-            .or_else(|| {
-                requested_agent_version
-                    .is_none()
-                    .then(|| self.application.session_profile(&owner_scope, &agent_id))
-                    .flatten()
-            });
-        if let Some(version) = requested_agent_version
-            && config_view.is_none()
-            && self.application.has_agent_profile_source()
-        {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "agent_version_unavailable: Agent `{agent_id}` version {version} is unavailable"
-            ))));
-        }
-        if let Some(requested_agent_version) = requested_agent_version
-            && config_view.is_none()
-        {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "agent_version_unavailable: agent `{agent_id}` has no executable publication at version {requested_agent_version}"
-            ))));
-        }
-        if config_view.is_none()
-            && requested_agent_version.is_none()
-            && self.application.agent_unavailable(&owner_scope, &agent_id)
-        {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "agent_unavailable: agent `{agent_id}` cannot start a new session"
-            ))));
-        }
-        let agent_defaults = config_view
-            .as_ref()
-            .map(|view| view.resources.as_slice())
-            .unwrap_or_default();
-        let prepared_resources = self
-            .prepare_session_input_attachments(&id, &owner_scope, &resources, agent_defaults)
-            .await?;
-        // Cause/effect decision table for Session model authority: R1 absent ->
-        // inherit the Agent publication; R2 equal override -> reuse its route and
-        // replace inference controls;
-        // R3 different override + resolver -> freeze the complete newly resolved
-        // publication; R4 different override + unavailable/invalid resolver ->
-        // fail before Session persistence. A public id is never stitched onto the
-        // Agent's old backend, endpoint, or credential provisioning.
-        let published_model = config_view
-            .as_ref()
-            .and_then(|view| view.model.clone())
-            .unwrap_or_else(|| self.application.model());
-        let (selected_model, model_override): (
-            Option<ModelConfig>,
-            Option<awaken_session_configuration_contract::SessionModelOverride>,
-        ) = match req.agent.model_override() {
-            ModelOverride::Set(cfg) => {
-                let inference = cfg.inference_options();
-                let model_override = self
-                    .application
-                    .resolve_session_model_override(
-                        &owner_scope,
-                        &cfg.id,
-                        &published_model,
-                        inference,
-                    )
-                    .await
-                    .map_err(StateError::Run)?;
-                (Some(cfg), Some(model_override))
-            }
-            ModelOverride::Absent => (
-                config_view.as_ref().and_then(|view| {
-                    view.model
-                        .clone()
-                        .map(|id| ModelConfig::from_inference(id, view.inference.clone()))
-                }),
-                None,
-            ),
+        let model_override = match req.agent.model_override() {
+            ModelOverride::Set(cfg) => Some(cfg),
+            ModelOverride::Absent => None,
         };
-        self.authorize_inference_geo(
-            &owner_scope,
-            selected_model
-                .as_ref()
-                .and_then(|model| model.inference_geo),
-            crate::InferenceGeoCheckpoint::SessionCreate,
-        )
-        .await?;
-        // Echo the agent version the client pinned (or overrode over), defaulting to 1.
-        let agent_version = requested_agent_version
-            .or_else(|| config_view.as_ref().map(|profile| profile.source_revision))
-            .unwrap_or(1)
-            .max(1);
-        let delegate_ids: Vec<String> = config_view
-            .as_ref()
-            .map(|view| {
-                view.delegates
-                    .iter()
-                    .map(|delegate| delegate.agent_id.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let selected_geo = selected_model
-            .as_ref()
-            .and_then(|model| model.inference_options().inference_geo);
-        for delegate_ref in config_view
-            .as_ref()
-            .into_iter()
-            .flat_map(|profile| profile.delegates.iter())
-        {
-            let delegate_id = &delegate_ref.agent_id;
-            let delegate = delegate_ref
-                .source_revision
-                .and_then(|revision| {
-                    self.application.session_profile_at_revision(
-                        &owner_scope,
-                        delegate_id,
-                        revision,
-                    )
-                })
-                .or_else(|| self.application.session_profile(&owner_scope, delegate_id))
-                .ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(format!(
-                        "multiagent_unavailable: Agent `{delegate_id}` has no executable profile"
-                    )))
-                })?;
-            if delegate.inference.inference_geo != selected_geo {
-                return Err(StateError::Run(RunError::bad_request(format!(
-                    "multiagent_inference_geo_mismatch: coordinator is {:?}, Agent `{delegate_id}` is {:?}",
-                    selected_geo, delegate.inference.inference_geo
-                ))));
-            }
-        }
-        // Freeze the root execution route before any Resource or Session write.
-        // For budgeted Sessions, the application's single roster compiler also
-        // validates that the root, exact ordinary roster revisions, and the
-        // Advisor route all execute inside the Native per-request gate.
-        let resolved_model = selected_model
-            .clone()
-            .unwrap_or_else(|| ModelConfig::new(self.application.model()));
-        let execution_model_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().identity().1.to_owned())
-            .or_else(|| {
-                config_view
-                    .as_ref()
-                    .and_then(|view| view.execution_model_ref.clone())
-            })
-            .unwrap_or_else(|| resolved_model.id.clone());
-        let published_backend_ref = model_override
-            .as_ref()
-            .and_then(|model_override| model_override.publication.as_ref())
-            .map(|publication| publication.primary.binding().identity().2.to_owned())
-            .or_else(|| {
-                config_view
-                    .as_ref()
-                    .map(|view| view.backend_ref.clone())
-                    .filter(|backend_ref| !backend_ref.trim().is_empty())
-            });
-        let budget_model_refs = req
-            .budget
-            .as_ref()
-            .map(|_| {
-                self.application.managed_session_model_refs(
-                    &owner_scope,
-                    &agent_id,
-                    config_view.as_ref(),
-                    &execution_model_ref,
-                    published_backend_ref.as_deref(),
-                    model_override
-                        .as_ref()
-                        .and_then(|model_override| model_override.publication.as_deref()),
-                )
-            })
-            .transpose()
-            .map_err(StateError::Run)?;
-        let agent_mcp_override = req.agent.mcp_servers_override();
-        let (mcp_candidates, mcp_targets) =
-            awaken_session_application::SessionApplication::normalize_mcp_candidate_targets(
-                initial_mcp_candidates(config_view.as_ref(), agent_mcp_override),
-            )?;
-        // Resolve the SDK-required Environment and networking policy once, for both
-        // SessionInit and the echoed Session object. Managed never invokes the
-        // native application's optional local-environment fallback.
-        let agent_environment = config_view
-            .as_ref()
-            .and_then(|view| view.environment.as_ref());
-        let (environment_id, environment) = self
-            .resolve_session_environment(
-                &req.environment_id,
-                agent_environment,
-                published_backend_ref.as_deref(),
-                &mcp_targets,
-            )
-            .await?;
-        let local_cloud = awaken_session_state_contract::SessionPlacementClass::new(
-            self.application.runtime_placement(),
-            environment.self_hosted,
-        )
-        .realized_by_coordinator();
-        // Cause/effect layout gate: C1 the complete effective typed bindings,
-        // frozen Environment, and exact publication-selected provider produce a
-        // non-overlapping final Sandbox layout -> continue; C2 any projected
-        // File/Memory/Repository, baseline, output, HOME/XDG, or provider mount
-        // overlaps -> reject before Vault checks, Skill/File materialization,
-        // Repository configuration, root CAS, cache prewarm, or provider I/O.
-        self.application
-            .validate_session_sandbox_layout(
-                &id,
-                &awaken_session_configuration_contract::SessionSandboxLayout {
-                    workspace_id: owner_scope.clone(),
-                    agent_id: agent_id.clone(),
-                    agent_revision: config_view.as_ref().and_then(|profile| {
-                        (profile.source_revision > 0).then_some(profile.source_revision)
-                    }),
-                    runtime_placement: self.application.runtime_placement(),
-                    model_override: model_override.clone(),
-                    runtime: published_backend_ref.clone(),
-                    mounts: Vec::new(),
-                    env: Vec::new(),
-                    environment: environment.clone(),
-                    resources: prepared_resources.effective_bindings().to_vec(),
-                },
-            )
-            .map_err(StateError::Run)?;
-        self.check_bind(&owner_scope, &req).await?;
-        let mcp_drafts = self
-            .application
-            .normalize_mcp_drafts(
-                &owner_scope,
-                mcp_candidates,
-                &req.vault_ids,
-                &environment.credential_realization.mcp_holder,
-            )
-            .await?;
-        let effective_skills = req
-            .agent
-            .skills_override()
-            .map(|skills| {
+        let request = awaken_session_application::SessionCreateRequest {
+            owner_scope: owner_scope.to_owned(),
+            explicit_id,
+            idempotency,
+            agent_id: req.agent.id().to_string(),
+            agent_version: req.agent.version(),
+            model_override: model_override.as_ref().map(|cfg| {
+                awaken_session_application::SessionModelRequest {
+                    model_id: cfg.id.clone(),
+                    inference: cfg.inference_options(),
+                }
+            }),
+            system_override: req
+                .agent
+                .system_override()
+                .map(|system| system.map(str::to_owned)),
+            tools_override: req.agent.tools_override().map(|tools| {
+                awaken_session_application::SessionToolsOverride {
+                    configuration: project::session_tool_configuration(tools),
+                    clears_all: tools.is_empty(),
+                }
+            }),
+            skills_override: req.agent.skills_override().map(|skills| {
                 skills
                     .iter()
                     .cloned()
                     .map(crate::types::agent::AgentSkill::into_binding)
-                    .collect::<Vec<_>>()
-            })
-            .or_else(|| config_view.as_ref().map(|view| view.skills.clone()));
-        self.application
-            .validate_session_skill_total(
-                &owner_scope,
-                &agent_id,
-                config_view.as_ref(),
-                effective_skills.as_deref().unwrap_or_default(),
-            )
-            .map_err(StateError::Run)?;
-        let resolved_skills = match &effective_skills {
-            Some(skills) => Some(
-                self.application
-                    .resolve_session_skills(&owner_scope, skills)
-                    .await
-                    .map_err(StateError::Run)?,
-            ),
-            None => None,
-        };
-        // Validate the advertised tool surface before persisting an activation or
-        // touching a Host. A definition error cannot strand Prepared resources.
-        let caps = self.application.capabilities_for(&id);
-        for tool in &caps.custom_tools {
-            project::validate_custom_tool(tool)
-                .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
-        }
-        let capability_tools = project::session_tool_configuration(&project::agent_tools(&caps));
-        let inherited_tools = config_view.as_ref().map_or_else(
-            || capability_tools.clone(),
-            |profile| awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: if profile.toolsets.is_empty() {
-                    capability_tools.toolsets.clone()
-                } else {
-                    profile.toolsets.clone()
-                },
-                client_tools: profile.client_tools.clone(),
-            },
-        );
-        let effective_tools = req
-            .agent
-            .tools_override()
-            .map(project::session_tool_configuration)
-            .unwrap_or(inherited_tools);
-        let session_skills = effective_skills.as_ref().map_or_else(
-            || project::agent_skills(&caps),
-            |skills| {
-                skills
+                    .collect()
+            }),
+            mcp_override: req.agent.mcp_servers_override().map(|servers| {
+                servers
                     .iter()
                     .cloned()
+                    .map(|server| {
+                        super::application::agent_mcp_candidate(
+                            server,
+                            awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+                        )
+                    })
+                    .collect()
+            }),
+            environment_id: req.environment_id.clone(),
+            inputs: std::mem::take(&mut req.resources)
+                .iter()
+                .map(crate::types::resource::ResourceInput::to_input_request)
+                .collect(),
+            vault_ids: req.vault_ids.clone(),
+            title: req.title.clone(),
+            metadata: req.metadata.clone(),
+            budget: req
+                .budget
+                .as_ref()
+                .map(|budget| match budget.max_list_cost_minor() {
+                    Ok(minor) => {
+                        awaken_session_application::SessionBudgetRequest::MaxListCostMinor(minor)
+                    }
+                    Err(message) => {
+                        awaken_session_application::SessionBudgetRequest::Invalid(message)
+                    }
+                }),
+        };
+        let protocol = ManagedCreateProtocol {
+            state: self,
+            model_override: model_override.as_ref(),
+            initial_events: &initial_events,
+        };
+        let created = Box::pin(
+            self.roles
+                .creation
+                .create_requested_session(request, &protocol),
+        )
+        .await
+        .map_err(Self::map_create_request_error)?;
+        let awaken_session_application::CreatedSession {
+            session: persisted,
+            session_id: id,
+            profile,
+            agent_version,
+            model,
+            default_model,
+            environment_id,
+            skills,
+            capabilities,
+            tools: _,
+            projection,
+        } = created;
+        let resolved_model = match model {
+            Some(choice)
+                if choice.source == awaken_session_application::SessionModelSource::Override =>
+            {
+                model_override
+                    .clone()
+                    .expect("an override choice echoes the requested model")
+            }
+            Some(choice) => ModelConfig::from_inference(choice.model_id, choice.inference),
+            None => ModelConfig::new(default_model),
+        };
+        let session_skills = skills.map_or_else(
+            || project::agent_skills(&capabilities),
+            |skills| {
+                skills
+                    .into_iter()
                     .map(crate::types::agent::AgentSkill::from_binding)
                     .collect()
             },
         );
-        if req
-            .agent
-            .tools_override()
-            .is_some_and(|tools| tools.is_empty())
-            && !session_skills.is_empty()
-        {
-            return Err(StateError::Run(RunError::bad_request(
-                "cannot clear tools while skills are configured",
-            )));
-        }
-        // Validate after replacement/inheritance has produced the effective
-        // Session configuration. Checking only when both override arrays were
-        // present admitted a partial override whose inherited half named a
-        // different server.
-        let effective_server_names = mcp_drafts
-            .iter()
-            .map(|draft| draft.name.clone())
-            .collect::<Vec<_>>();
-        let effective_toolset_names = effective_tools
-            .toolsets
-            .iter()
-            .filter_map(|toolset| match &toolset.source {
-                awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp { server_name } => {
-                    Some(server_name.clone())
-                }
-                awaken_runtime_contract::agent_bindings::ToolsetSource::Agent => None,
-            })
-            .collect::<Vec<_>>();
-        awaken_session_configuration_contract::validate_mcp_toolset_pairing(
-            &effective_server_names,
-            &effective_toolset_names,
-        )
-        .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
-        let budget_state = match &req.budget {
-            Some(budget) => {
-                let max_list_cost_minor = budget
-                    .max_list_cost_minor()
-                    .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
-                let occurred_at_unix_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-                let model_refs =
-                    budget_model_refs.expect("budgeted Session compiled its exact model roster");
-                let snapshot = self
-                    .application
-                    .resolve_managed_list_price_snapshot(
-                        awaken_session_budget_contract::ManagedListPriceRequest {
-                            occurred_at_unix_ms,
-                            model_refs,
-                        },
-                    )
-                    .await
-                    .map_err(|error| {
-                        let run = match error {
-                            awaken_session_budget_contract::ManagedListPriceError::Unavailable(
-                                _,
-                            ) => RunError::unavailable(error.to_string()),
-                            _ => RunError::bad_request(error.to_string()),
-                        };
-                        StateError::Run(run)
-                    })?;
-                awaken_session_budget_contract::SessionBudgetState::active(
-                    max_list_cost_minor,
-                    snapshot,
-                )
-            }
-            None => awaken_session_budget_contract::SessionBudgetState::Absent,
-        };
-        // Cause/effect rules for Session-owned Repository participants:
-        // R1 all pure Environment/Skill/tool/budget validation succeeds ->
-        // enter Registry/Vault; R2 lowering fails -> compensate only prior
-        // Applied participants; R3 later resolve/pin fails -> compensate every
-        // Applied participant; R4 root Applied/Replayed -> creation owns the
-        // participants and terminal reconciliation becomes the only retire path.
-        let (attachments, repository_configurations) = self
-            .lower_prepared_session_input_attachments(&id, &owner_scope, &prepared_resources)
-            .await?;
-        // Sole protocol-neutral Session input resolution point. Environment
-        // selection has already produced one exact snapshot above; the final
-        // SessionCreationIntent is the only value that combines and freezes both
-        // families. Runtime never re-opens Agent or Resource stores.
-        let mut resolved_resources = match self
-            .application
-            .resolve_session_inputs(&owner_scope, agent_defaults, &attachments)
-            .await
-        {
-            Ok(resources) => resources,
-            Err(first) => {
-                if !self
-                    .application
-                    .abort_unadopted_session_repositories(&repository_configurations)
-                    .await
-                {
-                    tracing::warn!(
-                        session = %id,
-                        "Managed Session Repository compensation remains pending after input resolution"
-                    );
-                }
-                return Err(StateError::Run(first));
-            }
-        };
-        if let Some(resolved_skills) = resolved_skills {
-            resolved_resources = match resolved_resources.with_skills(resolved_skills) {
-                Ok(resources) => resources,
-                Err(error) => {
-                    let first = StateError::Run(RunError::bad_request(error.to_string()));
-                    if !self
-                        .application
-                        .abort_unadopted_session_repositories(&repository_configurations)
-                        .await
-                    {
-                        tracing::warn!(
-                            session = %id,
-                            "Managed Session Repository compensation remains pending after Skill binding"
-                        );
-                    }
-                    return Err(first);
-                }
-            };
-        }
-        if let Err(error) = self
-            .application
-            .pin_repository_credentials(
-                &owner_scope,
-                &environment.credential_realization.resource_holder,
-                &mut resolved_resources,
-            )
-            .await
-        {
-            let first = Self::map_preparation_error(error);
-            if !self
-                .application
-                .abort_unadopted_session_repositories(&repository_configurations)
-                .await
-            {
-                tracing::warn!(
-                    session = %id,
-                    "Managed Session Repository compensation remains pending after credential pinning"
-                );
-            }
-            return Err(first);
-        }
-        let creation_intent = awaken_session_configuration_contract::SessionCreationIntent {
-            control: awaken_session_configuration_contract::ControlSessionCreationInputs {
-                mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
-                environment,
-                runtime_placement: self.application.runtime_placement(),
-                mcp_authoring: awaken_session_configuration_contract::SessionMcpAuthoringContext {
-                    ordered_vault_ids: req.vault_ids.clone(),
-                },
-                agent_id: agent_id.clone(),
-                agent_revision: config_view.as_ref().and_then(|profile| {
-                    (profile.source_revision > 0).then_some(profile.source_revision)
-                }),
-                model: resolved_model.id.clone(),
-                execution_model_ref,
-                model_override,
-                system_prompt: match req.agent.system_override() {
-                    None => {
-                        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit
-                    }
-                    Some(None) => {
-                        awaken_session_configuration_contract::SessionSystemPromptSelection::Clear
-                    }
-                    Some(Some(value)) => {
-                        awaken_session_configuration_contract::SessionSystemPromptSelection::Replace(
-                            value.to_owned(),
-                        )
-                    }
-                },
-                runtime: published_backend_ref,
-                delegate_ids: delegate_ids.clone(),
-                toolsets: effective_tools.toolsets.clone(),
-                mounts: Vec::new(),
-                env: Vec::new(),
-                prompts: Vec::new(),
-                transcript_prefix: None,
-                resources: resolved_resources,
-                initial_mcp: mcp_drafts,
-            },
-        };
-        // Finish every fallible wire projection before the durable root insert.
-        // After the application returns, Managed only caches this already-
-        // validated projection and therefore needs no second receipt recovery
-        // path around DTO construction.
+        let agent_id = req.agent.id().to_string();
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
-        let session_tools = project::managed_tools(&effective_tools);
-        let session_multiagent =
-            self.resolved_session_multiagent(&owner_scope, config_view.as_ref(), &caps)?;
-        // The adapter has finished lowering wire policy. The Session application
-        // now exclusively orders every durable mutation and external projection.
-        let creation = awaken_session_application::CreateSessionCommand {
-            owner_scope: owner_scope.clone(),
-            session_id: id.clone(),
-            intent: creation_intent,
-            title: req.title.clone(),
-            metadata: req.metadata.clone(),
-            tools: effective_tools.clone(),
-            budget: budget_state,
-            repository_configurations,
-            idempotency,
-            initial_events,
-        };
-        let persisted = if local_cloud {
-            Box::pin(self.application.accept_session(creation)).await
-        } else {
-            Box::pin(self.application.create_session(creation)).await
-        }
-        .map_err(Self::map_creation_error)?;
         let mut session = Session {
             id: id.clone(),
             kind: "session",
@@ -988,27 +495,27 @@ impl ManagedState {
                 version: agent_version,
                 // Echo the accepted official override or the published Agent model.
                 model: resolved_model,
-                name: config_view
+                name: profile
                     .as_ref()
                     .and_then(|profile| profile.name.clone())
                     .unwrap_or_else(|| agent_id.clone()),
-                description: config_view
+                description: profile
                     .as_ref()
                     .and_then(|profile| profile.description.clone()),
-                system: config_view.as_ref().and_then(|view| view.system.clone()),
-                tools: session_tools,
+                system: profile.as_ref().and_then(|profile| profile.system.clone()),
+                tools: projection.tools,
                 // Echo accepted Agent configuration in the SDK shape. Runtime
                 // visibility is a separate state and can remain Requested while
                 // this immutable Session snapshot is already readable.
                 mcp_servers: typed_mcp_servers(persisted.configured_mcp_servers()),
                 skills: session_skills,
-                multiagent: session_multiagent,
+                multiagent: projection.multiagent,
             },
             budget: persisted
                 .budget
                 .max_list_cost_minor()
                 .map(crate::types::BudgetLimit::from_minor),
-            environment_id: environment_id.clone(),
+            environment_id,
             created_at: super::constants::persisted_time(persisted.created_at_unix_ms),
             updated_at: super::constants::persisted_time(persisted.updated_at_unix_ms),
             archived_at: None,
@@ -1035,7 +542,10 @@ impl ManagedState {
         if let Some(tools) = req.agent.tools_override() {
             session.agent.tools = project::resolved_tools(tools);
         }
-        self.owners.lock().unwrap().insert(id.clone(), owner_scope);
+        self.owners
+            .lock()
+            .unwrap()
+            .insert(id.clone(), owner_scope.to_owned());
         let record = SessionRecord::new(
             agent_id,
             session,
@@ -1046,6 +556,28 @@ impl ManagedState {
         let session = record.session_projection();
         self.sessions.lock().unwrap().insert(id.clone(), record);
         Ok(session)
+    }
+
+    fn map_create_request_error(
+        error: awaken_session_application::SessionCreateRequestError,
+    ) -> StateError {
+        match error {
+            awaken_session_application::SessionCreateRequestError::Rejected(error) => {
+                StateError::Run(error)
+            }
+            awaken_session_application::SessionCreateRequestError::VaultNotFound(vault_id) => {
+                StateError::VaultNotFound(vault_id)
+            }
+            awaken_session_application::SessionCreateRequestError::Repository(error) => {
+                StateError::from(error)
+            }
+            awaken_session_application::SessionCreateRequestError::Preparation(error) => {
+                Self::map_preparation_error(error)
+            }
+            awaken_session_application::SessionCreateRequestError::Creation(error) => {
+                Self::map_creation_error(error)
+            }
+        }
     }
 
     /// The owner scope of `session_id`, if this process created (or has cached) it —
@@ -1068,7 +600,8 @@ impl ManagedState {
             return Ok(Some(scope));
         }
         match self
-            .application
+            .roles
+            .roots
             .owner(&awaken_session_types::SessionId::from(session_id))
             .await
         {
@@ -1099,7 +632,7 @@ impl ManagedState {
     ) -> Result<Session, StateError> {
         let created_at = super::constants::persisted_time(persisted.created_at_unix_ms);
         let updated_at = super::constants::persisted_time(persisted.updated_at_unix_ms);
-        let caps = self.application.capabilities_for(id);
+        let caps = self.roles.projection.capabilities_for(id);
         let projected_budget = persisted
             .budget
             .max_list_cost_minor()
@@ -1168,13 +701,18 @@ impl ManagedState {
         let deployment_id = metadata.get("awaken.deployment_id").cloned();
         let profile = agent_revision
             .and_then(|revision| {
-                self.application
+                self.roles
+                    .projection
                     .session_profile_at_revision(owner_scope, &agent_id, revision)
             })
             .or_else(|| {
                 agent_revision
                     .is_none()
-                    .then(|| self.application.session_profile(owner_scope, &agent_id))
+                    .then(|| {
+                        self.roles
+                            .projection
+                            .session_profile(owner_scope, &agent_id)
+                    })
                     .flatten()
             });
         let publication_decision =
@@ -1326,7 +864,8 @@ impl ManagedState {
         scope: &str,
     ) -> Result<Vec<Session>, StateError> {
         let persisted = self
-            .application
+            .roles
+            .roots
             .sessions_by_owner(scope)
             .await
             .map_err(StateError::from)?;
@@ -1366,7 +905,9 @@ impl ManagedState {
         // stored the terminal fence and outbox fact. Child cleanup targets are
         // frozen later from durable Runtime delegation authority.
         let transition = self
-            .application
+            .roles
+            .termination
+            .clone()
             .delete_session(awaken_session_application::SessionDeleteCommand::new(id))
             .await
             .map_err(Self::map_preparation_error)?;
@@ -1409,7 +950,7 @@ impl ManagedState {
     ) -> Result<Session, StateError> {
         self.ensure_session_for_frozen_control(id).await?;
         let owner = self.resolve_owner(id).await?;
-        let observed_at = self.application.now_unix_ms();
+        let observed_at = self.roles.clock.now_ms();
         let terminated_fact = lifecycle_fact(
             format!("session:{id}:terminated"),
             id,
@@ -1422,25 +963,28 @@ impl ManagedState {
             // This read selects a safe command, not a second status authority.
             // Both application commands reload and recheck the durable root.
             let terminal = self
-                .application
-                .session_repository_handle()
-                .get(&awaken_session_types::SessionId::from(id))
+                .roles
+                .roots
+                .session(&awaken_session_types::SessionId::from(id))
                 .await
                 .map_err(StateError::from)?
                 .execution
                 .is_terminal();
             if !terminal {
-                self.application
+                self.roles
+                    .termination
                     .terminate_session(id, &archived_at, terminated_fact.clone())
                     .await
                     .map_err(Self::map_preparation_error)?;
             }
-            self.application
+            self.roles
+                .termination
                 .release_terminal_session(id, &archived_at, terminated_fact)
                 .await
                 .map_err(Self::map_preparation_error)?;
         } else {
-            self.application
+            self.roles
+                .termination
                 .terminate_session(id, &archived_at, terminated_fact)
                 .await
                 .map_err(Self::map_preparation_error)?;
@@ -1450,6 +994,113 @@ impl ManagedState {
         // derived child terminal with identical warm/restart behavior.
         self.refresh_committed_projection(id).await?;
         self.get_session(id)
+    }
+}
+
+/// The Managed rules of Session creation: the `sesn_` id spelling, initial
+/// Event lowering, the inference-geography policy, custom tool rules and the
+/// SDK projection finished before the durable insert.
+struct ManagedCreateProtocol<'a> {
+    state: &'a ManagedState,
+    model_override: Option<&'a ModelConfig>,
+    initial_events: &'a [InboundEvent],
+}
+
+/// The Managed projection the adapter finishes before the durable insert.
+pub(crate) struct ManagedCreateProjection {
+    tools: Vec<awaken_session_configuration_contract::AgentTool>,
+    multiagent: Option<crate::types::SessionMultiagentCoordinator>,
+}
+
+fn run_error(error: StateError) -> RunError {
+    match error {
+        StateError::Run(error) => error,
+        other => RunError::internal(other.to_string()),
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_application::SessionCreateProtocol for ManagedCreateProtocol<'_> {
+    type Projection = ManagedCreateProjection;
+
+    // Mint from the process-incarnation namespace so active-active peers and
+    // restarted processes cannot choose the same Session id.
+    fn session_id_candidate(&self) -> String {
+        let sequence = self.state.session_seq.fetch_add(1, Ordering::SeqCst);
+        format!(
+            "sesn_{}",
+            awaken_agent_contract::stable_fingerprint(&(
+                "managed-session",
+                self.state.roles.creation.runtime_incarnation(),
+                sequence,
+            ))
+        )
+    }
+
+    fn initial_event_plan(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<awaken_session_event_contract::SessionInitialEventPlan>, RunError> {
+        crate::types::initial_event::compile_session_initial_event_plan(
+            session_id,
+            self.initial_events,
+        )
+        .map_err(RunError::bad_request)
+    }
+
+    async fn admit_model(
+        &self,
+        owner_scope: &str,
+        model: Option<&awaken_session_application::SessionModelChoice>,
+    ) -> Result<(), RunError> {
+        let inference_geo = match model {
+            Some(choice)
+                if choice.source == awaken_session_application::SessionModelSource::Override =>
+            {
+                self.model_override.and_then(|model| model.inference_geo)
+            }
+            Some(choice) => {
+                ModelConfig::from_inference(choice.model_id.clone(), choice.inference.clone())
+                    .inference_geo
+            }
+            None => None,
+        };
+        self.state
+            .authorize_inference_geo(
+                owner_scope,
+                inference_geo,
+                crate::InferenceGeoCheckpoint::SessionCreate,
+            )
+            .await
+            .map_err(run_error)
+    }
+
+    fn capability_tools(
+        &self,
+        capabilities: &AgentCapabilities,
+    ) -> Result<awaken_session_configuration_contract::SessionToolConfiguration, RunError> {
+        for tool in &capabilities.custom_tools {
+            project::validate_custom_tool(tool).map_err(RunError::bad_request)?;
+        }
+        Ok(project::session_tool_configuration(&project::agent_tools(
+            capabilities,
+        )))
+    }
+
+    fn project_before_insert(
+        &self,
+        owner_scope: &str,
+        profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
+        capabilities: &AgentCapabilities,
+        tools: &awaken_session_configuration_contract::SessionToolConfiguration,
+    ) -> Result<ManagedCreateProjection, RunError> {
+        Ok(ManagedCreateProjection {
+            tools: project::managed_tools(tools),
+            multiagent: self
+                .state
+                .resolved_session_multiagent(owner_scope, profile, capabilities)
+                .map_err(run_error)?,
+        })
     }
 }
 
