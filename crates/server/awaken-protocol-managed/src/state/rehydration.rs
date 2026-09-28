@@ -3,6 +3,7 @@
 // @formal reason: Rehydrates disposable projections from canonical Session truth.
 //! Cold reconstruction of disposable Managed Session projections.
 
+use super::sessions::RehydrationPurpose;
 use super::*;
 
 impl ManagedState {
@@ -69,28 +70,55 @@ impl ManagedState {
     /// warm callers consume those facts through `refresh_committed_projection`,
     /// so recovery cannot grow a second projector.
     pub(super) async fn ensure_session_record(&self, id: &str) -> Result<(), StateError> {
+        self.hydrate_session_record(id, RehydrationPurpose::Interactive)
+            .await
+    }
+
+    /// The one cold path from a durable Session root to the disposable wire
+    /// record. Interactive recovery refreshes executable projections and
+    /// enters their admission first; frozen control (interrupt, archive,
+    /// delete) must not prepare a Runtime, so it projects only the durable
+    /// baseline. Both share visibility, owner, finalization and identity rules;
+    /// the record's Agent is the frozen baseline's, never a placeholder.
+    pub(super) async fn hydrate_session_record(
+        &self,
+        id: &str,
+        purpose: RehydrationPurpose,
+    ) -> Result<(), StateError> {
         if self.sessions.lock().unwrap().contains_key(id) {
             return Ok(());
         }
         let recovered = self.read_persisted_session_projection(id).await?;
         let owner_scope = recovered.owner_scope;
         let persisted = recovered.session;
-        let admission = self
-            .application
-            .refresh_executable_projections()
-            .await
-            .map_err(|error| {
-                StateError::Run(RunError::unavailable_classified(
-                    "executable_projection_refresh_failed",
-                    format!("Executable projections could not be refreshed: {error}"),
-                ))
-            })?;
-        let agent_id = persisted
-            .agent_id()
-            .map_or_else(|| "assistant".to_string(), str::to_string);
+        // `read_persisted_session_projection` admits only finalized roots, so
+        // a missing Agent is a damaged root: fail closed rather than bind the
+        // record to an Agent the operator never published.
+        let agent_id = persisted.agent_id().map(str::to_string).ok_or_else(|| {
+            StateError::Run(RunError::unavailable(
+                "Session root is not finalized and cannot be rehydrated",
+            ))
+        })?;
         let session_revision = persisted.revision;
         let resource_state = persisted.resources.clone();
-        let session = admission.enter(|| self.rehydrated_session(id, &owner_scope, persisted))?;
+        let session = match purpose {
+            RehydrationPurpose::Interactive => {
+                let admission = self
+                    .application
+                    .refresh_executable_projections()
+                    .await
+                    .map_err(|error| {
+                        StateError::Run(RunError::unavailable_classified(
+                            "executable_projection_refresh_failed",
+                            format!("Executable projections could not be refreshed: {error}"),
+                        ))
+                    })?;
+                admission.enter(|| self.rehydrated_session(id, &owner_scope, persisted))?
+            }
+            RehydrationPurpose::CollectionRead | RehydrationPurpose::FrozenControl => {
+                self.rehydrated_session_for(id, &owner_scope, persisted, purpose)?
+            }
+        };
         let record = SessionRecord::new(
             agent_id,
             session,
@@ -437,5 +465,81 @@ mod tests {
         assert!(restored_environments.lock().unwrap().is_empty(), "R2-R6/E3");
         assert!(restored_inputs.lock().unwrap().is_empty(), "R2-R6/E3");
         assert!(restored_runtimes.lock().unwrap().is_empty(), "R2-R6/E1");
+    }
+
+    #[tokio::test]
+    async fn one_cold_path_binds_the_frozen_agent_for_every_purpose() {
+        // Cause/effect graph: C1 cold wire cache; C2 purpose Interactive or
+        // FrozenControl; C3 the durable root is finalized and visible, hidden,
+        // or absent. Effects: E1 the record binds the frozen baseline's Agent
+        // (never a placeholder) and the owner; E2 NotFound with no record.
+        // | Rule | C2 | C3 | Effect |
+        // |---|---|---|---|
+        // | H1 | Interactive | finalized | E1 |
+        // | H2 | FrozenControl | finalized | E1 |
+        // | H3 | either | Deleted (hidden) | E2 |
+        // | H4 | either | absent | E2 |
+        let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
+            Arc::new(ephemeral_session_repo());
+        let mut hidden = sample_persisted("hydrate-hidden");
+        hidden.disposition = awaken_session_state_contract::SessionDisposition::Deleted;
+        for session in [
+            sample_persisted("hydrate-interactive"),
+            sample_persisted("hydrate-frozen"),
+            hidden,
+        ] {
+            let id = session.session_id.clone();
+            repo.create(
+                "workspace-a",
+                session,
+                awaken_session_state_contract::IdempotencyRecord {
+                    key: format!("hydrate:{}", id.as_str()),
+                    payload_hash: "fixture".into(),
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("persist durable root");
+        }
+        let state = ManagedState::new(RehydrateFake::default()).with_session_repo(repo);
+        for (rule, id, purpose) in [
+            ("H1", "hydrate-interactive", RehydrationPurpose::Interactive),
+            ("H2", "hydrate-frozen", RehydrationPurpose::FrozenControl),
+        ] {
+            state
+                .hydrate_session_record(id, purpose)
+                .await
+                .unwrap_or_else(|error| panic!("{rule}: {error:?}"));
+            let agent_id = state
+                .sessions
+                .lock()
+                .unwrap()
+                .get(id)
+                .map(|record| record.agent_id.clone());
+            assert_eq!(agent_id.as_deref(), Some("coder"), "{rule}/E1");
+            assert_eq!(
+                state.owner_scope(id).as_deref(),
+                Some("workspace-a"),
+                "{rule}/E1"
+            );
+        }
+        for (rule, id) in [("H3", "hydrate-hidden"), ("H4", "hydrate-absent")] {
+            for purpose in [
+                RehydrationPurpose::Interactive,
+                RehydrationPurpose::FrozenControl,
+            ] {
+                assert!(
+                    matches!(
+                        state.hydrate_session_record(id, purpose).await,
+                        Err(StateError::NotFound)
+                    ),
+                    "{rule}/E2 {purpose:?}"
+                );
+                assert!(
+                    !state.sessions.lock().unwrap().contains_key(id),
+                    "{rule}/E2 no record"
+                );
+            }
+        }
     }
 }

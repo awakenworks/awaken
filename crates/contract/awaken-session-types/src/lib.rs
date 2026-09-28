@@ -5,6 +5,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+mod monotone;
+pub use monotone::{MonotoneAdmission, SourceOrder, monotone_admission};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionContractErrorDetail(String);
 

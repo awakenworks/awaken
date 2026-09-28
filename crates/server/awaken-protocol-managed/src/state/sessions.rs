@@ -9,7 +9,7 @@ use super::*;
 use super::session_mcp_projection::typed_mcp_servers;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RehydrationPurpose {
+pub(super) enum RehydrationPurpose {
     Interactive,
     CollectionRead,
     FrozenControl,
@@ -1090,7 +1090,7 @@ impl ManagedState {
         self.rehydrated_session_for(id, owner_scope, persisted, RehydrationPurpose::Interactive)
     }
 
-    fn rehydrated_session_for(
+    pub(super) fn rehydrated_session_for(
         &self,
         id: &str,
         owner_scope: &str,
@@ -1252,45 +1252,8 @@ impl ManagedState {
         &self,
         id: &str,
     ) -> Result<(), StateError> {
-        if self.sessions.lock().unwrap().contains_key(id) {
-            return Ok(());
-        }
-        let persisted = self
-            .application
-            .session(&awaken_session_types::SessionId::from(id))
+        self.hydrate_session_record(id, RehydrationPurpose::FrozenControl)
             .await
-            .map_err(StateError::from)?;
-        if persisted.is_hidden() {
-            return Err(StateError::NotFound);
-        }
-        let owner_scope = self
-            .application
-            .owner(&awaken_session_types::SessionId::from(id))
-            .await
-            .map_err(Self::map_application_mutation_error)?;
-        let record = SessionRecord::new(
-            persisted.agent_id().unwrap_or("assistant").to_string(),
-            self.rehydrated_session_for(
-                id,
-                &owner_scope,
-                persisted.clone(),
-                RehydrationPurpose::FrozenControl,
-            )?,
-            persisted.revision,
-            persisted.resources,
-            Vec::new(),
-        );
-        self.sessions
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_insert(record);
-        self.owners
-            .lock()
-            .unwrap()
-            .entry(id.to_string())
-            .or_insert(owner_scope);
-        Ok(())
     }
 
     /// `GET /v1/sessions/{id}`.
