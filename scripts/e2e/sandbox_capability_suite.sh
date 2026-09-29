@@ -13,6 +13,8 @@
 #   G1 Namespace /workspace fidelity    | real bwrap       | SessionEnvironment process -> typed File -> ACP
 #                                       |                  | observe one canonical /workspace tree
 #   G1 container adapter (docker)       | real docker      | lifecycle ; open_channel dial ; wire exchange
+#   G1 container adapter (podman)       | real rootless    | lifecycle ; retained staging ; inline File ;
+#                                      | Podman           | process Secret and credential-file writeback
 #   G1 mounts / read-only / egress      | real docker      | File/Inline/CacheVolume binds ; :ro rejects ;
 #                                       |                  | deny_egress confines (net UP vs DOWN)
 #   G5 cgroup enforcement               | real docker      | mem-cap -> OOM 137 ; uncapped -> 0 (boundary)
@@ -106,6 +108,20 @@ if docker info >/dev/null 2>&1; then
   run "docker:hand-in-container" bash deploy/images/sandbox/hand-smoke.sh
 else
   skip "no reachable Docker daemon"
+fi
+
+# Podman is an independently advertised backend of the same ContainerProvider,
+# so Docker evidence cannot qualify it. Required profiles reject both a missing
+# binary and an internal info/OCI prerequisite skip. Nextest gives each case its
+# own process, matching the existing residue owner's exact process cleanup key.
+step "G1/G2/G3 rootless Podman adapter against real OCI execution"
+if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+  run "podman:real-provider-lifecycle" \
+    env AWAKEN_TEST_REQUIRE_PODMAN=1 \
+    cargo nextest run -j 2 -p awaken-sandbox-container --features podman \
+      --test podman_it --no-tests=fail
+else
+  skip "no reachable Podman runtime"
 fi
 
 # ── Layer 5: real Kubernetes (k3d) — G1 pod tier ─────────────────────────────

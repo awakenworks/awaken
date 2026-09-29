@@ -1,6 +1,6 @@
 //! Real rootless-Podman integration, gated on the `podman` feature AND a working
-//! `podman` binary — skips cleanly otherwise (same discipline as the docker/bwrap
-//! tests).
+//! `podman` binary. Optional developer runs report unavailable prerequisites;
+//! `AWAKEN_TEST_REQUIRE_PODMAN=1` makes the release substrate row fail closed.
 //!
 //! Run with: `cargo test -p awaken-sandbox-container --features podman --test podman_it`
 #![cfg(feature = "podman")]
@@ -28,8 +28,17 @@ use awaken_sandbox_container::{
 
 const AGENT_PORT: u16 = 8080;
 
-fn live_prerequisite(info_responds: bool, oci_starts: bool) -> bool {
-    info_responds && oci_starts
+fn live_prerequisite(
+    info_responds: bool,
+    oci_starts: bool,
+    required: bool,
+) -> Result<bool, &'static str> {
+    let ready = info_responds && oci_starts;
+    if required && !ready {
+        Err("required Podman substrate needs both info and actual OCI execution")
+    } else {
+        Ok(ready)
+    }
 }
 
 struct CredentialBroker(Mutex<Vec<u8>>);
@@ -105,11 +114,11 @@ fn plan(cmd: &[&str], rootfs: RootfsPlan) -> ContainerPlan {
 
 async fn runtime() -> Option<PodmanRuntime> {
     let rt = PodmanRuntime::new(AGENT_PORT);
-    static PODMAN_READY: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
+    static PODMAN_READY: tokio::sync::OnceCell<(bool, bool)> = tokio::sync::OnceCell::const_new();
     // Cause/effect graph: C1 `podman info` works; C2 the OCI runtime can start a
-    // minimal container. Decision table: R1 C1,C2 -> run the live suite; R2
-    // !C1|!C2 -> external prerequisite unavailable, skip without converting a
-    // host D-Bus/runc outage into a product failure. The raw probe intentionally
+    // minimal container; C3 the substrate profile requires live evidence.
+    // R1 C1,C2 -> run the live suite; R2 !C1|!C2,!C3 -> report unavailable;
+    // R3 !C1|!C2,C3 -> fail qualification. The raw probe intentionally
     // bypasses `PodmanRuntime::create`, so a regression in our argv/adapter still
     // reaches the actual tests and fails instead of being hidden by this gate.
     let ready = PODMAN_READY
@@ -117,12 +126,12 @@ async fn runtime() -> Option<PodmanRuntime> {
             let info_responds = match rt.ping().await {
                 Ok(()) => true,
                 Err(error) => {
-                    eprintln!("skipping Podman integration: info probe failed: {error}");
+                    eprintln!("Podman prerequisite unavailable: info probe failed: {error}");
                     false
                 }
             };
             if !info_responds {
-                return false;
+                return (false, false);
             }
             let oci_starts = match tokio::process::Command::new("podman")
                 .args([
@@ -138,20 +147,23 @@ async fn runtime() -> Option<PodmanRuntime> {
                 Ok(output) if output.status.success() => true,
                 Ok(output) => {
                     eprintln!(
-                        "skipping Podman integration: OCI probe failed: {}",
+                        "Podman prerequisite unavailable: OCI probe failed: {}",
                         String::from_utf8_lossy(&output.stderr).trim()
                     );
                     false
                 }
                 Err(error) => {
-                    eprintln!("skipping Podman integration: OCI probe failed: {error}");
+                    eprintln!("Podman prerequisite unavailable: OCI probe failed: {error}");
                     false
                 }
             };
-            live_prerequisite(info_responds, oci_starts)
+            (info_responds, oci_starts)
         })
         .await;
-    if !*ready {
+    let required = std::env::var("AWAKEN_TEST_REQUIRE_PODMAN").as_deref() == Ok("1");
+    if !live_prerequisite(ready.0, ready.1, required)
+        .expect("release Podman qualification cannot become a successful prerequisite skip")
+    {
         return None;
     }
     Some(rt)
@@ -159,14 +171,23 @@ async fn runtime() -> Option<PodmanRuntime> {
 
 #[test]
 fn live_prerequisite_requires_both_info_and_oci_execution() {
-    // Cause/effect decision table for the external test gate: R1 !info,!oci;
-    // R2 !info,oci; R3 info,!oci all skip; only R4 info,oci runs live tests.
+    // Cause/effect decision table: C1 info; C2 OCI execution; C3 required
+    // substrate profile. R1-R3 !C1|!C2 skip only when !C3, and fail when C3;
+    // R4 C1+C2 runs the real lifecycle/Secret/filesystem cases for either C3.
+    // The Podman-only compilation of this suite also proves the shared residue
+    // owner has no unguarded Docker client dependency; cleanup remains exact.
     // `oci=true` with `info=false` is logically unreachable in the dynamic probe
     // but retained here to make the conjunction total and regression-resistant.
-    assert!(!live_prerequisite(false, false), "R1");
-    assert!(!live_prerequisite(false, true), "R2");
-    assert!(!live_prerequisite(true, false), "R3");
-    assert!(live_prerequisite(true, true), "R4");
+    for info in [false, true] {
+        for oci in [false, true] {
+            assert_eq!(live_prerequisite(info, oci, false), Ok(info && oci));
+            if info && oci {
+                assert_eq!(live_prerequisite(info, oci, true), Ok(true), "R4");
+            } else {
+                assert!(live_prerequisite(info, oci, true).is_err(), "R1-R3");
+            }
+        }
+    }
 }
 
 #[tokio::test]

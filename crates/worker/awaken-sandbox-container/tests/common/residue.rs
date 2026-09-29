@@ -101,6 +101,7 @@ impl TestResidue {
             };
             runtime.block_on(async {
                 let outcome = match backend {
+                    #[cfg(feature = "docker")]
                     Backend::Docker => {
                         match awaken_sandbox_container::docker::DockerRuntime::connect_local(
                             RESIDUE_AGENT_PORT,
@@ -111,6 +112,10 @@ impl TestResidue {
                                 return;
                             }
                         }
+                    }
+                    #[cfg(not(feature = "docker"))]
+                    Backend::Docker => {
+                        unreachable!("Docker residue requires the docker feature")
                     }
                     #[cfg(feature = "podman")]
                     Backend::Podman => {
