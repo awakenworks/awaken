@@ -417,6 +417,14 @@ impl PostgresExecutableAgentRegistrar {
         catalog: Arc<ExecutableAgentCatalog>,
     ) -> Result<Self, ExecutableAgentRegistrationError> {
         let pool = PgPool::connect(url).await.map_err(storage)?;
+        Self::with_existing_pool(pool, catalog).await
+    }
+
+    /// Verify the existing scoped ledger over the composition-owned pool.
+    pub async fn with_existing_pool(
+        pool: PgPool,
+        catalog: Arc<ExecutableAgentCatalog>,
+    ) -> Result<Self, ExecutableAgentRegistrationError> {
         let bundle = executable_agent_catalog_bundle().map_err(storage)?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(storage)?

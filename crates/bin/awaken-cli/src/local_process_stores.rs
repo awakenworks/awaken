@@ -157,10 +157,12 @@ pub(super) async fn open_local_process_stores(
 ) -> Result<ProcessStores, String> {
     // The local process's one wall clock, shared by Resources and every store.
     let clock = awaken_lease_contract::system_clock();
+    let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(1);
     let resources = open_resources_application(
         config::ResourceStoreBackend::Embedded(dir.to_path_buf()),
         PostgresSchemaMode::Migrate,
         clock.clone(),
+        &mut postgres_pools,
     )
     .await?;
     open_process_stores(ProcessStoreOpenOptions {
@@ -170,6 +172,7 @@ pub(super) async fn open_local_process_stores(
             captured_content: awaken_control::StoreBackend::Sqlite(dir.join("captured_content.db")),
         },
         resources: Some(resources),
+        postgres_pools: &mut postgres_pools,
         workspace_root: dir.to_path_buf(),
         platform_workspace: None,
         publish_local_workspace: true,

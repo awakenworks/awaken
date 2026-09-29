@@ -22,25 +22,38 @@ pub(crate) async fn for_runtime_role(
     schema: PostgresSchemaMode,
     captured_content: Arc<dyn awaken_runtime_contract::ContentEraser>,
     references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
+    postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
 ) -> Result<ExecutableAgentWiring, String> {
     match role {
         Role::AllInOne => Ok(ExecutableAgentWiring::local_with_references(references)),
         Role::Coordinator => {
-            ExecutableAgentWiring::coordinator(deployment, schema, captured_content, references)
-                .await
+            ExecutableAgentWiring::coordinator(
+                deployment,
+                schema,
+                captured_content,
+                references,
+                postgres_pools,
+            )
+            .await
         }
         _ => unreachable!("runtime process accepts only AllInOne or Coordinator"),
     }
 }
 
-pub(crate) async fn migrate(deployment: &ResolvedDeployment) -> Result<(), String> {
+pub(crate) async fn migrate(
+    deployment: &ResolvedDeployment,
+    postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
+) -> Result<(), String> {
     let Some(database_url) = deployment.runtime.database_url.as_deref() else {
         return Ok(());
     };
-    PostgresExecutableAgentRegistrar::connect(database_url, Arc::new(ExecutableAgentCatalog::new()))
-        .await
-        .map(drop)
-        .map_err(|error| format!("migrate executable Agent catalog: {error}"))
+    PostgresExecutableAgentRegistrar::with_pool(
+        postgres_pools.get(database_url).await?,
+        Arc::new(ExecutableAgentCatalog::new()),
+    )
+    .await
+    .map(drop)
+    .map_err(|error| format!("migrate executable Agent catalog: {error}"))
 }
 
 pub(crate) struct ExecutableAgentWiring {
@@ -145,6 +158,7 @@ impl ExecutableAgentWiring {
         schema: PostgresSchemaMode,
         captured_content: Arc<dyn awaken_runtime_contract::ContentEraser>,
         references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
+        postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
     ) -> Result<Self, String> {
         let authenticator = deployment
             .executable_agent_registration
@@ -155,11 +169,18 @@ impl ExecutableAgentWiring {
         let catalog = Arc::new(ExecutableAgentCatalog::new());
         let registrar = match schema {
             PostgresSchemaMode::Migrate => {
-                PostgresExecutableAgentRegistrar::connect(database_url, catalog.clone()).await
+                PostgresExecutableAgentRegistrar::with_pool(
+                    postgres_pools.get(database_url).await?,
+                    catalog.clone(),
+                )
+                .await
             }
             PostgresSchemaMode::Verify => {
-                PostgresExecutableAgentRegistrar::connect_existing(database_url, catalog.clone())
-                    .await
+                PostgresExecutableAgentRegistrar::with_existing_pool(
+                    postgres_pools.get(database_url).await?,
+                    catalog.clone(),
+                )
+                .await
             }
         }
         .map_err(|error| error.to_string())?;

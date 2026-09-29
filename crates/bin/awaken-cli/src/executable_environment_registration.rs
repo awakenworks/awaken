@@ -66,6 +66,7 @@ impl ExecutableEnvironmentWiring {
         schema: PostgresSchemaMode,
         work: Arc<dyn WorkQueue>,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+        postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
     ) -> Result<Self, String> {
         let authenticator = deployment
             .executable_agent_registration
@@ -78,12 +79,15 @@ impl ExecutableEnvironmentWiring {
         let durable = Arc::new(
             match schema {
                 PostgresSchemaMode::Migrate => {
-                    PostgresExecutableEnvironmentRegistrar::connect(database_url, catalog.clone())
-                        .await
+                    PostgresExecutableEnvironmentRegistrar::with_pool(
+                        postgres_pools.get(database_url).await?,
+                        catalog.clone(),
+                    )
+                    .await
                 }
                 PostgresSchemaMode::Verify => {
-                    PostgresExecutableEnvironmentRegistrar::connect_existing(
-                        database_url,
+                    PostgresExecutableEnvironmentRegistrar::with_existing_pool(
+                        postgres_pools.get(database_url).await?,
                         catalog.clone(),
                     )
                     .await
@@ -91,7 +95,8 @@ impl ExecutableEnvironmentWiring {
             }
             .map_err(|error| error.to_string())?,
         );
-        let image_builds = open_image_builds(deployment, schema, service_lifecycle).await?;
+        let image_builds =
+            open_image_builds(deployment, schema, service_lifecycle, postgres_pools).await?;
         let registrar = coordinator_registrar(durable.clone(), work, image_builds.as_ref());
         let private_router = executable_environment_registration_router_with_authenticator(
             registrar.clone(),
@@ -113,15 +118,23 @@ pub(crate) async fn for_runtime_role(
     schema: PostgresSchemaMode,
     work: Arc<dyn WorkQueue>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
 ) -> Result<ExecutableEnvironmentWiring, String> {
     match role {
         Role::AllInOne => {
-            let image_builds = open_image_builds(deployment, schema, service_lifecycle).await?;
+            let image_builds =
+                open_image_builds(deployment, schema, service_lifecycle, postgres_pools).await?;
             ExecutableEnvironmentWiring::local_with_image_builds(work, image_builds)
         }
         Role::Coordinator => {
-            ExecutableEnvironmentWiring::coordinator(deployment, schema, work, service_lifecycle)
-                .await
+            ExecutableEnvironmentWiring::coordinator(
+                deployment,
+                schema,
+                work,
+                service_lifecycle,
+                postgres_pools,
+            )
+            .await
         }
         Role::Control | Role::Worker => {
             unreachable!("runtime process accepts only AllInOne or Coordinator")
@@ -154,6 +167,7 @@ async fn open_image_builds(
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
 ) -> Result<Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>, String> {
     let Some(provisioner) =
         awaken_execution_composition::package_image_provisioner(&deployment.runtime).await?
@@ -176,14 +190,14 @@ async fn open_image_builds(
         }
         awaken_control::StoreBackend::Postgres(database_url) => match schema {
             PostgresSchemaMode::Migrate => {
-                awaken_environment_image_build::connect_postgres_environment_image_build_store(
-                    database_url,
+                awaken_environment_image_build::with_postgres_pool_environment_image_build_store(
+                    postgres_pools.get(database_url).await?,
                 )
                 .await
             }
             PostgresSchemaMode::Verify => {
-                awaken_environment_image_build::connect_existing_postgres_environment_image_build_store(
-                    database_url,
+                awaken_environment_image_build::with_existing_postgres_pool_environment_image_build_store(
+                    postgres_pools.get(database_url).await?,
                 )
                 .await
             }
@@ -220,21 +234,26 @@ pub(crate) fn control_registrar(
     ))
 }
 
-pub(crate) async fn migrate(deployment: &ResolvedDeployment) -> Result<(), String> {
+pub(crate) async fn migrate(
+    deployment: &ResolvedDeployment,
+    postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
+) -> Result<(), String> {
     let Some(database_url) = deployment.runtime.database_url.as_deref() else {
         return Ok(());
     };
-    PostgresExecutableEnvironmentRegistrar::connect(
-        database_url,
+    PostgresExecutableEnvironmentRegistrar::with_pool(
+        postgres_pools.get(database_url).await?,
         Arc::new(ExecutableEnvironmentCatalog::new()),
     )
     .await
     .map(drop)
     .map_err(|error| format!("migrate executable Environment catalog: {error}"))?;
-    awaken_environment_image_build::connect_postgres_environment_image_build_store(database_url)
-        .await
-        .map(drop)
-        .map_err(|error| format!("migrate Environment image-build jobs: {error}"))
+    awaken_environment_image_build::with_postgres_pool_environment_image_build_store(
+        postgres_pools.get(database_url).await?,
+    )
+    .await
+    .map(drop)
+    .map_err(|error| format!("migrate Environment image-build jobs: {error}"))
 }
 
 #[cfg(test)]

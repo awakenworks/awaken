@@ -15,25 +15,29 @@ pub(super) async fn open_resources_application(
     backend: config::ResourceStoreBackend,
     postgres_schema: PostgresSchemaMode,
     clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
+    postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
 ) -> Result<awaken_resource_application::ResourcesApplication, String> {
     let application = match backend {
         config::ResourceStoreBackend::Embedded(root) => {
             awaken_resource_persistence::open_embedded(&root, clock)
                 .map_err(|error| error.to_string())
         }
-        config::ResourceStoreBackend::Postgres(url) => awaken_resource_persistence::open_postgres(
-            &url,
-            match postgres_schema {
-                PostgresSchemaMode::Migrate => awaken_resource_persistence::SchemaMode::Migrate,
-                PostgresSchemaMode::Verify => awaken_resource_persistence::SchemaMode::Verify,
-            },
-            clock,
-        )
-        .await
-        .map_err(|error| error.to_string()),
+        config::ResourceStoreBackend::Postgres(url) => {
+            awaken_resource_persistence::open_postgres_with_pool(
+                postgres_pools.get(&url).await?,
+                match postgres_schema {
+                    PostgresSchemaMode::Migrate => awaken_resource_persistence::SchemaMode::Migrate,
+                    PostgresSchemaMode::Verify => awaken_resource_persistence::SchemaMode::Verify,
+                },
+                None,
+                clock,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        }
         config::ResourceStoreBackend::PostgresObject { url, object } => {
-            awaken_resource_persistence::open_postgres_with_object_store(
-                &url,
+            awaken_resource_persistence::open_postgres_with_pool_and_object_store(
+                postgres_pools.get(&url).await?,
                 match postgres_schema {
                     PostgresSchemaMode::Migrate => awaken_resource_persistence::SchemaMode::Migrate,
                     PostgresSchemaMode::Verify => awaken_resource_persistence::SchemaMode::Verify,
@@ -94,6 +98,7 @@ mod tests {
             config::ResourceStoreBackend::Embedded(root.path().to_path_buf()),
             PostgresSchemaMode::Migrate,
             awaken_lease_contract::system_clock(),
+            &mut crate::postgres_pools::ProcessPostgresPools::new(2),
         )
         .await
         .expect("embedded Resources application");

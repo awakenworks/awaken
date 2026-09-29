@@ -394,6 +394,14 @@ impl PostgresExecutableEnvironmentRegistrar {
         catalog: Arc<ExecutableEnvironmentCatalog>,
     ) -> Result<Self, ExecutableEnvironmentRegistrationError> {
         let pool = PgPool::connect(url).await.map_err(storage)?;
+        Self::with_existing_pool(pool, catalog).await
+    }
+
+    /// Verify the existing scoped ledger over the composition-owned pool.
+    pub async fn with_existing_pool(
+        pool: PgPool,
+        catalog: Arc<ExecutableEnvironmentCatalog>,
+    ) -> Result<Self, ExecutableEnvironmentRegistrationError> {
         let bundle = executable_environment_catalog_bundle().map_err(storage)?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(storage)?

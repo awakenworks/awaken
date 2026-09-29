@@ -128,6 +128,26 @@ where
         .expect("owned store runtime bridge thread panicked")
 }
 
+/// Shared PostgreSQL checkout policy. Compositions select capacity; every
+/// adapter receives a clone of that pool rather than another transport owner.
+#[cfg(feature = "postgres")]
+pub fn postgres_pool_options() -> sqlx::postgres::PgPoolOptions {
+    use sqlx::Connection;
+    sqlx::postgres::PgPoolOptions::new()
+        .idle_timeout(std::time::Duration::from_secs(5))
+        .test_before_acquire(false)
+        .before_acquire(|connection, _metadata| {
+            Box::pin(async move {
+                match tokio::time::timeout(std::time::Duration::from_millis(500), connection.ping())
+                    .await
+                {
+                    Ok(result) => result.map(|()| true),
+                    Err(_) => Err(sqlx::Error::PoolTimedOut),
+                }
+            })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;

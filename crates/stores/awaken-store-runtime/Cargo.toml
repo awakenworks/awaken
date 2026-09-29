@@ -12,10 +12,15 @@ authority = "store"
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 thiserror.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 proptest.workspace = true
+
+[features]
+default = []
+postgres = ["dep:sqlx"]
 
 [lints]
 workspace = true

@@ -163,6 +163,14 @@ impl PostgresWorkQueue {
         let pool = PgPool::connect(url)
             .await
             .map_err(|error| error.to_string())?;
+        Self::with_existing_pool(pool, clock).await
+    }
+
+    /// Verify the existing scoped ledger over the composition-owned pool.
+    pub async fn with_existing_pool(
+        pool: PgPool,
+        clock: Arc<dyn WallClock>,
+    ) -> Result<Self, String> {
         verify_postgres_migrations(&pool).await?;
         Ok(Self {
             pool,

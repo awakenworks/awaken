@@ -65,6 +65,7 @@ pub use coordinator_component::{
 pub use coordinator_persistence::init_scenario_runtime;
 pub use coordinator_persistence::{
     CoordinatorPersistence, migrate_postgres_schema as migrate_postgres_coordinator_schema,
+    migrate_postgres_schema_with_pool as migrate_postgres_coordinator_schema_with_pool,
     open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
 };
 pub use extraction_references::ReferenceIndexedMemoryExtractions;

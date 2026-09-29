@@ -36,6 +36,14 @@ impl PostgresEnvRegistry {
 
     pub async fn connect_existing(url: &str, clock: Arc<dyn WallClock>) -> Result<Self, String> {
         let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        Self::with_existing_pool(pool, clock).await
+    }
+
+    /// Verify the scoped ledger on the composition-owned pool.
+    pub async fn with_existing_pool(
+        pool: PgPool,
+        clock: Arc<dyn WallClock>,
+    ) -> Result<Self, String> {
         let bundle = env_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(|e| e.to_string())?

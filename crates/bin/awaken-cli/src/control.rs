@@ -306,12 +306,16 @@ async fn prepare_control_process_with_model_supply_and_installations(
     let background_services = std::mem::take(&mut managed_services.background_services);
     // The Control process chooses its one wall clock here.
     let clock = awaken_lease_contract::system_clock();
+    let mut postgres_pools = crate::postgres_pools::ProcessPostgresPools::new(
+        deployment.runtime.postgres_max_connections.get(),
+    );
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
         coordinator: deployment.coordinator.clone(),
         // Control receives Resource references through authoring/read ports and
         // opens no File, Memory, Skill-content, or lifecycle authority.
         resources: None,
+        postgres_pools: &mut postgres_pools,
         workspace_root: deployment.data_dir.clone(),
         platform_workspace,
         publish_local_workspace,

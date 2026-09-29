@@ -17,6 +17,8 @@ pub use in_memory::InMemoryEnvironmentImageBuildStore;
 pub use postgres::{
     connect_existing_postgres_environment_image_build_store,
     connect_postgres_environment_image_build_store,
+    with_existing_postgres_pool_environment_image_build_store,
+    with_postgres_pool_environment_image_build_store,
 };
 pub use schema::environment_image_build_bundle;
 #[cfg(any(test, feature = "test-support"))]

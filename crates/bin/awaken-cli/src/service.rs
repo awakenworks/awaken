@@ -330,7 +330,7 @@ fn load_migration_deployment(
 }
 
 fn role_seal_key(deployment: &ResolvedDeployment) -> Result<Option<[u8; 32]>, String> {
-    if crate::role_owns_control_component(deployment.role) {
+    if crate::process_stores::role_owns_control_component(deployment.role) {
         deployment.seal_key.load_or_create().map(Some)
     } else {
         Ok(None)
