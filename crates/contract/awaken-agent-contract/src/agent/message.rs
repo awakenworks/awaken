@@ -88,10 +88,59 @@ impl Id {
             })
     }
 
-    /// A tool-role result addressed to `call_id`: `tool-{call_id}`.
+    /// Legacy committed tool-role result identity. New Runtime results use the
+    /// owning durable ToolBatch coordinate; keep this reader for old commits.
     #[must_use]
     pub fn tool_result(call_id: &str) -> Self {
         Self(format!("tool-{call_id}"))
+    }
+
+    /// One result of a call in a durable ToolBatch. The batch id is already
+    /// Run/Step scoped; its byte length keeps delimiter-bearing provider call
+    /// ids from aliasing another batch/call pair. Provider correlation content
+    /// remains the original call id and is never rewritten to this message id.
+    #[must_use]
+    pub fn tool_result_for_batch(batch_id: &str, call_id: &str) -> Self {
+        Self(format!(
+            "batch-tool-result-v2:{}:{batch_id}:{call_id}",
+            batch_id.len()
+        ))
+    }
+
+    /// Recognize the exact provider call addressed by a Runtime result,
+    /// including legacy committed results. A different call or SDK result id
+    /// does not acquire Runtime-owned receipt authority by its content alone.
+    #[must_use]
+    pub fn is_tool_result_for_call(&self, call_id: &str) -> bool {
+        if self == &Self::tool_result(call_id) {
+            return true;
+        }
+        let Some(encoded) = self.0.strip_prefix("batch-tool-result-v2:") else {
+            return false;
+        };
+        let Some((batch_len, rest)) = encoded.split_once(':') else {
+            return false;
+        };
+        let Ok(batch_len) = batch_len.parse::<usize>() else {
+            return false;
+        };
+        let Some(batch_id) = rest.get(..batch_len) else {
+            return false;
+        };
+        let canonical_batch = batch_id
+            .strip_prefix("tool-batch:")
+            .and_then(|coordinate| coordinate.rsplit_once(':'))
+            .is_some_and(|(run, step)| {
+                !run.is_empty()
+                    && step
+                        .parse::<usize>()
+                        .is_ok_and(|number| number.to_string() == step)
+            });
+        canonical_batch
+            && rest
+                .get(batch_len..)
+                .and_then(|suffix| suffix.strip_prefix(':'))
+                .is_some_and(|result_call| result_call == call_id)
     }
 
     /// A steer-feedback continuation message: `{run}-steer-{nth}`.
@@ -286,6 +335,68 @@ mod tests {
         assert_eq!(Id::steer(&run, 3).0, "r-steer-3");
         assert_eq!(Id::steer_prefix(&run), "r-steer-");
         assert_eq!(Id::resume_input("call9").0, "resume-input-call9");
+    }
+
+    #[test]
+    fn tool_result_identity_is_batch_scoped_and_legacy_readable() {
+        // Causes: C1 same batch and provider call (including cold replay); C2
+        // another Run/Step batch reuses the provider call; C3 another call in
+        // the same batch; C4 delimiter-bearing batch/call pairs; C5 a legacy
+        // committed result; C6 forged/noncanonical v2 or SDK result identity.
+        // Effects: E1 stable ID; E2 distinct IDs; E3 exact current and legacy
+        // reads without classifying a different call; E4 reject forged ids.
+        //
+        // | Rule | Batch | Call | Effect |
+        // | R1 | same | same | E1,E3 |
+        // | R2 | different | same | E2,E3 |
+        // | R3 | same | different | E2,E3 |
+        // | R4 | delimiter collision candidate | different | E2 |
+        // | R5 | legacy committed | same/different | E3 |
+        // | R6 | noncanonical/SDK | same | E4 |
+        let first = Id::tool_result_for_batch("tool-batch:run-a:0", "voice-final");
+        assert_eq!(
+            first,
+            Id::tool_result_for_batch("tool-batch:run-a:0", "voice-final"),
+            "R1/E1"
+        );
+        assert_ne!(
+            first,
+            Id::tool_result_for_batch("tool-batch:run-a:1", "voice-final"),
+            "R2/E2"
+        );
+        assert_ne!(
+            first,
+            Id::tool_result_for_batch("tool-batch:run-a:0", "other"),
+            "R3/E2"
+        );
+        assert_ne!(
+            Id::tool_result_for_batch("tool-batch:a:0:b", "c"),
+            Id::tool_result_for_batch("tool-batch:a:0", "b:c"),
+            "R4/E2"
+        );
+        assert!(first.is_tool_result_for_call("voice-final"), "R1/E3");
+        assert!(!first.is_tool_result_for_call("voice"), "R3/E3");
+        assert!(
+            Id::tool_result("voice-final").is_tool_result_for_call("voice-final"),
+            "R5/E3"
+        );
+        assert!(
+            !Id::tool_result("voice-final").is_tool_result_for_call("voice"),
+            "R5/E3"
+        );
+        for forged in [
+            Id::tool_result_for_batch("not-a-batch", "voice-final"),
+            Id::tool_result_for_batch("tool-batch::0", "voice-final"),
+            Id::tool_result_for_batch("tool-batch:run:x", "voice-final"),
+            Id::tool_result_for_batch("tool-batch:run:01", "voice-final"),
+            Id("batch-tool-result-v2:100:tool-batch:run:0:voice-final".into()),
+            Id("sdk-result-voice-final".into()),
+        ] {
+            assert!(
+                !forged.is_tool_result_for_call("voice-final"),
+                "R6 forged or SDK-looking ID must not grant Runtime receipt authority: {forged:?}"
+            );
+        }
     }
 
     #[test]

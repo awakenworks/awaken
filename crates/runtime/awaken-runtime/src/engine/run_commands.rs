@@ -181,8 +181,9 @@ pub(crate) async fn interrupt_awaiting_tools(
                 .map_err(|error| Error::Execution(error.to_string()))?,
             ToolCallPhase::Completed(_) | ToolCallPhase::Indeterminate { .. } => continue,
         }
+        let result_message = tool_result_message(&batch, &call, &output)?;
         batch
-            .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
+            .set_result_messages(&call.call_id, vec![result_message])
             .map_err(|error| Error::Execution(error.to_string()))?;
     }
     batch

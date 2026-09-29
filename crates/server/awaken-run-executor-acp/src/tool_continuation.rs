@@ -120,23 +120,31 @@ pub(super) fn owned_tool_result_context(
         return Ok(None);
     };
     let messages = reader.committed_messages(&activation.thread_id);
-    let owned_calls = messages
-        .iter()
-        .filter(|message| message.role == Role::Assistant)
-        .flat_map(|message| &message.content)
-        .filter_map(|block| match block {
-            ContentBlock::ToolUse { id, name, .. }
-                if continuation.tool_await_reason(name).is_some() =>
-            {
-                Some((id, name))
-            }
-            _ => None,
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut owned_calls = std::collections::BTreeMap::new();
     let mut receipts = Vec::new();
     for message in &messages {
-        if message.role != Role::Tool {
-            continue;
+        match message.role {
+            Role::Assistant => {
+                // Provider call ids are response-local. A finalized ToolBatch
+                // publishes its results before the next Assistant inference,
+                // so only this occurrence can own following Tool results.
+                owned_calls.clear();
+                owned_calls.extend(message.content.iter().filter_map(|block| match block {
+                    ContentBlock::ToolUse { id, name, .. }
+                        if continuation.tool_await_reason(name).is_some() =>
+                    {
+                        Some((id, name))
+                    }
+                    _ => None,
+                }));
+                continue;
+            }
+            Role::User => {
+                owned_calls.clear();
+                continue;
+            }
+            Role::System => continue,
+            Role::Tool => {}
         }
         for block in &message.content {
             if let ContentBlock::ToolResult {
@@ -144,7 +152,7 @@ pub(super) fn owned_tool_result_context(
                 content,
                 is_error,
             } = block
-                && message.id == MessageId::tool_result(tool_use_id)
+                && message.id.is_tool_result_for_call(tool_use_id)
                 && let Some(tool) = owned_calls.get(tool_use_id)
             {
                 receipts.push(serde_json::json!({

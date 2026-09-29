@@ -22,6 +22,7 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::num::NonZeroU16;
 
 mod execution_domain;
+mod result_identity;
 mod source;
 pub use execution_domain::ToolExecutionDomain;
 pub use source::store_from_run_commands;

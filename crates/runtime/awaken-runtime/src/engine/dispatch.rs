@@ -907,7 +907,7 @@ async fn record_tool_output(
     }
     let mut result_state = output.state.clone();
     result_state.extend(reactions);
-    let mut result_messages = vec![tool_result_message(call, &output)];
+    let mut result_messages = vec![tool_result_message(batch, call, &output)?];
     result_messages.extend(reminders);
     batch
         .set_result_messages(&call.call_id, result_messages)
@@ -1028,8 +1028,9 @@ pub(super) async fn recover_tool_batch(
                     )
                     .map_err(|error| Error::Execution(error.to_string()))?;
                 let output = batch.output(&call.call_id).expect("now terminal");
+                let result_message = tool_result_message(&batch, &call, &output)?;
                 batch
-                    .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
+                    .set_result_messages(&call.call_id, vec![result_message])
                     .map_err(|error| Error::Execution(error.to_string()))?;
                 if let Some(disposition) = abandon_delegation_on_indeterminate(
                     runtime,
@@ -1182,8 +1183,9 @@ pub(super) async fn recover_tool_batch(
             ToolRecoveryAction::Entered { .. } => {}
             ToolRecoveryAction::Indeterminate => {
                 let output = batch.output(&call.call_id).expect("now terminal");
+                let result_message = tool_result_message(&batch, &call, &output)?;
                 batch
-                    .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
+                    .set_result_messages(&call.call_id, vec![result_message])
                     .map_err(|error| Error::Execution(error.to_string()))?;
                 if let Some(disposition) = abandon_delegation_on_indeterminate(
                     runtime,

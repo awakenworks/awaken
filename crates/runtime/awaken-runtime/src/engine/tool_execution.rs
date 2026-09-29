@@ -183,6 +183,7 @@ pub(super) struct ResumeExecutionContext<'a> {
     pub resolved: &'a ResolvedRun,
     pub env: &'a ResolvedExecutionEnv,
     pub context: &'a RuntimeRunContext,
+    pub batch: Option<&'a ToolBatch>,
     pub execution_admission: Option<ToolExecutionAdmission<'a>>,
 }
 
@@ -198,6 +199,7 @@ pub(super) async fn resume_into_messages(
         resolved,
         env,
         context,
+        batch,
         execution_admission,
     } = execution;
     // The pending call, when the ticket carries one, so a tool-outcome hook can
@@ -216,9 +218,12 @@ pub(super) async fn resume_into_messages(
                 Error::Execution("tool result resumed a ticket without a tool call".to_string())
             })?;
             let output = spill_tool_output(context, run_id, output).await?;
+            let batch = batch.ok_or_else(|| {
+                Error::Execution("resumed tool result has no committed tool batch".to_string())
+            })?;
             let call = pending_call(&output);
             let (messages, state) =
-                fold_resume_tool_output(env, run_id, call_id, call, &output, store, context).await;
+                fold_resume_tool_output(env, batch, call_id, call, &output, store, context).await?;
             Ok((messages, state, Some(output)))
         }
         ResumeResult::Permission(decision) => {
@@ -259,14 +264,18 @@ pub(super) async fn resume_into_messages(
                 let output = spill_tool_output(context, run_id, output).await?;
                 let (messages, state) = fold_resume_tool_output(
                     env,
-                    run_id,
+                    batch.ok_or_else(|| {
+                        Error::Execution(
+                            "approved tool result has no committed tool batch".to_string(),
+                        )
+                    })?,
                     call_id,
                     Some(call),
                     &output,
                     store,
                     context,
                 )
-                .await;
+                .await?;
                 return Ok((messages, state, Some(output)));
             }
             let reason = match decision {
@@ -278,10 +287,13 @@ pub(super) async fn resume_into_messages(
             let output = ToolOutput::error(call_id, format!("blocked: {reason}"));
             let output = spill_tool_output(context, run_id, output).await?;
             let messages = vec![tool_result_message_from(
+                batch.ok_or_else(|| {
+                    Error::Execution("denied tool result has no committed tool batch".to_string())
+                })?,
                 call_id,
                 &output.content,
                 output.is_error,
-            )];
+            )?];
             Ok((messages, Vec::new(), Some(output)))
         }
         ResumeResult::Input(text) => Ok((
@@ -393,36 +405,37 @@ pub(crate) async fn gate_decision(
 
 /// Fold a resumed tool result into `(messages, state)` off a throwaway store copy
 /// (the resume paths return staged effects rather than mutating the live store).
-/// The result message is minted from `call_id`; when a `call` is present (the
+/// The result message is minted from the committed ToolBatch; when a `call` is present (the
 /// replayed call the hooks advance on) its output state is applied to a `work`
 /// clone and the `AfterTool` reactions/reminders are folded in. The one home for
 /// the resume arms' outcome folding (`ToolResult` and an allowed `Decision`).
 pub(super) async fn fold_resume_tool_output(
     env: &ResolvedExecutionEnv,
-    run_id: &RunId,
+    batch: &ToolBatch,
     call_id: &str,
     call: Option<ToolCall>,
     output: &ToolOutput,
     store: &Store,
     context: &RuntimeRunContext,
-) -> (Vec<Message>, Vec<StateCommand>) {
+) -> Result<(Vec<Message>, Vec<StateCommand>)> {
     let mut state = output.state.clone();
     let mut messages = vec![tool_result_message_from(
+        batch,
         call_id,
         &output.content,
         output.is_error,
-    )];
+    )?];
     if let Some(call) = call {
         let mut work = store.clone();
         for command in &output.state {
             work.apply(command);
         }
         let (reactions, reminders) =
-            collect_tool_reactions(env, run_id, 0, &call, output, &work, context).await;
+            collect_tool_reactions(env, batch.run_id(), 0, &call, output, &work, context).await;
         state.extend(reactions);
         messages.extend(reminders);
     }
-    (messages, state)
+    Ok((messages, state))
 }
 
 /// Consult the `AfterTool` phase hooks for one executed call (ADR-0055 folds the

@@ -11,9 +11,11 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_runtime_contract::execution::{Error, Result};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ToolCall};
 use awaken_runtime_contract::resolved::{ContextPolicy, ResolvedSpec, ToolDescriptor};
 use awaken_runtime_contract::tool::ToolOutput;
+use awaken_runtime_contract::tool_batch::ToolBatch;
 
 use crate::tool_discovery::ToolDiscoveryState;
 
@@ -323,32 +325,31 @@ pub(crate) fn assistant_message(run_id: &RunId, step: usize, blocks: Vec<Content
     }
 }
 
-pub(crate) fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Message {
-    Message {
-        id: MessageId::tool_result(&call.call_id),
-        role: Role::Tool,
-        content: vec![ContentBlock::tool_result_with_error(
-            call.call_id.clone(),
-            output.content.clone(),
-            output.is_error,
-        )],
-    }
+pub(crate) fn tool_result_message(
+    batch: &ToolBatch,
+    call: &ToolCall,
+    output: &ToolOutput,
+) -> Result<Message> {
+    tool_result_message_from(batch, &call.call_id, &output.content, output.is_error)
 }
 
 /// A tool-role message carrying a structured `ToolResult` block addressed to the
 /// originating call, preserving success/error semantics for resumed results.
 pub(crate) fn tool_result_message_from(
+    batch: &ToolBatch,
     call_id: &str,
     content: &[ContentBlock],
     is_error: bool,
-) -> Message {
-    Message {
-        id: MessageId::tool_result(call_id),
+) -> Result<Message> {
+    Ok(Message {
+        id: batch
+            .result_message_id(call_id)
+            .map_err(|error| Error::Execution(error.to_string()))?,
         role: Role::Tool,
         content: vec![ContentBlock::tool_result_with_error(
             call_id.to_string(),
             content.to_vec(),
             is_error,
         )],
-    }
+    })
 }

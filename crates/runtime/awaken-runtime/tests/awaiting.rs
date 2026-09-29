@@ -1064,8 +1064,9 @@ async fn resumed_tool_operation_uses_the_committed_assistant_coordinate() {
     // Cause graph: C1 Runtime emits a tool and awaits confirmation; C2 a
     // validated result resumes the SAME Run; C3 the next model response invokes
     // another physical tool. E1 that message is assistant-1; E2 executor and
-    // retained batch use step 1 too; E3 cold projection recovers the same op.
-    // R1 C1+C2+C3 => E1+E2+E3. Fresh step 0 is covered by the existing suspend
+    // retained batch use step 1 too; E3 cold projection recovers the same op;
+    // E4 resumed and fresh Tool results use their own retained batch identities.
+    // R1 C1+C2+C3 => E1-E4. Fresh step 0 is covered by the existing suspend
     // test. This runs the real Runtime resume/drive/dispatch, not a manually
     // aligned Message+ToolBatch fixture that missed the local-step reset.
     let operations = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1128,6 +1129,42 @@ async fn resumed_tool_operation_uses_the_committed_assistant_coordinate() {
     );
     let cold: ToolBatch = serde_json::from_slice(&serde_json::to_vec(&batch).unwrap()).unwrap();
     assert_eq!(cold.operation_id("after-confirmation"), expected, "E3");
+    let first_batch = ActiveToolBatch::recorded_batches(&history.state, &run)
+        .map(|recorded| recorded.unwrap().1)
+        .find(|batch| {
+            batch
+                .calls()
+                .iter()
+                .any(|entry| entry.call.call_id == "confirmation")
+        })
+        .unwrap();
+    let result_for = |call_id: &str| {
+        history
+            .messages
+            .iter()
+            .find(|message| {
+                message.role == Role::Tool
+                    && message.content.iter().any(|block| {
+                        matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == call_id)
+                    })
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        result_for("confirmation").id,
+        first_batch.result_message_id("confirmation").unwrap(),
+        "E4 resumed result keeps the original batch coordinate"
+    );
+    assert_eq!(
+        result_for("after-confirmation").id,
+        cold.result_message_id("after-confirmation").unwrap(),
+        "E4 next result uses the new batch coordinate"
+    );
+    assert_ne!(
+        result_for("confirmation").id,
+        result_for("after-confirmation").id,
+        "E4 distinct results"
+    );
 }
 
 #[tokio::test]
