@@ -6,8 +6,9 @@
 //!
 //! The order of a fact is a function of its key and the committed evidence:
 //! a lifecycle role sits at its lifecycle commit, a transcript fold at its
-//! Message's commit, an Outcome evaluation at its evaluation command, and so
-//! on. The protocol projector used to rebuild every candidate public id from
+//! Message's commit, and an Outcome evaluation at the terminal report commit
+//! that first makes its span listable. Its public time still comes from the
+//! evaluation command. The protocol projector used to rebuild every candidate public id from
 //! the evidence and look its events up by hash; resolving the key directly
 //! removes that second spelling of each fact's identity.
 //!
@@ -668,20 +669,27 @@ impl<'a> OrderIndex<'a> {
                         let CommittedOutcomeProjection::Completed(report) = outcome.terminal else {
                             return None;
                         };
-                        report
+                        let iteration_index = report
                             .iterations
                             .iter()
-                            .any(|item| item.iteration == *iteration)
-                            .then_some(())?;
-                        let source_commit_cursor = outcome.evaluation_commit_cursor(*iteration)?;
+                            .position(|item| item.iteration == *iteration)?;
+                        let evaluation_cursor = outcome.evaluation_commit_cursor(*iteration)?;
+                        (evaluation_cursor <= outcome.terminal_commit_cursor).then_some(())?;
+                        let role_offset = match key.role {
+                            FactRole::OutcomeEvaluationStart => 0,
+                            FactRole::OutcomeEvaluationOngoing => 1,
+                            FactRole::OutcomeEvaluationEnd => 2,
+                            _ => return None,
+                        };
+                        let within = iteration_index.checked_mul(3)?.checked_add(role_offset)?;
                         Some(CanonicalOrder {
-                            processed_at_unix_ms: self.time_for(session_id, source_commit_cursor),
-                            source_commit_cursor,
+                            processed_at_unix_ms: self.time_for(session_id, evaluation_cursor),
+                            // The Completed report is required to materialize
+                            // this trio. Sorting at an earlier evaluation
+                            // command would insert it before issued cursors.
+                            source_commit_cursor: outcome.terminal_commit_cursor,
                             phase: key.role.phase(),
-                            ordinal: Ordinal::within(
-                                batch_index,
-                                usize::try_from(*iteration).unwrap_or(usize::MAX),
-                            ),
+                            ordinal: Ordinal::within(batch_index, within),
                         })
                     })
                     .min()
@@ -993,6 +1001,93 @@ mod tests {
                 order.processed_at_unix_ms,
             )
         })
+    }
+
+    #[test]
+    fn completed_outcome_releases_ordered_spans_only_at_its_terminal_commit() {
+        // Cause/effect table: C1 a Completed report contains two ordered
+        // iterations with evaluation commits 10/20 and terminal commit 30;
+        // C2 each iteration has start/ongoing/end; C3 one evaluation cursor
+        // lies beyond the terminal commit. R1 C1+C2 => all six facts release
+        // at 30 in iteration/trio order, regardless of their earlier times.
+        // R2 C1+C3 => no order for the inconsistent evaluation fact.
+        let terminal =
+            CommittedOutcomeProjection::Completed(awaken_session_execution_contract::OutcomeReport {
+                iterations: [0, 1]
+                    .map(
+                        |iteration| awaken_session_execution_contract::OutcomeIteration {
+                            messages: Vec::new(),
+                            outcome_id: "outcome".into(),
+                            description: "ship".into(),
+                            iteration,
+                            result: "satisfied".into(),
+                            explanation: "reviewed".into(),
+                            usage: None,
+                        },
+                    )
+                    .into(),
+            });
+        let children = HashMap::new();
+        let historical = HashMap::new();
+        let evaluations = HashMap::from([(0, 10), (1, 20)]);
+        let outcomes = [AnchoredOutcome {
+            outcome_id: "outcome",
+            terminal: &terminal,
+            terminal_commit_cursor: 30,
+            evaluation_commit_cursors: &evaluations,
+        }];
+        let evidence = |outcomes| OrderEvidence {
+            session_id: SESSION,
+            batches: &[],
+            closed_intervals: &[],
+            budget_reach: &[],
+            parent_terminal: ParentTerminalEvidence::default(),
+            lifecycle: &[],
+            root: None,
+            children: &children,
+            links: &[],
+            outcomes,
+            historical_pending: &historical,
+        };
+        let index = OrderIndex::new(evidence(&outcomes));
+        for (iteration, first) in [(0, 0), (1, 3)] {
+            for (role, offset) in [
+                (FactRole::OutcomeEvaluationStart, 0),
+                (FactRole::OutcomeEvaluationOngoing, 1),
+                (FactRole::OutcomeEvaluationEnd, 2),
+            ] {
+                assert_eq!(
+                    order(index.fact_order(&key(
+                        SESSION,
+                        role,
+                        FactProvenance::OutcomeEvaluation {
+                            outcome_id: "outcome".into(),
+                            iteration,
+                        },
+                    ))),
+                    Some((30, 60, (0, first + offset), None)),
+                    "R1 iteration={iteration} role={role:?}"
+                );
+            }
+        }
+        let inconsistent = HashMap::from([(0, 31), (1, 20)]);
+        let malformed = [AnchoredOutcome {
+            evaluation_commit_cursors: &inconsistent,
+            ..outcomes[0]
+        }];
+        let index = OrderIndex::new(evidence(&malformed));
+        assert_eq!(
+            order(index.fact_order(&key(
+                SESSION,
+                FactRole::OutcomeEvaluationStart,
+                FactProvenance::OutcomeEvaluation {
+                    outcome_id: "outcome".into(),
+                    iteration: 0,
+                },
+            ))),
+            None,
+            "R2 evaluation after terminal fails closed"
+        );
     }
 
     #[test]

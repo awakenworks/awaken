@@ -266,12 +266,14 @@ pub fn awaken_agent_contract::agent::message::Id::is_agent_thread_report(&self) 
 pub fn awaken_agent_contract::agent::message::Id::is_agent_thread_report_of(&self, &awaken_agent_contract::agent::run::Id) -> bool
 pub fn awaken_agent_contract::agent::message::Id::is_continuation_of(&self, &awaken_agent_contract::agent::run::Id) -> bool
 pub fn awaken_agent_contract::agent::message::Id::is_steer_of(&self, &awaken_agent_contract::agent::run::Id) -> bool
+pub fn awaken_agent_contract::agent::message::Id::is_tool_result_for_call(&self, &str) -> bool
 pub fn awaken_agent_contract::agent::message::Id::resume_input(&str) -> Self
 pub fn awaken_agent_contract::agent::message::Id::session_event_input(&str, &str) -> Self
 pub fn awaken_agent_contract::agent::message::Id::session_system(&str, &str) -> Self
 pub fn awaken_agent_contract::agent::message::Id::steer(&awaken_agent_contract::agent::run::Id, usize) -> Self
 pub fn awaken_agent_contract::agent::message::Id::steer_prefix(&awaken_agent_contract::agent::run::Id) -> alloc::string::String
 pub fn awaken_agent_contract::agent::message::Id::tool_result(&str) -> Self
+pub fn awaken_agent_contract::agent::message::Id::tool_result_for_batch(&str, &str) -> Self
 pub struct awaken_agent_contract::agent::message::Message
 pub awaken_agent_contract::agent::message::Message::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::agent::message::Message::id: awaken_agent_contract::agent::message::Id
