@@ -99,30 +99,8 @@ impl ActiveToolBatch {
     ) -> Result<Vec<ToolExecutionDomain>, ToolBatchError> {
         let mut domains = std::collections::BTreeMap::new();
         let mut latest_attempts = std::collections::BTreeMap::new();
-        for command in state.iter().filter(|command| {
-            command.scope == Self::SCOPE
-                && command.key.0 == Self::KEY
-                && command.run_id.as_ref() == Some(run_id)
-        }) {
-            if command.merge != Self::MERGE {
-                return Err(ToolBatchError::InvalidPersistedState(
-                    "tool execution history has an incompatible merge policy".into(),
-                ));
-            }
-            let mut one = Store::new();
-            one.apply(command);
-            let batch = Self::load(&one)
-                .map_err(|error| ToolBatchError::InvalidPersistedState(error.to_string()))?
-                .ok_or_else(|| {
-                    ToolBatchError::InvalidPersistedState(
-                        "tool execution history was removed".into(),
-                    )
-                })?;
-            if batch.run_id() != run_id {
-                return Err(ToolBatchError::InvalidPersistedState(
-                    "tool history belongs to another Run".into(),
-                ));
-            }
+        for recorded in Self::recorded_batches(state, run_id) {
+            let (_, batch) = recorded?;
             for call in batch.calls() {
                 if let Some(domain) = &call.materialization_domain {
                     domain.validate()?;

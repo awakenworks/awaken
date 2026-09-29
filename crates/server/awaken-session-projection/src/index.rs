@@ -120,7 +120,6 @@ struct ThreadIndex<'a> {
     aligned: bool,
     messages_by_id: HashMap<&'a str, Vec<usize>>,
     messages_by_response: HashMap<(String, usize, usize), Vec<usize>>,
-    coordinates: HashMap<String, (String, usize, usize)>,
 }
 
 impl<'a> ThreadIndex<'a> {
@@ -150,7 +149,6 @@ impl<'a> ThreadIndex<'a> {
             aligned,
             messages_by_id,
             messages_by_response,
-            coordinates,
         }
     }
 
@@ -429,21 +427,25 @@ impl<'a> OrderIndex<'a> {
         if !thread.aligned {
             return None;
         }
-        let (run_id, step, _) = thread.coordinates.get(source_id)?;
-        Some(
-            awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
-                &awaken_agent_contract::agent::run::Id(run_id.clone()),
-                *step,
-                call_id,
-            ),
+        let positions = thread.messages_by_id.get(source_id)?;
+        if positions.len() != 1 {
+            return None;
+        }
+        let message = thread.snapshot.messages.get(positions[0])?;
+        awaken_runtime_contract::ActiveToolBatch::operation_for_message(
+            thread.snapshot,
+            message,
+            call_id,
         )
+        .ok()
+        .flatten()
     }
 
     /// Order of every committed Advisor consultation call, by its operation.
     #[must_use]
     pub fn advisor_operation_orders(&self) -> HashMap<String, CanonicalOrder> {
         let mut orders = HashMap::new();
-        for thread in self.threads.values() {
+        for (thread_id, thread) in &self.threads {
             if !thread.aligned {
                 continue;
             }
@@ -454,9 +456,6 @@ impl<'a> OrderIndex<'a> {
                 .zip(snapshot.message_commit_cursors.iter().copied())
                 .enumerate()
             {
-                let Some((run_id, step, _)) = thread.coordinates.get(&message.id.0) else {
-                    continue;
-                };
                 for (block_ordinal, block) in message.content.iter().enumerate() {
                     let ContentBlock::ToolUse {
                         id: call_id, name, ..
@@ -467,12 +466,10 @@ impl<'a> OrderIndex<'a> {
                     if name != awaken_runtime_contract::resolved::ADVISOR_TOOL_ID {
                         continue;
                     }
-                    let operation_id =
-                        awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
-                            &awaken_agent_contract::agent::run::Id(run_id.clone()),
-                            *step,
-                            call_id,
-                        );
+                    let Some(operation_id) = self.tool_operation(thread_id, &message.id.0, call_id)
+                    else {
+                        continue;
+                    };
                     Self::retain_earliest(
                         &mut orders,
                         operation_id,
@@ -939,6 +936,7 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Record, RunState};
+    use awaken_agent_contract::agent::state::StateKey;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_session_event_contract::{SessionEventInput, SessionEventProjectionAnchor};
 
@@ -1398,15 +1396,44 @@ mod tests {
         let children = HashMap::new();
         let history = HashMap::new();
         let child_pending = HashMap::new();
-        let expected = awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
-            &run_id,
-            2,
-            "root-call",
-        );
-        for aligned in [true, false] {
-            if !aligned {
+        let base = root.clone();
+        // E5 a retained historical batch owns the operation even when its
+        // recorded step differs from the Message; E6 duplicate source ids are
+        // ambiguous and must never select a first/last guessed source.
+        for rule in ["transcript", "recorded", "unaligned", "duplicate"] {
+            root = base.clone();
+            if rule == "unaligned" {
                 root.message_commit_cursors.clear();
             }
+            if rule == "duplicate" {
+                root.messages.push(message.clone());
+                root.message_commit_cursors.push(7);
+            }
+            if rule == "recorded" {
+                let batch = awaken_runtime_contract::ToolBatch::for_step(
+                    run_id.clone(),
+                    0,
+                    [(
+                        awaken_runtime_contract::llm::ToolCall {
+                            call_id: "root-call".into(),
+                            tool_id: awaken_runtime_contract::resolved::ADVISOR_TOOL_ID.into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        awaken_runtime_contract::tool::ToolRecoveryPolicy::durable_request(),
+                    )],
+                )
+                .unwrap();
+                let mut command = awaken_runtime_contract::ActiveToolBatch::write(&Some(batch));
+                command.bind_run(&run_id);
+                root.state.push(command);
+                root.state_commit_cursors.push(7);
+            }
+            let expected = awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
+                &run_id,
+                if rule == "recorded" { 0 } else { 2 },
+                "root-call",
+            );
+            let aligned = rule == "transcript" || rule == "recorded";
             let index = OrderIndex::new(OrderEvidence {
                 session_id: SESSION,
                 batches: &[],

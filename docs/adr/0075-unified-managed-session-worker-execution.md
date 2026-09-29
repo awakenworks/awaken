@@ -1072,3 +1072,34 @@ after deletion and rejects receipt-erasure and unknown-release mutations.
 ToolResultProtocol still checks root-CAS alternatives, not cross-product quota
 liveness or universal Rust/SQL refinement. Historical missing evidence cannot
 be reconstructed by these fixes and requires an explicit reconciliation decision.
+
+
+### Logical step identity across client-tool resume
+
+A real Native coordinator Session exposed different coordinates after a client
+confirmation: the assistant Message advanced to step 1 while the new ToolBatch
+restarted at physical-drive step 0. `send_message` admitted the child under the
+batch's operation, then the committed-link reader derived another Thread from
+the Message coordinate and refused the valid receipt. This is a Runtime
+identity defect, independent of report wording or the application's business
+archive.
+
+The Runtime now derives one logical source step for inference evidence,
+assistant Messages, tool operations and phase hooks. The finite step ceiling
+also belongs to the same Run across resume; a new physical drive does not reset
+it. Local drive position remains only for selecting its first resumed stream
+checkpoint.
+
+Committed operation reads reuse `ActiveToolBatch::operation_for_message` in
+both Host coordination and Session ordering. When a batch was retained at the
+assistant's commit, its recorded operation owns the accepted effect, including
+historical executions with the mismatch above. The existing transcript
+coordinate contract remains available to snapshots without retained batch
+evidence. Conflicting arguments, ambiguous batch identities and foreign child
+receipts remain errors; no Message, receipt, Thread, or durable store is
+rewritten. Batch decoding is shared with recorded execution-domain recovery.
+
+Cause/effect rules remain attached to the tests: Runtime confirmation→resume→
+physical-tool identity and finite Run ceiling; recorded source warm/cold and
+conflict cases; Host published-result/publication-gap recovery of the original
+child. No protocol route or second execution/relationship registry is added.
