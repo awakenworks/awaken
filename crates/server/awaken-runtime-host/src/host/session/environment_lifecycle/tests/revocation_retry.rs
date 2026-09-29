@@ -86,7 +86,8 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     // authority from either existing owner.
     let thread = "conflicting-revocation-retains-relay";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     host.install_test_resident_session_environment(thread, environment);
@@ -277,7 +278,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     // preserves Closed(lease), never Uninstalled/Live or direct-assertion fallback.
     let thread = "revocation-retiring-retry-authority";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("revocation-agent")
@@ -593,7 +595,8 @@ async fn newer_projection_replaces_only_a_descriptor_and_preserves_every_physica
     // even with newer root. Revocation, discard, terminal and checkpoint each
     // retain their exact owner: root ordering never substitutes for closure.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let env = environment(&provider, "owner-A").await;
     let bound = BoundSessionEnvironment {
         identity: identity("owner-A"),

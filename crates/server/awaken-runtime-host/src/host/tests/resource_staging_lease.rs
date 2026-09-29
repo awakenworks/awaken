@@ -876,6 +876,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     spec.scope = SESSION.into();
     let fence = lease.sandbox_effect_fence("scoped-candidate").unwrap();
     let environment = provider
+        .realizer()
         .create_effective_for_effect(
             &spec,
             crate::session_environment::ProviderEffect::Fenced {
@@ -885,7 +886,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .unwrap();

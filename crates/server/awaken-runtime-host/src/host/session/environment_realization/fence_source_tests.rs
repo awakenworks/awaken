@@ -551,12 +551,13 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     observation_boundary: Some(observation.clone()),
                     ..Default::default()
                 });
-                let provider = crate::session_environment::SessionEnvironmentProvider::container(
+                let provider = crate::session_environment::SandboxEnvironmentProvider::container(
                     probe.clone(),
                     vec![],
                     Arc::new(crate::session_environment::UnusedHandExecutorFactory),
                     "unused",
-                );
+                )
+                .into_session_provider();
                 let spec = host.sandbox_spec_for_provider("session", &provider);
                 let handle =
                     crate::host::tests::terminal_fixture_container_handle("session", &spec);
@@ -660,12 +661,13 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
             host.session_slots.remove("session");
         }
         let probe = Arc::new(ProjectionProbe::default());
-        let provider = crate::session_environment::SessionEnvironmentProvider::container(
+        let provider = crate::session_environment::SandboxEnvironmentProvider::container(
             probe.clone(),
             vec![],
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "unused",
-        );
+        )
+        .into_session_provider();
         let mut spec = crate::session_environment::environment_test_spec();
         spec.scope = "session".into();
         let directory = tempfile::tempdir().unwrap();
@@ -699,7 +701,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
                 .as_ref()
                 .map(|source| source as &dyn CurrentExecutionAuthority),
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         );
         let transition = async {
             if rule == "initial_closed" {

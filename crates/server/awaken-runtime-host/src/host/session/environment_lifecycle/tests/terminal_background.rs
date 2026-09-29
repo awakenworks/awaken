@@ -14,7 +14,8 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     // an Environment-free context retains the existing `brain` key.
     let thread = "durable-background-generation";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let physical_id = environment.lifecycle().handle().sandbox_id;
     let durable_generation = generation(thread);

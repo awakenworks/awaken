@@ -745,9 +745,10 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     // single admission authority; no Bash command rewriting or alias mount
     // is introduced as a second path mapping.
     let host = host();
-    let local = crate::session_environment::SessionEnvironmentProvider::workdir(
+    let local = crate::session_environment::SandboxEnvironmentProvider::workdir(
         tempfile::tempdir().unwrap().path(),
-    );
+    )
+    .into_session_provider();
     let bare = host.sandbox_spec("bare");
     assert_eq!(bare.isolation, pc::IsolationClass::Workdir, "W2/E3");
 
@@ -859,7 +860,8 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
         .expect("install exact immutable Agent publication");
 
     let root = tempfile::tempdir().unwrap();
-    let local = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let local = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let spec = host.sandbox_spec("projected-acp");
     assert_eq!(
         spec.isolation,
@@ -938,7 +940,8 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     );
 
     let root = tempfile::tempdir().unwrap();
-    let local = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let local = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let spec = host.sandbox_spec("model-override-acp");
     assert_eq!(
         spec.isolation,

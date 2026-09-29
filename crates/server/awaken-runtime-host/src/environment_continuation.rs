@@ -585,6 +585,7 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let spec = self.host.sandbox_spec_for_provider(&thread, provider);
         let handle = provider
+            .terminal()
             .restore(&spec, &request, store.as_ref())
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;

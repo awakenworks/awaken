@@ -70,7 +70,7 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
     let provider = Arc::new(FakeContainerProvider::default());
     let factory =
         ScriptedHandFactory::new([ScriptedHandOutcome::Success, ScriptedHandOutcome::Success]);
-    let environments = SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+    let environments = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
         provider.clone(),
         None,
         Vec::new(),
@@ -79,7 +79,8 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
         std::time::Duration::ZERO,
         awaken_session_environment_contract::ContainerHandResidency::Resident,
         awaken_lease_contract::system_clock(),
-    );
+    )
+    .into_session_provider();
 
     let original = environments.create(&spec()).await.unwrap();
     let handle = original.lifecycle().handle();
@@ -150,12 +151,13 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
      */
     let provider = Arc::new(FakeContainerProvider::default());
     let stable = ScriptedHandFactory::new([ScriptedHandOutcome::Success]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         stable.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -207,12 +209,13 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         ScriptedHandOutcome::UnavailableBeforeDispatch,
         ScriptedHandOutcome::Success,
     ]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         recover.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -246,12 +249,13 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         .store(2, std::sync::atomic::Ordering::SeqCst);
     let failed_replacement =
         ScriptedHandFactory::new([ScriptedHandOutcome::UnavailableBeforeDispatch]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         failed_replacement.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -292,12 +296,13 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         ScriptedHandOutcome::UnavailableBeforeDispatch,
         ScriptedHandOutcome::Success,
     ]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         bounded.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -326,12 +331,13 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
 
     let provider = Arc::new(FakeContainerProvider::default());
     let indeterminate = ScriptedHandFactory::new([ScriptedHandOutcome::Indeterminate]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         indeterminate.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -383,12 +389,13 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
         ScriptedHandOutcome::Success,
         ScriptedHandOutcome::Success,
     ]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         factory,
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -485,12 +492,13 @@ async fn live_projection_update_rejects_an_unreapable_hand() {
         .lock()
         .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -548,12 +556,13 @@ async fn cancelled_projection_reap_retains_the_tracked_hand_owner() {
         .unwrap()
         .insert("__slow_reap_hand".into(), Vec::new());
     let environment = Arc::new(
-        SessionEnvironmentProvider::container(
+        SandboxEnvironmentProvider::container(
             provider.clone(),
             Vec::new(),
             ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
             "/usr/local/bin/awaken-sandbox",
         )
+        .into_session_provider()
         .create(&spec())
         .await
         .unwrap(),
@@ -608,12 +617,13 @@ async fn checkpoint_quiescence_fails_closed_when_attached_hand_cannot_be_reaped(
         .lock()
         .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -648,7 +658,7 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
     // Rules QR1/QR2/QR3 distinguish retry-stable checkpoint safety from the
     // existing terminal owner.
     let provider = Arc::new(FakeContainerProvider::default());
-    let environment = SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+    let environment = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
         provider.clone(),
         None,
         Vec::new(),
@@ -658,6 +668,7 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
         awaken_session_environment_contract::ContainerHandResidency::Resident,
         awaken_lease_contract::system_clock(),
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -706,12 +717,13 @@ async fn cancelled_checkpoint_quiescence_retains_the_attached_hand_owner() {
         .unwrap()
         .insert("__slow_reap_hand".into(), Vec::new());
     let environment = Arc::new(
-        SessionEnvironmentProvider::container(
+        SandboxEnvironmentProvider::container(
             provider.clone(),
             Vec::new(),
             ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
             "/usr/local/bin/awaken-sandbox",
         )
+        .into_session_provider()
         .create(&spec())
         .await
         .unwrap(),
@@ -759,7 +771,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     let provider = Arc::new(FakeContainerProvider::default());
     let factory =
         ScriptedHandFactory::new([ScriptedHandOutcome::Success, ScriptedHandOutcome::Success]);
-    let environment = SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
+    let environment = SandboxEnvironmentProvider::container_with_capacity_and_hand_idle(
         provider.clone(),
         None,
         Vec::new(),
@@ -767,6 +779,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::from_secs(60),
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -808,12 +821,13 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     environment.lifecycle().dispose().await.unwrap();
 
     let disabled_provider = Arc::new(FakeContainerProvider::default());
-    let disabled = SessionEnvironmentProvider::container(
+    let disabled = SandboxEnvironmentProvider::container(
         disabled_provider.clone(),
         Vec::new(),
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -843,7 +857,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         .lock()
         .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
-    let failed = SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
+    let failed = SandboxEnvironmentProvider::container_with_capacity_and_hand_idle(
         failed_provider.clone(),
         None,
         Vec::new(),
@@ -851,6 +865,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::from_secs(60),
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -893,7 +908,7 @@ async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
     let provider = Arc::new(FakeContainerProvider::default());
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    let environment = SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
+    let environment = SandboxEnvironmentProvider::container_with_capacity_and_hand_idle(
         provider.clone(),
         None,
         Vec::new(),
@@ -905,6 +920,7 @@ async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::from_secs(60),
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -945,14 +961,15 @@ async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
 #[tokio::test]
 async fn adopting_a_container_renews_its_ownership_before_use() {
     let provider = Arc::new(FakeContainerProvider::default());
-    let environments = SessionEnvironmentProvider::container(
+    let environments = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
-    );
+    )
+    .into_session_provider();
     let spec = spec();
-    let effective_spec = environments.effective_spec(&spec).unwrap();
+    let effective_spec = environments.realizer().effective_spec(&spec).unwrap();
     let handle = current_fake_container_handle(&effective_spec);
     let adopted = environments
         .adopt(&spec, &handle)

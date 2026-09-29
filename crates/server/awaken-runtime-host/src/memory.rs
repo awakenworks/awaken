@@ -663,9 +663,12 @@ impl crate::host::SharedHost {
     ) {
         self.env
             .session_provider
+            .installation()
             .install_memory_mounter(mounter.clone());
         if let Some(provider) = &self.env.backend_owned_session_provider {
-            provider.install_memory_mounter(mounter.clone());
+            provider
+                .installation()
+                .install_memory_mounter(mounter.clone());
         }
         *self
             .env

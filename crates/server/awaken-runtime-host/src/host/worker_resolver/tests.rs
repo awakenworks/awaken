@@ -1603,13 +1603,14 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     // | F4 | F | n/a | n/a | yes | T | E4: physical + logical revocation |
     // Workdir remains correctly ineligible for F1's immutability requirement.
     raw_host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     let host = Arc::new(raw_host);
     let managed = managed_test_host(host.clone());
     let bytes = b"frozen worker input".to_vec();
@@ -2513,8 +2514,10 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     activation.snapshot.resolved_spec.model_binding = candidate;
 
     let mut first = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-    first.env.backend_owned_session_provider =
-        Some(crate::session_environment::SessionEnvironmentProvider::workdir(&trusted_root));
+    first.env.backend_owned_session_provider = Some(
+        crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
+            .into_session_provider(),
+    );
     let first = Arc::new(first);
     let projection = empty_frozen_projection_for_snapshot(
         first.local_workspace(),
@@ -2536,8 +2539,10 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
 
     let mut replacement =
         SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-    replacement.env.backend_owned_session_provider =
-        Some(crate::session_environment::SessionEnvironmentProvider::workdir(&trusted_root));
+    replacement.env.backend_owned_session_provider = Some(
+        crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
+            .into_session_provider(),
+    );
     let replacement = Arc::new(replacement);
     let _replacement_managed = managed_test_host(replacement.clone());
     replacement

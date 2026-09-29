@@ -140,6 +140,7 @@ impl SharedHost {
                 BoundEnvironmentPreparationMode::LiveSource
                 | BoundEnvironmentPreparationMode::TerminalRepositoryPublication => Arc::new(
                     provider
+                        .adoption()
                         .adopt_effective_for_effect(
                             spec,
                             handle.ok_or_else(|| {
@@ -163,6 +164,7 @@ impl SharedHost {
                 BoundEnvironmentPreparationMode::Terminal
                 | BoundEnvironmentPreparationMode::TerminalDisposal => {
                     let Some(environment) = provider
+                        .terminal()
                         .prepare_terminal_effective_for_effect(
                             spec,
                             handle,
@@ -226,9 +228,10 @@ impl SharedHost {
             admit()?;
             let fresh = Arc::new(
                 provider
+                    .adoption()
                     .rebind_retained(
                         spec,
-                        &environment.handle(),
+                        &environment.lifecycle().handle(),
                         &environment,
                         crate::session_environment::ProviderEffect::Fenced {
                             fence: effect_fence,
@@ -475,6 +478,7 @@ impl SharedHost {
             None => (resident, None),
         };
         let observation = provider
+            .adoption()
             .observe_effective(
                 &spec,
                 &handle,
@@ -484,9 +488,9 @@ impl SharedHost {
                     effect_fence,
                 },
                 if mode.requires_live_source() {
-                    awaken_container_contract::ContainerObservationPurpose::Recovery
+                    awaken_session_environment_contract::ObservationPurpose::Recovery
                 } else {
-                    awaken_container_contract::ContainerObservationPurpose::TerminalCleanup
+                    awaken_session_environment_contract::ObservationPurpose::TerminalCleanup
                 },
             )
             .await
@@ -512,7 +516,7 @@ impl SharedHost {
                 | awaken_provisioning_contract::SandboxObservation::Terminal { .. }
                 | awaken_provisioning_contract::SandboxObservation::Disposing { .. }) => {
                     provider
-                        .validate_closed_observation(&handle, observation)
+                        .adoption().validate_closed_observation(&handle, observation)
                         .map_err(|error| HostError::internal(error.to_string()))?;
                     if mode == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
                         && matches!(
@@ -558,7 +562,7 @@ impl SharedHost {
                 ..
             } => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 if let Some(environment) = resident {
                     let cause = SessionEnvironmentRetirementCause::Terminal {
@@ -603,20 +607,19 @@ impl SharedHost {
             }
             observation @ awaken_provisioning_contract::SandboxObservation::Terminal { .. } => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 (
                     resident,
-                    TerminalEffectMode::for_terminal_source(matches!(
-                        provider,
-                        crate::session_environment::SessionEnvironmentProvider::Container { .. }
-                    )),
+                    TerminalEffectMode::for_terminal_source(
+                        provider.terminal().terminal_data_is_readable(),
+                    ),
                     committed_candidate,
                 )
             }
             observation @ awaken_provisioning_contract::SandboxObservation::Disposing { .. } => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 // Disposing is durable proof that every source-durability
                 // participant required by the preceding operation crossed the

@@ -661,26 +661,25 @@ mod tests {
         let storage = tempfile::tempdir().expect("durable Hand storage");
         let mut raw_host = SharedHost::new(Arc::new(AdoptionModel), "stub");
         raw_host.env.session_provider =
-            crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
                 storage.path(),
                 false,
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),
                 "/bin/sh",
                 std::time::Duration::ZERO,
-            );
+            )
+            .into_session_provider();
         #[cfg(target_os = "linux")]
         if scoped {
-            raw_host.env.session_provider = crate::session_environment::SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(storage.path(), false);
-            raw_host.env.session_provider.install_workdir_hand(
+            let mut provider = crate::session_environment::SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(storage.path(), false);
+            provider.install_workdir_hand(
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),
                 crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER")
                     .to_string_lossy()
                     .into_owned(),
                 std::time::Duration::ZERO,
             );
-            raw_host
-                .env
-                .session_provider
+            provider
                 .install_scoped_execution(
                     awaken_sandbox_local::LocalExecutionDeployment::new(
                         crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_LAUNCHER"),
@@ -690,6 +689,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
+            raw_host.env.session_provider = provider.into_session_provider();
         }
         let host = Arc::new(raw_host.with_store_dir(storage.path()));
         let managed = crate::host::worker_resolver::test_support::complete_managed_test_host(
@@ -849,6 +849,7 @@ mod tests {
             let environment = Arc::new(
                 host.env
                     .session_provider
+                    .realizer()
                     .create_effective_for_effect(
                         &host.sandbox_spec(thread),
                         crate::session_environment::ProviderEffect::Fenced {
@@ -856,7 +857,7 @@ mod tests {
                             authority: &authority,
                         },
                         None,
-                        awaken_container_contract::EnvironmentRealizationIntent::Create,
+                        awaken_session_environment_contract::EnvironmentRealizationKind::Create,
                     )
                     .await
                     .unwrap(),

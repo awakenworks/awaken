@@ -34,6 +34,7 @@ async fn environment(
     let effect_fence = environment_effect_fence(thread);
     Arc::new(
         provider
+            .realizer()
             .create_effective_for_effect(
                 &crate::provisioning::agent_run_sandbox_spec(thread),
                 crate::session_environment::ProviderEffect::Fenced {
@@ -43,7 +44,7 @@ async fn environment(
                     ),
                 },
                 None,
-                awaken_container_contract::EnvironmentRealizationIntent::Create,
+                awaken_session_environment_contract::EnvironmentRealizationKind::Create,
             )
             .await
             .expect("test Environment"),

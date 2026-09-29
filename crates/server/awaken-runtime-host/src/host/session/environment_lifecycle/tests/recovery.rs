@@ -242,7 +242,8 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     // would be rejected by the retirement priority fence before any rebuild.
     let thread = "closed-revoked-durable-rebuild";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let source_generation = generation(thread).id().to_owned();
@@ -352,7 +353,8 @@ async fn closed_recovery_cannot_override_protected_retirements() {
     // C3 rebuild is enabled. R2 C1+C2+C3 => error, identical protected fence,
     // no rebuild predecessor. Physical absence is not lifecycle authority.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     for terminal in [false, true] {
         let thread = if terminal {
             "closed-terminal"
@@ -417,7 +419,8 @@ async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
     // cannot clear replacement; E2 replacement's exact observation clears.
     // Decision rules R17/R19: C1+C2+C3=>E1; exact replacement=>E2.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let first = environment(&provider, "aba-retirement").await;
     let second = Arc::new(
         provider
@@ -488,7 +491,8 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     // `source_release_preparation_is_withheld_for_an_absent_pod_with_live_claim`.
     let thread = "checkpoint-owner-fence";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");

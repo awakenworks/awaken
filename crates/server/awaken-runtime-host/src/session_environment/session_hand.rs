@@ -1061,23 +1061,24 @@ mod tests {
         // Linux requires both filesystem adapters; other platforms exercise the
         // portable Workdir row here and their OS-specific Namespace gate separately.
         use super::super::tests::{DoneProcess, FakeHandExecutor, UnreapableProcess, spec};
-        use super::super::{SandboxEnvironment, SessionEnvironmentProvider};
+        use super::super::{SandboxEnvironment, SandboxEnvironmentProvider};
         for namespace in [false, true]
             .into_iter()
             .filter(|namespace| !namespace || cfg!(target_os = "linux"))
         {
             let base = tempfile::tempdir().unwrap();
             let provider = if namespace {
-                SessionEnvironmentProvider::namespace_with_agent_stderr(
+                SandboxEnvironmentProvider::namespace_with_agent_stderr(
                     base.path(),
                     false,
                     Arc::new(UnusedHandExecutorFactory),
                     "unused-hand",
                     Duration::ZERO,
                 )
+                .into_session_provider()
             } else {
                 let mut provider =
-                    SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
+                    SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
                         base.path(),
                         false,
                     );
@@ -1086,7 +1087,7 @@ mod tests {
                     "unused-hand".into(),
                     Duration::ZERO,
                 );
-                provider
+                provider.into_session_provider()
             };
             let environment = provider.create(&spec()).await.unwrap();
             environment

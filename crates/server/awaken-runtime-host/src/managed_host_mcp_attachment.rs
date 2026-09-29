@@ -205,6 +205,7 @@ impl awaken_session_runtime_contract::McpAttachmentRealizer for ManagedHost {
                         )
                         .map_err(crate::managed_adapter_error::to_run_error)?;
                     if !provider
+                        .realizer()
                         .capabilities()
                         .supports_secret_egress_without_bypass()
                     {

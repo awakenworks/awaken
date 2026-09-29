@@ -10,12 +10,13 @@ async fn realized_and_deferred_hand_share_the_same_pre_entry_process_domain() {
     // Every row must perform zero Hand launches/channel opens: metadata is not
     // execution, and reacquisition must not silently widen the durable domain.
     let provider = Arc::new(FakeContainerProvider::default());
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();

@@ -705,13 +705,14 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     let sandbox_roots = tempfile::tempdir().unwrap();
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_roots.path().to_path_buf(),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     let host = Arc::new(raw_host);
     install_test_memory_mounter(&host);
     let store = test_memory_store_id();

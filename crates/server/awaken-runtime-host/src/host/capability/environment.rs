@@ -65,9 +65,10 @@ impl EnvironmentProviders {
     ) -> Self {
         Self {
             auxiliary_sandboxes,
-            session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
+            session_provider: crate::session_environment::SandboxEnvironmentProvider::workdir(
                 sandbox_root,
-            ),
+            )
+            .into_session_provider(),
             environment_checkpoint_store: None,
             cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer::default(),
             backend_owned_session_provider: None,
@@ -99,9 +100,10 @@ impl SharedHost {
     ) -> Self {
         self.env
             .session_provider
+            .installation()
             .install_secret_broker(broker.clone());
         if let Some(provider) = &self.env.backend_owned_session_provider {
-            provider.install_secret_broker(broker);
+            provider.installation().install_secret_broker(broker);
         }
         self
     }
@@ -135,7 +137,7 @@ impl SharedHost {
         hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
-        self.env.session_provider = crate::session_environment::SessionEnvironmentProvider::
+        self.env.session_provider = crate::session_environment::SandboxEnvironmentProvider::
             container_with_capacity_hand_idle_and_residency(
                 provider,
                 capacity,
@@ -145,10 +147,13 @@ impl SharedHost {
                 std::time::Duration::from_secs(self.deployment.sandbox.container_hand_idle_secs),
                 self.deployment.sandbox.container_hand_residency,
                 self.clock.clone(),
-            );
+            ).into_session_provider();
         self.env.session_provider_explicit = true;
         if let Some(mounter) = self.memory_mounter() {
-            self.env.session_provider.install_memory_mounter(mounter);
+            self.env
+                .session_provider
+                .installation()
+                .install_memory_mounter(mounter);
         }
         self
     }
@@ -164,7 +169,7 @@ impl SharedHost {
         hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
-        self.env.session_provider = crate::session_environment::SessionEnvironmentProvider::
+        self.env.session_provider = crate::session_environment::SandboxEnvironmentProvider::
             container_with_capacity_hand_idle_and_residency(
                 components.provider,
                 components.capacity,
@@ -176,14 +181,17 @@ impl SharedHost {
                 ),
                 self.deployment.sandbox.container_hand_residency,
                 self.clock.clone(),
-            );
+            ).into_session_provider();
         if let Some(initializer) = components.cache_volume_initializer {
             self.env.cache_volume_prewarmer =
                 crate::cache_volume::CacheVolumePrewarmer::new(initializer);
         }
         self.env.session_provider_explicit = true;
         if let Some(mounter) = self.memory_mounter() {
-            self.env.session_provider.install_memory_mounter(mounter);
+            self.env
+                .session_provider
+                .installation()
+                .install_memory_mounter(mounter);
         }
         self
     }

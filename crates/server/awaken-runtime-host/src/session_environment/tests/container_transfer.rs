@@ -44,12 +44,13 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
     let mut docker_spec = spec();
     docker_spec.scope = format!("host-repo-real-{}", std::process::id());
     docker_spec.outputs_path = "/mnt/session/outputs".into();
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider,
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&docker_spec)
     .await
     .unwrap();
@@ -213,7 +214,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         awaken_session_environment_contract::ContainerHandResidency::Resident,
     ] {
         let fake = Arc::new(FakeContainerProvider::default());
-        let provider = SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+        let provider = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
             fake.clone(),
             None,
             Vec::new(),
@@ -222,7 +223,8 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             std::time::Duration::ZERO,
             residency,
             awaken_lease_contract::system_clock(),
-        );
+        )
+        .into_session_provider();
         let thread = "session-container";
         let host = Arc::new(crate::SharedHost::new(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
@@ -415,6 +417,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         foreign.sandbox_id.push_str("-foreign");
         assert!(
             provider
+                .adoption()
                 .rebind_retained(
                     &spec,
                     &foreign,
@@ -427,7 +430,9 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         );
         let directory = tempfile::tempdir().unwrap();
         assert!(
-            SessionEnvironmentProvider::workdir(directory.path())
+            SandboxEnvironmentProvider::workdir(directory.path())
+                .into_session_provider()
+                .adoption()
                 .rebind_retained(
                     &spec,
                     &handle,
@@ -477,12 +482,13 @@ impl pc::SandboxCheckpointStore for CountingCheckpointStore {
 async fn container_restore_is_refused_at_selection_when_the_provider_has_no_restorable_rung() {
     let provider = Arc::new(FakeContainerProvider::default());
     assert!(provider.restorable().is_none(), "C1");
-    let container = SessionEnvironmentProvider::container(
+    let container = SandboxEnvironmentProvider::container(
         provider,
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
-    );
+    )
+    .into_session_provider();
     let store = CountingCheckpointStore::default();
     let request = pc::SandboxRestoreRequest {
         workspace_id: "workspace".into(),
@@ -503,6 +509,7 @@ async fn container_restore_is_refused_at_selection_when_the_provider_has_no_rest
         },
     };
     let error = container
+        .terminal()
         .restore(&spec(), &request, &store)
         .await
         .expect_err("R1 refused");

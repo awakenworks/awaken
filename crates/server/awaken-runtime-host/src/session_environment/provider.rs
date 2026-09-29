@@ -11,6 +11,7 @@
 use super::{HandExecutorFactory, SandboxEnvironment, SessionEnvironment, container_files};
 use awaken_sandbox_local::FilesystemHandleCodec as _;
 use awaken_session_environment_contract::ContainerHandResidency;
+use awaken_session_environment_contract::{EnvironmentRealizationKind, ObservationPurpose};
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
@@ -18,7 +19,7 @@ use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 
 /// Creates/adopts the one Session environment while auxiliary housekeeping Runs
 /// may continue using their deliberately-fresh LocalProvider.
-pub(crate) enum SessionEnvironmentProvider {
+pub(crate) enum SandboxEnvironmentProvider {
     Workdir {
         provider: LocalProvider,
         hand: Option<WorkdirHandConfig>,
@@ -54,7 +55,7 @@ pub(crate) use awaken_session_environment_contract::{
     EnvironmentAdoptionLayout as SessionEnvironmentAdoptionLayout, ProviderEffect,
 };
 
-impl SessionEnvironmentProvider {
+impl SandboxEnvironmentProvider {
     /// Construct the in-process adapter for a non-container Deployment tier.
     /// Both initial Host construction and asynchronous provider selection use this one mapping;
     /// container tiers return `None` because their provider requires async setup.
@@ -328,14 +329,6 @@ impl SessionEnvironmentProvider {
         }
     }
 
-    pub(crate) async fn create(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<SessionEnvironment, pc::SandboxError> {
-        let spec = self.effective_spec(spec)?;
-        self.create_effective(&spec).await
-    }
-
     /// Produce the exact provider-visible spec, including provider-owned
     /// isolation selection and container extra mounts, without performing I/O.
     /// Admission, capacity, create, adopt, and restore all consume this one
@@ -392,25 +385,12 @@ impl SessionEnvironmentProvider {
         })
     }
 
-    pub(crate) async fn create_effective(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<SessionEnvironment, pc::SandboxError> {
-        self.create_effective_for_effect(
-            spec,
-            ProviderEffect::Unattached,
-            None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
-        )
-        .await
-    }
-
     pub(crate) async fn create_effective_for_effect(
         &self,
         spec: &pc::SandboxSpec,
         effect: ProviderEffect<'_>,
         source_handle: Option<&pc::SandboxHandle>,
-        intent: awaken_container_contract::EnvironmentRealizationIntent,
+        kind: EnvironmentRealizationKind,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         effect.admit()?;
         let environment = match self {
@@ -456,6 +436,24 @@ impl SessionEnvironmentProvider {
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
+                // The container provider decodes its own source handle into the
+                // exact physical incarnation a Rebuild replaces; Workdir and
+                // Namespace rebuilds are owned by their realization-marker path.
+                let intent = match kind {
+                    EnvironmentRealizationKind::Create => {
+                        awaken_container_contract::EnvironmentRealizationIntent::Create
+                    }
+                    EnvironmentRealizationKind::Rebuild => {
+                        let source = source_handle.ok_or_else(|| {
+                            pc::SandboxError::invalid(
+                                "Container Environment rebuild lacks its source binding",
+                            )
+                        })?;
+                        awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+                            source: Box::new(source.clone()),
+                        }
+                    }
+                };
                 let environment = match effect {
                     ProviderEffect::Fenced { fence, authority } => {
                         provider
@@ -559,18 +557,6 @@ impl SessionEnvironmentProvider {
         }
     }
 
-    /// Test-only convenience projection. Durable Session adoption uses
-    /// `adopt_effective_for_effect` after root-owned authorization.
-    #[cfg(test)]
-    pub(crate) async fn adopt(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-    ) -> Result<SessionEnvironment, pc::SandboxError> {
-        let layout = self.effective_adoption_layout(spec, handle)?;
-        self.adopt_effective(&layout.spec, handle).await
-    }
-
     /// The Host has validated the retained lifecycle owner; recheck exact
     /// handle equality before borrowing its unpersisted create-attempt proof.
     /// A matching serialized handle alone cannot mint this proof after restart.
@@ -611,7 +597,7 @@ impl SessionEnvironmentProvider {
         handle: &pc::SandboxHandle,
         retained: Option<&super::SessionEnvironment>,
         basis: pc::SandboxObservationBasis<'_>,
-        purpose: awaken_container_contract::ContainerObservationPurpose,
+        purpose: ObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         match self {
             Self::Workdir { provider, .. } => {
@@ -622,7 +608,14 @@ impl SessionEnvironmentProvider {
             }
             Self::Container { provider, .. } => {
                 let mut adoption = Self::container_observation_adoption(spec, handle, retained)?;
-                adoption.observation_purpose = purpose;
+                adoption.observation_purpose = match purpose {
+                    ObservationPurpose::Recovery => {
+                        awaken_container_contract::ContainerObservationPurpose::Recovery
+                    }
+                    ObservationPurpose::TerminalCleanup => {
+                        awaken_container_contract::ContainerObservationPurpose::TerminalCleanup
+                    }
+                };
                 provider.observe_environment(adoption, basis).await
             }
         }
@@ -690,19 +683,6 @@ impl SessionEnvironmentProvider {
                 "sandbox observation does not carry closed physical evidence",
             )),
         }
-    }
-
-    /// Adopt after Runtime has validated this exact provider-and-handle
-    /// projection. Callers that have not performed the pure preflight use
-    /// [`Self::adopt`] instead.
-    #[cfg(test)]
-    pub(crate) async fn adopt_effective(
-        &self,
-        spec: &pc::SandboxSpec,
-        handle: &pc::SandboxHandle,
-    ) -> Result<SessionEnvironment, pc::SandboxError> {
-        self.adopt_effective_for_effect(spec, handle, ProviderEffect::Unattached)
-            .await
     }
 
     /// Rebuild only the revoked process bindings after the lifecycle owner has
@@ -1065,6 +1045,185 @@ impl SessionEnvironmentProvider {
     }
 }
 
+impl SandboxEnvironmentProvider {
+    /// Hand this provider to the Host as one handle per consuming role.
+    #[must_use]
+    pub(crate) fn into_session_provider(
+        self,
+    ) -> awaken_session_environment_contract::SessionEnvironmentProvider {
+        awaken_session_environment_contract::SessionEnvironmentProvider::new(Arc::new(self))
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_environment_contract::EnvironmentRealizer for SandboxEnvironmentProvider {
+    fn capabilities(&self) -> pc::SandboxCapabilities {
+        SandboxEnvironmentProvider::capabilities(self)
+    }
+
+    fn supports_host_identity(&self) -> bool {
+        SandboxEnvironmentProvider::supports_host_identity(self)
+    }
+
+    fn effective_spec(&self, spec: &pc::SandboxSpec) -> Result<pc::SandboxSpec, pc::SandboxError> {
+        SandboxEnvironmentProvider::effective_spec(self, spec)
+    }
+
+    async fn create_effective_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        effect: ProviderEffect<'_>,
+        source_handle: Option<&pc::SandboxHandle>,
+        kind: EnvironmentRealizationKind,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
+        SandboxEnvironmentProvider::create_effective_for_effect(
+            self,
+            spec,
+            effect,
+            source_handle,
+            kind,
+        )
+        .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_environment_contract::EnvironmentAdoption for SandboxEnvironmentProvider {
+    fn effective_adoption_layout(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+    ) -> Result<SessionEnvironmentAdoptionLayout, pc::SandboxError> {
+        SandboxEnvironmentProvider::effective_adoption_layout(self, spec, handle)
+    }
+
+    async fn observe_effective(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        retained: Option<&SessionEnvironment>,
+        basis: pc::SandboxObservationBasis<'_>,
+        purpose: ObservationPurpose,
+    ) -> Result<pc::SandboxObservation, pc::SandboxError> {
+        SandboxEnvironmentProvider::observe_effective(self, spec, handle, retained, basis, purpose)
+            .await
+    }
+
+    fn validate_closed_observation(
+        &self,
+        handle: &pc::SandboxHandle,
+        observation: &pc::SandboxObservation,
+    ) -> Result<(), pc::SandboxError> {
+        SandboxEnvironmentProvider::validate_closed_observation(self, handle, observation)
+    }
+
+    async fn adopt_effective_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        effect: ProviderEffect<'_>,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
+        SandboxEnvironmentProvider::adopt_effective_for_effect(self, spec, handle, effect).await
+    }
+
+    async fn rebind_retained(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: &pc::SandboxHandle,
+        retained: &SessionEnvironment,
+        effect: ProviderEffect<'_>,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
+        SandboxEnvironmentProvider::rebind_retained(self, spec, handle, retained, effect).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_environment_contract::EnvironmentTerminalRealization
+    for SandboxEnvironmentProvider
+{
+    fn terminal_data_is_readable(&self) -> bool {
+        !matches!(self, Self::Container { .. })
+    }
+
+    async fn prepare_terminal_effective_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        handle: Option<&pc::SandboxHandle>,
+        expected_effect_fence: Option<&pc::SandboxEffectFence>,
+        terminal_effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<Option<SessionEnvironment>, pc::SandboxError> {
+        SandboxEnvironmentProvider::prepare_terminal_effective_for_effect(
+            self,
+            spec,
+            handle,
+            expected_effect_fence,
+            terminal_effect_fence,
+            authority,
+        )
+        .await
+    }
+
+    async fn restore(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<pc::SandboxHandle, pc::SandboxError> {
+        SandboxEnvironmentProvider::restore(self, spec, request, store).await
+    }
+
+    async fn dispose_restored(
+        &self,
+        spec: &pc::SandboxSpec,
+        request: &pc::SandboxRestoreRequest,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        SandboxEnvironmentProvider::dispose_restored(self, spec, request, authorization, authority)
+            .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_environment_contract::EnvironmentCapacity for SandboxEnvironmentProvider {
+    async fn prewarm_images(&self, specs: &[pc::SandboxSpec]) -> Result<(), pc::SandboxError> {
+        SandboxEnvironmentProvider::prewarm_images(self, specs).await
+    }
+
+    async fn prewarm(
+        &self,
+        spec: &pc::SandboxSpec,
+        target: usize,
+    ) -> Result<usize, pc::SandboxError> {
+        SandboxEnvironmentProvider::prewarm(self, spec, target).await
+    }
+
+    async fn discard_capacity(&self, spec: &pc::SandboxSpec) {
+        SandboxEnvironmentProvider::discard_capacity(self, spec).await;
+    }
+
+    fn ready_capacity(&self, spec: &pc::SandboxSpec) -> usize {
+        SandboxEnvironmentProvider::ready_capacity(self, spec)
+    }
+
+    async fn shutdown_capacity(&self) {
+        SandboxEnvironmentProvider::shutdown_capacity(self).await;
+    }
+}
+
+impl awaken_session_environment_contract::EnvironmentProviderInstallation
+    for SandboxEnvironmentProvider
+{
+    fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
+        SandboxEnvironmentProvider::install_memory_mounter(self, mounter);
+    }
+
+    fn install_secret_broker(&self, broker: Arc<dyn pc::SecretBroker>) {
+        SandboxEnvironmentProvider::install_secret_broker(self, broker);
+    }
+}
+
 /// Recover this provider family's own adapter from the handles the Host holds.
 /// An environment realized by any other provider is refused.
 fn own_environment(
@@ -1154,7 +1313,7 @@ mod execution_installation_tests {
         let root = tempfile::tempdir().unwrap();
         let deployment =
             Deployment::new("/missing-launcher".into(), "/missing-helper".into()).unwrap();
-        let mut namespace = SessionEnvironmentProvider::namespace_with_agent_stderr(
+        let mut namespace = SandboxEnvironmentProvider::namespace_with_agent_stderr(
             root.path(),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
@@ -1169,7 +1328,7 @@ mod execution_installation_tests {
                 .to_string()
                 .contains("requires Workdir provider")
         );
-        let mut untrusted = SessionEnvironmentProvider::workdir(root.path());
+        let mut untrusted = SandboxEnvironmentProvider::workdir(root.path());
         assert!(
             untrusted
                 .install_scoped_execution(deployment.clone())
@@ -1179,14 +1338,14 @@ mod execution_installation_tests {
                 .contains("TrustedHost authorization")
         );
         let mut owner =
-            SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(root.path(), false);
+            SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(root.path(), false);
         assert!(
             owner
                 .install_scoped_execution(deployment.clone())
                 .await
                 .is_err()
         );
-        let SessionEnvironmentProvider::Workdir { provider, .. } = &mut owner else {
+        let SandboxEnvironmentProvider::Workdir { provider, .. } = &mut owner else {
             unreachable!()
         };
         assert!(provider.execution_deployment().is_none());
@@ -1209,7 +1368,7 @@ mod execution_installation_tests {
                 .await
                 .is_err()
         );
-        let SessionEnvironmentProvider::Workdir { provider, .. } = &owner else {
+        let SandboxEnvironmentProvider::Workdir { provider, .. } = &owner else {
             unreachable!()
         };
         assert_eq!(provider.execution_deployment(), Some(&deployment));

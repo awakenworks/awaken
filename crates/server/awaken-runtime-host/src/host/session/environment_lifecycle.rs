@@ -89,11 +89,11 @@ impl TerminalEffectMode {
     /// A stopped process environment cannot supply the attached-exec file read
     /// used by Container. Filesystem providers retain direct data access after
     /// their marker becomes terminal. Neither row proves prior preparation.
-    const fn for_terminal_source(container: bool) -> Self {
-        if container {
-            Self::RecoverOnlyUnprepared
-        } else {
+    const fn for_terminal_source(data_readable: bool) -> Self {
+        if data_readable {
             Self::LiveUnprepared
+        } else {
+            Self::RecoverOnlyUnprepared
         }
     }
 }
@@ -794,6 +794,7 @@ impl SharedHost {
         let handle = environment.lifecycle().handle();
         let neutral_spec = self.session_environment_adoption_spec(thread, provider, None);
         let spec = provider
+            .adoption()
             .effective_adoption_layout(&neutral_spec, &handle)
             .map_err(|error| {
                 HostError::classified(
@@ -803,12 +804,13 @@ impl SharedHost {
             })?
             .spec;
         let observation = provider
+            .adoption()
             .observe_effective(
                 &spec,
                 &handle,
                 Some(environment.as_ref()),
                 awaken_provisioning_contract::SandboxObservationBasis::Unattached,
-                awaken_container_contract::ContainerObservationPurpose::Recovery,
+                awaken_session_environment_contract::ObservationPurpose::Recovery,
             )
             .await
             .map_err(|error| {
@@ -831,7 +833,7 @@ impl SharedHost {
                 ..
             } => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| {
                         HostError::classified(
                             "session_environment_observation_incompatible",
@@ -849,7 +851,7 @@ impl SharedHost {
             @ (awaken_provisioning_contract::SandboxObservation::Terminal { .. }
             | awaken_provisioning_contract::SandboxObservation::Disposing { .. }) => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| {
                         HostError::classified(
                             "session_environment_observation_incompatible",
@@ -1018,12 +1020,13 @@ impl SharedHost {
             )
         })?;
         let observation = provider
+            .adoption()
             .observe_effective(
                 &spec,
                 &handle,
                 retained,
                 provider_effect.observation_basis(&spec),
-                awaken_container_contract::ContainerObservationPurpose::Recovery,
+                awaken_session_environment_contract::ObservationPurpose::Recovery,
             )
             .await
             .map_err(|error| {
@@ -1069,11 +1072,11 @@ impl SharedHost {
                     (None, None) => {
                         let rebound = match revoked_owner.as_ref() {
                             Some(retiring) => provider
-                                .rebind_retained(&spec, &handle, &retiring.owned.environment(),
+                                .adoption().rebind_retained(&spec, &handle, &retiring.owned.environment(),
                                     provider_effect)
                                 .await,
                             None => provider
-                                .adopt_effective_for_effect(&spec, &handle, provider_effect)
+                                .adoption().adopt_effective_for_effect(&spec, &handle, provider_effect)
                                 .await,
                         };
                         admit_original()?;
@@ -1175,6 +1178,7 @@ impl SharedHost {
             observation,
         } = recovery;
         provider
+            .adoption()
             .validate_closed_observation(handle, observation)
             .map_err(|error| HostError::internal(error.to_string()))?;
         // Cause/effect decision table: C1 exact provider evidence is closed;

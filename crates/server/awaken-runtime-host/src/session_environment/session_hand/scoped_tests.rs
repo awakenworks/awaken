@@ -7,8 +7,8 @@
 use super::super::environment::EnvironmentStopProof;
 use super::super::tests::{DoneProcess, FakeHandExecutor, UnreapableProcess, spec};
 use super::super::{
-    SandboxEnvironment, SandboxEnvironmentAccess as _, SessionEnvironment,
-    SessionEnvironmentProvider,
+    SandboxEnvironment, SandboxEnvironmentAccess as _, SandboxEnvironmentProvider,
+    SessionEnvironment,
 };
 use super::*;
 use crate::acp_backend::deployment_test_binary;
@@ -27,7 +27,7 @@ impl awaken_provisioning_contract::CurrentExecutionAuthority for CurrentAuthorit
 
 async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
     let mut provider =
-        SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base, false);
+        SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base, false);
     if failing_hand {
         provider.install_workdir_hand(
             Arc::new(UnusedHandExecutorFactory),
@@ -47,7 +47,7 @@ async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .unwrap();

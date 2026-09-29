@@ -394,6 +394,7 @@ impl SharedHost {
                     self.execution_authority.as_ref(),
                 )?;
                 provider
+                    .terminal()
                     .dispose_restored(&spec, expected, &authorization, &authority)
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;

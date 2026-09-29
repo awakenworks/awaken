@@ -9,21 +9,22 @@ async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
     // than silently degrading the rebuild into an ordinary unfenced create.
     // U2 the same unattached Create reaches the unattached provider entrance.
     let fake = Arc::new(FakeContainerProvider::default());
-    let provider = SessionEnvironmentProvider::container(
+    let provider = SandboxEnvironmentProvider::container(
         fake.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
-    );
-    let spec = provider.effective_spec(&spec()).unwrap();
+    )
+    .into_session_provider();
+    let spec = provider.realizer().effective_spec(&spec()).unwrap();
+    let source = pc::SandboxHandle::new("container", "source");
     let rebuilt = provider
+        .realizer()
         .create_effective_for_effect(
             &spec,
             crate::session_environment::ProviderEffect::Unattached,
-            None,
-            awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
-                source: Box::new(pc::SandboxHandle::new("container", "source")),
-            },
+            Some(&source),
+            awaken_session_environment_contract::EnvironmentRealizationKind::Rebuild,
         )
         .await;
     assert!(
@@ -32,11 +33,12 @@ async fn unattached_container_rebuild_is_refused_before_any_provider_call() {
     );
     assert_eq!(fake.creates.load(Ordering::SeqCst), 0, "U1 zero creations");
     provider
+        .realizer()
         .create_effective_for_effect(
             &spec,
             crate::session_environment::ProviderEffect::Unattached,
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .expect("U2");
@@ -53,19 +55,21 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
     // R1=A1+A2 -> restored, R2=A1+A3 -> untouched. This catches the former
     // Container no-op that let an active manifest coexist with an empty Pod.
     let fake = Arc::new(FakeContainerProvider::default());
-    let provider = SessionEnvironmentProvider::container(
+    let provider = SandboxEnvironmentProvider::container(
         fake.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
-    );
-    let spec = provider.effective_spec(&spec()).unwrap();
+    )
+    .into_session_provider();
+    let spec = provider.realizer().effective_spec(&spec()).unwrap();
     let created = provider
+        .realizer()
         .create_effective_for_effect(
             &spec,
             crate::session_environment::ProviderEffect::Unattached,
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .unwrap();
@@ -93,7 +97,12 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
     drop(created);
     fake.shared.lock().unwrap().remove(&mounted.mount_path);
     let adopted = provider
-        .adopt_effective(&spec, &handle)
+        .adoption()
+        .adopt_effective_for_effect(
+            &spec,
+            &handle,
+            crate::session_environment::ProviderEffect::Unattached,
+        )
         .await
         .expect("adopt the same container after the input tree was lost");
     adopted
@@ -120,21 +129,29 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
         .lock()
         .unwrap()
         .insert("__ready_observation".into(), Vec::new());
-    let provider = SessionEnvironmentProvider::container(
+    let provider = SandboxEnvironmentProvider::container(
         fake.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
-    );
-    let spec = provider.effective_spec(&spec()).unwrap();
+    )
+    .into_session_provider();
+    let spec = provider.realizer().effective_spec(&spec()).unwrap();
     let handle = current_fake_container_handle(&spec);
     let fence = pc::SandboxEffectFence::new("observe", "owner", "boot", 1, u64::MAX).unwrap();
-    for purpose in [
-        awaken_container_contract::ContainerObservationPurpose::Recovery,
-        awaken_container_contract::ContainerObservationPurpose::TerminalCleanup,
+    for (purpose, container_purpose) in [
+        (
+            awaken_session_environment_contract::ObservationPurpose::Recovery,
+            awaken_container_contract::ContainerObservationPurpose::Recovery,
+        ),
+        (
+            awaken_session_environment_contract::ObservationPurpose::TerminalCleanup,
+            awaken_container_contract::ContainerObservationPurpose::TerminalCleanup,
+        ),
     ] {
         assert_eq!(
             provider
+                .adoption()
                 .observe_effective(
                     &spec,
                     &handle,
@@ -151,12 +168,13 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
         );
         assert_eq!(
             fake.observations.lock().unwrap().last(),
-            Some(&(purpose, fence.clone()))
+            Some(&(container_purpose, fence.clone()))
         );
     }
     fake.shared.lock().unwrap().remove("__ready_observation");
     assert!(
         provider
+            .adoption()
             .observe_effective(
                 &spec,
                 &handle,
@@ -165,7 +183,7 @@ async fn host_observation_preserves_purpose_and_exact_fence() {
                     spec: &spec,
                     effect_fence: &fence,
                 },
-                awaken_container_contract::ContainerObservationPurpose::TerminalCleanup
+                awaken_session_environment_contract::ObservationPurpose::TerminalCleanup
             )
             .await
             .is_err()

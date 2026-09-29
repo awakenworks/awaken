@@ -53,6 +53,7 @@ mod agent_view;
 mod files;
 mod hand;
 mod proofs;
+mod provider;
 mod provider_effect;
 mod realized;
 
@@ -60,6 +61,11 @@ pub use agent_view::{AgentFilesystemClient, AgentFilesystemView, AgentPathView};
 pub use files::{CapturedArtifact, DiscoveredSkillFile};
 pub use hand::{ContainerHandResidency, HandExecutorFactory};
 pub use proofs::{EnvironmentQuiescenceProof, EnvironmentStopProof, HandStopProof};
+pub use provider::{
+    EnvironmentAdoption, EnvironmentCapacity, EnvironmentProviderInstallation,
+    EnvironmentRealizationKind, EnvironmentRealizer, EnvironmentTerminalRealization,
+    ObservationPurpose, SessionEnvironmentProvider,
+};
 pub use provider_effect::{EnvironmentAdoptionLayout, ProviderEffect};
 pub use realized::{
     AgentProcessEnvironment, AgentToolEnvironment, EnvironmentHarvest, EnvironmentLifecycle,
