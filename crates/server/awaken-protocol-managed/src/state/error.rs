@@ -7,6 +7,7 @@ use awaken_session_error_contract::{RunError, RunErrorKind};
 use awaken_session_execution_contract::LiveInboxError;
 
 const SESSION_PROJECTION_RECOVERY_REQUIRED_CODE: &str = "session_projection_recovery_required";
+const SESSION_EVENT_HISTORY_CONFLICT_CODE: &str = "session_event_history_conflict";
 
 /// Why a session operation failed (mapped to an HTTP status by the router).
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +43,17 @@ pub enum StateError {
 }
 
 impl StateError {
+    /// A completed candidate contradicted an already published event. The
+    /// delivery owner supplies the exact id and typed cause before the cache
+    /// CAS; callers must leave the previously visible history untouched.
+    pub(crate) fn event_history_conflict(id: &str, cause: &str) -> Self {
+        Self::Run(RunError {
+            message: format!("committed Managed event {id} has conflicting {cause}"),
+            kind: RunErrorKind::Internal,
+            code: SESSION_EVENT_HISTORY_CONFLICT_CODE.into(),
+        })
+    }
+
     /// Classify a damaged committed Awaiting projection without weakening
     /// strict reply admission. Event reads expose the existing non-2xx health
     /// seam, while the Session route may still return root-owned lifecycle

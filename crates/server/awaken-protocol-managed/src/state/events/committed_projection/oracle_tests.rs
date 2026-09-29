@@ -18,27 +18,10 @@ use std::sync::{LazyLock, Mutex};
 use super::*;
 use crate::state::sessions::RehydrationPurpose;
 
-/// Tests whose histories still diverge warm vs cold, each with the most
-/// divergent publication points it may produce. An entry leaves the list, or
-/// its allowance falls, in the commit that removes its divergence.
-const KNOWN_DIVERGENCES: &[(&str, usize)] = &[
-    (
-        "state::events::tests::closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads",
-        8,
-    ),
-    (
-        "state::events::tests::committed_lifecycle_closes_cross_protocol_managed_projection_once",
-        2,
-    ),
-    (
-        "state::events::tests::newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason",
-        3,
-    ),
-];
-
-/// Suite-wide ceiling on divergent publication points: the sum of
-/// [`KNOWN_DIVERGENCES`]. It may only fall; the timeline's final value is 0.
-const DIVERGENCE_CEILING: usize = 13;
+/// Every test shares this one zero ceiling; no history or refresh schedule is
+/// exempt from the warm/cold comparison except the two explicit read-counting
+/// tests, whose own source-read budget would be changed by the oracle read.
+const DIVERGENCE_CEILING: usize = 0;
 
 /// Divergent publication points observed per test in this process.
 static OBSERVED: LazyLock<Mutex<HashMap<String, usize>>> = LazyLock::new(Mutex::default);
@@ -145,10 +128,6 @@ impl ManagedState {
             .name()
             .unwrap_or("<unnamed thread>")
             .to_string();
-        let allowance = KNOWN_DIVERGENCES
-            .iter()
-            .find(|(name, _)| *name == test)
-            .map_or(0, |(_, allowance)| *allowance);
         let observed = {
             let mut observed = OBSERVED.lock().unwrap();
             let count = observed.entry(test.clone()).or_default();
@@ -156,9 +135,9 @@ impl ManagedState {
             *count
         };
         assert!(
-            observed <= allowance,
-            "warm/cold oracle: divergent publication {observed} of {test} exceeds its known \
-             allowance {allowance} for Session {session_id}:\n{}",
+            observed == DIVERGENCE_CEILING,
+            "warm/cold oracle: divergent publication {observed} of {test} exceeds the zero \
+             ceiling for Session {session_id}:\n{}",
             describe_divergence(
                 &warm_history,
                 &cold_history,
@@ -204,30 +183,9 @@ impl ManagedState {
 }
 
 #[test]
-fn the_divergence_ceiling_is_the_sum_of_distinct_known_divergences() {
-    // Rules: R1 the suite-wide ceiling equals the sum of the per-test
-    // allowances, so lowering one without the other fails; R2 each test is
-    // listed once with a positive allowance, so a fixed test leaves the list
-    // instead of lingering at zero.
-    assert_eq!(
-        KNOWN_DIVERGENCES
-            .iter()
-            .map(|(_, allowance)| allowance)
-            .sum::<usize>(),
-        DIVERGENCE_CEILING,
-        "R1"
-    );
-    let mut names = KNOWN_DIVERGENCES
-        .iter()
-        .map(|(name, _)| *name)
-        .collect::<Vec<_>>();
-    names.sort_unstable();
-    names.dedup();
-    assert_eq!(names.len(), KNOWN_DIVERGENCES.len(), "R2 distinct");
-    assert!(
-        KNOWN_DIVERGENCES
-            .iter()
-            .all(|(_, allowance)| *allowance > 0),
-        "R2 positive"
-    );
+fn the_divergence_ceiling_cannot_regress_above_zero() {
+    // Cause: a future edit tries to admit even one known divergence again.
+    // Effect: this policy test fails before a green oracle result can bless it.
+    // Rule Z1: every warm/cold comparison has a zero allowance.
+    assert_eq!(DIVERGENCE_CEILING, 0, "Z1 no divergence exemptions");
 }

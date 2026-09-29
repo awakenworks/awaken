@@ -49,7 +49,8 @@ pub use evidence::{
 pub use fact::{FactKind, TimelineFact};
 pub use fault::{RunFault, run_fault, run_state_fault};
 pub use historical::{
-    audited_await_targets, historical_message_boundaries, historical_pending_by_lifecycle,
+    audited_await_targets, historical_message_await_name, historical_message_boundaries,
+    historical_pending_by_lifecycle,
 };
 pub use index::{
     BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,
@@ -63,7 +64,7 @@ pub use interval::{
 pub use key::{FactKey, FactProvenance};
 pub use lifecycle::{
     ChildLifecycle, CoordinatedThread, ThreadStatus, archive_children, project_child_lifecycle,
-    terminate_session,
+    root_lifecycle_opening_facts, terminate_session,
 };
 pub use observation::run_observation_facts;
 pub use order::{CanonicalOrder, Ordinal, historical_pending_projection_order};
@@ -77,6 +78,7 @@ pub use transcript::{
     AdvisorConsultationBlocks, CommittedMessageProjection, CommittedTranscriptEvidence,
     RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase, advisor_consultation_blocks,
     assistant_response_coordinates, committed_transcript_evidence, fold_transcript,
+    validate_committed_message_identities,
 };
 pub use transcript_plan::{
     ChildTranscript, ChildTranscriptPlan, ChildTranscriptStep, MessageFold, plan_child_transcript,

@@ -6,7 +6,7 @@
 //! replica builds from H's prefix alone, at every refreshed point.
 //! P2 prefix monotonicity: for every prefix P of H and the next prefix P',
 //! the cold history of P' keeps every id of P with the same payload and in
-//! the same relative order.
+//! its original position. Newly published facts append after P's frontier.
 //! P3 replica switch: for every id a warm replica published, a fresh cold
 //! replica pages after that id to exactly the warm suffix.
 //!
@@ -28,6 +28,9 @@ pub(super) trait Timeline: Sized {
 
     async fn new(steps: &[Self::Step]) -> Self;
     async fn apply(&mut self, step: Self::Step);
+    /// Whether this commit leaves the current Awaiting Run without its own
+    /// committed answerable target. Such a prefix must refuse publication.
+    fn damaged_at(step: Self::Step) -> bool;
     fn warm(&self) -> &ManagedState;
     fn session_id(&self) -> &str;
     /// A fresh replica over the same Runtime and Session stores.
@@ -93,11 +96,30 @@ fn one_aggregate_opening_per_interval(history: &[DurableEvent]) -> Result<(), St
 
 /// Refresh one replica. A refresh that fails is a property violation: the
 /// committed prefix did not project on that replica.
-async fn refresh(state: &ManagedState, session_id: &str) -> Result<(), String> {
-    state
-        .refresh_committed_events(session_id)
-        .await
-        .map_err(|error| format!("the committed prefix does not project: {error}"))
+async fn refresh(state: &ManagedState, session_id: &str, damaged: bool) -> Result<(), String> {
+    let before = state.sessions.lock().unwrap().get(session_id).cloned();
+    let result = state.refresh_committed_events(session_id).await;
+    match (result, damaged) {
+        (Ok(()), false) => Ok(()),
+        (Err(error), true) if error.is_projection_recovery_required() => {
+            let after = state.sessions.lock().unwrap().get(session_id).cloned();
+            match (before, after) {
+                (Some(before), Some(after))
+                    if before.cache_revision == after.cache_revision
+                        && after
+                            .same_projected_content(&before)
+                            .map_err(|e| e.to_string())? =>
+                {
+                    Ok(())
+                }
+                (None, None) => Ok(()),
+                (None, Some(after)) if after.events.is_empty() => Ok(()),
+                _ => Err("rejected damaged prefix changed the published memo".into()),
+            }
+        }
+        (Ok(()), true) => Err("damaged Awaiting prefix was published".into()),
+        (Err(error), _) => Err(format!("the committed prefix does not project: {error}")),
+    }
 }
 
 /// P1 for one schedule: refresh warm at every step whose bit is set, compare
@@ -111,10 +133,20 @@ pub(super) async fn warm_equals_cold<T: Timeline>(
     for (position, step) in steps.iter().copied().enumerate() {
         timeline.apply(step).await;
         if schedule & (1 << position) != 0 {
-            compare_with_cold(&timeline, &format!("schedule {schedule:#b} after {step:?}")).await?;
+            compare_with_cold(
+                &timeline,
+                &format!("schedule {schedule:#b} after {step:?}"),
+                T::damaged_at(step),
+            )
+            .await?;
         }
     }
-    compare_with_cold(&timeline, &format!("schedule {schedule:#b} final")).await
+    compare_with_cold(
+        &timeline,
+        &format!("schedule {schedule:#b} final"),
+        steps.last().is_some_and(|step| T::damaged_at(*step)),
+    )
+    .await
 }
 
 /// Refresh the warm replica, build a cold one over the same prefix, and
@@ -122,15 +154,21 @@ pub(super) async fn warm_equals_cold<T: Timeline>(
 async fn compare_with_cold<T: Timeline>(
     timeline: &T,
     label: &str,
+    damaged: bool,
 ) -> Result<Vec<DurableEvent>, String> {
-    refresh(timeline.warm(), timeline.session_id())
+    refresh(timeline.warm(), timeline.session_id(), damaged)
         .await
         .map_err(|error| format!("{label}: warm {error}"))?;
-    let warm = durable_history(timeline.warm(), timeline.session_id());
     let cold = timeline.cold();
-    refresh(&cold, timeline.session_id())
+    refresh(&cold, timeline.session_id(), damaged)
         .await
         .map_err(|error| format!("{label}: cold {error}"))?;
+    if damaged {
+        // A rejected prefix has no new listable history on either replica.
+        // Every schedule will compare the next valid prefix normally.
+        return Ok(Vec::new());
+    }
+    let warm = durable_history(timeline.warm(), timeline.session_id());
     let cold = durable_history(&cold, timeline.session_id());
     if warm != cold {
         return Err(format!(
@@ -166,20 +204,24 @@ pub(super) async fn every_schedule_equivalent<T: Timeline>(
     }
 }
 
-/// P2: the cold history after each step keeps every id the cold history of
-/// the previous step published, with its payload, in its relative order.
+/// P2: the cold history after each step retains the previous published prefix
+/// at its exact positions. A new fact before its frontier breaks paging even
+/// when all old ids keep their relative order.
 pub(super) async fn prefix_monotone<T: Timeline>(steps: &[T::Step]) -> Result<(), String> {
     let mut timeline = T::new(steps).await;
     let mut previous: Vec<DurableEvent> = Vec::new();
     for step in steps.iter().copied() {
         timeline.apply(step).await;
         let cold = timeline.cold();
-        refresh(&cold, timeline.session_id())
+        let damaged = T::damaged_at(step);
+        refresh(&cold, timeline.session_id(), damaged)
             .await
             .map_err(|error| format!("after {step:?}: {error}"))?;
+        if damaged {
+            continue;
+        }
         let current = durable_history(&cold, timeline.session_id());
-        let mut position = 0;
-        for event in &previous {
+        for (position, event) in previous.iter().enumerate() {
             match current.iter().position(|candidate| candidate.0 == event.0) {
                 None => {
                     return Err(format!(
@@ -187,19 +229,26 @@ pub(super) async fn prefix_monotone<T: Timeline>(steps: &[T::Step]) -> Result<()
                         event.0, event.1["type"]
                     ));
                 }
-                Some(found) if current[found] != *event => {
+                Some(found)
+                    if current[found].1 != event.1
+                        || !(current[found].2 == event.2
+                            || (event.2.is_none() && current[found].2.is_some())) =>
+                {
                     return Err(format!(
                         "after {step:?}: {} changed from {} to {}",
                         event.0, event.1, current[found].1
                     ));
                 }
-                Some(found) if found < position => {
+                Some(found) if found != position => {
                     return Err(format!(
-                        "after {step:?}: {} {} moved before an event it followed",
-                        event.0, event.1["type"]
+                        "after {step:?}: {} {} moved from published position {position} to {found}; a new fact was inserted before the old frontier: {:?} -> {:?}",
+                        event.0,
+                        event.1["type"],
+                        types(&previous),
+                        types(&current),
                     ));
                 }
-                Some(found) => position = found,
+                Some(_) => {}
             }
         }
         previous = current;
@@ -215,13 +264,13 @@ pub(super) async fn replica_switch_preserves_suffixes<T: Timeline>(
     let mut timeline = T::new(steps).await;
     for step in steps.iter().copied() {
         timeline.apply(step).await;
-        refresh(timeline.warm(), timeline.session_id())
+        refresh(timeline.warm(), timeline.session_id(), T::damaged_at(step))
             .await
             .map_err(|error| format!("after {step:?}: warm {error}"))?;
     }
     let warm = durable_history(timeline.warm(), timeline.session_id());
     let cold = timeline.cold();
-    refresh(&cold, timeline.session_id())
+    refresh(&cold, timeline.session_id(), false)
         .await
         .map_err(|error| format!("cold {error}"))?;
     for (index, (id, _, _)) in warm.iter().enumerate() {
@@ -255,6 +304,8 @@ pub(super) enum Step {
     Legacy(usize),
     /// Commit one assistant text response.
     Say(usize),
+    /// Replay its id with different content; recovery must reject the prefix.
+    ConflictingSay(usize),
     /// Commit one executed tool call and its result.
     Tool(usize),
     /// Commit, in one commit, a response whose tool call follows more
@@ -264,6 +315,11 @@ pub(super) enum Step {
     /// Commit a tool call that awaits permission: its message, the answerable
     /// ticket, `Awaiting`, and the audit row naming the await target.
     Ask(usize),
+    /// An audited wait commits before its ToolUse Message, which arrives at a
+    /// later source cursor. The already-issued Run-qualified id must survive.
+    WaitWithoutMessage(usize),
+    /// Commit only the ToolUse Message for an earlier audited wait.
+    LateToolMessage(usize),
     /// As [`Step::Ask`], but the commit left no audit of the await target.
     AskUnaudited(usize),
     /// Commit a scheduled action that pauses the Run while its Session
@@ -306,21 +362,39 @@ impl RootTimeline {
             .expect("a start step precedes the Run")
     }
 
-    fn ask(&mut self, index: usize, cursor: u64, reason: ToolAwaitKind) {
-        let session_id = self.session_id.clone();
-        let slot = self.slot(index);
-        let run = slot.run.clone();
-        let call = format!("ask-{index}-{}", slot.asks);
-        let message = MessageId::assistant(&run, 10 + slot.asks);
-        let input = serde_json::json!({"path": "secret.txt"});
+    fn ask_identity(index: usize, asks: usize) -> (String, serde_json::Value) {
+        (
+            format!("ask-{index}-{asks}"),
+            serde_json::json!({"path": "secret.txt"}),
+        )
+    }
+
+    fn commit_ask_message(
+        &self,
+        cursor: u64,
+        run: &RunId,
+        asks: usize,
+        call: &str,
+        input: &serde_json::Value,
+    ) {
         self.runtime.push_committed_message(
             cursor,
             Message::new(
-                message,
+                MessageId::assistant(run, 10 + asks),
                 Role::Assistant,
-                vec![ContentBlock::tool_use(&call, "read", input.clone())],
+                vec![ContentBlock::tool_use(call, "read", input.clone())],
             ),
         );
+    }
+
+    fn ask(&mut self, index: usize, cursor: u64, reason: ToolAwaitKind) {
+        let session_id = self.session_id.clone();
+        let slot = self.slot(index);
+        let (run, asks) = (slot.run.clone(), slot.asks);
+        let (call, input) = Self::ask_identity(index, asks);
+        if reason != ToolAwaitKind::PermissionWithoutMessage {
+            self.commit_ask_message(cursor, &run, asks, &call, &input);
+        }
         *self.runtime.pending.lock().unwrap() = Some(Pending {
             tool_use_id: call.clone(),
             name: "read".into(),
@@ -329,7 +403,9 @@ impl RootTimeline {
         });
         let target = awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
             reason: match reason {
-                ToolAwaitKind::Permission | ToolAwaitKind::PermissionUnaudited => {
+                ToolAwaitKind::Permission
+                | ToolAwaitKind::PermissionWithoutMessage
+                | ToolAwaitKind::PermissionUnaudited => {
                     awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission
                 }
                 ToolAwaitKind::Scheduled => {
@@ -408,12 +484,17 @@ impl RootTimeline {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ToolAwaitKind {
     Permission,
+    PermissionWithoutMessage,
     PermissionUnaudited,
     Scheduled,
 }
 
 impl Timeline for RootTimeline {
     type Step = Step;
+
+    fn damaged_at(step: Self::Step) -> bool {
+        matches!(step, Step::AskUnaudited(_))
+    }
 
     async fn new(steps: &[Step]) -> Self {
         let runs = steps
@@ -424,9 +505,12 @@ impl Timeline for RootTimeline {
                 | Step::ExternalInput(index)
                 | Step::Legacy(index)
                 | Step::Say(index)
+                | Step::ConflictingSay(index)
                 | Step::Tool(index)
                 | Step::Burst(index)
                 | Step::Ask(index)
+                | Step::WaitWithoutMessage(index)
+                | Step::LateToolMessage(index)
                 | Step::AskUnaudited(index)
                 | Step::Schedule(index)
                 | Step::Reply(index)
@@ -577,11 +661,19 @@ impl Timeline for RootTimeline {
                     asks: 0,
                 });
             }
-            Step::Say(index) => {
+            Step::Say(index) | Step::ConflictingSay(index) => {
                 let run = self.slot(index).run.clone();
                 self.runtime.push_committed_message(
                     cursor,
-                    Message::text(MessageId::assistant(&run, 0), Role::Assistant, "working"),
+                    Message::text(
+                        MessageId::assistant(&run, 0),
+                        Role::Assistant,
+                        if matches!(step, Step::ConflictingSay(_)) {
+                            "conflicting work"
+                        } else {
+                            "working"
+                        },
+                    ),
                 );
             }
             Step::Tool(index) => {
@@ -638,6 +730,15 @@ impl Timeline for RootTimeline {
                 }
             }
             Step::Ask(index) => self.ask(index, cursor, ToolAwaitKind::Permission),
+            Step::WaitWithoutMessage(index) => {
+                self.ask(index, cursor, ToolAwaitKind::PermissionWithoutMessage);
+            }
+            Step::LateToolMessage(index) => {
+                let slot = self.slot(index);
+                let (run, asks) = (slot.run.clone(), slot.asks);
+                let (call, input) = Self::ask_identity(index, asks);
+                self.commit_ask_message(cursor, &run, asks, &call, &input);
+            }
             Step::AskUnaudited(index) => {
                 self.ask(index, cursor, ToolAwaitKind::PermissionUnaudited);
             }
@@ -715,9 +816,15 @@ pub(super) enum ChildStep {
     Link,
     /// Commit one child assistant response.
     Say,
+    /// Replay its id with different content; recovery must reject the prefix.
+    ConflictingSay,
     /// The child pauses on a permission ticket, with the audit row naming
     /// its await target when `audited`.
     Ask { audited: bool },
+    /// The audited pause commits before its ToolUse Message.
+    AskWithoutMessage,
+    /// The matching ToolUse Message commits after that pause.
+    LateToolMessage,
     /// The child's ticket is consumed: `Resumed` and the tool result commit.
     Reply,
     /// The child Run is cancelled.
@@ -785,10 +892,27 @@ impl ChildTimeline {
             state,
         ));
     }
+
+    fn child_ask_message(&self, cursor: u64, run: &RunId) {
+        let call = format!("child-ask-{}", self.asks);
+        let input = serde_json::json!({"command": format!("echo {}", self.asks)});
+        self.commit_child_message(
+            cursor,
+            Message::new(
+                MessageId::assistant(run, 10 + self.asks),
+                Role::Assistant,
+                vec![ContentBlock::tool_use(&call, "bash", input)],
+            ),
+        );
+    }
 }
 
 impl Timeline for ChildTimeline {
     type Step = ChildStep;
+
+    fn damaged_at(step: Self::Step) -> bool {
+        matches!(step, ChildStep::Ask { audited: false })
+    }
 
     async fn new(_steps: &[ChildStep]) -> Self {
         let runtime = RehydrateFake::default();
@@ -859,21 +983,24 @@ impl Timeline for ChildTimeline {
                     RunState::Running,
                 );
             }
-            ChildStep::Say => self.commit_child_message(
+            ChildStep::Say | ChildStep::ConflictingSay => self.commit_child_message(
                 cursor,
-                Message::text(MessageId::assistant(&run, 0), Role::Assistant, "child work"),
+                Message::text(
+                    MessageId::assistant(&run, 0),
+                    Role::Assistant,
+                    if matches!(step, ChildStep::ConflictingSay) {
+                        "conflicting child work"
+                    } else {
+                        "child work"
+                    },
+                ),
             ),
-            ChildStep::Ask { audited } => {
+            ChildStep::Ask { .. } | ChildStep::AskWithoutMessage => {
                 let call = format!("child-ask-{}", self.asks);
                 let input = serde_json::json!({"command": format!("echo {}", self.asks)});
-                self.commit_child_message(
-                    cursor,
-                    Message::new(
-                        MessageId::assistant(&run, 10 + self.asks),
-                        Role::Assistant,
-                        vec![ContentBlock::tool_use(&call, "bash", input.clone())],
-                    ),
-                );
+                if !matches!(step, ChildStep::AskWithoutMessage) {
+                    self.child_ask_message(cursor, &run);
+                }
                 self.runtime.pending_by_thread.lock().unwrap().insert(
                     CHILD.into(),
                     Pending {
@@ -901,7 +1028,10 @@ impl Timeline for ChildTimeline {
                     RunState::Awaiting,
                 );
                 awaiting.await_reason = Some(target.reason());
-                if audited {
+                if matches!(
+                    step,
+                    ChildStep::Ask { audited: true } | ChildStep::AskWithoutMessage
+                ) {
                     self.runtime
                         .await_targets
                         .lock()
@@ -916,6 +1046,7 @@ impl Timeline for ChildTimeline {
                 }
                 self.runtime.lifecycle.lock().unwrap().push(awaiting);
             }
+            ChildStep::LateToolMessage => self.child_ask_message(cursor, &run),
             ChildStep::Reply => {
                 let call = format!("child-ask-{}", self.asks);
                 self.asks += 1;
@@ -976,6 +1107,11 @@ pub(super) const CONSECUTIVE_RUNS: &[Step] = &[
 ];
 pub(super) const AUDITED_PERMISSION_PAUSE: &[Step] =
     &[Step::Input(0), Step::Ask(0), Step::Reply(0), Step::Close(0)];
+pub(super) const LATE_ROOT_TOOL_MESSAGE: &[Step] = &[
+    Step::Legacy(0),
+    Step::WaitWithoutMessage(0),
+    Step::LateToolMessage(0),
+];
 pub(super) const RESCHEDULED_RUN: &[Step] = &[Step::Begin(0), Step::Reschedule(0), Step::Close(0)];
 pub(super) const OPEN_RESCHEDULED_INTERVAL: &[Step] = &[Step::Begin(0), Step::Reschedule(0)];
 pub(super) const OPEN_USER_EVENT_INTERVAL: &[Step] = &[Step::Input(0), Step::Say(0), Step::Tool(0)];
@@ -1025,6 +1161,11 @@ pub(super) const CHILD_AUDITED_PAUSE: &[ChildStep] = &[
     ChildStep::Reply,
     ChildStep::Close,
 ];
+pub(super) const LATE_CHILD_TOOL_MESSAGE: &[ChildStep] = &[
+    ChildStep::Link,
+    ChildStep::AskWithoutMessage,
+    ChildStep::LateToolMessage,
+];
 pub(super) const CHILD_UNAUDITED_PAUSE: &[ChildStep] = &[
     ChildStep::Link,
     ChildStep::Ask { audited: false },
@@ -1052,6 +1193,7 @@ pub(super) const ROOT_SCENARIOS: &[(&str, &[Step])] = &[
     ("external_customer_input", EXTERNAL_CUSTOMER_INPUT),
     ("consecutive_runs", CONSECUTIVE_RUNS),
     ("audited_permission_pause", AUDITED_PERMISSION_PAUSE),
+    ("late_root_tool_message", LATE_ROOT_TOOL_MESSAGE),
     ("rescheduled_run", RESCHEDULED_RUN),
     ("open_rescheduled_interval", OPEN_RESCHEDULED_INTERVAL),
     ("open_user_event_interval", OPEN_USER_EVENT_INTERVAL),
@@ -1081,7 +1223,96 @@ pub(super) const ROOT_SCENARIOS: &[(&str, &[Step])] = &[
 /// Every named coordinated-child history.
 pub(super) const CHILD_SCENARIOS: &[(&str, &[ChildStep])] = &[
     ("child_audited_pause", CHILD_AUDITED_PAUSE),
+    ("late_child_tool_message", LATE_CHILD_TOOL_MESSAGE),
     ("child_unaudited_pause", CHILD_UNAUDITED_PAUSE),
     ("child_pausing_twice", CHILD_PAUSING_TWICE),
     ("child_cancelled_pause", CHILD_CANCELLED_PAUSE),
 ];
+
+async fn repeated_message_identity<T: Timeline>(
+    start: T::Step,
+    say: T::Step,
+    conflicting: T::Step,
+) {
+    let mut timeline = T::new(&[start, say, conflicting]).await;
+    timeline.apply(start).await;
+    refresh(timeline.warm(), timeline.session_id(), false)
+        .await
+        .unwrap();
+    timeline.apply(say).await;
+    refresh(timeline.warm(), timeline.session_id(), false)
+        .await
+        .unwrap();
+    let issued = durable_history(timeline.warm(), timeline.session_id());
+    timeline.apply(say).await;
+    refresh(timeline.warm(), timeline.session_id(), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        durable_history(timeline.warm(), timeline.session_id()),
+        issued,
+        "R2/E2 exact replay is idempotent"
+    );
+    let before = timeline
+        .warm()
+        .sessions
+        .lock()
+        .unwrap()
+        .get(timeline.session_id())
+        .cloned()
+        .unwrap();
+    timeline.apply(conflicting).await;
+    let error = timeline
+        .warm()
+        .refresh_committed_events(timeline.session_id())
+        .await
+        .unwrap_err();
+    assert!(error.is_projection_recovery_required(), "R3/E3 {error}");
+    let after = timeline
+        .warm()
+        .sessions
+        .lock()
+        .unwrap()
+        .get(timeline.session_id())
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        after.cache_revision, before.cache_revision,
+        "R3/E3 no publication"
+    );
+    assert!(
+        after.same_projected_content(&before).unwrap(),
+        "R3/E3 frame unchanged"
+    );
+    let cold = timeline.cold();
+    assert!(
+        cold.refresh_committed_events(timeline.session_id())
+            .await
+            .unwrap_err()
+            .is_projection_recovery_required(),
+        "R3/E3 cold replica rejects the same corrupt prefix"
+    );
+}
+
+#[tokio::test]
+async fn root_and_child_replays_keep_first_public_message_and_reject_conflicting_content() {
+    // Causes: C1 root or child committed first Message id and content; C2 an
+    // identical later ThreadCommit replays that id; C3 a still later commit
+    // reuses the id with different persisted role/content. Effects: E1 C1
+    // publishes once; E2 C2 retains id/payload/order and sends no duplicate;
+    // E3 C3 gives a typed recovery error on warm and cold, leaving warm cache
+    // revision and complete published frame unchanged. Decision table:
+    // R1=C1=>E1; R2=C1+C2=>E1+E2; R3=C1+C2+C3=>E3.
+    repeated_message_identity::<RootTimeline>(
+        Step::Legacy(0),
+        Step::Say(0),
+        Step::ConflictingSay(0),
+    )
+    .await;
+    repeated_message_identity::<ChildTimeline>(
+        ChildStep::Link,
+        ChildStep::Say,
+        ChildStep::ConflictingSay,
+    )
+    .await;
+}

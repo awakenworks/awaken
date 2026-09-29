@@ -12,6 +12,7 @@
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;
 mod cancelled_model;
+mod damaged_await_health;
 mod pagination;
 mod prefix_monotonicity;
 mod refresh_failure;
@@ -2144,23 +2145,51 @@ impl awaken_session_execution_contract::OutcomeRuntime for LifecycleRuntime {
     }
 }
 
-/// The call a committed pause names in the audit of the Thread's latest
-/// Awaiting commit, once the snapshot passes the timeline's pause health check.
+/// One Thread's exact committed lifecycle and its sole audited target join.
+/// Test consumers use the same snapshot that the projection source would lend.
+fn committed_await_evidence(
+    snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+) -> Result<
+    (
+        Vec<RunLifecycleEvent>,
+        std::collections::HashMap<
+            RunLifecycleCursor,
+            awaken_agent_contract::agent::awaiting::AwaitTarget,
+        >,
+    ),
+    StateError,
+> {
+    let lifecycle = snapshot
+        .lifecycle_events_after(RunLifecycleCursor::default(), usize::MAX)
+        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
+        .events;
+    let targets = awaken_managed_session_events::audited_await_targets(&lifecycle, |thread_id| {
+        (thread_id == snapshot.thread_id.0).then_some(snapshot)
+    })
+    .map_err(projection_error)?;
+    Ok((lifecycle, targets))
+}
+
+fn committed_pause_health_from_snapshot(
+    snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+) -> Result<(), StateError> {
+    let (lifecycle, targets) = committed_await_evidence(snapshot)?;
+    ManagedState::committed_pause_health(snapshot, &lifecycle, &targets)
+}
+
+/// The call a committed pause names in its exact audit after health passes.
 fn audited_current_pause(
     snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-    runtime: &LifecycleRuntime,
 ) -> Option<String> {
-    ManagedState::committed_pause_health(snapshot).ok()?;
-    let lifecycle = runtime.lifecycle.lock().unwrap();
-    let audited =
-        awaken_managed_session_events::historical_pending_by_lifecycle(&lifecycle, |_| Some(snapshot))
-            .unwrap();
+    let (lifecycle, targets) = committed_await_evidence(snapshot).ok()?;
+    ManagedState::committed_pause_health(snapshot, &lifecycle, &targets).ok()?;
     lifecycle
         .iter()
         .rev()
         .find(|event| event.thread_id == snapshot.thread_id)
-        .and_then(|event| audited.get(&event.cursor))
-        .map(|pending| pending.tool_use_id.clone())
+        .and_then(|event| targets.get(&event.cursor))
+        .and_then(Pending::from_await_target)
+        .map(|pending| pending.tool_use_id)
 }
 
 fn lifecycle_cursor(source_commit_cursor: u64) -> RunLifecycleCursor {
@@ -2710,7 +2739,7 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         .unwrap()
         .unwrap();
     assert!(
-        ManagedState::committed_pause_health(&empty).is_err(),
+        committed_pause_health_from_snapshot(&empty).is_err(),
         "P1/E1 committed projection exposes unreconstructable damage"
     );
     assert!(
@@ -2737,7 +2766,7 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        audited_current_pause(&one, &runtime).as_deref(),
+        audited_current_pause(&one).as_deref(),
         Some("call-single-ticket"),
         "P2/E2"
     );
@@ -2758,7 +2787,7 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         "P3/E3 strict reply admission"
     );
     assert_eq!(
-        audited_current_pause(&one, &runtime).as_deref(),
+        audited_current_pause(&one).as_deref(),
         Some("call-single-ticket"),
         "P3/C2 list projection reconstructs without choosing a duplicate ticket"
     );
@@ -2863,7 +2892,7 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
         .unwrap()
         .unwrap();
     assert!(
-        ManagedState::committed_pause_health(&no_target).is_err(),
+        committed_pause_health_from_snapshot(&no_target).is_err(),
         "DI0/E0 no authority makes committed projection unhealthy"
     );
     // The ownership guard is fail-closed: an unstamped request is refused
@@ -2964,7 +2993,7 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        audited_current_pause(&snapshot, &runtime).as_deref(),
+        audited_current_pause(&snapshot).as_deref(),
         Some(call_id),
         "DI1/E1"
     );
@@ -3689,6 +3718,14 @@ async fn pending_child_reply_fixture(
             )],
         )],
     );
+    // The ToolUse and Awaiting belong to the same committed Thread boundary.
+    // Later lifecycle commits must not make the recovery fixture redate this
+    // already-issued Message and change its public source identity.
+    runtime
+        .message_cursors_by_thread
+        .lock()
+        .unwrap()
+        .insert(child_id.clone(), vec![2]);
     runtime.pending_by_thread.lock().unwrap().insert(
         child_id.clone(),
         Pending {
@@ -4304,6 +4341,13 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
                     vec![ContentBlock::text(format!("{label} result"))],
                 )],
             ));
+        runtime
+            .message_cursors_by_thread
+            .lock()
+            .unwrap()
+            .get_mut(&child_id)
+            .expect("R1-R3 child Message cursors")
+            .push(3);
         runtime.lifecycle.lock().unwrap().extend([
             lifecycle(
                 3,
@@ -6527,6 +6571,9 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                 "session.thread_status_running",
                 "agent.message",
                 "session.thread_status_idle",
+                // Class E: the first overlapping Run's terminal closed the
+                // public Thread period; the second terminal owns its opening.
+                "session.thread_status_running",
                 "session.thread_status_idle",
                 "session.usage",
                 "session.status_idle",
@@ -8546,6 +8593,8 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
     // result references without duplicates. K1 canonical non-empty
     // `session_agent_report_text` alone owns report continuation; K2 the shared
     // occurrence projector and append-only Event log own partial replay; K3
+    // the sibling ToolUse becomes listable only at its own ToolResult commit,
+    // so it appends after the already issued Awaiting/idle frontier; K4
     // ToolResult identity validation remains strict.
     //
     // | Rule | Ticket | Results | Report text | Projection | Effects |
@@ -8610,6 +8659,11 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
         .lock()
         .unwrap()
         .insert(child_id.into(), vec![tool_message.clone()]);
+    runtime
+        .message_cursors_by_thread
+        .lock()
+        .unwrap()
+        .insert(child_id.into(), vec![2]);
     runtime.pending_by_thread.lock().unwrap().insert(
         child_id.into(),
         Pending {
@@ -8693,6 +8747,13 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
             ),
         ],
     );
+    // One immutable ToolUse commit precedes the later atomic interruption
+    // result/terminal commit. Recovery must preserve all three coordinates.
+    runtime
+        .message_cursors_by_thread
+        .lock()
+        .unwrap()
+        .insert(child_id.into(), vec![2, 3, 3]);
     runtime.pending_by_thread.lock().unwrap().remove(child_id);
     runtime.lifecycle.lock().unwrap().push(lifecycle(
         3,
@@ -9469,7 +9530,9 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
     // Message boundary; C5 root and child committed usage snapshots differ;
     // C6 the Session owns one immutable price snapshot; C7 aggregate usage
     // contains root plus the ordinary child exactly once; C8 the terminal
-    // aggregate is projected again warm and then rebuilt cold.
+    // aggregate is projected again warm and then rebuilt cold; C9 the first
+    // committed Message retains its original cursor when later results and
+    // lifecycle commits append.
     // Effects: E0 the C2 prefix emits its non-tool thinking/message exactly
     // once but no unclassified MCP call; E1 child `(type,id)` order is identical;
     // E2 primary multiagent/tool `(type,id)` order, including both reports,
@@ -9487,8 +9550,8 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
     // remains revisitable until every ToolUse occurrence is classified.
     // | Rule | Transcript | Refresh grouping | MCP crosses Message | C5,C6 | Effect |
     // | B0 | call-only prefix | first warm read | pending | T | E0 |
-    // | B1 | same | prefix then full | yes | T | E0,E1,E2,E3,E4,E5,E6,E7(R4 warm/replay) |
-    // | B2 | same | full cold read | yes | T | E1,E2,E3,E4,E5,E6,E7(R4 cold) |
+    // | B1 | same + C9 | prefix then full | yes | T | E0,E1,E2,E3,E4,E5,E6,E7(R4 warm/replay) |
+    // | B2 | same + C9 | full cold read | yes | T | E1,E2,E3,E4,E5,E6,E7(R4 cold) |
     let repo = Arc::new(ephemeral_session_repo());
     let runtime = RehydrateFake::default();
     runtime
@@ -9638,6 +9701,14 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
         .lock()
         .unwrap()
         .insert(child_id.into(), vec![first.clone()]);
+    // ThreadCommit assigns a fixed cursor to each committed Message. The
+    // fake's default cursor follows its latest lifecycle, which would
+    // retroactively move `first` when a later child completion appears.
+    runtime
+        .message_cursors_by_thread
+        .lock()
+        .unwrap()
+        .insert(child_id.into(), vec![1]);
     warm.refresh_committed_events(&session.id).await.unwrap();
     let prefix_events = warm
         .list_thread_events(&session.id, child_id, None, None)
@@ -9670,6 +9741,11 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
         .lock()
         .unwrap()
         .insert(child_id.into(), vec![first, result, second]);
+    runtime
+        .message_cursors_by_thread
+        .lock()
+        .unwrap()
+        .insert(child_id.into(), vec![1, 2, 2]);
     runtime.lifecycle.lock().unwrap().push(lifecycle(
         2,
         child_id,
@@ -12039,7 +12115,9 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
 
     let cold_run = RunId("run-cold-4".into());
     let cold_call_id = "call-cold-submit";
-    runtime.replace_committed_messages(vec![(
+    // A cold reader sees a longer committed prefix. Replacing older Messages
+    // used to retract a published Message-qualified tool from durable truth.
+    runtime.push_committed_message(
         100,
         Message::new(
             MessageId("cold-tool".into()),
@@ -12050,7 +12128,7 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
                 serde_json::json!({"manifest_path":"artifact-manifest.json"}),
             )],
         ),
-    )]);
+    );
     let cold_pending = Pending {
         tool_use_id: cold_call_id.into(),
         name: "design_submit_artifact".into(),
@@ -12133,6 +12211,8 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
     // missing sibling ask plus the first result, never duplicate text/tool, then
     // consumes the now-classified source Message; E5 C5 emits one allow/result
     // pair and EndTurn, proving completed work cannot remain frozen.
+    // The sibling's own Awaiting cursor, rather than the earlier first call's
+    // Message/Awaiting cursor, places it after the already listable idle fact.
     // O6 repeats O2/O4 with the real committed AwaitTarget audit prefix.
     // Historical first-call evidence must not override the current sibling
     // ticket: both calls must remain Ask, including a cold read at O4.
@@ -12957,9 +13037,13 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
     //
     // | Rule | Outcome terminal | lifecycle relation | cache       | Effect |
     // | R1   | Errored          | absent             | warm        | E1+E2  |
-    // | R2   | Errored          | exact source Run   | warm/racing | E1-E3  |
+    // | R2   | Errored          | exact source Run at later commits | warm/racing | E1-E3 |
     // | R3   | Errored          | exact source Run   | cold/restart| E1-E4  |
     // | R4   | none             | ordinary root Run  | warm        | E5      |
+    // The terminal Outcome state is already at Thread commit cursor 1.
+    // ThreadCommit stores assign every later commit a dense successor, so
+    // the injected lifecycle below starts at 2 rather than retroactively
+    // introducing another cursor-1 fact after the first public read.
     let session_id = "session-errored-outcome";
     let repository = Arc::new(ephemeral_session_repo());
     let runtime = RehydrateFake::default();
@@ -13041,14 +13125,14 @@ async fn errored_outcome_projection_is_visible_once_and_preserves_unrelated_root
 
     runtime.lifecycle.lock().unwrap().extend([
         lifecycle(
-            1,
+            2,
             session_id,
             &source_run_id,
             RunLifecycleEventKind::Running,
             RunState::Running,
         ),
         lifecycle(
-            2,
+            3,
             session_id,
             &source_run_id,
             RunLifecycleEventKind::Failed,

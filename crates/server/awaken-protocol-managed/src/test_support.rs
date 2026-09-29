@@ -496,7 +496,11 @@ impl CoordinatedRuntimeFake {
         use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
         let (run_id, step) = self.current_child_response();
         let run_ordinal = self.runs.load(std::sync::atomic::Ordering::SeqCst);
-        let source_commit_cursor = run_ordinal.saturating_sub(1) * 4 + 3;
+        // The deferred parent Run already committed its terminal at base+3.
+        // The shared ThreadCommit partition gives this later child Message the
+        // next cursor; reusing base+3 would retroactively insert a fact before
+        // a Session event that was already listable.
+        let source_commit_cursor = run_ordinal.saturating_sub(1) * 4 + 4;
         let mut messages = self.child_messages.lock().unwrap();
         let mut cursors = self.child_message_cursors.lock().unwrap();
         messages.push(Message::new(
@@ -514,12 +518,34 @@ impl CoordinatedRuntimeFake {
         cursors.push(source_commit_cursor);
     }
 
-    pub fn complete_deferred_child(&self, text: &str) {
+    pub fn complete_deferred_child(
+        &self,
+        text: &str,
+        admission: awaken_session_execution_contract::SessionRunActivityAdmission,
+    ) -> awaken_session_state_contract::SessionRuntimeIntervalObservation {
         use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
         use awaken_agent_contract::agent::run::{EndCause, RunState};
         let run_ordinal = self.runs.load(std::sync::atomic::Ordering::SeqCst);
         let base = run_ordinal.saturating_sub(1) * 4;
         let (run_id, step) = self.current_child_response();
+        let awaken_session_execution_contract::SessionRunActivityAdmission::Admitted {
+            session_activity_epoch,
+        } = admission
+        else {
+            panic!("deferred child requires the committed activity receipt");
+        };
+        let source_commit_cursor = base + 5;
+        let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
+            activity_epoch: session_activity_epoch,
+            thread_id: awaken_agent_contract::agent::thread::Id(Self::CHILD_THREAD_ID.into()),
+            run_id: run_id.clone(),
+            lifecycle_cursor: awaken_agent_contract::encode_run_lifecycle_cursor(
+                source_commit_cursor,
+                0,
+            )
+            .unwrap(),
+            source_commit_cursor,
+        };
         {
             let mut messages = self.child_messages.lock().unwrap();
             let mut cursors = self.child_message_cursors.lock().unwrap();
@@ -528,20 +554,21 @@ impl CoordinatedRuntimeFake {
                 Role::Assistant,
                 text,
             ));
-            cursors.push(base + 4);
+            cursors.push(source_commit_cursor);
         }
         self.lifecycle
             .lock()
             .unwrap()
             .push(awaken_agent_contract::RunLifecycleEvent {
-                cursor: awaken_agent_contract::encode_run_lifecycle_cursor(base + 4, 0).unwrap(),
-                source_commit_cursor: base + 4,
+                cursor: observation.lifecycle_cursor,
+                source_commit_cursor,
                 thread_id: awaken_agent_contract::agent::thread::Id(Self::CHILD_THREAD_ID.into()),
                 run_id,
                 kind: awaken_agent_contract::RunLifecycleEventKind::Completed,
                 state: RunState::Ended(EndCause::NaturalEnd),
                 await_reason: None,
             });
+        observation
     }
 }
 

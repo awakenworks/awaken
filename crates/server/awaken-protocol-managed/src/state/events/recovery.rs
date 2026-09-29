@@ -363,14 +363,17 @@ impl ManagedState {
         }))
     }
 
-    /// Refuse a committed prefix whose current Run is paused without an
-    /// audited await target. The timeline classifies every pause from the
-    /// `RunStateChanged` audit its commit wrote beside the ticket, never from
-    /// a live ticket, so a pause that left no target cannot be projected the
-    /// same before and after its ticket is consumed; it is surfaced as damage
-    /// instead. A budget pause needs no target: its reason is the whole fact.
+    /// Refuse a committed prefix whose current Run is paused without the
+    /// target of that exact lifecycle commit. The timeline's one audit join
+    /// supplies `targets`; a newer audit without a new lifecycle transition
+    /// cannot retroactively repair the wait. BudgetReached needs no target.
     pub(super) fn committed_pause_health(
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        lifecycle: &[RunLifecycleEvent],
+        targets: &std::collections::HashMap<
+            RunLifecycleCursor,
+            awaken_agent_contract::agent::awaiting::AwaitTarget,
+        >,
     ) -> Result<(), StateError> {
         let Some(current) = Self::current_recovery_run(snapshot)? else {
             return Ok(());
@@ -381,28 +384,19 @@ impl ManagedState {
         ) {
             return Ok(());
         }
-        let audited = Self::latest_recovery_run_state_change(snapshot, &current.id);
-        let Some((event, awaken_agent_contract::agent::run::RunState::Awaiting)) = audited else {
+        let Some(event) = lifecycle
+            .iter()
+            .rev()
+            .find(|event| event.thread_id == snapshot.thread_id && event.run_id == current.id)
+        else {
             return Err(StateError::projection_recovery_required(
                 "Runtime recovery exposed an Awaiting Run without its answerable ticket; interrupt the Session to settle it",
             ));
         };
-        let budget_pause = event
-            .payload
-            .get("await_reason")
-            .cloned()
-            .and_then(|reason| {
-                serde_json::from_value::<awaken_agent_contract::agent::awaiting::AwaitReason>(
-                    reason,
-                )
-                .ok()
-            })
-            == Some(awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached);
-        if event
-            .payload
-            .get("await_target")
-            .is_some_and(|target| !target.is_null())
-            || budget_pause
+        if event.kind == RunLifecycleEventKind::Awaiting
+            && (targets.contains_key(&event.cursor)
+                || event.await_reason.as_ref()
+                    == Some(&awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached))
         {
             return Ok(());
         }

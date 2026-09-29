@@ -3,26 +3,11 @@
 //! planned by [`awaken_managed_session_events::plan_interval_aggregate`].
 
 use super::*;
-use awaken_managed_session_events::{FactKey, FactProvenance, FactRole, IntervalStep};
+use awaken_managed_session_events::{FactKey, IntervalStep};
 
 impl ManagedState {
     pub(super) fn append_aggregate_running_once(record: &mut SessionRecord, key: FactKey) {
         record.append_fact_once(key, OutboundKind::SessionStatusRunning {});
-    }
-
-    pub(super) fn append_terminal_thread_running_once(
-        record: &mut SessionRecord,
-        terminal: &RunLifecycleEvent,
-    ) {
-        let key = FactKey::new(
-            record.session.id.clone(),
-            FactRole::RootTerminalStatusRunning,
-            FactProvenance::Lifecycle {
-                cursor: terminal.cursor.0,
-            },
-        );
-        let kind = primary_thread_status_kind(record, PrimaryThreadStatusProjection::Running);
-        record.append_fact_once(key, kind);
     }
 
     pub(super) fn replace_interval_aggregate_projections(

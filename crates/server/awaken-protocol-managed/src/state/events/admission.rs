@@ -675,10 +675,20 @@ impl ManagedState {
             .iter()
             .map(|projection| projection.event.clone())
             .collect::<Vec<_>>();
-        self.publish_projection_update(session_id, |candidate| {
-            merge_durable_inbound_projections(candidate, &receipt_projections);
-            Ok(())
-        })?;
+        // The full committed-prefix reducer already owns these same durable
+        // inbound receipts. Publishing a receipt directly onto a stale cache
+        // could put it before earlier Runtime child facts when those facts are
+        // first observed on the next refresh. The accepted root receipt remains
+        // the command outcome even if this disposable refresh cannot complete;
+        // GET/SSE will retry the one reducer against committed truth.
+        if let Err(error) = self.refresh_committed_events(session_id).await {
+            tracing::warn!(
+                session_id,
+                batch_id = %accepted.batch_id,
+                %error,
+                "accepted Session Event awaits committed projection refresh"
+            );
+        }
         Ok(SendEventsResponse { data: receipts })
     }
 }

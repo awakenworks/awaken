@@ -99,7 +99,6 @@ impl ManagedState {
         // prefix, while stable Event ids make a partially classified source
         // Message safely revisitable without another cursor or registry.
         let transcript_evidence = project::committed_transcript_evidence(messages, pending);
-        let mut pending_is_in_new_message = false;
         for step in steps {
             let fold = match step {
                 ChildTranscriptStep::Report {
@@ -134,17 +133,12 @@ impl ManagedState {
                 fold.source_run_id.map(|run_id| run_id.0.as_str()),
                 &pending_history,
             );
-            pending_is_in_new_message |= selected.pending_occurrence;
-            // The exact current ticket wins over any earlier call in this
-            // source message. Historical permissions are applied per call by
-            // the shared encoder, never chosen by HashMap iteration order.
-            let message_pending = selected
-                .retained_pending_occurrence
-                .then_some(pending)
-                .flatten();
+            // Only this Message's committed Awaiting boundaries classify its
+            // calls. The latest ticket must not synthesize a call in another
+            // historical Message merely because that Message had an old wait.
             let mut projected = project_messages_with_mcp_ids(
                 std::slice::from_ref(&selected.message),
-                message_pending,
+                None,
                 &tool_index.all,
                 tool_index.mcp,
                 transcript_evidence.advisor_blocks(),
@@ -198,42 +192,6 @@ impl ManagedState {
             }
         }
 
-        // When Awaiting has no committed ToolUse message in this delta, retain
-        // the existing synthetic-pending path. It has no minted transcript
-        // event: the reversible tool id is sourced by the durable Run id.
-        if pending.is_some() && !pending_is_in_new_message {
-            let tool_index = record.projected_tool_index_for(Some(thread_id));
-            let mut projected = project_messages_with_mcp_ids(
-                &[],
-                pending,
-                &tool_index.all,
-                tool_index.mcp,
-                transcript_evidence.advisor_blocks(),
-                &[],
-            );
-            self.qualify_tool_projection(
-                record,
-                Some(thread_id),
-                &[],
-                pending_source_run_id,
-                &mut projected,
-            )?;
-            for projected in projected {
-                let id = projected.id.ok_or_else(|| {
-                    StateError::Run(RunError::internal(
-                        "synthetic child pending projection has no qualified tool id",
-                    ))
-                })?;
-                record
-                    .event_thread_owners
-                    .insert(id.clone(), thread_id.to_string());
-                record.events.push(Event {
-                    id,
-                    kind: projected.kind,
-                    processed_at: None,
-                });
-            }
-        }
         Ok(())
     }
 

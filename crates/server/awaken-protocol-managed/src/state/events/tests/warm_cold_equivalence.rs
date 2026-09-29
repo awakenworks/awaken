@@ -4,9 +4,8 @@
 //! Each scenario enumerates every subset of its commit boundaries as the
 //! points where the warm replica refreshed (exhaustive for at most 8 steps),
 //! and a property test draws longer histories with one sampled schedule each.
-//! A history that still diverges is listed with the timeline class that makes
-//! it diverge and asserted to diverge; fixing the class fails that assertion
-//! until the scenario pins its sequence and leaves the list.
+//! A damaged Awaiting prefix must reject on both replicas without publishing;
+//! the next healthy prefix is compared under every schedule.
 //!
 //! Consumer: the timeline's schedule-independence guarantee.
 
@@ -16,8 +15,6 @@ use super::timeline_scenarios::*;
 enum Expect {
     /// Every schedule equals its cold rebuild and ends on this sequence.
     Sequence(&'static [&'static str]),
-    /// The history still diverges through this timeline class.
-    KnownDivergence(&'static str),
 }
 
 async fn check<T: Timeline>(name: &str, steps: &[T::Step], expect: Expect) {
@@ -30,11 +27,6 @@ async fn check<T: Timeline>(name: &str, steps: &[T::Step], expect: Expect) {
                 .map(|kind| (*kind).to_string())
                 .collect::<Vec<_>>()),
             "{name}"
-        ),
-        Expect::KnownDivergence(class) => assert!(
-            result.is_err(),
-            "{name} no longer diverges (class {class}): pin its sequence {result:?} and remove \
-             it from the known divergences"
         ),
     }
 }
@@ -143,6 +135,25 @@ scenario!(
         "session.thread_status_running",
         "agent.tool_result",
         "agent.message",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
+);
+
+// Causes: L1 an audited Awaiting commit has no ToolUse Message yet; L2 its
+// answerable Run-qualified id was already issued; L3 the exact ToolUse Message
+// commits later. Effects: every one of eight refresh schedules keeps L2's id,
+// payload, order and every suffix. Rule L1+L2+L3 => cold/warm one six-event
+// sequence; the late Message cannot replace the earlier public occurrence.
+scenario!(
+    late_root_tool_message,
+    RootTimeline,
+    LATE_ROOT_TOOL_MESSAGE,
+    Expect::Sequence(&[
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.tool_use",
         "session.thread_status_idle",
         "session.usage",
         "session.status_idle",
@@ -296,17 +307,36 @@ scenario!(
 );
 
 // D: the ticket is set and consumed, but its Awaiting commit left no audit.
+// Reject at that damaged prefix; after the reply, the committed Message owns
+// the tool id and the valid suffix is the same under every refresh schedule.
 scenario!(
     unaudited_permission_pause,
     RootTimeline,
     UNAUDITED_PERMISSION_PAUSE,
-    Expect::KnownDivergence("D"),
+    Expect::Sequence(&[
+        "user.message",
+        "session.status_running",
+        "session.thread_status_running",
+        "session.thread_status_idle",
+        "session.thread_status_running",
+        "agent.tool_use",
+        "agent.tool_result",
+        "agent.message",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
 // F: a scheduled action pauses the Run while its Session activity stays
 // admitted, then resumes autonomously and completes. The interval's span
 // starts after the Runtime cursor its admission recorded, so every reader
 // holds the pause inside it and the aggregate stays open through it.
+// Causes: S1 ScheduledAction has a committed ToolUse Message but no
+// client-answerable ticket; S2 Awaiting closes the public Thread; S3 the
+// ToolResult on Resume first classifies that ToolUse as processed. Effects:
+// S1+S2 publish idle without a tool; S3 appends the tool after the old idle
+// frontier and before its result. The Message-qualified id stays stable.
 scenario!(
     scheduled_autonomous_resume,
     RootTimeline,
@@ -314,9 +344,9 @@ scenario!(
     Expect::Sequence(&[
         "session.status_running",
         "session.thread_status_running",
-        "agent.tool_use",
         "session.thread_status_idle",
         "session.thread_status_running",
+        "agent.tool_use",
         "agent.tool_result",
         "agent.message",
         "session.thread_status_idle",
@@ -355,20 +385,44 @@ scenario!(
     ]),
 );
 
-// E: the Run pauses, then is cancelled.
+// E: each Run boundary without an intervening opening owns its committed
+// synthetic Running key. Warm and cold agree through cancellation.
 scenario!(
     cancelled_pause,
     RootTimeline,
     CANCELLED_PAUSE,
-    Expect::KnownDivergence("E"),
+    Expect::Sequence(&[
+        "user.message",
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.thread_status_running",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
-// E: as above for a Run without Session activity.
+// E: the same rule also reconstructs both aggregate periods of a Run without
+// Session activity; no reader's prior Root status selects the opening.
 scenario!(
     cancelled_pause_without_activity,
     RootTimeline,
     CANCELLED_PAUSE_WITHOUT_ACTIVITY,
-    Expect::KnownDivergence("E"),
+    Expect::Sequence(&[
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+        "session.status_running",
+        "session.thread_status_running",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
 // B: a child pauses on an audited ticket, is answered and completes. The
@@ -399,12 +453,49 @@ scenario!(
     ]),
 );
 
-// B/E: the same pause left no audit of its target.
+// Causes: C1 a linked child has an audited Awaiting target but no matching
+// ToolUse Message at that commit; C2 the matching Message arrives later.
+// Effects: C1 publishes one Run-qualified answerable tool and an idle close;
+// C2 leaves that issued id, payload, order and every after-cursor suffix
+// intact. Rule C1+C2 must have the same sequence for every refresh schedule.
+scenario!(
+    late_child_tool_message,
+    ChildTimeline,
+    LATE_CHILD_TOOL_MESSAGE,
+    Expect::Sequence(&[
+        "session.status_running",
+        "agent.tool_use",
+        "agent.tool_result",
+        "session.thread_created",
+        "session.thread_status_running",
+        "agent.thread_message_sent",
+        "agent.tool_use",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
+);
+
+// B/E: the child pause left no audit of its target. Both replicas reject
+// without publication until the committed reply makes the prefix healthy.
 scenario!(
     child_unaudited_pause,
     ChildTimeline,
     CHILD_UNAUDITED_PAUSE,
-    Expect::KnownDivergence("B/E"),
+    Expect::Sequence(&[
+        "session.status_running",
+        "agent.tool_use",
+        "agent.tool_result",
+        "session.thread_created",
+        "session.thread_status_running",
+        "agent.thread_message_sent",
+        "session.usage",
+        "session.status_idle",
+        "session.status_running",
+        "session.thread_status_idle",
+        "session.usage",
+        "session.status_idle",
+    ]),
 );
 
 // B/E: the child pauses twice before completing; every pause and every
@@ -461,29 +552,6 @@ scenario!(
     ]),
 );
 
-/// Step kinds whose histories may still diverge; a drawn history that
-/// diverges without one of them fails the property. The list only shrinks.
-const KNOWN_DIVERGENT_KINDS: &[&str] = &["AskUnaudited", "Cancel"];
-
-fn kind(step: Step) -> &'static str {
-    match step {
-        Step::Input(_) => "Input",
-        Step::Begin(_) => "Begin",
-        Step::ExternalInput(_) => "ExternalInput",
-        Step::Legacy(_) => "Legacy",
-        Step::Say(_) => "Say",
-        Step::Tool(_) => "Tool",
-        Step::Burst(_) => "Burst",
-        Step::Ask(_) => "Ask",
-        Step::AskUnaudited(_) => "AskUnaudited",
-        Step::Schedule(_) => "Schedule",
-        Step::Reply(_) => "Reply",
-        Step::Reschedule(_) => "Reschedule",
-        Step::Cancel(_) => "Cancel",
-        Step::Close(_) => "Close",
-    }
-}
-
 /// One Run's commits: a start, a body, and an end (the last Run may stay
 /// open).
 fn run_strategy(index: usize, last: bool) -> impl proptest::strategy::Strategy<Value = Vec<Step>> {
@@ -538,9 +606,10 @@ fn history_strategy() -> impl proptest::strategy::Strategy<Value = (Vec<Step>, u
 fn sampled_long_histories_equal_their_cold_rebuild_under_a_sampled_schedule() {
     // Causes: C1 two Runs of up to 12 commits drawn from every step kind; C2
     // one sampled refresh schedule. Effects: E1 warm equals cold at every
-    // refreshed point and at the end; E2 a divergence is allowed only when
-    // the history contains a step kind still listed as known divergent.
-    // Shrinking reports the smallest history and schedule that break E1/E2.
+    // refreshed point and at the end; E2 an unaudited Awaiting commit returns
+    // the same typed rejection on both replicas and leaves warm history
+    // unchanged. Rules: R1=healthy prefix=>E1; R2=damaged pause=>E2;
+    // R3=next healthy prefix=>E1. Shrinking reports the smallest violation.
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     let mut runner = TestRunner::new(Config {
         cases: 256,
@@ -555,14 +624,7 @@ fn sampled_long_histories_equal_their_cold_rebuild_under_a_sampled_schedule() {
                 .build()
                 .unwrap()
                 .block_on(warm_equals_cold::<RootTimeline>(&steps, schedule));
-            if let Err(divergence) = result {
-                proptest::prop_assert!(
-                    steps
-                        .iter()
-                        .any(|step| KNOWN_DIVERGENT_KINDS.contains(&kind(*step))),
-                    "{steps:?}: {divergence}"
-                );
-            }
+            proptest::prop_assert!(result.is_ok(), "{steps:?}: {result:?}");
             Ok(())
         })
         .unwrap();
