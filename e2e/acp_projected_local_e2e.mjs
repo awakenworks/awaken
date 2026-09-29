@@ -2,8 +2,8 @@
 // tier. A PATH-local `gemini` fixture speaks the real ACP JSON-RPC wire, while the
 // aggregated `awaken` process performs the same catalog selection, exact credential
 // admission, and sandbox realization used by an installed CLI. Gemini exercises
-// process-secret projection; Codex proves a bearer-only publication cannot bypass
-// its typed credential-artifact driver. No scenario-host composition is involved.
+// process-secret projection; Codex exercises its typed provider artifact and
+// process-private MCP credential route. No scenario-host composition is involved.
 //
 // Fixture launch cause graph: host OS -> native PATH delimiter + executable
 // wrapper -> ACP JSON-RPC fixture starts -> durable run settles.
@@ -22,10 +22,10 @@
 // |---|---|---|---|
 // | P1 | Provider + supported adapter | Namespace | launch with exact endpoint/model/secret |
 // | P2 | Provider + supported adapter | Workdir | no eligible Worker; never launch |
-// | P3 | Provider + unsupported adapter | Namespace | terminal fail before launch |
+// | P3 | Provider + supported MCP credential | Namespace | exact process-private MCP route |
 //
 // This scenario owns P1 and P3. The shared placement-kernel tests own P2; the
-// container scenario owns the stronger container/resource realization rule.
+// container scenario owns unsupported credential custody before launch.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -98,7 +98,7 @@ lines.on('line', (line) => {
   } else if (request.method === 'session/prompt') {
     const text = ['PROJECTED', 'base=' + process.env.GOOGLE_GEMINI_BASE_URL,
       'model=' + process.env.GEMINI_MODEL, 'key=' + (process.env.GEMINI_API_KEY || '').slice(0, 6),
-      'cwd=' + process.cwd(), 'home=' + process.env.GEMINI_DIR].join(' ');
+      'cwd=' + process.cwd(), 'home=' + process.env.GEMINI_CLI_HOME].join(' ');
     console.log(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
       sessionId: 'projected-session', update: { sessionUpdate: 'agent_message_chunk',
         content: { type: 'text', text } },
@@ -122,19 +122,40 @@ function installCodexAdapterFixture() {
   fs.writeFileSync(executable, `#!${process.execPath}
 const readline = require('node:readline');
 const lines = readline.createInterface({ input: process.stdin });
-lines.on('line', (line) => {
+let mcpServers = [];
+lines.on('line', async (line) => {
   const request = JSON.parse(line);
   if (request.method === 'initialize') {
     console.log(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 1,
       agentCapabilities: { loadSession: true, promptCapabilities: { embeddedContext: true },
         mcpCapabilities: { http: true } } } }));
-  } else if (request.method === 'session/new') {
+  } else if (request.method === 'session/new' || request.method === 'session/load') {
+    mcpServers = request.params.mcpServers || [];
     console.log(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
       sessionId: 'projected-codex-session', modes: { currentModeId: 'code',
         availableModes: [{ id: 'code', name: 'Code' }] }, configOptions: [],
     } }));
   } else if (request.method === 'session/prompt') {
-    process.exit(1);
+    const server = mcpServers.find((entry) => entry.name === 'calc-secure');
+    if (!server) process.exit(1);
+    try {
+      const headers = Object.fromEntries((server.headers || []).map((entry) => [entry.name, entry.value]));
+      const response = await fetch(server.url, { method: 'POST', headers: {
+        ...headers, 'content-type': 'application/json',
+      }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'add', arguments: { a: 2, b: 3 } } }) });
+      if (!response.ok) process.exit(1);
+      const result = await response.json();
+      const text = 'SECURE_MCP=' + result.result.content[0].text;
+      console.log(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
+        sessionId: 'projected-codex-session', update: { sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text } },
+      } }));
+      console.log(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } }));
+      process.exit(0);
+    } catch {
+      process.exit(1);
+    }
   }
 });
 `);
@@ -346,9 +367,12 @@ async function main() {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    // P1 receipt rule: C4 exact projected command receipt; E4 processed receipt
-    // plus PROJECTED reply; K1 older history cannot satisfy the provider oracle.
-    // Decision P1+C4=>launch facts+E4 through the canonical SDK observer.
+    // P1 receipt rule: C4 exact projected command receipt; C5 its PROJECTED
+    // reply; C6 the same Session's terminal end_turn. E4 the processed receipt,
+    // reply and complete terminal precede server restart. K1 old history cannot
+    // satisfy the receipt delta. Rule C4+C5+C6=>E4; C4+C5 without C6 remains
+    // active, so stopping the server there could strand this Gemini Run while
+    // the next phase only serves Codex.
     const projectedReceipt = (await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise projection' }] }],
       betas: BETAS,
@@ -358,7 +382,9 @@ async function main() {
       session.id,
       projectedReceipt.id,
       BETAS,
-      ({ delta }) => projectedMessages(delta).some((text) => text.includes('PROJECTED')),
+      ({ delta }) => projectedMessages(delta).some((text) => text.includes('PROJECTED'))
+        && delta.some((event) => event.type === 'session.status_idle'
+          && event.stop_reason?.type === 'end_turn'),
       'projected local Gemini response',
       { timeoutMs: 60_000 },
     );
@@ -418,25 +444,15 @@ async function main() {
       access_token: mcpToken,
       betas: BETAS,
     });
-    // Cause/effect graph for MCP on the local Namespace provider:
-    // C1=credential is selected; C2=provider proves substitution + no bypass;
-    // C3=a driving event wakes the registered Worker realization.
-    // C1 + !C2 + C3 -> M1 durably admit the exact command, then mark it
-    //                      processed at the failed Run's durable terminal anchor
-    //                      while the permanent custody failure projects one
-    //                      error, settles then terminates the root Thread, and
-    //                      terminates the Session.
-    // !C1       -> M2 isolate MCP custody from the independently unsupported
-    //               provider/CLI launch failure; the Run reports that execution
-    //               failure while the Session remains reusable.
-    //
-    // | Rule | credential | provider proof | driving event | result                    |
-    // | M1   | yes        | no             | yes           | exact receipt; terminal-processed; error + Thread settle/terminal; no launch |
-    // | M2   | no         | n/a            | yes           | failed Run event; Session idle; no MCP I/O |
-    // FMECA: rolling M1 back into an HTTP error would erase the already committed
-    // Session command. This missing no-bypass proof is classified permanently,
-    // so the authoritative effect failure terminates after admission; it must not
-    // fabricate model/tool execution or create another admission path.
+    // Local MCP cause/effect table: C1=the exact vault credential is selected;
+    // C2=Codex declares HTTP client injection; C3=a command drives the Run.
+    // M1 C1+C2+C3 => the process-private ACP route makes one authenticated MCP
+    // call, the exact receipt is processed, and the Session returns idle.
+    // M2 !C1+C3 => the separate fixture's provider failure reports a Run error
+    // while its Session stays reusable and makes no additional MCP call.
+    // The container D1 rule owns unsupported credential custody and its
+    // before-launch terminal outcome; repeating it here would contradict the
+    // Codex catalog capability and this local Worker's installed mechanism.
     const secureSession = await codexClient.beta.sessions.create({
       agent: agentWithMcpServer(CODEX_AGENT, {
         name: 'calc-secure', type: 'url', url: fixture.url,
@@ -446,84 +462,41 @@ async function main() {
       betas: BETAS,
     });
     const secureReceipt = await codexClient.beta.sessions.events.send(secureSession.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'must fail before launch' }] }],
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'call the secure MCP route' }] }],
       betas: BETAS,
     });
     const acceptedSecure = secureReceipt.data[0];
     assert.equal(acceptedSecure?.type, 'user.message', 'M1 exact User Event receipt family');
-    assert.equal(acceptedSecure?.processed_at, null, 'M1 effect failure is not falsely processed');
+    assert.equal(acceptedSecure?.processed_at, null, 'M1 receipt precedes execution');
     const secureObservation = await waitForSessionEventReceipt(
       codexClient,
       secureSession.id,
       acceptedSecure.id,
       BETAS,
-      ({ delta }) => ['session.error', 'session.thread_status_idle',
-        'session.thread_status_terminated', 'session.status_terminated']
-        .every((type) => delta.some((event) => event.type === type)),
-      'the credential-custody failure to reach its complete durable terminal projection',
-      { timeoutMs: 30_000 },
+      ({ delta }) => projectedMessages(delta).some((text) => text.includes('SECURE_MCP=5'))
+        && delta.some((event) => event.type === 'session.status_idle'
+          && event.stop_reason?.type === 'end_turn'),
+      'the process-private Codex MCP call and its completed Run',
+      { timeoutMs: 60_000 },
     );
     const secureEvents = secureObservation.events;
     const retainedSecure = secureObservation.receiptEvent;
     assert.equal(
       typeof retainedSecure?.processed_at,
       'string',
-      'M1 durable history anchors the exact command to its failed Run terminal',
+      'M1 durable history anchors the exact command to its successful Run terminal',
     );
-    const secureErrors = secureEvents.filter((event) => event.type === 'session.error');
-    assert.equal(
-      secureErrors.length,
-      1,
-      `M1 permanent custody failure projects exactly one error: ${JSON.stringify(secureErrors)}`,
-    );
-    assert.ok(
-      typeof secureErrors[0].error?.message === 'string' && secureErrors[0].error.message.length > 0,
-      'M1 error retains a nonempty failure cause',
-    );
-    assert.equal(
-      secureEvents.filter((event) => event.type === 'session.thread_status_terminated').length,
-      1,
-      'M1 terminates the exact root Thread once',
-    );
-    assert.equal(
-      secureEvents.filter((event) => event.type === 'session.thread_status_idle').length,
-      1,
-      'M1 settles the failed root Run before terminal Session policy applies',
-    );
-    assert.ok(
-      secureEvents.findIndex((event) => event.type === 'session.thread_status_idle')
-        < secureEvents.findIndex((event) => event.type === 'session.thread_status_terminated'),
-      'M1 root Thread settles before it is terminated',
-    );
-    assert.equal(
-      secureEvents.filter((event) => event.type === 'session.status_terminated').length,
-      1,
-      'M1 terminates the Session once',
-    );
-    assert.ok(
-      !secureEvents.some((event) => [
-        'agent.message',
-        'agent.mcp_tool_use',
-        'agent.mcp_tool_result',
-        'agent.tool_use',
-        'agent.tool_result',
-        'session.status_idle',
-        'session.usage',
-        'span.model_request_start',
-        'span.model_request_end',
-      ].includes(event.type)),
-      `M1 no model/tool/success effect is fabricated: ${secureEvents.map((event) => event.type)}`,
-    );
+    assert.equal(secureEvents.filter((event) => event.type === 'session.error').length, 0, 'M1');
+    assert.ok(projectedMessages(secureObservation.delta).some((text) => text.includes('SECURE_MCP=5')), 'M1');
     assert.equal(
       (await codexClient.beta.sessions.retrieve(secureSession.id, { betas: BETAS })).status,
-      'terminated',
-      'M1 permanent realization failure is durable after the accepted receipt',
+      'idle',
+      'M1 authenticated MCP call completes the Session',
     );
-    assert.equal(
-      fixture.calls.length,
-      0,
-      'M1: the unsupported custody boundary performs no authenticated MCP I/O',
-    );
+    assert.ok(fixture.calls.some((call) => call.method === 'tools/call'
+      && call.authorization === `Bearer ${mcpToken}`), 'M1 exact vault bearer reached only the MCP server');
+    assert.equal(fixture.unauthorized, 0, 'M1 no unauthenticated MCP request');
+    const secureMcpCalls = fixture.calls.length;
     const codexSession = await codexClient.beta.sessions.create({
       agent: agentWithMcpServer(CODEX_AGENT, {
         name: 'calc-uncredentialed', type: 'url', url: fixture.url,
@@ -559,9 +532,9 @@ async function main() {
     );
     const providerSession = await codexClient.beta.sessions.retrieve(codexSession.id, { betas: BETAS });
     assert.equal(providerSession.status, 'idle', 'M2: execution failure does not masquerade as realization failure');
-    assert.equal(fixture.calls.length, 0, 'M2: provider rejection still performs no MCP I/O');
+    assert.equal(fixture.calls.length, secureMcpCalls, 'M2: provider rejection performs no additional MCP I/O');
 
-    console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini access, preserves Codex failure diagnostics, and keeps authenticated MCP fail closed without a no-bypass substitution boundary.');
+    console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini access, completes authenticated Codex MCP work, and preserves independent Codex failure diagnostics.');
   } finally {
     await directory.close();
     await stop(server).catch(() => {});

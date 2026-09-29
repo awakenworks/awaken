@@ -208,6 +208,20 @@ impl AgentChannelSource for BoundLocalChannelSource {
                 });
             }
         }
+        // A file-routed instruction lives in the Session-owned config home:
+        // HOME itself for a managed launch, a private directory beside the
+        // user's untouched home for a backend-owned one.
+        if let Some(file) = launch.bind_instructions_file(&self.sandbox.config_home())? {
+            let logical = format!(
+                "{}/{}",
+                self.sandbox.config_home_logical().trim_end_matches('/'),
+                file.relative_path
+            );
+            self.sandbox
+                .materialize_inline(&logical, file.contents.as_bytes())
+                .await
+                .map_err(|error| OpenError(format!("materialize ACP instructions: {error}")))?;
+        }
         if let Some(artifact) = resolved.credential_artifact {
             let broker = resolved.secret_broker.ok_or_else(|| {
                 OpenError("credential_provision_failed: secret broker unavailable".into())
@@ -308,6 +322,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             tool_aliases: launch.tool_aliases,
             session_config_options: launch.session_config_options,
             expected_capability: launch.expected_capability,
+            instructions: launch.instructions,
         })
     }
 }
@@ -534,6 +549,7 @@ mod tests {
         config_home_logical: String,
         command: Mutex<Option<pc::Command>>,
         materialized: Mutex<Vec<(String, Vec<u8>)>>,
+        fail_materialize: bool,
     }
 
     impl Default for CapturingAgentSandbox {
@@ -545,6 +561,7 @@ mod tests {
                 config_home_logical: SANDBOX_CONFIG_HOME.to_string(),
                 command: Mutex::new(None),
                 materialized: Mutex::new(Vec::new()),
+                fail_materialize: false,
             }
         }
     }
@@ -601,6 +618,11 @@ mod tests {
             logical: &str,
             contents: &[u8],
         ) -> Result<(), pc::SandboxError> {
+            if self.fail_materialize {
+                return Err(pc::SandboxError::unsupported(
+                    "fixture materialization failure",
+                ));
+            }
             self.materialized
                 .lock()
                 .unwrap()
@@ -692,6 +714,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn projected_routes_preserve_the_complete_shared_launch_projection() {
+        // Causes: C1 default/resolved argv; C2 managed model; C3 frozen Agent
+        // instructions. Effects: E1 exact selected argv; E2 provider config
+        // preserved; E3 identical system append through plain/Host routes.
+        // Rules P1 C1=default => catalog argv; P2 C1=resolved => exact override;
+        // both C2+C3 => E2+E3. Host materialization is tested separately below.
+        let mut cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
+        cli.env = &[("TZ", "UTC")];
+        let mut activation = acp_activation("acp:claude");
+        activation.snapshot.resolved_spec.instructions = "任务规则：保留完整指令".into();
+        let mut context = awaken_runtime_contract::RuntimeRunContext::new();
+        context.request_timezone = Some("Asia/Singapore".into());
+        for argv in [None, Some(vec!["/installed/claude-agent-acp".into()])] {
+            let source = LaunchSource::Projected(
+                AcpLaunchRegistry::single_with_resolved_argv(
+                    cli,
+                    Arc::new(FakeResolver),
+                    argv.clone(),
+                )
+                .unwrap(),
+            );
+            let projected = source
+                .resolve(
+                    &activation,
+                    &awaken_runtime_contract::resolved::Backend::from_ref("acp:claude"),
+                    &context,
+                )
+                .await
+                .unwrap();
+            let plain = awaken_run_executor_acp::project_launch(
+                &cli,
+                &FakeResolver,
+                &activation,
+                &context,
+                argv.as_deref(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                projected.launch.argv,
+                argv.unwrap_or_else(|| vec!["claude-agent-acp".into()]),
+                "E1"
+            );
+            assert_eq!(projected.launch.env, plain.launch.env, "E2 route parity");
+            assert_eq!(
+                projected
+                    .launch
+                    .env
+                    .iter()
+                    .filter(|entry| entry.name == "TZ")
+                    .count(),
+                1,
+                "one derived TZ"
+            );
+            assert!(
+                projected.launch.env.iter().any(|entry| entry.name == "TZ"
+                    && entry.value
+                        == pc::EnvValue::Inline {
+                            value: "Asia/Singapore".into()
+                        }),
+                "shared task timezone wins"
+            );
+            assert!(
+                projected
+                    .launch
+                    .env
+                    .iter()
+                    .any(|entry| entry.name == "ANTHROPIC_BASE_URL"
+                        && entry.value
+                            == pc::EnvValue::Inline {
+                                value: "http://model.invalid".into()
+                            }),
+                "E2"
+            );
+            assert_eq!(
+                projected.launch.instructions.session_meta(),
+                Some(&serde_json::json!({"append":"任务规则：保留完整指令"})),
+                "E3"
+            );
+            assert_eq!(
+                projected.launch.instructions, plain.launch.instructions,
+                "E3 route parity"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn bound_container_runs_the_selected_preinstalled_cli() {
         let sandbox = Arc::new(CapturingAgentSandbox::default());
         let source = bound_projecting_source(sandbox.clone(), "claude");
@@ -718,6 +827,36 @@ mod tests {
                 .iter()
                 .any(|entry| entry.name == "PATH"),
             "L4: a container must use image lookup rather than the Worker's PATH"
+        );
+    }
+
+    #[tokio::test]
+    async fn instruction_materialization_failure_never_starts_the_adapter() {
+        // F1 file append route + failed materialization => open error and no
+        // process. F2 process TZ is derived from the shared context and cannot
+        // be shadowed by stale resolver env; successful binding is covered by P.
+        let sandbox = Arc::new(CapturingAgentSandbox {
+            fail_materialize: true,
+            ..CapturingAgentSandbox::local()
+        });
+        let source = bound_backend_owned_source(
+            sandbox.clone(),
+            "opencode",
+            awaken_runtime_contract::resolved::BackendModelSelection::Default,
+            "",
+        );
+        let mut activation = acp_activation("acp:opencode");
+        activation.snapshot.resolved_spec.instructions = "file-routed policy".into();
+        let mut context = awaken_runtime_contract::RuntimeRunContext::new();
+        context.request_timezone = Some("Asia/Singapore".into());
+        let error = awaken_run_executor_acp::open_agent_session(&source, &activation, &context)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.0.contains("materialize ACP instructions"), "F1");
+        assert!(
+            sandbox.command.lock().unwrap().is_none(),
+            "F1 no process effect"
         );
     }
 
@@ -864,7 +1003,7 @@ mod tests {
                     !matches!(&entry.value, pc::EnvValue::Secret { .. })
                         && !entry.name.contains("API_KEY")
                         && !entry.name.ends_with("_MODEL")
-                        && entry.name != "GEMINI_DIR"
+                        && entry.name != "GEMINI_CLI_HOME"
                 }),
                 "H1/E2"
             );

@@ -571,7 +571,6 @@ impl DeploymentApplication {
         }
         let admission = self.refresh_executable_projections().await?;
         let run_id = format!("drun_{}", uuid::Uuid::new_v4().simple());
-        let launch = admission.enter(|| launch_for(&deployment, id, &run_id));
         let run = DeploymentRunRecord {
             created_at: timestamp(self.clock.now_ms()),
             deployment_id: id.to_string(),
@@ -581,6 +580,7 @@ impl DeploymentApplication {
             session_id: None,
             error: None,
         };
+        let launch = admission.enter(|| launch_for(&deployment, id, &run_id, &run.trigger));
         self.persist_run(&run_id, &run, None).await?;
         self.runs
             .lock()
@@ -1045,10 +1045,20 @@ fn ensure_scheduled_capacity(
     Ok(())
 }
 
-fn launch_for(record: &DeploymentRecord, deployment_id: &str, run_id: &str) -> DeploymentLaunch {
+fn launch_for(
+    record: &DeploymentRecord,
+    deployment_id: &str,
+    run_id: &str,
+    trigger: &DeploymentTrigger,
+) -> DeploymentLaunch {
     DeploymentLaunch {
         deployment_id: deployment_id.to_string(),
         deployment_run_id: run_id.to_string(),
+        trigger: Some(trigger.clone()),
+        timezone: record
+            .schedule
+            .as_ref()
+            .map(|schedule| schedule.timezone().to_owned()),
         workspace_id: record.workspace_id.clone(),
         agent: record.agent.clone(),
         environment_id: record.environment_id.clone(),
@@ -1062,6 +1072,7 @@ fn launch_for(record: &DeploymentRecord, deployment_id: &str, run_id: &str) -> D
 
 #[cfg(test)]
 mod tests {
+    mod execution_context;
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1307,8 +1318,8 @@ mod tests {
                 session_id: None,
                 error: None,
             };
+            let launch = launch_for(&deployment.record, &deployment.id, run_id, &run.trigger);
             application.runs.lock().unwrap().insert(run_id.into(), run);
-            let launch = launch_for(&deployment.record, &deployment.id, run_id);
             let completed = application.launch_run(run_id, launch).await.unwrap();
             let current = application
                 .get("workspace-a", &deployment.id)

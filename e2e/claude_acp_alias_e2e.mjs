@@ -98,7 +98,13 @@ for (const [mode, boundaries, finalDecision, settle = false, primed = false, lon
     ? {...argumentsFor(ordinal), content: argumentsFor(ordinal).content + '\n'}
     : argumentsFor(ordinal);
   let phase = 0; let emissions = 0; let primerEmitted = false; let primerHistoryRetained = true; let expectedPrompt = ''; let promptObserved = false;
+  // S1 replacement survives every existing cancellation/load boundary and is
+  // present exactly once in the actual provider system field, never User text.
+  const instructionMarker = `AWAKEN_FROZEN_SYSTEM_${mode}`;
   const provider = await startFakeAnthropic('fixture-key', { behavior: (body, turn) => {
+    const system = typeof body.system === 'string' ? body.system : (body.system ?? []).map(block => block.text ?? '').join('\n');
+    assert.equal(system.split(instructionMarker).length - 1, 1, `${mode}/${phase}: exact system delivery`);
+    assert.ok(!JSON.stringify(body.messages).includes(instructionMarker), 'no first-prompt duplication');
     promptObserved ||= body.messages.some(message => (typeof message.content === 'string' ? [message.content] : message.content.filter(block => block.type === 'text').map(block => block.text)).some(text => text.includes(expectedPrompt)));
     // R8 a successful operation precedes the very first pending approval.
     // On resume, verify its actual successful tool result reached the provider;
@@ -123,7 +129,7 @@ for (const [mode, boundaries, finalDecision, settle = false, primed = false, lon
   } });
   const record = path.join(root, 'calls.jsonl'); const clients = [];
   const settings = { cwd: root, mcpServers: [{ name: 'awaken_session', command: process.execPath, args: [fixture, record], env: [] }],
-    _meta: { claudeCode: { options: { toolAliases: { [alias]: target }, tools: [], disallowedTools: ['Bash', 'Write'], settingSources: [] } } } };
+    _meta: { systemPrompt: instructionMarker, claudeCode: { options: { toolAliases: { [alias]: target }, tools: [], disallowedTools: ['Bash', 'Write'], settingSources: [] } } } };
   const recorded = async () => (await fs.readFile(record, 'utf8').catch(error => {
     if (error.code === 'ENOENT') return ''; throw error;
   })).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
@@ -191,4 +197,44 @@ for (const [mode, boundaries, finalDecision, settle = false, primed = false, lon
     for (const client of clients) await client.stop();
     await provider.close(); await fs.rm(root, { recursive:true, force:true });
   }
+}
+
+const systemLengths = new Map();
+for (const mode of ['replace', 'append', 'empty_replace']) {
+  // Causes: S2 replace/append; S3 fresh process new/load; S4 builtins removed/
+  // retained. Rules replace=>one marker+no Bash; append=>one marker+Bash.
+  // Both S3 branches reapply identical metadata without a user-message copy.
+  // Empty replacement uses the pinned adapter's truthy newline; its provider
+  // system stays no larger than custom replacement and does not regain builtins.
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'awaken-acp-system-'));
+  const marker = `AWAKEN_SYSTEM_ROUTE_${mode}`;
+  let observed = 0;
+  const provider = await startFakeAnthropic('fixture-key', { behavior: body => {
+    const system = typeof body.system === 'string' ? body.system : (body.system ?? []).map(block => block.text ?? '').join('\n');
+    assert.equal(system.split(marker).length - 1, mode === 'empty_replace' ? 0 : 1, `${mode}: system marker count`);
+    assert.ok(!JSON.stringify(body.messages).includes(marker), `${mode}: no User duplicate`);
+    assert.equal((body.tools ?? []).some(tool => tool.name === 'Bash'), mode === 'append', `${mode}: builtin policy preserved`);
+    systemLengths.set(mode, system.length);
+    if (mode === 'empty_replace') assert.ok(system.length <= systemLengths.get('replace'), 'empty transport drops the same preset as nonempty replacement');
+    observed++;
+    return { text: 'system-route-observed' };
+  } });
+  let active;
+  try {
+    const settings = { cwd: root, mcpServers: [], _meta: {
+      systemPrompt: mode === 'append' ? { append: marker } : mode === 'empty_replace' ? '\n' : marker,
+      claudeCode: { options: { settingSources: [], ...(mode !== 'append' ? { tools: [] } : {}) } },
+    } };
+    let sessionId;
+    for (const method of ['session/new', 'session/load']) {
+      active = startClient(root, provider, () => 'deny');
+      await active.rpc('initialize', { protocolVersion: 1, clientCapabilities: {} });
+      const session = await active.rpc(method, { ...settings, ...(sessionId ? { sessionId } : {}) });
+      sessionId ??= session.sessionId;
+      assert.equal((await active.rpc('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'Say system-route-observed.' }] })).stopReason, 'end_turn');
+      await active.stop();
+    }
+    assert.ok(observed >= 2, 'new and fresh-process load reached inference');
+    console.log(`PASS actual Claude ACP system ${mode}: new/load, marker=${mode === 'empty_replace' ? 0 : 1}, builtin policy preserved`);
+  } finally { await active?.stop(); await provider.close(); await fs.rm(root, { recursive: true, force: true }); }
 }

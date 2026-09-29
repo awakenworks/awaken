@@ -103,6 +103,9 @@ pub struct AgentSession {
     pub tool_aliases: std::collections::BTreeMap<String, String>,
     pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
+    /// Where the frozen Agent instructions reach this adapter. When they are
+    /// already in its system prompt the first Step does not repeat them.
+    pub instructions: AcpInstructions,
 }
 
 /// Opens an [`AgentSession`] for a run. The one seam the host wires: local =
@@ -393,13 +396,24 @@ fn prompt_of(input: &[Message]) -> String {
         .join("\n")
 }
 
-/// ACP has no portable system-instruction field. Project the frozen Agent
-/// instructions into the first Step so an ACP backend observes the same resolved
-/// snapshot contract as a native backend. Later steers reuse the ACP session and
-/// therefore send only their new input, preserving prefix-cache locality.
-fn initial_prompt(activation: &RunActivation, request_context: &[Message]) -> String {
+/// ACP has no portable system-instruction field. When the adapter's catalog
+/// route already placed the frozen Agent instructions into its system prompt
+/// they are omitted here; otherwise the first Step carries them so an ACP
+/// backend still observes the same resolved snapshot contract as a native
+/// backend. Later steers reuse the ACP session and therefore send only their
+/// new input, preserving prefix-cache locality.
+fn initial_prompt(
+    activation: &RunActivation,
+    request_context: &[Message],
+    instructions: &AcpInstructions,
+) -> String {
+    let frozen = if instructions.in_system_prompt() {
+        ""
+    } else {
+        activation.snapshot.resolved_spec.instructions.as_str()
+    };
     let normalized = awaken_runtime_contract::NormalizedModelInput::new(
-        &activation.snapshot.resolved_spec.instructions,
+        frozen,
         request_context,
         &activation.input,
     );
@@ -409,6 +423,8 @@ fn initial_prompt(activation: &RunActivation, request_context: &[Message]) -> St
         thread_id = %activation.thread_id.0,
         publication_id = %activation.snapshot.fingerprint.0,
         backend = "acp",
+        instructions_placement = instructions.placement().label(),
+        instructions_fallback = instructions.placement().fallback_reason(),
         has_instructions = trace.has_instructions,
         request_context_supplied = trace.request_context_supplied,
         request_context_visible = trace.request_context_visible,
@@ -772,7 +788,8 @@ impl AcpRunExecutor {
             .identity()
             .2
             .to_owned();
-        let mut prompt = initial_prompt(&activation, &context.request_context);
+        let mut prompt =
+            initial_prompt(&activation, &context.request_context, &session.instructions);
         // `RunActivation::input` is a durable Run fact, not merely transport
         // prompt material. Commit it with the external Agent's facts so ACP and
         // Native expose the same Thread transcript and message-range semantics.
@@ -926,6 +943,13 @@ impl AcpRunExecutor {
             config.session_model = session.session_model.clone();
             config.session_mode = session.session_mode.clone();
             config.tool_aliases = session.tool_aliases.clone();
+            config.system_prompt = session.instructions.session_meta().cloned();
+            let instructions_observer = launch_sink.map(|sink| {
+                instructions::InstructionsLaunchObserver::new(sink, &session.instructions)
+            });
+            let launch_sink = instructions_observer
+                .as_ref()
+                .map(|observer| LaunchSink::new(observer, &scope));
             config.session_config_options = session.session_config_options.clone();
             config.expected_capability = session.expected_capability.clone();
             config.session_cwd = session.workspace_cwd.clone();
@@ -1786,6 +1810,11 @@ use permission::{
 };
 mod config_home;
 mod discovery_spec;
+mod instructions;
+pub use instructions::{
+    AcpInstructions, InstructionsChannel, InstructionsDelivery, InstructionsFile,
+    InstructionsPlacement,
+};
 mod session_home;
 mod subprocess;
 pub use acp_cli::{
@@ -1807,7 +1836,7 @@ pub use discovery_spec::{
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
     AcpLaunch, AcpLaunchIdentity, BrokeredAcpModelAccessMaterializer, LaunchResolver,
-    ProjectingChannelSource, SubprocessChannelSource, admit_mcp_session_servers,
+    ProjectingChannelSource, ResolvedLaunch, SubprocessChannelSource, admit_mcp_session_servers,
     mcp_session_servers_from_routes, project_launch, with_backend_owned_host_environment,
     with_local_host_launch_environment,
 };

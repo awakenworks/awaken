@@ -80,7 +80,7 @@ pub(super) async fn drive_resumed(
     // resumes from both minting the former fixed `resume-step-1000` id.
     let resume_step_base =
         awaken_agent_contract::agent::message::next_assistant_step(&committed, run_id);
-    let mut transcript = model_transcript(
+    let normalized = normalized_model_input(
         context,
         committed,
         run_id,
@@ -88,6 +88,12 @@ pub(super) async fn drive_resumed(
         &resolved.snapshot_id.0,
         &resolved.spec.instructions,
     );
+    let mut transcript = normalized.durable_input;
+    let projected_context = RuntimeRunContext {
+        request_context: normalized.request_context,
+        ..context.clone()
+    };
+    let context = &projected_context;
     transcript.extend(fresh_context.iter().cloned());
     // Keep the state already validated at recovery admission, including model
     // history and any child result committed by resume_delegation. Rebuilding

@@ -221,6 +221,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0082-open-specification-closed-substrate.md` | Deferred; keep ADR-0041's current open durable-backend and provider placement until a second closed substrate or a revised self-hosted multi-node floor requires a new product decision | Not required | n/a |
 | `adr/0083-managed-cloud-session-durable-acceptance.md` | Implemented local Cloud Managed durable-root acceptance; physical capacity remains a deployment and frozen idle-retention concern | Not required | n/a |
 | `adr/0084-shared-worker-transport-assembly.md` | Decision record | Not required | n/a |
+| `adr/0085-acp-instructions-and-session-time-context.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 

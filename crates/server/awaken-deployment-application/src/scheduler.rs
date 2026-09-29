@@ -198,7 +198,7 @@ impl DeploymentApplication {
                 deployment.revision = advanced_revision;
                 result.push((
                     run_id.clone(),
-                    launch_for(deployment, deployment_id, &run_id),
+                    launch_for(deployment, deployment_id, &run_id, &run.trigger),
                     run,
                     deployment.clone(),
                     expected_revision,

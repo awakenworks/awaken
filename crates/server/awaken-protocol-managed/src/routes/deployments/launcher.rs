@@ -123,6 +123,39 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
             });
         }
         let launch_fingerprint = awaken_agent_contract::stable_fingerprint(&request);
+        let trigger = match &request.trigger {
+            Some(awaken_deployment_application::DeploymentTrigger::Manual) => {
+                awaken_session_configuration_contract::SessionTrigger::DeploymentManual {
+                    deployment_id: request.deployment_id.clone(),
+                    run_id: request.deployment_run_id.clone(),
+                }
+            }
+            Some(awaken_deployment_application::DeploymentTrigger::Schedule { scheduled_at }) => {
+                awaken_session_configuration_contract::SessionTrigger::DeploymentSchedule {
+                    deployment_id: request.deployment_id.clone(),
+                    run_id: request.deployment_run_id.clone(),
+                    scheduled_at: scheduled_at.clone(),
+                }
+            }
+            None => {
+                return failed(RunError::SessionCreationRejectedError {
+                    message: "Deployment launch is missing its committed Run origin".into(),
+                });
+            }
+        };
+        let context_seed =
+            match awaken_session_configuration_contract::SessionContextSeed::from_metadata(
+                trigger,
+                &request.metadata,
+                request.timezone.as_deref(),
+            ) {
+                Ok(seed) => seed,
+                Err(error) => {
+                    return failed(RunError::SessionCreationRejectedError {
+                        message: error.to_string(),
+                    });
+                }
+            };
         let initial_events = request
             .initial_events
             .into_iter()
@@ -164,6 +197,7 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 &launch_fingerprint,
                 create,
                 request.workspace_id,
+                context_seed,
             )
             .await
         {
