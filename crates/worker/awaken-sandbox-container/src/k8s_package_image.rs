@@ -44,6 +44,10 @@ const PACKAGE_BUILD_TIMEOUT_SECS: i64 = 30 * 60;
 // build's installation window.
 const IMAGE_CHECK_TIMEOUT_SECS: i64 = 10 * 60;
 const IMAGE_CHECK_CLIENT_GRACE_SECS: u64 = 10;
+// A completed kubelet check is the exact, API-observed availability proof for
+// this immutable image. Retain it across ordinary Session creation instead of
+// scheduling another pull one minute after every successful check.
+const IMAGE_CHECK_SUCCESS_REUSE_SECS: i32 = 60 * 60;
 
 fn image_check_client_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(IMAGE_CHECK_TIMEOUT_SECS as u64 + IMAGE_CHECK_CLIENT_GRACE_SECS)
@@ -605,7 +609,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
             spec: Some(JobSpec {
                 active_deadline_seconds: Some(IMAGE_CHECK_TIMEOUT_SECS),
                 backoff_limit: Some(0),
-                ttl_seconds_after_finished: Some(60),
+                ttl_seconds_after_finished: Some(IMAGE_CHECK_SUCCESS_REUSE_SECS),
                 template: PodTemplateSpec {
                     metadata: Some(ObjectMeta {
                         labels: Some(labels),
@@ -1380,6 +1384,52 @@ mod tests {
                 ImageCheckDisposition::Unavailable(_)
             ),
             "R4"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_image_checks_outlive_an_ordinary_session_creation_window() {
+        // Causes: C1 a generic base-image check succeeds; C2 a package-image
+        // check succeeds; C3 the Job is pending, failed, or has passed its TTL.
+        // Effects: E1 both exact successful Job/Pod observations remain reusable
+        // for an hour across Sessions; E2 the existing lifecycle still handles
+        // pending, failure, and TTL expiry without another cache. Decision rules:
+        // R1=C1=>E1, R2=C2=>E1, R3=C3=>E2. The retention exceeds the bounded
+        // probe window, so a normal later Session does not schedule a new pull.
+        let builder = test_builder();
+        let base = "registry.local/base@sha256:exact";
+        let (mut config, _, destination) = builder
+            .build_objects(base, &package_requirements())
+            .unwrap();
+        config.metadata.uid = Some("config-uid".into());
+        for (image, package_config) in [(base, None), (destination.as_str(), Some(&config))] {
+            let (_, job) = builder.image_check_job(image, package_config).unwrap();
+            let spec = job.spec.unwrap();
+            assert_eq!(spec.ttl_seconds_after_finished, Some(60 * 60), "R1/R2:E1");
+            assert!(
+                i64::from(spec.ttl_seconds_after_finished.unwrap())
+                    > spec.active_deadline_seconds.unwrap(),
+                "R1/R2:E1 proof survives the bounded pull window"
+            );
+        }
+        assert_eq!(
+            image_check_disposition(false, false, false, false),
+            ImageCheckDisposition::Continue,
+            "R3:E2 pending check is not proof"
+        );
+        assert!(
+            matches!(
+                image_check_disposition(false, false, true, false),
+                ImageCheckDisposition::Unavailable(_)
+            ),
+            "R3:E2 failed check is not proof"
+        );
+        assert!(
+            matches!(
+                image_check_observation(None),
+                ImageCheckObservation::Missing
+            ),
+            "R3:E2 TTL expiry returns to the same probe path"
         );
     }
 
