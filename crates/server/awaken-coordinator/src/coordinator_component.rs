@@ -287,6 +287,14 @@ pub async fn build_coordinator_component(
     register_application_access_retention(&service_lifecycle, application_access.clone());
     deployment_application.bind_launcher(deployment_session_launcher);
 
+    let domain_observation = service_authenticator.as_ref().map(|authenticator| {
+        crate::worker_observation_boundary::domain_router_with_authenticator(
+            worker_directory.clone(),
+            host.clone(),
+            environments.clone(),
+            authenticator.clone(),
+        )
+    });
     let (managed, data, application, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
             host,
@@ -328,6 +336,10 @@ pub async fn build_coordinator_component(
         None => private_router,
     };
     let private_router = private_router.merge(worker_transport);
+    let private_router = match domain_observation {
+        Some(observation) => private_router.merge(observation),
+        None => private_router,
+    };
     let work_session_access =
         awaken_protocol_managed::ManagedWorkSessionAccess::new(environments.clone(), managed_state);
     let managed_management = awaken_protocol_managed::with_managed_response_context(

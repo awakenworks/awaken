@@ -4,7 +4,7 @@
 //! fixtures here; this suite does not claim Kubernetes or remote termination.
 mod postgres_support;
 
-use awaken_dispatch_contract::ControlDispatchQueue;
+use awaken_dispatch_contract::{ControlDispatchQueue, DispatchQueue};
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
@@ -17,7 +17,8 @@ use awaken_dispatch::{
     ClosedAttemptExecution, ClosedWorkerExecution, MemoryDispatchStore, PhysicalAttempt,
     PostgresDispatchStore, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
     WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerProcessStopStatus, WorkerRegistration, WorkerState, stop_expired_predecessor,
+    WorkerProcessStopStatus, WorkerRegistration, WorkerState,
+    has_active_physical_attempt_for_owner, stop_expired_predecessor,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_dispatch_testkit::worker_http::activation;
@@ -39,10 +40,21 @@ struct StopSource {
     attempt: Mutex<Option<Arc<AttemptStopProbe>>>,
     evidence_release_calls: Mutex<Vec<AttemptExecutionBinding>>,
     evidence_release_result: Mutex<Result<(), String>>,
+    idle_release_calls: Mutex<Vec<WorkerIdentity>>,
 }
 
 #[async_trait::async_trait]
 impl WorkerExecutionStopSource for StopSource {
+    async fn release_closed_idle_worker_evidence(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<(), ApplicationError> {
+        self.idle_release_calls
+            .lock()
+            .unwrap()
+            .push(identity.clone());
+        Ok(())
+    }
     async fn stop_closed_worker(
         &self,
         command: &ClosedWorkerExecution,
@@ -356,6 +368,7 @@ impl Fixture {
             attempt: Mutex::new(None),
             evidence_release_calls: Mutex::new(Vec::new()),
             evidence_release_result: Mutex::new(Ok(())),
+            idle_release_calls: Mutex::new(Vec::new()),
         });
         let thread_id = request_thread_id(&tag);
         let recovery: Arc<dyn RunRecoverySource> = Arc::new(StaticRecoverySource {
@@ -453,6 +466,206 @@ impl Fixture {
 
 fn request_thread_id(tag: &str) -> awaken_agent_contract::agent::thread::Id {
     awaken_agent_contract::agent::thread::Id(format!("thread-{tag}"))
+}
+
+#[tokio::test]
+async fn closed_worker_releases_idle_evidence_only_after_the_original_physical_ack() {
+    // C1 exact authenticated incarnation; C2 Registry closure; C3 original
+    // Dispatch physical slot occupied/acknowledged. E1 C1+C2+occupied -> retain
+    // metadata and slot, no provider stop or forged exit. E2 C1+C2+ACK -> release
+    // metadata through the existing source. R1 occupied; R2 original exact ACK;
+    // R3 retry closed deregistration converges without changing the successor.
+    // Shared observation decision table: R4 occupied exact owner -> true;
+    // R5 occupied foreign owner -> false; R6 original ACK -> false. These
+    // reads leave the physical slot and Registry unchanged. Store faults or
+    // inconsistent active rows are errors, never false (R7, adapter contract).
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 100, 1_000).await;
+    let identity = f.binding.worker().clone();
+    let request = || {
+        reqwest::Client::new()
+            .post(format!("{}/v1/worker/deregister", f.address))
+            .header("x-awaken-worker-id", &identity.worker_id)
+            .json(&json!({"identity":identity}))
+    };
+    assert!(
+        request().send().await.unwrap().status().is_success(),
+        "R1 closure"
+    );
+    assert!(
+        f.stop.idle_release_calls.lock().unwrap().is_empty(),
+        "R1 occupied"
+    );
+    assert!(
+        has_active_physical_attempt_for_owner(f.store.as_ref(), &identity.lease_owner())
+            .await
+            .unwrap(),
+        "R4 exact occupied owner"
+    );
+    assert!(
+        !has_active_physical_attempt_for_owner(f.store.as_ref(), "foreign:1:boot")
+            .await
+            .unwrap(),
+        "R5 foreign owner"
+    );
+    assert_eq!(
+        f.store
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .claim,
+        f.old,
+        "R1 no retirement"
+    );
+    assert!(
+        f.store.finish_attempt(&f.old).await.unwrap().applied(),
+        "R2 original ACK"
+    );
+    assert!(
+        !has_active_physical_attempt_for_owner(f.store.as_ref(), &identity.lease_owner())
+            .await
+            .unwrap(),
+        "R6 original slot acknowledged"
+    );
+    assert!(
+        request().send().await.unwrap().status().is_success(),
+        "R3 retry"
+    );
+    assert_eq!(*f.stop.idle_release_calls.lock().unwrap(), [identity]);
+    assert!(
+        f.stop.calls.lock().unwrap().is_empty(),
+        "no independent stop proof was invented"
+    );
+}
+
+#[tokio::test]
+async fn postgres_guarded_admission_uses_one_process_connection_and_rejects_foreign_pools() {
+    // P1 Registry and Dispatch share max_connections=1 -> exact guarded slot
+    // admission completes on the original transaction, no nested acquisition.
+    // P2 same database but independent pool -> rejection and zero slot effects.
+    // P3 exact closed incarnation -> Fenced and no physical slot. P4 Ready
+    // snapshot expires while its guard is held -> fresh DB time fences entry.
+    // P5 handoff reuses the same transaction and canonical slot reducer. P6
+    // production AnyDispatchStore preserves the original Control capability
+    // and transaction instead of falling back to the Worker rung. Adapter-level
+    // real database proof complements the HTTP closure/cancellation cases;
+    // absence of a configured URL is an explicit skip, never PG evidence.
+    let Some(url) = postgres_support::database_url() else {
+        return;
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let directory = PostgresWorkerDirectory::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    let composed = awaken_dispatch::AnyDispatchStore::with_postgres_pool(pool.clone())
+        .await
+        .unwrap();
+    let foreign = PostgresWorkerDirectory::connect_existing(&url, 1)
+        .await
+        .unwrap();
+    for rule in [
+        "shared", "composed", "handoff", "foreign", "closed", "expired",
+    ] {
+        let tag = format!("one-connection-{rule}-{}", std::process::id());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let identity = register(
+            &directory,
+            &tag,
+            now,
+            if rule == "expired" { 10_000 } else { 60_000 },
+        )
+        .await;
+        let snapshot = directory.current(&tag).await.unwrap().unwrap().snapshot;
+        let request = RunDispatch::new(activation(&tag))
+            .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
+        let run_id = request.run_id().clone();
+        store.enqueue(request).await.unwrap();
+        let claim = RunClaim::from(
+            &store
+                .claim_run_compatible(&run_id, &snapshot, 60_000)
+                .await
+                .unwrap()
+                .unwrap()
+                .lease,
+        );
+        let binding =
+            AttemptExecutionBinding::new(identity.clone(), "cluster", "frozen-original").unwrap();
+        if rule == "closed" {
+            directory.deregister(&identity).await.unwrap();
+        }
+        let guard = if rule == "foreign" {
+            foreign.lock_incarnation(&identity).await.unwrap().unwrap()
+        } else {
+            directory
+                .lock_incarnation(&identity)
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        if rule == "expired" {
+            AuthoritativeWallClock
+                .advance_past(snapshot.expires_at_ms)
+                .await;
+        }
+        let admission_store: &dyn ControlDispatchQueue = if rule == "composed" {
+            &composed
+        } else {
+            &store
+        };
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            admission_store.admit_attempt_guarded(&claim, Some(&binding), guard, rule == "handoff"),
+        )
+        .await
+        .expect("P1 no nested pool acquisition");
+        match rule {
+            "shared" | "composed" | "handoff" => {
+                assert_eq!(outcome.unwrap(), AttemptAdmission::Applied);
+                assert_eq!(
+                    store
+                        .load_physical_attempt(&run_id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .binding,
+                    Some(binding)
+                );
+                assert!(store.finish_attempt(&claim).await.unwrap().applied());
+            }
+            "foreign" => {
+                assert!(outcome.is_err());
+                assert!(
+                    store
+                        .load_physical_attempt(&run_id)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            "closed" | "expired" => {
+                assert_eq!(outcome.unwrap(), AttemptAdmission::Fenced);
+                assert!(
+                    store
+                        .load_physical_attempt(&run_id)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+    pool.close().await;
 }
 
 #[tokio::test]

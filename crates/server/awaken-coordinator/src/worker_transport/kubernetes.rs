@@ -59,6 +59,22 @@ struct KubernetesWorkerBindings {
 
 #[async_trait::async_trait]
 impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
+    async fn retain_registered_worker_evidence(
+        &self,
+        worker: &WorkerIdentity,
+    ) -> Result<(), ApplicationError> {
+        let pod = KubernetesPodIdentity::from_worker_id(&worker.worker_id)
+            .map_err(ApplicationError::invalid)?;
+        if pod.namespace() != self.namespace || !pod.matches_worker(worker) {
+            return Err(ApplicationError::invalid(
+                "Worker retention domain mismatch",
+            ));
+        }
+        self.observer
+            .retain_pod_process_evidence(pod.name(), pod.uid())
+            .await
+            .map_err(|_| ApplicationError::unavailable("exact Worker retention unavailable"))
+    }
     async fn binding_for(
         &self,
         worker: &WorkerIdentity,
@@ -122,6 +138,28 @@ impl KubernetesWorkerStops {
 
 #[async_trait::async_trait]
 impl WorkerExecutionStopSource for KubernetesWorkerStops {
+    fn owns_worker_evidence(&self, worker: &WorkerIdentity) -> bool {
+        KubernetesPodIdentity::from_worker_id(&worker.worker_id)
+            .is_ok_and(|pod| pod.namespace() == self.namespace && pod.matches_worker(worker))
+    }
+    async fn release_closed_idle_worker_evidence(
+        &self,
+        worker: &WorkerIdentity,
+    ) -> Result<(), ApplicationError> {
+        let pod = KubernetesPodIdentity::from_worker_id(&worker.worker_id)
+            .map_err(ApplicationError::invalid)?;
+        if pod.namespace() != self.namespace || !pod.matches_worker(worker) {
+            return Err(ApplicationError::invalid(
+                "idle Worker evidence belongs to another Kubernetes domain",
+            ));
+        }
+        self.stopper
+            .release_closed_idle_pod_evidence(pod.name(), pod.uid())
+            .await
+            .map_err(|_| {
+                ApplicationError::unavailable("idle Worker process evidence release is unavailable")
+            })
+    }
     async fn stop_closed_worker(
         &self,
         execution: &ClosedWorkerExecution,

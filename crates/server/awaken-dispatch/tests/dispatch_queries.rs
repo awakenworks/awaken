@@ -210,6 +210,15 @@ async fn assert_bad_row_isolation(store: &dyn ControlDispatchQueue) {
         store.list_dispatches().await.is_err(),
         "Q7 original monitoring decoder remains strict"
     );
+    // R7 one corrupt Dispatch row makes owner occupancy undecidable; the
+    // shared release/observation scan must propagate that error instead of
+    // treating the owner as empty, even if a healthy peer remains readable.
+    assert!(
+        awaken_dispatch::has_active_physical_attempt_for_owner(store, "owner:1:boot")
+            .await
+            .is_err(),
+        "R7 corrupt occupancy is not an empty observation"
+    );
 }
 
 #[tokio::test]

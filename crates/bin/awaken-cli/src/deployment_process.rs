@@ -269,6 +269,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         service_lifecycle: prepared.service_lifecycle,
         event_batch_cutover_validation: prepared.event_batch_cutover_validation,
         coordinator_authorities,
+        worker_authenticator: prepared.worker_authenticator,
         admin_tools: prepared.admin_tools,
         clock: process_clock,
     })

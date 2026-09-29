@@ -447,6 +447,17 @@ pub trait ControlDispatchQueue: DispatchQueue {
         &self,
         claim: &RunClaim,
     ) -> Result<SettleOutcome, DispatchError>;
+
+    /// Use the original Registry exclusion through physical admission. SQL
+    /// adapters sharing one pool transfer its transaction instead of requiring
+    /// a second connection; other adapters retain the guard until completion.
+    async fn admit_attempt_guarded(
+        &self,
+        claim: &RunClaim,
+        binding: Option<&crate::dispatch::AttemptExecutionBinding>,
+        guard: awaken_worker_contract::WorkerIncarnationGuard,
+        handoff: bool,
+    ) -> Result<AttemptAdmission, DispatchError>;
     /// Read one exact persisted binding only while `claim` remains the current
     /// owner. This query grants no material and changes no delivery state.
     async fn current_credential_binding(

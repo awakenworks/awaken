@@ -7,7 +7,9 @@ use awaken_sandbox_container::k8s::{
 
 #[tokio::test]
 async fn deployment_restart_policy_requires_actual_closed_exit_evidence() {
-    // Live rules DP1 retained original Always Pod -> exact pre-effect binding;
+    // Live rules DP0 unregistered Pod has no evidence finalizer; the canonical
+    // registration adapter retains the exact UID idempotently before binding.
+    // DP1 retained original Always Pod -> exact pre-effect binding;
     // DP2 DELETE acceptance -> Unknown; DP3 accepted deletion + original runtime
     // exit -> observed; DP4 only then release the owned evidence finalizer.
     // This runs the production adapter against a real kubelet, without claiming
@@ -35,7 +37,7 @@ async fn deployment_restart_policy_requires_actual_closed_exit_evidence() {
         kube::Api::namespaced(client.clone(), &namespace);
     let mut value = serde_json::json!({
         "apiVersion":"v1", "kind":"Pod",
-        "metadata":{"name":name,"namespace":namespace,"finalizers":[WORKER_PROCESS_EVIDENCE_FINALIZER]},
+        "metadata":{"name":name,"namespace":namespace},
         "spec":{"restartPolicy":"Always","automountServiceAccountToken":false,
             "containers":[{"name":"worker","image":fixture_image(),
                 "command":["/bin/sh","-c","while :; do sleep 1; done"],
@@ -54,6 +56,26 @@ async fn deployment_restart_policy_requires_actual_closed_exit_evidence() {
         .unwrap();
     let uid = created.metadata.uid.unwrap();
     let observer = PodProcessObserver::new(client.clone(), &namespace).unwrap();
+    assert!(
+        !pods
+            .get(&name)
+            .await
+            .unwrap()
+            .metadata
+            .finalizers
+            .unwrap_or_default()
+            .iter()
+            .any(|f| f == WORKER_PROCESS_EVIDENCE_FINALIZER),
+        "DP0"
+    );
+    observer
+        .retain_pod_process_evidence(&name, &uid)
+        .await
+        .unwrap();
+    observer
+        .retain_pod_process_evidence(&name, &uid)
+        .await
+        .unwrap();
     let binding = wait_for_binding(&observer, &name, &uid).await;
     assert_eq!(
         serde_json::to_value(&binding).unwrap()["restartable"],

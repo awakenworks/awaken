@@ -14,7 +14,7 @@ use kube::Api;
 use kube::api::{DeleteParams, PostParams, Preconditions};
 
 use super::error::api_not_found;
-use super::finalizer::{ExactFinalizerReleaseAdmission, release_exact_pod_finalizer};
+use super::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
 use super::names::{continuation_claim_for_pod, continuation_claim_name};
 use super::pod_projection::CONTINUATION_VOLUME;
 use super::{
@@ -529,10 +529,11 @@ pub(super) async fn release_pod_cleanup_gate(
     pending: &PendingPodCleanup,
     admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
-    release_exact_pod_finalizer(
+    update_exact_pod_finalizer(
         pods,
         &pending.name,
         CONTINUATION_CLEANUP_FINALIZER,
+        false,
         admit,
         &|observed| {
         if observed.metadata.uid.as_deref() != Some(pending.uid.as_str()) {
@@ -555,10 +556,10 @@ pub(super) async fn release_pod_cleanup_gate(
                         "Kubernetes continuation cleanup successor changed before gate release",
                     ));
                 }
-                Ok(ExactFinalizerReleaseAdmission::Remove)
+                Ok(ExactFinalizerAdmission::Remove)
             }
             PodCleanupGateReleaseAdmission::AlreadyReleasedAfterDelete => {
-                Ok(ExactFinalizerReleaseAdmission::Complete)
+                Ok(ExactFinalizerAdmission::Complete)
             }
             PodCleanupGateReleaseAdmission::LostBeforeDelete => {
                 Err(backend(

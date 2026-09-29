@@ -418,6 +418,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
         service_lifecycle: prepared.service_lifecycle,
         event_batch_cutover_validation: prepared.event_batch_cutover_validation,
         coordinator_authorities: None,
+        worker_authenticator: prepared.worker_authenticator,
         admin_tools: prepared.admin_tools,
         clock,
     })

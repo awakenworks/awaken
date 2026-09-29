@@ -15,6 +15,16 @@ impl ControlDispatchQueue for SqliteDispatchStore {
         self.finish_physical_attempt_with(claim, true).await
     }
 
+    async fn admit_attempt_guarded(
+        &self,
+        claim: &RunClaim,
+        binding: Option<&AttemptExecutionBinding>,
+        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+        handoff: bool,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        crate::application::admit_with_incarnation_guard(self, claim, binding, guard, handoff).await
+    }
+
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,

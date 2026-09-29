@@ -641,6 +641,155 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registered_application_factory_uses_one_identity_and_rejects_drift_before_ready() {
+    // Causes C1 compatible registration; C2 factory returns/unwinds/errors;
+    // C3 actual capabilities equal the frozen declaration. R1 C1+C2(ok)+C3 ->
+    // one factory, same context/upstream identity, normal Ready/claim/shutdown.
+    // R2 C2(error|panic)|!C3 -> exact deregistration, no Ready/claim/provider IO.
+    // Drift crosses each declaration axis; no failed row may retain a second
+    // application dependency source or silently fall back to static clients.
+    use awaken_worker::{WorkerApplicationCapabilities, WorkerApplicationDependencies};
+    for fault in [
+        "ok",
+        "error",
+        "panic",
+        "inference",
+        "scheme",
+        "credential",
+        "checkpoint",
+        "decorator",
+        "web",
+    ] {
+        let upstream = FakeWorkerUpstream::start();
+        let factories = Arc::new(AtomicUsize::new(0));
+        let calls = factories.clone();
+        let provider = Arc::new(ExternalSessionProvider::default());
+        let expected_worker = format!("registered-{fault}");
+        let worker_id = expected_worker.clone();
+        let mut declaration = WorkerApplicationCapabilities::default();
+        match fault {
+            "inference" => declaration.inference = true,
+            "scheme" => {
+                declaration.inference_schemes.insert("invented".into());
+            }
+            "credential" => {
+                declaration.inference_credentials.recipient_bound_envelopes = true;
+            }
+            "checkpoint" => declaration.checkpoint_store = true,
+            "decorator" => declaration.attempt_decorator = true,
+            "web" => declaration.web_search_schema = serde_json::json!({}),
+            _ => {}
+        }
+        let admin_addr = format!("127.0.0.1:{}", free_port());
+        let worker =
+            lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id(&worker_id))
+                .with_session_container_provider("external-secure", provider.clone())
+                .with_manifest(manifest())
+                .with_registered_application_factory(
+                    declaration,
+                    Arc::new(move |context| {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(context.identity().worker_id, expected_worker);
+                        assert_eq!(
+                            context.upstream().worker_identity(),
+                            Some(context.identity())
+                        );
+                        assert_ne!(fault, "panic", "injected registered application unwind");
+                        if fault == "error" {
+                            return Err("injected registered application error".into());
+                        }
+                        Ok(WorkerApplicationDependencies::default())
+                    }),
+                )
+                .with_admin_listen(&admin_addr);
+        // A checkpoint declaration on an incapable provider fails before
+        // registration by the original builder invariant, rather than drifting
+        // into a second startup-time compatibility check.
+        if fault == "checkpoint" {
+            assert!(worker.build().is_err());
+            assert_eq!(factories.load(Ordering::SeqCst), 0);
+            assert!(upstream.requests().is_empty());
+            continue;
+        }
+        let result = tokio::time::timeout(
+            Duration::from_secs(8),
+            worker.build().unwrap().run_until(async {
+                if fault != "ok" {
+                    return std::future::pending().await;
+                }
+                assert!(
+                    poll_status(&admin_addr, "GET", "/readyz", 200).await,
+                    "R1 Ready"
+                );
+                Ok(WorkerShutdown::Prompt)
+            }),
+        )
+        .await
+        .expect("bounded canonical registration withdrawal");
+        assert_eq!(factories.load(Ordering::SeqCst), 1);
+        if fault == "ok" {
+            result.unwrap();
+        } else {
+            assert!(result.is_err(), "R2 {fault}");
+            assert_eq!(
+                upstream.requests(),
+                ["/v1/worker/register", "/v1/worker/deregister"],
+                "R2 {fault}"
+            );
+            assert_eq!(
+                provider.probe_calls.load(Ordering::SeqCst),
+                0,
+                "R2 no physical preparation"
+            );
+        }
+    }
+}
+
+#[test]
+fn static_and_registered_application_sources_are_mutually_exclusive() {
+    // C1 static web/decorator dependency and C2 registered factory cannot both
+    // own the same client. R1 either order -> reject before registration; R2
+    // repeated registered factories -> reject, no last-writer identity override.
+    use awaken_worker::{WorkerApplicationCapabilities, WorkerApplicationDependencies};
+    let factory: awaken_worker::RegisteredWorkerApplicationFactory =
+        Arc::new(|_| Ok(WorkerApplicationDependencies::default()));
+    for reverse in [false, true] {
+        let builder = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"));
+        let builder = if reverse {
+            builder
+                .with_registered_application_factory(
+                    WorkerApplicationCapabilities::default(),
+                    factory.clone(),
+                )
+                .with_web_search_provider_registry(Default::default())
+        } else {
+            builder
+                .with_web_search_provider_registry(Default::default())
+                .with_registered_application_factory(
+                    WorkerApplicationCapabilities::default(),
+                    factory.clone(),
+                )
+        };
+        assert!(
+            builder.with_manifest(manifest()).build().is_err(),
+            "R1 {reverse}"
+        );
+    }
+    assert!(
+        WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+            .with_registered_application_factory(
+                WorkerApplicationCapabilities::default(),
+                factory.clone()
+            )
+            .with_registered_application_factory(WorkerApplicationCapabilities::default(), factory)
+            .with_manifest(manifest())
+            .build()
+            .is_err(),
+        "R2"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_transport_gap_retries_the_same_incarnation_until_coordinator_is_reachable() {
     // Cause/effect decision table for a newly networked Pod:
     // C1 the Service coordinate initially refuses TCP; C2 the same coordinate
@@ -1089,6 +1238,44 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
                 "{declaration:?}"
             );
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closed_registration_receipt_withdraws_before_application_factories() {
+    // R1 registration response loss/lease expiry may return the original
+    // Draining/Quiesced/Dead record. All closed receipts retain the exact
+    // identity for the original withdrawal, but invoke no factory/probe/Ready
+    // or claim. R2 Starting/Ready continues through existing lifecycle cases.
+    for state in ["draining", "quiesced", "dead"] {
+        let upstream = FakeWorkerUpstream::start();
+        upstream.set_registration_state(state);
+        let factories = Arc::new(AtomicUsize::new(0));
+        let calls = factories.clone();
+        let worker =
+            lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id("closed-receipt"))
+                .with_deployment_config(local_coordinator_deployment())
+                .with_attempt_decorator_factory(Arc::new(move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err("closed receipt must precede factory".into())
+                }))
+                .with_manifest(manifest())
+                .without_admin_surface()
+                .build()
+                .unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(8),
+            worker.run_until(std::future::pending()),
+        )
+        .await
+        .expect("bounded original withdrawal")
+        .expect_err("closed admission");
+        assert!(error.to_string().contains("admission is already closed"));
+        assert_eq!(factories.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            upstream.requests(),
+            ["/v1/worker/register", "/v1/worker/deregister"]
+        );
     }
 }
 

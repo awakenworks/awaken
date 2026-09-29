@@ -512,6 +512,13 @@ pub trait WorkerObservationSource: Send + Sync {
 /// incarnation: use a new Worker id, never manufacture the discarded history.
 #[async_trait]
 pub trait WorkerDirectory: WorkerObservationSource {
+    /// Hold the existing incarnation exclusion across a final admission and its
+    /// Dispatch transaction. Provider I/O must precede this guard. Unsupported
+    /// adapters fail closed rather than pretending to serialize with closure.
+    async fn lock_incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<WorkerIncarnationGuard>, RegistryError>;
     async fn register(
         &self,
         registration: WorkerRegistration,
@@ -575,6 +582,90 @@ pub trait WorkerDirectory: WorkerObservationSource {
         _identity: &WorkerIdentity,
         _receipt: WorkerProcessExit,
     ) -> Result<RegistryMutation, RegistryError>;
+}
+
+type IncarnationRelease =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+type ResourceRelease = Box<dyn FnOnce(Box<dyn std::any::Any + Send>) -> IncarnationRelease + Send>;
+
+/// One exact Registry snapshot held under its original mutation exclusion.
+/// It creates no execution authority; callers still check state, time and claim.
+pub struct WorkerIncarnationGuard {
+    held: Option<Box<dyn std::any::Any + Send>>,
+    snapshot: WorkerSnapshot,
+    release: Option<IncarnationRelease>,
+    release_resource: Option<ResourceRelease>,
+}
+
+impl WorkerIncarnationGuard {
+    pub fn new(held: impl Send + 'static, snapshot: WorkerSnapshot) -> Self {
+        Self {
+            held: Some(Box::new(held)),
+            snapshot,
+            release: None,
+            release_resource: None,
+        }
+    }
+    pub fn new_releasing(
+        snapshot: WorkerSnapshot,
+        release: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
+    ) -> Self {
+        Self {
+            held: None,
+            snapshot,
+            release: Some(Box::pin(release)),
+            release_resource: None,
+        }
+    }
+    /// Store adapters may transfer their original transaction into the paired
+    /// Dispatch transaction. This opaque resource owns no second authority.
+    pub fn new_resource<T, F, Fut>(snapshot: WorkerSnapshot, resource: T, release: F) -> Self
+    where
+        T: Send + 'static,
+        F: FnOnce(T) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
+    {
+        Self {
+            held: Some(Box::new(resource)),
+            snapshot,
+            release: None,
+            release_resource: Some(Box::new(move |resource| {
+                Box::pin(release(
+                    *resource.downcast::<T>().expect("original resource type"),
+                ))
+            })),
+        }
+    }
+    /// Take only the exact backend resource; a different adapter preserves it
+    /// for normal release. The receiving store must validate backend provenance.
+    pub fn take_resource<T: Send + 'static>(&mut self) -> Option<T> {
+        let resource = self.held.take()?;
+        match resource.downcast::<T>() {
+            Ok(resource) => {
+                self.release_resource = None;
+                Some(*resource)
+            }
+            Err(resource) => {
+                self.held = Some(resource);
+                None
+            }
+        }
+    }
+    pub fn snapshot(&self) -> &WorkerSnapshot {
+        &self.snapshot
+    }
+    pub async fn release(mut self) -> Result<(), String> {
+        if let Some(release) = self.release_resource.take()
+            && let Some(resource) = self.held.take()
+        {
+            release(resource).await?;
+        }
+        if let Some(release) = self.release {
+            release.await?;
+        }
+        drop(self.held);
+        Ok(())
+    }
 }
 
 impl WorkerSnapshot {

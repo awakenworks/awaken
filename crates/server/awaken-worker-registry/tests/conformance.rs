@@ -28,6 +28,72 @@ async fn memory_registry_conforms() {
     assert_expiry_race(directory.clone(), directory, "memory").await;
 }
 
+async fn assert_incarnation_exclusion(
+    first: Arc<dyn WorkerDirectory>,
+    second: Arc<dyn WorkerDirectory>,
+    backend: &str,
+) {
+    // Causes C1 exact current incarnation; C2 admission guard is held; C3 close,
+    // expiry or replacement races the final Dispatch admission. R1 C1+C2 ->
+    // closure cannot commit until guard release. R2 release -> exact closure
+    // commits; a new guard observes Dead and cannot mint execution authority.
+    // Independent SQLite connections/PG pools prove database exclusion rather
+    // than a test-side mutex. Stale identity returns no guard and no mutation.
+    let id = format!("guard-{backend}-{}", std::process::id());
+    let identity = first
+        .register(registration(&id, "guarded"), 100, 50)
+        .await
+        .unwrap()
+        .snapshot
+        .identity;
+    let held = first.lock_incarnation(&identity).await.unwrap().unwrap();
+    assert_eq!(held.snapshot().identity, identity);
+    let next = second.clone();
+    let expected = identity.clone();
+    let task = tokio::spawn(async move { next.deregister(&expected).await.unwrap() });
+    let mut task = Box::pin(task);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut task)
+            .await
+            .is_err(),
+        "R1 closed transition remains excluded"
+    );
+    held.release().await.unwrap();
+    assert_eq!(task.await.unwrap(), RegistryMutation::Applied, "R2");
+    let closed = first.lock_incarnation(&identity).await.unwrap().unwrap();
+    assert_eq!(
+        closed.snapshot().state,
+        WorkerState::Dead,
+        "R2 exact closed truth"
+    );
+    closed.release().await.unwrap();
+    let mut stale = identity;
+    stale.generation += 1;
+    assert!(
+        first.lock_incarnation(&stale).await.unwrap().is_none(),
+        "R3 stale identity"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "test-support")]
+async fn memory_incarnation_exclusion_serializes_closure() {
+    let directory: Arc<dyn WorkerDirectory> = Arc::new(MemoryWorkerDirectory::new());
+    assert_incarnation_exclusion(directory.clone(), directory, "memory").await;
+}
+
+#[tokio::test]
+async fn sqlite_incarnation_exclusion_serializes_independent_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("guards.sqlite");
+    assert_incarnation_exclusion(
+        Arc::new(SqliteWorkerDirectory::open(&path).unwrap()),
+        Arc::new(SqliteWorkerDirectory::open(&path).unwrap()),
+        "sqlite",
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn sqlite_registry_conforms_and_reopens() {
     // Cause/effect graph: durable path -> transition sequence -> process closes
@@ -147,6 +213,16 @@ async fn postgres_registry_conforms_when_configured() {
     )
     .await;
     assert_expiry_race(
+        store.clone(),
+        Arc::new(
+            PostgresWorkerDirectory::connect_existing(&url, 5)
+                .await
+                .unwrap(),
+        ),
+        "postgres",
+    )
+    .await;
+    assert_incarnation_exclusion(
         store,
         Arc::new(
             PostgresWorkerDirectory::connect_existing(&url, 5)

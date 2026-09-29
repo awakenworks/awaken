@@ -538,6 +538,10 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     ) -> Result<Vec<(RunId, RunState)>, awaken_dispatch::Error> {
         crate::host::terminal_reconciliation::reconcile_committed_terminals(self, limit).await
     }
+
+    async fn reconcile_worker_evidence(&self) -> Result<(), awaken_dispatch::Error> {
+        self.host()?.reconcile_worker_evidence().await
+    }
 }
 
 #[cfg(test)]

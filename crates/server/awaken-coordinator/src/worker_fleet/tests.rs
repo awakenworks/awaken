@@ -29,6 +29,15 @@ impl WorkerObservationSource for ScriptedDirectory {
 
 #[async_trait]
 impl WorkerDirectory for ScriptedDirectory {
+    async fn lock_incarnation(
+        &self,
+        _identity: &WorkerIdentity,
+    ) -> Result<Option<awaken_worker_contract::WorkerIncarnationGuard>, RegistryError> {
+        Err(RegistryError::Persistence(
+            "fixture forbids physical admission".into(),
+        ))
+    }
+
     async fn register(
         &self,
         _registration: WorkerRegistration,

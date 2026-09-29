@@ -124,6 +124,38 @@ impl PodProcessObserver {
             namespace: namespace.into(),
         })
     }
+
+    /// Retain this registered UID before Ready; never adopt a deleting or
+    /// replacement Pod. This creates metadata only, not a process binding.
+    pub async fn retain_pod_process_evidence(
+        &self,
+        name: &str,
+        uid: &str,
+    ) -> Result<(), RuntimeError> {
+        use super::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
+        update_exact_pod_finalizer(
+            &self.pods,
+            name,
+            WORKER_PROCESS_EVIDENCE_FINALIZER,
+            true,
+            &|| Ok(()),
+            &|pod| {
+                if uid.is_empty()
+                    || pod.metadata.uid.as_deref() != Some(uid)
+                    || pod.metadata.deletion_timestamp.is_some()
+                {
+                    return Err(backend("Worker retention requires the original live Pod"));
+                }
+                Ok(if evidence_is_retained(pod) {
+                    ExactFinalizerAdmission::Complete
+                } else {
+                    ExactFinalizerAdmission::Retain
+                })
+            },
+            &|_| {},
+        )
+        .await
+    }
     /// Obtain the exact running process coordinate through the existing control
     /// client. The caller must persist it before allowing any external effects.
     /// Every ordinary container is included. Init, ephemeral, independently

@@ -605,6 +605,16 @@ impl ControlDispatchQueue for AnyDispatchStore {
     ) -> Result<SettleOutcome, DispatchError> {
         delegate_control!(self, finish_attempt_closure(claim))
     }
+
+    async fn admit_attempt_guarded(
+        &self,
+        claim: &RunClaim,
+        binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
+        guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+        handoff: bool,
+    ) -> Result<crate::AttemptAdmission, DispatchError> {
+        delegate_control!(self, admit_attempt_guarded(claim, binding, guard, handoff))
+    }
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,

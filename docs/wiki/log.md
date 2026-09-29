@@ -1,5 +1,14 @@
 # Wiki Update Log
 
+## 2026-09-30 — Observe exact Worker occupancy at transport cutover
+
+- ADR-0065 keeps Registry, Dispatch and WorkQueue as the three read authorities
+  for one incarnation. Coordinator's existing private Worker observation
+  boundary composes them without a release-owned database reader or mutation.
+- An unavailable or inconsistent observation stops the cutover. The historical
+  unbound physical attempt remains occupied and cannot be replayed or cleared
+  from a newer Pod observation.
+
 ## 2026-09-29 — Consolidate Sandbox allowlist ownership
 
 - [ADR-0041](../adr/0041-sandbox-execution-environment-provider.md) records the
@@ -803,3 +812,18 @@
   to connect profiled reads/replies to existing native execution authorities.
 - Session ownership, Run truth, dispatch settlement and reply receipts retain
   their existing owners.
+
+## 2026-09-29 — Retain Worker evidence within the original lifecycle
+
+- [ADR-0065](../adr/0065-recoverable-embeddable-remote-worker.md#amendment-closed-worker-evidence-release-fences-late-admission-2026-09-29)
+  closes late physical admission under Registry exclusion. Registered Pod
+  retention and closed-idle release reuse the original transport and Dispatch
+  maintenance loop; metadata release does not prove historical execution ended.
+
+## 2026-09-30 — Observe exact Work ownership without reclamation
+
+- The existing [Worker lifecycle boundary](../adr/0065-recoverable-embeddable-remote-worker.md#amendment-closed-worker-evidence-release-fences-late-admission-2026-09-29)
+  consumes a read-only WorkQueue owner query. Expired but unreleased authority
+  remains occupied; observations neither release Work nor establish physical exit.
+  The PostgreSQL adapter was split into a bounded source module while its
+  schema, port and backend conformance ownership remained unchanged.
