@@ -106,6 +106,21 @@ if docker info >/dev/null 2>&1; then
   # C5: the real hand runs a real tool in a --network none container over the unix
   # rendezvous, driven by a host brain speaking the hand wire.
   run "docker:hand-in-container" bash deploy/images/sandbox/hand-smoke.sh
+  # One canonical image owner supplies both existing physical environment rows.
+  # An explicitly empty runtime set builds the hermetic Native/transport image;
+  # --ensure-current verifies the exact current binary and contract bytes.
+  session_image="${AWAKEN_TEST_SESSION_IMAGE:-awaken-sandbox:session-e2e}"
+  run "docker:current-session-image" \
+    deploy/images/sandbox/build.sh --ensure-current "$session_image" ""
+  run "docker:one-environment-native-acp-hand" \
+    env AWAKEN_TEST_SESSION_IMAGE="$session_image" \
+    cargo nextest run -j 2 -p awaken-sandbox-container --features docker \
+      --test session_docker --run-ignored only --no-tests=fail
+  run "docker:anonymous-repository-and-artifact-readback" \
+    env AWAKEN_TEST_SESSION_IMAGE="$session_image" \
+    cargo nextest run -j 2 -p awaken-session-environment --features docker-tests \
+      --lib --run-ignored only --no-tests=fail \
+      -E 'test(docker_anonymous_repository_and_artifact_readback_use_one_sandbox)'
 else
   skip "no reachable Docker daemon"
 fi
