@@ -246,6 +246,31 @@ def wired_scripts(hooks: str) -> set[str]:
     return wired
 
 
+def undeclared_invocations(hooks: str, declarations: dict[str, tuple[str, ...]]) -> list[str]:
+    """Checkers a ``pre-commit`` command runs that declare no ``INPUT_GLOBS``.
+
+    A command invoking an undeclared checker keeps whatever glob a human wrote,
+    and nothing afterwards compares that glob to what the checker reads. The
+    drift is silent and one-directional: the checker grows a new input, the glob
+    does not, and the check simply stops running for the paths it stopped being
+    triggered by. That is the failure this renderer exists to remove, so leaving
+    the door open for new commands is not a policy - it is the bug, deferred.
+
+    Returning the names rather than rendering something for them keeps the
+    renderer honest: it cannot invent a trigger for inputs nobody declared.
+    """
+
+    lines, spans = _spans(hooks)
+    undeclared: set[str] = set()
+    for _, header, end in spans:
+        body_end = _body_end(lines, header + 1, end)
+        block = _without_generated(lines[header + 1:body_end])
+        for name in INVOCATION.findall("".join(block)):
+            if name not in declarations:
+                undeclared.add(name)
+    return sorted(undeclared)
+
+
 def render(hooks: str, declarations: dict[str, tuple[str, ...]]) -> str:
     """``hooks`` with every generated glob region rebuilt from ``declarations``."""
 
@@ -291,6 +316,17 @@ def selftest() -> None:
     | G4   | F  | F  | T  | F  | F  | F  | untouched: no declaring checker is invoked |
     | G5   | T  | F  | F  | F  | T  | F  | a region with no glob line at all          |
     | G6   | T  | F  | F  | F  | F  | T  | one glob, the union of both declarations   |
+
+    Mandatory declaration (U): a rendered trigger only exists for a checker that
+    declared its inputs, so a `pre-commit` command running an undeclared Python
+    checker is reported rather than left with an unaudited hand-written glob. A
+    command running a shell script declares nothing and is out of scope - G4
+    stays untouched, which is why the rule matches `.py` invocations only.
+
+    | Rule | Command runs                      | Effect                        |
+    |------|-----------------------------------|-------------------------------|
+    | U1   | an undeclared `.py` checker       | named by undeclared_invocations |
+    | U2   | only declaring checkers + a shell | nothing reported              |
 
     Matcher (M): the proof above is only valid under doublestar semantics.
 
@@ -343,6 +379,24 @@ def selftest() -> None:
     assert wired_scripts(generated) == {
         "check_alpha.py", "check_beta.py", "check_everything.py",
     }, "wiring is read from run bodies, not from glob text"
+    # U2 the fixture's own commands are all declared (its shell command runs no
+    # Python checker), so the mandatory-declaration rule reports nothing.
+    assert undeclared_invocations(generated, declarations) == [], "U2"
+    # U1 one added command runs a checker that declared nothing.
+    # Inserted inside the pre-commit commands block: a command appended past the
+    # end of that section is not a pre-commit trigger and must not be scanned.
+    with_undeclared = generated.replace(
+        "pre-commit:\n  commands:\n",
+        "pre-commit:\n  commands:\n"
+        "    stray:\n"
+        '      glob: "docs/*.md"\n'
+        "      run: python3 scripts/ci/check_stray.py {staged_files}\n\n",
+        1,
+    )
+    assert undeclared_invocations(with_undeclared, declarations) == [
+        "check_stray.py"
+    ], "U1"
+
     # A declaration that cannot be rendered into brace alternation is refused at
     # the source rather than emitted as a broken glob.
     for broken in ['INPUT_GLOBS = ("a,b",)\n', 'INPUT_GLOBS = ()\n', 'INPUT_GLOBS = ["a"]\n']:
@@ -383,7 +437,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     current = HOOKS.read_text(encoding="utf-8")
-    rendered = render(current, declared_input_globs(SCRIPTS))
+    declarations = declared_input_globs(SCRIPTS)
+    undeclared = undeclared_invocations(current, declarations)
+    if undeclared:
+        print(
+            "generate_hooks: these pre-commit checkers declare no INPUT_GLOBS, so their "
+            "trigger stays hand-written and can drift from what they read:\n  "
+            + "\n  ".join(undeclared)
+            + "\nAdd a module-level INPUT_GLOBS tuple naming every path the checker reads.",
+            file=sys.stderr,
+        )
+        return 1
+    rendered = render(current, declarations)
     if rendered == current:
         print("lefthook.yml generated globs are current")
         return 0

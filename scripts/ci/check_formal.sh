@@ -90,7 +90,12 @@ formal_failure_kind=""
 formal_failure_stage=""
 formal_failure_subject=""
 formal_failure_deadline_seconds=""
-kani_batch_timeout_seconds="${AWAKEN_KANI_BATCH_TIMEOUT_SECONDS:-1800}"
+# The deadline is declared, and an override may only lower it: a batch that
+# needs longer has not been made cheaper. formal_budget.py owns that rule and
+# names the remedies that terminate.
+if ! kani_batch_timeout_seconds="$(python3 scripts/ci/formal_budget.py kani-batch-timeout-seconds)"; then
+  exit 1
+fi
 finish_formal_artifacts() {
   first_result=$?
   result=$first_result
@@ -177,6 +182,7 @@ python3 scripts/ci/check_feature_coverage.py --require-complete
 python3 scripts/ci/check_formal_coverage.py --require-complete \
   --require-guardrail G42 \
   --require-guardrail G43
+python3 scripts/ci/formal_budget.py --self-test
 python3 scripts/ci/formal_ledger.py --self-test
 python3 scripts/ci/formal_plan.py --self-test
 python3 scripts/ci/test_formal_profile.py
