@@ -130,7 +130,11 @@ impl CoordinationEndpoint {
         &self,
         session_id: &awaken_session_types::SessionId,
         request: &ModelRequestAdmissionRequest,
+        claimed: Option<&RunClaim>,
     ) -> Result<bool, String> {
+        if claimed.is_some_and(|claim| claim.run_id.0 != request.run_id.0) {
+            return Err("Session model request Run differs from its dispatch claim".into());
+        }
         match self {
             Self::Local(application) => application
                 .upgrade()
@@ -138,12 +142,13 @@ impl CoordinationEndpoint {
                 .admit_session_model_request(session_id, &request.thread_id, &request.run_id)
                 .await
                 .map_err(|error| error.to_string()),
-            Self::Remote { control, slots } => {
-                let claim = Self::current_claim(slots, session_id.as_str(), &request.run_id.0)
-                    .map_err(|error| error.to_string())?;
+            Self::Remote { control, .. } => {
+                let claim = claimed.ok_or_else(|| {
+                    "Remote Session model request requires its exact dispatch claim".to_string()
+                })?;
                 control
                     .admit_session_model_request(
-                        &claim,
+                        claim,
                         session_id.as_str(),
                         &request.thread_id,
                         &request.run_id,
@@ -266,6 +271,7 @@ impl CoordinationEndpoint {
 pub(crate) struct HostModelRequestGate {
     endpoint: CoordinationEndpoint,
     session_id: String,
+    claim: Option<RunClaim>,
 }
 
 impl HostModelRequestGate {
@@ -273,8 +279,35 @@ impl HostModelRequestGate {
         Self {
             endpoint,
             session_id: session_id.into(),
+            claim: None,
         }
     }
+
+    fn claimed(endpoint: CoordinationEndpoint, session_id: String, claim: RunClaim) -> Self {
+        Self {
+            endpoint,
+            session_id,
+            claim: Some(claim),
+        }
+    }
+}
+
+/// Bind the existing Session gate once for each exact dispatch claim. The
+/// durable Worker invokes this factory in its canonical attempt-context seam;
+/// no Session-wide mutable claim cache is consulted for model admission.
+pub(crate) fn claimed_model_request_gate_factory(
+    endpoint: CoordinationEndpoint,
+    session_id: impl Into<String>,
+) -> awaken_dispatch::ClaimedModelRequestGateFactory {
+    let session_id = session_id.into();
+    Arc::new(move |claim| {
+        let gate: Arc<dyn ModelRequestGate> = Arc::new(HostModelRequestGate::claimed(
+            endpoint.clone(),
+            session_id.clone(),
+            claim.clone(),
+        ));
+        gate
+    })
 }
 
 #[async_trait::async_trait]
@@ -290,6 +323,7 @@ impl ModelRequestGate for HostModelRequestGate {
             .admit_model_request(
                 &awaken_session_types::SessionId::from(&self.session_id),
                 &request,
+                self.claim.as_ref(),
             )
             .await
             .map(|admitted| {
@@ -645,7 +679,10 @@ mod tests {
         }
     }
 
-    struct RemoteControl;
+    #[derive(Default)]
+    struct RemoteControl {
+        model_calls: std::sync::Mutex<Vec<RunClaim>>,
+    }
 
     #[async_trait::async_trait]
     impl awaken_session_realization_contract::SessionRealizationControl for RemoteControl {
@@ -735,16 +772,13 @@ mod tests {
 
         async fn admit_session_model_request(
             &self,
-            _claim: &RunClaim,
+            claim: &RunClaim,
             _session_id: &str,
             _thread_id: &awaken_agent_contract::agent::thread::Id,
             _run_id: &awaken_agent_contract::agent::run::Id,
         ) -> Result<bool, awaken_dispatch_contract::ClaimedSessionControlError> {
-            Err(
-                awaken_dispatch_contract::ClaimedSessionControlError::new(
-                    "remote coordination fixture does not admit model requests",
-                ),
-            )
+            self.model_calls.lock().unwrap().push(claim.clone());
+            Ok(true)
         }
 
         async fn admit_session_run_activity(
@@ -859,7 +893,7 @@ mod tests {
         drop(local_port);
         drop(local);
         let host = crate::SharedHost::new(Arc::new(EndpointModel), "stub")
-            .with_session_control(Arc::new(RemoteControl));
+            .with_session_control(Arc::new(RemoteControl::default()));
         *host
             .dispatch
             .agent_coordination
@@ -874,6 +908,83 @@ mod tests {
             "R2/E1-E2"
         );
         assert!(host.dispatch_settlement_observer().is_some(), "R2/E1");
+    }
+
+    #[tokio::test]
+    async fn claimed_model_gate_uses_each_run_claim_despite_a_shared_session_slot() {
+        // Causes: C1 parent and child Runs overlap in one Session; C2 the
+        // Session slot holds the other Run's claim; C3 a request names a Run
+        // other than the gate's bound claim; C4 an unclaimed remote context.
+        // Effects: E1 parent/child model requests carry their own exact claim;
+        // E2 C3/C4 fail before the remote control is entered. Decision rules:
+        // R1=C1+C2+matching Run=>E1, R2=C3=>E2, R3=C4=>E2. The Coordinator's
+        // existing claim guard separately rejects a stale owner/epoch.
+        let parent = RunClaim {
+            run_id: RunId("parent".into()),
+            owner: "worker".into(),
+            epoch: 1,
+        };
+        let child = RunClaim {
+            run_id: RunId("child".into()),
+            owner: "worker".into(),
+            epoch: 2,
+        };
+        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let control = Arc::new(RemoteControl::default());
+        let endpoint = CoordinationEndpoint::Remote {
+            control: control.clone(),
+            slots: slots.clone(),
+        };
+        let factory = claimed_model_request_gate_factory(endpoint.clone(), "session");
+        slots.update("session", |slot| slot.dispatch_claim = Some(parent.clone()));
+        assert_eq!(
+            factory(&child)
+                .admit_model_request(ModelRequestAdmissionRequest {
+                    run_id: child.run_id.clone(),
+                    thread_id: ThreadId("child-thread".into()),
+                })
+                .await
+                .unwrap(),
+            ModelRequestAdmission::Admit,
+            "R1 child ignores parent slot"
+        );
+        slots.update("session", |slot| slot.dispatch_claim = Some(child.clone()));
+        assert_eq!(
+            factory(&parent)
+                .admit_model_request(ModelRequestAdmissionRequest {
+                    run_id: parent.run_id.clone(),
+                    thread_id: ThreadId("parent-thread".into()),
+                })
+                .await
+                .unwrap(),
+            ModelRequestAdmission::Admit,
+            "R1 parent ignores child slot"
+        );
+        assert!(
+            factory(&child)
+                .admit_model_request(ModelRequestAdmissionRequest {
+                    run_id: parent.run_id.clone(),
+                    thread_id: ThreadId("wrong".into()),
+                })
+                .await
+                .is_err(),
+            "R2 mismatched Run is fenced locally"
+        );
+        assert!(
+            HostModelRequestGate::new(endpoint, "session")
+                .admit_model_request(ModelRequestAdmissionRequest {
+                    run_id: parent.run_id.clone(),
+                    thread_id: ThreadId("unclaimed".into()),
+                })
+                .await
+                .is_err(),
+            "R3 remote execution cannot borrow a slot claim"
+        );
+        assert_eq!(
+            *control.model_calls.lock().unwrap(),
+            vec![child, parent],
+            "R1-R3 exact remote calls"
+        );
     }
 
     #[tokio::test]

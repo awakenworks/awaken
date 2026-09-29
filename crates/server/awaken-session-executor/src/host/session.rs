@@ -1833,7 +1833,7 @@ impl SharedHost {
                 run_context,
                 awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
             );
-            let run_context = match (session_dispatch, coordination_endpoint) {
+            let run_context = match (session_dispatch, coordination_endpoint.clone()) {
                 (true, Some(endpoint)) => run_context.with_model_request_gate(Arc::new(
                     crate::coordination::HostModelRequestGate::new(endpoint, thread),
                 )),
@@ -1874,8 +1874,14 @@ impl SharedHost {
                 run_context,
                 awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
             );
+            let claimed_model_gate = run_context.model_request_gate.as_ref().and_then(|_| {
+                coordination_endpoint.clone().map(|endpoint| {
+                    crate::coordination::claimed_model_request_gate_factory(endpoint, thread)
+                })
+            });
             let (delivery, claimed_worker) = self
                 .build_ingress(
+                    claimed_model_gate,
                     runtime.clone(),
                     attempt_executor,
                     commit.clone(),

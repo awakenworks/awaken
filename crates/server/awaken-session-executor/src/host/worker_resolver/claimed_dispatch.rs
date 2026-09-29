@@ -130,9 +130,18 @@ impl HostWorkerResolver {
                     Some(awaken_dispatch::RunClaim::from(&claimed.lease)),
                 ),
             ));
+        let has_model_request_gate = child_context.model_request_gate.is_some();
         worker = worker
             .with_context(child_context)
             .with_local_credential_capabilities(adapters.credential_capabilities);
+        if has_model_request_gate && let Some(endpoint) = host.coordination_endpoint() {
+            worker = worker.with_claimed_model_request_gate_factory(
+                crate::coordination::claimed_model_request_gate_factory(
+                    endpoint,
+                    session_thread_id.0.clone(),
+                ),
+            );
+        }
         Ok(Arc::new(worker))
     }
 
