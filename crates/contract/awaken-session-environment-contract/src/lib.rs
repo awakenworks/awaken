@@ -2,10 +2,64 @@
 //! Worker realizes.
 //!
 //! The Runtime Host is shared by every process topology, so it names only
-//! these ports; the process composition injects the concrete sandbox
-//! implementation (`awaken-sandbox-local`) behind them.
+//! these ports; the process composition injects the concrete sandbox-backed
+//! implementation (`awaken-session-environment`, over `awaken-sandbox-local`
+//! and the container contract) behind them. The implementation depends only on
+//! contracts and Worker adapters; the Runtime Host links it only as a
+//! dev-dependency for its own tests.
+//!
+//! # Design: one port per consuming role
+//!
+//! A Session owns one realized environment, and one provider realizes it.
+//! Neither is a single wide interface: each is split by *who calls it*, and
+//! every Host module depends on the one role it uses. The Host carries a
+//! realized environment as a record of handles — one `Arc<dyn Role>` per
+//! role, all over the same adapter — so passing the environment around never
+//! widens what a consumer may call. The provider is carried the same way.
+//!
+//! Realized-environment roles:
+//!
+//! | Role | Consumers |
+//! |---|---|
+//! | `EnvironmentLifecycle` — durable handle, stop/quiesce bound processes, unattached disposal, fenced prepare/dispose, checkpoint and terminal checkpoint cleanup, Memory reconciliation acknowledgement | Session environment lifecycle owner, realization, terminal preparation and cleanup, background-task ownership |
+//! | `EnvironmentProjection` — capabilities, owned-path reservation, live mount validation and update fence, attach and adopted-mount reconciliation, projection-path removal, runtime workspace writes | managed Resource projection, realization, provisioning |
+//! | `SkillFilesystem` — Skill directory interpretation, scan/register/refresh, read-only tree materialization | Skill delivery and discovery |
+//! | `EnvironmentHarvest` — Artifact capture, frozen-mount read-back | Artifact harvest, terminal preparation |
+//! | `AgentToolEnvironment` — bound tool executor, rooted tools, Agent filesystem view, host-identity support | Native Agent runs (Session context, root and child runners, child substrate, runtime build), Worker projection synchronizer |
+//! | `AgentProcessEnvironment` — ACP process launch, config home, workspace cwd, inline materialization | ACP channel source, Session MCP attachment |
+//! | `ScopedExecution` (Linux TrustedHost only) — execution-authority binding and refresh | execution-authority binding, realization renewal, revocation retirement |
+//! | `RepositoryRealizer` (provisioning contract) | Repository activation |
+//!
+//! Provider roles:
+//!
+//! | Role | Consumers |
+//! |---|---|
+//! | `EnvironmentRealizer` — capabilities, host identity, effective spec, fenced create | Session realization, Worker projection synchronizer |
+//! | `EnvironmentAdoption` — adoption layout, observation and closed-evidence validation, fenced adopt, retained rebind | environment lifecycle recovery, terminal preparation |
+//! | `EnvironmentTerminalRealization` — terminal reconstruction, exact restore, restored-target disposal | terminal preparation and cleanup, environment continuation |
+//! | `EnvironmentCapacity` — image prewarm, capacity prewarm/discard/ready/shutdown | warm capacity |
+//! | `EnvironmentProviderInstallation` — Memory mounter and secret broker installation | Host startup |
+//!
+//! The provider that realized an environment may recover its own adapter from
+//! the handles to rebind or observe it; the Host never does.
+//!
+//! Auxiliary Agent Runs (judge, compactor, Memory selection and extraction,
+//! isolated Skill forks) use the separate [`AuxiliarySandboxFactory`] port:
+//! they never share the Session-owned environment.
 
 use std::sync::Arc;
+
+mod agent_view;
+mod files;
+mod hand;
+mod proofs;
+mod provider_effect;
+
+pub use agent_view::{AgentFilesystemClient, AgentFilesystemView, AgentPathView};
+pub use files::{CapturedArtifact, DiscoveredSkillFile};
+pub use hand::{ContainerHandResidency, HandExecutorFactory};
+pub use proofs::{EnvironmentQuiescenceProof, EnvironmentStopProof, HandStopProof};
+pub use provider_effect::{EnvironmentAdoptionLayout, ProviderEffect};
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;

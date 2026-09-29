@@ -9,8 +9,8 @@
 //! Selection and lifecycle construction for a Session's single environment.
 
 use super::{HandExecutorFactory, SessionEnvironment, container_files};
-use crate::deployment_config::ContainerHandResidency;
 use awaken_sandbox_local::FilesystemHandleCodec as _;
+use awaken_session_environment_contract::ContainerHandResidency;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
@@ -50,66 +50,9 @@ pub(crate) struct WorkdirHandConfig {
     pub(super) idle_after: std::time::Duration,
 }
 
-pub(crate) struct SessionEnvironmentAdoptionLayout {
-    pub(crate) spec: pc::SandboxSpec,
-    pub(crate) historical_owned_paths: Option<Vec<String>>,
-}
-
-/// Who owns one Session Environment provider effect. The Session aggregate
-/// decides this once (an unowned Environment has no realization lease); every
-/// provider projection then takes the matching named operation. A fence always
-/// travels with its current authority, so neither an omitted fence nor a fence
-/// without authority can select a weaker path.
-#[derive(Clone, Copy)]
-pub(crate) enum ProviderEffect<'a> {
-    /// No aggregate effect owns the Environment.
-    Unattached,
-    /// The aggregate-owned effect fence and the authority that admits it.
-    Fenced {
-        fence: &'a pc::SandboxEffectFence,
-        authority: &'a dyn pc::CurrentExecutionAuthority,
-    },
-}
-
-impl<'a> ProviderEffect<'a> {
-    /// Project an aggregate-derived optional fence and its captured authority.
-    /// A fence without authority is refused rather than degraded.
-    pub(crate) fn from_parts(
-        fence: Option<&'a pc::SandboxEffectFence>,
-        authority: Option<&'a dyn pc::CurrentExecutionAuthority>,
-    ) -> Result<Self, pc::SandboxError> {
-        match (fence, authority) {
-            (Some(fence), Some(authority)) => Ok(Self::Fenced { fence, authority }),
-            (None, _) => Ok(Self::Unattached),
-            (Some(_), None) => Err(pc::SandboxError::fence_rejected(
-                "a fenced Session Environment effect has no current authority",
-            )),
-        }
-    }
-
-    /// The observation basis this effect implies for `spec`.
-    pub(crate) const fn observation_basis(
-        self,
-        spec: &'a pc::SandboxSpec,
-    ) -> pc::SandboxObservationBasis<'a> {
-        match self {
-            Self::Unattached => pc::SandboxObservationBasis::Unattached,
-            Self::Fenced { fence, .. } => pc::SandboxObservationBasis::Effect {
-                spec,
-                effect_fence: fence,
-            },
-        }
-    }
-
-    fn admit(self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Unattached => Ok(()),
-            Self::Fenced { fence, authority } => {
-                pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))
-            }
-        }
-    }
-}
+pub(crate) use awaken_session_environment_contract::{
+    EnvironmentAdoptionLayout as SessionEnvironmentAdoptionLayout, ProviderEffect,
+};
 
 impl SessionEnvironmentProvider {
     /// Construct the in-process adapter for a non-container Deployment tier.

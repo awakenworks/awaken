@@ -503,6 +503,7 @@ dependencies = [
  "awaken-session-budget-contract",
  "awaken-session-configuration-contract",
  "awaken-session-dream-contract",
+ "awaken-session-environment-contract",
  "awaken-session-executor",
  "awaken-session-repository-contract",
  "awaken-session-resource-contract",
@@ -2775,6 +2776,7 @@ name = "awaken-session-environment-contract"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-agent-channel",
  "awaken-provisioning-contract",
  "awaken-tool-contract",
 ]
@@ -3373,6 +3375,7 @@ dependencies = [
  "awaken-sandbox-memoryd",
  "awaken-service-lifecycle",
  "awaken-session-configuration-contract",
+ "awaken-session-environment-contract",
  "awaken-session-execution-contract",
  "awaken-session-executor",
  "awaken-session-realization-contract",

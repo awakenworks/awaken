@@ -165,7 +165,7 @@ impl ContainerEnvironmentProvider for RecordingProvider {
 
 struct UnusedHandFactory;
 
-impl awaken_session_executor::HandExecutorFactory for UnusedHandFactory {
+impl awaken_session_environment_contract::HandExecutorFactory for UnusedHandFactory {
     fn bind(
         &self,
         _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,

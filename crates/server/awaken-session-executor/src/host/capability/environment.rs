@@ -119,7 +119,7 @@ impl SharedHost {
     pub fn with_session_container_provider(
         self,
         provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+        hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
         self.with_session_container_provider_and_capacity(provider, None, hand_factory)
     }
@@ -132,7 +132,7 @@ impl SharedHost {
         mut self,
         provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
         capacity: Option<Arc<dyn awaken_container_contract::ContainerEnvironmentCapacity>>,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+        hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
         self.env.session_provider = crate::session_environment::SessionEnvironmentProvider::
@@ -161,7 +161,7 @@ impl SharedHost {
     pub fn with_session_container_environment_components(
         mut self,
         components: ContainerEnvironmentComponents,
-        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+        hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
         self.env.session_provider = crate::session_environment::SessionEnvironmentProvider::

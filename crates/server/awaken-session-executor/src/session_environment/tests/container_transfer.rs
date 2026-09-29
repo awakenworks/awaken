@@ -195,8 +195,8 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
     // W3 C5=>E4. Real Docker probe additionally tests CurrentAttemptOnly proof,
     // authenticated Control retirement, new Run admission and physical cleanup.
     for residency in [
-        crate::ContainerHandResidency::AttachedExec,
-        crate::ContainerHandResidency::Resident,
+        awaken_session_environment_contract::ContainerHandResidency::AttachedExec,
+        awaken_session_environment_contract::ContainerHandResidency::Resident,
     ] {
         let fake = Arc::new(FakeContainerProvider::default());
         let provider = SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(

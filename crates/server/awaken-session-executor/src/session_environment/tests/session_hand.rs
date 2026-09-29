@@ -77,7 +77,7 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
         factory,
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::ZERO,
-        crate::deployment_config::ContainerHandResidency::Resident,
+        awaken_session_environment_contract::ContainerHandResidency::Resident,
         awaken_lease_contract::system_clock(),
     );
 
@@ -630,7 +630,7 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::ZERO,
-        crate::deployment_config::ContainerHandResidency::Resident,
+        awaken_session_environment_contract::ContainerHandResidency::Resident,
         awaken_lease_contract::system_clock(),
     )
     .create(&spec())

@@ -746,7 +746,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
     struct UnusedHandFactory;
 
-    impl crate::HandExecutorFactory for UnusedHandFactory {
+    impl awaken_session_environment_contract::HandExecutorFactory for UnusedHandFactory {
         fn bind(
             &self,
             _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,

@@ -8,27 +8,7 @@ use awaken_provisioning_contract as pc;
 
 use super::SessionEnvironment;
 
-/// One derived view of the process, ACP, and prompt-visible filesystem.
-///
-/// `command_cwd` remains sandbox-logical so every provider consumes the same
-/// command contract. `protocol_cwd` is the path visible to the ACP process.
-/// `prompt_paths` deliberately omits the Workdir provider's private host root.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct AgentFilesystemView {
-    pub protocol_cwd: String,
-    pub command_cwd: String,
-    pub prompt_paths: crate::managed_resource_projection::AgentPathView,
-}
-
-/// The component that will interpret a model-visible resource path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AgentFilesystemClient {
-    /// Awaken Hand tools consume the environment's logical/relative prompt view.
-    NativeTools,
-    /// An ACP CLI consumes paths relative to its protocol working directory on
-    /// TrustedHost and sandbox-absolute paths in Namespace/Container.
-    AcpProcess,
-}
+pub(crate) use awaken_session_environment_contract::{AgentFilesystemClient, AgentFilesystemView};
 
 /// Segregated capability needed by the ACP channel adapter. Keeping it beside
 /// the Session owner avoids teaching the neutral provisioning contract about
