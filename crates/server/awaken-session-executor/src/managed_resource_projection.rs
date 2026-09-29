@@ -1661,23 +1661,8 @@ impl crate::ManagedHost {
 
         match &input.source {
             ResolvedInputSource::File { file_id } => {
-                let authority = match (claim, realization) {
-                    (_, Some((session_id, revision, lease))) if self.host.upstream.is_some() => Some(
-                        awaken_dispatch::ResourceOperationFence::SessionMaterialization(
-                            awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
-                                session_id,
-                                revision,
-                                input.clone(),
-                                lease.clone(),
-                            )
-                            .map_err(RunError::internal)?,
-                        ),
-                    ),
-                    (Some(claim), _) => Some(
-                        awaken_dispatch::ResourceOperationFence::Run(claim.clone()),
-                    ),
-                    (None, _) => None,
-                };
+                // Ordinary staging already chose the exact Run or Session fence.
+                // Terminal publication admits only Repository inputs above.
                 let content = self
                     .host
                     .resources
@@ -1686,7 +1671,7 @@ impl crate::ManagedHost {
                         workspace,
                         file_id.as_str(),
                         &awaken_resource_contract::FileReadPurpose::SessionResource,
-                        authority.as_ref(),
+                        repository_authority,
                     )
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?
