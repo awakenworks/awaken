@@ -247,6 +247,7 @@ pub(super) async fn prepare_control_routers(
             .credentials
             .clone(),
         workspace: execution_workspace.clone(),
+        clock: stores.clock.clone(),
     });
     let environment_authoring = {
         let control = stores

@@ -1,6 +1,8 @@
 // @formal entrypoint worker.acp_capability_is_detected_only_after_a_verified_handshake
 use std::sync::Arc;
 
+use awaken_lease_contract::WallClockExt as _;
+
 /// Project the one executable ACP catalog into the management read model. This
 /// startup edge is intentionally the only place that knows both contexts;
 /// neither Control nor the executor keeps a synchronized adapter list.
@@ -205,15 +207,13 @@ pub(crate) struct LiveRuntimeCapabilities {
     pub(crate) workers: Arc<dyn awaken_coordinator::WorkerObservationSource>,
     pub(crate) credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     pub(crate) workspace: String,
+    pub(crate) clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 #[async_trait::async_trait]
 impl awaken_control::RuntimeCapabilitySource for LiveRuntimeCapabilities {
     async fn current(&self) -> Vec<awaken_control::RuntimeCapability> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = self.clock.now_ms();
         let workers = self.workers.list().await;
         let credentials = self.credentials.list(&self.workspace).await;
         runtime_capabilities(&self.initial)
@@ -340,6 +340,58 @@ mod tests {
             drain_deadline_ms: None,
             process_exit: None,
         }
+    }
+
+    struct FixedWorkers(Vec<awaken_worker_contract::RegisteredWorker>);
+
+    #[async_trait::async_trait]
+    impl awaken_coordinator::WorkerObservationSource for FixedWorkers {
+        async fn list(
+            &self,
+        ) -> Result<
+            Vec<awaken_worker_contract::RegisteredWorker>,
+            awaken_worker_contract::RegistryError,
+        > {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn management_runtime_query_judges_evidence_on_its_injected_clock() {
+        use awaken_control::RuntimeCapabilitySource as _;
+
+        // Causes: C1 the clock precedes a Worker's observed capability, C2 it
+        // is inside both the Worker and capability validity windows, C3 it
+        // reaches their common exclusive expiry. The Worker and credential
+        // snapshots stay identical across calls. Effects: E1/E3 unavailable,
+        // E2 detected. Decision rules: R1 99 -> E1, R2 150 -> E2,
+        // R3 200 -> E3; changing only the injected clock changes the verdict.
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(99));
+        let source = LiveRuntimeCapabilities {
+            initial: Vec::new(),
+            workers: Arc::new(FixedWorkers(vec![worker(
+                "current",
+                None,
+                Some("sha256:capability"),
+            )])),
+            credentials: Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+            workspace: "workspace".into(),
+            clock: clock.clone(),
+        };
+        let detected = |rows: Vec<awaken_control::RuntimeCapability>| {
+            rows.into_iter()
+                .find(|row| row.id == "acp:claude")
+                .expect("known Claude ACP capability")
+                .local
+                .expect("current() always projects local evidence")
+                .detected
+        };
+
+        assert!(!detected(source.current().await), "R1 before observation");
+        clock.set(150);
+        assert!(detected(source.current().await), "R2 live observation");
+        clock.set(200);
+        assert!(!detected(source.current().await), "R3 expired observation");
     }
 
     #[test]

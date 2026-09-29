@@ -5,6 +5,8 @@
 
 use super::*;
 
+use awaken_lease_contract::WallClockExt as _;
+
 pub(super) async fn prepare_runtime_routers(
     stores: ProcessStores,
     iam: Option<Arc<ManagementAuthz>>,
@@ -272,6 +274,7 @@ pub(super) async fn prepare_runtime_routers(
             workers: worker_observations.clone(),
             credentials: control.credentials.clone(),
             workspace: platform_workspace.clone(),
+            clock: stores.clock.clone(),
         })
     });
     let environment_authoring = match role {
@@ -654,18 +657,15 @@ pub(super) async fn prepare_runtime_routers(
             ),
         )),
     );
-    let now_ms = || {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or_default()
-    };
-    if let Ok(summary) = resource_reclaimer.reconcile(now_ms(), 256).await
+    if let Ok(summary) = resource_reclaimer
+        .reconcile(resource_authorities.clock().now_ms(), 256)
+        .await
         && summary.completed > 0
     {
         eprintln!("reclaimed {} durable resource(s)", summary.completed);
     }
     let recurring_resource_reclaimer = resource_reclaimer.clone();
+    let reclamation_clock = resource_authorities.clock();
     process
         .service_lifecycle
         .spawn("resources-reclamation", move |cancel| async move {
@@ -676,11 +676,10 @@ pub(super) async fn prepare_runtime_routers(
                     () = cancel.cancelled() => break,
                     _ = interval.tick() => {}
                 }
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_millis() as u64)
-                    .unwrap_or_default();
-                if let Err(error) = recurring_resource_reclaimer.reconcile(now, 256).await {
+                if let Err(error) = recurring_resource_reclaimer
+                    .reconcile(reclamation_clock.now_ms(), 256)
+                    .await
+                {
                     eprintln!("resource reclamation retry remains pending: {error}");
                 }
             }
