@@ -60,10 +60,10 @@
     },
     "awaken-dispatch-contract": {
       "depth": 7,
-      "production_lines": 2410,
+      "production_lines": 2412,
       "catch_all_errors": 3,
       "growth_reasons": {
-        "production_lines": "Preserve the existing governed attempt closure contract and the exact Run selector on DispatchOperationalFeed; both reuse the canonical Dispatch owner. The dispatch deadline and claim guard judge through the one awaken_lease_contract::Expiry law (one import line).",
+        "production_lines": "Canonical Epoch deserialization on four existing dispatch wire fields rejects unminted zero grants; no new types, dependencies or grant rules.",
         "depth": "Removing the compatibility facade exposes direct domain-owner dependencies; retaining explicit state, realization, runtime, and ingress boundaries avoids a replacement aggregator."
       }
     },

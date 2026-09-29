@@ -174,6 +174,7 @@ pub struct ClaimRunRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenewRequest {
     pub run_id: String,
+    #[serde(deserialize_with = "awaken_lease_contract::fence::Epoch::deserialize_u64")]
     pub lease_epoch: u64,
     #[serde(default)]
     pub identity: Option<WorkerIdentity>,
@@ -209,6 +210,7 @@ pub struct SessionRunReservationResolutionRequest {
 pub struct SettleRequest {
     pub run_id: String,
     /// Required: a missing epoch used to decode as 0, which names no claim.
+    #[serde(deserialize_with = "awaken_lease_contract::fence::Epoch::deserialize_u64")]
     pub epoch: u64,
     pub outcome: DispatchOutcome,
     #[serde(default)]
@@ -332,6 +334,52 @@ mod tests {
             .is_err(),
             "L1"
         );
+    }
+
+    /// The complete dispatch-epoch wire table is shared by all four entrances.
+    /// Causes: C1 Lease/RunClaim/Renew/Settle shape; C2 epoch missing, zero,
+    /// positive or maximal. Effects: E1 no request is admitted for missing/zero;
+    /// E2 a minted epoch is retained exactly (including u64::MAX, which cannot
+    /// advance). Missing/zero never reach a server-side effect because decoding
+    /// fails before a typed request exists. Credential legacy envelopes have a
+    /// separate optional-epoch rule and are not dispatch grants.
+    #[test]
+    fn every_dispatch_epoch_wire_refuses_zero_and_missing_grants() {
+        for epoch in [None, Some(0), Some(1), Some(u64::MAX)] {
+            let mut lease = serde_json::json!({
+                "run_id": "run-wire", "owner": "worker", "expires_ms": 10,
+            });
+            let mut claim = serde_json::json!({"run_id": "run-wire", "owner": "worker"});
+            let mut renew = serde_json::json!({"run_id": "run-wire"});
+            let mut settle = serde_json::json!({
+                "run_id": "run-wire", "outcome": crate::DispatchOutcome::Done,
+            });
+            if let Some(epoch) = epoch {
+                lease["epoch"] = epoch.into();
+                claim["epoch"] = epoch.into();
+                renew["lease_epoch"] = epoch.into();
+                settle["epoch"] = epoch.into();
+            }
+            let decoded = [
+                serde_json::from_value::<crate::Lease>(lease).map(|v| v.epoch),
+                serde_json::from_value::<crate::RunClaim>(claim).map(|v| v.epoch),
+                serde_json::from_value::<RenewRequest>(renew).map(|v| v.lease_epoch),
+                serde_json::from_value::<SettleRequest>(settle).map(|v| v.epoch),
+            ];
+            for (entrance, result) in ["Lease", "RunClaim", "Renew", "Settle"]
+                .into_iter()
+                .zip(decoded)
+            {
+                match epoch {
+                    Some(epoch) if epoch != 0 => assert_eq!(
+                        result.expect("E2 a valid grant must decode"),
+                        epoch,
+                        "{entrance}"
+                    ),
+                    _ => assert!(result.is_err(), "E1 {entrance} epoch={epoch:?}"),
+                }
+            }
+        }
     }
 
     /// Stream-request compatibility cause/effect table: C1 an older Worker

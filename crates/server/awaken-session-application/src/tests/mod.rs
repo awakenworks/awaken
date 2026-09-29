@@ -4793,7 +4793,7 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
                 SessionId::from(session_id),
                 worker_owner,
                 awaken_lease_contract::fence::Epoch::FIRST,
-                awaken_lease_contract::Expiry::from_unix_ms(now_ms.saturating_add(30_000)),
+                awaken_lease_contract::Expiry::from_epoch_ms(now_ms.saturating_add(30_000)),
             )
         }))
     }

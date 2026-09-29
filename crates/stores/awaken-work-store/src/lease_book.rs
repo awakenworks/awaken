@@ -13,7 +13,7 @@ use loom::sync::Mutex;
 #[cfg(not(all(test, feature = "loom")))]
 use std::sync::Mutex;
 
-use awaken_lease_contract::fence::Epoch;
+use awaken_lease_contract::fence::{Epoch, fence_is_live_at};
 
 use crate::mutation::{
     LeaseAuthorityCommand, LeaseAuthorityDecision, LeaseAuthorityTuple, LeaseFence,
@@ -46,7 +46,9 @@ struct LeaseWindow {
     expires_at_ms: u64,
 }
 
-/// One coherent read of the process-local lease authority tuple.
+/// One coherent read for the test-support in-memory authority, not a durable
+/// backend's lease source. Compile it with its sole in-memory consumer.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct LeaseAuthoritySnapshot {
     pub(crate) owner: Option<String>,
     pub(crate) epoch: Option<u64>,
@@ -69,7 +71,7 @@ impl LeaseBook {
             .unwrap()
             .leases
             .get(work_id)
-            .is_some_and(|lease| lease.expires_at_ms > now_ms)
+            .is_some_and(|lease| fence_is_live_at(lease.expires_at_ms, now_ms))
     }
 
     pub fn is_leased_with_reclaim_age(&self, work_id: &str, now_ms: u64, age_ms: u64) -> bool {
@@ -78,7 +80,9 @@ impl LeaseBook {
             .unwrap()
             .leases
             .get(work_id)
-            .is_some_and(|lease| now_ms < lease.refreshed_at_ms.saturating_add(age_ms))
+            .is_some_and(|lease| {
+                fence_is_live_at(lease.refreshed_at_ms.saturating_add(age_ms), now_ms)
+            })
     }
 
     pub fn lease(&self, work_id: &str, now_ms: u64) {
@@ -152,6 +156,7 @@ impl LeaseBook {
             && authority.epochs.get(work_id).map(|epoch| epoch.get()) == Some(expected_epoch)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn snapshot(&self, work_id: &str) -> LeaseAuthoritySnapshot {
         let authority = self.authority.lock().unwrap();
         LeaseAuthoritySnapshot {
@@ -164,7 +169,7 @@ impl LeaseBook {
     pub fn authority(&self, work_id: &str, now_ms: u64) -> Option<(String, u64, u64)> {
         let authority = self.authority.lock().unwrap();
         let lease = authority.leases.get(work_id).copied()?;
-        if lease.expires_at_ms <= now_ms {
+        if !fence_is_live_at(lease.expires_at_ms, now_ms) {
             return None;
         }
         let owner = authority.owners.get(work_id).cloned()?;
@@ -286,6 +291,40 @@ impl LeaseBook {
 #[cfg(all(test, not(feature = "loom")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lease_observation_and_reclaim_age_share_the_expiry_boundary() {
+        // Causes: C1 observation before/at expiry; C2 TTL zero/positive;
+        // C3 reclaim age shorter/equal to TTL; C4 addition saturates near MAX.
+        // Effects: E1 a live lease returns the exact complete authority;
+        // E2 at the deadline neither liveness nor authority remains;
+        // E3 a shorter reclaim age expires independently without rewriting the
+        // stored lease; E4 u64 wire deadlines never clamp to the SQL domain.
+        // Constraint: this single-thread test uses the production Mutex, while
+        // the adjacent Loom scenarios own interleaved snapshot coherence.
+        for (start, ttl, age, now, live, reclaim_live) in [
+            (0, 0, 0, 0, false, false),
+            (10, 10, 10, 19, true, true),
+            (10, 10, 10, 20, false, false),
+            (10, 10, 5, 15, true, false),
+            (u64::MAX - 2, 10, 10, u64::MAX - 1, true, true),
+            (u64::MAX - 2, 10, 10, u64::MAX, false, false),
+        ] {
+            let book = LeaseBook::default();
+            assert_eq!(book.claim_for("work", "owner", start, ttl), Ok(1));
+            assert_eq!(book.is_leased("work", now), live, "E2 {start}/{now}");
+            assert_eq!(
+                book.is_leased_with_reclaim_age("work", now, age),
+                reclaim_live,
+                "E3 {start}/{now}"
+            );
+            assert_eq!(
+                book.authority("work", now),
+                live.then(|| ("owner".into(), 1, start.saturating_add(ttl))),
+                "E1/E2/E4 {start}/{now}"
+            );
+        }
+    }
 
     #[test]
     fn exhausted_epoch_cannot_install_an_owner() {
