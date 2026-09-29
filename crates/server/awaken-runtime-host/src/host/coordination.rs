@@ -339,7 +339,7 @@ fn apply_coordination_result(
 fn apply_active_batch_coordination_results(
     session_id: &awaken_session_types::SessionId,
     active: &[PendingCoordinationCall],
-    batch: Option<&awaken_runtime_contract::ToolBatch>,
+    batch: Option<&ToolBatch>,
     links: &mut Vec<CoordinatedThreadLink>,
 ) -> Result<(), HostError> {
     let Some(batch) = batch else {
