@@ -315,6 +315,37 @@ pub(crate) fn selected_dispatch_bundle(
     }
 }
 
+/// Two already-published V7 identities converged at the same schema. Preserve
+/// their receipts; only the missing effect is appended at V8. All later
+/// migrations have one numbering stream and one SQL owner.
+#[cfg(feature = "durable")]
+pub(crate) fn selected_converged_dispatch_bundle(
+    v7_checksum: Option<&str>,
+) -> Result<MigrationBundle, MigrationError> {
+    let canonical = converged_dispatch_bundle()?;
+    let index_sql = include_str!("migrations/V0008__dispatch_operation_run_sequence.sql");
+    let published_index =
+        portable_migration(7, "V0007__dispatch_operation_run_sequence.sql", index_sql)?;
+    if v7_checksum
+        != Some(
+            published_index
+                .checksum_for(awaken_scoped_migration::Dialect::Sqlite)
+                .as_str(),
+        )
+    {
+        // Unknown receipts deliberately reach ordinary checksum validation.
+        return Ok(canonical);
+    }
+    let mut migrations = canonical.migrations().to_vec();
+    migrations[6] = published_index;
+    migrations[7] = Migration::new(
+        8,
+        "close physical entry before independent domain stop",
+        PHYSICAL_ATTEMPT_CLOSING.trim(),
+    )?;
+    MigrationBundle::new(CONVERGED_BUNDLE_ID, migrations)
+}
+
 /// The sole append point after either immutable historical stream has reached
 /// its terminal schema. V1 is a durable convergence receipt; new schema changes
 /// start at V2 instead of extending both historical numberings.
@@ -423,7 +454,7 @@ mod tests {
 
         // Migration decision table I1-I3. Causes: C1 compact/expanded published
         // history; C2 converged V6 already applied; C3 one original operation;
-        // C4 repeated upgrade. I1=C1+C2+C3 => only V7 applies, preserving exact
+        // C4 repeated upgrade. I1=C1+C2+C3 => V7 closure and V8 index apply, preserving exact
         // sequence, payload and time. I2=I1+exact Run query => composite index
         // supplies ordered replay. I3=C4 => no new migration or fact mutation.
         // This asserts access to the one log, never another replay projection.
@@ -450,7 +481,7 @@ mod tests {
             let applied = runner.run_bundle(&connection, &full).unwrap();
             assert_eq!(
                 applied.iter().map(|row| row.version).collect::<Vec<_>>(),
-                [7],
+                [7, 8],
                 "I1"
             );
             let observed: (i64, String, i64) = connection
@@ -618,7 +649,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5, 6, 7],
+            [1, 2, 3, 4, 5, 6, 7, 8],
             "S1/E1"
         );
         for (table, column) in [
