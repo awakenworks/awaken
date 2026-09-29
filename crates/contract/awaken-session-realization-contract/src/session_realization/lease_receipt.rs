@@ -28,7 +28,7 @@ impl SessionRealizationLeaseReceipt {
     ) -> Result<Self, SessionRealizationControlFailure> {
         // The one expiry law: live strictly before the deadline, so a live
         // lease always has a nonzero remainder at millisecond resolution.
-        let remaining_ms = awaken_lease_contract::Expiry::from_unix_ms(lease.expires_at_unix_ms)
+        let remaining_ms = awaken_lease_contract::Expiry::from_epoch_ms(lease.expires_at_unix_ms)
             .remaining_at(awaken_lease_contract::UtcTime::from_epoch_ms(
                 authority_now_unix_ms,
             ))

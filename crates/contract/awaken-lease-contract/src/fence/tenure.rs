@@ -285,6 +285,36 @@ mod tests {
     }
 
     #[test]
+    fn reused_holder_names_cannot_recover_a_predecessor_tenure() {
+        // C1 subject fixed; C2 holder goes A -> B -> A; C3 each reassignment
+        // advances Epoch. E1 current A remains a distinct tenure from old A;
+        // E2 the current lease rejects both predecessors despite renewed
+        // expiries; E3 a foreign subject never succeeds even at a larger epoch.
+        // This three-transition sequence is the smallest ABA state coverage;
+        // the independent coordinate decision table above owns other rows.
+        let old_a = lease("s", "A", 7, 100);
+        let b = Lease::new(
+            old_a.tenure().reassigned("B").unwrap(),
+            Expiry::from_epoch_ms(200),
+        );
+        let current_a = Lease::new(
+            b.tenure().reassigned("A").unwrap(),
+            Expiry::from_epoch_ms(300),
+        );
+        assert_ne!(current_a.tenure(), old_a.tenure(), "E1");
+        for predecessor in [old_a, b] {
+            let renewed = predecessor
+                .renewed_to(Expiry::from_epoch_ms(u64::MAX))
+                .unwrap();
+            assert!(!current_a.authorizes_successor(&renewed), "E2");
+        }
+        assert!(
+            !current_a.authorizes_successor(&lease("foreign", "A", 10, 400)),
+            "E3"
+        );
+    }
+
+    #[test]
     fn identity_renewal_reassignment_and_liveness() {
         // R1 equality is over the tenure and the expiry; R2 the tenure alone
         // ignores expiry; R3 renewal never shortens; R4 reassignment advances

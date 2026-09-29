@@ -351,7 +351,7 @@ impl SessionWorkLease {
             session_id,
             owner,
             Epoch::from_persisted(epoch)?,
-            Expiry::from_unix_ms(expires_at_unix_ms),
+            Expiry::from_epoch_ms(expires_at_unix_ms),
         ))
     }
 
@@ -394,7 +394,7 @@ impl SessionWorkLease {
 
     #[must_use]
     pub fn expires_at_unix_ms(&self) -> u64 {
-        self.0.expires().to_unix_ms()
+        self.0.expires().to_epoch_ms()
     }
 }
 

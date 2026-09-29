@@ -305,7 +305,7 @@ impl McpGenerationRef {
                     runtime_incarnation,
                     Epoch::from_persisted(lease_epoch)?,
                 ),
-                Expiry::from_unix_ms(lease_expires_at_unix_ms),
+                Expiry::from_epoch_ms(lease_expires_at_unix_ms),
             ),
         })
     }
@@ -324,7 +324,7 @@ impl McpGenerationRef {
         Self {
             lease: Lease::new(
                 self.lease.tenure().clone(),
-                Expiry::from_unix_ms(lease_expires_at_unix_ms),
+                Expiry::from_epoch_ms(lease_expires_at_unix_ms),
             ),
         }
     }
@@ -405,7 +405,7 @@ impl McpGenerationRef {
     /// still judge realization leases in persisted coordinates.
     #[must_use]
     pub fn lease_expires_at_unix_ms(&self) -> u64 {
-        self.lease.expires().to_unix_ms()
+        self.lease.expires().to_epoch_ms()
     }
 }
 

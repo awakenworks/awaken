@@ -185,7 +185,13 @@ async fn signed_admission_freezes_only_coordinator_selected_bindings() {
         for field in ["owner", "epoch", "run_id"] {
             let mut body = f.body();
             body["claim"][field] = if field == "epoch" {
-                json!(0)
+                json!(
+                    awaken_lease_contract::fence::Epoch::from_persisted(f.claim.epoch)
+                        .unwrap()
+                        .next()
+                        .unwrap()
+                        .get()
+                )
             } else {
                 json!("foreign")
             };
@@ -195,6 +201,28 @@ async fn signed_admission_freezes_only_coordinator_selected_bindings() {
             } else {
                 assert_eq!(body["admission"], "fenced");
             }
+        }
+        // R11b crosses begin/handoff with zero/missing grant: wire decoding
+        // refuses before provider I/O or physical-slot installation. R11
+        // above still covers a well-formed but non-current positive epoch.
+        for epoch in [None, Some(0)] {
+            let mut body = f.body();
+            body["claim"].as_object_mut().unwrap().remove("epoch");
+            if let Some(epoch) = epoch {
+                body["claim"]["epoch"] = epoch.into();
+            }
+            assert_eq!(
+                f.request(verb, body).await.unwrap().0,
+                reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+                "R11b {verb} {epoch:?}"
+            );
+            assert!(
+                f.store
+                    .load_physical_attempt(&f.claim.run_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
         }
         let mut body = f.body();
         body["identity"]["incarnation_id"] = json!("foreign-boot");

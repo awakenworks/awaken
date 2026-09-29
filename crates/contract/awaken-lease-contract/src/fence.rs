@@ -134,7 +134,8 @@ pub trait FenceToken {
 /// Liveness law shared by every fence token: live strictly before expiry.
 #[must_use]
 pub const fn fence_is_live_at(expires_at_unix_ms: u64, now_unix_ms: u64) -> bool {
-    expires_at_unix_ms > now_unix_ms
+    crate::Expiry::from_epoch_ms(expires_at_unix_ms)
+        .is_live_at(crate::UtcTime::from_epoch_ms(now_unix_ms))
 }
 
 #[cfg(test)]
@@ -143,15 +144,26 @@ mod tests {
 
     #[test]
     fn liveness_kernel_is_strictly_before_expiry() {
-        // C1 now before/at/after expiry. R1 live only strictly before.
-        for (now, live) in [
-            (0, true),
-            (99, true),
-            (100, false),
-            (101, false),
-            (u64::MAX, false),
+        // Causes: C1 unsigned expiry is zero, ordinary or beyond the signed
+        // SQL domain; C2 now is before/at/after it. R1 zero is always expired;
+        // R2 ordinary expiry is live only before; R3 the u64 wire domain must
+        // not clamp through SQL milliseconds. All rows use the canonical
+        // Expiry law, so token and lease judgments have no separate boundary.
+        for (expiry, now, live) in [
+            (0, 0, false),
+            (100, 0, true),
+            (100, 99, true),
+            (100, 100, false),
+            (100, 101, false),
+            (100, u64::MAX, false),
+            (u64::MAX, u64::MAX - 1, true),
+            (u64::MAX, u64::MAX, false),
         ] {
-            assert_eq!(fence_is_live_at(100, now), live, "kernel now={now}");
+            assert_eq!(
+                fence_is_live_at(expiry, now),
+                live,
+                "expiry={expiry} now={now}"
+            );
         }
     }
 }
@@ -176,7 +188,7 @@ mod verification {
         let expiry: u64 = kani::any();
         let lease = Lease::new(
             Tenure::granted(subject, holder, Epoch::from_persisted(epoch).unwrap()),
-            Expiry::from_unix_ms(expiry),
+            Expiry::from_epoch_ms(expiry),
         );
         (subject, holder, epoch, expiry, lease)
     }

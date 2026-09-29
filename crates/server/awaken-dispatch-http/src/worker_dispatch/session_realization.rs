@@ -814,12 +814,12 @@ fn narrowed_to_registry(
     registry_unix_ms: u64,
     now_unix_ms: u64,
 ) -> Option<u64> {
-    awaken_lease_contract::Expiry::from_unix_ms(requested_unix_ms)
+    awaken_lease_contract::Expiry::from_epoch_ms(requested_unix_ms)
         .within(
-            awaken_lease_contract::Expiry::from_unix_ms(registry_unix_ms),
+            awaken_lease_contract::Expiry::from_epoch_ms(registry_unix_ms),
             awaken_lease_contract::UtcTime::from_epoch_ms(now_unix_ms),
         )
-        .map(awaken_lease_contract::Expiry::to_unix_ms)
+        .map(awaken_lease_contract::Expiry::to_epoch_ms)
 }
 
 #[cfg(test)]

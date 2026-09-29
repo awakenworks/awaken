@@ -661,6 +661,29 @@ async fn session_recovery_reads_committed_truth_only_under_the_exact_work_epoch(
         "session_work_authority": receipt,
     });
 
+    // W0: a missing/zero Dispatch epoch fails the canonical wire decoder;
+    // the rejection precedes any Work lookup or committed Thread read. Positive
+    // exact grants continue into W1 below; the ABA mismatch still uses W2.
+    for epoch in [None, Some(0)] {
+        let mut invalid = exact_request.clone();
+        invalid["claim"].as_object_mut().unwrap().remove("epoch");
+        if let Some(epoch) = epoch {
+            invalid["claim"]["epoch"] = epoch.into();
+        }
+        let (status, _) = post(
+            &router,
+            "work-epoch-worker",
+            "/v1/worker/recovery/snapshot",
+            invalid,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "W0 {epoch:?}");
+        assert!(
+            recovery.observed.lock().unwrap().is_empty(),
+            "W0 zero reads"
+        );
+    }
+
     let (status, _) = post(
         &router,
         "work-epoch-worker",
@@ -793,6 +816,36 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
         .as_u64()
         .expect("claim returns a lease epoch");
     assert_eq!(epoch, 1, "the first claim assigns fence epoch 1: {v}");
+
+    // Causes: H0 epoch missing/zero crossed with Renew/Settle entrance.
+    // Effect: invalid JSON is rejected before a typed authority reaches the
+    // service. The subsequent exact renewal/settlement and empty final claim
+    // verify that rejected input neither retires nor replaces the live grant.
+    for (path, key, body) in [
+        (
+            "/v1/worker/dispatch/renew",
+            "lease_epoch",
+            json!({"run_id": "run-A"}),
+        ),
+        (
+            "/v1/worker/dispatch/settle",
+            "epoch",
+            json!({"run_id": "run-A", "outcome": "Done"}),
+        ),
+    ] {
+        for epoch in [None, Some(0)] {
+            let mut invalid = body.clone();
+            if let Some(epoch) = epoch {
+                invalid[key] = epoch.into();
+            }
+            let (status, _) = post(&router, "worker-1", path, invalid).await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "H0 {path} {epoch:?}"
+            );
+        }
+    }
 
     // Renewal transport rule H1. Causes: the authenticated Worker still owns the
     // exact run+epoch returned by claim. Effect: Control derives owner/time/lease
