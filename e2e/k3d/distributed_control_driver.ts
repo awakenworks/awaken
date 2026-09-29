@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeFileSync } from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 // The shared E2E harness is intentionally JavaScript-owned and has no parallel
 // declaration shim; Node executes this import directly in the K3D lane.
@@ -20,10 +21,10 @@ import {
 const MANAGED_BETA = 'managed-agents-2026-04-01';
 const BETAS = [MANAGED_BETA];
 const WORKSPACE = 'workspace-adr71';
-const AGENT = 'adr71-agent';
+const AGENT = process.env.ADR71_AGENT_ID ?? 'adr71-agent';
 
 function clientFor(baseURL: string) {
-  return new Anthropic({ apiKey: 'e2e-dummy', baseURL, maxRetries: 0 });
+  return new Anthropic({ apiKey: process.env.ADR71_API_KEY ?? 'e2e-dummy', baseURL, maxRetries: 0 });
 }
 
 function betaFor(route: string) {
@@ -654,8 +655,8 @@ async function verifyNativeCrash(
   console.log(`OK Native crash recovery ${marker}`);
 }
 
-async function createParallelSessions(client: Anthropic, environmentIds: string[]) {
-  return Promise.all(environmentIds.map(async (environmentId) => {
+export async function createParallelSessions(client: Anthropic, environmentIds: string[]) {
+  const attempts = await Promise.allSettled(environmentIds.map(async (environmentId) => {
     const session = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: environmentId,
@@ -664,6 +665,16 @@ async function createParallelSessions(client: Anthropic, environmentIds: string[
     assert.ok(session.id, JSON.stringify(session));
     return session.id as string;
   }));
+  const created = attempts.flatMap((attempt) => attempt.status === 'fulfilled' ? [attempt.value] : []);
+  const errors = attempts.flatMap((attempt) => attempt.status === 'rejected' ? [String(attempt.reason)] : []);
+  if (errors.length > 0) {
+    // No creation retry after an ambiguous response. Dispose every known id
+    // only after all independent creates join; preserve both error classes.
+    try { await disposeFixtureSessions(created, (id) => client.beta.sessions.delete(id, { betas: BETAS })); }
+    catch (error) { errors.push(`partial admission cleanup: ${String(error)}`); }
+    throw new Error(`Session admission failed: ${errors.join('; ')}`);
+  }
+  return created;
 }
 
 export function validateFleetEnvironmentIds(environmentIds: string[], concurrency: number) {
@@ -780,13 +791,67 @@ export function auditLoadResults(
   const percentile = (fraction: number) => sorted[Math.ceil(sorted.length * fraction) - 1] ?? null;
   const p50 = percentile(0.50);
   const p95 = percentile(0.95);
+  const p99 = sorted.length >= 100 ? percentile(0.99) : null;
   const max = sorted.at(-1) ?? null;
   if (!Number.isFinite(p95Limit) || p95Limit <= 0 || latencies.some((value) => !Number.isFinite(value) || value < 0)) {
     errors.push('invalid latency measurement or performance limit');
   } else if (p95 !== null && p95 > p95Limit) {
     errors.push(`completed turn p95 ${p95.toFixed(1)}ms > ${p95Limit}ms (p50=${p50}ms max=${max}ms)`);
   }
-  return { errors, expected, completed: latencies.length, p50, p95, max };
+  return { errors, expected, completed: latencies.length, p50, p95, p99, max };
+}
+
+export function arrivalShape(environment: Record<string, string | undefined>) {
+  if (environment.ADR71_LOAD_RATE_PER_SECOND === undefined) return null;
+  const rate = Number(environment.ADR71_LOAD_RATE_PER_SECOND);
+  const maxOutstanding = Number(environment.ADR71_LOAD_MAX_OUTSTANDING ?? 256);
+  const maxStartLagMs = Number(environment.ADR71_LOAD_MAX_START_LAG_MS ?? 1_000);
+  const p99LimitMs = Number(environment.ADR71_TURN_P99_MS ?? 10_000);
+  assert.ok(Number.isFinite(rate) && rate > 0 && rate <= 10_000
+    && Number.isInteger(maxOutstanding) && maxOutstanding > 0 && maxOutstanding <= 100_000
+    && Number.isFinite(maxStartLagMs) && maxStartLagMs > 0
+    && Number.isFinite(p99LimitMs) && p99LimitMs > 0, 'invalid arrival shape');
+  return { rate, maxOutstanding, maxStartLagMs, p99LimitMs };
+}
+
+// This schedules test traffic only. Durable queuing, execution and ordering
+// remain in the public Managed API and its existing dispatch authority.
+export async function runArrivalWindow(
+  count: number,
+  shape: NonNullable<ReturnType<typeof arrivalShape>>,
+  send: (index: number, scheduledAt: number) => Promise<unknown>,
+  clock = { now: () => performance.now(), sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)) },
+) {
+  const started = clock.now();
+  const pending = new Set<Promise<void>>();
+  const errors: string[] = [];
+  let launched = 0;
+  let startLagMs = 0;
+  for (let index = 0; index < count; index += 1) {
+    const scheduledAt = started + index * 1_000 / shape.rate;
+    await clock.sleep(Math.max(0, scheduledAt - clock.now()));
+    startLagMs = Math.max(startLagMs, clock.now() - scheduledAt);
+    if (startLagMs > shape.maxStartLagMs || pending.size >= shape.maxOutstanding) {
+      errors.push(`generator could not offer request ${index}: lag=${startLagMs} outstanding=${pending.size}`);
+      break;
+    }
+    launched += 1;
+    // Catch rejection immediately; later arrivals cannot erase failed effects.
+    // Calling send inside a Promise also converts synchronous failure into the
+    // same joined error contract and cannot leak an unhandled rejection.
+    const request = Promise.resolve().then(() => send(index, scheduledAt)).then(
+      () => undefined,
+      (error) => { errors.push(`request ${index}: ${String(error)}`); },
+    );
+    pending.add(request);
+    void request.then(() => pending.delete(request));
+  }
+  const offeredUntil = started + count * 1_000 / shape.rate;
+  await clock.sleep(Math.max(0, offeredUntil - clock.now()));
+  await Promise.all(pending);
+  const elapsedMs = clock.now() - started;
+  return { planned: count, launched, errors, offeredMs: count * 1_000 / shape.rate,
+    elapsedMs, drainMs: Math.max(0, elapsedMs - count * 1_000 / shape.rate), startLagMs };
 }
 
 export function loadShape(environment: Record<string, string | undefined>) {
@@ -825,6 +890,9 @@ async function load(base: string) {
   // |    | errors and marker+idle completion p95 <= configured limit |
   // | L4 | yes | bounded + active/active | every full-history marker exactly once |
   const {count,concurrency,rounds} = loadShape(process.env);
+  const arrival = arrivalShape(process.env);
+  assert.ok(!arrival || count >= 100, 'open-arrival requires at least 100 planned completions for a numeric p99');
+  const windows: any[] = [];
   // Five seconds is a performance regression gate for the complete
   // public->Coordinator->claim->Worker->Provider->commit->idle round trip, not
   // an admission SLO.
@@ -832,6 +900,7 @@ async function load(base: string) {
   const coldStartLimit = Number(process.env.ADR71_COLD_START_MAX_MS ?? 30_000);
   const managed = clientFor(base);
   const sessions = await createFleetSessions(managed, concurrency);
+  try {
   // L2 must precede L1's timer after a database promotion: these GETs neither
   // materialize a Resource Pod nor execute a turn, but establish that the
   // public read path has recovered before measuring fresh Pod realization.
@@ -863,9 +932,8 @@ async function load(base: string) {
     const markers = Array.from({length:count}, (_,index) => `ADR71-LOAD-${Date.now()}-${round}-${index}`);
     const latencies: number[] = [];
     const samples: { marker: string; admissionMs: number; observationMs: number }[] = [];
-    async function runClient(clientIndex: number) {
-      for (let index = clientIndex; index < markers.length; index += concurrency) {
-        const started = performance.now();
+    async function send(index: number, scheduledAt = performance.now()) {
+        const clientIndex = index % concurrency;
         const receipt = await managed.beta.sessions.events.send(sessions[clientIndex], {
           events: [{ type: 'user.message', content: [{ type: 'text', text: markers[index] }] }],
           betas: BETAS,
@@ -878,14 +946,21 @@ async function load(base: string) {
           managed, sessions[clientIndex], receiptId, markers[index], 300_000,
         );
         const observedAt = performance.now();
-        const elapsed = observedAt - started;
+        const elapsed = observedAt - scheduledAt;
         latencies.push(elapsed);
-        samples.push({ marker: markers[index], admissionMs: acceptedAt - started, observationMs: observedAt - acceptedAt });
+        samples.push({ marker: markers[index], admissionMs: acceptedAt - scheduledAt, observationMs: observedAt - acceptedAt });
+    }
+    async function runClient(clientIndex: number) {
+      for (let index = clientIndex; index < markers.length; index += concurrency) {
+        await send(index);
       }
     }
     // A failed Session stops its own dependent sends. Join the independent
     // clients before auditing; do not replay an ambiguously accepted write.
-    const clients = await Promise.allSettled(Array.from({ length: concurrency }, (_, index) => runClient(index)));
+    const windowStarted = performance.now();
+    const offered = arrival ? await runArrivalWindow(count, arrival, send) : null;
+    const clients = arrival ? [] : await Promise.allSettled(Array.from({ length: concurrency }, (_, index) => runClient(index)));
+    const elapsedMs = performance.now() - windowStarted;
     const markersBySession = sessions.map(() => [] as string[]);
     markers.forEach((marker, index) => markersBySession[index % concurrency].push(marker));
     // Refresh durable history after all clients settle, including those whose
@@ -904,12 +979,28 @@ async function load(base: string) {
     clients.forEach((client, index) => {
       if (client.status === 'rejected') audit.errors.push(`Session ${index}: ${String(client.reason)}`);
     });
-    console.log(`LOAD AUDIT ${JSON.stringify({ ...audit, round, rounds, coldMs: coldElapsed, samples })}`);
+    if (offered) audit.errors.push(...offered.errors);
+    if (arrival && (audit.p99 === null || audit.p99 > arrival.p99LimitMs)) {
+      audit.errors.push(`p99 missing or above ${arrival.p99LimitMs}ms`);
+    }
+    const observation = { ...audit, round, rounds, coldMs: coldElapsed, samples,
+      mode: arrival ? 'open-arrival' : 'closed', concurrency,
+      offeredRate: arrival?.rate ?? null, offered, elapsedMs,
+      completedPerSecond: audit.completed * 1_000 / elapsedMs };
+    windows.push(observation);
+    // Preserve the failed window before throwing; no best-run selection or
+    // later cleanup can overwrite this raw receipt/latency evidence.
+    if (process.env.ADR71_LOAD_REPORT_FILE) writeFileSync(process.env.ADR71_LOAD_REPORT_FILE,
+      JSON.stringify({ schema_version: 1, windows }, null, 2) + '\n');
+    console.log(`LOAD AUDIT ${JSON.stringify(observation)}`);
     assert.deepEqual(audit.errors, [], 'L3-L5 complete latency and durable-history audit');
     console.log(
       `OK load round=${round}/${rounds} requests=${count} concurrency=${concurrency} cold_ms=${coldElapsed.toFixed(1)} `
         + `turn_p50_ms=${audit.p50} turn_p95_ms=${audit.p95} turn_max_ms=${audit.max}`,
     );
+  }
+  } finally {
+    await disposeFixtureSessions(sessions, (sessionId) => managed.beta.sessions.delete(sessionId, { betas: BETAS }));
   }
 }
 

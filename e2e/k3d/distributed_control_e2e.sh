@@ -20,6 +20,7 @@ DRIVER="$REPO_ROOT/e2e/k3d/distributed_control_driver.ts"
 API_PF_LOG="${TMPDIR:-/tmp}/${CLUSTER}_api_pf.log"
 API_PF=""
 PROVIDER_PF=""
+CAPACITY_SAMPLER=""
 STOPPED_NODE=""
 STOPPED_CONTAINER=""
 PARTITIONED_NODE=""
@@ -82,6 +83,23 @@ batch_cleanup_wait_until() {
     return 1
   fi
   kubectl -n "$NS" wait --for=delete "$@" --timeout="${remaining}s"
+}
+
+sample_capacity() {
+  # Observations never change claim state. Exact current Run/owner/epoch tuples
+  # count execution claims; idle Sessions and queued inputs are excluded. The
+  # same DB query observes connection/wait/WAL costs without another metric owner.
+  while true; do
+    timeout 15 kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -At -v ON_ERROR_STOP=1 -c \
+      "SELECT json_build_object('observed_at',clock_timestamp(),
+        'claims',(SELECT COALESCE(json_agg(json_build_object('run_id',run_id,'owner',lease_owner,'epoch',lease_epoch)), '[]'::json)
+          FROM runtime_dispatch WHERE status='running'
+          AND lease_until > FLOOR(EXTRACT(EPOCH FROM clock_timestamp())*1000)),
+        'connections',(SELECT count(*) FROM pg_stat_activity),
+        'lock_waiters',(SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock'),
+        'wal_bytes',(SELECT wal_bytes FROM pg_stat_wal))" || return "$?"
+    sleep 5
+  done
 }
 
 if [[ "${1:-}" = "--self-test" ]]; then
@@ -151,6 +169,11 @@ coordinator_worker_log_count() {
 }
 
 cleanup() {
+  if [[ -n "$CAPACITY_SAMPLER" ]]; then
+    kill "$CAPACITY_SAMPLER" 2>/dev/null || true
+    wait "$CAPACITY_SAMPLER" 2>/dev/null || true
+    CAPACITY_SAMPLER=""
+  fi
   local status="$1"
   [ -z "$WORKER_TLS_DIR" ] || rm -rf -- "$WORKER_TLS_DIR"
   [ -z "$ROLE_OVERLAY" ] || rm -rf -- "$ROLE_OVERLAY"
@@ -923,7 +946,29 @@ start_public_endpoint
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-DATABASE-FAILOVER
 
 log "10/11 run concurrent pressure through the same endpoint and audit final truth"
+if [[ -n "${ADR71_EVIDENCE_DIR:-}" ]]; then
+  mkdir -p "$ADR71_EVIDENCE_DIR"
+  export ADR71_LOAD_REPORT_FILE="$ADR71_EVIDENCE_DIR/load.json"
+  kubectl -n "$NS" get deployment,statefulset -o json >"$ADR71_EVIDENCE_DIR/topology.json"
+  python3 - "$REPO_ROOT" "$IMAGE_ID" "$SANDBOX_IMAGE" "$ADR71_EVIDENCE_DIR/provenance.json" <<'PY'
+import json, pathlib, subprocess, sys
+repo, image, sandbox, target = sys.argv[1:]
+revision = subprocess.check_output(['git','-C',repo,'rev-parse','HEAD'],text=True).strip()
+pathlib.Path(target).write_text(json.dumps(dict(source_revision=revision, role_image_id=image,
+    sandbox_image=sandbox, environment='local-k3d', provider_mode='fixture'),sort_keys=True)+'\n')
+PY
+  sample_capacity >"$ADR71_EVIDENCE_DIR/database.jsonl" 2>"$ADR71_EVIDENCE_DIR/database-sampler.log" &
+  CAPACITY_SAMPLER=$!
+fi
 node "$DRIVER" load "$API_URL" "$ENVIRONMENT_ID"
+if [[ -n "$CAPACITY_SAMPLER" ]]; then
+  # A failed observer is an evidence failure, not an empty successful sample.
+  kill -0 "$CAPACITY_SAMPLER" || { wait "$CAPACITY_SAMPLER"; exit 1; }
+  kill "$CAPACITY_SAMPLER"
+  wait "$CAPACITY_SAMPLER" 2>/dev/null || true
+  CAPACITY_SAMPLER=""
+  [[ -s "$ADR71_EVIDENCE_DIR/database.jsonl" ]]
+fi
 DATABASES=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d awaken -tAc \
   "SELECT count(*) FROM pg_database WHERE datname IN ('control','credentials','runtime','resources')" | tr -d '[:space:]')
 [ "$DATABASES" = "4" ] || { err "expected four isolated owner databases, got $DATABASES"; exit 1; }
