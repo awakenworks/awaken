@@ -19,7 +19,8 @@ pub(crate) use agent_sandbox::{AgentFilesystemClient, AgentFilesystemView};
 pub(crate) use awaken_session_environment_contract::SessionEnvironment;
 pub(crate) use awaken_session_environment_contract::SessionEnvironmentProvider;
 pub(crate) use environment::SandboxEnvironment;
-pub(crate) use provider::{ProviderEffect, SandboxEnvironmentProvider};
+pub(crate) use provider::ProviderEffect;
+pub use provider::SandboxEnvironmentProvider;
 pub(crate) use session_hand::HandExecutorFactory;
 #[cfg(test)]
 pub(crate) use session_hand::UnusedHandExecutorFactory;

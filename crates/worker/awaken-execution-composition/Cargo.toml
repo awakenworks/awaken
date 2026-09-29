@@ -24,6 +24,8 @@ awaken-sandbox-container.workspace = true
 awaken-sandbox-local.workspace = true
 awaken-session-environment-contract.workspace = true
 async-trait.workspace = true
+# The Namespace companion check and tier probe run at startup.
+tokio = { workspace = true, features = ["process", "time"] }
 
 [features]
 # Container Session tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s). Off by default:
@@ -33,7 +35,12 @@ podman = ["awaken-sandbox-container/podman"]
 k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+# Hosts over a chosen Deployment for the startup rows.
+awaken-runtime-host-testkit.workspace = true
+awaken-runtime-contract.workspace = true
+# A projected ACP backend bound before selection (startup ordering rows).
+awaken-run-executor-acp.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

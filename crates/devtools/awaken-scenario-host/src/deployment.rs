@@ -236,7 +236,7 @@ pub(crate) fn resource_host_with_deployment(
     let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
         .ok()
         .filter(|workspace| !workspace.trim().is_empty());
-    let mut host = SharedHost::new_with_resources_and_deployment(
+    let host = SharedHost::new_with_resources_and_deployment(
         llm,
         model_ref,
         awaken_runtime_host_testkit::local_resource_ports(&resources.authorities()),
@@ -251,6 +251,9 @@ pub(crate) fn resource_host_with_deployment(
     )
     .with_skill_bundle_source(resources.skill_bundle_source())
     .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
+    // Plain deterministic fixtures keep the cheap Workdir adapter; Deployment
+    // selection (`runtime_resource_host_with_deployment`) replaces it.
+    let mut host = awaken_execution_composition::with_workdir_fallback(host);
     if let Some(authority) = SCENARIO_RUNTIME_AUTHORITY.get() {
         host = host.with_runtime_authority(authority.clone());
     }

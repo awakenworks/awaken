@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_run_executor_acp::{AgentChannelSource, AgentSession, ChannelOpenDoor, OpenError};
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_sandbox_local::NamespaceProvider;
 
 mod attached_tools;
 mod launch;
@@ -322,63 +321,12 @@ fn launch_command(launch: &awaken_run_executor_acp::AcpLaunch, cwd: &str) -> pc:
     }
 }
 
-/// Resolve the effective sandbox tier at startup, probing the OS-native launcher
-/// ONCE (memoized) for the `Namespace` tier so an unsupported host gets a clear startup
-/// decision instead of an opaque per-run spawn error. An unavailable provider fails
-/// closed (`Err`) by default — the caller turns it into a startup abort with guidance.
-/// Only when typed deployment policy opts in do we degrade to the UNSANDBOXED
-/// `Local` tier with a loud notice so a dev/single-tenant worker runs.
-/// Every other tier passes through unchanged.
-pub async fn resolve_sandbox_tier(
-    tier: crate::deployment_config::SandboxTier,
-    allow_local_fallback: bool,
-    namespace_base: &std::path::Path,
-) -> Result<crate::deployment_config::SandboxTier, String> {
-    use crate::deployment_config::SandboxTier;
-    use awaken_provisioning_contract::SandboxProvider;
-    if tier != SandboxTier::Namespace {
-        return Ok(tier);
-    }
-    match NamespaceProvider::new(namespace_base.to_path_buf())
-        .probe_ready()
-        .await
-    {
-        Ok(()) => Ok(SandboxTier::Namespace),
-        Err(e) if namespace_degrades_to_local(allow_local_fallback) => {
-            eprintln!(
-                "awaken: OS-native sandbox unavailable ({e}); running UNSANDBOXED local ACP \
-                 execution (no OS isolation for this worker). Install bwrap on Linux or enable \
-                 macOS Seatbelt, or disable sandbox.allow_local_fallback to require \
-                 isolation (fail closed)."
-            );
-            Ok(SandboxTier::Local)
-        }
-        Err(e) => Err(format!(
-            "OS-native sandbox unavailable: {e}. Install bwrap (Linux) / use macOS Seatbelt, \
-             configure sandbox_allow_local_fallback=true for an explicit unsafe fallback, or \
-             configure sandbox_tier=local to run unsandboxed"
-        )),
-    }
-}
-
-/// Whether an unavailable `Namespace` provider may degrade to the UNSANDBOXED
-/// `Local` tier. Isolation never silently downgrades: the explicit unsafe opt-in is
-/// required whether the namespace tier was configured explicitly or selected as a
-/// default. Pure, so the policy is unit-testable off-host.
-fn namespace_degrades_to_local(fallback_optin: bool) -> bool {
-    fallback_optin
-}
-
 #[cfg(test)]
 mod tests {
     mod attached;
     use super::*;
     use awaken_run_executor_acp::{AcpLaunch, LaunchResolver};
     use std::sync::Mutex;
-
-    fn base() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("awaken-sbxsrc-ut-{}", std::process::id()))
-    }
 
     const SANDBOX_CONFIG_HOME: &str = "/acp-config";
     const WORKDIR_CONFIG_HOME: &str = ".acp-config";
@@ -1222,56 +1170,6 @@ mod tests {
         assert!(
             sandbox.command.lock().unwrap().is_none(),
             "a mismatched run must not spawn in the SessionEnvironment"
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_sandbox_tier_passes_non_namespace_tiers_through_unprobed() {
-        use crate::deployment_config::SandboxTier;
-        // Only the namespace tier is bwrap-probed; the rest resolve to themselves.
-        assert_eq!(
-            resolve_sandbox_tier(SandboxTier::Local, true, &base())
-                .await
-                .unwrap(),
-            SandboxTier::Local
-        );
-        assert_eq!(
-            resolve_sandbox_tier(SandboxTier::Docker, true, &base())
-                .await
-                .unwrap(),
-            SandboxTier::Docker
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_sandbox_tier_never_errors_for_namespace_with_the_local_fallback_optin() {
-        use crate::deployment_config::SandboxTier;
-        // Cause/effect decision table:
-        // | Namespace ready | typed fallback | Effect |
-        // | yes             | either         | Namespace |
-        // | no              | true           | Local |
-        // The assertion covers either host state without ambient configuration.
-        let resolved = resolve_sandbox_tier(SandboxTier::Namespace, true, &base()).await;
-        assert!(matches!(
-            resolved,
-            Ok(SandboxTier::Namespace | SandboxTier::Local)
-        ));
-    }
-
-    #[test]
-    fn namespace_degrade_policy_requires_an_explicit_unsafe_optin() {
-        // Cause/effect decision table:
-        // | Namespace ready | typed fallback | Effect |
-        // | no              | false          | reject |
-        // | no              | true           | Local |
-        // Readiness is tested at the impure caller; this covers the pure policy.
-        assert!(
-            !namespace_degrades_to_local(false),
-            "namespace fails closed without an explicit fallback opt-in"
-        );
-        assert!(
-            namespace_degrades_to_local(true),
-            "the explicit unsafe opt-in permits local fallback"
         );
     }
 }

@@ -184,10 +184,13 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
     let platform =
         resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
             .map_host_async(|host| async move {
-                host.with_agent_publications(host_publication)
-                    .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), launch)
-                    .await
-                    .expect("scenario Session environment must be available")
+                awaken_execution_composition::with_acp_launch_source(
+                    host.with_agent_publications(host_publication),
+                    awaken_worker::relay_hand_executor_factory(),
+                    launch,
+                )
+                .await
+                .expect("scenario Session environment must be available")
             })
             .await;
     mount_with_agent_source(platform, publication)
@@ -456,7 +459,7 @@ pub async fn build_acp_managed_mcp_router() -> Router {
         // launch facts; a static executor here would bypass that environment
         // and reopen the process-placement decision.
         move |host| {
-            host.with_projected_acp(
+            awaken_execution_composition::with_backend_owned_environment(host).with_projected_acp(
                 scenario_host_acp_cli(fixture_cli),
                 Arc::new(FixedAcpModel),
                 store_dir,
@@ -511,12 +514,13 @@ pub async fn build_acp_real_mcp_router() -> Router {
         deployment,
         None,
         move |host| {
-            host.with_projected_acp_argv(
-                cli,
-                Arc::new(acp_gateway::ScenarioEnvAcpModel),
-                store_dir,
-                launch_argv,
-            )
+            awaken_execution_composition::with_backend_owned_environment(host)
+                .with_projected_acp_argv(
+                    cli,
+                    Arc::new(acp_gateway::ScenarioEnvAcpModel),
+                    store_dir,
+                    launch_argv,
+                )
         },
     )
     .await
@@ -675,15 +679,18 @@ pub(crate) async fn bind_acp_session_environment(
 ) -> crate::deployment::ScenarioPlatform {
     platform
         .map_host_async(|host| async move {
-            let host = host
-                .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), source)
-                .await
-                .expect("scenario Session environment must be available")
-                // This composition owner mirrors the production Worker/CLI
-                // wiring for every Scenario ACP environment. Individual
-                // scenarios must not remember a second, optional tool-export
-                // installation path.
-                .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter));
+            let host = awaken_execution_composition::with_acp_launch_source(
+                host,
+                awaken_worker::relay_hand_executor_factory(),
+                source,
+            )
+            .await
+            .expect("scenario Session environment must be available")
+            // This composition owner mirrors the production Worker/CLI
+            // wiring for every Scenario ACP environment. Individual
+            // scenarios must not remember a second, optional tool-export
+            // installation path.
+            .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter));
             match secret_broker {
                 Some(broker) => host.with_session_secret_broker(broker),
                 None => host,
@@ -814,10 +821,13 @@ pub async fn build_acp_container_router() -> Router {
     let host_publication = publication.clone();
     let platform = resource_host_with_deployment(model, "awaken", deployment)
         .map_host_async(|host| async move {
-            host.with_agent_publications(host_publication)
-                .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), launch)
-                .await
-                .expect("scenario Session environment must be available")
+            awaken_execution_composition::with_acp_launch_source(
+                host.with_agent_publications(host_publication),
+                awaken_worker::relay_hand_executor_factory(),
+                launch,
+            )
+            .await
+            .expect("scenario Session environment must be available")
         })
         .await;
     // Use the same shared Resource Registry + Managed ACL assembly as every other

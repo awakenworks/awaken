@@ -846,22 +846,33 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     // refreshes (no installed Control) -> Worker close causes refresh and launch denial -> exact tree
     // stop. A real workload File survives denial/stop. No vendor/cloud claim.
     // S29 the helper is Cargo's exact artifact, independent of the test binary's
-    // intermediate directory; the normal startup validation/probe still runs.
+    // intermediate directory; its startup validation and probe are the
+    // execution composition's startup rows.
     let base = tempfile::tempdir().unwrap();
     let gate = Arc::new(WorkerProofGate(std::sync::Mutex::new(true)));
     let mut deployment = crate::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = crate::SandboxTier::Local;
     deployment.sandbox_dir = Some(base.path().into());
     deployment.sandbox.trusted_host_scoped_execution = true;
-    let host = SharedHost::new_with_deployment(Arc::new(OkModel), "stub", deployment)
-        .with_session_environment_from_deployment_at(
-            Some(Arc::new(
-                crate::session_environment::UnusedHandExecutorFactory,
-            )),
-            crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
+    // The TrustedHost backend exactly as startup selection configures it:
+    // the installed Hand and scoped execution discovered from the helper.
+    let helper = crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER");
+    let mut trusted = crate::session_environment::SandboxEnvironmentProvider::
+        trusted_host_workdir_with_agent_stderr(base.path().join("trusted-host"), false);
+    trusted.install_workdir_hand(
+        Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        helper.to_string_lossy().into_owned(),
+        std::time::Duration::ZERO,
+    );
+    trusted
+        .install_scoped_execution(
+            awaken_sandbox_local::LocalExecutionDeployment::discover(helper)
+                .expect("discover the scoped helper"),
         )
         .await
-        .unwrap()
+        .expect("install scoped execution");
+    let host = SharedHost::new_with_deployment(Arc::new(OkModel), "stub", deployment)
+        .with_backend_owned_environment_provider(trusted.into_session_provider())
         .with_execution_authority(gate.clone());
     let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker".into(),

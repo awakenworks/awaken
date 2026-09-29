@@ -293,7 +293,14 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
         ModelBinding::new("host", "echo", "genai"),
         deployment,
         None,
-        move |host| host.with_session_container_provider(provider, Arc::new(UnusedHandFactory)),
+        move |host| {
+            awaken_execution_composition::install_container_provider(
+                host,
+                provider,
+                None,
+                Arc::new(UnusedHandFactory),
+            )
+        },
     )
     .await;
 
