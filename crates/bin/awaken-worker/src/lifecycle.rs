@@ -10,9 +10,9 @@
 // @formal entrypoint worker_drain.registry_transition_follows_local_fence
 //! Worker registry authority, heartbeat, and local admission lifecycle.
 
+use awaken_lease_contract::mono::{self, Instant};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
 
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_session_executor::SharedHost;
@@ -426,7 +426,7 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
     let mut admission_suspended = false;
     let mut consecutive_failures = 0_u64;
     loop {
-        tokio::time::sleep_until(tokio::time::Instant::from_std(next_attempt)).await;
+        tokio::time::sleep_until(next_attempt).await;
         let Ok(attempt) = authority_proof_started() else {
             break;
         };
@@ -519,7 +519,7 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
                     } else {
                         "applied"
                     },
-                    Instant::now().duration_since(attempt_started),
+                    mono::now().duration_since(attempt_started),
                     scheduling_lag,
                     lifecycle.authority.remaining(),
                 );
@@ -527,7 +527,7 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
             Ok(Ok(receipt)) => {
                 awaken_observability::record_worker_authority_heartbeat(
                     "rejected",
-                    Instant::now().duration_since(attempt_started),
+                    mono::now().duration_since(attempt_started),
                     scheduling_lag,
                     lifecycle.authority.remaining(),
                 );
@@ -537,7 +537,7 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
             }
             Ok(Err(error)) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
-                let now = Instant::now();
+                let now = mono::now();
                 let remaining = lifecycle.authority.remaining();
                 tracing::warn!(
                     error = %error,
@@ -565,7 +565,7 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
             }
             Err(_) => {
                 consecutive_failures = consecutive_failures.saturating_add(1);
-                let now = Instant::now();
+                let now = mono::now();
                 let remaining = lifecycle.authority.remaining();
                 tracing::warn!(
                     consecutive_failures,
@@ -606,7 +606,7 @@ async fn pause_authority_admission_for_retry(
         lifecycle.host.suspend_pool_admission().await;
         *admission_suspended = true;
     }
-    let now = Instant::now();
+    let now = mono::now();
     let remaining = lifecycle.authority.remaining();
     if remaining.is_zero() {
         awaken_observability::record_worker_authority_loss("proof_expired");
@@ -643,10 +643,7 @@ async fn supervise_session_realization_reconciliation<Renewal, RenewalFuture, Co
         }
     };
     let cold_recovery = async move {
-        let mut interval = tokio::time::interval_at(
-            awaken_lease_contract::mono::now() + cold_period,
-            cold_period,
-        );
+        let mut interval = tokio::time::interval_at(mono::now() + cold_period, cold_period);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
@@ -780,7 +777,7 @@ where
         }
     };
 
-    let remaining = deadline.saturating_duration_since(awaken_lease_contract::mono::now());
+    let remaining = deadline.saturating_duration_since(mono::now());
     let returned = match tokio::time::timeout_at(deadline, observe_return(remaining)).await {
         Ok(returned) => returned,
         Err(_) => {
@@ -842,7 +839,7 @@ where
 pub(crate) async fn revoke_worker_session_authority(
     lifecycle: &WorkerSupervisor,
 ) -> WorkerRevocationReport {
-    let deadline = awaken_lease_contract::mono::now() + WORKER_REVOCATION_BUDGET;
+    let deadline = mono::now() + WORKER_REVOCATION_BUDGET;
     WorkerRevocationReport {
         outcome: revoke_worker_session_authority_before(lifecycle, deadline).await,
         deadline,

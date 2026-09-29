@@ -42,19 +42,22 @@ pub fn boottime_elapsed() -> std::io::Result<std::time::Duration> {
 /// Linux reuses the physical cutoff's suspend-inclusive BOOTTIME. Other
 /// platforms preserve their existing Instant-based proof behavior; this is
 /// not a claim of suspend-inclusive or process-tree qualification there.
+///
+/// The scheduling half is the one monotonic scheduling point
+/// (`awaken_lease_contract::mono`); only the authority half reads this crate's
+/// clock, so scheduling never stands in for the physical cutoff's clock.
 pub fn authority_proof_started() -> std::io::Result<AuthorityProofStarted> {
-    #[cfg(not(target_os = "linux"))]
-    let origin = {
-        static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-        *ORIGIN.get_or_init(std::time::Instant::now)
-    };
-    let scheduled = std::time::Instant::now();
+    let scheduled = awaken_lease_contract::mono::now();
     #[cfg(target_os = "linux")]
     let elapsed = boottime_elapsed()?;
     #[cfg(not(target_os = "linux"))]
-    let elapsed = scheduled
-        .checked_duration_since(origin)
-        .ok_or_else(|| std::io::Error::other("local authority elapsed clock regressed"))?;
+    let elapsed = {
+        static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let origin = *ORIGIN.get_or_init(std::time::Instant::now);
+        std::time::Instant::now()
+            .checked_duration_since(origin)
+            .ok_or_else(|| std::io::Error::other("local authority elapsed clock regressed"))?
+    };
     Ok(AuthorityProofStarted::from_clock_sample(scheduled, elapsed))
 }
 
