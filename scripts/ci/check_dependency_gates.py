@@ -109,6 +109,17 @@ SILENT_SKIP_EXEMPTIONS: dict[str, str] = {
         "behaviour is covered against the repository's own MCP server; what is "
         "uncovered is GitHub's specific responses."
     ),
+    "crates/worker/awaken-execution-composition/src/container.rs": (
+        "L7 needs a rootless Podman that can start busybox, and no lane stands "
+        "Podman up: the sandbox suite's container layer is Docker only. While "
+        "this test lived in awaken-session-executor the check counted it covered "
+        "because the suite runs other tests of that crate, yet no lane ever ran "
+        "it with Podman; moving it here only made the gap visible. The L1-L7 "
+        "lease decisions are covered hermetically by awaken-sandbox-container's "
+        "pool/lease_tests.rs and warm hand-out against real Docker by "
+        "tests/pool_docker.rs; what is uncovered is the production builder "
+        "under real Podman."
+    ),
     # ---- e2e runners whose substrate is absent by default ----------------
     "e2e/acp_projected_container_e2e.mjs": (
         "Requires a reachable Docker daemon. The sandbox group covers the "
