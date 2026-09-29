@@ -65,10 +65,11 @@ impl SharedHost {
         warm_context: Option<Arc<SessionCtx>>,
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<ChildExecutionSubstrate, HostError> {
-        let commit = match &warm_context {
+        let parent_commit = match &warm_context {
             Some(context) => context.commit.clone(),
             None => self.commit_for_read(thread).await?,
         };
+        let commit = parent_commit.for_independent_child();
         let mut attempt_context = match warm_context {
             Some(context) => context.attempt_context.for_child_run(),
             None => {
