@@ -138,18 +138,17 @@ fn map_resolver_error(err: resolver::Error) -> Error {
     Error::Resolution(err.to_string())
 }
 
-/// Build the model-visible transcript from request-only context followed by
-/// committed Thread truth. The prefix is deliberately cloned into the attempt
-/// view and never returned as `new_messages`, so every execution path gets the
-/// same context semantics without creating another durable transcript.
-fn model_transcript(
+/// Normalize the two views once. Request-only context remains outside the
+/// transcript ledger and phase-hook conversation; inference assembly prepends
+/// it through the existing protected prelude alongside plugin context.
+fn normalized_model_input(
     context: &RuntimeRunContext,
     committed: Vec<Message>,
     run_id: &RunId,
     thread_id: &ThreadId,
     publication_id: &str,
     instructions: &str,
-) -> Vec<Message> {
+) -> awaken_runtime_contract::NormalizedModelInput {
     let normalized = if transcript_prefix_projects_to(TranscriptContextDestination::ModelRequest) {
         awaken_runtime_contract::NormalizedModelInput::new(
             instructions,
@@ -176,7 +175,7 @@ fn model_transcript(
     debug_assert!(!transcript_prefix_projects_to(
         TranscriptContextDestination::DurableThreadTruth
     ));
-    normalized.ordered_messages()
+    normalized
 }
 
 /// Partition an activation's accepted input against committed Thread truth.

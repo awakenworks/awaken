@@ -1692,17 +1692,22 @@ impl SharedHost {
                         .map(|snapshot| &snapshot.resolved_spec),
                 ));
             let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
-                Arc::new(crate::application::AcpContextAttemptExecutor::new(
-                    attempt_executor,
-                    acp_memory_recall,
-                    acp_provider_server_tools,
-                ));
+                Arc::new(
+                    crate::application::attempt_context::AcpContextAttemptExecutor::new(
+                        attempt_executor,
+                        acp_memory_recall,
+                        acp_provider_server_tools,
+                    ),
+                );
             let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
-                Arc::new(crate::application::SessionContextAttemptExecutor::new(
-                    attempt_executor,
-                    self.session_slots.clone(),
-                    thread,
-                ));
+                Arc::new(
+                    crate::application::attempt_context::SessionContextAttemptExecutor::new(
+                        attempt_executor,
+                        self.session_slots.clone(),
+                        thread,
+                        self.clock.clone(),
+                    ),
+                );
             let attempt_executor = self
                 .exec
                 .attempt_decorator

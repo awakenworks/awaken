@@ -119,6 +119,9 @@ async fn compaction_summary_reaches_the_same_long_run() {
     // E2 C2 injects the committed summary into that Run's inference. Constraint/
     // Invariant: compaction changes context projection, not Thread identity or
     // committed history. Decision rule: execute C1 then C2 and distinguish replies.
+    // C3 the Host supplies request-only environment context on both attempts:
+    // it must remain model-visible while contributing no conversational prefix
+    // to compaction. C1+C3 => still E1; C2+C3 => E2 over actual Thread history.
     let (host, _managed) = dispatch_test_host(
         SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction_tokens(1, 1),
     );

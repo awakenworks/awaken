@@ -325,6 +325,12 @@ pub enum MetadataUpdate {
 pub struct DeploymentLaunch {
     pub deployment_id: String,
     pub deployment_run_id: String,
+    /// Projection of the committed Run, not another authored/fingerprinted
+    /// launch input. A JSON replay must recover these facts from that Run.
+    #[serde(skip)]
+    pub trigger: Option<DeploymentTrigger>,
+    #[serde(skip)]
+    pub timezone: Option<String>,
     pub workspace_id: String,
     pub agent: DeploymentAgent,
     pub environment_id: String,

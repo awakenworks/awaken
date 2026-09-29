@@ -66,7 +66,7 @@ fn main() -> io::Result<()> {
                     env("GEMINI_MODEL"),
                     prefix(&env("GEMINI_API_KEY")),
                     std::env::current_dir()?.display(),
-                    env("GEMINI_DIR")
+                    env("GEMINI_CLI_HOME")
                 )
             };
             writeln!(

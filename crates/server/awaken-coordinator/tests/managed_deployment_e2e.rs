@@ -192,6 +192,8 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     let request = DeploymentLaunch {
         deployment_id: "depl_failed_initial".into(),
         deployment_run_id: "drun_failed_initial".into(),
+        trigger: Some(awaken_deployment_application::DeploymentTrigger::Manual),
+        timezone: None,
         workspace_id,
         agent: DeploymentAgent::new("assistant", 1),
         environment_id: "env_local".into(),
@@ -320,6 +322,8 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     let request = DeploymentLaunch {
         deployment_id: "depl_retry".into(),
         deployment_run_id: "drun_retry".into(),
+        trigger: Some(awaken_deployment_application::DeploymentTrigger::Manual),
+        timezone: None,
         workspace_id,
         agent: DeploymentAgent::new("assistant", 1),
         environment_id: "env_local".into(),

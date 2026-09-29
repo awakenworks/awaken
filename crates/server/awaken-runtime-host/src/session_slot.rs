@@ -771,7 +771,9 @@ impl SessionRuntimeSlots {
                     .map(|prompt| prompt.render(delivery, path_view.clone())),
             );
             if let Some(baseline) = &slot.baseline {
-                prompts.extend(baseline.prompts.clone());
+                prompts.extend(baseline.prompts.iter()
+                    .filter(|prompt| !awaken_session_configuration_contract::SessionContextSeed::is_seed_prompt(prompt))
+                    .cloned());
             }
             if let Some(skill_prompt) = &slot.skill_prompt {
                 prompts.push(skill_prompt.render(&path_view, environment.as_deref())?);

@@ -48,6 +48,8 @@ pub struct AcpLaunch {
     pub session_config_options: Vec<awaken_protocol_acp::SessionConfigOptionSelection>,
     pub session_working_directory: Option<String>,
     pub expected_capability: Option<awaken_protocol_acp::AcpCapabilityExpectation>,
+    /// How the frozen Agent instructions reach this adapter's system prompt.
+    pub instructions: crate::AcpInstructions,
 }
 
 impl AcpLaunch {
@@ -86,6 +88,7 @@ impl AcpLaunch {
             session_config_options: Vec::new(),
             session_working_directory: None,
             expected_capability: None,
+            instructions: crate::AcpInstructions::default(),
         }
     }
 }
@@ -304,6 +307,9 @@ async fn spawn(
         tool_aliases: launch.tool_aliases.clone(),
         session_config_options: launch.session_config_options.clone(),
         expected_capability: launch.expected_capability.clone(),
+        // A plain subprocess has no Session-owned home to write into, so a
+        // file route stays pending and reports its first-prompt fallback.
+        instructions: launch.instructions.clone(),
     })
 }
 
@@ -435,30 +441,59 @@ impl ProjectingChannelSource {
         activation: &RunActivation,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> std::result::Result<AcpLaunch, OpenError> {
-        project_launch(&self.cli, self.resolver.as_ref(), activation, context).await
+        Ok(
+            project_launch(&self.cli, self.resolver.as_ref(), activation, context, None)
+                .await?
+                .launch,
+        )
     }
 }
 
-/// Project a run onto a concrete [`AcpLaunch`] (no spawn): resolve the model + per-run
-/// env through `resolver`, read the compaction window from the run's config, and hand
-/// all of it to the CLI's [`AcpCli::try_project`] row. The reusable projection core — a
-/// sandboxed / containerized ACP source uses it to launch the **per-agent** CLI (the
-/// run's `acp:<cli>` backend_ref) inside its isolation, not a fixed argv.
+/// One launch projection and its existing last-mile credential requirements.
+pub struct ResolvedLaunch {
+    pub launch: AcpLaunch,
+    pub credential_artifact: Option<crate::CredentialArtifactRequirement>,
+    pub secret_broker: Option<Arc<dyn pc::SecretBroker>>,
+}
+
+/// Resolve and project one launch for both plain and sandbox-backed sources.
+/// The Host selects a route and materializes its requirements; all model, env,
+/// argv, tool-alias and instruction projection stays in this one function.
 pub async fn project_launch(
     cli: &AcpCli,
     resolver: &dyn LaunchResolver,
     activation: &RunActivation,
     context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
-) -> std::result::Result<AcpLaunch, OpenError> {
+    launch_argv: Option<&[String]>,
+) -> std::result::Result<ResolvedLaunch, OpenError> {
     let model = resolver.model(activation, context).await?;
+    let credential_artifact = model.credential_artifact().cloned();
     let extra_env = resolver.extra_env(activation)?;
     let window = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
         &activation.snapshot.resolved_spec.plugin_config,
     )
     .compact_window;
-    let mut launch = cli.try_project(&model, window, &extra_env)?;
+    let mut launch = cli.try_project_with_argv(&model, window, &extra_env, launch_argv)?;
+    if let Some(timezone) = &context.request_timezone {
+        launch.env.retain(|entry| entry.name != "TZ");
+        launch.env.push(pc::EnvVar {
+            name: "TZ".into(),
+            value: pc::EnvValue::Inline {
+                value: timezone.clone(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        });
+    }
     launch.project_tool_aliases(cli, &activation.snapshot.resolved_spec.tool_presentation)?;
-    Ok(launch)
+    launch.project_instructions(
+        cli.instructions,
+        &activation.snapshot.resolved_spec.instructions,
+    )?;
+    Ok(ResolvedLaunch {
+        launch,
+        credential_artifact,
+        secret_broker: resolver.secret_broker(),
+    })
 }
 
 /// Project `plugin_config`'s declared secret-free MCP routes onto the one ACP
@@ -985,6 +1020,7 @@ mod tests {
             session_config_options: Vec::new(),
             session_working_directory: None,
             expected_capability: None,
+            instructions: crate::AcpInstructions::default(),
         };
         let debug = format!("{launch:?}");
         assert!(!debug.contains("lease://acp-exact"));

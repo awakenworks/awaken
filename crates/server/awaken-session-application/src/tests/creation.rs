@@ -1849,7 +1849,20 @@ async fn assert_profiled_realization_and_environment_rules(
     let baseline = realized.frozen_baseline().expect("P1 frozen baseline");
     assert_eq!(baseline.mounts.len(), 1, "P1/E1");
     assert_eq!(baseline.env.len(), 1, "P1/E1");
-    assert_eq!(baseline.prompts, ["project context"], "P1/E1");
+    assert_eq!(
+        baseline.prompts,
+        [
+            "project context".to_owned(),
+            awaken_session_configuration_contract::SessionContextSeed::from_metadata(
+                awaken_session_configuration_contract::SessionTrigger::Interactive {},
+                &Default::default(),
+                None,
+            )
+            .unwrap()
+            .encode()
+        ],
+        "P1/E1 product prompt + one frozen context seed"
+    );
     assert_eq!(
         baseline.environment.environment_id, "project-environment",
         "P1/E1"
@@ -2516,6 +2529,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     );
 }
 
+mod execution_context;
 mod time_assurance;
 
 /// The Registry of an ephemeral Resources application, on the host clock: the

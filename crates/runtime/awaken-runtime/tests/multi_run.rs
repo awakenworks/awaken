@@ -181,8 +181,10 @@ async fn request_context_is_model_visible_but_never_committed() {
      * generated output become durable; E3 the later attempt cannot observe C1.
      * Constraints: request context may coexist with or without a reader; this
      * rule exercises the maximal interaction. Rule R1 C1+C2+C3 => E1+E2;
-     * R2 C2+C3+C4 => E3. Resume uses the same `model_transcript` owner, so a
+     * R2 C2+C3+C4 => E3. Resume uses the same `normalized_model_input` owner, so a
      * second resume-only assembly test would duplicate this ordering contract.
+     * R3 C1 is excluded from phase-hook conversational history (including the
+     * compactor), while R1 still requires that exact C1 at inference assembly.
      */
     let runtime = runtime();
     let commit: Arc<MemoryCommitCoordinator> = Arc::new(MemoryCommitCoordinator::new(
@@ -203,6 +205,52 @@ async fn request_context_is_model_visible_but_never_committed() {
     let mut contextual = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(reader.clone());
+    use awaken_runtime_contract::plugin::{
+        CapabilityBound, Contributions, HookReaction, PhaseContext, PhaseHook, PhaseHookPoint,
+        Plugin, PluginManifest,
+    };
+    #[derive(Clone)]
+    struct ContextProbe(Arc<std::sync::Mutex<Vec<Vec<String>>>>);
+    #[async_trait::async_trait]
+    impl PhaseHook for ContextProbe {
+        fn point(&self) -> PhaseHookPoint {
+            PhaseHookPoint::BeforeInference
+        }
+        async fn on_phase(
+            &self,
+            _: &PhaseContext,
+            history: &[Message],
+            _: &awaken_agent_contract::agent::state::Store,
+        ) -> HookReaction {
+            self.0
+                .lock()
+                .unwrap()
+                .push(history.iter().map(Message::text_content).collect());
+            HookReaction::default()
+        }
+    }
+    impl Plugin for ContextProbe {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: "context-probe".into(),
+                requires: Vec::new(),
+                config_sections: Vec::new(),
+                bound: CapabilityBound {
+                    phase_hooks: vec![PhaseHookPoint::BeforeInference],
+                    ..Default::default()
+                },
+            }
+        }
+        fn resolve(&self) -> Contributions {
+            let mut value = Contributions::new("context-probe");
+            value.register_hook(Arc::new(self.clone()));
+            value
+        }
+    }
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    contextual
+        .session_plugins
+        .push(Arc::new(ContextProbe(observed.clone())));
     contextual.request_context.push(Message::text(
         MessageId("request-only".to_string()),
         Role::User,
@@ -229,6 +277,19 @@ async fn request_context_is_model_visible_but_never_committed() {
             .all(|message| message.id.0 != "request-only"),
         "request-only context never becomes durable Thread truth"
     );
+    {
+        let hooks = observed.lock().unwrap();
+        assert_eq!(hooks.len(), 1, "R3 actual hook was called");
+        assert!(
+            hooks[0].iter().all(|text| text != "Transient."),
+            "R3 request context is not conversational history"
+        );
+        assert!(
+            hooks[0].iter().any(|text| text == "Committed.")
+                && hooks[0].iter().any(|text| text == "Current."),
+            "R3 actual conversation retained"
+        );
+    }
 
     runtime
         .execute(

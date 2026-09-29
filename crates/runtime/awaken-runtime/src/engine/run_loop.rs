@@ -68,7 +68,7 @@ pub(crate) async fn run_agent_loop(
     // of the same Run were committed. Share the resume path's transcript-owned
     // step classifier so its new Message ids cannot alias those earlier steps.
     let step_base = awaken_agent_contract::agent::message::next_assistant_step(&committed, &run_id);
-    let mut transcript = model_transcript(
+    let normalized = normalized_model_input(
         &context,
         committed,
         &run_id,
@@ -76,6 +76,11 @@ pub(crate) async fn run_agent_loop(
         &activation.snapshot.fingerprint.0,
         &activation.snapshot.resolved_spec.instructions,
     );
+    let mut transcript = normalized.durable_input;
+    let context = RuntimeRunContext {
+        request_context: normalized.request_context,
+        ..context
+    };
 
     // Cancellation observed before any model call: commit a terminal Cancelled
     // outcome instead of starting work.
@@ -716,11 +721,13 @@ pub(super) async fn drive(
         // Request-only context the `BeforeInference` hooks wrote to state: the
         // kernel reads it here (single chokepoint) and prepends the flattened
         // per-producer blocks to this inference, never committing them (ADR-0055).
-        let prelude: Vec<Message> = ContextMessages::load(&store)
-            .map_err(|error| Error::Execution(error.to_string()))?
-            .into_values()
-            .flatten()
-            .collect();
+        let mut prelude = context.request_context.clone();
+        prelude.extend(
+            ContextMessages::load(&store)
+                .map_err(|error| Error::Execution(error.to_string()))?
+                .into_values()
+                .flatten(),
+        );
         let context_window = ContextWindow::load(&store)
             .map_err(|error| Error::Execution(error.to_string()))?
             .keep_last_at(ledger.transcript.len());

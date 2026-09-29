@@ -263,6 +263,8 @@ mod tests {
         let blobs = FsSessionBlobStore::new(blob_root.path().to_path_buf());
         let source = tempfile::tempdir().unwrap();
         std::fs::write(source.path().join("session"), b"opaque").unwrap();
+        // R1/C5: retain this complete blob for the erasure oracle; portable
+        // Session-home exclusions are owned by the shared blob-store tests.
         blobs
             .store(
                 &SessionHomeKey {
@@ -271,6 +273,7 @@ mod tests {
                     adapter: "codex".into(),
                 },
                 source.path(),
+                &[],
             )
             .await
             .unwrap();

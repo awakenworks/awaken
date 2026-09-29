@@ -288,6 +288,9 @@ pub struct RuntimeRunContext {
     /// Process-local projection of the activation's frozen caller toolsets.
     /// The activation, rather than this live wiring, owns recovery identity.
     pub inherited_toolsets: Option<crate::activation::InheritedToolsets>,
+    /// Derived from the frozen Session context seed for this attempt. ACP uses
+    /// it only for process TZ; the shared request-context message owns task time.
+    pub request_timezone: Option<String>,
     /// Authorized Workspace ownership for this attempt. The ingress/session
     /// boundary supplies the same [`awaken_tenancy::ExecutionScopeRef`] that is
     /// persisted on durable dispatch; tools may consume it as trusted execution
