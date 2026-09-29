@@ -348,7 +348,11 @@ impl MemoryRuntime {
     }
 
     fn extraction_controller(&self) -> MemoryExtractionController {
-        MemoryExtractionController::new(self.extraction_repository(), self.claim_owner.clone())
+        MemoryExtractionController::new(
+            self.extraction_repository(),
+            self.claim_owner.clone(),
+            self.clock.clone(),
+        )
     }
 }
 
