@@ -17,7 +17,11 @@ tokio.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-resource-contract.workspace = true
+awaken-lease-contract.workspace = true
 schemars = "1"
+
+[dev-dependencies]
+awaken-lease-testkit.workspace = true
 
 [lints]
 workspace = true

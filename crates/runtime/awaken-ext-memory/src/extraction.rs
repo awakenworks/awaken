@@ -776,9 +776,6 @@ impl awaken_runtime_contract::terminal::RunTerminalObserver for MemoryTerminalOb
 
 mod controller;
 
-#[cfg(test)]
-pub(crate) use controller::unix_ms;
-
 /// Operational policy for the at-least-once extraction worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryExtractionPolicy {
@@ -796,12 +793,14 @@ pub struct MemoryExtractionController {
     repository: std::sync::Arc<dyn MemoryExtractionRepository>,
     owner: String,
     policy: MemoryExtractionPolicy,
+    clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::{Id, Role};
+    use awaken_lease_contract::WallClockExt as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -1273,13 +1272,17 @@ mod tests {
     #[tokio::test]
     async fn controller_owns_retry_receipt_and_completion_ordering() {
         let repository = Arc::new(TestRepository::default());
-        let controller = MemoryExtractionController::new(repository.clone(), "worker-a")
-            .with_policy(MemoryExtractionPolicy {
-                lease_ms: 1_000,
-                heartbeat_ms: 100,
-                max_attempts: 3,
-                retry_base_ms: 0,
-            });
+        let controller = MemoryExtractionController::new(
+            repository.clone(),
+            "worker-a",
+            awaken_lease_contract::system_clock(),
+        )
+        .with_policy(MemoryExtractionPolicy {
+            lease_ms: 1_000,
+            heartbeat_ms: 100,
+            max_attempts: 3,
+            retry_base_ms: 0,
+        });
         assert_eq!(
             controller.enqueue(intent()).await.unwrap(),
             PutMemoryExtractionOutcome::Inserted
@@ -1310,6 +1313,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_extraction_receipt_uses_the_controller_clock() {
+        // Causes: C1 one recoverable intent and a successful bound driver;
+        // C2 the injected clock reads 1_234, independent of the host clock.
+        // Effects: E1 exactly one extraction completes, E2 its durable receipt
+        // records 1_234, E3 the completed claim is released. Decision rule:
+        // R1 C1+C2 -> E1/E2/E3; the real host clock cannot stamp the receipt.
+        let repository = Arc::new(TestRepository::default());
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_234));
+        let controller = MemoryExtractionController::new(repository.clone(), "worker-a", clock);
+        controller.enqueue(intent()).await.unwrap();
+        let driver = TestDriver {
+            extraction_calls: AtomicUsize::new(0),
+            first_outcome: None,
+            binding_valid: true,
+        };
+
+        controller.drive_recoverable(&driver).await;
+
+        let completed = repository
+            .get_extraction("extract-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.status, MemoryExtractionStatus::Completed, "E1");
+        assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 1, "E1");
+        assert_eq!(
+            completed.receipt.as_ref().unwrap().stored_at_unix_ms,
+            1_234,
+            "E2"
+        );
+        assert!(completed.claim_owner.is_none(), "E3");
+    }
+
+    #[tokio::test]
     async fn recovery_scan_is_exhaustive_and_survives_one_transient_read_error() {
         // Cause/effect graph: C1 the accepted binding is inside/beyond the first
         // 64 global rows; C2 a recoverable repository read succeeds/fails once;
@@ -1331,13 +1368,17 @@ mod tests {
             recoverable_failures_remaining: AtomicUsize::new(1),
             ..TestRepository::default()
         });
-        let controller = MemoryExtractionController::new(repository.clone(), "worker-a")
-            .with_policy(MemoryExtractionPolicy {
-                lease_ms: 1_000,
-                heartbeat_ms: 100,
-                max_attempts: 3,
-                retry_base_ms: 0,
-            });
+        let controller = MemoryExtractionController::new(
+            repository.clone(),
+            "worker-a",
+            awaken_lease_contract::system_clock(),
+        )
+        .with_policy(MemoryExtractionPolicy {
+            lease_ms: 1_000,
+            heartbeat_ms: 100,
+            max_attempts: 3,
+            retry_base_ms: 0,
+        });
         for index in 0..64 {
             let mut foreign = intent();
             foreign.intent_id = format!("foreign-{index:02}");
@@ -1381,16 +1422,22 @@ mod tests {
     async fn heartbeat_renews_from_the_latest_claim_revision() {
         // Concurrent claim-revision graph: C1 the controller owns generation G;
         // C2 credential materialization commits a newer revision while inference
-        // is running; C3 heartbeat fires. E1 preserve the receipt, E2 renew the
-        // same G lease, E3 do not consume a retry attempt.
+        // is running; C3 the injected clock advances from 1_000 to 2_000 while
+        // the claim remains live, then reaches its new expiry at 12_000.
+        // Effects: E1 preserve the receipt, E2 renew the same G lease to
+        // 12_000, E3 do not consume a retry attempt, E4 reject renewal at the
+        // exclusive expiry without persisting a changed claim. Decision rules:
+        // R1 C1+C2+C3@2_000 -> E1/E2/E3; R2 C1+C3@12_000 -> E4.
         let repository = Arc::new(TestRepository::default());
-        let controller = MemoryExtractionController::new(repository.clone(), "worker-a")
-            .with_policy(MemoryExtractionPolicy {
-                lease_ms: 10_000,
-                heartbeat_ms: 100,
-                max_attempts: 3,
-                retry_base_ms: 0,
-            });
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_000));
+        let controller =
+            MemoryExtractionController::new(repository.clone(), "worker-a", clock.clone())
+                .with_policy(MemoryExtractionPolicy {
+                    lease_ms: 10_000,
+                    heartbeat_ms: 100,
+                    max_attempts: 3,
+                    retry_base_ms: 0,
+                });
         controller.enqueue(intent()).await.unwrap();
         let mut claimed = repository
             .get_extraction("extract-1")
@@ -1398,7 +1445,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let expected_revision = claimed.revision;
-        let generation = claimed.claim("worker-a", unix_ms(), 10_000).unwrap();
+        let generation = claimed.claim("worker-a", clock.now_ms(), 10_000).unwrap();
         repository
             .compare_and_swap_extraction(expected_revision, claimed.clone())
             .await
@@ -1410,7 +1457,7 @@ mod tests {
             .record_credential_realization(
                 "worker-a",
                 generation,
-                unix_ms(),
+                clock.now_ms(),
                 credential_receipt(generation),
             )
             .unwrap();
@@ -1419,30 +1466,45 @@ mod tests {
             .await
             .unwrap();
 
+        clock.set(2_000);
         controller
             .renew_current_claim(&mut claimed, generation)
             .await
-            .expect("C1+C2+C3 renews current state");
+            .expect("R1 renews current state");
         assert_eq!(claimed.claim_generation, generation, "E2");
+        assert_eq!(claimed.lease_expires_at_unix_ms, Some(12_000), "E2");
         assert_eq!(claimed.attempts, 1, "E3");
         assert_eq!(claimed.credential_realizations.len(), 1, "E1");
-        assert_eq!(
-            repository
-                .get_extraction("extract-1")
+        clock.set(12_000);
+        assert!(
+            controller
+                .renew_current_claim(&mut claimed, generation)
                 .await
-                .unwrap()
-                .unwrap()
-                .credential_realizations
-                .len(),
-            1,
-            "E1 durable"
+                .is_err(),
+            "R2/E4"
+        );
+        assert_eq!(claimed.lease_expires_at_unix_ms, Some(12_000), "E4");
+        let persisted = repository
+            .get_extraction("extract-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.credential_realizations.len(), 1, "E1 durable");
+        assert_eq!(
+            persisted.lease_expires_at_unix_ms,
+            Some(12_000),
+            "E4 durable"
         );
     }
 
     #[tokio::test]
     async fn revoked_binding_fails_terminally_without_running_extractor() {
         let repository = Arc::new(TestRepository::default());
-        let controller = MemoryExtractionController::new(repository.clone(), "worker-a");
+        let controller = MemoryExtractionController::new(
+            repository.clone(),
+            "worker-a",
+            awaken_lease_contract::system_clock(),
+        );
         controller.enqueue(intent()).await.unwrap();
         let driver = TestDriver {
             extraction_calls: AtomicUsize::new(0),
@@ -1505,13 +1567,17 @@ mod tests {
             ),
         ] {
             let repository = Arc::new(TestRepository::default());
-            let controller = MemoryExtractionController::new(repository.clone(), "worker-a")
-                .with_policy(MemoryExtractionPolicy {
-                    lease_ms: 1_000,
-                    heartbeat_ms: 100,
-                    max_attempts: 3,
-                    retry_base_ms: 0,
-                });
+            let controller = MemoryExtractionController::new(
+                repository.clone(),
+                "worker-a",
+                awaken_lease_contract::system_clock(),
+            )
+            .with_policy(MemoryExtractionPolicy {
+                lease_ms: 1_000,
+                heartbeat_ms: 100,
+                max_attempts: 3,
+                retry_base_ms: 0,
+            });
             controller.enqueue(intent()).await.unwrap();
             let driver = TestDriver {
                 extraction_calls: AtomicUsize::new(0),
@@ -1546,7 +1612,11 @@ mod tests {
     #[tokio::test]
     async fn terminal_enqueue_uses_a_durable_snapshot_window_and_stable_agent_identity() {
         let repository = Arc::new(TestRepository::default());
-        let controller = MemoryExtractionController::new(repository.clone(), "worker-a");
+        let controller = MemoryExtractionController::new(
+            repository.clone(),
+            "worker-a",
+            awaken_lease_contract::system_clock(),
+        );
         let first = Message::text(Id("m1".into()), Role::User, "first new fact");
         let recall = Message::text(
             Id(format!("{}-1", crate::RECALL_MESSAGE_ID_PREFIX)),
@@ -1657,7 +1727,11 @@ mod tests {
         // | R3   | distinct | same        | exact/different  | F  | E4       |
         // | R4   | equal    | none        | fresh            | T  | E5       |
         let repository = Arc::new(TestRepository::default());
-        let controller = MemoryExtractionController::new(repository.clone(), "worker-a");
+        let controller = MemoryExtractionController::new(
+            repository.clone(),
+            "worker-a",
+            awaken_lease_contract::system_clock(),
+        );
         let request = |session: &str, thread: &str, run: &str, transcript: Vec<Message>| {
             MemoryTerminalExtractionRequest {
                 workspace_id: "ws-a".into(),

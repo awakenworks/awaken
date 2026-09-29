@@ -5,6 +5,7 @@
 //! those existing contracts without introducing a second lifecycle authority.
 
 use super::*;
+use awaken_lease_contract::WallClockExt as _;
 
 impl Default for MemoryExtractionPolicy {
     fn default() -> Self {
@@ -22,11 +23,13 @@ impl MemoryExtractionController {
     pub fn new(
         repository: std::sync::Arc<dyn MemoryExtractionRepository>,
         owner: impl Into<String>,
+        clock: std::sync::Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             repository,
             owner: owner.into(),
             policy: MemoryExtractionPolicy::default(),
+            clock,
         }
     }
 
@@ -183,7 +186,7 @@ impl MemoryExtractionController {
                     continue;
                 }
             };
-            let now = unix_ms();
+            let now = self.clock.now_ms();
             let expected_revision = intent.revision;
             let generation = match intent.claim(&self.owner, now, self.policy.lease_ms) {
                 Ok(generation) => generation,
@@ -221,7 +224,7 @@ impl MemoryExtractionController {
                 {
                     continue;
                 }
-                let now = unix_ms();
+                let now = self.clock.now_ms();
                 let expected_revision = intent.revision;
                 let action = failure.into_action(intent.attempts, self.policy.max_attempts);
                 let retryable = matches!(&action, AdvanceFailureAction::Retry(_));
@@ -269,7 +272,12 @@ impl MemoryExtractionController {
                 .await?
                 .ok_or_else(|| MemoryExtractionError::NotFound(intent.intent_id.clone()))?;
             let expected_revision = current.revision;
-            current.renew_claim(&self.owner, generation, unix_ms(), self.policy.lease_ms)?;
+            current.renew_claim(
+                &self.owner,
+                generation,
+                self.clock.now_ms(),
+                self.policy.lease_ms,
+            )?;
             match self
                 .repository
                 .compare_and_swap_extraction(expected_revision, current.clone())
@@ -347,12 +355,12 @@ impl MemoryExtractionController {
                     )
                 })?;
             current
-                .require_claim(&self.owner, generation, unix_ms())
+                .require_claim(&self.owner, generation, self.clock.now_ms())
                 .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
             *intent = current;
             let expected_revision = intent.revision;
             intent
-                .mark_extracted(&self.owner, generation, unix_ms(), mutations)
+                .mark_extracted(&self.owner, generation, self.clock.now_ms(), mutations)
                 .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
             self.repository
                 .compare_and_swap_extraction(expected_revision, intent.clone())
@@ -374,13 +382,14 @@ impl MemoryExtractionController {
                 );
             }
             let expected_revision = intent.revision;
+            let now = self.clock.now_ms();
             intent
                 .mark_stored(
                     &self.owner,
                     generation,
-                    unix_ms(),
+                    now,
                     MemoryExtractionReceipt {
-                        stored_at_unix_ms: unix_ms(),
+                        stored_at_unix_ms: now,
                         mutations: receipts,
                     },
                 )
@@ -393,7 +402,7 @@ impl MemoryExtractionController {
         if intent.status == MemoryExtractionStatus::Stored {
             let expected_revision = intent.revision;
             intent
-                .complete(&self.owner, generation, unix_ms())
+                .complete(&self.owner, generation, self.clock.now_ms())
                 .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
             self.repository
                 .compare_and_swap_extraction(expected_revision, intent.clone())
@@ -433,15 +442,6 @@ impl AdvanceFailure {
             Self::Retryable(error) => AdvanceFailureAction::Retry(error),
         }
     }
-}
-
-pub(crate) fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
