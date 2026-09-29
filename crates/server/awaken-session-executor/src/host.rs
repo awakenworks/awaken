@@ -116,6 +116,7 @@ pub(crate) mod capability;
 pub use capability::DispatchPoolSizing;
 mod completion;
 mod coordination;
+mod dispatch_resolution;
 mod durable_control;
 pub use placement::{remote_worker_placement, self_hosted_inference_holder};
 mod credential_capabilities;

@@ -1583,7 +1583,7 @@ impl crate::ManagedHost {
         } else {
             claim.map(|claim| awaken_dispatch::ResourceOperationFence::Run(claim.clone()))
         };
-        self.stage_resolved_input_with_repository_authority(
+        self.stage_resolved_input_with_resource_authority(
             workspace,
             input,
             authority.as_ref(),
@@ -1620,7 +1620,7 @@ impl crate::ManagedHost {
             command: Box::new(command.clone()),
             lease: lease.clone(),
         };
-        self.stage_resolved_input_with_repository_authority(
+        self.stage_resolved_input_with_resource_authority(
             workspace,
             input,
             Some(&fence),
@@ -1630,11 +1630,11 @@ impl crate::ManagedHost {
         .await
     }
 
-    async fn stage_resolved_input_with_repository_authority(
+    async fn stage_resolved_input_with_resource_authority(
         &self,
         workspace: &str,
         input: &awaken_session_resource_contract::ResolvedInput,
-        repository_authority: Option<&awaken_dispatch::ResourceOperationFence>,
+        resource_authority: Option<&awaken_dispatch::ResourceOperationFence>,
         realization: Option<(
             &str,
             u64,
@@ -1645,7 +1645,7 @@ impl crate::ManagedHost {
         use awaken_session_error_contract::RunError;
         use awaken_session_resource_contract::ResolvedInputSource;
 
-        let claim = repository_authority.and_then(|authority| match authority {
+        let claim = resource_authority.and_then(|authority| match authority {
             awaken_dispatch::ResourceOperationFence::Run(claim) => Some(claim),
             _ => None,
         });
@@ -1671,7 +1671,7 @@ impl crate::ManagedHost {
                         workspace,
                         file_id.as_str(),
                         &awaken_resource_contract::FileReadPurpose::SessionResource,
-                        repository_authority,
+                        resource_authority,
                     )
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?
@@ -1701,15 +1701,17 @@ impl crate::ManagedHost {
                 config,
             } => {
                 let materialization_reference = match (&self.host.upstream, claim, realization) {
-                    (Some(_), _, Some((session_id, revision, lease))) => {
-                        let intent =
-                            awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
-                                session_id,
-                                revision,
-                                input.clone(),
-                                lease.clone(),
-                            )
-                            .map_err(RunError::internal)?;
+                    (Some(_), _, Some(_)) => {
+                        let Some(
+                            awaken_dispatch::ResourceOperationFence::SessionMaterialization(
+                                intent,
+                            ),
+                        ) = resource_authority
+                        else {
+                            return Err(RunError::internal(
+                                "remote Memory realization lost its admitted Resource fence",
+                            ));
+                        };
                         Some(
                             awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
                                 awaken_session_realization_contract::SessionResourceMaterializationIntent,
@@ -1727,7 +1729,7 @@ impl crate::ManagedHost {
                                 memory_store_id.as_str(),
                                 config.version,
                                 input.access,
-                                &intent,
+                                intent,
                             )
                             .map_err(|error| RunError::internal(error.to_string()))?,
                         )
@@ -1813,7 +1815,7 @@ impl crate::ManagedHost {
                             "repository `{repository_id}` cannot be realized: {error}"
                         ))
                     })?;
-                let transport = match (repository_authority, &self.host.upstream) {
+                let transport = match (resource_authority, &self.host.upstream) {
                     (
                         Some(awaken_dispatch::ResourceOperationFence::RepositoryPublication {
                             ..
@@ -1840,14 +1842,14 @@ impl crate::ManagedHost {
                         config_version: config.version,
                         remote_url: config.remote_url.clone(),
                         credential_binding: config.credential_binding.clone(),
-                        authority: repository_authority.cloned().map(Box::new),
+                        authority: resource_authority.cloned().map(Box::new),
                     });
                 // Coordinator staging has no Run claim and cannot authorize a
                 // Platform-held Git transport. Retain the exact binding check
                 // and immutable Session input; the claiming Worker recompiles
                 // it through the existing Gateway authorizer. No executable
                 // direct Repository activation may escape this stage.
-                if repository_authority.is_none()
+                if resource_authority.is_none()
                     && let (Some(binding), Some(pin)) = (&config.credential_binding, credential_pin)
                     && pin.selected_plaintext_holder.boundary
                         == awaken_runtime_contract::PlaintextBoundary::Platform
