@@ -32,6 +32,16 @@ INPUT_GLOBS: tuple[str, ...] = ("scripts/ci/formal_budget.py",)
 # The declared ceiling for one `cargo kani` batch. 1800s is what the gate has
 # historically completed within; the batches that exceed it exceed 7200s too, so
 # a larger number buys a longer wait rather than a proof.
+#
+# Two 2026-09-28 full-gate runs at 3600s and 7200s stalled at the same
+# `model_routing::kani_proofs::fallback_selection_preserves_the_complete_publication_pin`
+# harness. A subsequent 240s isolated replay also stalled while expanding
+# ModelBinding/String admission inside a selector proof. Explicit unwind 16
+# still timed out; simply raising or partitioning this batch was not a fix.
+# The production selector is now payload-transparent and the proof calls that
+# same kernel with stack values. A focused replay finished 15/15 checks, with
+# 0.05s solver time; the real ModelCandidate instantiation has a separate unit
+# witness. The final-SHA full gate remains the release receipt authority.
 KANI_BATCH_TIMEOUT_CEILING_SECONDS = 1800
 
 BUDGETS = {

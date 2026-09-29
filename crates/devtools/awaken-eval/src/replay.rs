@@ -120,10 +120,10 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
         }
     }
 
-    let activation = RunActivation {
-        run_id: RunId(format!("eval-{}", case.id)),
-        thread_id: ThreadId(format!("eval-{}", case.id)),
-        snapshot: ExecutableAgentSnapshot {
+    let activation = RunActivation::new(
+        RunId(format!("eval-{}", case.id)),
+        ThreadId(format!("eval-{}", case.id)),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("eval".to_string()),
             metadata: Default::default(),
             root_agent_id: AgentId("eval".to_string()),
@@ -144,16 +144,12 @@ async fn replay(case: &Case) -> (String, bool, Vec<String>) {
             },
             fingerprint,
         },
-        input: vec![Message {
+        vec![Message {
             id: MessageId("eval-input".to_string()),
             role: Role::User,
             content: vec![ContentBlock::text(case.input.clone())],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    };
+    );
 
     let commit = Arc::new(MemoryCommitCoordinator::new(
         awaken_lease_contract::system_clock(),

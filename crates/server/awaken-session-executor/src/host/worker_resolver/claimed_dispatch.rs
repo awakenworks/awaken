@@ -51,6 +51,11 @@ impl HostWorkerResolver {
         publication_source: Arc<awaken_runtime_contract::StaticPublishedAgentSnapshots>,
     ) -> Result<Arc<awaken_dispatch::DispatchWorker<AnyDispatchStore>>, awaken_dispatch::Error>
     {
+        crate::agent_runner::validate_child_tool_configuration(
+            &claimed.request.activation.snapshot,
+            claimed.request.activation.inherited_toolsets(),
+        )
+        .map_err(|error| Self::execution_error(error.to_string()))?;
         let substrate = host
             .session_child_execution_substrate(&session_thread_id.0, None)
             .await
@@ -69,9 +74,13 @@ impl HostWorkerResolver {
         );
         let commit = substrate.commit;
         let adapters = host.child_execution_adapters(&session_thread_id.0, environment.clone());
-        let mut runtime =
-            crate::agent_runner::configure_child_native_runtime(runtime, snapshot, &adapters)
-                .map_err(|error| Self::execution_error(error.to_string()))?;
+        let mut runtime = crate::agent_runner::configure_child_native_runtime(
+            runtime,
+            snapshot,
+            claimed.request.activation.inherited_toolsets(),
+            &adapters,
+        )
+        .map_err(|error| Self::execution_error(error.to_string()))?;
         if let Some(delegation) = host
             .run_delegation(
                 &session_thread_id.0,
@@ -79,6 +88,8 @@ impl HostWorkerResolver {
                 commit.clone(),
                 Some(snapshot),
                 publication_source,
+                claimed.request.activation.inherited_toolsets().cloned(),
+                &snapshot.resolved_spec.plugin_config.agent.toolsets,
             )
             .map_err(Self::map_host_resolution_error)?
         {

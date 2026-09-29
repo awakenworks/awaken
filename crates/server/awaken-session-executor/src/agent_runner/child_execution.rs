@@ -251,14 +251,28 @@ pub(crate) async fn run_configured_agent_until_boundary(
     origin: DelegationOrigin,
     seed: Option<RunInput>,
     resume: Option<ResumeResult>,
-    context: RuntimeRunContext,
+    mut context: RuntimeRunContext,
     run_delegation: Option<Arc<dyn RunDelegationService>>,
     parent_thread_id: ThreadId,
     scheduler: Option<RunScheduler>,
     adapters: ChildExecutionAdapters,
 ) -> Result<AgentRunBoundary, AgentRunError> {
     let config = config.clone();
+    if resume.is_some() {
+        if let Some(ticket) = scheduler
+            .as_ref()
+            .and_then(RunScheduler::local_child_reader)
+            .or_else(|| context.reader.clone())
+            .and_then(|reader| reader.resume_ticket(&child_run_id))
+        {
+            context.inherited_toolsets = ticket.inherited_toolsets;
+        }
+    }
     let thread = child_run_id.0.clone();
+    super::child_attempt::validate_child_tool_configuration(
+        &config,
+        context.inherited_toolsets.as_ref(),
+    )?;
     let created = match &sandbox {
         AgentRunSandbox::Fresh(provider) => Some(
             provider
@@ -290,7 +304,12 @@ pub(crate) async fn run_configured_agent_until_boundary(
         &config.resolved_spec.plugin_config.agent.toolsets,
     );
     let runtime = build_runtime_with_authorization(llm, env, &authorization);
-    let mut runtime = configure_child_native_runtime(runtime, &config, &adapters)?;
+    let mut runtime = configure_child_native_runtime(
+        runtime,
+        &config,
+        context.inherited_toolsets.as_ref(),
+        &adapters,
+    )?;
     if let Some(service) = run_delegation {
         runtime = runtime.with_run_delegation(service);
     }
@@ -319,6 +338,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
             let (_, mut activation) = runtime.prepare(&config, thread, seed);
             activation.run_id = child_run_id.clone();
             activation.delegation_origin = Some(origin);
+            activation = activation.with_inherited_toolsets(context.inherited_toolsets.clone());
             Ok((Some(activation), None))
         }
         (None, Some(result)) => {
@@ -340,6 +360,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
                 Vec::new(),
             );
             activation.delegation_origin = Some(origin);
+            activation = activation.with_inherited_toolsets(context.inherited_toolsets.clone());
             Ok((
                 Some(activation),
                 Some(ResumeCommand::from_ticket(&ticket, result, 0)),
@@ -792,6 +813,12 @@ mod tests {
                 .with_commit(commit.clone())
                 .with_reader(commit)
                 .with_tool_executor(parent_executor.clone())
+                .with_inherited_toolsets(Some(
+                    awaken_runtime_contract::activation::InheritedToolsets::with_caller(
+                        Vec::new(),
+                        None,
+                    ),
+                ))
         };
         let model = |file_name: &str, inferences: Arc<AtomicUsize>| {
             Arc::new(SandboxWriteModel {

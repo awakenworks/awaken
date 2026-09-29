@@ -285,6 +285,9 @@ pub enum ModelCancellationObservation {
 
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
+    /// Process-local projection of the activation's frozen caller toolsets.
+    /// The activation, rather than this live wiring, owns recovery identity.
+    pub inherited_toolsets: Option<crate::activation::InheritedToolsets>,
     /// Authorized Workspace ownership for this attempt. The ingress/session
     /// boundary supplies the same [`awaken_tenancy::ExecutionScopeRef`] that is
     /// persisted on durable dispatch; tools may consume it as trusted execution
@@ -396,6 +399,14 @@ pub struct RuntimeRunContext {
 }
 
 impl RuntimeRunContext {
+    #[must_use]
+    pub fn with_inherited_toolsets(
+        mut self,
+        inherited: Option<crate::activation::InheritedToolsets>,
+    ) -> Self {
+        self.inherited_toolsets = inherited;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }

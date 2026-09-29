@@ -3167,13 +3167,6 @@ async fn pending_without_transcript_uses_awaiting_lifecycle_anchor() {
 
 #[tokio::test]
 async fn root_projection_and_reply_admission_share_one_recovery_prefix() {
-    // Causes: the fixtures below establish `root projection and reply admission share one recovery
-    // prefix` with the concrete inputs, state, dependencies, and failure triggers used by this
-    // case.
-    // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
-    // truth; live, warm, and cold projections may not diverge or mint a second lifecycle.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph: C0 the frozen root Agent declares `client_lookup`
     // as a custom client tool; C1 the root recovery snapshot contains
     // transcript, Awaiting lifecycle watermark, and one ResumeTicket; C2
@@ -3301,12 +3294,6 @@ async fn root_projection_and_reply_admission_share_one_recovery_prefix() {
 
 #[test]
 fn tool_reply_target_resolution_decision_table() {
-    // Causes: the fixtures below establish `tool reply target resolution decision table` with the
-    // concrete inputs, state, dependencies, and failure triggers used by this case.
-    // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
-    // truth; live, warm, and cold projections may not diverge or mint a second lifecycle.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
     // Resolver-kernel test: candidates are constructed directly to prove
     // exact identity consumption independently of today’s singular Runtime
     // ticket producer. The production constraint is tested immediately
@@ -3332,6 +3319,9 @@ fn tool_reply_target_resolution_decision_table() {
     // | R3 | legacy | root/child | T | one | - | E1 owner |
     // | R4 | legacy | any | T | many | - | E2 |
     // | R5 | either | any | F | any | any | E2 |
+    // | R10 | qualified | none | - | - | - | E2 no pending owner |
+    // R10 rejects replies without a committed pending owner. Host config H5
+    // proves real auto-deny emits no ticket; SDK A4 pins non-ask HTTP rejection.
     // | R6 | qualified | any | T | - | stale | E2 |
     // | R7 | qualified | same owner, two calls | T | - | current | E3 |
     // | R8 | qualified | same owner, duplicate/partial | T | - | current | E4 |
@@ -3511,6 +3501,17 @@ fn tool_reply_target_resolution_decision_table() {
         )
         .is_err(),
         "R5/E2 wrong reply kind"
+    );
+    let no_pending_owner = managed_tool_event_id(child_id, "child-source", "denied-call");
+    let no_owner = ManagedState::resolve_tool_reply(
+        session_id,
+        &no_pending_owner,
+        ToolReplyFamily::Confirmation,
+        &candidates,
+    );
+    assert!(
+        no_owner.is_err(),
+        "R10/E2 no pending owner cannot be confirmed"
     );
     let stale_child_id = managed_tool_event_id(child_id, "stale-source", "child-call");
     assert!(
@@ -4366,12 +4367,6 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
 
 #[tokio::test]
 async fn legacy_tool_reply_id_routes_one_pending_owner() {
-    // Causes: the fixtures below establish `legacy tool reply ids require one pending owner` with
-    // the concrete inputs, state, dependencies, and failure triggers used by this case.
-    // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
-    // truth; live, warm, and cold projections may not diverge or mint a second lifecycle.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph: C0=root and child freeze the same custom client
     // descriptor; C1=a pre-qualification reply carries only a Runtime call
     // id; C2=one child or both root+child currently expose the same

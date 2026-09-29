@@ -32,7 +32,10 @@ pub use brave::BraveSearchProvider;
 mod configuration;
 #[cfg(test)]
 use configuration::WebExecutionConfiguration;
-use configuration::url_matches_filter;
+use configuration::{
+    EffectiveWebFetchConfiguration, EffectiveWebSearchConfiguration, domains_permit_any_url,
+    url_matches_filters,
+};
 pub use configuration::{
     WebDomainFilter, WebFetchExecutionConfiguration, WebSearchExecutionConfiguration,
     WebSearchUserLocation, web_fetch_execution_configuration, web_search_execution_configuration,
@@ -109,7 +112,7 @@ pub trait WebFetchProvider: Send + Sync {
         &self,
         request: WebFetchRequest,
         credential: Option<&Credential>,
-        domain_filter: Option<&WebDomainFilter>,
+        domain_filters: &[WebDomainFilter],
     ) -> Result<String, ToolError>;
 }
 
@@ -242,290 +245,11 @@ impl std::fmt::Display for WebSearchRegistryError {
 
 impl std::error::Error for WebSearchRegistryError {}
 
-/// One authoritative source for provider discovery and dispatch.
-#[derive(Clone, Default)]
-pub struct WebSearchProviderRegistry {
-    providers: BTreeMap<String, RegisteredWebSearchProvider>,
-    fetch_providers: BTreeMap<String, RegisteredWebFetchProvider>,
-    server_search_providers: BTreeMap<String, WebServerToolProviderDescriptor>,
-    server_fetch_providers: BTreeMap<String, WebServerToolProviderDescriptor>,
-}
-
-#[derive(Clone)]
-struct RegisteredWebSearchProvider {
-    descriptor: WebSearchProviderDescriptor,
-    provider: Arc<dyn WebSearchProvider>,
-}
-
-#[derive(Clone)]
-struct RegisteredWebFetchProvider {
-    descriptor: WebFetchProviderDescriptor,
-    provider: Arc<dyn WebFetchProvider>,
-}
-
-fn validate_provider_descriptor(
-    id: &str,
-    label: &str,
-    options_schema: &Value,
-) -> Result<(), WebSearchRegistryError> {
-    if id.trim().is_empty()
-        || label.trim().is_empty()
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-        || !options_schema.is_object()
-    {
-        return Err(WebSearchRegistryError::InvalidDescriptor);
-    }
-    Ok(())
-}
-
-fn validate_web_credential_requirement(
-    requirement: &WebSearchCredentialRequirement,
-) -> Result<(), WebSearchRegistryError> {
-    match requirement {
-        WebSearchCredentialRequirement::None => Ok(()),
-        WebSearchCredentialRequirement::Exact(CredentialUsage::HttpHeader { name, .. })
-            if !name.trim().is_empty() =>
-        {
-            Ok(())
-        }
-        WebSearchCredentialRequirement::Exact(_) => Err(WebSearchRegistryError::InvalidDescriptor),
-    }
-}
-
-impl WebSearchProviderRegistry {
-    pub fn try_new(
-        providers: impl IntoIterator<Item = Arc<dyn WebSearchProvider>>,
-    ) -> Result<Self, WebSearchRegistryError> {
-        let mut registry = Self::default();
-        for provider in providers {
-            registry.register(provider)?;
-        }
-        Ok(registry)
-    }
-
-    pub fn builtins() -> Self {
-        let mut catalog = Self::try_new([
-            Arc::new(DuckDuckGoProvider) as Arc<dyn WebSearchProvider>,
-            Arc::new(BraveSearchProvider) as Arc<dyn WebSearchProvider>,
-        ])
-        .expect("built-in web-search provider descriptors are unique and valid");
-        catalog
-            .register_fetch(Arc::new(AwakenDirectFetchProvider))
-            .expect("built-in web-fetch provider descriptor is valid");
-        catalog
-            .register_server_search(openrouter_server_search_descriptor())
-            .expect("OpenRouter search descriptor is valid");
-        for descriptor in native_server_search_descriptors() {
-            catalog
-                .register_server_search(descriptor)
-                .expect("native search descriptor is valid");
-        }
-        catalog
-            .register_server_fetch(openrouter_server_fetch_descriptor())
-            .expect("OpenRouter fetch descriptor is valid");
-        catalog
-    }
-
-    /// Provider-server capabilities usable by hosted compositions without
-    /// installing the open direct/BYOK HTTP providers in that process.
-    pub fn server_builtins() -> Self {
-        let mut catalog = Self::default();
-        catalog
-            .register_server_search(openrouter_server_search_descriptor())
-            .expect("OpenRouter search descriptor is valid");
-        for descriptor in native_server_search_descriptors() {
-            catalog
-                .register_server_search(descriptor)
-                .expect("native search descriptor is valid");
-        }
-        catalog
-            .register_server_fetch(openrouter_server_fetch_descriptor())
-            .expect("OpenRouter fetch descriptor is valid");
-        catalog
-    }
-
-    pub fn register(
-        &mut self,
-        provider: Arc<dyn WebSearchProvider>,
-    ) -> Result<(), WebSearchRegistryError> {
-        let descriptor = provider.descriptor();
-        validate_provider_descriptor(
-            &descriptor.id,
-            &descriptor.label,
-            &descriptor.options_schema,
-        )?;
-        validate_web_credential_requirement(&descriptor.credential)?;
-        if self.providers.contains_key(&descriptor.id)
-            || self.server_search_providers.contains_key(&descriptor.id)
-        {
-            return Err(WebSearchRegistryError::DuplicateProvider(descriptor.id));
-        }
-        self.providers.insert(
-            descriptor.id.clone(),
-            RegisteredWebSearchProvider {
-                descriptor,
-                provider,
-            },
-        );
-        Ok(())
-    }
-
-    pub fn register_fetch(
-        &mut self,
-        provider: Arc<dyn WebFetchProvider>,
-    ) -> Result<(), WebSearchRegistryError> {
-        let descriptor = provider.descriptor();
-        validate_provider_descriptor(
-            &descriptor.id,
-            &descriptor.label,
-            &descriptor.options_schema,
-        )?;
-        validate_web_credential_requirement(&descriptor.credential)?;
-        if self.fetch_providers.contains_key(&descriptor.id)
-            || self.server_fetch_providers.contains_key(&descriptor.id)
-        {
-            return Err(WebSearchRegistryError::DuplicateProvider(descriptor.id));
-        }
-        self.fetch_providers.insert(
-            descriptor.id.clone(),
-            RegisteredWebFetchProvider {
-                descriptor,
-                provider,
-            },
-        );
-        Ok(())
-    }
-
-    fn register_server_search(
-        &mut self,
-        descriptor: WebServerToolProviderDescriptor,
-    ) -> Result<(), WebSearchRegistryError> {
-        validate_provider_descriptor(
-            &descriptor.id,
-            &descriptor.label,
-            &descriptor.options_schema,
-        )?;
-        if self.providers.contains_key(&descriptor.id)
-            || self.server_search_providers.contains_key(&descriptor.id)
-        {
-            return Err(WebSearchRegistryError::DuplicateProvider(descriptor.id));
-        }
-        self.server_search_providers
-            .insert(descriptor.id.clone(), descriptor);
-        Ok(())
-    }
-
-    fn register_server_fetch(
-        &mut self,
-        descriptor: WebServerToolProviderDescriptor,
-    ) -> Result<(), WebSearchRegistryError> {
-        validate_provider_descriptor(
-            &descriptor.id,
-            &descriptor.label,
-            &descriptor.options_schema,
-        )?;
-        if self.fetch_providers.contains_key(&descriptor.id)
-            || self.server_fetch_providers.contains_key(&descriptor.id)
-        {
-            return Err(WebSearchRegistryError::DuplicateProvider(descriptor.id));
-        }
-        self.server_fetch_providers
-            .insert(descriptor.id.clone(), descriptor);
-        Ok(())
-    }
-
-    pub fn descriptors(&self) -> Vec<WebSearchProviderDescriptor> {
-        self.providers
-            .values()
-            .map(|provider| provider.descriptor.clone())
-            .collect()
-    }
-
-    fn provider(&self, id: &str) -> Option<RegisteredWebSearchProvider> {
-        self.providers.get(id).cloned()
-    }
-
-    fn fetch_provider(&self, id: &str) -> Option<RegisteredWebFetchProvider> {
-        self.fetch_providers.get(id).cloned()
-    }
-
-    /// Secret-free authentication contract for one host-executed search
-    /// provider. Publication uses this same descriptor that dispatch uses.
-    #[must_use]
-    pub fn search_credential_requirement(
-        &self,
-        id: &str,
-    ) -> Option<WebSearchCredentialRequirement> {
-        self.providers
-            .get(id)
-            .map(|provider| provider.descriptor.credential.clone())
-    }
-
-    /// Secret-free authentication contract for one host-executed fetch
-    /// provider. Publication uses this same descriptor that dispatch uses.
-    #[must_use]
-    pub fn fetch_credential_requirement(&self, id: &str) -> Option<WebSearchCredentialRequirement> {
-        self.fetch_providers
-            .get(id)
-            .map(|provider| provider.descriptor.credential.clone())
-    }
-
-    /// JSON Schema is derived from the same descriptors dispatch uses. Each
-    /// provider becomes one branch, so paid providers require an exact pin while
-    /// free providers do not expose a meaningless credential field.
-    pub fn config_schema(&self) -> Value {
-        let mut descriptors = self.descriptors();
-        descriptors.sort_by_key(|provider| {
-            (
-                !matches!(provider.credential, WebSearchCredentialRequirement::None),
-                provider.id.clone(),
-            )
-        });
-        let host_variants = descriptors
-            .into_iter()
-            .map(|provider| {
-                host_target_schema(
-                    &provider.id,
-                    &provider.label,
-                    &provider.credential,
-                    provider.options_schema,
-                )
-            })
-            .collect::<Vec<_>>();
-        route_plan_schema(
-            "Web search",
-            host_variants,
-            self.server_search_providers.values().cloned().collect(),
-        )
-    }
-
-    pub fn fetch_config_schema(&self) -> Value {
-        let mut descriptors = self
-            .fetch_providers
-            .values()
-            .map(|provider| provider.descriptor.clone())
-            .collect::<Vec<_>>();
-        descriptors.sort_by_key(|provider| provider.id.clone());
-        let host_variants = descriptors
-            .into_iter()
-            .map(|provider| {
-                host_target_schema(
-                    &provider.id,
-                    &provider.label,
-                    &provider.credential,
-                    provider.options_schema,
-                )
-            })
-            .collect();
-        route_plan_schema(
-            "Web fetch",
-            host_variants,
-            self.server_fetch_providers.values().cloned().collect(),
-        )
-    }
-}
+mod registry;
+pub use registry::WebSearchProviderRegistry;
+#[cfg(test)]
+use registry::validate_web_credential_requirement;
+use registry::{RegisteredWebFetchProvider, RegisteredWebSearchProvider};
 
 fn host_target_schema(
     id: &str,
@@ -653,7 +377,7 @@ pub struct WebSearchArgs {
 struct WebSearchTool {
     targets: Vec<ConfiguredSearchTarget>,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
-    execution_configuration: Option<WebSearchExecutionConfiguration>,
+    execution_configuration: Option<EffectiveWebSearchConfiguration>,
 }
 
 struct ConfiguredSearchTarget {
@@ -666,7 +390,7 @@ impl WebSearchTool {
     fn configured(
         targets: Vec<(RegisteredWebSearchProvider, WebProviderTarget)>,
         credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
-        execution_configuration: Option<WebSearchExecutionConfiguration>,
+        execution_configuration: Option<EffectiveWebSearchConfiguration>,
     ) -> Self {
         Self {
             targets: targets
@@ -702,6 +426,15 @@ impl Tool for WebSearchTool {
     const DESCRIPTION: &'static str = "Search the web through the configured platform provider";
 
     async fn call(&self, args: WebSearchArgs) -> Result<String, ToolError> {
+        if self
+            .execution_configuration
+            .as_ref()
+            .is_some_and(|policy| !domains_permit_any_url(&policy.domains))
+        {
+            return Err(ToolError::DefinitiveFailure(
+                "url_not_allowed: no domain is permitted by the combined web_search policy".into(),
+            ));
+        }
         let mut last_unavailable = None;
         for target in &self.targets {
             let credential = resolve_credential(
@@ -732,13 +465,14 @@ impl Tool for WebSearchTool {
                     let results = match self
                         .execution_configuration
                         .as_ref()
-                        .and_then(|configuration| configuration.domains.as_ref())
+                        .map(|configuration| &configuration.domains)
+                        .filter(|domains| !domains.is_empty())
                     {
                         Some(filter) => results
                             .into_iter()
                             .filter(|result| {
                                 url::Url::parse(&result.url)
-                                    .is_ok_and(|url| url_matches_filter(&url, filter))
+                                    .is_ok_and(|url| url_matches_filters(&url, filter))
                             })
                             .collect(),
                         None => results,
@@ -790,7 +524,7 @@ async fn resolve_credential(
 pub struct WebSearchPlugin {
     registry: WebSearchProviderRegistry,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
-    execution_configuration: Option<WebSearchExecutionConfiguration>,
+    execution_configuration: Option<EffectiveWebSearchConfiguration>,
 }
 
 enum ConfiguredWebRoute<T> {
@@ -824,8 +558,19 @@ impl WebSearchPlugin {
         mut self,
         configuration: Option<WebSearchExecutionConfiguration>,
     ) -> Self {
-        self.execution_configuration = configuration;
+        self.execution_configuration = configuration.map(Into::into);
         self
+    }
+
+    /// Configure the one WebSearch realization from the Run's frozen callers.
+    pub fn with_inherited_execution_configuration(
+        mut self,
+        own: Option<WebSearchExecutionConfiguration>,
+        inherited: &awaken_runtime_contract::activation::InheritedToolsets,
+    ) -> Result<Self, String> {
+        self.execution_configuration =
+            configuration::effective_search_configuration(own, inherited)?;
+        Ok(self)
     }
 
     fn configured_provider(
@@ -852,7 +597,7 @@ impl WebSearchPlugin {
             if self
                 .execution_configuration
                 .as_ref()
-                .is_some_and(|policy| policy.domains.is_some() || policy.user_location.is_some())
+                .is_some_and(|policy| !policy.domains.is_empty() || policy.user_location.is_some())
             {
                 return Err(PluginConfigError::new(
                     WEB_SEARCH_PLUGIN_ID,
@@ -960,6 +705,14 @@ impl WebSearchPlugin {
                 erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
             ),
         };
+        let mut descriptor = descriptor;
+        if self
+            .execution_configuration
+            .as_ref()
+            .is_some_and(|policy| !domains_permit_any_url(&policy.domains))
+        {
+            descriptor.description.push_str(" No domain is permitted by the combined policy; every call returns url_not_allowed.");
+        }
         Ok((descriptor, tool))
     }
 }
@@ -1105,7 +858,7 @@ pub fn web_fetch_descriptor() -> ToolDescriptor {
 pub struct WebFetchPlugin {
     registry: WebSearchProviderRegistry,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
-    execution_configuration: Option<WebFetchExecutionConfiguration>,
+    execution_configuration: Option<EffectiveWebFetchConfiguration>,
 }
 
 impl WebFetchPlugin {
@@ -1125,8 +878,19 @@ impl WebFetchPlugin {
         mut self,
         configuration: Option<WebFetchExecutionConfiguration>,
     ) -> Self {
-        self.execution_configuration = configuration;
+        self.execution_configuration = configuration.map(Into::into);
         self
+    }
+
+    /// Configure the one WebFetch realization from the Run's frozen callers.
+    pub fn with_inherited_execution_configuration(
+        mut self,
+        own: Option<WebFetchExecutionConfiguration>,
+        inherited: &awaken_runtime_contract::activation::InheritedToolsets,
+    ) -> Result<Self, String> {
+        self.execution_configuration =
+            configuration::effective_fetch_configuration(own, inherited)?;
+        Ok(self)
     }
 
     pub fn default_config() -> Value {
@@ -1153,7 +917,7 @@ impl WebFetchPlugin {
                 ));
             }
             if self.execution_configuration.as_ref().is_some_and(|policy| {
-                policy.domains.is_some() || policy.max_content_tokens.is_some()
+                !policy.domains.is_empty() || policy.max_content_tokens.is_some()
             }) {
                 return Err(PluginConfigError::new(
                     WEB_FETCH_PLUGIN_ID,
@@ -1182,8 +946,7 @@ impl WebFetchPlugin {
             if self
                 .execution_configuration
                 .as_ref()
-                .and_then(|configuration| configuration.domains.as_ref())
-                .is_some()
+                .is_some_and(|configuration| !configuration.domains.is_empty())
                 && !provider.provider.enforces_domain_filter()
             {
                 return Err(PluginConfigError::new(
@@ -1239,7 +1002,17 @@ impl WebFetchPlugin {
                     })
                     .collect();
                 Ok((
-                    web_fetch_descriptor(),
+                    {
+                        let mut descriptor = web_fetch_descriptor();
+                        if self
+                            .execution_configuration
+                            .as_ref()
+                            .is_some_and(|policy| !domains_permit_any_url(&policy.domains))
+                        {
+                            descriptor.description.push_str(" No domain is permitted by the combined policy; every call returns url_not_allowed.");
+                        }
+                        descriptor
+                    },
                     erase_for(
                         RoutedWebFetchTool {
                             targets,
@@ -1298,7 +1071,7 @@ struct ConfiguredFetchTarget {
 struct RoutedWebFetchTool {
     targets: Vec<ConfiguredFetchTarget>,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
-    execution_configuration: Option<WebFetchExecutionConfiguration>,
+    execution_configuration: Option<EffectiveWebFetchConfiguration>,
 }
 
 #[async_trait]
@@ -1330,13 +1103,13 @@ impl Tool for RoutedWebFetchTool {
                 url: args.url.clone(),
                 options: target.config.options.clone(),
             };
-            let domain_filter = self
+            let domain_filters = self
                 .execution_configuration
                 .as_ref()
-                .and_then(|configuration| configuration.domains.as_ref());
+                .map_or(&[][..], |configuration| configuration.domains.as_slice());
             let result = target
                 .provider
-                .fetch(request, credential.as_ref(), domain_filter)
+                .fetch(request, credential.as_ref(), domain_filters)
                 .await;
             match result {
                 Ok(mut body) => {
@@ -1482,6 +1255,224 @@ mod tests {
 
     struct FakeFetchProvider {
         seen_requests: Mutex<Vec<WebFetchRequest>>,
+        seen_filters: Mutex<Vec<Vec<WebDomainFilter>>>,
+    }
+
+    #[tokio::test]
+    async fn inherited_policy_controls_provider_dispatch_and_empty_domain_descriptions() {
+        // Causes: C1 only the caller has a list; C2 own allow and caller block;
+        // C3 own/caller allows are disjoint; C4 provider cannot enforce policy;
+        // C5 a caller supplies location. Effects: I1 caller-only policy is active;
+        // I2 allowed fetch dispatches once with every filter, blocked fetch has
+        // zero additional dispatch; I3 empty intersections keep the tool with
+        // an explanatory descriptor but return url_not_allowed without I/O;
+        // I4 incompatible realization is refused; I5 location reaches provider
+        // and blocked search results are omitted. Both allow and refusal are
+        // witnessed, including an explicit unrestricted source.
+        use awaken_runtime_contract::activation::InheritedToolsets;
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        };
+        let inherited = |name: &str, value| {
+            InheritedToolsets::with_caller(
+                vec![ToolsetPolicy {
+                    source: ToolsetSource::Agent,
+                    default: ToolExecutionPolicy::default(),
+                    overrides: vec![ToolPolicyOverride::with_optional_configuration(
+                        name,
+                        ToolExecutionPolicy::default(),
+                        Some(value),
+                    )],
+                }],
+                None,
+            )
+        };
+        let provider = Arc::new(FakeFetchProvider {
+            seen_requests: Mutex::new(Vec::new()),
+            seen_filters: Mutex::new(Vec::new()),
+        });
+        let mut registry = WebSearchProviderRegistry::builtins();
+        registry.register_fetch(provider.clone()).unwrap();
+        let allow = inherited(
+            "web_fetch",
+            json!({"type":"web_fetch","domains":{"type":"allow","domains":["example.com"]}}),
+        );
+        let caller_only = WebFetchPlugin::new(registry.clone(), None)
+            .with_inherited_execution_configuration(None, &allow)
+            .unwrap();
+        let (_, tool) = caller_only
+            .configured_tool(Some(&json!({"provider_id":"fetch-probe","options":{}})))
+            .unwrap();
+        let call = |url: &str| ToolCall {
+            call_id: "inherited-fetch".into(),
+            tool_id: "web_fetch".into(),
+            arguments: json!({"url":url}),
+        };
+        assert_eq!(
+            tool.invoke(call("https://docs.example.com/"))
+                .await
+                .unwrap()
+                .text(),
+            "abcdef",
+            "I1 allowed"
+        );
+        assert!(
+            tool.invoke(call("https://example.net/"))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("url_not_allowed"),
+            "I1 refused"
+        );
+        assert_eq!(
+            provider.seen_requests.lock().unwrap().len(),
+            1,
+            "I1 no refused dispatch"
+        );
+        let blocked = inherited(
+            "web_fetch",
+            json!({"type":"web_fetch","domains":{"type":"block","domains":["ads.example.com"]}}),
+        );
+        let plugin = WebFetchPlugin::new(registry.clone(), None)
+            .with_inherited_execution_configuration(
+                Some(WebFetchExecutionConfiguration {
+                    domains: Some(WebDomainFilter::Allow(vec!["example.com".into()])),
+                    max_content_tokens: None,
+                }),
+                &blocked,
+            )
+            .unwrap();
+        let (_, tool) = plugin
+            .configured_tool(Some(&json!({"provider_id":"fetch-probe","options":{}})))
+            .unwrap();
+        tool.invoke(call("https://docs.example.com/"))
+            .await
+            .unwrap();
+        assert_eq!(
+            provider.seen_filters.lock().unwrap().last().unwrap().len(),
+            2,
+            "I2 complete transport policy"
+        );
+        assert!(
+            tool.invoke(call("https://ads.example.com/")).await.is_err(),
+            "I2 blocked"
+        );
+        assert_eq!(
+            provider.seen_requests.lock().unwrap().len(),
+            2,
+            "I2 no blocked I/O"
+        );
+        let plugin = WebFetchPlugin::new(registry.clone(), None)
+            .with_inherited_execution_configuration(
+                Some(WebFetchExecutionConfiguration {
+                    domains: Some(WebDomainFilter::Allow(vec!["example.net".into()])),
+                    max_content_tokens: None,
+                }),
+                &allow,
+            )
+            .unwrap();
+        let (descriptor, tool) = plugin
+            .configured_tool(Some(&json!({"provider_id":"fetch-probe","options":{}})))
+            .unwrap();
+        assert!(
+            descriptor.description.contains("No domain is permitted"),
+            "I3 model informed"
+        );
+        assert!(
+            tool.invoke(call("https://example.net/"))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("url_not_allowed"),
+            "I3 error code"
+        );
+        assert_eq!(
+            provider.seen_requests.lock().unwrap().len(),
+            2,
+            "I3 no dispatch"
+        );
+        assert!(
+            caller_only
+                .configured_tool(Some(&json!({"provider_id":"openrouter","options":{}})))
+                .is_err(),
+            "I4 caller-only restriction blocks unsupported realization"
+        );
+        let provider = fake_provider("inherited-search", false);
+        let registry =
+            WebSearchProviderRegistry::try_new([provider.clone() as Arc<dyn WebSearchProvider>])
+                .unwrap();
+        let search = inherited(
+            "web_search",
+            json!({"type":"web_search","domains":{"type":"block","domains":["result.test"]},"user_location":{"country":"SG"}}),
+        );
+        let plugin = WebSearchPlugin::new(registry.clone(), None)
+            .with_inherited_execution_configuration(None, &search)
+            .unwrap();
+        let (_, tool) = plugin
+            .configured_tool(Some(
+                &json!({"provider_id":"inherited-search","options":{}}),
+            ))
+            .unwrap();
+        let call = || ToolCall {
+            call_id: "inherited-search".into(),
+            tool_id: "web_search".into(),
+            arguments: json!({"query":"policy"}),
+        };
+        assert_eq!(
+            tool.invoke(call()).await.unwrap().text(),
+            "no web-search results",
+            "I5 result omitted"
+        );
+        assert_eq!(
+            provider
+                .seen_request
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .user_location
+                .as_ref()
+                .unwrap()
+                .country
+                .as_deref(),
+            Some("SG"),
+            "I5 inherited location"
+        );
+        *provider.seen_request.lock().unwrap() = None;
+        let search = inherited(
+            "web_search",
+            json!({"type":"web_search","domains":{"type":"allow","domains":["example.com"]}}),
+        );
+        let plugin = WebSearchPlugin::new(registry, None)
+            .with_inherited_execution_configuration(
+                Some(WebSearchExecutionConfiguration {
+                    domains: Some(WebDomainFilter::Allow(vec!["example.net".into()])),
+                    user_location: None,
+                }),
+                &search,
+            )
+            .unwrap();
+        let (descriptor, tool) = plugin
+            .configured_tool(Some(
+                &json!({"provider_id":"inherited-search","options":{}}),
+            ))
+            .unwrap();
+        assert!(
+            descriptor.description.contains("No domain is permitted"),
+            "I3 search description"
+        );
+        assert!(
+            tool.invoke(call())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("url_not_allowed"),
+            "I3 search error"
+        );
+        assert!(
+            provider.seen_request.lock().unwrap().is_none(),
+            "I3 no search dispatch"
+        );
     }
 
     #[test]
@@ -1594,9 +1585,13 @@ mod tests {
             &self,
             request: WebFetchRequest,
             _credential: Option<&Credential>,
-            _domain_filter: Option<&WebDomainFilter>,
+            domain_filters: &[WebDomainFilter],
         ) -> Result<String, ToolError> {
             self.seen_requests.lock().unwrap().push(request);
+            self.seen_filters
+                .lock()
+                .unwrap()
+                .push(domain_filters.to_vec());
             Ok("abcdef".into())
         }
     }
@@ -1808,6 +1803,7 @@ mod tests {
 
         let fetch_provider = Arc::new(FakeFetchProvider {
             seen_requests: Mutex::new(Vec::new()),
+            seen_filters: Mutex::new(Vec::new()),
         });
         let mut fetch_registry = WebSearchProviderRegistry::default();
         fetch_registry

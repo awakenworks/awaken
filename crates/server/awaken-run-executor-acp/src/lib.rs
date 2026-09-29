@@ -1064,6 +1064,7 @@ impl AcpRunExecutor {
                         },
                     )
                     .with_delegation_origin(activation.delegation_origin.clone())
+                    .with_inherited_toolsets(activation.inherited_toolsets().cloned())
                     .with_data_subject(
                         activation
                             .data_subject_id
@@ -1482,6 +1483,7 @@ fn pause_ticket(activation: &RunActivation, run_id: &RunId, reason: PauseReason)
         AwaitTarget::Pause(reason),
     )
     .with_delegation_origin(activation.delegation_origin.clone())
+    .with_inherited_toolsets(activation.inherited_toolsets().cloned())
     .with_data_subject(
         activation
             .data_subject_id

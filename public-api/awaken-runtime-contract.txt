@@ -117,6 +117,7 @@ pub use awaken_runtime_contract::tool_batch
 pub use awaken_runtime_contract::tool_discovery
 pub use awaken_runtime_contract::tool_execution_waves
 pub mod awaken_runtime_contract::activation
+pub use awaken_runtime_contract::activation::InheritedToolsets
 pub struct awaken_runtime_contract::activation::RunActivation
 pub awaken_runtime_contract::activation::RunActivation::data_subject_id: core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>
 pub awaken_runtime_contract::activation::RunActivation::delegation_origin: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>
@@ -125,15 +126,19 @@ pub awaken_runtime_contract::activation::RunActivation::model_ref_override: core
 pub awaken_runtime_contract::activation::RunActivation::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::activation::RunActivation::snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub awaken_runtime_contract::activation::RunActivation::thread_id: awaken_agent_contract::agent::thread::Id
-pub awaken_runtime_contract::activation::RunActivation::tool_capability_narrowing: awaken_runtime_contract::permission::ToolCapabilityNarrowing
 impl awaken_runtime_contract::activation::RunActivation
 pub fn awaken_runtime_contract::activation::RunActivation::effective_model_ref(&self) -> &str
+pub fn awaken_runtime_contract::activation::RunActivation::inherited_toolsets(&self) -> core::option::Option<&awaken_agent_contract::toolset::InheritedToolsets>
 pub fn awaken_runtime_contract::activation::RunActivation::narrow_context(&self, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::runtime_context::RuntimeRunContext
+pub fn awaken_runtime_contract::activation::RunActivation::narrow_tools(self, awaken_runtime_contract::permission::ToolCapabilityNarrowing) -> core::result::Result<Self, &'static str>
 pub fn awaken_runtime_contract::activation::RunActivation::new(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
+pub const fn awaken_runtime_contract::activation::RunActivation::tool_capability_narrowing(&self) -> awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub fn awaken_runtime_contract::activation::RunActivation::with_data_subject(self, core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>) -> Self
 pub fn awaken_runtime_contract::activation::RunActivation::with_delegation_origin(self, awaken_agent_contract::agent::delegation::DelegationOrigin) -> Self
+pub fn awaken_runtime_contract::activation::RunActivation::with_inherited_toolsets(self, core::option::Option<awaken_agent_contract::toolset::InheritedToolsets>) -> Self
 pub fn awaken_runtime_contract::activation::RunActivation::with_model_ref_override(self, core::option::Option<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::activation::RunActivation::without_tools(self) -> Self
+pub const awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY: &str
 pub mod awaken_runtime_contract::agent_bindings
 pub use awaken_runtime_contract::agent_bindings::ToolExecutionPolicy
 pub use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement
@@ -889,7 +894,7 @@ pub async fn awaken_runtime_contract::model_operation::with_model_invocation_con
 pub async fn awaken_runtime_contract::model_operation::with_model_operation_context<T>(core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>, impl core::future::future::Future<Output = T>) -> T
 pub mod awaken_runtime_contract::model_routing
 pub fn awaken_runtime_contract::model_routing::exact_candidate_identity(&awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> bool
-pub fn awaken_runtime_contract::model_routing::pinned_candidate_at<'a>(&'a awaken_runtime_contract::resolved::ResolvedModelCandidate, &'a [awaken_runtime_contract::resolved::ResolvedModelCandidate], usize) -> core::option::Option<&'a awaken_runtime_contract::resolved::ResolvedModelCandidate>
+pub fn awaken_runtime_contract::model_routing::pinned_candidate_at<'a, T>(&'a T, &'a [T], usize) -> core::option::Option<&'a T>
 pub const fn awaken_runtime_contract::model_routing::route_pin_axes_are_exact(bool, bool, bool, bool) -> bool
 pub mod awaken_runtime_contract::pause
 pub struct awaken_runtime_contract::pause::PauseSignal(_)
@@ -948,10 +953,12 @@ impl core::convert::From<awaken_runtime_contract::permission::RulingAuthority> f
 pub fn awaken_runtime_contract::permission::GateAuthority::from(awaken_runtime_contract::permission::RulingAuthority) -> Self
 pub enum awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured
+pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::ConfiguredWithInheritedToolsets
 pub awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
 impl awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub const fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::intersect(self, Self) -> Self
 pub fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::is_configured(&self) -> bool
+pub fn awaken_runtime_contract::permission::ToolCapabilityNarrowing::is_default(&self) -> bool
 pub enum awaken_runtime_contract::permission::ToolPermissionVerdict
 pub awaken_runtime_contract::permission::ToolPermissionVerdict::Allow
 pub awaken_runtime_contract::permission::ToolPermissionVerdict::Deny
@@ -1726,6 +1733,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::capture: awaken
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::credential::AttemptCredentialRealization>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::inherited_toolsets: core::option::Option<awaken_agent_contract::toolset::InheritedToolsets>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_cancellation_observation: awaken_runtime_contract::runtime_context::ModelCancellationObservation
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_content_materializer: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>>
@@ -1761,6 +1769,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_credential_realization(self, awaken_runtime_contract::credential::AttemptCredentialRealization) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_data_subject(self, awaken_runtime_contract::data_subject::DataSubjectId) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_inherited_toolsets(self, core::option::Option<awaken_agent_contract::toolset::InheritedToolsets>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_cancellation_observation(self, awaken_runtime_contract::runtime_context::ModelCancellationObservation) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_content_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>) -> Self
@@ -2378,13 +2387,16 @@ pub awaken_runtime_contract::RunActivation::model_ref_override: core::option::Op
 pub awaken_runtime_contract::RunActivation::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::RunActivation::snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub awaken_runtime_contract::RunActivation::thread_id: awaken_agent_contract::agent::thread::Id
-pub awaken_runtime_contract::RunActivation::tool_capability_narrowing: awaken_runtime_contract::permission::ToolCapabilityNarrowing
 impl awaken_runtime_contract::activation::RunActivation
 pub fn awaken_runtime_contract::activation::RunActivation::effective_model_ref(&self) -> &str
+pub fn awaken_runtime_contract::activation::RunActivation::inherited_toolsets(&self) -> core::option::Option<&awaken_agent_contract::toolset::InheritedToolsets>
 pub fn awaken_runtime_contract::activation::RunActivation::narrow_context(&self, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::runtime_context::RuntimeRunContext
+pub fn awaken_runtime_contract::activation::RunActivation::narrow_tools(self, awaken_runtime_contract::permission::ToolCapabilityNarrowing) -> core::result::Result<Self, &'static str>
 pub fn awaken_runtime_contract::activation::RunActivation::new(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
+pub const fn awaken_runtime_contract::activation::RunActivation::tool_capability_narrowing(&self) -> awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub fn awaken_runtime_contract::activation::RunActivation::with_data_subject(self, core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>) -> Self
 pub fn awaken_runtime_contract::activation::RunActivation::with_delegation_origin(self, awaken_agent_contract::agent::delegation::DelegationOrigin) -> Self
+pub fn awaken_runtime_contract::activation::RunActivation::with_inherited_toolsets(self, core::option::Option<awaken_agent_contract::toolset::InheritedToolsets>) -> Self
 pub fn awaken_runtime_contract::activation::RunActivation::with_model_ref_override(self, core::option::Option<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::activation::RunActivation::without_tools(self) -> Self
 pub struct awaken_runtime_contract::RunDelegations
@@ -2405,6 +2417,7 @@ pub awaken_runtime_contract::RuntimeRunContext::capture: awaken_runtime_contract
 pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::credential::AttemptCredentialRealization>
 pub awaken_runtime_contract::RuntimeRunContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
+pub awaken_runtime_contract::RuntimeRunContext::inherited_toolsets: core::option::Option<awaken_agent_contract::toolset::InheritedToolsets>
 pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::RuntimeRunContext::model_cancellation_observation: awaken_runtime_contract::runtime_context::ModelCancellationObservation
 pub awaken_runtime_contract::RuntimeRunContext::model_content_materializer: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>>
@@ -2440,6 +2453,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_credential_realization(self, awaken_runtime_contract::credential::AttemptCredentialRealization) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_data_subject(self, awaken_runtime_contract::data_subject::DataSubjectId) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_inherited_toolsets(self, core::option::Option<awaken_agent_contract::toolset::InheritedToolsets>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_cancellation_observation(self, awaken_runtime_contract::runtime_context::ModelCancellationObservation) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_content_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::ModelContentMaterializer>) -> Self

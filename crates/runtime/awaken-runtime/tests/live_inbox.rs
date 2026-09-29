@@ -121,20 +121,16 @@ fn runtime() -> Runtime {
 }
 
 fn activation(run_id: &str, text: &str) -> RunActivation {
-    RunActivation {
-        run_id: RunId(run_id.to_string()),
-        thread_id: ThreadId("thread-1".to_string()),
-        snapshot: snapshot(),
-        input: vec![Message {
+    RunActivation::new(
+        RunId(run_id.to_string()),
+        ThreadId("thread-1".to_string()),
+        snapshot(),
+        vec![Message {
             id: MessageId(format!("{run_id}-input")),
             role: Role::User,
             content: vec![ContentBlock::text(text)],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    }
+    )
 }
 
 fn queued(text: &str) -> Message {

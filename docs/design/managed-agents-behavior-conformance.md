@@ -79,10 +79,11 @@ Each was found by reading one layer further down. The lesson worth keeping is
 that a rule measured at the wrong layer reports a gap that is not there, and the
 measurement looks identical either way.
 
-## Runtime semantics still uncovered
+## Runtime semantics and evidence
 
-Session-scoped, so neither owner above reaches them. Listed here rather than in a
-baseline, because a baseline entry implies something checks it.
+These Session-scoped rules cross roster admission, committed execution input,
+tool realization, and public events. Each claim below names its current owner
+and its executed evidence or states the remaining qualification boundary.
 
 - **`auto` sees no session content.** CMA evaluates each call over "tool + input
   + session content so far" and may deny it as high-risk.
@@ -98,22 +99,67 @@ baseline, because a baseline entry implies something checks it.
   evaluator there is nothing for the rule to range over, so this surface does not
   violate it - it cannot express it. The rule becomes load-bearing the moment an
   evaluator that reads session content is injected.
-- **Web domain lists do not compose.** CMA's one genuinely composing rule is
-  `allowed_domains` / `blocked_domains` along the path to a thread - allow-lists
-  intersect, block-lists union, "a roster agent can narrow but never widen" -
-  while `max_content_tokens` and `user_location` deliberately do *not* combine
-  (own, then caller's, then coordinator's). This repository exposes all five as
-  configurable fields and has no composition step. A test belongs beside the
-  delegation runtime and must cover the non-combining pair, or it will encode
-  "intersect everything", which CMA explicitly is not.
+- **Web domain lists compose at execution, without changing the authored
+  singleton shape.** The extension still decodes each Agent's one
+  `WebDomainFilter::{Allow, Block}`. `RunActivation` freezes versioned caller
+  toolsets outside the publication; a committed `ResumeTicket` retains that same
+  input. Coordinated child admission reads the Session's current coordinator
+  tools, while ordinary delegation carries the caller and its ancestors. Direct
+  and recovered Native children install the same extension-owned effective
+  configuration. Every list applies to a URL: allow lists intersect by host/path
+  coverage and block lists accumulate. Fetch refuses outside URLs before network
+  I/O with `url_not_allowed`; search omits rejected results. An empty combined
+  allow region remains a configured tool, reports `url_not_allowed`, and tells
+  the model that no domain is permitted. `max_content_tokens` and
+  `user_location` take the first whole value stated by the child, then a caller,
+  then the coordinator. Existing redirect and provider-server capability fences
+  also activate for inherited-only restrictions.
+
+  The `web::configuration::tests` decision table covers parent/subdomain/path
+  intersections, mixed allow/block rules, disjoint lists, scalar precedence,
+  malformed input and a monotonicity property. The Web tool test witnesses
+  provider calls and zero-effect refusals; the child attempt test uses a real
+  loopback HTTP request both before and after activation serialization. Session
+  coordination tests freeze current settings on the next child admission while
+  retaining the previous dispatch. Root/child activations use a closed format
+  marker: an old decoder that ignores unknown fields still rejects the marker,
+  and an old registered Worker lacks the exact required capability. A selected
+  legacy child Web tool without reconstructable caller evidence fails closed.
+  ACP and remote child executions that select Web tools remain explicitly
+  unavailable until those adapters can enforce the same inherited policy;
+  capability selection cannot silently drop it.
+  The published Agent's `domains` value and fingerprint are never rewritten to
+  store this per-Run policy. Current `web_fetch_text_limit` counts bounded UTF-8
+  bytes; exact CMA token accounting remains a separate qualification, not a
+  claim inferred from the field name.
 - **`agent_with_overrides` propagation.** CMA applies session overrides to the
   coordinator and its `self` copies, never to a roster agent referenced by id.
-  The override surface exists here; the propagation rule is untested.
+  `project_effective_agent_publication` and `project_session_tool_override`
+  remain the single projector for matching coordinator identity; referenced
+  roster snapshots keep their own toolsets. The coordinated child admission
+  test pins the non-self case and the current coordinator source. This does not
+  constitute cross-product proof of every override field.
 - **`user.tool_confirmation` for a non-`ask` event.** CMA rejects it with a 400,
   including for a call denied under `auto`, so a client cannot override a denial.
-  Three attempts to trace the inbound validation found only the outbound
-  projection (`RecordedPermission::from_audit`, which is exact and fail-closed).
-  Not verified either way; not asserted either way.
+  The inbound owner is `state/events/admission.rs`, which builds candidates from
+  committed pending tickets and calls `resolve_tool_reply` in `recovery.rs`.
+  A call with no pending owner is rejected with `RunError::bad_request`.
+  R10 in `tool_reply_target_resolution_decision_table` pins the resolver rule.
+  Host config H5 uses the real Native Runtime and an injected auto-deny
+  evaluator to prove an error result with no tool side effect or pending ticket.
+  The official SDK A4 sends a confirmation for a real auto-allowed event and
+  observes HTTP 400. The shipped default auto evaluator never emits deny;
+  vendor-equivalent risk classification is not established by these tests.
+- **Session concurrency and shared budget already have owners.**
+  `SessionApplication` reserves 24 ordinary child slots because the public limit
+  includes the primary Thread; `coordinated_child_admission` exempts Advisor
+  Threads, and `enqueue_session_child` is the atomic dispatch admission owner.
+  `coordinated_agent_admission_preserves_activity_across_ambiguous_delivery`
+  pins the 24-slot command. The existing
+  `shared_budget_child_boundaries_project_with_terminal_priority_live_warm_and_cold`
+  table pins shared-budget projection across live, warm and cold views. Runtime
+  `DelegationLimits::max_parallel` is a different parent-Run budget and is not
+  evidence for this Session limit.
 
 ## Why a concurrency scanner is not the answer here
 

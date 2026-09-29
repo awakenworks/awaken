@@ -509,6 +509,8 @@ impl SharedHost {
         commit: Arc<crate::store::HostCommit>,
         parent_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         publication_source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+        inherited_toolsets: Option<awaken_runtime_contract::activation::InheritedToolsets>,
+        caller_toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
         let Some(parent_snapshot) = parent_snapshot else {
             return Ok(None);
@@ -549,7 +551,8 @@ impl SharedHost {
             workspace,
         )
         .map_err(|error| HostError::bad_request(error.to_string()))?
-        .with_scheduler(scheduler);
+        .with_scheduler(scheduler)
+        .with_tool_configuration(caller_toolsets.to_vec(), inherited_toolsets);
         Ok(Some(Arc::new(service)))
     }
 }

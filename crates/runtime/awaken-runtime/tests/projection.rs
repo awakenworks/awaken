@@ -62,10 +62,10 @@ async fn run() -> (MemoryCommitCoordinator, MemoryStreamSink) {
         .with_commit(commit.clone())
         .with_stream_sink(sink.clone());
 
-    let activation = RunActivation {
-        run_id: RunId("run-1".to_string()),
-        thread_id: ThreadId("thread-1".to_string()),
-        snapshot: ExecutableAgentSnapshot {
+    let activation = RunActivation::new(
+        RunId("run-1".to_string()),
+        ThreadId("thread-1".to_string()),
+        ExecutableAgentSnapshot {
             id: ExecutableAgentSnapshotId("snapshot-1".to_string()),
             metadata: Default::default(),
             root_agent_id: AgentId("agent-1".to_string()),
@@ -86,16 +86,12 @@ async fn run() -> (MemoryCommitCoordinator, MemoryStreamSink) {
             },
             fingerprint,
         },
-        input: vec![Message {
+        vec![Message {
             id: MessageId("m1".to_string()),
             role: Role::User,
             content: vec![ContentBlock::text("hi")],
         }],
-        delegation_origin: None,
-        model_ref_override: None,
-        data_subject_id: None,
-        tool_capability_narrowing: Default::default(),
-    };
+    );
     runtime.execute(activation, context).await.expect("runs");
     (
         Arc::try_unwrap(commit).unwrap_or_else(|shared| (*shared).clone()),

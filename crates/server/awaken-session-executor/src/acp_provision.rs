@@ -554,10 +554,10 @@ mod tests {
     fn activation(
         model: Option<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
     ) -> RunActivation {
-        RunActivation {
-            run_id: RunId("r".into()),
-            thread_id: ThreadId("th".into()),
-            snapshot: ExecutableAgentSnapshot {
+        RunActivation::new(
+            RunId("r".into()),
+            ThreadId("th".into()),
+            ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("s".into()),
                 metadata: Default::default(),
                 root_agent_id: AgentId("a".into()),
@@ -580,12 +580,8 @@ mod tests {
                 },
                 fingerprint: CatalogFingerprint("fp".into()),
             },
-            input: Vec::new(),
-            delegation_origin: None,
-            model_ref_override: None,
-            data_subject_id: None,
-            tool_capability_narrowing: Default::default(),
-        }
+            Vec::new(),
+        )
     }
 
     fn managed_candidate(

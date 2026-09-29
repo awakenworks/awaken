@@ -942,10 +942,10 @@ mod tests {
     }
 
     fn activation(backend_ref: &str) -> RunActivation {
-        RunActivation {
-            run_id: RunId("run-router".into()),
-            thread_id: ThreadId("thread-router".into()),
-            snapshot: ExecutableAgentSnapshot {
+        RunActivation::new(
+            RunId("run-router".into()),
+            ThreadId("thread-router".into()),
+            ExecutableAgentSnapshot {
                 id: ExecutableAgentSnapshotId("snapshot-router".into()),
                 metadata: Default::default(),
                 root_agent_id: AgentId("agent-router".into()),
@@ -966,12 +966,8 @@ mod tests {
                 },
                 fingerprint: CatalogFingerprint("snapshot-fingerprint".into()),
             },
-            input: vec![Message::text(MessageId("input".into()), Role::User, "go")],
-            delegation_origin: None,
-            model_ref_override: None,
-            data_subject_id: None,
-            tool_capability_narrowing: Default::default(),
-        }
+            vec![Message::text(MessageId("input".into()), Role::User, "go")],
+        )
     }
 
     fn resume(activation: &RunActivation) -> ResumeCommand {

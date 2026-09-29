@@ -315,9 +315,9 @@ impl WebFetchProvider for ManagedGatewayWebProvider {
         &self,
         request: WebFetchRequest,
         credential: Option<&Credential>,
-        domain_filter: Option<&WebDomainFilter>,
+        domain_filters: &[WebDomainFilter],
     ) -> Result<String, ToolError> {
-        if domain_filter.is_some() {
+        if !domain_filters.is_empty() {
             return Err(ToolError::DefinitiveFailure(
                 "managed WebFetch cannot enforce target redirect domain policy".into(),
             ));
@@ -476,7 +476,7 @@ mod tests {
                     options: json!({"route_ref":"web-fetch:direct@3"}),
                 },
                 None,
-                None,
+                &[],
             ),
         )
         .await
