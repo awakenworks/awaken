@@ -27,7 +27,8 @@ impl SharedHost {
                     ) =>
                 {
                     let current = retirement.owned.environment();
-                    Arc::ptr_eq(&current, environment) && current.handle() == environment.handle()
+                    Arc::ptr_eq(&current, environment)
+                        && current.lifecycle().handle() == environment.lifecycle().handle()
                 }
                 _ => false,
             })
@@ -285,7 +286,8 @@ impl SharedHost {
                 retiring.cause,
                 SessionEnvironmentRetirementCause::Terminal { .. }
             ) || binding != Some(retiring.owned.binding())
-                || environment.handle() != retiring.owned.environment().handle()
+                || environment.lifecycle().handle()
+                    != retiring.owned.environment().lifecycle().handle()
             {
                 return Err(HostError::unavailable_classified(
                     "session_terminal_environment_owner_changed",
@@ -320,7 +322,8 @@ impl SharedHost {
                         .read(thread, |slot| {
                             slot.environment_owner.resident().is_some_and(|current| {
                                 Arc::ptr_eq(&current, &environment)
-                                    && current.handle() == environment.handle()
+                                    && current.lifecycle().handle()
+                                        == environment.lifecycle().handle()
                             })
                         })
                         .unwrap_or(false);
@@ -346,7 +349,8 @@ impl SharedHost {
                 };
                 if let Some(candidate) = committed_candidate {
                     if !Arc::ptr_eq(&candidate.environment, &environment)
-                        || candidate.environment.handle() != environment.handle()
+                        || candidate.environment.lifecycle().handle()
+                            != environment.lifecycle().handle()
                     {
                         return Err(HostError::internal(
                             "terminal committed Candidate changed its exact Environment",
@@ -886,7 +890,7 @@ impl SharedHost {
                 .await?;
             let durable_handle = environment
                 .as_ref()
-                .map(|(environment, _)| environment.handle());
+                .map(|(environment, _)| environment.lifecycle().handle());
             let definitive_absence = environment.is_none();
             let prepared = PreparedBoundEnvironment::new(
                 environment,
@@ -1000,6 +1004,7 @@ impl SharedHost {
             for intent in &plan.intents {
                 self.terminal_cleanup_effect_fence(effect)?;
                 let files = environment
+                    .harvest()
                     .list_frozen_mount_files(intent.mount_path())
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
@@ -1049,6 +1054,7 @@ impl SharedHost {
             self.execution_authority.as_ref(),
         )?;
         environment
+            .lifecycle()
             .acknowledge_memory_reconciliation(&effect_fence, materializations, &authority)
             .await
             .map_err(|error| HostError::unavailable(error.to_string()))
@@ -1125,6 +1131,7 @@ impl SharedHost {
                 let provider_request =
                     crate::environment_continuation::provisioning_checkpoint_request(request);
                 environment
+                    .lifecycle()
                     .cleanup_checkpoint_for_terminal(
                         &provider_request,
                         store.as_ref(),

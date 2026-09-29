@@ -6,79 +6,13 @@
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 
-use super::SessionEnvironment;
+use super::SandboxEnvironment;
 
+use awaken_session_environment_contract::AgentProcessEnvironment;
 pub(crate) use awaken_session_environment_contract::{AgentFilesystemClient, AgentFilesystemView};
 
-/// Segregated capability needed by the ACP channel adapter. Keeping it beside
-/// the Session owner avoids teaching the neutral provisioning contract about
-/// async byte channels.
 #[async_trait]
-pub(crate) trait AgentSandbox: Send + Sync {
-    fn is_container(&self) -> bool;
-
-    /// Deployment-selected in-sandbox helper, shared with the Session Hand.
-    fn channel_helper(&self) -> Option<String> {
-        None
-    }
-
-    /// Whether a child runs as the trusted host user and can consume that user's
-    /// PATH/HOME-owned CLI identity. Namespace and container environments cannot
-    /// truthfully provide this without mounting/copying credentials.
-    fn supports_host_identity(&self) -> bool;
-
-    fn config_home(&self) -> String;
-
-    /// Jail-relative/interior path used to materialize the config home. This is
-    /// distinct from [`Self::config_home`] on the Workdir tier, where the child
-    /// sees an absolute host path but the file writer accepts only a logical
-    /// path below the Session root.
-    fn config_home_logical(&self) -> String;
-
-    /// Workspace path understood by the ACP agent inside this environment.
-    fn workspace_cwd(&self) -> String;
-
-    /// Derive every cwd/path projection from one validated Agent configuration.
-    fn filesystem_view(&self, working_directory: Option<&str>) -> AgentFilesystemView {
-        let workspace = self.workspace_cwd();
-        let (protocol_cwd, command_cwd) = working_directory.map_or_else(
-            || (workspace.clone(), workspace),
-            |relative| {
-                let logical = format!(
-                    "{}/{}",
-                    pc::WorkspaceLayout::ROOT.trim_end_matches('/'),
-                    relative
-                );
-                (logical.clone(), logical)
-            },
-        );
-        AgentFilesystemView {
-            protocol_cwd,
-            command_cwd,
-            prompt_paths: crate::managed_resource_projection::AgentPathView::sandbox_absolute(),
-        }
-    }
-
-    async fn materialize_inline(
-        &self,
-        logical: &str,
-        contents: &[u8],
-    ) -> Result<(), pc::SandboxError>;
-
-    async fn spawn_agent(
-        &self,
-        command: pc::Command,
-    ) -> Result<
-        (
-            Box<dyn pc::ProcessHandle>,
-            Box<dyn awaken_run_executor_acp::AgentChannelType>,
-        ),
-        pc::SandboxError,
-    >;
-}
-
-#[async_trait]
-impl AgentSandbox for SessionEnvironment {
+impl AgentProcessEnvironment for SandboxEnvironment {
     fn channel_helper(&self) -> Option<String> {
         match self {
             Self::Container { hand, .. } | Self::Namespace { hand, .. } => {
@@ -150,7 +84,7 @@ impl AgentSandbox for SessionEnvironment {
     ) -> Result<
         (
             Box<dyn pc::ProcessHandle>,
-            Box<dyn awaken_run_executor_acp::AgentChannelType>,
+            Box<dyn awaken_agent_channel::AgentChannel>,
         ),
         pc::SandboxError,
     > {

@@ -12,14 +12,32 @@ mod environment;
 mod lifecycle;
 mod provider;
 mod repository_realizer;
+mod roles;
 mod session_files;
 mod session_hand;
-pub(crate) use agent_sandbox::{AgentFilesystemClient, AgentFilesystemView, AgentSandbox};
-pub(crate) use environment::SessionEnvironment;
+pub(crate) use agent_sandbox::{AgentFilesystemClient, AgentFilesystemView};
+pub(crate) use awaken_session_environment_contract::SessionEnvironment;
+pub(crate) use environment::SandboxEnvironment;
 pub(crate) use provider::{ProviderEffect, SessionEnvironmentProvider};
 pub(crate) use session_hand::HandExecutorFactory;
 #[cfg(test)]
 pub(crate) use session_hand::UnusedHandExecutorFactory;
+
+/// Test access to the sandbox adapter behind a Session environment's role
+/// handles, for observability the roles deliberately do not offer.
+#[cfg(test)]
+pub(crate) trait SandboxEnvironmentAccess {
+    fn sandbox_environment(&self) -> &SandboxEnvironment;
+}
+
+#[cfg(test)]
+impl SandboxEnvironmentAccess for SessionEnvironment {
+    fn sandbox_environment(&self) -> &SandboxEnvironment {
+        self.origin()
+            .downcast_ref()
+            .expect("a sandbox-backed Session environment")
+    }
+}
 
 #[cfg(test)]
 mod tests;

@@ -83,10 +83,12 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )
         .await
         .expect("create the exact durable terminal-test Sandbox");
-    let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        physical,
-    ));
-    let binding = serde_json::to_string(&env.handle()).expect("encode terminal binding");
+    let env = Arc::new(
+        crate::session_environment::SandboxEnvironment::workdir(physical)
+            .into_session_environment(),
+    );
+    let binding =
+        serde_json::to_string(&env.lifecycle().handle()).expect("encode terminal binding");
     let environment_generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("t-end"),
         lease.epoch,
@@ -143,7 +145,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         _ => panic!("unknown terminal test row"),
     }
     assert_eq!(
-        env.status().await.expect("status"),
+        env.sandbox_environment().status().await.expect("status"),
         SandboxStatus::Ready,
         "the fenced sandbox workspace exists while the Session is live"
     );
@@ -262,7 +264,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             "U4 retains exact ownership"
         );
         assert_eq!(
-            env.status().await.unwrap(),
+            env.sandbox_environment().status().await.unwrap(),
             SandboxStatus::Ready,
             "U4 no physical delete"
         );
@@ -278,7 +280,10 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     let recovery = recovery.expect("recovery terminal preparation replay");
     assert_eq!(archive, recovery, "T1/E1 exact response-loss replay");
     assert_eq!(
-        env.status().await.expect("status after preparation"),
+        env.sandbox_environment()
+            .status()
+            .await
+            .expect("status after preparation"),
         SandboxStatus::Ready,
         "T1/E2 preparation cannot reap the workspace",
     );
@@ -287,7 +292,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             .read("t-end", |slot| {
                 matches!(&slot.environment_owner, crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
                     if Arc::ptr_eq(&retiring.owned.environment(), &env)
-                        && retiring.owned.environment().handle() == env.handle())
+                        && retiring.owned.environment().lifecycle().handle() == env.lifecycle().handle())
             })
             .unwrap_or(false),
         "T1/E2 exact owner is hidden from tools but retained for Disposal"
@@ -343,7 +348,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // ... and the sandbox is ACTUALLY disposed: its workspace dir was reaped, so a
     // subsequent status reports Terminated (proving dispose ran, not just an evict).
     assert_eq!(
-        env.status().await.expect("status"),
+        env.sandbox_environment().status().await.expect("status"),
         SandboxStatus::Terminated,
         "terminal cleanup disposes the sandbox (workspace reaped), unlike an evict-rebuild"
     );

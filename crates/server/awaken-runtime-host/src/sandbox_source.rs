@@ -22,7 +22,7 @@ pub use launch::{AcpLaunchRegistry, LaunchSource};
 /// Discovery, capability publication, placement, and environment realization are
 /// upstream responsibilities. This adapter only consumes their immutable result.
 pub(crate) struct BoundLocalChannelSource {
-    sandbox: Arc<dyn crate::session_environment::AgentSandbox>,
+    sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
     launch: LaunchSource,
     codec: awaken_run_executor_acp::Codec,
     backend: awaken_runtime_contract::resolved::Backend,
@@ -83,7 +83,7 @@ fn acp_mcp_projection_has_one_exact_authority() {
 
 impl BoundLocalChannelSource {
     pub(crate) fn from_environment(
-        sandbox: Arc<crate::session_environment::SessionEnvironment>,
+        sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
         launch: LaunchSource,
         backend: awaken_runtime_contract::resolved::Backend,
         mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
@@ -622,9 +622,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::session_environment::AgentSandbox for CapturingAgentSandbox {
+    impl awaken_session_environment_contract::AgentProcessEnvironment for CapturingAgentSandbox {
         fn is_container(&self) -> bool {
             self.container
+        }
+
+        fn channel_helper(&self) -> Option<String> {
+            // This fixture launches no in-sandbox helper.
+            None
         }
 
         fn supports_host_identity(&self) -> bool {
@@ -675,7 +680,7 @@ mod tests {
     }
 
     fn bound_projecting_source(
-        sandbox: Arc<dyn crate::session_environment::AgentSandbox>,
+        sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
         cli_id: &str,
     ) -> BoundLocalChannelSource {
         let cli = awaken_run_executor_acp::acp_cli(cli_id).expect("known ACP CLI");
@@ -777,8 +782,10 @@ mod tests {
         // authored paths are rejected by the Agent contract/resolver tests.
         // Decision rules: C2 absent=>E1; C2 configured=>E2+E3.
         let sandbox = Arc::new(CapturingAgentSandbox::local());
-        let default =
-            crate::session_environment::AgentSandbox::filesystem_view(sandbox.as_ref(), None);
+        let default = awaken_session_environment_contract::AgentProcessEnvironment::filesystem_view(
+            sandbox.as_ref(),
+            None,
+        );
         assert_eq!(default.command_cwd, "/workspace", "E1 process");
         assert_eq!(default.protocol_cwd, "/workspace", "E1 ACP");
         let cli = *awaken_run_executor_acp::acp_cli("codex").unwrap();

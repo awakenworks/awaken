@@ -373,7 +373,7 @@ impl SharedHost {
                     && let SessionEnvironmentOwner::Retiring(current) = &slot.environment_owner
                     && current.cause == SessionEnvironmentRetirementCause::RecoveryDiscard
                     && Arc::ptr_eq(&current.owned.environment(), expected)
-                    && current.owned.environment().handle() == expected.handle()
+                    && current.owned.environment().lifecycle().handle() == expected.lifecycle().handle()
                 {
                     (
                         ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,
@@ -386,7 +386,7 @@ impl SharedHost {
                         &slot.environment_owner,
                         SessionEnvironmentOwner::Resident(current)
                             if Arc::ptr_eq(&current.environment, expected)
-                                && current.environment.handle() == expected.handle()
+                                && current.environment.lifecycle().handle() == expected.lifecycle().handle()
                     )
                 {
                     (
@@ -514,7 +514,7 @@ impl SharedHost {
                 SessionEnvironmentOwner::Resident(owned)
                     if owned.identity == expected_identity
                         && owned.binding == source_binding
-                        && serde_json::to_string(&owned.environment.handle())
+                        && serde_json::to_string(&owned.environment.lifecycle().handle())
                             .is_ok_and(|binding| binding == source_binding) =>
                 {
                     Some(owned.environment.clone())
@@ -536,7 +536,7 @@ impl SharedHost {
     ) -> Option<awaken_provisioning_contract::SandboxHandle> {
         self.session_environment(thread)
             .await
-            .map(|env| env.handle())
+            .map(|env| env.lifecycle().handle())
     }
 
     /// Install only the process-local projection of durable Environment truth.
@@ -583,7 +583,7 @@ impl SharedHost {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) {
-        let binding = serde_json::to_string(&environment.handle())
+        let binding = serde_json::to_string(&environment.lifecycle().handle())
             .expect("test Environment handle serializes");
         let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
             thread,
@@ -700,14 +700,15 @@ impl SharedHost {
             })
             .transpose()?;
         if let Some(candidate) = &candidate
-            && (candidate.binding != encoded || candidate.environment.handle() != handle)
+            && (candidate.binding != encoded
+                || candidate.environment.lifecycle().handle() != handle)
         {
             return Err(HostError::internal(
                 "Session Environment retry conflicts with its hidden Candidate binding",
             ));
         }
         if let Some(environment) = resident.as_ref() {
-            let resident_handle = environment.handle();
+            let resident_handle = environment.lifecycle().handle();
             if resident_handle != handle {
                 return Err(HostError::internal(format!(
                     "Session {thread} is already bound to sandbox {}, not {}",
@@ -790,7 +791,7 @@ impl SharedHost {
             return Ok(());
         };
         let environment = retiring.owned.environment();
-        let handle = environment.handle();
+        let handle = environment.lifecycle().handle();
         let neutral_spec = self.session_environment_adoption_spec(thread, provider, None);
         let spec = provider
             .effective_adoption_layout(&neutral_spec, &handle)
@@ -1281,7 +1282,7 @@ impl SharedHost {
                 (!same_generation).then(|| environment.clone())
             }).flatten();
             let Some(environment) = selected else { return Ok(None) };
-            if !matches!(environment.as_ref(), crate::session_environment::SessionEnvironment::Workdir { sandbox, .. } if sandbox.has_scoped_execution()) {
+            if environment.scoped_execution().is_none() {
                 return Ok(None);
             }
             self.retire_current_environment(thread,
@@ -1294,7 +1295,7 @@ impl SharedHost {
             // Cancellation leaves the same Retiring owner for the next caller.
             let (mcp, execution) = tokio::join!(
                 self.drain_mcp_projections(thread, &[]),
-                environment.stop_bound_processes(),
+                environment.lifecycle().stop_bound_processes(),
             );
             mcp?;
             execution.map_err(|error| HostError::internal(error.to_string()))?;
@@ -1354,13 +1355,19 @@ impl SharedHost {
         thread: &str,
         retirement: &RetiringSessionEnvironment,
     ) -> Result<bool, HostError> {
+        use crate::session_environment::SandboxEnvironmentAccess as _;
         let environment = retirement.owned.environment();
         environment
+            .lifecycle()
             .stop_bound_processes()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        self.observe_retirement_status(thread, retirement, environment.status().await)
-            .map_err(|error| HostError::internal(error.to_string()))
+        self.observe_retirement_status(
+            thread,
+            retirement,
+            environment.sandbox_environment().status().await,
+        )
+        .map_err(|error| HostError::internal(error.to_string()))
     }
 
     async fn dispose_and_confirm_retirement(
@@ -1370,6 +1377,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         let environment = retirement.owned.environment();
         environment
+            .lifecycle()
             .dispose()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
@@ -1488,6 +1496,7 @@ impl SharedHost {
         )?;
         owned
             .environment
+            .lifecycle()
             .dispose_for_effect(authorization, &authority)
             .await
             .map_err(|error| HostError::unavailable(error.to_string()))?;
@@ -1592,6 +1601,7 @@ impl SharedHost {
                 _ => retirement
                     .owned
                     .environment()
+                    .lifecycle()
                     .stop_bound_processes()
                     .await
                     .map(|_| ())

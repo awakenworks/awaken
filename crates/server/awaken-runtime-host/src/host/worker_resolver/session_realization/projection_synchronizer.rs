@@ -410,6 +410,7 @@ mod tests {
     use crate::host::worker_resolver::test_support::{
         AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
+    use crate::session_environment::SandboxEnvironmentAccess as _;
     use awaken_sandbox_local::FilesystemHandleCodec as _;
     use std::sync::Arc;
 
@@ -897,8 +898,8 @@ mod tests {
                 .expect("DH1/SC1 exact owned Environment A")
         };
         let original = owned_environment();
-        let original_handle = original.handle();
-        let original_hand = original.tool_executor();
+        let original_handle = original.lifecycle().handle();
+        let original_hand = original.agent_tools().tool_executor();
         let mut memory_bytes = "seed".to_string();
         if !successor_cancellations.is_empty() {
             scoped_memory_edit(&original, &memory_bytes, "generation-1").await;
@@ -967,7 +968,7 @@ mod tests {
             ]);
             command.cwd = "/workspace".into();
             command.stdio = awaken_provisioning_contract::Stdio::Piped;
-            let (process, channel) = original.spawn_agent(command).await.unwrap();
+            let (process, channel) = original.agent_process().spawn_agent(command).await.unwrap();
             let ready = root_sentinel
                 .parent()
                 .unwrap()
@@ -1264,7 +1265,7 @@ mod tests {
                     host.session_environment(thread).await.is_none(),
                     "MC hidden owner"
                 );
-                assert_eq!(candidate.environment.handle(), original_handle);
+                assert_eq!(candidate.environment.lifecycle().handle(), original_handle);
                 for old in &retired {
                     assert!(!Arc::ptr_eq(old, &candidate.environment));
                     assert!(
@@ -1303,7 +1304,7 @@ mod tests {
             .session_environment(thread)
             .await
             .expect("DH1/E1-E2 fresh Resident Environment B");
-        let rebuilt_hand = rebuilt.tool_executor();
+        let rebuilt_hand = rebuilt.agent_tools().tool_executor();
         if !successor_cancellations.is_empty() {
             scoped_memory_edit(&rebuilt, &memory_bytes, "generation-final").await;
             assert_eq!(
@@ -1350,7 +1351,11 @@ mod tests {
             !Arc::ptr_eq(&original_hand, &rebuilt_hand),
             "DH1/E2 fresh Hand"
         );
-        assert_eq!(rebuilt.handle(), original_handle, "DH1/E3 typed handle");
+        assert_eq!(
+            rebuilt.lifecycle().handle(),
+            original_handle,
+            "DH1/E3 typed handle"
+        );
         assert!(root_sentinel.exists(), "DH1/E3 root sentinel survives");
         assert_eq!(
             std::fs::read(&root_sentinel).unwrap(),
@@ -1422,11 +1427,11 @@ mod tests {
         after: &str,
     ) {
         // Literal fixture bytes are positional arguments, never shell source.
-        let view = environment.agent_filesystem_view(
+        let view = environment.agent_tools().agent_filesystem_view(
             None,
             crate::session_environment::AgentFilesystemClient::AcpProcess,
         );
-        let handle = environment.handle();
+        let handle = environment.lifecycle().handle();
         let materializations = handle.memory_materializations().unwrap().unwrap();
         assert_eq!(materializations.len(), 1, "MC-M exact Copy participant");
         assert_eq!(materializations[0].mount_path, "/mnt/memory");
@@ -1442,7 +1447,11 @@ mod tests {
         ]);
         command.cwd = "/workspace".into();
         command.stdio = awaken_provisioning_contract::Stdio::Piped;
-        let (process, _channel) = environment.spawn_agent(command).await.unwrap();
+        let (process, _channel) = environment
+            .agent_process()
+            .spawn_agent(command)
+            .await
+            .unwrap();
         assert_eq!(
             process.wait().await.unwrap().code,
             Some(0),
@@ -1464,7 +1473,7 @@ mod tests {
         let mut command = awaken_provisioning_contract::Command::new(["/usr/bin/true"]);
         command.cwd = "/workspace".into();
         command.stdio = awaken_provisioning_contract::Stdio::Piped;
-        let (process, _channel) = environment.spawn_agent(command).await?;
+        let (process, _channel) = environment.agent_process().spawn_agent(command).await?;
         assert_eq!(
             process.wait().await?.code,
             Some(0),
@@ -1494,13 +1503,15 @@ mod tests {
         );
         assert!(
             environment
+                .lifecycle()
                 .handle()
                 .filesystem_physical_incarnation()
                 .expect("local V1 handle")
                 .is_none(),
             "fixture must exercise handle-equal V1 recreation"
         );
-        let binding = serde_json::to_string(&environment.handle()).expect("raw V1 binding");
+        let binding =
+            serde_json::to_string(&environment.lifecycle().handle()).expect("raw V1 binding");
         let sentinel = host
             .storage_dir()
             .expect("legacy fixture storage")
@@ -1564,8 +1575,8 @@ mod tests {
             .expect("CR1 install exact frozen publication before the legacy owner");
         let (original, raw_binding, retired_sentinel) =
             revoked_legacy_v1_environment(host.as_ref(), thread).await;
-        let original_handle = original.handle();
-        let original_hand = original.tool_executor();
+        let original_handle = original.lifecycle().handle();
+        let original_hand = original.agent_tools().tool_executor();
 
         // CR4 the legacy recovery fixture must also exercise real binding CAS,
         // not an unregistered claim previously hidden by the empty local slot.
@@ -1614,11 +1625,11 @@ mod tests {
         assert!(!Arc::ptr_eq(&original, &rebuilt), "CR1/E3 fresh Arc");
         assert_eq!(
             original_handle,
-            rebuilt.handle(),
+            rebuilt.lifecycle().handle(),
             "CR1/E4 V1 recreates the same logical handle"
         );
         assert!(
-            !Arc::ptr_eq(&original_hand, &rebuilt.tool_executor()),
+            !Arc::ptr_eq(&original_hand, &rebuilt.agent_tools().tool_executor()),
             "CR1/E3 same-id recreation publishes a fresh Hand"
         );
         assert!(
@@ -1738,7 +1749,11 @@ mod tests {
         );
 
         assert_eq!(
-            retiring.status().await.expect("RA1 retained owner status"),
+            retiring
+                .sandbox_environment()
+                .status()
+                .await
+                .expect("RA1 retained owner status"),
             awaken_provisioning_contract::SandboxStatus::Ready,
             "RA1/E2 rebuild disposal never ran"
         );

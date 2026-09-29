@@ -946,6 +946,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .await
         .expect("P1 retained Environment");
     let status = environment
+        .sandbox_environment()
         .run_test_command(awaken_provisioning_contract::Command::new([
             "sh",
             "-c",
@@ -967,6 +968,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         // P1 observes only the dedicated proof directory. Traversing the
         // attached Repository would mix its provider-owned Git metadata into
         // this assertion and duplicate the Repository realizer's own checks.
+        .sandbox_environment()
         .list_workspace_files(".terminal-publication-proof")
         .await
         .expect("P1 list workspace")

@@ -96,7 +96,7 @@ impl SharedHost {
                 .exec
                 .acp
                 .as_ref()
-                .map(|acp| acp.child_executor_factory(environment)),
+                .map(|acp| acp.child_executor_factory(environment.agent_process().clone())),
             remote: self.agent.remote_attempt_executor.clone(),
             credential_capabilities: self.local_credential_realization_capabilities(),
             web_search: Some(self.web_search_plugin(thread, None)),
@@ -277,9 +277,10 @@ mod tests {
             .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("profiles"))
             .await
             .unwrap();
-        let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            sandbox,
-        ));
+        let environment = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(sandbox)
+                .into_session_environment(),
+        );
         for upstream in [false, true] {
             for material_access in [false, true] {
                 for acp_installed in [false, true] {

@@ -1297,7 +1297,7 @@ impl ArtifactHarvester {
                 .map_err(ArtifactPublicationError::from)?;
         }
         let expected_revision = current_capture.map_or(0, |capture| capture.revision);
-        let artifacts = env.capture_artifacts().await.map_err(|error| {
+        let artifacts = env.harvest().capture_artifacts().await.map_err(|error| {
             ArtifactPublicationError::Indeterminate {
                 detail: error.to_string(),
             }

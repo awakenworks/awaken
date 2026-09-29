@@ -198,10 +198,7 @@ impl SessionRuntimeSlots {
             .expect("session runtime slots mutex poisoned")
             .values()
             .filter_map(|slot| slot.environment_owner.execution_environment())
-            .filter(|environment| {
-                matches!(environment.as_ref(),
-                SessionEnvironment::Workdir { sandbox, .. } if sandbox.has_scoped_execution())
-            })
+            .filter(|environment| environment.scoped_execution().is_some())
             .cloned()
             .collect()
     }
@@ -217,16 +214,16 @@ impl SessionRuntimeSlots {
         environment: &Arc<SessionEnvironment>,
         worker: Option<&Arc<dyn CurrentExecutionAuthority>>,
     ) -> Result<(), crate::HostError> {
-        let SessionEnvironment::Workdir { sandbox, .. } = environment.as_ref() else {
+        let Some(scoped) = environment.scoped_execution() else {
             return Ok(());
         };
-        if !sandbox.needs_execution_authority() {
+        if !scoped.needs_execution_authority() {
             return Ok(());
         }
         let Some(asserted) = slot.realization_authority.lease() else {
             return Ok(());
         };
-        sandbox
+        scoped
             .bind_execution_authority(Arc::new(SessionExecutionAuthority::capture(
                 self,
                 session,
@@ -243,6 +240,7 @@ impl SessionRuntimeSlots {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use crate::session_environment::{SandboxEnvironment, SandboxEnvironmentAccess as _};
 
     struct Worker(Mutex<Option<Duration>>);
     impl CurrentExecutionAuthority for Worker {
@@ -270,7 +268,8 @@ mod tests {
                 .create_sandbox(&crate::session_environment::environment_test_spec())
                 .await
                 .unwrap();
-            let environment = Arc::new(SessionEnvironment::workdir(sandbox));
+            let environment =
+                Arc::new(SandboxEnvironment::workdir(sandbox).into_session_environment());
             let slots = SessionRuntimeSlots::default();
             let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
             let asserted = SessionRealizationLease {
@@ -307,7 +306,7 @@ mod tests {
         fn candidate(environment: Arc<SessionEnvironment>) -> SessionEnvironmentOwner {
             SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                 UnboundSessionEnvironment {
-                    binding: serde_json::to_string(&environment.handle()).unwrap(),
+                    binding: serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
                     environment,
                     origin: UnboundSessionEnvironmentOrigin::New,
                 },
@@ -432,16 +431,18 @@ mod tests {
                                 });
                         }
                         "environment_aba" => {
-                            let SessionEnvironment::Workdir { sandbox, .. } =
-                                f.environment.as_ref()
+                            let SandboxEnvironment::Workdir { sandbox, .. } =
+                                f.environment.sandbox_environment()
                             else {
                                 unreachable!()
                             };
-                            slot.environment_owner =
-                                Fixture::candidate(Arc::new(SessionEnvironment::Workdir {
+                            slot.environment_owner = Fixture::candidate(Arc::new(
+                                SandboxEnvironment::Workdir {
                                     sandbox: sandbox.clone(),
                                     hand: None,
-                                }));
+                                }
+                                .into_session_environment(),
+                            ));
                         }
                         "vacant" => slot.environment_owner = SessionEnvironmentOwner::Vacant,
                         "pending" => {

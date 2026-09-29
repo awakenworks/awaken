@@ -279,7 +279,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
             .expect("a Fresh Agent Run created a sandbox"),
     };
     let current_tool_executor: Arc<dyn ToolExecutor> = match &sandbox {
-        AgentRunSandbox::Shared(environment) => environment.tool_executor(),
+        AgentRunSandbox::Shared(environment) => environment.agent_tools().tool_executor(),
         #[cfg(test)]
         AgentRunSandbox::SharedLocal(_) => Arc::new(RawToolRegistry::new(env.runtime_tools())),
         AgentRunSandbox::Fresh(_) => Arc::new(RawToolRegistry::new(env.runtime_tools())),
@@ -813,7 +813,8 @@ mod tests {
             .unwrap();
         let shared_path = shared_sandbox.workspace_path().to_path_buf();
         let shared_environment =
-            crate::session_environment::SessionEnvironment::workdir(shared_sandbox);
+            crate::session_environment::SandboxEnvironment::workdir(shared_sandbox)
+                .into_session_environment();
         let shared_inferences = Arc::new(AtomicUsize::new(0));
         let shared_config = child_config(None);
         let shared = run_configured_agent_until_boundary(

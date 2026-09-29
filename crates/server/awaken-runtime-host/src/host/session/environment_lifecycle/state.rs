@@ -123,7 +123,7 @@ fn compatible_durable_projection(
     matches!((current, projected), (Ok(current), Ok(projected))
         if same_generation
             && current.owned_paths_are_monotonic_to(&projected)
-            && owned.environment.handle() == projected)
+            && owned.environment.lifecycle().handle() == projected)
 }
 
 fn same_durable_generation(
@@ -482,7 +482,7 @@ impl SessionEnvironmentOwner {
         environment: Arc<crate::session_environment::SessionEnvironment>,
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
     ) -> Result<UnboundSessionEnvironment, HostError> {
-        let binding = serde_json::to_string(&environment.handle())
+        let binding = serde_json::to_string(&environment.lifecycle().handle())
             .map_err(|error| HostError::internal(error.to_string()))?;
         let origin = match (&mut *self, kind) {
             (Self::Vacant, awaken_session_state_contract::SessionEnvironmentEffectKind::Create) => {
@@ -610,7 +610,8 @@ impl SessionEnvironmentOwner {
             |environment: &Arc<crate::session_environment::SessionEnvironment>| match selection {
                 RetirementSelection::Current => true,
                 RetirementSelection::Exact(expected) => {
-                    Arc::ptr_eq(environment, expected) && environment.handle() == expected.handle()
+                    Arc::ptr_eq(environment, expected)
+                        && environment.lifecycle().handle() == expected.lifecycle().handle()
                 }
             };
         let owned = match self {
@@ -684,7 +685,7 @@ impl SessionEnvironmentOwner {
                 "adopted cleanup candidate has no durable pending owner",
             ));
         };
-        let adopted_binding = serde_json::to_string(&environment.handle())
+        let adopted_binding = serde_json::to_string(&environment.lifecycle().handle())
             .map_err(|error| HostError::internal(error.to_string()))?;
         if identity != expected_identity
             || binding != expected_binding
@@ -789,7 +790,7 @@ impl SessionEnvironmentOwner {
                 "Session Environment re-adoption lost its exact revocation fence",
             ));
         }
-        let binding = serde_json::to_string(&environment.handle())
+        let binding = serde_json::to_string(&environment.lifecycle().handle())
             .map_err(|error| HostError::internal(error.to_string()))?;
         let (expected_binding, origin) = match &current.owned {
             RetiringEnvironmentOwner::Bound(owned)
@@ -814,7 +815,7 @@ impl SessionEnvironmentOwner {
             }
         };
         if &binding != expected_binding
-            || environment.handle() != current.owned.environment().handle()
+            || environment.lifecycle().handle() != current.owned.environment().lifecycle().handle()
         {
             return Err(HostError::internal(
                 "Session Environment re-adoption changed its exact physical target",

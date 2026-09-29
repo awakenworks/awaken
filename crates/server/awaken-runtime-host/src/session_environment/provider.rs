@@ -8,7 +8,7 @@
 // @formal reason: probe truth is not a refinement claim.
 //! Selection and lifecycle construction for a Session's single environment.
 
-use super::{HandExecutorFactory, SessionEnvironment, container_files};
+use super::{HandExecutorFactory, SandboxEnvironment, SessionEnvironment, container_files};
 use awaken_sandbox_local::FilesystemHandleCodec as _;
 use awaken_session_environment_contract::ContainerHandResidency;
 use std::sync::Arc;
@@ -419,10 +419,10 @@ impl SessionEnvironmentProvider {
                     .create_sandbox_for_effect(spec, fence, source_handle, authority)
                     .await
                     .map(|sandbox| {
-                        SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                        SandboxEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                     }),
                 ProviderEffect::Unattached => provider.create_sandbox(spec).await.map(|sandbox| {
-                    SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                    SandboxEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                 }),
             },
             Self::Namespace {
@@ -439,7 +439,7 @@ impl SessionEnvironmentProvider {
                 ProviderEffect::Unattached => provider.create_sandbox(spec).await,
             }
             .map(|sandbox| {
-                SessionEnvironment::namespace(
+                SandboxEnvironment::namespace(
                     sandbox,
                     hand_factory.clone(),
                     hand_bin,
@@ -474,7 +474,7 @@ impl SessionEnvironmentProvider {
                         provider.create_unattached_environment(spec).await?
                     }
                 };
-                SessionEnvironment::container(
+                SandboxEnvironment::container(
                     environment,
                     hand_factory.clone(),
                     hand_bin,
@@ -487,7 +487,7 @@ impl SessionEnvironmentProvider {
             }
         }?;
         effect.admit()?;
-        Ok(environment)
+        Ok(environment.into_session_environment())
     }
 
     pub(crate) async fn prewarm_images(
@@ -582,7 +582,8 @@ impl SessionEnvironmentProvider {
         let mut adoption =
             awaken_container_contract::ContainerEnvironmentAdoption::new(spec, handle);
         if let Some(environment) = retained {
-            let super::SessionEnvironment::Container { sandbox, .. } = environment else {
+            let environment = own_environment(environment)?;
+            let super::SandboxEnvironment::Container { sandbox, .. } = environment else {
                 return Err(pc::SandboxError::conflict(
                     "retained Environment belongs to another provider",
                 ));
@@ -719,13 +720,14 @@ impl SessionEnvironmentProvider {
         retained: &SessionEnvironment,
         effect: ProviderEffect<'_>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
+        let retained = own_environment(retained)?;
         if &retained.handle() != handle {
             return Err(pc::SandboxError::conflict(
                 "retained Environment differs from rebound handle",
             ));
         }
         #[cfg(target_os = "linux")]
-        if matches!(retained, SessionEnvironment::Workdir { sandbox, .. } if sandbox.has_scoped_execution())
+        if matches!(retained, SandboxEnvironment::Workdir { sandbox, .. } if sandbox.has_scoped_execution())
         {
             if !matches!(self, Self::Workdir { provider, .. } if provider.execution_deployment().is_some())
                 || matches!(effect, ProviderEffect::Unattached)
@@ -739,9 +741,9 @@ impl SessionEnvironmentProvider {
         }
         #[cfg(not(target_os = "linux"))]
         let _ = (spec, effect);
-        match (self, retained) {
-            (Self::Workdir { hand, .. }, SessionEnvironment::Workdir { sandbox, .. }) => {
-                Ok(SessionEnvironment::Workdir {
+        let rebound = match (self, retained) {
+            (Self::Workdir { hand, .. }, SandboxEnvironment::Workdir { sandbox, .. }) => {
+                Ok(SandboxEnvironment::Workdir {
                     sandbox: sandbox.clone(),
                     hand: None,
                 }
@@ -754,8 +756,8 @@ impl SessionEnvironmentProvider {
                     hand_idle_after,
                     ..
                 },
-                SessionEnvironment::Namespace { sandbox, .. },
-            ) => Ok(SessionEnvironment::namespace_shared(
+                SandboxEnvironment::Namespace { sandbox, .. },
+            ) => Ok(SandboxEnvironment::namespace_shared(
                 sandbox.clone(),
                 hand_factory.clone(),
                 hand_bin,
@@ -770,13 +772,13 @@ impl SessionEnvironmentProvider {
                     clock,
                     ..
                 },
-                SessionEnvironment::Container {
+                SandboxEnvironment::Container {
                     sandbox,
                     capabilities,
                     ..
                 },
             ) => {
-                SessionEnvironment::container(
+                SandboxEnvironment::container(
                     sandbox.clone(),
                     hand_factory.clone(),
                     hand_bin,
@@ -790,7 +792,8 @@ impl SessionEnvironmentProvider {
             _ => Err(pc::SandboxError::conflict(
                 "retained Environment belongs to another provider",
             )),
-        }
+        }?;
+        Ok(rebound.into_session_environment())
     }
 
     /// Adopt the already-observed exact handle under the root-authorized
@@ -810,13 +813,13 @@ impl SessionEnvironmentProvider {
                     .adopt_sandbox_for_effect(spec, handle, fence, authority)
                     .await
                     .map(|sandbox| {
-                        SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                        SandboxEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                     }),
                 ProviderEffect::Unattached => provider
                     .adopt_sandbox_with_spec(spec, handle)
                     .await
                     .map(|sandbox| {
-                        SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                        SandboxEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                     }),
             },
             Self::Namespace {
@@ -837,7 +840,7 @@ impl SessionEnvironmentProvider {
                 }
             }
             .map(|sandbox| {
-                SessionEnvironment::namespace(
+                SandboxEnvironment::namespace(
                     sandbox,
                     hand_factory.clone(),
                     hand_bin,
@@ -869,7 +872,7 @@ impl SessionEnvironmentProvider {
                 effect.admit()?;
                 environment.renew_lease().await?;
                 effect.admit()?;
-                SessionEnvironment::container(
+                SandboxEnvironment::container(
                     environment,
                     hand_factory.clone(),
                     hand_bin,
@@ -882,7 +885,7 @@ impl SessionEnvironmentProvider {
             }
         }?;
         effect.admit()?;
-        Ok(environment)
+        Ok(environment.into_session_environment())
     }
 
     /// Restore only the exact target frozen into the durable continuation
@@ -942,7 +945,7 @@ impl SessionEnvironmentProvider {
         terminal_effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<SessionEnvironment>, pc::SandboxError> {
-        match self {
+        let prepared = match self {
             Self::Workdir { provider, hand } => provider
                 .prepare_terminal_sandbox_for_effect(
                     spec,
@@ -954,7 +957,7 @@ impl SessionEnvironmentProvider {
                 .await
                 .map(|sandbox| {
                     sandbox.map(|sandbox| {
-                        SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
+                        SandboxEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
                     })
                 }),
             Self::Namespace {
@@ -973,7 +976,7 @@ impl SessionEnvironmentProvider {
                 .await
                 .map(|sandbox| {
                     sandbox.map(|sandbox| {
-                        SessionEnvironment::namespace(
+                        SandboxEnvironment::namespace(
                             sandbox,
                             hand_factory.clone(),
                             hand_bin,
@@ -1003,7 +1006,7 @@ impl SessionEnvironmentProvider {
                 let Some(environment) = environment else {
                     return Ok(None);
                 };
-                SessionEnvironment::container(
+                SandboxEnvironment::container(
                     environment,
                     hand_factory.clone(),
                     hand_bin,
@@ -1015,7 +1018,8 @@ impl SessionEnvironmentProvider {
                 .await
                 .map(Some)
             }
-        }
+        }?;
+        Ok(prepared.map(SandboxEnvironment::into_session_environment))
     }
 
     /// Dispose the exact restore target named by a durable request without
@@ -1059,6 +1063,19 @@ impl SessionEnvironmentProvider {
             }
         }
     }
+}
+
+/// Recover this provider family's own adapter from the handles the Host holds.
+/// An environment realized by any other provider is refused.
+fn own_environment(
+    environment: &SessionEnvironment,
+) -> Result<&SandboxEnvironment, pc::SandboxError> {
+    environment
+        .origin()
+        .downcast_ref::<SandboxEnvironment>()
+        .ok_or_else(|| {
+            pc::SandboxError::conflict("retained Environment belongs to another provider")
+        })
 }
 
 fn container_spec(

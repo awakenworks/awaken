@@ -19,7 +19,7 @@ async fn realized_and_deferred_hand_share_the_same_pre_entry_process_domain() {
     .create(&spec())
     .await
     .unwrap();
-    let executor = environment.tool_executor();
+    let executor = environment.agent_tools().tool_executor();
     let call = ToolCall {
         call_id: "domain".into(),
         tool_id: "bash".into(),
@@ -37,7 +37,7 @@ async fn realized_and_deferred_hand_share_the_same_pre_entry_process_domain() {
             }
         }
         for _ in 0..2 {
-            let environment_domain = environment.tool_execution_domain().await;
+            let environment_domain = environment.agent_tools().tool_execution_domain().await;
             let hand_domain = executor.execution_domain(&call).await;
             if row == "error" {
                 assert!(environment_domain.is_err(), "R3");

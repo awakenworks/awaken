@@ -189,6 +189,7 @@ impl SessionAcpCapabilityNegotiator {
             })?;
         let result = async {
             let (process, mut channel) = environment
+                .agent_process()
                 .spawn_agent(pc::Command {
                     argv: argv.to_vec(),
                     cwd: cwd.to_string_lossy().into_owned(),
@@ -226,18 +227,19 @@ impl SessionAcpCapabilityNegotiator {
         // Disposal itself crosses the container runtime boundary. Bound it so
         // a wedged daemon cannot hold the capability refresh (and therefore a
         // Worker heartbeat/lease) forever.
-        let dispose = tokio::time::timeout(Duration::from_secs(10), environment.dispose())
-            .await
-            .map_err(|_| {
-                pc::SandboxError::timeout("dispose ACP capability probe environment timed out")
-            })
-            .and_then(|result| {
-                result.map_err(|error| {
-                    error.map_detail(|detail| {
-                        format!("dispose ACP capability probe environment: {detail}")
-                    })
+        let dispose =
+            tokio::time::timeout(Duration::from_secs(10), environment.lifecycle().dispose())
+                .await
+                .map_err(|_| {
+                    pc::SandboxError::timeout("dispose ACP capability probe environment timed out")
                 })
-            });
+                .and_then(|result| {
+                    result.map_err(|error| {
+                        error.map_detail(|detail| {
+                            format!("dispose ACP capability probe environment: {detail}")
+                        })
+                    })
+                });
         // A disposal that did not prove the environment gone is a strand this
         // process *observed*, not one a cancellation hid; record it directly
         // rather than waiting for a claim that is about to settle.

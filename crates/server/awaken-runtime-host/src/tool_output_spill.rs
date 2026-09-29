@@ -47,6 +47,7 @@ impl ToolOutputSpiller for SandboxToolOutputSpiller {
             return Ok(awaken_runtime_contract::tool_batch::ToolExecutionDomain::Worker {});
         }
         self.environment
+            .agent_tools()
             .tool_execution_domain()
             .await
             .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))
@@ -63,6 +64,7 @@ impl ToolOutputSpiller for SandboxToolOutputSpiller {
 
         let logical_path = stable_output_path(run_id, call_id);
         self.environment
+            .projection()
             .write_workspace_file(&logical_path, content.as_bytes())
             .await
             .map_err(|error| {
@@ -114,9 +116,9 @@ fn truncated_preview(content: &str, visible_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_environment::SandboxEnvironment;
     use std::path::Path;
 
-    use crate::session_environment::AgentSandbox;
     use awaken_provisioning_contract::{
         IsolationClass, NetworkPolicy, ResourceLimits, SandboxSpec,
     };
@@ -163,8 +165,8 @@ mod tests {
             .create_sandbox(&spec())
             .await
             .unwrap();
-        let environment = Arc::new(SessionEnvironment::workdir(local));
-        let workspace = AgentSandbox::workspace_cwd(environment.as_ref());
+        let environment = Arc::new(SandboxEnvironment::workdir(local).into_session_environment());
+        let workspace = environment.agent_process().workspace_cwd();
         let spiller = SandboxToolOutputSpiller::new(environment.clone());
         let run_id = RunId("run/untrusted".into());
         let call_id = "../../provider-call";
@@ -208,6 +210,7 @@ mod tests {
         assert!(preview.contains(&logical), "S3");
         assert!(!logical.contains(".."), "S4/S5");
         let bash = environment
+            .agent_tools()
             .rooted_tools()
             .into_iter()
             .find(|tool| tool.id() == "bash")

@@ -1125,12 +1125,15 @@ mod durable_cancel_tests {
     ) {
         let root = tempfile::tempdir().expect("sandbox root");
         let provider = Arc::new(LocalProvider::new(root.path()));
-        let sandbox = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            provider
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("parent"))
-                .await
-                .expect("parent sandbox"),
-        ));
+        let sandbox = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                provider
+                    .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("parent"))
+                    .await
+                    .expect("parent sandbox"),
+            )
+            .into_session_environment(),
+        );
         (root, sandbox)
     }
 

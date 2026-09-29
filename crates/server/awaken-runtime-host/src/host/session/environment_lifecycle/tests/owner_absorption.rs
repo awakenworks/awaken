@@ -176,7 +176,8 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     let root = tempfile::tempdir().unwrap();
     let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
     let resident_environment = environment(&provider, thread).await;
-    let initial_binding = serde_json::to_string(&resident_environment.handle()).unwrap();
+    let initial_binding =
+        serde_json::to_string(&resident_environment.lifecycle().handle()).unwrap();
     let initial_identity = identity(thread);
     let mut owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
         identity: initial_identity,
@@ -185,9 +186,11 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
     });
 
     resident_environment
+        .projection()
         .reserve_owned_path("/workspace/live.txt")
         .expect("P1 reserve provider-owned path");
-    let reserved_binding = serde_json::to_string(&resident_environment.handle()).unwrap();
+    let reserved_binding =
+        serde_json::to_string(&resident_environment.lifecycle().handle()).unwrap();
     let reserved_identity = BoundSessionEnvironmentIdentity::Durable {
         effect_id: "resource-reservation-effect".into(),
         generation: generation(thread),
@@ -232,9 +235,10 @@ async fn resident_owner_absorbs_only_its_exact_monotonic_resource_reservation() 
 
     let foreign = environment(&provider, "foreign-resource-reservation").await;
     foreign
+        .projection()
         .reserve_owned_path("/workspace/foreign.txt")
         .expect("P2 reserve foreign path");
-    let foreign_binding = serde_json::to_string(&foreign.handle()).unwrap();
+    let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
     assert!(
         owner
             .install_projection(
@@ -275,7 +279,7 @@ async fn realization_revocation_absorbs_only_a_compatible_durable_receipt() {
     let root = tempfile::tempdir().unwrap();
     let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
     let environment = environment(&provider, thread).await;
-    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let mut owner = resident(thread, environment.clone());
     let retirement = owner
         .begin_retirement(
@@ -778,11 +782,12 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     );
     if preclosed {
         environment
+            .lifecycle()
             .dispose()
             .await
             .expect("CP3 exact root already unavailable");
         assert_eq!(
-            environment.status().await.unwrap(),
+            environment.sandbox_environment().status().await.unwrap(),
             awaken_provisioning_contract::SandboxStatus::Terminated,
             "CP3 unavailable observation precondition"
         );
@@ -799,7 +804,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
         "CP2/E2 or CP3/E3 exact retired root is absent"
     );
     assert_eq!(
-        environment.status().await.unwrap(),
+        environment.sandbox_environment().status().await.unwrap(),
         awaken_provisioning_contract::SandboxStatus::Terminated,
         "CP2/E2 or CP3/E3 old wrapper remains terminal"
     );

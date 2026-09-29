@@ -784,7 +784,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         .join("memory-replay/mnt/memory/seed.md");
     assert_eq!(std::fs::read(&memory_file).unwrap(), b"seed");
     std::fs::write(&memory_file, b"agent edit without newline").unwrap();
-    let original_handle = environment.handle();
+    let original_handle = environment.lifecycle().handle();
 
     // R-ACK: installed Memory is complete, but Control still carries the
     // original empty→Memory command. Both callers must succeed without a new
@@ -807,7 +807,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         std::fs::read(&memory_file).unwrap(),
         b"agent edit without newline"
     );
-    assert_eq!(environment.handle(), original_handle);
+    assert_eq!(environment.lifecycle().handle(), original_handle);
 
     // Reproduce the active-active recovery state observed in the black-box
     // pressure test: the durable sandbox binding is resident, while this process
@@ -931,7 +931,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             installed,
             "{field}"
         );
-        assert_eq!(environment.handle(), original_handle, "{field}");
+        assert_eq!(environment.lifecycle().handle(), original_handle, "{field}");
         assert_eq!(
             std::fs::read(&memory_file).unwrap(),
             b"agent edit without newline",

@@ -4,7 +4,7 @@
 //! The environment lifecycle and process launcher remain in the parent module;
 //! this module owns the backend-neutral filesystem surface used by provisioning.
 
-use super::SessionEnvironment;
+use super::SandboxEnvironment;
 use super::container_files;
 use awaken_provisioning_contract as pc;
 use awaken_session_environment_contract::DiscoveredSkillFile;
@@ -132,7 +132,7 @@ fn file_read_authority_never_changes_path_class_or_admits_unsafe_input() {
     }
 }
 
-impl SessionEnvironment {
+impl SandboxEnvironment {
     /// Capture Agent-authored output metadata and bytes as one ephemeral batch.
     /// Container backends already expose a bounded complete-tree transport, so
     /// one harvest must consume it once instead of listing once and rescanning

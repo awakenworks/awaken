@@ -1047,6 +1047,7 @@ impl Drop for HandProjectionUpdate<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_environment::SandboxEnvironmentAccess as _;
     use std::sync::Barrier;
 
     #[tokio::test]
@@ -1060,7 +1061,7 @@ mod tests {
         // Linux requires both filesystem adapters; other platforms exercise the
         // portable Workdir row here and their OS-specific Namespace gate separately.
         use super::super::tests::{DoneProcess, FakeHandExecutor, UnreapableProcess, spec};
-        use super::super::{SessionEnvironment, SessionEnvironmentProvider};
+        use super::super::{SandboxEnvironment, SessionEnvironmentProvider};
         for namespace in [false, true]
             .into_iter()
             .filter(|namespace| !namespace || cfg!(target_os = "linux"))
@@ -1089,6 +1090,7 @@ mod tests {
             };
             let environment = provider.create(&spec()).await.unwrap();
             environment
+                .projection()
                 .attach_mount(pc::MountRequirement {
                     mount_id: "retained-resource".into(),
                     source: pc::MountSource::Inline {
@@ -1101,21 +1103,22 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let hand = match &environment {
-                SessionEnvironment::Workdir {
+            let hand = match environment.sandbox_environment() {
+                SandboxEnvironment::Workdir {
                     hand: Some(hand), ..
                 }
-                | SessionEnvironment::Namespace { hand, .. } => hand.clone(),
+                | SandboxEnvironment::Namespace { hand, .. } => hand.clone(),
                 _ => panic!("filesystem Hand required"),
             };
             *hand.lifecycle.binding.lock().await = HandBindingState::Ready(HandBinding {
                 process: Some(Box::new(UnreapableProcess)),
                 executor: Arc::new(FakeHandExecutor),
             });
-            assert!(environment.quiesce().await.is_err());
-            assert!(environment.dispose().await.is_err());
+            assert!(environment.lifecycle().quiesce().await.is_err());
+            assert!(environment.lifecycle().dispose().await.is_err());
             assert!(
                 environment
+                    .harvest()
                     .list_frozen_mount_files("/mnt/session/uploads")
                     .await
                     .unwrap()
@@ -1129,9 +1132,9 @@ mod tests {
             } else {
                 panic!("owner must remain tracked")
             }
-            environment.dispose().await.unwrap();
+            environment.lifecycle().dispose().await.unwrap();
             assert_eq!(
-                environment.status().await.unwrap(),
+                environment.sandbox_environment().status().await.unwrap(),
                 pc::SandboxStatus::Terminated
             );
             assert!(!hand.has_tracked_binding().await);

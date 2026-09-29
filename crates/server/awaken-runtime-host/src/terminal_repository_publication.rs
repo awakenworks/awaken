@@ -152,7 +152,7 @@ impl ManagedHost {
                 command.session_id.as_str(),
                 staged.repositories.first().expect("checked"),
                 &staged.binding_checks,
-                environment.as_ref(),
+                environment.repositories().as_ref(),
                 &command.intent.expectation,
                 Some(&fence),
             )

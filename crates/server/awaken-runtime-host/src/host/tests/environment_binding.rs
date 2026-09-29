@@ -259,10 +259,15 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         .ctx_for("binding-response-loss", None)
         .await
         .expect("R2 exact retry reads back committed identity");
-    let first_handle = first.env.as_ref().expect("R1 Environment").handle();
+    let first_handle = first
+        .env
+        .as_ref()
+        .expect("R1 Environment")
+        .lifecycle()
+        .handle();
     assert_eq!(
         first_handle,
-        candidate.environment.handle(),
+        candidate.environment.lifecycle().handle(),
         "R2 no recreate"
     );
     let second = host
@@ -271,7 +276,12 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
         .expect("R1 slot replay");
     assert!(Arc::ptr_eq(&first, &second), "R1 no context recreation");
     assert_eq!(
-        second.env.as_ref().expect("R1 Environment").handle(),
+        second
+            .env
+            .as_ref()
+            .expect("R1 Environment")
+            .lifecycle()
+            .handle(),
         first_handle,
         "R1 immutable physical identity"
     );
@@ -337,7 +347,15 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
     .expect("R1 lifecycle owner must not re-enter its mutex")
     .expect("R1 exact committed binding is adopted");
     assert_eq!(
-        serde_json::to_string(&context.env.as_ref().expect("R1 Environment").handle()).unwrap(),
+        serde_json::to_string(
+            &context
+                .env
+                .as_ref()
+                .expect("R1 Environment")
+                .lifecycle()
+                .handle()
+        )
+        .unwrap(),
         binding,
         "R1 root identity"
     );

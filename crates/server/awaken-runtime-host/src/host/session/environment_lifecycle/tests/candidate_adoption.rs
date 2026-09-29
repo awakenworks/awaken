@@ -47,7 +47,7 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
     for (suffix, install_non_owner) in [("absent", false), ("non-owner", true)] {
         let thread = format!("durable-adoption-{suffix}");
         let environment = environment(&provider, &thread).await;
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let expected = BoundSessionEnvironmentIdentity::LegacyDirect(
             LegacyDirectEnvironmentProvenance::DurableBinding {
                 binding: binding.clone(),
@@ -117,7 +117,7 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
         ),
     ] {
         let environment = environment(&provider, thread).await;
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
         let candidate = match kind {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create => host
@@ -211,7 +211,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
         let root = tempfile::tempdir().unwrap();
         let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
         let environment = environment(&provider, thread).await;
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let source = identity(thread);
         let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
         host.install_session_environment_owner_projection(
@@ -326,7 +326,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         let root = tempfile::tempdir().unwrap();
         let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
         let environment = environment(&provider, thread).await;
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
         let store = Arc::new(
             awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
@@ -549,7 +549,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
         provider
             .rebind_retained(
                 &crate::provisioning::agent_run_sandbox_spec("candidate-evidence"),
-                &owned.handle(),
+                &owned.lifecycle().handle(),
                 &owned,
                 crate::session_environment::ProviderEffect::Unattached,
             )

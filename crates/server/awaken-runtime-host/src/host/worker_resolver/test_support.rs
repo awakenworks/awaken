@@ -276,7 +276,7 @@ pub(crate) async fn available_local_environment_binding(
         )
         .await
         .expect("create typed available-Environment fixture");
-    let binding = serde_json::to_string(&environment.handle())
+    let binding = serde_json::to_string(&environment.lifecycle().handle())
         .expect("serialize typed available-Environment fixture");
     drop(environment);
     binding

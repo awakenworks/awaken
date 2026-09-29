@@ -1760,6 +1760,7 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
     .expect("same identity is already prepared");
     assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E3");
     environment
+        .lifecycle()
         .dispose()
         .await
         .expect("dispose fixture environment");

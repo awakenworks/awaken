@@ -842,8 +842,8 @@ impl SharedHost {
         );
         for input in transition.desired().resources.inputs() {
             let path = crate::managed_resource_projection::resolved_input_effect_path(input);
-            if let Err(error) = environment.reserve_owned_path(&path) {
-                let _ = environment.dispose().await;
+            if let Err(error) = environment.projection().reserve_owned_path(&path) {
+                let _ = environment.lifecycle().dispose().await;
                 return Err(HostError::internal(error.to_string()));
             }
         }

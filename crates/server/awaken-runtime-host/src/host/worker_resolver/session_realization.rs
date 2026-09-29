@@ -1416,6 +1416,7 @@ mod tests {
             .env
             .as_ref()
             .expect("R1 eager Environment")
+            .lifecycle()
             .handle();
         let binding = serde_json::to_string(&handle).expect("R1 durable binding");
         let committed_environment = original_control.current_projection().environment;
@@ -1564,7 +1565,7 @@ mod tests {
                 .session_environment(thread)
                 .await
                 .expect("R9 resident Arc");
-            let old_handle = retained.handle();
+            let old_handle = retained.lifecycle().handle();
             crate::host::worker_resolver::test_support::remove_local_environment_root(
                 &host, thread,
             );
@@ -1656,7 +1657,7 @@ mod tests {
                 .await
                 .expect("R10 replacement");
             assert_ne!(
-                replacement.handle(),
+                replacement.lifecycle().handle(),
                 old_handle,
                 "R10 new physical incarnation"
             );

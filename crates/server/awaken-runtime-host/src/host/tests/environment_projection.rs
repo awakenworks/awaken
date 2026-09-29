@@ -86,7 +86,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .session_environment("t-attach")
         .await
         .expect("session environment");
-    let handle_before = environment_before.handle();
+    let handle_before = environment_before.lifecycle().handle();
     assert!(
         host.session_slots
             .read("t-attach", |slot| slot.runtime.is_some())
@@ -164,6 +164,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
     assert_eq!(
         environment_before
+            .harvest()
             .list_frozen_mount_files("/mnt/session/uploads")
             .await
             .unwrap(),
@@ -225,6 +226,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
     assert!(
         environment_after
+            .sandbox_environment()
             .list_workspace_files(".mnt")
             .await
             .unwrap()
@@ -308,12 +310,13 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         .session_environment("invalid-live-repository")
         .await
         .expect("resident environment");
-    let before_handle = environment.handle();
+    let before_handle = environment.lifecycle().handle();
     let before_manifest = host
         .thread_resource_manifest("invalid-live-repository")
         .expect("installed manifest");
     let before_spec = host.sandbox_spec("invalid-live-repository");
     let before_files = environment
+        .harvest()
         .list_frozen_mount_files("/mnt/session/uploads")
         .await
         .unwrap();
@@ -373,6 +376,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     );
     assert_eq!(
         environment
+            .harvest()
             .list_frozen_mount_files("/mnt/session/uploads")
             .await
             .unwrap(),
@@ -500,7 +504,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     let before_manifest = host
         .thread_resource_manifest("t-repo-detach")
         .expect("installed manifest");
-    let handle = environment.handle();
+    let handle = environment.lifecycle().handle();
     let checkout = fixture
         .path()
         .join("sandboxes/t-repo-detach/workspace/live-repo");
@@ -625,6 +629,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     assert_eq!(host.sandbox_spec("t-local-attach"), before);
     assert!(
         environment
+            .sandbox_environment()
             .list_workspace_files("mnt/session/uploads")
             .await
             .unwrap()

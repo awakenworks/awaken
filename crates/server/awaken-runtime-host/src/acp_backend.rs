@@ -127,7 +127,7 @@ impl AcpBackend {
 
     pub(crate) fn child_executor_factory(
         self: &Arc<Self>,
-        sandbox: Arc<crate::session_environment::SessionEnvironment>,
+        sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
     ) -> crate::agent_runner::ChildAcpExecutorFactory {
         let acp = self.clone();
         Arc::new(move |backend, permission| {
@@ -150,7 +150,7 @@ impl AcpBackend {
     /// remain available for remote adapters and deterministic tests.
     pub(crate) fn executor_for(
         &self,
-        sandbox: Arc<crate::session_environment::SessionEnvironment>,
+        sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
         permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         backend: awaken_runtime_contract::resolved::Backend,
         mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,

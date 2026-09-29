@@ -252,9 +252,10 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             )
             .await
             .expect("M1 initial Fuse participant");
-        let fuse_handle = created.handle();
-        let before =
-            created.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
+        let fuse_handle = created.lifecycle().handle();
+        let before = created
+            .agent_tools()
+            .agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
         drop(created);
         let unfenced = match &fuse_provider {
             SessionEnvironmentProvider::Workdir { provider, .. } => {
@@ -287,7 +288,11 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             )
             .await
             .expect("M1 Ready replay reuses Fuse");
-        assert_eq!(ready_replay.handle(), fuse_handle, "M1 {label} binding");
+        assert_eq!(
+            ready_replay.lifecycle().handle(),
+            fuse_handle,
+            "M1 {label} binding"
+        );
         drop(ready_replay);
         let adopted = fuse_provider
             .adopt_effective_for_effect(
@@ -301,8 +306,9 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .await
             .expect("M1 adoption reuses Fuse");
         assert_eq!(fuse_mounts.load(Ordering::SeqCst), 1, "M1 {label}");
-        let after =
-            adopted.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
+        let after = adopted
+            .agent_tools()
+            .agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
         assert_eq!(before.protocol_cwd, after.protocol_cwd, "M5 stable cwd");
         assert_eq!(
             before.command_cwd, after.command_cwd,
@@ -326,14 +332,18 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 required: true,
             };
             adopted
+                .projection()
                 .reconcile_adopted_mounts(&[fuse_memory.clone(), late])
                 .await
                 .expect("M4 only the late mount attaches");
             assert_eq!(fuse_mounts.load(Ordering::SeqCst), 1, "M4 no remount");
             let files = if trusted {
-                adopted.list_frozen_mount_files("/workspace").await
+                adopted
+                    .harvest()
+                    .list_frozen_mount_files("/workspace")
+                    .await
             } else {
-                adopted.list_workspace_files("").await
+                adopted.sandbox_environment().list_workspace_files("").await
             }
             .unwrap();
             assert!(
@@ -343,7 +353,11 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
                 "M4 late mount is visible"
             );
             assert!(
-                adopted.attach_mount(fuse_memory).await.is_err(),
+                adopted
+                    .projection()
+                    .attach_mount(fuse_memory)
+                    .await
+                    .is_err(),
                 "ordinary runtime replacement remains fenced"
             );
         }
@@ -377,7 +391,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         )
         .await
         .expect("M2 initial Copy participant");
-    let copy_handle = created.handle();
+    let copy_handle = created.lifecycle().handle();
     drop(created);
     let SessionEnvironmentProvider::Namespace {
         provider: copy_namespace,
@@ -423,12 +437,14 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .await
         .expect("M2 adoption retains Copy");
     copy_adopted
+        .projection()
         .reconcile_adopted_mounts(std::slice::from_ref(&copy_memory))
         .await
         .expect("M2 exact Copy is already reconciled");
     assert_eq!(copy_mounts.load(Ordering::SeqCst), 1, "M2 zero remount");
     assert_eq!(
         copy_adopted
+            .harvest()
             .list_frozen_mount_files(&copy_memory.mount_path)
             .await
             .unwrap(),
@@ -546,14 +562,16 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         )
         .await
         .expect("T1 hot Fuse create");
-    hot.acknowledge_memory_reconciliation(
-        &hot_terminal,
-        &[],
-        &awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_terminal),
-    )
-    .await
-    .expect("T1 exact empty Fuse evidence");
+    hot.lifecycle()
+        .acknowledge_memory_reconciliation(
+            &hot_terminal,
+            &[],
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_terminal),
+        )
+        .await
+        .expect("T1 exact empty Fuse evidence");
     let prepared = hot
+        .lifecycle()
         .prepare_disposal_for_effect(
             &hot_terminal,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_terminal),
@@ -561,14 +579,15 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         .await
         .expect("T1 prepared");
     let authorization = restart_disposal_authorization(prepared, "terminal-fuse-hot");
-    hot.dispose_for_effect(
-        &authorization,
-        &awaken_provisioning_contract::test_support::EffectAuthority::new(
-            authorization.effect_fence(),
-        ),
-    )
-    .await
-    .expect("T1 dispose");
+    hot.lifecycle()
+        .dispose_for_effect(
+            &authorization,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                authorization.effect_fence(),
+            ),
+        )
+        .await
+        .expect("T1 dispose");
     assert_eq!(hot_mounts.load(Ordering::SeqCst), 1, "T1 no remount");
     assert_eq!(hot_teardowns.load(Ordering::SeqCst), 1, "T1 one teardown");
 
@@ -627,7 +646,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             )
             .await
             .expect("T2 create Fuse");
-        let handle = created.handle();
+        let handle = created.lifecycle().handle();
         drop(created);
         let request_handle = (!namespace).then_some(&handle);
         let foreign = pc::SandboxEffectFence::new(
@@ -666,6 +685,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .expect("T2 Ready participant");
         assert_eq!(
             first
+                .harvest()
                 .list_frozen_mount_files(&memory.mount_path)
                 .await
                 .unwrap(),
@@ -687,6 +707,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .expect("T2 Removing participant");
         assert_eq!(mounts.load(Ordering::SeqCst), 1, "T2 {label}");
         second
+            .lifecycle()
             .acknowledge_memory_reconciliation(
                 &terminal,
                 &[],
@@ -695,6 +716,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .await
             .expect("T4 exact empty Fuse evidence");
         let prepared = second
+            .lifecycle()
             .prepare_disposal_for_effect(
                 &terminal,
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
@@ -705,6 +727,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             restart_disposal_authorization(prepared, &format!("terminal-fuse-{label}"));
         assert!(
             second
+                .lifecycle()
                 .dispose_for_effect(
                     &authorization,
                     &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -733,6 +756,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .expect("T4 authorized Removing participant");
         assert_eq!(mounts.load(Ordering::SeqCst), 1, "T4 {label} same guard");
         replay
+            .lifecycle()
             .dispose_for_effect(
                 &authorization,
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -829,7 +853,7 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     )
                     .await
                     .unwrap();
-                let handle = created.handle();
+                let handle = created.lifecycle().handle();
                 drop(created);
                 let cold_provider = provider.at_root(root.path());
                 drop(provider);
@@ -925,6 +949,7 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                 for mount in &spec.mounts {
                     assert_eq!(
                         replay
+                            .harvest()
                             .list_frozen_mount_files(&mount.mount_path)
                             .await
                             .unwrap(),
@@ -932,15 +957,18 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     );
                 }
                 replay
+                    .lifecycle()
                     .acknowledge_memory_reconciliation(&terminal, &[], &authority)
                     .await
                     .unwrap();
                 let prepared = replay
+                    .lifecycle()
                     .prepare_disposal_for_effect(&terminal, &authority)
                     .await
                     .unwrap();
                 let authorization = restart_disposal_authorization(prepared, "cold-current-memory");
                 replay
+                    .lifecycle()
                     .dispose_for_effect(
                         &authorization,
                         &pc::test_support::EffectAuthority::new(authorization.effect_fence()),
@@ -1006,7 +1034,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         )
         .await
         .unwrap();
-    let handle = created.handle();
+    let handle = created.lifecycle().handle();
     drop(created);
     let adopted = namespace
         .adopt_effective_for_effect(
@@ -1019,10 +1047,11 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         )
         .await
         .unwrap();
-    assert_eq!(adopted.handle(), handle);
+    assert_eq!(adopted.lifecycle().handle(), handle);
     let terminal_fence =
         pc::SandboxEffectFence::new("terminal", "provider-test", "runtime", 1, u64::MAX).unwrap();
     adopted
+        .lifecycle()
         .prepare_disposal_for_effect(
             &terminal_fence,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal_fence),
@@ -1083,6 +1112,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         pc::SandboxEffectFence::new(disposal_id, "provider-test", "runtime", 1, u64::MAX).unwrap();
     let authorization = disposal_preparation.authorize(disposal_fence).unwrap();
     adopted
+        .lifecycle()
         .dispose_for_effect(
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(

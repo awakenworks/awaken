@@ -89,7 +89,7 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
         .lock()
         .unwrap()
         .insert(mounted.mount_path.clone(), b"customer evidence".to_vec());
-    let handle = created.handle();
+    let handle = created.lifecycle().handle();
     drop(created);
     fake.shared.lock().unwrap().remove(&mounted.mount_path);
     let adopted = provider
@@ -97,6 +97,7 @@ async fn adopted_container_reprojects_the_current_managed_file_tree() {
         .await
         .expect("adopt the same container after the input tree was lost");
     adopted
+        .projection()
         .reconcile_adopted_mounts(&[mounted.clone(), outside])
         .await
         .expect("R1/R2 adopted Managed Files are reprojected");

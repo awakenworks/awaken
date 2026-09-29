@@ -1072,12 +1072,15 @@ mod tests {
             spec.outputs_path, "/mnt/session/outputs",
             "Managed Agents writes deliverables at its documented path"
         );
-        let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            awaken_sandbox_local::LocalProvider::new(storage.path())
-                .create_sandbox(&spec)
-                .await
-                .unwrap(),
-        ));
+        let environment = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                awaken_sandbox_local::LocalProvider::new(storage.path())
+                    .create_sandbox(&spec)
+                    .await
+                    .unwrap(),
+            )
+            .into_session_environment(),
+        );
         host.install_test_resident_session_environment(thread, environment);
         let output_dir = storage
             .path()
@@ -1340,12 +1343,15 @@ mod tests {
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher);
         let failed_host = Arc::new(raw_host);
         failed_host.register_thread_workspace(thread, "workspace-a");
-        let failed_environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            awaken_sandbox_local::LocalProvider::new(failed_storage.path())
-                .create_sandbox(&spec)
-                .await
-                .unwrap(),
-        ));
+        let failed_environment = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(
+                awaken_sandbox_local::LocalProvider::new(failed_storage.path())
+                    .create_sandbox(&spec)
+                    .await
+                    .unwrap(),
+            )
+            .into_session_environment(),
+        );
         failed_host.install_test_resident_session_environment(thread, failed_environment);
         let failed_output = failed_storage
             .path()
