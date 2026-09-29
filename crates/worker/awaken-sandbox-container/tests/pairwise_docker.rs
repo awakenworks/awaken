@@ -134,13 +134,17 @@ async fn run_to_exit_disposing(
     spec: &pc::SandboxSpec,
     disposal: Disposal,
 ) -> Option<i32> {
-    // Own this scope's container for the whole row: swept before creation so a
-    // leftover from an aborted run cannot fail this one closed, and swept again
-    // on the way out even if an assertion below unwinds past `dispose`.
-    let _residue = residue::TestResidue::arm(scope, residue::Backend::Docker);
+    // D2 causes: C1 another gate may run the same fixed pairwise row at once;
+    // C2 a prior attempt may leave this process's scope behind. Effect: only
+    // this process's scope is swept, created, observed, and disposed; another
+    // gate cannot remove a live row while its owner is disposing it.
+    let scope = format!("{scope}-{}", std::process::id());
+    let mut spec = spec.clone();
+    spec.scope = scope.clone();
+    let _residue = residue::TestResidue::arm(&scope, residue::Backend::Docker);
 
-    let sandbox = provider.create(spec).await.expect("create real container");
-    let command = command_of(spec);
+    let sandbox = provider.create(&spec).await.expect("create real container");
+    let command = command_of(&spec);
     assert!(
         !command.is_empty(),
         "test spec must declare an exec command"
@@ -236,6 +240,9 @@ fn file_bind_spec(scope: &str, host_file: &str, command: &str) -> pc::SandboxSpe
 
 #[tokio::test]
 async fn deny_egress_confines_a_real_container() {
+    // D2: an open and a denied row may overlap another gate's identical
+    // pairwise suite. Process-owned scopes keep both physical containers
+    // distinct; each row still proves its own default-route outcome.
     let Some((provider, _)) = setup().await else {
         return;
     };
