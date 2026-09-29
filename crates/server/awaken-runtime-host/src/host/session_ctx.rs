@@ -334,6 +334,7 @@ impl SessionCtx {
             .data_subject_id
             .clone()
             .map(awaken_runtime_contract::DataSubjectId);
+        activation = activation.with_inherited_toolsets(ticket.inherited_toolsets.clone());
         activation
     }
 

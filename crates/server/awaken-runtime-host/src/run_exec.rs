@@ -336,6 +336,7 @@ impl RunExecutor for BoundRunExecutor<'_> {
                 "Run activation does not match its bound Thread".to_string(),
             ));
         }
+        let activation = self.host.bind_fresh_root_tool_configuration(activation);
         let run_id = activation.run_id.clone();
         *self
             .ctx
