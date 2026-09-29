@@ -875,6 +875,18 @@ impl BrokeredCandidateExecutor {
 
 #[async_trait]
 impl LlmExecutor for BrokeredCandidateExecutor {
+    fn effect_scope(
+        &self,
+        request: &ChatRequest,
+    ) -> awaken_runtime_contract::model_operation::ModelEffectScope {
+        awaken_provider_genai::provider_model_effect_scope(
+            &self.provider,
+            &self.api_dialect,
+            &self.adapter_kind,
+            request,
+        )
+    }
+
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
         self.execute(request, None).await
     }
@@ -1088,6 +1100,8 @@ mod tests {
         closed: Mutex<Vec<String>>,
         fail_close: bool,
     }
+
+    mod effect_scope;
 
     #[tokio::test]
     async fn brokered_web_discovery_and_resolution_share_the_cloud_client() {
