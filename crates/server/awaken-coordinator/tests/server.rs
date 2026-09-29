@@ -490,8 +490,8 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
     // Cause/effect decision table for the changed Outcome/HITL boundary:
     // R1 C={active Outcome, protected Worker tool, no result} -> E={successful
     // receipt, requires_action, no evaluation/error}; R2 C={same aggregate,
-    // matching allow, another protected call} -> E={ordinary Run commit, same
-    // aggregate awaits again}; R3 C={same aggregate, matching deny, Worker
+    // matching allow, frozen ticket tool format} -> E={ordinary Run commit,
+    // same aggregate awaits again}; R3 C={same aggregate, matching deny, Worker
     // reaches natural end} -> E={denial committed, aggregate continuation,
     // satisfied evaluation}; R4 C={no active Outcome} -> E={ordinary resume
     // only}, covered by `hitl_write_awaits_then_confirms_and_reads_rooted`;

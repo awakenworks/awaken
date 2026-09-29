@@ -930,11 +930,24 @@ impl SharedHost {
             HostError::internal("foreground resume requires a continuation owner")
         })?;
         let ctx = self.ctx_for(session_id, None).await?;
+        if ticket.inherited_toolsets.is_none()
+            && !ctx
+                .config
+                .resolved_spec
+                .plugin_config
+                .agent
+                .delegates
+                .is_empty()
+        {
+            return Err(HostError::bad_request(
+                "legacy Run ticket cannot resume a delegation-capable root without frozen tool sources",
+            ));
+        }
         let activation = ctx
             .resume_activation(ticket)
             .with_model_ref_override(self.agent.inference_routing.override_for(session_id));
         let request = self
-            .resolved_dispatch(activation)?
+            .resolved_resume_dispatch(activation)?
             .for_session(ThreadId(session_id.to_string()))
             .with_session_activity_epoch(session_activity_epoch);
         // One exact enqueue closes the foreground-to-durable crash window. A

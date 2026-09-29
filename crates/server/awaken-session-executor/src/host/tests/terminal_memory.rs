@@ -68,6 +68,7 @@ fn terminal_memory_evidence() -> pc::MemoryMaterializationEvidence {
 
 struct RecordingTerminalMemoryReferenceEncoder {
     events: Arc<Mutex<Vec<&'static str>>>,
+    realization_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl awaken_resource_contract::MemoryMaterializationReferenceEncoder<awaken_dispatch::RunClaim>
@@ -99,6 +100,8 @@ impl
         access: awaken_resource_contract::ResourceAccess,
         fence: &awaken_session_realization_contract::SessionResourceMaterializationIntent,
     ) -> Result<String, awaken_resource_contract::MemoryMaterializationReferenceError> {
+        self.realization_attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(input) =
             fence.target()
         else {
@@ -124,6 +127,10 @@ impl
             || fence.session_id() != "realization-memory-session"
             || fence.resource_revision() != 5
             || fence.lease().owner != "realization-memory-worker"
+            || fence.lease().runtime_incarnation != "realization-memory-worker:1:boot"
+            || fence.lease().epoch != 2
+            || input.binding_id != awaken_resource_contract::BindingId::from("realization-memory")
+            || input.mount_path != "/memory/realization"
         {
             return Err(
                 awaken_resource_contract::MemoryMaterializationReferenceError::AuthorityMismatch {
@@ -165,19 +172,23 @@ impl
 }
 
 #[tokio::test]
-async fn remote_memory_staging_uses_the_session_realization_lease_without_a_run_claim() {
+async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     // Cause/effect graph: C1 the Host is a registered Worker with remote
-    // Resource transport; C2 a Run claim is absent/present; C3 an exact Session
-    // realization tuple is absent/present. Effects: E1 RunV1 remains preferred
-    // when C2 exists; E2 C2 absent+C3 present derives one V3 reference from the
-    // complete frozen input; E3 neither fence fails before mount publication.
+    // Resource transport; C2 a Run claim is absent/present; C3 a Session
+    // realization is absent/exact/stale/zero revision; C4 the frozen Memory
+    // input is exact/foreign. E1 claim alone uses RunV1; E2 exact realization
+    // takes precedence over a claim and passes one already-admitted V3 intent;
+    // E3 neither fence or zero revision fails before encoder or mount effects;
+    // E4 stale lease/foreign input reaches one encoder rejection, no mount.
     //
-    // | Rule | Run claim | realization tuple | Effect |
-    // |---|---|---|---|
-    // | R1 | present | any | E1 |
-    // | R2 | absent | present | E2 |
-    // | R3 | absent | absent | E3 |
+    // | Rule | Run claim | realization | Memory input | Effect |
+    // | R1 | present | absent | exact | E1 |
+    // | R2 | any | exact | exact | E2 |
+    // | R3 | absent | absent/zero | exact | E3 |
+    // | R4 | any | stale | exact | E4 |
+    // | R5 | any | exact | foreign | E4 |
     let events = Arc::new(Mutex::new(Vec::new()));
+    let realization_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub")
             .with_worker_upstream(awaken_worker_transport_security::WorkerUpstream::new(
@@ -185,6 +196,7 @@ async fn remote_memory_staging_uses_the_session_realization_lease_without_a_run_
             ))
             .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
                 events: events.clone(),
+                realization_attempts: realization_attempts.clone(),
             })),
     );
     let managed = crate::ManagedHost::new(host);
@@ -296,6 +308,130 @@ async fn remote_memory_staging_uses_the_session_realization_lease_without_a_run_
         "R2 lease generation is part of the cache authority"
     );
 
+    fn reference(staged: &crate::provisioning::StagedResources) -> Option<&str> {
+        let awaken_provisioning_contract::MountSource::MemoryStore {
+            materialization_reference,
+            ..
+        } = &staged.mounts[0].source
+        else {
+            panic!("expected one typed Memory mount")
+        };
+        materialization_reference.as_deref()
+    }
+    let claim = awaken_dispatch_contract::RunClaim {
+        run_id: RunId("realization-run".into()),
+        owner: "realization-memory-worker".into(),
+        epoch: 2,
+    };
+    let run_only = managed
+        .stage_resolved_input("realization-workspace", &input, Some(&claim), None, None)
+        .await
+        .expect("R1 Run claim alone");
+    assert_eq!(reference(&run_only), Some("run-v1-reference"), "R1/E1");
+    assert_eq!(
+        realization_attempts.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "R1 does not call the Session encoder"
+    );
+    let both = managed
+        .stage_resolved_input(
+            "realization-workspace",
+            &input,
+            Some(&claim),
+            Some(("realization-memory-session", 5, &lease)),
+            None,
+        )
+        .await
+        .expect("R2 Session realization supersedes a Run claim");
+    assert_eq!(reference(&both), Some("realization-v3-reference"), "R2/E2");
+    assert_eq!(
+        realization_attempts.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "R2 invokes the exact Session encoder once"
+    );
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        &[
+            "encode-realization-v3",
+            "encode-realization-v3",
+            "encode-run-v1",
+            "encode-realization-v3",
+        ],
+        "R1/R2 select distinct existing encoders"
+    );
+
+    let stale = awaken_session_resource_contract::SessionRealizationLease {
+        epoch: 1,
+        ..lease.clone()
+    };
+    let stale_error = match managed
+        .stage_resolved_input(
+            "realization-workspace",
+            &input,
+            Some(&claim),
+            Some(("realization-memory-session", 5, &stale)),
+            None,
+        )
+        .await
+    {
+        Ok(_) => panic!("R4 stale Session lease unexpectedly encoded"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        stale_error.kind,
+        awaken_session_error_contract::RunErrorKind::Internal,
+        "R4 encoder rejection remains closed"
+    );
+    let mut foreign_input = input.clone();
+    foreign_input.binding_id = awaken_resource_contract::BindingId::from("foreign-memory");
+    let foreign_error = match managed
+        .stage_resolved_input(
+            "realization-workspace",
+            &foreign_input,
+            None,
+            Some(("realization-memory-session", 5, &lease)),
+            None,
+        )
+        .await
+    {
+        Ok(_) => panic!("R5 foreign Memory input unexpectedly encoded"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        foreign_error.kind,
+        awaken_session_error_contract::RunErrorKind::Internal,
+        "R5 encoder rejection remains closed"
+    );
+    assert_eq!(
+        realization_attempts.load(std::sync::atomic::Ordering::SeqCst),
+        5,
+        "R4/R5 each reach the existing encoder exactly once"
+    );
+    assert_eq!(events.lock().unwrap().len(), 4, "R4/R5 no mount reference");
+    let zero_error = match managed
+        .stage_resolved_input(
+            "realization-workspace",
+            &input,
+            None,
+            Some(("realization-memory-session", 0, &lease)),
+            None,
+        )
+        .await
+    {
+        Ok(_) => panic!("R3 zero revision unexpectedly encoded"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        zero_error.kind,
+        awaken_session_error_contract::RunErrorKind::BadRequest,
+        "R3 zero revision rejects at outer admission"
+    );
+    assert_eq!(
+        realization_attempts.load(std::sync::atomic::Ordering::SeqCst),
+        5,
+        "R3 zero revision never reaches encoder"
+    );
+
     let error = match managed
         .stage_prevalidated_resource_transition_under_resource_projection(
             "unfenced-realization-memory-session",
@@ -315,6 +451,12 @@ async fn remote_memory_staging_uses_the_session_realization_lease_without_a_run_
             .contains("dispatch claim or Session realization lease"),
         "R3/E3: {error:?}"
     );
+    assert_eq!(
+        realization_attempts.load(std::sync::atomic::Ordering::SeqCst),
+        5,
+        "R3 no fence never reaches encoder"
+    );
+    assert_eq!(events.lock().unwrap().len(), 4, "R3 no mount reference");
 }
 
 struct RecordingTerminalMemoryMounter {
@@ -827,6 +969,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         ))
         .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
             events: events.clone(),
+            realization_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }))
         .with_session_container_provider(
             provider,
@@ -1752,6 +1895,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             ))
             .with_memory_reference_encoder(Arc::new(RecordingTerminalMemoryReferenceEncoder {
                 events: events.clone(),
+                realization_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }))
             .with_session_container_provider(
                 provider,
