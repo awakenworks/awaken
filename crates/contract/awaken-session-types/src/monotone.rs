@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn source_order_classifies_revisions_and_dominance() {
+    fn projection_convergence_source_order_classifies_revisions_and_dominance() {
         // Revisions: nothing installed or larger => Newer; equal => Equal;
         // smaller => Behind, including the u64 extremes.
         for (current, incoming, order) in [
