@@ -53,6 +53,24 @@ fn acp_web_tool_disposition(
 }
 
 impl crate::host::SharedHost {
+    /// Both web plugins consume the same Workspace-pinned credential boundary.
+    /// The extension registry and the exact materializer remain their existing
+    /// owners; assembling this resolver twice would let their custody drift.
+    fn web_credentials(
+        &self,
+        thread: &str,
+    ) -> Option<Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>> {
+        self.exec
+            .credential_materializer
+            .clone()
+            .map(|materializer| {
+                Arc::new(HostWebSearchCredentialResolver::new(
+                    materializer,
+                    self.thread_workspace(thread),
+                )) as Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>
+            })
+    }
+
     /// Build the one configured WebSearch plugin used by both root and delegated
     /// Native runtimes. Provider selection stays in the immutable publication;
     /// this adapter supplies only the Worker-held credential materialization edge.
@@ -61,20 +79,10 @@ impl crate::host::SharedHost {
         thread: &str,
         execution_configuration: Option<awaken_ext_builtin_tools::WebSearchExecutionConfiguration>,
     ) -> Arc<awaken_ext_builtin_tools::WebSearchPlugin> {
-        let credentials = self
-            .exec
-            .credential_materializer
-            .clone()
-            .map(|materializer| {
-                Arc::new(HostWebSearchCredentialResolver::new(
-                    materializer,
-                    self.thread_workspace(thread),
-                )) as Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>
-            });
         Arc::new(
             awaken_ext_builtin_tools::WebSearchPlugin::new(
                 self.tools.web_search_providers.clone(),
-                credentials,
+                self.web_credentials(thread),
             )
             .with_execution_configuration(execution_configuration),
         )
@@ -87,20 +95,10 @@ impl crate::host::SharedHost {
         thread: &str,
         execution_configuration: Option<awaken_ext_builtin_tools::WebFetchExecutionConfiguration>,
     ) -> Arc<awaken_ext_builtin_tools::WebFetchPlugin> {
-        let credentials = self
-            .exec
-            .credential_materializer
-            .clone()
-            .map(|materializer| {
-                Arc::new(HostWebSearchCredentialResolver::new(
-                    materializer,
-                    self.thread_workspace(thread),
-                )) as Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>
-            });
         Arc::new(
             awaken_ext_builtin_tools::WebFetchPlugin::new(
                 self.tools.web_search_providers.clone(),
-                credentials,
+                self.web_credentials(thread),
             )
             .with_execution_configuration(execution_configuration),
         )
@@ -196,6 +194,7 @@ impl WebSearchCredentialResolver for HostWebSearchCredentialResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_runtime_contract::tool::{ToolCall, ToolError};
     use awaken_runtime_contract::{
@@ -284,21 +283,50 @@ mod tests {
         );
     }
 
-    struct PaidProbe;
+    fn paid_provider_descriptor() -> (
+        String,
+        String,
+        awaken_ext_builtin_tools::WebSearchCredentialRequirement,
+        serde_json::Value,
+    ) {
+        (
+            "brave".into(),
+            "Paid probe".into(),
+            awaken_ext_builtin_tools::WebSearchCredentialRequirement::Exact(
+                CredentialUsage::HttpHeader {
+                    name: "X-Subscription-Token".into(),
+                    scheme: None,
+                },
+            ),
+            serde_json::json!({ "type": "object" }),
+        )
+    }
+
+    fn verify_paid_header(
+        credential: Option<&awaken_credential::Credential>,
+    ) -> Result<(), ToolError> {
+        let header = credential
+            .and_then(awaken_credential::Credential::header)
+            .ok_or_else(|| ToolError::DefinitiveFailure("missing paid wire credential".into()))?;
+        if header != ("X-Subscription-Token".into(), "paid-search-key".into()) {
+            return Err(ToolError::DefinitiveFailure("wrong paid material".into()));
+        }
+        Ok(())
+    }
+
+    struct PaidProbe {
+        calls: Arc<AtomicUsize>,
+    }
 
     #[async_trait::async_trait]
     impl awaken_ext_builtin_tools::WebSearchProvider for PaidProbe {
         fn descriptor(&self) -> awaken_ext_builtin_tools::WebSearchProviderDescriptor {
+            let (id, label, credential, options_schema) = paid_provider_descriptor();
             awaken_ext_builtin_tools::WebSearchProviderDescriptor {
-                id: "brave".into(),
-                label: "Paid probe".into(),
-                credential: awaken_ext_builtin_tools::WebSearchCredentialRequirement::Exact(
-                    CredentialUsage::HttpHeader {
-                        name: "X-Subscription-Token".into(),
-                        scheme: None,
-                    },
-                ),
-                options_schema: serde_json::json!({ "type": "object" }),
+                id,
+                label,
+                credential,
+                options_schema,
             }
         }
 
@@ -307,14 +335,8 @@ mod tests {
             request: awaken_ext_builtin_tools::WebSearchRequest,
             credential: Option<&awaken_credential::Credential>,
         ) -> Result<Vec<awaken_ext_builtin_tools::WebSearchResult>, ToolError> {
-            let header = credential
-                .and_then(awaken_credential::Credential::header)
-                .ok_or_else(|| {
-                    ToolError::DefinitiveFailure("missing paid wire credential".into())
-                })?;
-            if header != ("X-Subscription-Token".into(), "paid-search-key".into()) {
-                return Err(ToolError::DefinitiveFailure("wrong paid material".into()));
-            }
+            verify_paid_header(credential)?;
+            self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(vec![awaken_ext_builtin_tools::WebSearchResult {
                 title: request.query,
                 url: "https://paid.test/result".into(),
@@ -323,8 +345,38 @@ mod tests {
         }
     }
 
+    /// Test-only Fetch consumer of the same exact paid wire requirement.
+    struct PaidFetchProbe {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_ext_builtin_tools::WebFetchProvider for PaidFetchProbe {
+        fn descriptor(&self) -> awaken_ext_builtin_tools::WebFetchProviderDescriptor {
+            let (id, label, credential, options_schema) = paid_provider_descriptor();
+            awaken_ext_builtin_tools::WebFetchProviderDescriptor {
+                id,
+                label,
+                credential,
+                options_schema,
+            }
+        }
+
+        async fn fetch(
+            &self,
+            request: awaken_ext_builtin_tools::WebFetchRequest,
+            credential: Option<&awaken_credential::Credential>,
+            domain_filters: &[awaken_ext_builtin_tools::WebDomainFilter],
+        ) -> Result<String, ToolError> {
+            assert!(domain_filters.is_empty(), "R7 Fetch has no domain filter");
+            verify_paid_header(credential)?;
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(format!("paid fetch: {}", request.url))
+        }
+    }
+
     #[tokio::test]
-    async fn exact_web_search_credential_is_fenced_before_plaintext() {
+    async fn web_plugins_share_exact_credential_custody_without_sharing_tool_grants() {
         use awaken_credential_vault::repo::{
             CredentialRepo, InMemoryCredentialRepo, enter_credential_described,
         };
@@ -337,6 +389,12 @@ mod tests {
         // requested revision; R3 wrong Workspace; R4 provider mismatch; R5
         // source rotated after publication; R6 source disabled after rotation.
         // R2-R6 reject in the materializer before a Provider receives a header.
+        // C7 plugin={Search,Fetch}; C8 materializer={installed,missing}; C9
+        // tool grant={Search only,Fetch only}; C10 domain filters={empty}.
+        // R7 exact+installed grants each plugin one invocation, with no Fetch
+        // domain filter; R8 missing/foreign denies both before provider
+        // I/O; R9 either single-tool grant blocks the other for Native and ACP.
+        // The shared resolver changes no tool surface or permission authority.
         let repo: Arc<dyn CredentialRepo> = Arc::new(InMemoryCredentialRepo::new());
         let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
         let usage = CredentialUsage::HttpHeader {
@@ -393,42 +451,185 @@ mod tests {
             awaken_runtime_contract::credential::CredentialPurpose::WebProviderAuthorization,
             "brave",
         ));
-        let resolver = Arc::new(HostWebSearchCredentialResolver::new(
-            materializer.clone(),
-            "workspace-a".into(),
-        ));
+        let search_calls = Arc::new(AtomicUsize::new(0));
+        let fetch_calls = Arc::new(AtomicUsize::new(0));
+        let mut providers =
+            awaken_ext_builtin_tools::WebSearchProviderRegistry::try_new([Arc::new(PaidProbe {
+                calls: search_calls.clone(),
+            })
+                as Arc<dyn awaken_ext_builtin_tools::WebSearchProvider>])
+            .unwrap();
+        providers
+            .register_fetch(Arc::new(PaidFetchProbe {
+                calls: fetch_calls.clone(),
+            }))
+            .unwrap();
+        let host = crate::host::SharedHost::new(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .with_local_workspace("workspace-a")
+        .with_credential_materializer(materializer.clone())
+        .with_web_search_provider_registry(providers.clone());
+        let resolver = host.web_credentials("bound-thread").unwrap();
         assert_eq!(
             resolver.resolve(&access, "brave").await.unwrap().header(),
             Some(("X-Subscription-Token".into(), "paid-search-key".into()))
         );
-        let providers =
-            awaken_ext_builtin_tools::WebSearchProviderRegistry::try_new([
-                Arc::new(PaidProbe) as Arc<dyn awaken_ext_builtin_tools::WebSearchProvider>
-            ])
+
+        let published = serde_json::json!({
+            "provider_id": "brave",
+            "credential_access": access,
+            "options": {},
+        });
+        let without_materializer = crate::host::SharedHost::new(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .with_local_workspace("workspace-a")
+        .with_web_search_provider_registry(providers.clone());
+        assert!(
+            without_materializer
+                .web_search_plugin("bound-thread", None)
+                .configured_tool(Some(&published))
+                .is_err(),
+            "R8 Search requires a materializer"
+        );
+        assert!(
+            without_materializer
+                .web_fetch_plugin("bound-thread", None)
+                .configured_tool(Some(&published))
+                .is_err(),
+            "R8 Fetch requires a materializer"
+        );
+
+        let foreign = crate::host::SharedHost::new(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .with_local_workspace("workspace-b")
+        .with_credential_materializer(materializer.clone())
+        .with_web_search_provider_registry(providers);
+        let (_, foreign_search) = foreign
+            .web_search_plugin("bound-thread", None)
+            .configured_tool(Some(&published))
             .unwrap();
-        let plugin =
-            awaken_ext_builtin_tools::WebSearchPlugin::new(providers, Some(resolver.clone()));
-        let (_, paid_tool) = plugin
-            .configured_tool(Some(&serde_json::json!({
-                "provider_id": "brave",
-                "credential_access": access,
-                "options": {},
-            })))
+        let (_, foreign_fetch) = foreign
+            .web_fetch_plugin("bound-thread", None)
+            .configured_tool(Some(&published))
             .unwrap();
-        let output = paid_tool
+        for (tool, call) in [
+            (
+                foreign_search,
+                ToolCall {
+                    call_id: "foreign-search".into(),
+                    tool_id: awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID.into(),
+                    arguments: serde_json::json!({ "query": "ddd" }),
+                },
+            ),
+            (
+                foreign_fetch,
+                ToolCall {
+                    call_id: "foreign-fetch".into(),
+                    tool_id: awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID.into(),
+                    arguments: serde_json::json!({ "url": "https://paid.test/result" }),
+                },
+            ),
+        ] {
+            assert!(tool.invoke(call).await.is_err(), "R8 foreign Workspace");
+        }
+        assert_eq!(search_calls.load(Ordering::SeqCst), 0, "R8/E2 Search");
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 0, "R8/E2 Fetch");
+
+        let (_, paid_search) = host
+            .web_search_plugin("bound-thread", None)
+            .configured_tool(Some(&published))
+            .unwrap();
+        let (_, paid_fetch) = host
+            .web_fetch_plugin("bound-thread", None)
+            .configured_tool(Some(&published))
+            .unwrap();
+        let search_output = paid_search
             .invoke(ToolCall {
-                call_id: "paid-e2e".into(),
+                call_id: "paid-search".into(),
                 tool_id: awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID.into(),
                 arguments: serde_json::json!({ "query": "ddd" }),
             })
             .await
             .unwrap();
-        assert!(output.text().contains("https://paid.test/result"));
+        let fetch_output = paid_fetch
+            .invoke(ToolCall {
+                call_id: "paid-fetch".into(),
+                tool_id: awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID.into(),
+                arguments: serde_json::json!({ "url": "https://paid.test/result" }),
+            })
+            .await
+            .unwrap();
+        assert!(search_output.text().contains("https://paid.test/result"));
+        assert!(fetch_output.text().contains("paid fetch"));
+        assert_eq!(search_calls.load(Ordering::SeqCst), 1, "R7/E1 Search");
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 1, "R7/E1 Fetch");
+
+        use awaken_runtime_contract::agent_bindings::{
+            ResolvedConfiguration, ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+        use awaken_runtime_contract::permission::GateOutcomeKind;
+        for (granted, blocked) in [
+            (
+                awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID,
+                awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID,
+            ),
+            (
+                awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID,
+                awaken_ext_builtin_tools::WEB_SEARCH_TOOL_ID,
+            ),
+        ] {
+            let allowed = ToolExecutionPolicy::default();
+            let authorization = crate::config::effective_tool_authorization(
+                &ResolvedConfiguration::default(),
+                &[],
+                &[ToolsetPolicy {
+                    source: ToolsetSource::Agent,
+                    default: ToolExecutionPolicy {
+                        enabled: false,
+                        ..allowed
+                    },
+                    overrides: vec![ToolPolicyOverride::new(granted, allowed)],
+                }],
+            );
+            for (tool_id, expected) in [
+                (granted, GateOutcomeKind::Allow),
+                (blocked, GateOutcomeKind::Block),
+            ] {
+                let call = ToolCall {
+                    call_id: format!("grant-{tool_id}"),
+                    tool_id: tool_id.into(),
+                    arguments: serde_json::json!({}),
+                };
+                let native = authorization
+                    .gate
+                    .gate(&call, &awaken_agent_contract::agent::state::Store::new())
+                    .await;
+                let acp = authorization.policy.evaluate(&call).await;
+                assert_eq!(native.outcome.kind(), expected, "R9 Native {tool_id}");
+                assert_eq!(
+                    acp.verdict.kind().gate_outcome_kind(),
+                    expected,
+                    "R9 ACP {tool_id}"
+                );
+            }
+        }
+        assert_eq!(search_calls.load(Ordering::SeqCst), 1, "R9/E3 Search");
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 1, "R9/E3 Fetch");
+
         let mut stale = access.clone();
         stale.credential.revision = 2;
         assert!(resolver.resolve(&stale, "brave").await.is_err());
         assert!(
-            HostWebSearchCredentialResolver::new(materializer.clone(), "workspace-b".into())
+            foreign
+                .web_credentials("bound-thread")
+                .unwrap()
                 .resolve(&access, "brave")
                 .await
                 .is_err()
