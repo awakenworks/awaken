@@ -77,7 +77,7 @@ impl SharedHost {
                     .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
                         awaken_tenancy::ScopeId::from(workspace),
                     ))
-                    .with_tool_executor(environment.tool_executor())
+                    .with_tool_executor(environment.agent_tools().tool_executor())
                     .with_tool_output_spiller(Arc::new(
                         crate::tool_output_spill::SandboxToolOutputSpiller::new(
                             environment.clone(),

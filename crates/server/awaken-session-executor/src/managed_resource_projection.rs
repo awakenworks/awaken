@@ -778,6 +778,7 @@ impl crate::ManagedHost {
         }
         if let Some(environment) = &live_environment {
             environment
+                .projection()
                 .validate_live_mount_replacement(&previous_mounts, &desired_mounts)
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
 
@@ -785,7 +786,7 @@ impl crate::ManagedHost {
             // Skill, credential, Vault, cache, or Repository. Persist that
             // conservative reservation first, under the exact aggregate
             // transition identity; every later effect is therefore replayable.
-            let source_binding = serde_json::to_string(&environment.handle())
+            let source_binding = serde_json::to_string(&environment.lifecycle().handle())
                 .map_err(|error| RunError::internal(error.to_string()))?;
             let reserved_paths = if transition.previous() != transition.desired() {
                 desired_manifest
@@ -831,10 +832,10 @@ impl crate::ManagedHost {
                     | awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned => {
                         for path in reserved_paths {
                             environment
-                                .reserve_owned_path(&path)
+                                .projection().reserve_owned_path(&path)
                                 .map_err(|error| RunError::internal(error.to_string()))?;
                         }
-                        let binding = serde_json::to_string(&environment.handle())
+                        let binding = serde_json::to_string(&environment.lifecycle().handle())
                             .map_err(|error| RunError::internal(error.to_string()))?;
                         self.host
                             .persist_authorized_environment_binding(thread, binding, &effect)
@@ -895,6 +896,7 @@ impl crate::ManagedHost {
         let new = &compiled.staged;
         let projection_update = match &live_environment {
             Some(environment) => environment
+                .projection()
                 .begin_live_projection_update()
                 .await
                 .map_err(|error| RunError::internal(error.to_string()))?,
@@ -924,6 +926,7 @@ impl crate::ManagedHost {
             // can safely retry without mistaking an unrealized mount for success.
             if reconcile_skills {
                 environment
+                    .projection()
                     .remove_projection_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?;
@@ -939,6 +942,7 @@ impl crate::ManagedHost {
                         let path =
                             crate::managed_resource_projection::resolved_input_effect_path(input);
                         environment
+                            .projection()
                             .remove_projection_path(&path)
                             .await
                             .map_err(|error| RunError::internal(error.to_string()))?;
@@ -947,6 +951,7 @@ impl crate::ManagedHost {
             }
             if reconciliation == crate::session_slot::EnvironmentResourceReconciliation::Adopted {
                 environment
+                    .projection()
                     .reconcile_adopted_mounts(&self.host.thread_session_mounts(thread))
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?;
@@ -1021,6 +1026,7 @@ impl crate::ManagedHost {
                                 continue;
                             }
                             environment
+                                .projection()
                                 .attach_mount(mount.clone())
                                 .await
                                 .map_err(|error| RunError::internal(error.to_string()))?;
@@ -1042,7 +1048,7 @@ impl crate::ManagedHost {
                                     thread,
                                     repository,
                                     &new.binding_checks,
-                                    environment.as_ref(),
+                                    environment.repositories().as_ref(),
                                 )
                                 .await
                                 .map_err(|error| RunError::internal(error.to_string()))?;
@@ -1160,7 +1166,7 @@ impl ManagedLayoutValidationScope<'_> {
     fn network_isolation(self) -> bool {
         match self {
             Self::Structural => true,
-            Self::Exact(provider) => provider.capabilities().network_isolation,
+            Self::Exact(provider) => provider.realizer().capabilities().network_isolation,
         }
     }
 }
@@ -1345,9 +1351,13 @@ impl crate::SharedHost {
                 network_isolation: scope.network_isolation(),
             },
         );
-        let historical_owned_paths = live_environment
-            .as_ref()
-            .and_then(|environment| environment.handle().owned_paths().map(<[String]>::to_vec));
+        let historical_owned_paths = live_environment.as_ref().and_then(|environment| {
+            environment
+                .lifecycle()
+                .handle()
+                .owned_paths()
+                .map(<[String]>::to_vec)
+        });
         if live_environment.is_some()
             && !repository_paths.is_empty()
             && historical_owned_paths.is_none()

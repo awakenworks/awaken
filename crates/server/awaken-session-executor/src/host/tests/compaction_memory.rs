@@ -705,13 +705,14 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     let sandbox_roots = tempfile::tempdir().unwrap();
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_roots.path().to_path_buf(),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     let host = Arc::new(raw_host);
     install_test_memory_mounter(&host);
     let store = test_memory_store_id();
@@ -784,7 +785,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         .join("memory-replay/mnt/memory/seed.md");
     assert_eq!(std::fs::read(&memory_file).unwrap(), b"seed");
     std::fs::write(&memory_file, b"agent edit without newline").unwrap();
-    let original_handle = environment.handle();
+    let original_handle = environment.lifecycle().handle();
 
     // R-ACK: installed Memory is complete, but Control still carries the
     // original empty→Memory command. Both callers must succeed without a new
@@ -807,7 +808,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         std::fs::read(&memory_file).unwrap(),
         b"agent edit without newline"
     );
-    assert_eq!(environment.handle(), original_handle);
+    assert_eq!(environment.lifecycle().handle(), original_handle);
 
     // Reproduce the active-active recovery state observed in the black-box
     // pressure test: the durable sandbox binding is resident, while this process
@@ -931,7 +932,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             installed,
             "{field}"
         );
-        assert_eq!(environment.handle(), original_handle, "{field}");
+        assert_eq!(environment.lifecycle().handle(), original_handle, "{field}");
         assert_eq!(
             std::fs::read(&memory_file).unwrap(),
             b"agent edit without newline",

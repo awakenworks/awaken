@@ -356,12 +356,10 @@ impl crate::SharedHost {
     async fn refresh_session_execution(&self) -> Result<(), crate::HostError> {
         let outcomes = stream::iter(self.session_slots.execution_environments())
             .map(|environment| async move {
-                let crate::session_environment::SessionEnvironment::Workdir { sandbox, .. } =
-                    environment.as_ref()
-                else {
-                    unreachable!()
+                let Some(scoped) = environment.scoped_execution() else {
+                    unreachable!("execution environments are exactly the scoped ones")
                 };
-                sandbox
+                scoped
                     .refresh_scoped_execution()
                     .await
                     .map_err(|error| crate::HostError::internal(error.to_string()))

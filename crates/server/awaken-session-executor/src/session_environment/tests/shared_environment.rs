@@ -12,7 +12,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     // Decision rules: H1+H2+H3 => E1+E2; +H4 => E3+E2; no Hand configured => E4.
     let base = tempfile::tempdir().unwrap();
     let mut provider =
-        SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
+        SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
     provider.install_workdir_hand(
         Arc::new(FakeHandExecutorFactory),
         base.path()
@@ -21,6 +21,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
             .into_owned(),
         std::time::Duration::ZERO,
     );
+    let provider = provider.into_session_provider();
     let create_fence =
         pc::SandboxEffectFence::new("create-hand", "owner", "runtime", 1, u64::MAX).unwrap();
     // C5 fenced creation has no source/denied source/current source. The first
@@ -34,6 +35,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     );
     assert!(
         provider
+            .realizer()
             .create_effective_for_effect(
                 &spec(),
                 crate::session_environment::ProviderEffect::Fenced {
@@ -41,13 +43,14 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
                     authority: &denied,
                 },
                 None,
-                awaken_container_contract::EnvironmentRealizationIntent::Create
+                awaken_session_environment_contract::EnvironmentRealizationKind::Create
             )
             .await
             .is_err()
     );
     assert_eq!(std::fs::read_dir(base.path()).unwrap().count(), 0);
     let environment = provider
+        .realizer()
         .create_effective_for_effect(
             &spec(),
             crate::session_environment::ProviderEffect::Fenced {
@@ -57,11 +60,11 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .unwrap();
-    let executor = environment.tool_executor();
+    let executor = environment.agent_tools().tool_executor();
     let call = ToolCall {
         call_id: "no-fallback".into(),
         tool_id: "write".into(),
@@ -69,10 +72,10 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     };
     let (first, second) = tokio::join!(executor.invoke(&call), executor.invoke(&call));
     assert!(first.is_err() && second.is_err());
-    let SessionEnvironment::Workdir {
+    let SandboxEnvironment::Workdir {
         sandbox,
         hand: Some(hand),
-    } = &environment
+    } = environment.sandbox_environment()
     else {
         panic!("installed Hand")
     };
@@ -87,17 +90,23 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     // cannot become a different Native prompt path by accident.
     assert_eq!(
         environment
+            .agent_tools()
             .agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::NativeTools)
             .prompt_paths,
         crate::managed_resource_projection::AgentPathView::workdir_relative("/workspace")
     );
-    let handle = environment.handle();
+    let handle = environment.lifecycle().handle();
     // H5 retained TrustedHost + installed Hand + revoked old wrapper => reuse
     // the exact physical Sandbox, create a fresh lazy Hand, and retain the
     // mandatory launch failure (never fall back to direct filesystem access).
     // H5 shares H2's missing executable so no platform-specific helper is needed.
-    environment.stop_bound_processes().await.unwrap();
+    environment
+        .lifecycle()
+        .stop_bound_processes()
+        .await
+        .unwrap();
     let rebound = provider
+        .adoption()
         .rebind_retained(
             &spec(),
             &handle,
@@ -107,32 +116,43 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         .await
         .unwrap();
     let (
-        SessionEnvironment::Workdir {
+        SandboxEnvironment::Workdir {
             sandbox: before,
             hand: Some(old_hand),
         },
-        SessionEnvironment::Workdir {
+        SandboxEnvironment::Workdir {
             sandbox: after,
             hand: Some(new_hand),
         },
-    ) = (&environment, &rebound)
+    ) = (
+        environment.sandbox_environment(),
+        rebound.sandbox_environment(),
+    )
     else {
         panic!("H5 mandatory Hand survives retained rebind");
     };
     assert!(Arc::ptr_eq(before, after), "H5 same physical workspace");
     assert!(!Arc::ptr_eq(old_hand, new_hand), "H5 fresh Hand wrapper");
-    assert!(rebound.tool_executor().invoke(&call).await.is_err());
+    assert!(
+        rebound
+            .agent_tools()
+            .tool_executor()
+            .invoke(&call)
+            .await
+            .is_err()
+    );
     assert!(
         !before
             .workspace_path()
             .join("workspace/must-not-exist")
             .exists()
     );
-    rebound.stop_bound_processes().await.unwrap();
+    rebound.lifecycle().stop_bound_processes().await.unwrap();
     drop(rebound);
     drop(executor);
     drop(environment);
     let adopted = provider
+        .adoption()
         .adopt_effective_for_effect(
             &spec(),
             &handle,
@@ -143,11 +163,19 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         )
         .await
         .unwrap();
-    assert!(adopted.tool_executor().invoke(&call).await.is_err());
-    adopted.stop_bound_processes().await.unwrap();
+    assert!(
+        adopted
+            .agent_tools()
+            .tool_executor()
+            .invoke(&call)
+            .await
+            .is_err()
+    );
+    adopted.lifecycle().stop_bound_processes().await.unwrap();
     let terminal =
         pc::SandboxEffectFence::new("terminal-hand", "owner", "runtime", 1, u64::MAX).unwrap();
     let prepared = adopted
+        .lifecycle()
         .prepare_disposal_for_effect(
             &terminal,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&terminal),
@@ -156,6 +184,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         .unwrap();
     let authorization = restart_disposal_authorization(prepared, "hand-adoption");
     adopted
+        .lifecycle()
         .dispose_for_effect(
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -164,16 +193,33 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
         )
         .await
         .unwrap();
-    let relocated = provider.at_root(base.path().join("relocated"));
+    let relocated =
+        crate::session_environment::relocated_provider(&provider, base.path().join("relocated"));
     let environment = relocated.create(&spec()).await.unwrap();
-    assert!(environment.tool_executor().invoke(&call).await.is_err());
-    environment.dispose().await.unwrap();
-    let plain = SessionEnvironmentProvider::workdir(base.path().join("plain"))
+    assert!(
+        environment
+            .agent_tools()
+            .tool_executor()
+            .invoke(&call)
+            .await
+            .is_err()
+    );
+    environment.lifecycle().dispose().await.unwrap();
+    let plain = SandboxEnvironmentProvider::workdir(base.path().join("plain"))
+        .into_session_provider()
         .create(&spec())
         .await
         .unwrap();
-    assert!(!plain.tool_executor().invoke(&call).await.unwrap().is_error);
-    plain.dispose().await.unwrap();
+    assert!(
+        !plain
+            .agent_tools()
+            .tool_executor()
+            .invoke(&call)
+            .await
+            .unwrap()
+            .is_error
+    );
+    plain.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -185,7 +231,8 @@ async fn trusted_host_live_resource_admission_keeps_readonly_advisory() {
     // enforced-readonly capability or creating another mount path.
     let base = tempfile::tempdir().unwrap();
     let provider =
-        SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
+        SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false)
+            .into_session_provider();
     let environment = provider.create(&spec()).await.unwrap();
     let readonly = pc::MountRequirement {
         mount_id: "late-file".into(),
@@ -198,15 +245,20 @@ async fn trusted_host_live_resource_admission_keeps_readonly_advisory() {
         required: true,
     };
     environment
+        .projection()
         .validate_live_mount_replacement(&[], std::slice::from_ref(&readonly))
         .expect("TrustedHost admits advisory read-only managed resources");
-    assert!(!environment.capabilities().enforced_readonly);
+    assert!(!environment.projection().capabilities().enforced_readonly);
     // L1 trusted + inline RO => attach exact bytes and Copy receipt;
     // L2 repeat => idempotent bytes; L3 invalid hash => preserve previous bytes;
     // L4 escape => reject; L5 unresolved source => reject. Admission alone is
     // insufficient: each rule crosses the actual provider attachment port.
     for _ in 0..2 {
-        let realized = environment.attach_mount(readonly.clone()).await.unwrap();
+        let realized = environment
+            .projection()
+            .attach_mount(readonly.clone())
+            .await
+            .unwrap();
         assert_eq!(realized.realization, pc::Realization::Copy);
     }
     let mut invalid = readonly.clone();
@@ -214,18 +266,36 @@ async fn trusted_host_live_resource_admission_keeps_readonly_advisory() {
         contents: b"wrong".to_vec(),
         content_hash: Some("sha256:wrong".into()),
     };
-    assert!(environment.attach_mount(invalid).await.is_err(), "L3");
+    assert!(
+        environment
+            .projection()
+            .attach_mount(invalid)
+            .await
+            .is_err(),
+        "L3"
+    );
     let mut escape = readonly.clone();
     escape.mount_path = "/../escape.txt".into();
-    assert!(environment.attach_mount(escape).await.is_err(), "L4");
+    assert!(
+        environment.projection().attach_mount(escape).await.is_err(),
+        "L4"
+    );
     let mut unresolved = readonly;
     unresolved.source = pc::MountSource::MemoryStore {
         store_id: "late-store".into(),
         materialization_reference: None,
         write_consistency: Default::default(),
     };
-    assert!(environment.attach_mount(unresolved).await.is_err(), "L5");
+    assert!(
+        environment
+            .projection()
+            .attach_mount(unresolved)
+            .await
+            .is_err(),
+        "L5"
+    );
     let files = environment
+        .harvest()
         .list_frozen_mount_files("/mnt/session/uploads")
         .await
         .unwrap();
@@ -233,7 +303,7 @@ async fn trusted_host_live_resource_admission_keeps_readonly_advisory() {
         files.iter().any(|(_, bytes)| bytes == b"late"),
         "L1/L3 preserved bytes"
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -249,11 +319,14 @@ async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
     // T4 Workdir+mixed=>reject. A selected mount alias is not a general root alias.
     let base = tempfile::tempdir().unwrap();
     let provider =
-        SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
+        SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false)
+            .into_session_provider();
     let environment = provider.create(&spec()).await.unwrap();
-    let root = AgentSandbox::workspace_cwd(&environment);
+    let root = environment.agent_process().workspace_cwd();
 
-    let default = environment.agent_filesystem_view(None, AgentFilesystemClient::AcpProcess);
+    let default = environment
+        .agent_tools()
+        .agent_filesystem_view(None, AgentFilesystemClient::AcpProcess);
     assert_eq!(
         default.protocol_cwd,
         std::path::Path::new(&root)
@@ -268,8 +341,9 @@ async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
         "T1/E5"
     );
 
-    let configured =
-        environment.agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
+    let configured = environment
+        .agent_tools()
+        .agent_filesystem_view(Some("repo/src"), AgentFilesystemClient::AcpProcess);
     assert_eq!(
         configured.protocol_cwd,
         std::path::Path::new(&root)
@@ -285,7 +359,9 @@ async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
         crate::managed_resource_projection::AgentPathView::workdir_relative("/workspace/repo/src"),
         "T2/E5"
     );
-    let native = environment.agent_filesystem_view(None, AgentFilesystemClient::NativeTools);
+    let native = environment
+        .agent_tools()
+        .agent_filesystem_view(None, AgentFilesystemClient::NativeTools);
     assert_eq!(
         native.prompt_paths,
         crate::managed_resource_projection::AgentPathView::workdir_relative("/"),
@@ -295,11 +371,12 @@ async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
     assert_eq!(native.command_cwd, "/");
     assert!(
         environment
+            .agent_tools()
             .agent_prompt_path_view(None, true, true)
             .is_err(),
         "T4 mixed Workdir path consumers"
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -314,13 +391,17 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
     for cwd in [None, Some("项目 repo/src")] {
         let base = tempfile::tempdir().unwrap();
         let provider =
-            SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
+            SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false)
+                .into_session_provider();
         let environment = provider.create(&spec()).await.unwrap();
         environment
+            .agent_process()
             .materialize_inline("/workspace/项目 repo/src/.keep", b"")
             .await
             .unwrap();
-        let view = environment.agent_filesystem_view(cwd, AgentFilesystemClient::AcpProcess);
+        let view = environment
+            .agent_tools()
+            .agent_filesystem_view(cwd, AgentFilesystemClient::AcpProcess);
         let logical = "/mnt/session/uploads/资料 brief.txt";
         let input = awaken_session_resource_contract::ResolvedInput {
             created_at_unix_ms: None,
@@ -334,6 +415,7 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
             instructions: Some("{{awaken.resource.path}}".into()),
         };
         environment
+            .agent_tools()
             .tool_executor()
             .invoke(&ToolCall {
                 call_id: "native-before-acp".into(),
@@ -374,12 +456,17 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
             visibility: pc::EnvVisibility::Process,
         })
         .collect();
-        let (agent, mut channel) = environment.spawn_agent(command.clone()).await.unwrap();
+        let (agent, mut channel) = environment
+            .agent_process()
+            .spawn_agent(command.clone())
+            .await
+            .unwrap();
         let mut output = String::new();
         channel.read_to_string(&mut output).await.unwrap();
         assert_eq!(agent.wait().await.unwrap().code, Some(0), "{output}");
         assert!(output.contains("FILESYSTEM_CHILD_OK"));
         let read = environment
+            .agent_tools()
             .tool_executor()
             .invoke(&ToolCall {
                 call_id: "native-after-acp".into(),
@@ -390,29 +477,41 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
             .unwrap();
         assert!(read.text().contains("acp-bytes"), "E3");
         command.cwd = logical.into();
-        assert!(environment.spawn_agent(command).await.is_err(), "W3");
+        assert!(
+            environment
+                .agent_process()
+                .spawn_agent(command)
+                .await
+                .is_err(),
+            "W3"
+        );
         // W4 retained Workdir + either cwd -> same physical owner and exact
         // ACP-written bytes; rebind must not adopt or replace the workspace.
         let rebound = provider
+            .adoption()
             .rebind_retained(
                 &spec(),
-                &environment.handle(),
+                &environment.lifecycle().handle(),
                 &environment,
                 crate::session_environment::ProviderEffect::Unattached,
             )
             .await
             .unwrap();
         let (
-            SessionEnvironment::Workdir {
+            SandboxEnvironment::Workdir {
                 sandbox: before, ..
             },
-            SessionEnvironment::Workdir { sandbox: after, .. },
-        ) = (&environment, &rebound)
+            SandboxEnvironment::Workdir { sandbox: after, .. },
+        ) = (
+            environment.sandbox_environment(),
+            rebound.sandbox_environment(),
+        )
         else {
             unreachable!()
         };
         assert!(Arc::ptr_eq(before, after), "W4 owner");
         let retained = rebound
+            .agent_tools()
             .tool_executor()
             .invoke(&ToolCall {
                 call_id: "native-after-rebind".into(),
@@ -422,7 +521,7 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
             .await
             .unwrap();
         assert!(retained.text().contains("acp-bytes"), "W4 bytes");
-        rebound.dispose().await.unwrap();
+        rebound.lifecycle().dispose().await.unwrap();
     }
 }
 
@@ -503,16 +602,20 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         return;
     }
     let namespace = provider.create_sandbox(&namespace_spec).await.unwrap();
-    let environment = SessionEnvironment::namespace(
+    let environment = SandboxEnvironment::namespace(
         namespace,
         Arc::new(FakeHandExecutorFactory),
         "/bin/sh",
         std::time::Duration::ZERO,
-    );
+    )
+    .into_session_environment();
     #[cfg(target_os = "macos")]
     assert_eq!(environment.handle().provider_kind(), "seatbelt");
     #[cfg(not(target_os = "macos"))]
-    assert_eq!(environment.handle().provider_kind(), "bubblewrap");
+    assert_eq!(
+        environment.lifecycle().handle().provider_kind(),
+        "bubblewrap"
+    );
 
     let mut native_command = pc::Command::new([
         "/bin/sh",
@@ -520,10 +623,19 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         "printf namespace-state > /workspace/process-marker",
     ]);
     native_command.cwd = pc::WorkspaceLayout::ROOT.into();
-    let native = environment.sandbox().spawn(native_command).await.unwrap();
+    let native = environment
+        .sandbox_environment()
+        .sandbox()
+        .spawn(native_command)
+        .await
+        .unwrap();
     assert_eq!(native.wait().await.unwrap().code, Some(0));
 
-    let typed_files = environment.list_workspace_files("").await.unwrap();
+    let typed_files = environment
+        .sandbox_environment()
+        .list_workspace_files("")
+        .await
+        .unwrap();
     assert!(
         typed_files.iter().any(|(path, bytes)| {
             path.ends_with("process-marker") && bytes.as_slice() == b"namespace-state"
@@ -531,11 +643,13 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         "N1/E1 typed file reads the process-authored /workspace bytes: {typed_files:?}"
     );
     environment
+        .projection()
         .write_workspace_file("typed-marker", b"typed-state")
         .await
         .unwrap();
 
     let hand_output = environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "namespace-hand".into(),
@@ -552,7 +666,11 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         "cat /workspace/process-marker; printf '|'; cat /workspace/typed-marker",
     ]);
     agent_command.cwd = pc::WorkspaceLayout::ROOT.into();
-    let (agent, mut channel) = environment.spawn_agent(agent_command).await.unwrap();
+    let (agent, mut channel) = environment
+        .agent_process()
+        .spawn_agent(agent_command)
+        .await
+        .unwrap();
     let mut output = String::new();
     channel.read_to_string(&mut output).await.unwrap();
     assert_eq!(agent.wait().await.unwrap().code, Some(0));
@@ -560,8 +678,12 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
 
     // N3 a revoked Namespace wrapper -> same physical Sandbox Arc and root,
     // fresh Hand, and successful agent I/O. The closed prior Hand stays closed.
-    environment.stop_bound_processes().await.unwrap();
-    let selected = SessionEnvironmentProvider::Namespace {
+    environment
+        .lifecycle()
+        .stop_bound_processes()
+        .await
+        .unwrap();
+    let selected = SandboxEnvironmentProvider::Namespace {
         provider,
         hand_factory: Arc::new(FakeHandExecutorFactory),
         hand_bin: "/bin/sh".into(),
@@ -570,27 +692,34 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
     let rebound = selected
         .rebind_retained(
             &crate::session_environment::environment_test_spec(),
-            &environment.handle(),
+            &environment.lifecycle().handle(),
             &environment,
             crate::session_environment::ProviderEffect::Unattached,
         )
         .await
         .unwrap();
     let (
-        SessionEnvironment::Namespace {
+        SandboxEnvironment::Namespace {
             sandbox: before, ..
         },
-        SessionEnvironment::Namespace { sandbox: after, .. },
-    ) = (&environment, &rebound)
+        SandboxEnvironment::Namespace { sandbox: after, .. },
+    ) = (
+        environment.sandbox_environment(),
+        rebound.sandbox_environment(),
+    )
     else {
         unreachable!()
     };
     assert!(Arc::ptr_eq(before, after), "N3 physical owner");
     assert!(
-        !Arc::ptr_eq(&environment.tool_executor(), &rebound.tool_executor()),
+        !Arc::ptr_eq(
+            &environment.agent_tools().tool_executor(),
+            &rebound.agent_tools().tool_executor()
+        ),
         "N3 fresh Hand"
     );
     let (agent, mut channel) = rebound
+        .agent_process()
         .spawn_agent(pc::Command::new([
             "/bin/sh",
             "-c",
@@ -605,7 +734,7 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         bytes, "typed-state",
         "N3 new Hand still owns the original root"
     );
-    rebound.dispose().await.unwrap();
+    rebound.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -622,21 +751,23 @@ async fn skill_paths_follow_the_materialization_layout_and_attempt_client() {
     for tier in ["rooted", "hand", "namespace", "container"] {
         let root = tempfile::tempdir().unwrap();
         let provider = match tier {
-            "namespace" => SessionEnvironmentProvider::namespace_with_agent_stderr(
+            "namespace" => SandboxEnvironmentProvider::namespace_with_agent_stderr(
                 root.path(),
                 false,
                 Arc::new(FakeHandExecutorFactory),
                 "/bin/sh",
                 std::time::Duration::ZERO,
-            ),
-            "container" => SessionEnvironmentProvider::container(
+            )
+            .into_session_provider(),
+            "container" => SandboxEnvironmentProvider::container(
                 Arc::new(FakeContainerProvider::default()),
                 Vec::new(),
                 Arc::new(FakeHandExecutorFactory),
                 "/bin/sh",
-            ),
+            )
+            .into_session_provider(),
             _ => {
-                let mut provider = SessionEnvironmentProvider::workdir(root.path());
+                let mut provider = SandboxEnvironmentProvider::workdir(root.path());
                 if tier == "hand" {
                     provider.install_workdir_hand(
                         Arc::new(FakeHandExecutorFactory),
@@ -644,7 +775,7 @@ async fn skill_paths_follow_the_materialization_layout_and_attempt_client() {
                         std::time::Duration::ZERO,
                     );
                 }
-                provider
+                provider.into_session_provider()
             }
         };
         let environment = provider.create(&spec()).await.unwrap();
@@ -653,7 +784,7 @@ async fn skill_paths_follow_the_materialization_layout_and_attempt_client() {
             AgentFilesystemClient::AcpProcess,
         ] {
             for cwd in [None, Some("repo/src")] {
-                let view = environment.agent_filesystem_view(cwd, client);
+                let view = environment.agent_tools().agent_filesystem_view(cwd, client);
                 for directory in [
                     ".skills/s",
                     "workspace/repo/.claude/skills/s",
@@ -683,7 +814,10 @@ async fn skill_paths_follow_the_materialization_layout_and_attempt_client() {
                     } else {
                         "repo/.claude/skills/s"
                     };
-                    let logical = environment.skill_directory_path(directory).unwrap();
+                    let logical = environment
+                        .skills()
+                        .skill_directory_path(directory)
+                        .unwrap();
                     assert_eq!(
                         view.prompt_paths.render(&logical),
                         if expected.starts_with('/') {
@@ -704,23 +838,24 @@ async fn skill_paths_follow_the_materialization_layout_and_attempt_client() {
             "skill\0escape",
         ] {
             assert!(
-                environment.skill_directory_path(bad).is_err(),
+                environment.skills().skill_directory_path(bad).is_err(),
                 "P5 {tier} {bad:?}"
             );
         }
-        environment.dispose().await.unwrap();
+        environment.lifecycle().dispose().await.unwrap();
     }
 }
 
 #[tokio::test]
 async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
     let provider = Arc::new(FakeContainerProvider::default());
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -728,29 +863,36 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
         provider.creates.load(std::sync::atomic::Ordering::SeqCst),
         1
     );
-    assert_eq!(environment.handle().provider_kind(), "container");
-    assert!(AgentSandbox::is_container(&environment));
+    assert_eq!(
+        environment.lifecycle().handle().provider_kind(),
+        "container"
+    );
+    assert!(environment.agent_process().is_container());
     // Config-home placement decision table:
     // C1=environment already exists; C2=root may be read-only; C3=workspace
     // is the provider's writable Session boundary. C1+C2+C3 requires both
     // the exposed and materialization paths to stay under /workspace.
     assert_eq!(
-        AgentSandbox::config_home(&environment),
+        environment.agent_process().config_home(),
         "/workspace/.acp-config"
     );
     assert_eq!(
-        AgentSandbox::config_home_logical(&environment),
+        environment.agent_process().config_home_logical(),
         "/workspace/.acp-config"
     );
 
-    AgentSandbox::materialize_inline(&environment, "/workspace/direct.bin", b"direct")
+    environment
+        .agent_process()
+        .materialize_inline("/workspace/direct.bin", b"direct")
         .await
         .unwrap();
     environment
+        .projection()
         .write_workspace_file("projected.bin", b"projected")
         .await
         .unwrap();
     environment
+        .skills()
         .materialize_read_only_tree(
             "generated-skills",
             &[("skill/SKILL.md".into(), b"generated".to_vec(), false)],
@@ -758,17 +900,20 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
         .await
         .unwrap();
     environment
+        .projection()
         .remove_projection_path("projected.bin")
         .await
         .unwrap();
 
     let native = environment
+        .sandbox_environment()
         .sandbox()
         .spawn(pc::Command::new(["sh", "-c", "write marker"]))
         .await
         .unwrap();
     assert_eq!(native.wait().await.unwrap().code, Some(0));
     let (agent, mut channel) = environment
+        .agent_process()
         .spawn_agent(pc::Command::new(["sh", "-c", "cat marker"]))
         .await
         .unwrap();
@@ -777,8 +922,8 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
     assert_eq!(agent.wait().await.unwrap().code, Some(0));
     assert_eq!(output, "shared-container-state");
 
-    let hand = environment.tool_executor();
-    environment.register_skill_dir("skills");
+    let hand = environment.agent_tools().tool_executor();
+    environment.skills().register_skill_dir("skills");
     provider.shared.lock().unwrap().insert(
         "authored/SKILL.md".into(),
         b"---\ndescription: authored\n---\nbody".to_vec(),
@@ -792,13 +937,17 @@ async fn container_native_tools_and_acp_share_one_environment_and_bound_hand() {
         .await
         .unwrap();
     assert!(result.text().contains("bound-hand-ok"));
-    let skills = environment.scan_skill_dir("skills").unwrap();
+    let skills = environment.skills().scan_skill_dir("skills").unwrap();
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].id, "authored");
     assert_eq!(skills[0].dir, "skills/authored");
-    environment.refresh_skills().await.unwrap();
-    environment.stop_bound_processes().await.unwrap();
-    environment.dispose().await.unwrap();
+    environment.skills().refresh_skills().await.unwrap();
+    environment
+        .lifecycle()
+        .stop_bound_processes()
+        .await
+        .unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -820,12 +969,13 @@ async fn managed_skill_refresh_propagates_container_read_failure() {
         .unwrap()
         .insert("__fail_skill_read".into(), Vec::new());
     let environment = Arc::new(
-        SessionEnvironmentProvider::container(
+        SandboxEnvironmentProvider::container(
             provider,
             Vec::new(),
             Arc::new(FakeHandExecutorFactory),
             "/usr/local/bin/awaken-sandbox",
         )
+        .into_session_provider()
         .create(&spec())
         .await
         .unwrap(),
@@ -850,7 +1000,7 @@ async fn managed_skill_refresh_propagates_container_read_failure() {
         }
     };
     assert!(error.contains("scripted Skill read outage"), "SR2: {error}");
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -865,16 +1015,17 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
      * test); PT2=perception+refresh-fails-if-run=>normal result here;
      * PT3=content-mutation+refresh-error=>E2+E3 here. */
     let provider = Arc::new(FakeContainerProvider::default());
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
-    environment.register_skill_dir("skills");
+    environment.skills().register_skill_dir("skills");
     provider
         .shared
         .lock()
@@ -882,6 +1033,7 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
         .insert("__fail_skill_read".into(), Vec::new());
 
     let perception = environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "read-only".into(),
@@ -893,6 +1045,7 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
     assert_eq!(perception.text(), "bound-hand-ok", "PT2");
 
     let error = environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "controlled-refresh".into(),
@@ -910,12 +1063,14 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
         "PT3 original refresh diagnostic: {error}"
     );
     let stale = environment
+        .skills()
         .scan_skill_dir("skills")
         .expect_err("PT3 invalidation must not expose the last-good catalog");
     assert!(stale.to_string().contains("unavailable"), "PT3: {stale}");
     assert!(
         matches!(
             environment
+                .agent_tools()
                 .tool_executor()
                 .invoke(&ToolCall {
                     call_id: "no-replay".into(),
@@ -927,7 +1082,7 @@ async fn controlled_modification_fails_when_post_tool_skill_refresh_fails() {
         ),
         "PT3 closed Hand rejects every later dispatch"
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -938,16 +1093,17 @@ async fn post_dispatch_refresh_failure_cannot_hide_an_unknown_hand_effect() {
     use awaken_runtime_contract::tool::ToolError;
     let provider = Arc::new(FakeContainerProvider::default());
     let factory = ScriptedHandFactory::new([ScriptedHandOutcome::Indeterminate]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         factory.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
-    environment.register_skill_dir("skills");
+    environment.skills().register_skill_dir("skills");
     provider
         .shared
         .lock()
@@ -959,16 +1115,24 @@ async fn post_dispatch_refresh_failure_cannot_hide_an_unknown_hand_effect() {
         arguments: serde_json::json!({}),
     };
     assert!(matches!(
-        environment.tool_executor().invoke(&call).await,
+        environment
+            .agent_tools()
+            .tool_executor()
+            .invoke(&call)
+            .await,
         Err(ToolError::Indeterminate(_))
     ));
     assert!(matches!(
-        environment.tool_executor().invoke(&call).await,
+        environment
+            .agent_tools()
+            .tool_executor()
+            .invoke(&call)
+            .await,
         Err(ToolError::UnavailableBeforeDispatch(_))
     ));
-    assert!(environment.scan_skill_dir("skills").is_err());
+    assert!(environment.skills().scan_skill_dir("skills").is_err());
     assert_eq!(factory.binds.load(std::sync::atomic::Ordering::SeqCst), 1);
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -987,12 +1151,13 @@ async fn managed_skill_refresh_rejects_invalid_container_skill_bytes() {
         .unwrap()
         .insert("broken/SKILL.md".into(), vec![0xff, 0xfe]);
     let environment = Arc::new(
-        SessionEnvironmentProvider::container(
+        SandboxEnvironmentProvider::container(
             provider,
             Vec::new(),
             Arc::new(FakeHandExecutorFactory),
             "/usr/local/bin/awaken-sandbox",
         )
+        .into_session_provider()
         .create(&spec())
         .await
         .unwrap(),
@@ -1017,7 +1182,7 @@ async fn managed_skill_refresh_rejects_invalid_container_skill_bytes() {
         }
     };
     assert!(error.contains("UTF-8"), "SU2: {error}");
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -1063,23 +1228,24 @@ async fn prepared_image_is_the_only_environment_to_container_image_conversion() 
     }
 
     let provider = Arc::new(FakeContainerProvider::default());
-    let environments = SessionEnvironmentProvider::container(
+    let environments = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
-    );
+    )
+    .into_session_provider();
     let unprepared =
         crate::provisioning::environment_capacity_projection(&snapshot(None), true).spec;
     let environment = environments.create(&unprepared).await.unwrap();
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 
     let digest = "registry.example/awaken@sha256:0123456789abcdef";
     let prepared =
         crate::provisioning::environment_capacity_projection(&snapshot(Some(digest.into())), true)
             .spec;
     let environment = environments.create(&prepared).await.unwrap();
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 
     let specs = provider.specs.lock().unwrap();
     assert_eq!(specs.len(), 2, "I1/I2 provider boundary");

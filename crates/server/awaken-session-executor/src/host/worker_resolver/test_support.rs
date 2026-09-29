@@ -263,6 +263,7 @@ pub(crate) async fn available_local_environment_binding(
     )
     .expect("create available-Environment fixture fence");
     let environment = provider
+        .realizer()
         .create_effective_for_effect(
             &spec,
             crate::session_environment::ProviderEffect::Fenced {
@@ -272,11 +273,11 @@ pub(crate) async fn available_local_environment_binding(
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .expect("create typed available-Environment fixture");
-    let binding = serde_json::to_string(&environment.handle())
+    let binding = serde_json::to_string(&environment.lifecycle().handle())
         .expect("serialize typed available-Environment fixture");
     drop(environment);
     binding

@@ -983,12 +983,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         SharedHost::new_with_deployment(Arc::new(OkModel), "stub", backend_deployment)
             .with_acp(executor.clone());
     backend_secure_host.env.backend_owned_session_provider = Some(
-        crate::session_environment::SessionEnvironmentProvider::container(
+        crate::session_environment::SandboxEnvironmentProvider::container(
             Arc::new(SecureExternalProvider),
             Vec::new(),
             Arc::new(UnusedHandFactory),
             "/bin/sh",
-        ),
+        )
+        .into_session_provider(),
     );
     let backend_secure_host = Arc::new(backend_secure_host);
     backend_secure_host.register_thread_backend_projection("mcp-acp-backend-secure", "acp:test");
@@ -1026,7 +1027,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             Arc::new(UnusedHandFactory),
         );
     default_secure_host.env.backend_owned_session_provider = Some(
-        crate::session_environment::SessionEnvironmentProvider::workdir(weak_backend_root.path()),
+        crate::session_environment::SandboxEnvironmentProvider::workdir(weak_backend_root.path())
+            .into_session_provider(),
     );
     let default_secure_host = Arc::new(default_secure_host);
     default_secure_host.register_thread_backend_projection("mcp-acp-backend-weak", "acp:test");

@@ -89,11 +89,11 @@ impl TerminalEffectMode {
     /// A stopped process environment cannot supply the attached-exec file read
     /// used by Container. Filesystem providers retain direct data access after
     /// their marker becomes terminal. Neither row proves prior preparation.
-    const fn for_terminal_source(container: bool) -> Self {
-        if container {
-            Self::RecoverOnlyUnprepared
-        } else {
+    const fn for_terminal_source(data_readable: bool) -> Self {
+        if data_readable {
             Self::LiveUnprepared
+        } else {
+            Self::RecoverOnlyUnprepared
         }
     }
 }
@@ -373,7 +373,7 @@ impl SharedHost {
                     && let SessionEnvironmentOwner::Retiring(current) = &slot.environment_owner
                     && current.cause == SessionEnvironmentRetirementCause::RecoveryDiscard
                     && Arc::ptr_eq(&current.owned.environment(), expected)
-                    && current.owned.environment().handle() == expected.handle()
+                    && current.owned.environment().lifecycle().handle() == expected.lifecycle().handle()
                 {
                     (
                         ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,
@@ -386,7 +386,7 @@ impl SharedHost {
                         &slot.environment_owner,
                         SessionEnvironmentOwner::Resident(current)
                             if Arc::ptr_eq(&current.environment, expected)
-                                && current.environment.handle() == expected.handle()
+                                && current.environment.lifecycle().handle() == expected.lifecycle().handle()
                     )
                 {
                     (
@@ -514,7 +514,7 @@ impl SharedHost {
                 SessionEnvironmentOwner::Resident(owned)
                     if owned.identity == expected_identity
                         && owned.binding == source_binding
-                        && serde_json::to_string(&owned.environment.handle())
+                        && serde_json::to_string(&owned.environment.lifecycle().handle())
                             .is_ok_and(|binding| binding == source_binding) =>
                 {
                     Some(owned.environment.clone())
@@ -536,7 +536,7 @@ impl SharedHost {
     ) -> Option<awaken_provisioning_contract::SandboxHandle> {
         self.session_environment(thread)
             .await
-            .map(|env| env.handle())
+            .map(|env| env.lifecycle().handle())
     }
 
     /// Install only the process-local projection of durable Environment truth.
@@ -583,7 +583,7 @@ impl SharedHost {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) {
-        let binding = serde_json::to_string(&environment.handle())
+        let binding = serde_json::to_string(&environment.lifecycle().handle())
             .expect("test Environment handle serializes");
         let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
             thread,
@@ -700,14 +700,15 @@ impl SharedHost {
             })
             .transpose()?;
         if let Some(candidate) = &candidate
-            && (candidate.binding != encoded || candidate.environment.handle() != handle)
+            && (candidate.binding != encoded
+                || candidate.environment.lifecycle().handle() != handle)
         {
             return Err(HostError::internal(
                 "Session Environment retry conflicts with its hidden Candidate binding",
             ));
         }
         if let Some(environment) = resident.as_ref() {
-            let resident_handle = environment.handle();
+            let resident_handle = environment.lifecycle().handle();
             if resident_handle != handle {
                 return Err(HostError::internal(format!(
                     "Session {thread} is already bound to sandbox {}, not {}",
@@ -790,9 +791,10 @@ impl SharedHost {
             return Ok(());
         };
         let environment = retiring.owned.environment();
-        let handle = environment.handle();
+        let handle = environment.lifecycle().handle();
         let neutral_spec = self.session_environment_adoption_spec(thread, provider, None);
         let spec = provider
+            .adoption()
             .effective_adoption_layout(&neutral_spec, &handle)
             .map_err(|error| {
                 HostError::classified(
@@ -802,12 +804,13 @@ impl SharedHost {
             })?
             .spec;
         let observation = provider
+            .adoption()
             .observe_effective(
                 &spec,
                 &handle,
                 Some(environment.as_ref()),
                 awaken_provisioning_contract::SandboxObservationBasis::Unattached,
-                awaken_container_contract::ContainerObservationPurpose::Recovery,
+                awaken_session_environment_contract::ObservationPurpose::Recovery,
             )
             .await
             .map_err(|error| {
@@ -830,7 +833,7 @@ impl SharedHost {
                 ..
             } => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| {
                         HostError::classified(
                             "session_environment_observation_incompatible",
@@ -848,7 +851,7 @@ impl SharedHost {
             @ (awaken_provisioning_contract::SandboxObservation::Terminal { .. }
             | awaken_provisioning_contract::SandboxObservation::Disposing { .. }) => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| {
                         HostError::classified(
                             "session_environment_observation_incompatible",
@@ -1017,12 +1020,13 @@ impl SharedHost {
             )
         })?;
         let observation = provider
+            .adoption()
             .observe_effective(
                 &spec,
                 &handle,
                 retained,
                 provider_effect.observation_basis(&spec),
-                awaken_container_contract::ContainerObservationPurpose::Recovery,
+                awaken_session_environment_contract::ObservationPurpose::Recovery,
             )
             .await
             .map_err(|error| {
@@ -1068,11 +1072,11 @@ impl SharedHost {
                     (None, None) => {
                         let rebound = match revoked_owner.as_ref() {
                             Some(retiring) => provider
-                                .rebind_retained(&spec, &handle, &retiring.owned.environment(),
+                                .adoption().rebind_retained(&spec, &handle, &retiring.owned.environment(),
                                     provider_effect)
                                 .await,
                             None => provider
-                                .adopt_effective_for_effect(&spec, &handle, provider_effect)
+                                .adoption().adopt_effective_for_effect(&spec, &handle, provider_effect)
                                 .await,
                         };
                         admit_original()?;
@@ -1174,6 +1178,7 @@ impl SharedHost {
             observation,
         } = recovery;
         provider
+            .adoption()
             .validate_closed_observation(handle, observation)
             .map_err(|error| HostError::internal(error.to_string()))?;
         // Cause/effect decision table: C1 exact provider evidence is closed;
@@ -1281,7 +1286,7 @@ impl SharedHost {
                 (!same_generation).then(|| environment.clone())
             }).flatten();
             let Some(environment) = selected else { return Ok(None) };
-            if !matches!(environment.as_ref(), crate::session_environment::SessionEnvironment::Workdir { sandbox, .. } if sandbox.has_scoped_execution()) {
+            if environment.scoped_execution().is_none() {
                 return Ok(None);
             }
             self.retire_current_environment(thread,
@@ -1294,7 +1299,7 @@ impl SharedHost {
             // Cancellation leaves the same Retiring owner for the next caller.
             let (mcp, execution) = tokio::join!(
                 self.drain_mcp_projections(thread, &[]),
-                environment.stop_bound_processes(),
+                environment.lifecycle().stop_bound_processes(),
             );
             mcp?;
             execution.map_err(|error| HostError::internal(error.to_string()))?;
@@ -1354,13 +1359,19 @@ impl SharedHost {
         thread: &str,
         retirement: &RetiringSessionEnvironment,
     ) -> Result<bool, HostError> {
+        use crate::session_environment::SandboxEnvironmentAccess as _;
         let environment = retirement.owned.environment();
         environment
+            .lifecycle()
             .stop_bound_processes()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        self.observe_retirement_status(thread, retirement, environment.status().await)
-            .map_err(|error| HostError::internal(error.to_string()))
+        self.observe_retirement_status(
+            thread,
+            retirement,
+            environment.sandbox_environment().status().await,
+        )
+        .map_err(|error| HostError::internal(error.to_string()))
     }
 
     async fn dispose_and_confirm_retirement(
@@ -1370,6 +1381,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         let environment = retirement.owned.environment();
         environment
+            .lifecycle()
             .dispose()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
@@ -1488,6 +1500,7 @@ impl SharedHost {
         )?;
         owned
             .environment
+            .lifecycle()
             .dispose_for_effect(authorization, &authority)
             .await
             .map_err(|error| HostError::unavailable(error.to_string()))?;
@@ -1592,6 +1605,7 @@ impl SharedHost {
                 _ => retirement
                     .owned
                     .environment()
+                    .lifecycle()
                     .stop_bound_processes()
                     .await
                     .map(|_| ())
@@ -1712,12 +1726,12 @@ mod terminal_output_tests {
             ),
         ];
         assert_eq!(
-            TerminalEffectMode::for_terminal_source(false),
+            TerminalEffectMode::for_terminal_source(true),
             TerminalEffectMode::LiveUnprepared,
             "HT0 filesystem data remains readable"
         );
         assert_eq!(
-            TerminalEffectMode::for_terminal_source(true),
+            TerminalEffectMode::for_terminal_source(false),
             TerminalEffectMode::RecoverOnlyUnprepared,
             "HT0 Container terminal source requires receipt-only reads and still needs preparation"
         );

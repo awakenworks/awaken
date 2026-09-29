@@ -14,9 +14,10 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     // an Environment-free context retains the existing `brain` key.
     let thread = "durable-background-generation";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let physical_id = environment.handle().sandbox_id;
+    let physical_id = environment.lifecycle().handle().sandbox_id;
     let durable_generation = generation(thread);
     assert_ne!(physical_id, durable_generation.id(), "C2");
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
@@ -26,7 +27,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
                 effect_id: format!("effect-{thread}"),
                 generation: durable_generation.clone(),
             },
-            binding: serde_json::to_string(&environment.handle()).unwrap(),
+            binding: serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
             environment: environment.clone(),
         });
     });
@@ -146,13 +147,14 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             )
             .await
             .expect("C1 create provider-effective terminal Sandbox");
-        let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-            physical,
-        ));
-        let physical_id = environment.handle().sandbox_id;
+        let environment = Arc::new(
+            crate::session_environment::SandboxEnvironment::workdir(physical)
+                .into_session_environment(),
+        );
+        let physical_id = environment.lifecycle().handle().sandbox_id;
         let durable_generation = generation(thread);
         assert_ne!(physical_id, durable_generation.id(), "C2");
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let identity = if durable {
             BoundSessionEnvironmentIdentity::Durable {
                 effect_id: create_fence.operation_id().to_owned(),
@@ -210,6 +212,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         .unwrap();
         assert!(
             environment
+                .skills()
                 .scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR)
                 .unwrap()
                 .iter()
@@ -336,7 +339,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E1 zero Skill harvest"
         );
         assert_eq!(
-            environment.status().await.unwrap(),
+            environment.sandbox_environment().status().await.unwrap(),
             SandboxStatus::Ready,
             "E1"
         );
@@ -393,7 +396,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E3 cleanup cannot self-promote an Agent-authored Skill; explicit publication remains the canonical owner"
         );
         assert_eq!(
-            environment.status().await.unwrap(),
+            environment.sandbox_environment().status().await.unwrap(),
             SandboxStatus::Ready,
             "E3 Preparation is non-destructive"
         );
@@ -434,7 +437,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             .await
             .expect("C5 aggregate-authorized physical Disposal");
         assert_eq!(
-            environment.status().await.unwrap(),
+            environment.sandbox_environment().status().await.unwrap(),
             SandboxStatus::Terminated,
             "E4 one physical disposal"
         );

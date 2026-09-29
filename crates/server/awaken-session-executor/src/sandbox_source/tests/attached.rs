@@ -1,7 +1,6 @@
 //! Lifecycle decision rows through the existing production channel source.
 
 use super::*;
-use crate::session_environment::AgentSandbox;
 use awaken_runtime_contract::tool_export::{AcpToolExport, AcpToolExporter};
 use pc::ProcessHandle as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -83,7 +82,7 @@ impl Sandbox {
 }
 
 #[async_trait]
-impl AgentSandbox for Sandbox {
+impl awaken_session_environment_contract::AgentProcessEnvironment for Sandbox {
     fn is_container(&self) -> bool {
         true
     }

@@ -50,7 +50,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     std::fs::write(&retired_sentinel, b"owned by the retiring Environment")
         .expect("RR1 retiring root sentinel");
     host.install_test_resident_session_environment(thread, environment.clone());
-    let original_hand = environment.tool_executor();
+    let original_hand = environment.agent_tools().tool_executor();
     let agent_id = snapshot.root_agent_id.0.clone();
     let cached = host
         .ctx_for_snapshot(thread, Some(agent_id.as_str()), Some(snapshot))
@@ -89,7 +89,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
         "RR2/E2 closed owner replaced"
     );
     assert!(
-        !Arc::ptr_eq(&original_hand, &rebuilt.tool_executor()),
+        !Arc::ptr_eq(&original_hand, &rebuilt.agent_tools().tool_executor()),
         "RR2/E2 rebuilt Environment owns a fresh Hand"
     );
     assert!(
@@ -125,7 +125,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .await
         .expect("R21/C1 ordinary direct Runtime");
     let ready = ready_runtime.env.clone().expect("R21/C2 Ready Environment");
-    let ready_binding = serde_json::to_string(&ready.handle()).unwrap();
+    let ready_binding = serde_json::to_string(&ready.lifecycle().handle()).unwrap();
     let ready_owner = ready_host
         .session_slots
         .read(ready_thread, |slot| slot.environment_owner.clone())
@@ -198,8 +198,12 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .env
         .clone()
         .expect("R21/C3 terminated Environment");
-    let terminated_binding = serde_json::to_string(&terminated.handle()).unwrap();
-    terminated.dispose().await.expect("C3 terminated provider");
+    let terminated_binding = serde_json::to_string(&terminated.lifecycle().handle()).unwrap();
+    terminated
+        .lifecycle()
+        .dispose()
+        .await
+        .expect("C3 terminated provider");
     let disposition = missing_host
         .adopt_bound_session_environment(
             missing_thread,
@@ -238,9 +242,10 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     // would be rejected by the retirement priority fence before any rebuild.
     let thread = "closed-revoked-durable-rebuild";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let source_generation = generation(thread).id().to_owned();
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     host.session_slots.update(thread, |slot| {
@@ -348,7 +353,8 @@ async fn closed_recovery_cannot_override_protected_retirements() {
     // C3 rebuild is enabled. R2 C1+C2+C3 => error, identical protected fence,
     // no rebuild predecessor. Physical absence is not lifecycle authority.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     for terminal in [false, true] {
         let thread = if terminal {
             "closed-terminal"
@@ -356,7 +362,7 @@ async fn closed_recovery_cannot_override_protected_retirements() {
             "closed-checkpoint"
         };
         let environment = environment(&provider, thread).await;
-        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
         host.session_slots.update(thread, |slot| {
             slot.environment_owner = resident(thread, environment.clone());
@@ -413,18 +419,23 @@ async fn stale_same_binding_retirement_cannot_clear_an_aba_replacement() {
     // cannot clear replacement; E2 replacement's exact observation clears.
     // Decision rules R17/R19: C1+C2+C3=>E1; exact replacement=>E2.
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let first = environment(&provider, "aba-retirement").await;
     let second = Arc::new(
         provider
             .adopt(
                 &crate::provisioning::agent_run_sandbox_spec("aba-retirement"),
-                &first.handle(),
+                &first.lifecycle().handle(),
             )
             .await
             .unwrap(),
     );
-    assert_eq!(first.handle(), second.handle(), "R17/C1");
+    assert_eq!(
+        first.lifecycle().handle(),
+        second.lifecycle().handle(),
+        "R17/C1"
+    );
     assert!(!Arc::ptr_eq(&first, &second), "R17/C2");
 
     // R17 also covers revoked-owner completion: neither same binding nor same
@@ -480,9 +491,10 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     // `source_release_preparation_is_withheld_for_an_absent_pod_with_live_claim`.
     let thread = "checkpoint-owner-fence";
     let root = tempfile::tempdir().unwrap();
-    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let binding = serde_json::to_string(&environment.handle()).unwrap();
+    let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
     host.session_slots.update(thread, |slot| {
         // Test fixture write remains inside the sole lifecycle-owner module.

@@ -66,9 +66,10 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 let thread = "current-upload-host";
                 let root = tempfile::tempdir().unwrap();
                 let provider =
-                    crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+                    crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+                        .into_session_provider();
                 let environment = environment(&provider, thread).await;
-                let binding = serde_json::to_string(&environment.handle()).unwrap();
+                let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
                 let lease = awaken_session_resource_contract::SessionRealizationLease {
                     owner: "upload-worker".into(),
                     runtime_incarnation: "boot".into(),

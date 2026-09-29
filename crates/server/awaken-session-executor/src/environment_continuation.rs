@@ -244,7 +244,7 @@ impl ManagedHost {
             .await
             .map_err(to_run_error)?;
         self.continuation_effect_fence(thread, operation)?;
-        environment.quiesce().await.map_err(|error| {
+        environment.lifecycle().quiesce().await.map_err(|error| {
             RunError::unavailable_classified(
                 "session_environment_hand_not_quiescent",
                 error.to_string(),
@@ -319,6 +319,7 @@ impl ManagedHost {
         )
         .map_err(|error| RunError::unavailable(error.to_string()))?;
         let checkpoint = environment
+            .lifecycle()
             .checkpoint_for_effect(&provider_request, store.as_ref(), &effect_fence, &authority)
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
@@ -444,6 +445,7 @@ impl ManagedHost {
                 )
                 .map_err(to_run_error)?;
             environment
+                .lifecycle()
                 .acknowledge_memory_reconciliation(&effect_fence, materializations, &authority)
                 .await
                 .map_err(|error| {
@@ -464,6 +466,7 @@ impl ManagedHost {
             )
             .map_err(to_run_error)?;
         let provider_prepared_effect_fence = environment
+            .lifecycle()
             .prepare_disposal_for_effect(&effect_fence, &authority)
             .await
             .map_err(|error| {
@@ -582,6 +585,7 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let spec = self.host.sandbox_spec_for_provider(&thread, provider);
         let handle = provider
+            .terminal()
             .restore(&spec, &request, store.as_ref())
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;

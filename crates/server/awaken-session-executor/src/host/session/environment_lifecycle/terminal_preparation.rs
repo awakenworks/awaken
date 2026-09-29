@@ -27,7 +27,8 @@ impl SharedHost {
                     ) =>
                 {
                     let current = retirement.owned.environment();
-                    Arc::ptr_eq(&current, environment) && current.handle() == environment.handle()
+                    Arc::ptr_eq(&current, environment)
+                        && current.lifecycle().handle() == environment.lifecycle().handle()
                 }
                 _ => false,
             })
@@ -139,6 +140,7 @@ impl SharedHost {
                 BoundEnvironmentPreparationMode::LiveSource
                 | BoundEnvironmentPreparationMode::TerminalRepositoryPublication => Arc::new(
                     provider
+                        .adoption()
                         .adopt_effective_for_effect(
                             spec,
                             handle.ok_or_else(|| {
@@ -162,6 +164,7 @@ impl SharedHost {
                 BoundEnvironmentPreparationMode::Terminal
                 | BoundEnvironmentPreparationMode::TerminalDisposal => {
                     let Some(environment) = provider
+                        .terminal()
                         .prepare_terminal_effective_for_effect(
                             spec,
                             handle,
@@ -225,9 +228,10 @@ impl SharedHost {
             admit()?;
             let fresh = Arc::new(
                 provider
+                    .adoption()
                     .rebind_retained(
                         spec,
-                        &environment.handle(),
+                        &environment.lifecycle().handle(),
                         &environment,
                         crate::session_environment::ProviderEffect::Fenced {
                             fence: effect_fence,
@@ -285,7 +289,8 @@ impl SharedHost {
                 retiring.cause,
                 SessionEnvironmentRetirementCause::Terminal { .. }
             ) || binding != Some(retiring.owned.binding())
-                || environment.handle() != retiring.owned.environment().handle()
+                || environment.lifecycle().handle()
+                    != retiring.owned.environment().lifecycle().handle()
             {
                 return Err(HostError::unavailable_classified(
                     "session_terminal_environment_owner_changed",
@@ -320,7 +325,8 @@ impl SharedHost {
                         .read(thread, |slot| {
                             slot.environment_owner.resident().is_some_and(|current| {
                                 Arc::ptr_eq(&current, &environment)
-                                    && current.handle() == environment.handle()
+                                    && current.lifecycle().handle()
+                                        == environment.lifecycle().handle()
                             })
                         })
                         .unwrap_or(false);
@@ -346,7 +352,8 @@ impl SharedHost {
                 };
                 if let Some(candidate) = committed_candidate {
                     if !Arc::ptr_eq(&candidate.environment, &environment)
-                        || candidate.environment.handle() != environment.handle()
+                        || candidate.environment.lifecycle().handle()
+                            != environment.lifecycle().handle()
                     {
                         return Err(HostError::internal(
                             "terminal committed Candidate changed its exact Environment",
@@ -471,6 +478,7 @@ impl SharedHost {
             None => (resident, None),
         };
         let observation = provider
+            .adoption()
             .observe_effective(
                 &spec,
                 &handle,
@@ -480,9 +488,9 @@ impl SharedHost {
                     effect_fence,
                 },
                 if mode.requires_live_source() {
-                    awaken_container_contract::ContainerObservationPurpose::Recovery
+                    awaken_session_environment_contract::ObservationPurpose::Recovery
                 } else {
-                    awaken_container_contract::ContainerObservationPurpose::TerminalCleanup
+                    awaken_session_environment_contract::ObservationPurpose::TerminalCleanup
                 },
             )
             .await
@@ -508,7 +516,7 @@ impl SharedHost {
                 | awaken_provisioning_contract::SandboxObservation::Terminal { .. }
                 | awaken_provisioning_contract::SandboxObservation::Disposing { .. }) => {
                     provider
-                        .validate_closed_observation(&handle, observation)
+                        .adoption().validate_closed_observation(&handle, observation)
                         .map_err(|error| HostError::internal(error.to_string()))?;
                     if mode == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
                         && matches!(
@@ -554,7 +562,7 @@ impl SharedHost {
                 ..
             } => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 if let Some(environment) = resident {
                     let cause = SessionEnvironmentRetirementCause::Terminal {
@@ -599,20 +607,19 @@ impl SharedHost {
             }
             observation @ awaken_provisioning_contract::SandboxObservation::Terminal { .. } => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 (
                     resident,
-                    TerminalEffectMode::for_terminal_source(matches!(
-                        provider,
-                        crate::session_environment::SessionEnvironmentProvider::Container { .. }
-                    )),
+                    TerminalEffectMode::for_terminal_source(
+                        provider.terminal().terminal_data_is_readable(),
+                    ),
                     committed_candidate,
                 )
             }
             observation @ awaken_provisioning_contract::SandboxObservation::Disposing { .. } => {
                 provider
-                    .validate_closed_observation(&handle, &observation)
+                    .adoption().validate_closed_observation(&handle, &observation)
                     .map_err(|error| HostError::internal(error.to_string()))?;
                 // Disposing is durable proof that every source-durability
                 // participant required by the preceding operation crossed the
@@ -886,7 +893,7 @@ impl SharedHost {
                 .await?;
             let durable_handle = environment
                 .as_ref()
-                .map(|(environment, _)| environment.handle());
+                .map(|(environment, _)| environment.lifecycle().handle());
             let definitive_absence = environment.is_none();
             let prepared = PreparedBoundEnvironment::new(
                 environment,
@@ -1000,6 +1007,7 @@ impl SharedHost {
             for intent in &plan.intents {
                 self.terminal_cleanup_effect_fence(effect)?;
                 let files = environment
+                    .harvest()
                     .list_frozen_mount_files(intent.mount_path())
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
@@ -1049,6 +1057,7 @@ impl SharedHost {
             self.execution_authority.as_ref(),
         )?;
         environment
+            .lifecycle()
             .acknowledge_memory_reconciliation(&effect_fence, materializations, &authority)
             .await
             .map_err(|error| HostError::unavailable(error.to_string()))
@@ -1125,6 +1134,7 @@ impl SharedHost {
                 let provider_request =
                     crate::environment_continuation::provisioning_checkpoint_request(request);
                 environment
+                    .lifecycle()
                     .cleanup_checkpoint_for_terminal(
                         &provider_request,
                         store.as_ref(),

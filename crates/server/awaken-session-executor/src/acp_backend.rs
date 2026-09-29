@@ -127,7 +127,7 @@ impl AcpBackend {
 
     pub(crate) fn child_executor_factory(
         self: &Arc<Self>,
-        sandbox: Arc<crate::session_environment::SessionEnvironment>,
+        sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
     ) -> crate::agent_runner::ChildAcpExecutorFactory {
         let acp = self.clone();
         Arc::new(move |backend, permission| {
@@ -150,7 +150,7 @@ impl AcpBackend {
     /// remain available for remote adapters and deterministic tests.
     pub(crate) fn executor_for(
         &self,
-        sandbox: Arc<crate::session_environment::SessionEnvironment>,
+        sandbox: Arc<dyn awaken_session_environment_contract::AgentProcessEnvironment>,
         permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         backend: awaken_runtime_contract::resolved::Backend,
         mcp_servers: Vec<awaken_run_executor_acp::SessionMcpServer>,
@@ -258,7 +258,7 @@ impl crate::host::SharedHost {
         session_home: Option<Arc<dyn SessionHomeProvider>>,
     ) -> Self {
         if self.env.backend_owned_session_provider.is_none() {
-            let provider = crate::session_environment::SessionEnvironmentProvider::
+            let provider = crate::session_environment::SandboxEnvironmentProvider::
                 trusted_host_workdir_with_agent_stderr(
                     session_sandbox_base(&self.deployment).join("backend-owned"),
                     self.deployment.sandbox.inherit_agent_stderr,
@@ -266,7 +266,7 @@ impl crate::host::SharedHost {
             if let Some(mounter) = self.memory_mounter() {
                 provider.install_memory_mounter(mounter);
             }
-            self.env.backend_owned_session_provider = Some(provider);
+            self.env.backend_owned_session_provider = Some(provider.into_session_provider());
         }
         let observer = self.acp_launch_observer();
         self.exec.acp = Some(Arc::new(AcpBackend::bound(
@@ -406,45 +406,55 @@ impl crate::host::SharedHost {
             validate_namespace_hand_bin(&namespace_hand_path).await?;
         }
         let namespace_hand_bin = namespace_hand_path.to_string_lossy().into_owned();
-        if deployment.trusted_host_enabled() && host.env.backend_owned_session_provider.is_none() {
-            host.env.backend_owned_session_provider = Some(
-                crate::session_environment::SessionEnvironmentProvider::
+        if deployment.trusted_host_enabled() {
+            // The TrustedHost backend is configured completely before the Host
+            // holds it: an already-installed backend cannot gain its Hand or
+            // scoped execution afterwards, so it must not exist yet when either
+            // is required.
+            let needs_configuration = trusted_hand_factory.is_some()
+                || cfg!(target_os = "linux") && deployment.sandbox.trusted_host_scoped_execution;
+            if host.env.backend_owned_session_provider.is_some() && needs_configuration {
+                return Err(
+                    "configure TrustedHost execution: its backend was installed before the \
+                     deployment selected its Hand; select the Session environment before \
+                     binding ACP"
+                        .into(),
+                );
+            }
+            if host.env.backend_owned_session_provider.is_none() {
+                #[allow(unused_mut)]
+                let mut provider = crate::session_environment::SandboxEnvironmentProvider::
                     trusted_host_workdir_with_agent_stderr(
                         base.join("trusted-host"),
                         deployment.sandbox.inherit_agent_stderr,
-                    ),
-            );
-        }
-        if let Some(factory) = trusted_hand_factory {
-            host.env
-                .backend_owned_session_provider
-                .as_mut()
-                .expect("TrustedHost provider installed")
-                .install_workdir_hand(
-                    factory,
-                    namespace_hand_bin.clone(),
-                    std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
-                );
-        }
-        #[cfg(target_os = "linux")]
-        if deployment.sandbox.trusted_host_scoped_execution {
-            let execution =
-                awaken_sandbox_local::LocalExecutionDeployment::discover(namespace_hand_path)
+                    );
+                if let Some(factory) = trusted_hand_factory {
+                    provider.install_workdir_hand(
+                        factory,
+                        namespace_hand_bin.clone(),
+                        std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
+                    );
+                }
+                #[cfg(target_os = "linux")]
+                if deployment.sandbox.trusted_host_scoped_execution {
+                    let execution = awaken_sandbox_local::LocalExecutionDeployment::discover(
+                        namespace_hand_path,
+                    )
                     .map_err(|error| format!("configure TrustedHost execution: {error}"))?;
-            host.env
-                .backend_owned_session_provider
-                .as_mut()
-                .expect("TrustedHost provider installed")
-                .install_scoped_execution(execution)
-                .await
-                .map_err(|error| format!("configure TrustedHost execution: {error}"))?;
+                    provider
+                        .install_scoped_execution(execution)
+                        .await
+                        .map_err(|error| format!("configure TrustedHost execution: {error}"))?;
+                }
+                host.env.backend_owned_session_provider = Some(provider.into_session_provider());
+            }
         }
         // An explicit primary provider does not configure the independent,
         // operator-enabled TrustedHost backend. Preserve the primary while
         // completing that secondary backend through the same startup path.
         if !host.env.session_provider_explicit {
             host.env.session_provider = if let Some(provider) =
-                crate::session_environment::SessionEnvironmentProvider::for_host_tier(
+                crate::session_environment::SandboxEnvironmentProvider::for_host_tier(
                     tier,
                     base,
                     deployment.sandbox.inherit_agent_stderr,
@@ -452,7 +462,7 @@ impl crate::host::SharedHost {
                     namespace_hand_bin,
                     std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
                 )? {
-                provider
+                provider.into_session_provider()
             } else {
                 // The container tiers are assembled by the worker-plane
                 // composition (`awaken-execution-composition`), which installs
@@ -469,9 +479,10 @@ impl crate::host::SharedHost {
         if let Some(mounter) = host.memory_mounter() {
             host.env
                 .session_provider
+                .installation()
                 .install_memory_mounter(mounter.clone());
             if let Some(provider) = &host.env.backend_owned_session_provider {
-                provider.install_memory_mounter(mounter);
+                provider.installation().install_memory_mounter(mounter);
             }
         }
         Ok(host)
@@ -588,6 +599,7 @@ pub(crate) fn session_sandbox_base(deployment: &crate::DeploymentConfig) -> std:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_environment::SandboxEnvironmentProviderAccess as _;
 
     #[test]
     fn namespace_companion_resolution_preserves_release_and_cargo_test_layouts() {
@@ -733,7 +745,10 @@ mod tests {
             .await;
 
         assert!(host.env.session_provider_explicit);
-        assert_eq!(host.env.session_provider.capabilities(), expected);
+        assert_eq!(
+            host.env.session_provider.realizer().capabilities(),
+            expected
+        );
         assert!(host.exec.acp.is_none());
     }
 
@@ -772,7 +787,7 @@ mod tests {
                         );
                     }
                     host.env.session_provider_explicit = explicit_primary;
-                    let capabilities = host.env.session_provider.capabilities();
+                    let capabilities = host.env.session_provider.realizer().capabilities();
                     let host = host
                         .with_session_environment_from_deployment_at(
                             Some(Arc::new(NoHandFactory)),
@@ -789,10 +804,15 @@ mod tests {
                         .unwrap();
                     #[cfg(target_os = "linux")]
                     {
-                        let provider = host.env.backend_owned_session_provider.as_ref().unwrap();
+                        let provider = host
+                            .env
+                            .backend_owned_session_provider
+                            .as_ref()
+                            .unwrap()
+                            .sandbox_provider();
                         for provider in [provider, &provider.at_root(base.path().join("relocated"))]
                         {
-                            let crate::session_environment::SessionEnvironmentProvider::Workdir {
+                            let crate::session_environment::SandboxEnvironmentProvider::Workdir {
                                 provider,
                                 ..
                             } = provider
@@ -802,11 +822,17 @@ mod tests {
                             assert_eq!(provider.execution_deployment().is_some(), scoped);
                         }
                     }
-                    assert_eq!(host.env.session_provider.capabilities(), capabilities);
+                    assert_eq!(
+                        host.env.session_provider.realizer().capabilities(),
+                        capabilities
+                    );
                     assert!(matches!(
-                        host.env.backend_owned_session_provider,
+                        host.env
+                            .backend_owned_session_provider
+                            .as_ref()
+                            .map(|provider| provider.sandbox_provider()),
                         Some(
-                            crate::session_environment::SessionEnvironmentProvider::Workdir {
+                            crate::session_environment::SandboxEnvironmentProvider::Workdir {
                                 hand: Some(_),
                                 ..
                             }
@@ -909,13 +935,14 @@ mod tests {
             None,
         );
         host.env.session_provider =
-            crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
                 std::env::temp_dir().join("awaken-managed-environment"),
                 false,
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),
                 "/bin/sh",
                 std::time::Duration::ZERO,
-            );
+            )
+            .into_session_provider();
         let backend_owned = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
             credential: awaken_runtime_contract::CredentialRef {
                 id: "local".into(),
@@ -949,6 +976,7 @@ mod tests {
         assert!(
             host.session_environment_provider(&backend_owned)
                 .expect("E1")
+                .realizer()
                 .supports_host_identity(),
             "E1"
         );
@@ -963,6 +991,7 @@ mod tests {
                 !host
                     .session_environment_provider(provisioning)
                     .unwrap_or_else(|_| panic!("{rule}"))
+                    .realizer()
                     .supports_host_identity(),
                 "{rule}"
             );

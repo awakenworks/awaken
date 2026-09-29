@@ -551,7 +551,7 @@ impl SharedHost {
             thread,
             create_time_mounts,
             has_repositories,
-            provider.capabilities().network_isolation,
+            provider.realizer().capabilities().network_isolation,
         )
     }
 
@@ -578,7 +578,7 @@ impl SharedHost {
             thread,
             resources.mounts.clone(),
             !resources.repositories.is_empty(),
-            provider.capabilities().network_isolation,
+            provider.realizer().capabilities().network_isolation,
         )
     }
 
@@ -617,7 +617,7 @@ impl SharedHost {
             thread,
             mounts,
             has_repositories,
-            provider.capabilities().network_isolation,
+            provider.realizer().capabilities().network_isolation,
         )
     }
 
@@ -632,7 +632,11 @@ impl SharedHost {
             thread,
             resource_mounts,
             has_repositories,
-            self.env.session_provider.capabilities().network_isolation,
+            self.env
+                .session_provider
+                .realizer()
+                .capabilities()
+                .network_isolation,
         )
     }
 
@@ -712,6 +716,7 @@ impl SharedHost {
         historical_owned_paths: &[&str],
     ) -> Result<pc::SandboxSpec, crate::host::HostError> {
         let effective = provider
+            .realizer()
             .effective_spec(spec)
             .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
         pc::validate_repository_sandbox_adoption_layout(
@@ -1297,7 +1302,7 @@ impl ArtifactHarvester {
                 .map_err(ArtifactPublicationError::from)?;
         }
         let expected_revision = current_capture.map_or(0, |capture| capture.revision);
-        let artifacts = env.capture_artifacts().await.map_err(|error| {
+        let artifacts = env.harvest().capture_artifacts().await.map_err(|error| {
             ArtifactPublicationError::Indeterminate {
                 detail: error.to_string(),
             }

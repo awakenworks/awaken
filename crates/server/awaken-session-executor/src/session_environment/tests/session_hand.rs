@@ -70,7 +70,7 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
     let provider = Arc::new(FakeContainerProvider::default());
     let factory =
         ScriptedHandFactory::new([ScriptedHandOutcome::Success, ScriptedHandOutcome::Success]);
-    let environments = SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+    let environments = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
         provider.clone(),
         None,
         Vec::new(),
@@ -79,17 +79,22 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
         std::time::Duration::ZERO,
         awaken_session_environment_contract::ContainerHandResidency::Resident,
         awaken_lease_contract::system_clock(),
-    );
+    )
+    .into_session_provider();
 
     let original = environments.create(&spec()).await.unwrap();
-    let handle = original.handle();
+    let handle = original.lifecycle().handle();
     assert_eq!(
-        original.tool_executor().recovery_capability("write"),
+        original
+            .agent_tools()
+            .tool_executor()
+            .recovery_capability("write"),
         awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest
     );
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
     assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 0);
     original
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "original-resident-bind".into(),
@@ -100,16 +105,20 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
         .unwrap();
     assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 1);
 
-    original.stop_bound_processes().await.unwrap();
+    original.lifecycle().stop_bound_processes().await.unwrap();
     let adopted = environments.adopt(&spec(), &handle).await.unwrap();
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
     assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 1);
     assert_eq!(provider.renews.load(Ordering::SeqCst), 1);
     assert_eq!(
-        adopted.tool_executor().recovery_capability("bash"),
+        adopted
+            .agent_tools()
+            .tool_executor()
+            .recovery_capability("bash"),
         awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest
     );
     adopted
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "adopted-resident-bind".into(),
@@ -119,7 +128,7 @@ async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
         .await
         .unwrap();
     assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 2);
-    adopted.dispose().await.unwrap();
+    adopted.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -142,16 +151,17 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
      */
     let provider = Arc::new(FakeContainerProvider::default());
     let stable = ScriptedHandFactory::new([ScriptedHandOutcome::Success]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         stable.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
-    let hand = environment.tool_executor();
+    let hand = environment.agent_tools().tool_executor();
     tokio::task::yield_now().await;
     assert_eq!(
         hand.invoke(&ToolCall {
@@ -171,7 +181,11 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
             .load(std::sync::atomic::Ordering::SeqCst),
         1
     );
-    environment.stop_bound_processes().await.unwrap();
+    environment
+        .lifecycle()
+        .stop_bound_processes()
+        .await
+        .unwrap();
     assert!(matches!(
         hand.invoke(&ToolCall {
             call_id: "closed".into(),
@@ -188,23 +202,24 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         1,
         "a closed owner never launches another Hand"
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 
     let provider = Arc::new(FakeContainerProvider::default());
     let recover = ScriptedHandFactory::new([
         ScriptedHandOutcome::UnavailableBeforeDispatch,
         ScriptedHandOutcome::Success,
     ]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         recover.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
-    let hand = environment.tool_executor();
+    let hand = environment.agent_tools().tool_executor();
     let left = ToolCall {
         call_id: "left".into(),
         tool_id: "read".into(),
@@ -226,7 +241,7 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         2,
         "concurrent callers share one replacement"
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 
     let provider = Arc::new(FakeContainerProvider::default());
     provider
@@ -234,16 +249,18 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         .store(2, std::sync::atomic::Ordering::SeqCst);
     let failed_replacement =
         ScriptedHandFactory::new([ScriptedHandOutcome::UnavailableBeforeDispatch]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         failed_replacement.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
     let error = environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "replacement-spawn-failure".into(),
@@ -271,7 +288,7 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         1,
         "a failed process spawn never creates an executor"
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 
     let provider = Arc::new(FakeContainerProvider::default());
     let bounded = ScriptedHandFactory::new([
@@ -279,16 +296,18 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
         ScriptedHandOutcome::UnavailableBeforeDispatch,
         ScriptedHandOutcome::Success,
     ]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         bounded.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
     let error = environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "bounded".into(),
@@ -308,20 +327,22 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
             .load(std::sync::atomic::Ordering::SeqCst),
         2
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 
     let provider = Arc::new(FakeContainerProvider::default());
     let indeterminate = ScriptedHandFactory::new([ScriptedHandOutcome::Indeterminate]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         indeterminate.clone(),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
     let error = environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "indeterminate".into(),
@@ -346,7 +367,7 @@ async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
             .load(std::sync::atomic::Ordering::SeqCst),
         1
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -368,16 +389,17 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
         ScriptedHandOutcome::Success,
         ScriptedHandOutcome::Success,
     ]);
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         factory,
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
-    let hand = environment.tool_executor();
+    let hand = environment.agent_tools().tool_executor();
     hand.invoke(&ToolCall {
         call_id: "before-projection-update".into(),
         tool_id: "read".into(),
@@ -388,6 +410,7 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 1, "U1/C1");
 
     let committed = environment
+        .projection()
         .begin_live_projection_update()
         .await
         .unwrap()
@@ -415,6 +438,7 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 2, "U2/E3");
 
     let uncommitted = environment
+        .projection()
         .begin_live_projection_update()
         .await
         .unwrap()
@@ -435,6 +459,7 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 2, "U3/E4");
 
     environment
+        .projection()
         .begin_live_projection_update()
         .await
         .unwrap()
@@ -448,7 +473,7 @@ async fn live_projection_update_hibernates_and_fences_the_session_hand() {
     .await
     .unwrap();
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 3, "U3 retry");
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -467,16 +492,17 @@ async fn live_projection_update_rejects_an_unreapable_hand() {
         .lock()
         .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
-    let hand = environment.tool_executor();
+    let hand = environment.agent_tools().tool_executor();
     hand.invoke(&ToolCall {
         call_id: "bind-unreapable-hand".into(),
         tool_id: "read".into(),
@@ -485,7 +511,11 @@ async fn live_projection_update_rejects_an_unreapable_hand() {
     .await
     .unwrap();
 
-    let error = match environment.begin_live_projection_update().await {
+    let error = match environment
+        .projection()
+        .begin_live_projection_update()
+        .await
+    {
         Err(error) => error,
         Ok(_) => panic!("an unknown old-process outcome must reject the projection update"),
     };
@@ -508,7 +538,7 @@ async fn live_projection_update_rejects_an_unreapable_hand() {
         1,
         "a failed projection reap never permits a replacement Hand"
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
     assert_eq!(provider.disposals.load(Ordering::SeqCst), 1, "UR2/E4");
 }
 
@@ -526,17 +556,19 @@ async fn cancelled_projection_reap_retains_the_tracked_hand_owner() {
         .unwrap()
         .insert("__slow_reap_hand".into(), Vec::new());
     let environment = Arc::new(
-        SessionEnvironmentProvider::container(
+        SandboxEnvironmentProvider::container(
             provider.clone(),
             Vec::new(),
             ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
             "/usr/local/bin/awaken-sandbox",
         )
+        .into_session_provider()
         .create(&spec())
         .await
         .unwrap(),
     );
     environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "bind-slow-reap-hand".into(),
@@ -549,6 +581,7 @@ async fn cancelled_projection_reap_retains_the_tracked_hand_owner() {
         let environment = environment.clone();
         async move {
             let update = environment
+                .projection()
                 .begin_live_projection_update()
                 .await?
                 .expect("Container projection has a Hand fence");
@@ -560,7 +593,7 @@ async fn cancelled_projection_reap_retains_the_tracked_hand_owner() {
     updating.abort();
     let _ = updating.await;
 
-    let SessionEnvironment::Container { hand, .. } = environment.as_ref() else {
+    let SandboxEnvironment::Container { hand, .. } = environment.sandbox_environment() else {
         panic!("test uses a Container environment")
     };
     assert!(
@@ -584,16 +617,18 @@ async fn checkpoint_quiescence_fails_closed_when_attached_hand_cannot_be_reaped(
         .lock()
         .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
-    let environment = SessionEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
     environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "bind-unreapable-checkpoint-hand".into(),
@@ -603,8 +638,8 @@ async fn checkpoint_quiescence_fails_closed_when_attached_hand_cannot_be_reaped(
         .await
         .unwrap();
 
-    assert!(environment.quiesce().await.is_err(), "QH1/E1");
-    let SessionEnvironment::Container { hand, .. } = &environment else {
+    assert!(environment.lifecycle().quiesce().await.is_err(), "QH1/E1");
+    let SandboxEnvironment::Container { hand, .. } = environment.sandbox_environment() else {
         panic!("test uses a Container environment")
     };
     assert!(hand.has_tracked_binding().await, "QH1/E2");
@@ -623,7 +658,7 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
     // Rules QR1/QR2/QR3 distinguish retry-stable checkpoint safety from the
     // existing terminal owner.
     let provider = Arc::new(FakeContainerProvider::default());
-    let environment = SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+    let environment = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
         provider.clone(),
         None,
         Vec::new(),
@@ -633,10 +668,12 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
         awaken_session_environment_contract::ContainerHandResidency::Resident,
         awaken_lease_contract::system_clock(),
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
     environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "bind-resident-checkpoint-hand".into(),
@@ -646,24 +683,24 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
         .await
         .unwrap();
 
-    assert!(environment.quiesce().await.is_err(), "QR1/E1");
-    let SessionEnvironment::Container { hand, .. } = &environment else {
+    assert!(environment.lifecycle().quiesce().await.is_err(), "QR1/E1");
+    let SandboxEnvironment::Container { hand, .. } = environment.sandbox_environment() else {
         panic!("test uses a Container environment")
     };
     assert!(hand.has_tracked_binding().await, "QR1/E1");
     assert_eq!(
-        environment.status().await.unwrap(),
+        environment.sandbox_environment().status().await.unwrap(),
         pc::SandboxStatus::Ready,
         "QR1/E1"
     );
-    assert!(environment.quiesce().await.is_err(), "QR2/E2");
+    assert!(environment.lifecycle().quiesce().await.is_err(), "QR2/E2");
     assert!(hand.has_tracked_binding().await, "QR2/E2");
     assert_eq!(
         provider.resident_channel_opens.load(Ordering::SeqCst),
         1,
         "QR2/E2"
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
     assert!(!hand.has_tracked_binding().await, "QR3/E3");
 }
 
@@ -680,17 +717,19 @@ async fn cancelled_checkpoint_quiescence_retains_the_attached_hand_owner() {
         .unwrap()
         .insert("__slow_reap_hand".into(), Vec::new());
     let environment = Arc::new(
-        SessionEnvironmentProvider::container(
+        SandboxEnvironmentProvider::container(
             provider.clone(),
             Vec::new(),
             ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
             "/usr/local/bin/awaken-sandbox",
         )
+        .into_session_provider()
         .create(&spec())
         .await
         .unwrap(),
     );
     environment
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "bind-slow-checkpoint-hand".into(),
@@ -701,13 +740,13 @@ async fn cancelled_checkpoint_quiescence_retains_the_attached_hand_owner() {
         .unwrap();
     let quiescing = tokio::spawn({
         let environment = environment.clone();
-        async move { environment.quiesce().await }
+        async move { environment.lifecycle().quiesce().await }
     });
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     quiescing.abort();
     let _ = quiescing.await;
 
-    let SessionEnvironment::Container { hand, .. } = environment.as_ref() else {
+    let SandboxEnvironment::Container { hand, .. } = environment.sandbox_environment() else {
         panic!("test uses a Container environment")
     };
     assert!(hand.has_tracked_binding().await, "QC1/E2");
@@ -732,7 +771,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     let provider = Arc::new(FakeContainerProvider::default());
     let factory =
         ScriptedHandFactory::new([ScriptedHandOutcome::Success, ScriptedHandOutcome::Success]);
-    let environment = SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
+    let environment = SandboxEnvironmentProvider::container_with_capacity_and_hand_idle(
         provider.clone(),
         None,
         Vec::new(),
@@ -740,10 +779,11 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::from_secs(60),
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
-    let hand = environment.tool_executor();
+    let hand = environment.agent_tools().tool_executor();
     hand.invoke(&ToolCall {
         call_id: "start-idle-window".into(),
         tool_id: "read".into(),
@@ -778,15 +818,16 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     .unwrap();
     assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 2, "I3+I4");
     assert_eq!(factory.binds.load(Ordering::SeqCst), 2, "I4");
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 
     let disabled_provider = Arc::new(FakeContainerProvider::default());
-    let disabled = SessionEnvironmentProvider::container(
+    let disabled = SandboxEnvironmentProvider::container(
         disabled_provider.clone(),
         Vec::new(),
         ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
         "/usr/local/bin/awaken-sandbox",
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
@@ -794,6 +835,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     tokio::time::advance(std::time::Duration::from_secs(3_600)).await;
     tokio::task::yield_now().await;
     disabled
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "disabled".into(),
@@ -807,7 +849,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         1,
         "I5"
     );
-    disabled.dispose().await.unwrap();
+    disabled.lifecycle().dispose().await.unwrap();
 
     let failed_provider = Arc::new(FakeContainerProvider::default());
     failed_provider
@@ -815,7 +857,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         .lock()
         .unwrap()
         .insert("__unreapable_hand".into(), Vec::new());
-    let failed = SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
+    let failed = SandboxEnvironmentProvider::container_with_capacity_and_hand_idle(
         failed_provider.clone(),
         None,
         Vec::new(),
@@ -823,10 +865,12 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::from_secs(60),
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
     failed
+        .agent_tools()
         .tool_executor()
         .invoke(&ToolCall {
             call_id: "bind-unreapable-idle-hand".into(),
@@ -840,6 +884,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
     tokio::task::yield_now().await;
     assert!(matches!(
         failed
+            .agent_tools()
             .tool_executor()
             .invoke(&ToolCall {
                 call_id: "after-reap-failure".into(),
@@ -850,7 +895,7 @@ async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_onc
         Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
     ));
     assert_eq!(failed_provider.hand_spawns.load(Ordering::SeqCst), 1, "I6");
-    failed.dispose().await.unwrap();
+    failed.lifecycle().dispose().await.unwrap();
     assert_eq!(failed_provider.disposals.load(Ordering::SeqCst), 1, "I7/E7");
 }
 
@@ -863,7 +908,7 @@ async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
     let provider = Arc::new(FakeContainerProvider::default());
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    let environment = SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
+    let environment = SandboxEnvironmentProvider::container_with_capacity_and_hand_idle(
         provider.clone(),
         None,
         Vec::new(),
@@ -875,11 +920,12 @@ async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
         "/usr/local/bin/awaken-sandbox",
         std::time::Duration::from_secs(60),
     )
+    .into_session_provider()
     .create(&spec())
     .await
     .unwrap();
     tokio::task::yield_now().await;
-    let hand = environment.tool_executor();
+    let hand = environment.agent_tools().tool_executor();
     let running_hand = hand.clone();
     let running = tokio::spawn(async move {
         running_hand
@@ -909,20 +955,21 @@ async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
         1,
         "I7: a stale timer never forces replacement"
     );
-    environment.dispose().await.unwrap();
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
 async fn adopting_a_container_renews_its_ownership_before_use() {
     let provider = Arc::new(FakeContainerProvider::default());
-    let environments = SessionEnvironmentProvider::container(
+    let environments = SandboxEnvironmentProvider::container(
         provider.clone(),
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
-    );
+    )
+    .into_session_provider();
     let spec = spec();
-    let effective_spec = environments.effective_spec(&spec).unwrap();
+    let effective_spec = environments.realizer().effective_spec(&spec).unwrap();
     let handle = current_fake_container_handle(&effective_spec);
     let adopted = environments
         .adopt(&spec, &handle)
@@ -933,7 +980,7 @@ async fn adopting_a_container_renews_its_ownership_before_use() {
         1,
         "adoption refreshes ownership before starting the replacement hand"
     );
-    adopted.dispose().await.unwrap();
+    adopted.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]

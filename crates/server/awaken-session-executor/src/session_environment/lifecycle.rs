@@ -4,7 +4,7 @@
 
 use awaken_provisioning_contract as pc;
 
-use super::SessionEnvironment;
+use super::SandboxEnvironment;
 use super::environment::{EnvironmentQuiescenceProof, EnvironmentStopProof};
 use super::session_hand::{HandStopProof, SessionHandExecutor};
 
@@ -25,7 +25,7 @@ async fn dispose_container_after_closing_hand<S: pc::Sandbox + ?Sized>(
     sandbox.dispose_unattached().await
 }
 
-impl SessionEnvironment {
+impl SandboxEnvironment {
     /// Stop only this wrapper's process bindings, never its filesystem. Every
     /// revocation, terminal harvest and filesystem disposal shares this edge.
     /// Hand failure must not short-circuit the independent exact-scope stop;

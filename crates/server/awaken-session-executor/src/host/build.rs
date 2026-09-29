@@ -438,18 +438,27 @@ impl SharedHost {
         // A durable host must place its Workdir sandboxes under a stable root too;
         // otherwise the dispatch row survives restart but its persisted handle
         // points into the previous process's random temp directory.
-        self.env.session_provider = self.env.session_provider.at_root(dir.join("sandboxes"));
+        self.env.session_provider = crate::session_environment::relocated_provider(
+            &self.env.session_provider,
+            dir.join("sandboxes"),
+        );
         self.env.backend_owned_session_provider = self
             .env
             .backend_owned_session_provider
             .as_ref()
-            .map(|provider| provider.at_root(dir.join("trusted-local-sandboxes")));
+            .map(|provider| {
+                crate::session_environment::relocated_provider(
+                    provider,
+                    dir.join("trusted-local-sandboxes"),
+                )
+            });
         if let Some(mounter) = self.memory_mounter() {
             self.env
                 .session_provider
+                .installation()
                 .install_memory_mounter(mounter.clone());
             if let Some(provider) = &self.env.backend_owned_session_provider {
-                provider.install_memory_mounter(mounter);
+                provider.installation().install_memory_mounter(mounter);
             }
         }
         self.store_dir = Some(dir);

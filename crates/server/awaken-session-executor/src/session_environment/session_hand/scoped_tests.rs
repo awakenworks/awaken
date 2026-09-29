@@ -6,7 +6,10 @@
 
 use super::super::environment::EnvironmentStopProof;
 use super::super::tests::{DoneProcess, FakeHandExecutor, UnreapableProcess, spec};
-use super::super::{SessionEnvironment, SessionEnvironmentProvider};
+use super::super::{
+    SandboxEnvironment, SandboxEnvironmentAccess as _, SandboxEnvironmentProvider,
+    SessionEnvironment,
+};
 use super::*;
 use crate::acp_backend::deployment_test_binary;
 use std::path::Path;
@@ -24,7 +27,7 @@ impl awaken_provisioning_contract::CurrentExecutionAuthority for CurrentAuthorit
 
 async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
     let mut provider =
-        SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base, false);
+        SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base, false);
     if failing_hand {
         provider.install_workdir_hand(
             Arc::new(UnusedHandExecutorFactory),
@@ -44,11 +47,11 @@ async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .unwrap();
-    let SessionEnvironment::Workdir { sandbox, hand } = &environment else {
+    let SandboxEnvironment::Workdir { sandbox, hand } = environment.sandbox_environment() else {
         panic!("TrustedHost Workdir")
     };
     sandbox
@@ -99,6 +102,7 @@ async fn terminal_delete(environment: &SessionEnvironment) {
     let fence =
         pc::SandboxEffectFence::new("terminal-scoped", "owner", "runtime", 1, u64::MAX).unwrap();
     let prepared = environment
+        .lifecycle()
         .prepare_disposal_for_effect(
             &fence,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence),
@@ -108,6 +112,7 @@ async fn terminal_delete(environment: &SessionEnvironment) {
     let authorization =
         super::super::tests::restart_disposal_authorization(prepared, "scoped-stop");
     environment
+        .lifecycle()
         .dispose_for_effect(
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -141,26 +146,36 @@ async fn trusted_host_scoped_session_stop_reaches_every_tree_before_resource_eff
         for entry in ["stop", "quiesce", "dispose"] {
             let base = tempfile::tempdir().unwrap();
             let environment = environment(base.path(), failing_hand).await;
-            let SessionEnvironment::Workdir { sandbox, hand } = &environment else {
+            let SandboxEnvironment::Workdir { sandbox, hand } = environment.sandbox_environment()
+            else {
                 unreachable!()
             };
             let file = sandbox.workspace_path().join("workspace/retained");
             environment
+                .agent_process()
                 .materialize_inline("/workspace/retained", b"exact\0resource\xff")
                 .await
                 .unwrap();
             let native = sandbox.spawn(command("native-ready")).await.unwrap();
-            let (acp, _channel) = environment.spawn_agent(command("acp-ready")).await.unwrap();
+            let (acp, _channel) = environment
+                .agent_process()
+                .spawn_agent(command("acp-ready"))
+                .await
+                .unwrap();
             wait_ready(&sandbox.workspace_path().join("workspace/native-ready")).await;
             wait_ready(&sandbox.workspace_path().join("workspace/acp-ready")).await;
             assert!(native.poll().await.unwrap().is_none());
             assert!(acp.poll().await.unwrap().is_none());
             let result = match entry {
-                "stop" => environment.stop_bound_processes().await.map(|proof| {
-                    assert_eq!(proof, EnvironmentStopProof::ExecutionTreeQuiescent);
-                }),
-                "quiesce" => environment.quiesce().await.map(|_| ()),
-                "dispose" => environment.dispose().await,
+                "stop" => environment
+                    .lifecycle()
+                    .stop_bound_processes()
+                    .await
+                    .map(|proof| {
+                        assert_eq!(proof, EnvironmentStopProof::ExecutionTreeQuiescent);
+                    }),
+                "quiesce" => environment.lifecycle().quiesce().await.map(|_| ()),
+                "dispose" => environment.lifecycle().dispose().await,
                 _ => unreachable!(),
             };
             assert_eq!(
@@ -185,7 +200,11 @@ async fn trusted_host_scoped_session_stop_reaches_every_tree_before_resource_eff
                 current.process = Some(Box::new(DoneProcess::success("same-hand-reaped")));
             }
             assert_eq!(
-                environment.stop_bound_processes().await.unwrap(),
+                environment
+                    .lifecycle()
+                    .stop_bound_processes()
+                    .await
+                    .unwrap(),
                 EnvironmentStopProof::ExecutionTreeQuiescent,
             );
             terminal_delete(&environment).await;
@@ -205,11 +224,12 @@ async fn trusted_host_scoped_session_unknown_observer_blocks_receipt_and_retries
     // durable execution evidence. Editing the marker is fault injection only.
     let base = tempfile::tempdir().unwrap();
     let environment = environment(base.path(), false).await;
-    let SessionEnvironment::Workdir { sandbox, .. } = &environment else {
+    let SandboxEnvironment::Workdir { sandbox, .. } = environment.sandbox_environment() else {
         unreachable!()
     };
     let file = sandbox.workspace_path().join("workspace/retained");
     environment
+        .agent_process()
         .materialize_inline("/workspace/retained", b"retained exact bytes")
         .await
         .unwrap();
@@ -222,16 +242,22 @@ async fn trusted_host_scoped_session_unknown_observer_blocks_receipt_and_retries
     let mut foreign: serde_json::Value = serde_json::from_slice(&original).unwrap();
     foreign["executions"][0]["boot_id"] = serde_json::to_value([7_u8; 16]).unwrap();
     std::fs::write(&marker, serde_json::to_vec(&foreign).unwrap()).unwrap();
-    assert!(environment.quiesce().await.is_err());
+    assert!(environment.lifecycle().quiesce().await.is_err());
     assert!(
         process.poll().await.unwrap().is_some(),
         "local exact stop was still attempted"
     );
     assert_eq!(std::fs::read(&file).unwrap(), b"retained exact bytes");
     std::fs::write(&marker, &original).unwrap();
-    environment.quiesce().await.unwrap();
-    environment.quiesce().await.unwrap();
-    assert!(environment.spawn_agent(command("closed")).await.is_err());
+    environment.lifecycle().quiesce().await.unwrap();
+    environment.lifecycle().quiesce().await.unwrap();
+    assert!(
+        environment
+            .agent_process()
+            .spawn_agent(command("closed"))
+            .await
+            .is_err()
+    );
     terminal_delete(&environment).await;
     assert!(!file.exists());
 }
@@ -268,14 +294,15 @@ async fn trusted_host_scoped_session_cancelled_stop_retains_hand_and_concurrent_
     // The barrier and real pidfd poll establish ordering, not a scheduling sleep.
     let base = tempfile::tempdir().unwrap();
     let environment = Arc::new(environment(base.path(), true).await);
-    let SessionEnvironment::Workdir {
+    let SandboxEnvironment::Workdir {
         sandbox,
         hand: Some(hand),
-    } = environment.as_ref()
+    } = environment.sandbox_environment()
     else {
         unreachable!()
     };
     environment
+        .agent_process()
         .materialize_inline("/workspace/retained", b"retained")
         .await
         .unwrap();
@@ -289,7 +316,8 @@ async fn trusted_host_scoped_session_cancelled_stop_retains_hand_and_concurrent_
         panic!("retained Hand fixture")
     }
     let task_environment = environment.clone();
-    let stop = tokio::spawn(async move { task_environment.stop_bound_processes().await });
+    let stop =
+        tokio::spawn(async move { task_environment.lifecycle().stop_bound_processes().await });
     tokio::time::timeout(Duration::from_secs(1), waiting.notified())
         .await
         .unwrap();
@@ -311,12 +339,15 @@ async fn trusted_host_scoped_session_cancelled_stop_retains_hand_and_concurrent_
     } else {
         panic!("cancellation must not consume the pending Hand")
     }
-    let (first, second) = tokio::join!(environment.stop_bound_processes(), environment.quiesce());
+    let (first, second) = tokio::join!(
+        environment.lifecycle().stop_bound_processes(),
+        environment.lifecycle().quiesce()
+    );
     assert!(
         first.is_ok() || second.is_ok(),
         "one exact marker observer progresses"
     );
-    environment.quiesce().await.unwrap();
+    environment.lifecycle().quiesce().await.unwrap();
     assert_eq!(std::fs::read(&file).unwrap(), b"retained");
     terminal_delete(&environment).await;
     assert!(!file.exists());

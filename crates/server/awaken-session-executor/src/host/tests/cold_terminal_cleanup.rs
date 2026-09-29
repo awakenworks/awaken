@@ -64,11 +64,12 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         )
         .await
         .expect("R1 exact Worker-local Sandbox");
-    let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
-        physical,
-    ));
-    let binding =
-        serde_json::to_string(&environment.handle()).expect("R1 encode live Environment binding");
+    let environment = Arc::new(
+        crate::session_environment::SandboxEnvironment::workdir(physical)
+            .into_session_environment(),
+    );
+    let binding = serde_json::to_string(&environment.lifecycle().handle())
+        .expect("R1 encode live Environment binding");
     let environment_generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("remote-terminal-worker"),
         lease.epoch,
@@ -152,7 +153,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         "R1/E4 keeps the exact projection for aggregate readback"
     );
     assert_eq!(
-        environment.status().await.unwrap(),
+        environment.sandbox_environment().status().await.unwrap(),
         SandboxStatus::Terminated,
         "R1/E2"
     );

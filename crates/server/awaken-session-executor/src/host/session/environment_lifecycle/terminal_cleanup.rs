@@ -185,12 +185,16 @@ impl SharedHost {
             .filter(|prepared| prepared.environment.permits_live_io())
             .and_then(|prepared| prepared.environment.environment.as_ref())
         {
-            environment.stop_bound_processes().await.map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_terminal_hand_not_quiescent",
-                    error.to_string(),
-                )
-            })?;
+            environment
+                .lifecycle()
+                .stop_bound_processes()
+                .await
+                .map_err(|error| {
+                    HostError::unavailable_classified(
+                        "session_terminal_hand_not_quiescent",
+                        error.to_string(),
+                    )
+                })?;
         }
         self.terminal_cleanup_effect_fence(&effect)?;
         let artifact_capture_mode = root_environment
@@ -280,6 +284,7 @@ impl SharedHost {
                 )?;
                 provider_prepared_effect_fence = Some(
                     environment
+                        .lifecycle()
                         .prepare_disposal_for_effect(&provider_effect_fence, &authority)
                         .await
                         .map_err(|error| HostError::unavailable(error.to_string()))?,
@@ -389,6 +394,7 @@ impl SharedHost {
                     self.execution_authority.as_ref(),
                 )?;
                 provider
+                    .terminal()
                     .dispose_restored(&spec, expected, &authorization, &authority)
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
@@ -446,6 +452,7 @@ impl SharedHost {
                         self.execution_authority.as_ref(),
                     )?;
                     environment
+                        .lifecycle()
                         .dispose_for_effect(&authorization, &authority)
                         .await
                         .map_err(|error| HostError::unavailable(error.to_string()))?;

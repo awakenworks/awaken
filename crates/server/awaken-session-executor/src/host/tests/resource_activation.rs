@@ -796,14 +796,20 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let mut raw_host =
         SharedHost::new(Arc::new(OkModel), "stub").with_session_recovery_control(control.clone());
     raw_host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root.clone(),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
-    let repository_path_fidelity = raw_host.env.session_provider.capabilities().path_fidelity;
+        )
+        .into_session_provider();
+    let repository_path_fidelity = raw_host
+        .env
+        .session_provider
+        .realizer()
+        .capabilities()
+        .path_fidelity;
     let host = Arc::new(raw_host);
     let workspace_id = host.local_workspace().to_string();
     let managed = managed_with_resource_source(host.clone());
@@ -946,6 +952,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .await
         .expect("P1 retained Environment");
     let status = environment
+        .sandbox_environment()
         .run_test_command(awaken_provisioning_contract::Command::new([
             "sh",
             "-c",
@@ -967,6 +974,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         // P1 observes only the dedicated proof directory. Traversing the
         // attached Repository would mix its provider-owned Git metadata into
         // this assertion and duplicate the Repository realizer's own checks.
+        .sandbox_environment()
         .list_workspace_files(".terminal-publication-proof")
         .await
         .expect("P1 list workspace")
@@ -1197,8 +1205,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "P7 original Store identity"
         );
         assert_eq!(
-            before.environment.handle(),
-            after.environment.handle(),
+            before.environment.lifecycle().handle(),
+            after.environment.lifecycle().handle(),
             "P7 exact physical target"
         );
         assert!(
@@ -1352,13 +1360,14 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .with_session_recovery_control(control.clone())
         .with_local_workspace(workspace_id);
     raw_replacement.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root,
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     let replacement_host = Arc::new(raw_replacement);
     let replacement_managed = managed_with_resource_source(replacement_host.clone());
     let replacement_binding_sink = Arc::new(BindingOrderSink {

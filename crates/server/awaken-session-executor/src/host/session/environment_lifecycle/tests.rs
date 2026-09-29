@@ -1,6 +1,7 @@
 //! Session environment lifecycle tests, split by topic; shared fixtures live here.
 use super::state::ProjectedEnvironmentOwner;
 use super::*;
+use crate::session_environment::SandboxEnvironmentAccess;
 use crate::session_slot::UnboundSessionEnvironmentOrigin;
 
 mod candidate_adoption;
@@ -33,6 +34,7 @@ async fn environment(
     let effect_fence = environment_effect_fence(thread);
     Arc::new(
         provider
+            .realizer()
             .create_effective_for_effect(
                 &crate::provisioning::agent_run_sandbox_spec(thread),
                 crate::session_environment::ProviderEffect::Fenced {
@@ -42,7 +44,7 @@ async fn environment(
                     ),
                 },
                 None,
-                awaken_container_contract::EnvironmentRealizationIntent::Create,
+                awaken_session_environment_contract::EnvironmentRealizationKind::Create,
             )
             .await
             .expect("test Environment"),
@@ -78,6 +80,7 @@ async fn dispose_current_environment(
     // exact create-effect predecessor. E1 prepare that current predecessor,
     // derive the typed aggregate authorization, then perform physical disposal.
     let prepared = environment
+        .lifecycle()
         .prepare_disposal_for_effect(
             &environment_effect_fence(thread),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -91,6 +94,7 @@ async fn dispose_current_environment(
         "environment-lifecycle-current-disposal-preparation",
     );
     environment
+        .lifecycle()
         .dispose_for_effect(
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
@@ -138,7 +142,7 @@ fn resident(
 ) -> SessionEnvironmentOwner {
     SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
         identity: identity(thread),
-        binding: serde_json::to_string(&environment.handle()).unwrap(),
+        binding: serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
         environment,
     })
 }

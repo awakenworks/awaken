@@ -876,6 +876,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     spec.scope = SESSION.into();
     let fence = lease.sandbox_effect_fence("scoped-candidate").unwrap();
     let environment = provider
+        .realizer()
         .create_effective_for_effect(
             &spec,
             crate::session_environment::ProviderEffect::Fenced {
@@ -885,13 +886,13 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
                 ),
             },
             None,
-            awaken_container_contract::EnvironmentRealizationIntent::Create,
+            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
         )
         .await
         .unwrap();
     let environment = Arc::new(environment);
-    let crate::session_environment::SessionEnvironment::Workdir { sandbox, .. } =
-        environment.as_ref()
+    let crate::session_environment::SandboxEnvironment::Workdir { sandbox, .. } =
+        environment.sandbox_environment()
     else {
         unreachable!()
     };
@@ -946,7 +947,11 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         "no Control and an empty live-lease cohort must still refresh the retained tree"
     );
     assert!(sandbox.spawn(command()).await.is_err());
-    environment.stop_bound_processes().await.unwrap();
+    environment
+        .lifecycle()
+        .stop_bound_processes()
+        .await
+        .unwrap();
     assert!(process.poll().await.unwrap().is_some());
     assert_eq!(std::fs::read(ready).unwrap(), b"exact");
 }

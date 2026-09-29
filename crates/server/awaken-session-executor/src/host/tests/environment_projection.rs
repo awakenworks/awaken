@@ -42,7 +42,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     // This test owns R2. Run-ingress sandbox-binding conformance owns R3.
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             std::env::temp_dir().join(format!(
                 "awaken-hot-attach-namespace-{}",
                 std::process::id()
@@ -51,7 +51,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     let host = Arc::new(raw_host);
     let managed = managed_with_resource_source(host.clone());
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
@@ -86,7 +87,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .session_environment("t-attach")
         .await
         .expect("session environment");
-    let handle_before = environment_before.handle();
+    let handle_before = environment_before.lifecycle().handle();
     assert!(
         host.session_slots
             .read("t-attach", |slot| slot.runtime.is_some())
@@ -164,6 +165,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
     assert_eq!(
         environment_before
+            .harvest()
             .list_frozen_mount_files("/mnt/session/uploads")
             .await
             .unwrap(),
@@ -225,6 +227,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
     assert!(
         environment_after
+            .sandbox_environment()
             .list_workspace_files(".mnt")
             .await
             .unwrap()
@@ -254,13 +257,14 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     let storage = tempfile::tempdir().unwrap();
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             storage.path().join("sandboxes"),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     let host = Arc::new(raw_host);
     let verifier = Arc::new(SequencedRepositoryTransport(AtomicUsize::new(0)));
     let managed = managed_with_resource_source(host.clone())
@@ -308,12 +312,13 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         .session_environment("invalid-live-repository")
         .await
         .expect("resident environment");
-    let before_handle = environment.handle();
+    let before_handle = environment.lifecycle().handle();
     let before_manifest = host
         .thread_resource_manifest("invalid-live-repository")
         .expect("installed manifest");
     let before_spec = host.sandbox_spec("invalid-live-repository");
     let before_files = environment
+        .harvest()
         .list_frozen_mount_files("/mnt/session/uploads")
         .await
         .unwrap();
@@ -373,6 +378,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     );
     assert_eq!(
         environment
+            .harvest()
             .list_frozen_mount_files("/mnt/session/uploads")
             .await
             .unwrap(),
@@ -422,14 +428,20 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
 
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             fixture.path().join("sandboxes"),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
-    let repository_path_fidelity = raw_host.env.session_provider.capabilities().path_fidelity;
+        )
+        .into_session_provider();
+    let repository_path_fidelity = raw_host
+        .env
+        .session_provider
+        .realizer()
+        .capabilities()
+        .path_fidelity;
     let host = Arc::new(raw_host);
     let managed = managed_with_resource_source(host.clone());
     let desired = effective_resources(vec![TestInput {
@@ -500,7 +512,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     let before_manifest = host
         .thread_resource_manifest("t-repo-detach")
         .expect("installed manifest");
-    let handle = environment.handle();
+    let handle = environment.lifecycle().handle();
     let checkout = fixture
         .path()
         .join("sandboxes/t-repo-detach/workspace/live-repo");
@@ -625,6 +637,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     assert_eq!(host.sandbox_spec("t-local-attach"), before);
     assert!(
         environment
+            .sandbox_environment()
             .list_workspace_files("mnt/session/uploads")
             .await
             .unwrap()
@@ -1361,10 +1374,11 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     );
     let mut physical = SharedHost::new(Arc::new(OkModel), "stub");
     physical.env.backend_owned_session_provider = Some(
-        crate::session_environment::SessionEnvironmentProvider::workdir_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::workdir_with_agent_stderr(
             std::env::temp_dir().join("awaken-worker-layout-provider"),
             false,
-        ),
+        )
+        .into_session_provider(),
     );
     physical
         .install_frozen_session_projection(
@@ -1419,16 +1433,17 @@ fn frozen_environment_selects_trusted_host_exactly() {
     let mut host = SharedHost::new(Arc::new(OkModel), "stub");
     host.deployment.sandbox.trusted_host_enabled = true;
     host.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     host.env.backend_owned_session_provider = Some(
-        crate::session_environment::SessionEnvironmentProvider::
-            trusted_host_workdir_with_agent_stderr(trusted_root.path(), false),
+        crate::session_environment::SandboxEnvironmentProvider::
+            trusted_host_workdir_with_agent_stderr(trusted_root.path(), false).into_session_provider(),
     );
 
     let mut trusted = session_environment(
@@ -1446,18 +1461,19 @@ fn frozen_environment_selects_trusted_host_exactly() {
             &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
         )
         .unwrap();
-    assert!(selected.supports_host_identity(), "T1/E1");
+    assert!(selected.realizer().supports_host_identity(), "T1/E1");
 
     let mut absent = SharedHost::new(Arc::new(OkModel), "stub");
     absent.deployment.sandbox.trusted_host_enabled = true;
     absent.env.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
             std::time::Duration::ZERO,
-        );
+        )
+        .into_session_provider();
     absent
         .install_environment_projection("T2", &trusted)
         .unwrap();

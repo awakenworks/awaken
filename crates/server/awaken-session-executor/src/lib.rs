@@ -87,7 +87,6 @@ mod unavailable_worker;
 mod web_search;
 mod worker_services;
 
-use crate::session_environment::AgentSandbox as _;
 use crate::skill_catalog::skill_store_run_error;
 use awaken_dispatch_contract::ControlDispatchQueue;
 pub(crate) use dispatch_session_runtime::DispatchSessionRuntime;
