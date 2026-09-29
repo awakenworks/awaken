@@ -86,7 +86,7 @@ async function readTurn(sessionId, label, instructionsPreloaded = false) {
   // Restored conversation already knows facts.md. A distinct, undisclosed
   // bundled reference makes a new read necessary without forcing redundant
   // reloads of information that legitimately survives in conversation history.
-  const restored = label === 'cold-restored-session';
+  const restored = label === 'cold-restored-session' || label === 'preloaded-warm-session';
   const expected = restored ? recoveryMarker : referenceMarker;
   const id = await send(sessionId, restored
     ? '请读取这个 Skill 中尚未读过的 references/recovery.md。根据它给我一个简短问题，并带上其中的识别标记。'
@@ -138,6 +138,14 @@ async function environment(failure = false) {
 async function session(environmentId, selectedAgent = owned.agent) {
   const start = performance.now();
   const value = await client.beta.sessions.create({ agent: selectedAgent, environment_id: environmentId, betas });
+  if (typeof selectedAgent === 'object' && Object.hasOwn(selectedAgent, 'system')) {
+    // P0 a standard Session override replaces Agent.system exactly, then the
+    // persistent read returns that same full method. This distinguishes lost
+    // delivery from the model choosing a redundant read under valid guidance.
+    assert.equal(value.agent.system, selectedAgent.system, 'create echoes exact system override');
+    const restored = await client.beta.sessions.retrieve(value.id, { betas });
+    assert.equal(restored.agent.system, selectedAgent.system, 'persistent Session preserves exact system override');
+  }
   owned.sessions.push(value.id);
   record({ label: 'session-create', session_id: value.id, duration_ms: performance.now() - start });
   return value.id;
@@ -293,8 +301,9 @@ async function main() {
   }
   const cold = await session(normalEnv); await readTurn(cold, 'cold-session');
   const warm = await session(normalEnv); await readTurn(warm, 'warm-session');
-  // P1 complete pinned instructions are already in Agent.system; P2 the
-  // bundled reference is still unknown; P3 cold/warm same Session. P1+P2 at
+  // P1 complete pinned instructions are already in Agent.system; P2 facts.md
+  // is unknown in cold context, recovery.md is unknown in warm context;
+  // P3 cold/warm same Session. P1+P2 at
   // both P3 states => apply method without rereading SKILL.md, read reference,
   // deliver actual new bytes and reply, no Bash/Pod. Existing cold and restored
   // cases own metadata-only disclosure and missing-reference reads. Same SDK,

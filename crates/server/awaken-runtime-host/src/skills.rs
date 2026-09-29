@@ -582,7 +582,7 @@ impl FilesystemSkillPrompt {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(format!(
-            "Available Skills are listed below. Apply a relevant Skill's complete instructions. If its complete instructions are already in the conversation, use them without rereading `SKILL.md`. Otherwise, read its `SKILL.md` from the given path before acting. Names and descriptions alone are not complete instructions. Use the listed directory for supporting scripts or resources when needed.\n{}",
+            "Available Skills are listed below. Apply a relevant Skill's complete instructions. If its complete instructions are already in the conversation, DO NOT read `SKILL.md` again: apply the provided instructions without rereading or checking the same body. Otherwise, read its `SKILL.md` from the given path before acting. Names and descriptions alone are not complete instructions. Supporting scripts and references are separate: read them from the listed directory when their content is needed and is not already available in the conversation.\n{}",
             entries.join("\n")
         ))
     }
