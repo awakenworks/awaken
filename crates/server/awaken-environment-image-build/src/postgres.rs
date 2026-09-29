@@ -18,6 +18,12 @@ pub async fn connect_postgres_environment_image_build_store(
     url: &str,
 ) -> Result<Arc<dyn EnvironmentImageBuildStore>, EnvironmentImageBuildError> {
     let pool = PgPool::connect(url).await.map_err(storage)?;
+    with_postgres_pool_environment_image_build_store(pool).await
+}
+
+pub async fn with_postgres_pool_environment_image_build_store(
+    pool: PgPool,
+) -> Result<Arc<dyn EnvironmentImageBuildStore>, EnvironmentImageBuildError> {
     let bundle = environment_image_build_bundle().map_err(storage)?;
     awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
         .map_err(storage)?
@@ -31,6 +37,12 @@ pub async fn connect_existing_postgres_environment_image_build_store(
     url: &str,
 ) -> Result<Arc<dyn EnvironmentImageBuildStore>, EnvironmentImageBuildError> {
     let pool = PgPool::connect(url).await.map_err(storage)?;
+    with_existing_postgres_pool_environment_image_build_store(pool).await
+}
+
+pub async fn with_existing_postgres_pool_environment_image_build_store(
+    pool: PgPool,
+) -> Result<Arc<dyn EnvironmentImageBuildStore>, EnvironmentImageBuildError> {
     let bundle = environment_image_build_bundle().map_err(storage)?;
     awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
         .map_err(storage)?

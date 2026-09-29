@@ -67,6 +67,11 @@ impl PostgresCatalogRepo {
         let pool = PgPool::connect(url)
             .await
             .map_err(|err| StoreError::Connect(err.to_string()))?;
+        Self::with_existing_pool(pool).await
+    }
+
+    /// Verify the scoped ledger on the composition-owned pool.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
         let bundle = catalog_bundle().map_err(|err| StoreError::Schema(err.to_string()))?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(|err| StoreError::Schema(err.to_string()))?

@@ -506,6 +506,7 @@ dependencies = [
  "awaken-session-store",
  "awaken-session-types",
  "awaken-session-work-contract",
+ "awaken-sql-storage",
  "awaken-store-inmem",
  "awaken-store-sqlite",
  "awaken-tenancy",
@@ -2148,7 +2149,9 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-skill-store",
+ "awaken-sql-storage",
  "object_store",
+ "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
@@ -3080,6 +3083,7 @@ name = "awaken-sql-storage"
 version = "1.0.0"
 dependencies = [
  "proptest",
+ "sqlx",
  "thiserror",
  "tokio",
 ]

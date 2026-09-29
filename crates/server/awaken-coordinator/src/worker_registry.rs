@@ -38,13 +38,6 @@ pub async fn open_postgres_pool(
         .map_err(|error| error.to_string())
 }
 
-pub async fn migrate_postgres(url: &str, max_connections: u32) -> Result<(), String> {
-    PostgresWorkerDirectory::connect(url, max_connections)
-        .await
-        .map(drop)
-        .map_err(|error| error.to_string())
-}
-
 #[cfg(any(test, feature = "test-support"))]
 pub fn test_directory() -> WorkerDirectoryHandle {
     Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new())

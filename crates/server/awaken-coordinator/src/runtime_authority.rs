@@ -224,7 +224,7 @@ impl DurableRuntimeAuthority {
             || deployment.store == StoreKind::Postgres
         {
             Some(
-                sqlx::postgres::PgPoolOptions::new()
+                awaken_sql_storage::postgres_pool_options()
                     .max_connections(deployment.postgres_max_connections.get())
                     .connect(required_database_url(
                         deployment,
@@ -287,22 +287,17 @@ fn thread_commit_path(store: StoreKind, root: &std::path::Path, thread: &str) ->
     }
 }
 
-pub async fn migrate(deployment: &DeploymentConfig) -> Result<(), String> {
+pub(crate) async fn migrate_with_pool(
+    deployment: &DeploymentConfig,
+    pool: sqlx::PgPool,
+) -> Result<(), String> {
     if deployment.dispatch_backend == DispatchBackend::Postgres {
-        AnyDispatchStore::connect_postgres(
-            required_database_url(deployment, "Postgres dispatch")?,
-            deployment.postgres_max_connections.get(),
-        )
-        .await
-        .map(drop)?;
+        AnyDispatchStore::with_postgres_pool(pool.clone()).await?;
     }
     if deployment.store == StoreKind::Postgres {
-        PostgresCommitCoordinator::migrate(
-            required_database_url(deployment, "Postgres commit")?,
-            deployment.postgres_max_connections.get(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        PostgresCommitCoordinator::with_pool(pool)
+            .await
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
