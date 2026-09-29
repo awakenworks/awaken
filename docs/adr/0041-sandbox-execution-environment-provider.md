@@ -1135,3 +1135,23 @@ identity and volume group, RuntimeDefault seccomp, and disabled service links.
 The backend realization configuration records this security-floor revision, so
 recovery does not reinterpret a pre-floor object as an equivalent realization.
 Kubernetes deny-all and allowlist postures consume their own live policy evidence.
+
+## Amendment 11 (2026-09-30): bind orphan reaping to process identity
+
+The existing `exec_attempts` owner supplies one wrapper prelude and one orphan
+reaper to Docker, Podman and Kubernetes. A PID alone is not an identity: a
+completed exec can leave its PID record behind, and a later exec can reuse that
+number. The wrapper now records the Linux `/proc` start time beside the
+existing PID file. The signal APIs retain their exact runtime process status
+checks and PID-file address; no second process registry or lifecycle is added.
+
+At disposal, the existing attempt ledger seals new work before asking the
+container-local reaper to inspect each record. A missing start-time record or
+unreadable live `/proc` identity makes quiescence indeterminate, so container
+removal proceeds without in-container harvest. An absent or different process
+identity removes only the stale record. Only a matching live identity may be
+signalled; the reaper excludes its own record, observes exit after TERM or KILL
+within a bounded deadline, and refuses quiescence if that observation remains
+unknown. This protects a replacement Pod and its retained workspace from stale
+PID reuse without treating a signal request, CRI timeout or missing observation
+as an exit receipt.
