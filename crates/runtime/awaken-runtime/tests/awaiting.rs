@@ -735,3 +735,188 @@ async fn resumed_requested_client_calls_keep_their_frozen_execution_owner() {
         }
     }
 }
+
+struct EchoThenProbe {
+    calls: AtomicUsize,
+}
+#[async_trait::async_trait]
+impl LlmExecutor for EchoThenProbe {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = match n {
+            0 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "confirmation".into(),
+                tool_id: "echo".into(),
+                arguments: serde_json::json!({}),
+            }]),
+            1 => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "after-confirmation".into(),
+                tool_id: "probe".into(),
+                arguments: serde_json::json!({}),
+            }]),
+            _ => AssistantOutput::text("done"),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+struct ConfirmEchoOnly;
+#[async_trait::async_trait]
+impl ToolGateHook for ConfirmEchoOnly {
+    async fn gate(&self, call: &ToolCall, _state: &Store) -> GateDecision {
+        GateDecision::plugin_gate(if call.tool_id == "echo" {
+            GateOutcome::RequireConfirmation {
+                correlation_id: "ticket-1".into(),
+            }
+        } else {
+            GateOutcome::Allow
+        })
+    }
+}
+struct OperationProbe(Arc<std::sync::Mutex<Vec<String>>>);
+#[async_trait::async_trait]
+impl RawTool for OperationProbe {
+    fn id(&self) -> &str {
+        "probe"
+    }
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.0.lock().unwrap().push(
+            awaken_runtime_contract::tool::current_tool_operation_context()
+                .expect("runtime operation")
+                .operation_id,
+        );
+        Ok(ToolOutput::ok(call.call_id, "recorded"))
+    }
+}
+
+#[tokio::test]
+async fn resumed_tool_operation_uses_the_committed_assistant_coordinate() {
+    // Cause graph: C1 Runtime emits a tool and awaits confirmation; C2 a
+    // validated result resumes the SAME Run; C3 the next model response invokes
+    // another physical tool. E1 that message is assistant-1; E2 executor and
+    // retained batch use step 1 too; E3 cold projection recovers the same op.
+    // R1 C1+C2+C3 => E1+E2+E3. Fresh step 0 is covered by the existing suspend
+    // test. This runs the real Runtime resume/drive/dispatch, not a manually
+    // aligned Message+ToolBatch fixture that missed the local-step reset.
+    let operations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut spec = snapshot();
+    spec.resolved_spec
+        .tool_descriptors
+        .push(ToolDescriptor::pinned(
+            "test",
+            "probe",
+            "Probe",
+            serde_json::json!({"type":"object"}),
+        ));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(EchoThenProbe {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool {
+            ran: Arc::new(AtomicUsize::new(0)),
+        }))
+        .with_tool(Arc::new(OperationProbe(operations.clone())))
+        .with_gate(Arc::new(ConfirmEchoOnly));
+    runtime.register_snapshot(spec.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
+    let mut input = activation();
+    input.snapshot = spec;
+    assert_eq!(
+        runtime
+            .execute(input, RuntimeRunContext::new().with_commit(commit.clone()))
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+    let outcome = runtime
+        .resume(
+            resume_command(ResumeResult::allow()),
+            commit.as_ref(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    let history = commit.committed();
+    let message = history.messages.iter().find(|message| message.content.iter().any(|block| matches!(block, ContentBlock::ToolUse { id, .. } if id == "after-confirmation"))).unwrap();
+    let run = RunId("run-1".into());
+    assert_eq!(message.id.assistant_step_of(&run), Some(1), "E1");
+    let expected = ToolBatch::operation_id_for_step(&run, 1, "after-confirmation");
+    assert_eq!(
+        *operations.lock().unwrap(),
+        vec![expected.clone()],
+        "E2 executor identity"
+    );
+    let stored = Store::rebuild(&history.state);
+    let batch = ActiveToolBatch::load(&stored).unwrap().unwrap();
+    assert_eq!(
+        batch.operation_id("after-confirmation"),
+        expected,
+        "E2 stored identity"
+    );
+    let cold: ToolBatch = serde_json::from_slice(&serde_json::to_vec(&batch).unwrap()).unwrap();
+    assert_eq!(cold.operation_id("after-confirmation"), expected, "E3");
+}
+
+#[tokio::test]
+async fn resume_does_not_restart_the_same_runs_step_ceiling() {
+    // B1 Run ceiling=1 + step 0 awaits; B2 approved resume completes its existing
+    // tool; B3 the next inference would be logical step 1. Effect B1+B2+B3:
+    // finish MaxSteps without invoking that model or new physical tool. The
+    // ceiling belongs to the Run, not to a physical resume drive. This shares
+    // the same monotonic logical coordinate as operation identity test R1.
+    let model = Arc::new(EchoThenProbe {
+        calls: AtomicUsize::new(0),
+    });
+    let operations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut limited = snapshot();
+    limited.resolved_spec.max_steps = Some(1);
+    let runtime = Runtime::new()
+        .with_llm(model.clone())
+        .with_tool(Arc::new(EchoTool {
+            ran: Arc::new(AtomicUsize::new(0)),
+        }))
+        .with_tool(Arc::new(OperationProbe(operations.clone())))
+        .with_gate(Arc::new(ConfirmEchoOnly));
+    runtime.register_snapshot(limited.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
+    let mut input = activation();
+    input.snapshot = limited;
+    assert_eq!(
+        runtime
+            .execute(input, RuntimeRunContext::new().with_commit(commit.clone()))
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+    assert_eq!(
+        runtime
+            .resume(
+                resume_command(ResumeResult::allow()),
+                commit.as_ref(),
+                RuntimeRunContext::new().with_commit(commit.clone())
+            )
+            .await
+            .unwrap(),
+        RunState::Ended(EndCause::MaxSteps)
+    );
+    assert_eq!(
+        model.calls.load(Ordering::SeqCst),
+        1,
+        "B3 no additional model request"
+    );
+    assert!(
+        operations.lock().unwrap().is_empty(),
+        "B3 no additional physical effect"
+    );
+}

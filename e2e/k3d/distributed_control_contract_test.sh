@@ -248,7 +248,10 @@ grep -q "ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 (awaken_standby)'
 ! grep -q -- '- synchronous_standby_names=FIRST 1 (awaken_standby)' "$RENDERED"
 grep -q 'application_name=awaken_standby' "$RENDERED"
 grep -q 'connect_timeout=2' "$RENDERED"
-grep -q 'crictl stop --timeout 0 "$PRIMARY_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# H1 primary-DB crash and H2 native-Worker crash both call the canonical
+# UID/CRI-fenced stop helper; H3 an inline stop would reintroduce a parallel
+# physical-control implementation. The harness self-test owns its effect table.
+grep -Fq 'k3d_hard_stop_cri_container "$CLUSTER" "$PRIMARY_NODE" "$PRIMARY_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # Positive recovery starts only after one terminal model record and a rejected
 # finish ACK. The negative in-flight case keeps the original journal/slot even
@@ -268,7 +271,8 @@ grep -q 'coordinator_worker_log_count' "$REPO_ROOT/e2e/k3d/distributed_control_e
 grep -q 'observe_expired_predecessor' "$REPO_ROOT/crates/server/awaken-dispatch-http/src/worker_dispatch/session_coordination.rs"
 grep -Fq 'hard_crash_native_worker "$NATIVE_CRASH_OLD" "$NATIVE_OLD_UID"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'hard_crash_native_worker "$NATIVE_CRASH_NEXT" "$NATIVE_INFLIGHT_UID"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-[[ "$(grep -c 'crictl stop --timeout 0 "$container"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")" -eq 1 ]]
+grep -Fq 'k3d_hard_stop_cri_container "$CLUSTER" "$node" "$container" || return "$?"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+! grep -Fq 'crictl stop --timeout' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'NATIVE_INFLIGHT_RETAINED' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq '[ "$NATIVE_INFLIGHT_JOURNAL" = "1|0" ]' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'observe-provider-completed' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"

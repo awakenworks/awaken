@@ -280,8 +280,7 @@ async fn infer_step(
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
     thread_id: &ThreadId,
-    step_base: usize,
-    step: usize,
+    source_step: usize,
     ledger: &mut StepLedger,
     store: &mut Store,
     prelude: &[Message],
@@ -396,7 +395,7 @@ async fn infer_step(
             context,
             run_id,
             thread_id,
-            step: step_base + step,
+            step: source_step,
             response: truncation_retries,
         };
         let mut journal = super::model_operation::ModelOperationJournal::new(
@@ -476,12 +475,12 @@ async fn infer_step(
                     }
                     let partial = truncated_assistant_message(
                         run_id,
-                        step_base + step,
+                        source_step,
                         truncation_retries,
                         response.output.blocks,
                     );
                     ledger.push_message(partial);
-                    let prompt = continuation_message(run_id, step_base + step, truncation_retries);
+                    let prompt = continuation_message(run_id, source_step, truncation_retries);
                     ledger.push_message(prompt);
                     // The next loop iteration is another logical model request.
                     // Commit this response's usage and transcript first so the
@@ -649,7 +648,16 @@ pub(super) async fn drive(
         return Ok(ledger.into_step_result(reached));
     }
 
-    for step in (0..).take_while(|step| resolved.spec.max_steps.is_none_or(|limit| *step < limit)) {
+    for step in (0..).take_while(|step| {
+        resolved
+            .spec
+            .max_steps
+            .is_none_or(|limit| step_base + *step < limit)
+    }) {
+        // One logical coordinate owns model evidence, Messages and ToolBatch
+        // operations across resume/reclaim. `step` is only this drive's budget
+        // ordinal; restarting it must not restart durable effect identities.
+        let source_step = step_base + step;
         // Step-boundary incremental commit: everything the completed steps
         // staged — messages, state, audit — becomes durable under a `Running`
         // fact before the next inference. A crash then loses at most the step
@@ -687,7 +695,7 @@ pub(super) async fn drive(
             env,
             context,
             run_id,
-            step,
+            source_step,
             PhaseHookPoint::StepStart,
             &run_input,
             &mut store,
@@ -698,7 +706,7 @@ pub(super) async fn drive(
             env,
             context,
             run_id,
-            step,
+            source_step,
             PhaseHookPoint::BeforeInference,
             &run_input,
             &mut store,
@@ -728,7 +736,7 @@ pub(super) async fn drive(
         let final_step = resolved
             .spec
             .max_steps
-            .is_some_and(|limit| limit > 1 && step + 1 == limit);
+            .is_some_and(|limit| limit > 1 && source_step + 1 == limit);
         let inference = infer_step(
             &llm,
             runtime,
@@ -736,8 +744,7 @@ pub(super) async fn drive(
             env,
             run_id,
             thread_id,
-            step_base,
-            step,
+            source_step,
             &mut ledger,
             &mut store,
             &prelude,
@@ -833,7 +840,7 @@ pub(super) async fn drive(
             env,
             context,
             run_id,
-            step,
+            source_step,
             PhaseHookPoint::AfterInference,
             &run_input,
             &mut store,
@@ -868,7 +875,7 @@ pub(super) async fn drive(
                 call
             })
             .collect();
-        let assistant = assistant_message(run_id, step_base + step, response.output.blocks);
+        let assistant = assistant_message(run_id, source_step, response.output.blocks);
         ledger.push_message(assistant);
 
         // A non-tool MaxTokens response reaches this boundary when its in-place
@@ -1002,7 +1009,7 @@ pub(super) async fn drive(
             env,
             run_id,
             thread_id,
-            step,
+            source_step,
             calls,
             &mut ledger,
             &mut store,
@@ -1047,7 +1054,7 @@ pub(super) async fn drive(
             env,
             context,
             run_id,
-            step,
+            source_step,
             PhaseHookPoint::StepEnd,
             &run_input,
             &mut store,

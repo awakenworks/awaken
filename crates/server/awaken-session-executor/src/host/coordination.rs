@@ -92,7 +92,7 @@ fn coordinated_activation_input(
 #[derive(Clone)]
 struct PendingCoordinationCall {
     run_id: RunId,
-    step: usize,
+    operation_id: String,
     call_id: String,
     args: SendMessageArgs,
 }
@@ -113,7 +113,7 @@ fn project_committed_coordination_links(
     for message in &committed.messages {
         if message.role == Role::Assistant {
             active.clear();
-            let Some((owner, step, None)) = message.id.assistant_coordinates() else {
+            let Some((owner, _step, None)) = message.id.assistant_coordinates() else {
                 continue;
             };
             let run_id = match runs.get(owner).copied().flatten() {
@@ -138,7 +138,16 @@ fn project_committed_coordination_links(
                     )?;
                     active.push(PendingCoordinationCall {
                         run_id: run_id.clone(),
-                        step,
+                        operation_id:
+                            awaken_runtime_contract::ActiveToolBatch::operation_for_message(
+                                committed, message, id,
+                            )
+                            .map_err(|error| HostError::internal(error.to_string()))?
+                            .ok_or_else(|| {
+                                HostError::internal(
+                                    "committed coordination call has no operation identity",
+                                )
+                            })?,
                         call_id: id.clone(),
                         args,
                     });
@@ -148,7 +157,13 @@ fn project_committed_coordination_links(
                     apply_advisor_call(
                         session_id,
                         run_id,
-                        step,
+                        awaken_runtime_contract::ActiveToolBatch::operation_for_message(
+                            committed, message, id,
+                        )
+                        .map_err(|error| HostError::internal(error.to_string()))?
+                        .ok_or_else(|| {
+                            HostError::internal("committed advisor call has no operation identity")
+                        })?,
                         id,
                         advisor_model.unwrap_or_default(),
                         &mut links,
@@ -212,14 +227,13 @@ fn apply_lifecycle_latest_runs(
 fn apply_advisor_call(
     session_id: &awaken_session_types::SessionId,
     run_id: &RunId,
-    step: usize,
+    operation_id: String,
     call_id: &str,
     model: &str,
     links: &mut Vec<CoordinatedThreadLink>,
 ) -> Result<(), HostError> {
     let child_run_id = DelegationId::for_parent_call(run_id, call_id).child_run_id();
     let thread_id = ThreadId(child_run_id.0.clone());
-    let operation_id = ToolBatch::operation_id_for_step(run_id, step, call_id);
     if let Some(existing) = links.iter().find(|link| link.thread_id == thread_id) {
         if existing.target.advisor_model() != Some(model)
             || existing.created_by_operation_id != operation_id
@@ -264,7 +278,7 @@ fn apply_coordination_result(
         ));
     }
     let thread_id = ThreadId(receipt.session_thread_id);
-    let operation_id = ToolBatch::operation_id_for_step(&call.run_id, call.step, &call.call_id);
+    let operation_id = call.operation_id.clone();
     match (
         call.args
             .agent_id
@@ -325,7 +339,7 @@ fn apply_coordination_result(
 fn apply_active_batch_coordination_results(
     session_id: &awaken_session_types::SessionId,
     active: &[PendingCoordinationCall],
-    batch: Option<&awaken_runtime_contract::ToolBatch>,
+    batch: Option<&ToolBatch>,
     links: &mut Vec<CoordinatedThreadLink>,
 ) -> Result<(), HostError> {
     let Some(batch) = batch else {
@@ -1418,7 +1432,7 @@ mod tests {
         apply_advisor_call(
             &awaken_session_types::SessionId::from(session_id),
             &first_run,
-            0,
+            ToolBatch::operation_id_for_step(&first_run, 0, "advisor-call-1"),
             "advisor-call-1",
             "claude-opus-5",
             &mut links,
@@ -1427,7 +1441,7 @@ mod tests {
         apply_advisor_call(
             &awaken_session_types::SessionId::from(session_id),
             &first_run,
-            0,
+            ToolBatch::operation_id_for_step(&first_run, 0, "advisor-call-1"),
             "advisor-call-1",
             "claude-opus-5",
             &mut links,
@@ -1438,7 +1452,7 @@ mod tests {
         apply_advisor_call(
             &awaken_session_types::SessionId::from(session_id),
             &first_run,
-            0,
+            ToolBatch::operation_id_for_step(&first_run, 0, "advisor-call-2"),
             "advisor-call-2",
             "claude-opus-5",
             &mut links,
@@ -1447,7 +1461,7 @@ mod tests {
         apply_advisor_call(
             &awaken_session_types::SessionId::from(session_id),
             &second_run,
-            0,
+            ToolBatch::operation_id_for_step(&second_run, 0, "advisor-call-1"),
             "advisor-call-1",
             "claude-opus-5",
             &mut links,
@@ -1481,7 +1495,7 @@ mod tests {
             apply_advisor_call(
                 &awaken_session_types::SessionId::from(session_id),
                 &first_run,
-                0,
+                ToolBatch::operation_id_for_step(&first_run, 0, "advisor-call-1"),
                 "advisor-call-1",
                 "conflicting-model",
                 &mut links,
@@ -1581,7 +1595,7 @@ mod tests {
                 ToolCall {
                     call_id: gap_call.into(),
                     tool_id: awaken_ext_builtin_tools::SEND_MESSAGE.into(),
-                    arguments: serde_json::json!({}),
+                    arguments: serde_json::json!({"agent_id": "reviewer", "message": "review"}),
                 },
                 ToolRecoveryPolicy::default(),
             )],
@@ -1713,5 +1727,120 @@ mod tests {
             cold_snapshot.store_cursor
         ));
         assert_eq!(cold, warm, "P4/E5 warm and cold committed truth agree");
+    }
+
+    #[test]
+    fn retained_resumed_batch_recovers_its_exact_child_without_rewriting_the_receipt() {
+        // L1 assistant step advanced to 1 after client confirmation while the
+        // historical committed execution used batch 0; L2 its accepted result
+        // is published or still in the active batch; L3 cold serde recovery;
+        // L4 a receipt names another child. Effects L1+L2 => one original link,
+        // L3 => same link, L4 => error. This models the real failing Session's
+        // two commit coordinates; the Runtime integration test separately
+        // ensures newly resumed executions can no longer produce the mismatch.
+        let session = awaken_session_types::SessionId::from("resumed-session");
+        let run = RunId("resumed-run".into());
+        let call_id = "send-after-confirm";
+        let args = serde_json::json!({"agent_id":"writer","message":"write report"});
+        let operation = ToolBatch::operation_id_for_step(&run, 0, call_id);
+        let child =
+            awaken_session_execution_contract::coordinated_thread_id(&session, &run, &operation);
+        let assistant = Message::new(
+            MessageId::assistant(&run, 1),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                call_id,
+                awaken_ext_builtin_tools::SEND_MESSAGE,
+                args.clone(),
+            )],
+        );
+        let result = Message::new(
+            MessageId::tool_result(call_id),
+            Role::Tool,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: call_id.into(),
+                content: vec![ContentBlock::text(
+                    serde_json::to_string(&AgentMessageReceipt {
+                        session_thread_id: child.0.clone(),
+                        accepted: true,
+                    })
+                    .unwrap(),
+                )],
+                is_error: false,
+            }],
+        );
+        let mut batch = ToolBatch::for_step(
+            run.clone(),
+            0,
+            [(
+                ToolCall {
+                    call_id: call_id.into(),
+                    tool_id: awaken_ext_builtin_tools::SEND_MESSAGE.into(),
+                    arguments: args,
+                },
+                ToolRecoveryPolicy::durable_request(),
+            )],
+        )
+        .unwrap();
+        let mut requested = awaken_runtime_contract::ActiveToolBatch::write(&Some(batch.clone()));
+        requested.bind_run(&run);
+        batch.mark_executing(call_id).unwrap();
+        batch.complete(ToolOutput::ok(call_id, "accepted")).unwrap();
+        batch
+            .set_result_messages(call_id, vec![result.clone()])
+            .unwrap();
+        let mut completed = awaken_runtime_contract::ActiveToolBatch::write(&Some(batch));
+        completed.bind_run(&run);
+        let base = RunRecoverySnapshot {
+            thread_id: ThreadId(session.as_str().to_owned()),
+            claimed_run_id: run.clone(),
+            runs: vec![awaken_agent_contract::agent::run::Record {
+                id: run.clone(),
+                thread_id: ThreadId(session.as_str().to_owned()),
+                state: RunState::Running,
+            }],
+            latest_run_id: Some(run),
+            messages: vec![assistant, result],
+            message_commit_cursors: vec![7, 8],
+            commit_timestamps: Default::default(),
+            state: vec![requested, completed],
+            state_commit_cursors: vec![7, 8],
+            events: vec![],
+            resume_tickets: vec![],
+            thread_version: 2,
+            store_cursor: 8,
+            next_commit_ordinal: 2,
+        };
+        for published in [true, false] {
+            let mut snapshot = base.clone();
+            if !published {
+                snapshot.messages.pop();
+                snapshot.message_commit_cursors.pop();
+            }
+            let links = project_committed_coordination_links(&session, None, &snapshot).unwrap();
+            assert_eq!(links.len(), 1, "L1/L2");
+            assert_eq!(links[0].thread_id, child, "L1 original child");
+            assert_eq!(
+                links[0].created_by_operation_id, operation,
+                "L1 recorded operation"
+            );
+            let cold: RunRecoverySnapshot =
+                serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+            assert_eq!(
+                project_committed_coordination_links(&session, None, &cold).unwrap(),
+                links,
+                "L3"
+            );
+        }
+        let mut corrupt = base;
+        if let ContentBlock::ToolResult { content, .. } = &mut corrupt.messages[1].content[0] {
+            *content = vec![ContentBlock::text(
+                r#"{"session_thread_id":"foreign-child","accepted":true}"#,
+            )];
+        }
+        assert!(
+            project_committed_coordination_links(&session, None, &corrupt).is_err(),
+            "L4 still rejects a foreign receipt"
+        );
     }
 }
