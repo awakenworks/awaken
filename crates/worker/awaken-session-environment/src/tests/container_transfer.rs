@@ -8,57 +8,69 @@ use super::*;
 // the base branch; C2 replay the unchanged container state -> no second
 // push; C3 outputs and authored Skills remain independently harvestable.
 #[tokio::test]
-async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_token() {
-    let Ok(image) = std::env::var("AWAKEN_TEST_SESSION_IMAGE") else {
-        eprintln!("skipping: AWAKEN_TEST_SESSION_IMAGE is not set");
-        return;
-    };
-    let temp = tempfile::tempdir().unwrap();
-    let remote = temp.path().join("remote.git");
-    let seed = temp.path().join("seed");
-    let git = |cwd: &std::path::Path, args: &[&str]| {
-        let status = std::process::Command::new("git")
-            .current_dir(cwd)
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {args:?}");
-    };
-    git(temp.path(), &["init", "--bare", remote.to_str().unwrap()]);
-    git(
-        temp.path(),
-        &["clone", remote.to_str().unwrap(), seed.to_str().unwrap()],
-    );
-    git(&seed, &["config", "user.name", "seed"]);
-    git(&seed, &["config", "user.email", "seed@example.invalid"]);
-    std::fs::write(seed.join("README.md"), "base").unwrap();
-    git(&seed, &["add", "README.md"]);
-    git(&seed, &["commit", "-m", "base"]);
-    git(&seed, &["push", "-u", "origin", "HEAD"]);
+#[ignore = "real production Sandbox image supplied by the required substrate gate"]
+async fn docker_anonymous_repository_and_artifact_readback_use_one_sandbox() {
+    // R0 missing image => qualification fails before physical effects. The
+    // ordinary developer profile reports this row as ignored, never as a pass.
+    // R1 both anonymous bare origin and worktree live in the admitted Sandbox:
+    // every seed/clone/publish/readback command uses its one process port. This
+    // row proves real anonymous Git/filesystem effects. Its name states that
+    // consumer boundary because the former token claim supplied no credential.
+    let image = std::env::var("AWAKEN_TEST_SESSION_IMAGE")
+        .expect("required Docker Session qualification needs its current Sandbox image");
+    let clock = awaken_lease_contract::system_clock();
 
     let runtime =
         Arc::new(awaken_sandbox_container::docker::DockerRuntime::connect_local(8080).unwrap());
-    let provider = Arc::new(awaken_sandbox_container::ContainerProvider::new(
-        runtime, image,
-    ));
+    let provider = Arc::new(
+        awaken_sandbox_container::ContainerProvider::new(runtime, image).with_clock(clock.clone()),
+    );
     let mut docker_spec = spec();
     docker_spec.scope = format!("host-repo-real-{}", std::process::id());
     docker_spec.outputs_path = "/mnt/session/outputs".into();
-    let environment = SandboxEnvironmentProvider::container(
+    let environment = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
         provider,
+        None,
         Vec::new(),
         Arc::new(FakeHandExecutorFactory),
         "/usr/local/bin/awaken-sandbox",
+        std::time::Duration::ZERO,
+        awaken_session_environment_contract::ContainerHandResidency::AttachedExec,
+        clock,
     )
     .into_session_provider()
     .create(&docker_spec)
     .await
     .unwrap();
+    let remote = "/workspace/remote.git";
+    let mut seed = pc::Command::new([
+        "sh",
+        "-c",
+        concat!(
+            "set -eu; git init -q --bare --initial-branch=main /workspace/remote.git; ",
+            "git init -q --initial-branch=main /workspace/seed; ",
+            "git -C /workspace/seed config user.name seed; ",
+            "git -C /workspace/seed config user.email seed@example.invalid; ",
+            "printf base > /workspace/seed/README.md; ",
+            "git -C /workspace/seed add README.md; ",
+            "git -C /workspace/seed commit -qm base; ",
+            "git -C /workspace/seed push -q /workspace/remote.git HEAD 2>/dev/null; ",
+            "git --git-dir=/workspace/remote.git rev-parse refs/heads/main"
+        ),
+    ]);
+    seed.stdio = pc::Stdio::Piped;
+    let (seed_process, mut seed_channel) =
+        environment.agent_process().spawn_agent(seed).await.unwrap();
+    let mut base_commit = String::new();
+    seed_channel.read_to_string(&mut base_commit).await.unwrap();
+    assert_eq!(seed_process.wait().await.unwrap().code, Some(0), "R1 seed");
+    let base_commit = base_commit.trim();
+    assert_eq!(base_commit.len(), 40, "R1 exact seeded base commit");
     let repository_plan = pc::RepositoryRealizationPlan {
         repository_id: "repo".into(),
         mount_path: "/workspace/repo".into(),
-        source_remote_url: remote.to_string_lossy().into_owned(),
-        transport_url: remote.to_string_lossy().into_owned(),
+        source_remote_url: remote.into(),
+        transport_url: remote.into(),
         initial_branch: None,
         initial_commit: None,
         access: pc::MountAccess::ReadWrite,
@@ -111,12 +123,14 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
                 "git -C /workspace/repo add README.md && ",
                 "git -C /workspace/repo commit -m changed && ",
                 "git -C /workspace/repo rev-parse HEAD > /workspace/.mnt/commit.txt && ",
-                "mkdir -p /workspace/outputs/nested && ",
-                "printf '\\000\\377' > /workspace/outputs/nested/result.bin && ",
+                "mkdir -p -- \"$1/nested\" && ",
+                "printf '\\000\\377' > \"$1/nested/result.bin\" && ",
                 "mkdir -p /workspace/skills/authored && ",
                 "printf '%s' '---\ndescription: authored\n---\nbody' > ",
                 "/workspace/skills/authored/SKILL.md"
             ),
+            "fixture-write",
+            docker_spec.outputs_path.as_str(),
         ]))
         .await
         .unwrap();
@@ -168,29 +182,35 @@ async fn docker_environment_transfers_repo_and_harvests_files_without_exposing_t
     assert!(artifacts[0].metadata.path.ends_with("nested/result.bin"));
     assert_eq!(artifacts[0].metadata.id, artifacts[0].metadata.content_hash);
     assert_eq!(artifacts[0].bytes, vec![0, 0xff]);
-    environment.lifecycle().dispose().await.unwrap();
-
-    git(
-        temp.path(),
-        &[
-            "--git-dir",
-            remote.to_str().unwrap(),
-            "show-ref",
-            "--verify",
-            "refs/heads/awf/work",
-        ],
-    );
-    let count = std::process::Command::new("git")
-        .args([
-            "--git-dir",
-            remote.to_str().unwrap(),
-            "rev-list",
-            "--count",
-            "--all",
-        ])
-        .output()
+    let mut observe = pc::Command::new([
+        "sh",
+        "-c",
+        concat!(
+            "set -eu; git --git-dir=/workspace/remote.git show-ref --verify refs/heads/awf/work >/dev/null; ",
+            "git --git-dir=/workspace/remote.git rev-parse refs/heads/main; ",
+            "git --git-dir=/workspace/remote.git rev-parse refs/heads/awf/work; ",
+            "git --git-dir=/workspace/remote.git rev-list --count --all"
+        ),
+    ]);
+    observe.stdio = pc::Stdio::Piped;
+    let (process, mut channel) = environment
+        .agent_process()
+        .spawn_agent(observe)
+        .await
         .unwrap();
-    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+    let mut observation = String::new();
+    channel.read_to_string(&mut observation).await.unwrap();
+    assert_eq!(
+        process.wait().await.unwrap().code,
+        Some(0),
+        "C1/C2 remote readback"
+    );
+    assert_eq!(
+        observation.lines().collect::<Vec<_>>(),
+        [base_commit, expectation.commit.as_str(), "2"],
+        "C1 base unchanged and exact work branch; C2 replay adds no commit"
+    );
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 /// A checkpoint store that counts reads so a test can prove the selection

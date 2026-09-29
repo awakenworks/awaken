@@ -18,15 +18,17 @@ use awaken_sandbox_container::{
 use tokio::io::AsyncReadExt;
 
 #[tokio::test]
+#[ignore = "real production Sandbox image supplied by the required substrate gate"]
 async fn native_acp_and_hand_share_one_production_container() {
     // Cause/effect coverage: a configured production image and reachable Docker
     // daemon create one shared container; mounted files and Native/ACP/hand
     // commands observe the same state, structured hand content preserves its
     // text result, and output harvesting remains exact.
-    let Ok(image) = std::env::var("AWAKEN_TEST_SESSION_IMAGE") else {
-        eprintln!("skipping: AWAKEN_TEST_SESSION_IMAGE is not set");
-        return;
-    };
+    // R0 image missing => reject qualification before container creation;
+    // ordinary developer runs report this physical row as ignored. R1 image
+    // supplied => the existing shared-state/Hand/harvest assertions all run.
+    let image = std::env::var("AWAKEN_TEST_SESSION_IMAGE")
+        .expect("required Docker shared-environment qualification needs its Sandbox image");
     let runtime = Arc::new(DockerRuntime::connect_local(8080).expect("docker client"));
     runtime.ping().await.expect("reachable Docker daemon");
     let provider = ContainerProvider::new(runtime.clone(), image)
