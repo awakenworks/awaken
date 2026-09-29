@@ -66,7 +66,8 @@ esac
 cleanup_mutation_artifacts() {
   cargo clean -p awaken-mcp-wire >/dev/null 2>&1 || true
   cargo clean -p awaken-runtime-contract >/dev/null 2>&1 || true
-  cargo clean -p awaken-tool-contract -p awaken-agent-contract -p awaken-lease-contract >/dev/null 2>&1 || true
+  cargo clean -p awaken-tool-contract -p awaken-agent-contract -p awaken-lease-contract \
+    -p awaken-session-types >/dev/null 2>&1 || true
   cargo clean -p awaken-session-application-contract -p awaken-session-configuration-contract \
     -p awaken-session-error-contract -p awaken-session-event-contract -p awaken-session-realization-contract \
     -p awaken-session-repository-contract -p awaken-session-execution-contract \
@@ -183,13 +184,15 @@ cargo mutants --package awaken-lease-contract \
   --re 'bounded_rfc3339_nanos' \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-work-observations/mutants.out"
-# Root projection ordering and same-version equality must be observed through
-# the complete ManagedHost installation entry, including its returned error.
-cargo mutants --package awaken-session-executor \
+# R1/R3 causes: a newer or stale root revision reaches the canonical shared
+# ordering kernel; effects: the complete ManagedHost installation advances or
+# rejects without rewriting its correlated receipt. The Host convergence test
+# owns the observation, while the mutation belongs to the shared type owner.
+cargo mutants --package awaken-session-types --test-package awaken-session-executor \
   --output "$mutation_evidence/environment-projection" \
-  --file crates/server/awaken-session-executor/src/session_slot/projection_receipt.rs \
-  --re 'replace > with <|replace > with >=|replace && with \|\|' \
-  --timeout 60 --no-times -- --lib projection_convergence::
+  --file crates/contract/awaken-session-types/src/monotone.rs \
+  --re 'replace > with <|replace > with >=' \
+  --timeout 60 --no-times -- --lib projection_convergence
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/environment-projection/mutants.out"
 cleanup_mutation_artifacts
 trap - EXIT
