@@ -186,7 +186,7 @@ mod tests {
             .unwrap();
         let mut pools = ProcessPostgresPools::new(2);
         pools.seed(&url, pool.clone()).unwrap();
-        let clock = awaken_lease_contract::system_clock();
+        let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(1_000));
         let resources = crate::resources::open_resources_application(
             crate::config::ResourceStoreBackend::Postgres(url.clone()),
             crate::PostgresSchemaMode::Migrate,
@@ -210,7 +210,7 @@ mod tests {
             seal_key: None,
             role: crate::config::Role::Coordinator,
             postgres_schema: crate::PostgresSchemaMode::Migrate,
-            clock,
+            clock: clock.clone(),
         })
         .await
         .unwrap();
@@ -236,6 +236,26 @@ mod tests {
         )
         .await
         .unwrap();
+        // P8 process clock t=1000 -> capture records carry 1000; advance the
+        // same handle to t=1500 -> erasure fence carries 1500. Both effects
+        // use the existing cap2 pool. Ambient time or a second store/clock
+        // would fail these exact persisted observations.
+        let coordinator = stores.coordinator.as_ref().unwrap();
+        let subject = awaken_runtime_contract::DataSubjectId("clock-probe".into());
+        coordinator.capture_sink.record(
+            &subject, awaken_runtime_contract::Purpose::TelemetryContent,
+            awaken_runtime_contract::ContentKind::InputMessages, "probe",
+        ).await.unwrap();
+        let recorded: i64 = sqlx::query_scalar(
+            "SELECT recorded_at FROM coordinator_data_capture_captured WHERE subject = $1",
+        ).bind(&subject.0).fetch_one(&pool).await.unwrap();
+        assert_eq!(recorded, 1_000, "P8 capture uses process clock");
+        clock.set(1_500);
+        assert_eq!(coordinator.captured_content_eraser.erase_subject(&subject).await.unwrap(), 1);
+        let erased: i64 = sqlx::query_scalar(
+            "SELECT erased_at FROM coordinator_data_capture_fence WHERE subject = $1",
+        ).bind(&subject.0).fetch_one(&pool).await.unwrap();
+        assert_eq!(erased, 1_500, "P8 erasure uses the same advanced clock");
         let first = pool.acquire().await.unwrap();
         let second = pool.acquire().await.unwrap();
         let count: i64 =
@@ -266,7 +286,9 @@ mod tests {
         );
         assert!(awaken_coordinator::application_access_store::ApplicationAccessStore::with_existing_postgres_pool(pool.clone(), awaken_lease_contract::system_clock()).await.is_err());
         assert!(
-            awaken_captured_content_store::PgCapturedContentStore::with_existing_pool(pool.clone())
+            awaken_captured_content_store::PgCapturedContentStore::with_existing_pool(
+                pool.clone(), awaken_lease_contract::system_clock(),
+            )
                 .await
                 .is_err()
         );

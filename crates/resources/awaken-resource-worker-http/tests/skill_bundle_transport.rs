@@ -114,6 +114,7 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
             Arc::new(StoreSkillBundleSource::new(store)),
             dispatch.clone(),
             Arc::new(HeaderWorkerAuthenticator),
+            awaken_lease_contract::system_clock(),
         )
         .with_worker_directory(directory),
     );

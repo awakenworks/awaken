@@ -27,7 +27,12 @@ async fn the_hand_role_runs_a_real_tool_over_a_unix_socket() {
     // Start the hand role (the same code path `awaken-sandbox hand --unix <path>` runs).
     let serve_path = sock_str.clone();
     let hand = tokio::spawn(async move {
-        serve_with_operation_ledger(HandBind::Unix(serve_path), ledger).await
+        serve_with_operation_ledger(
+            HandBind::Unix(serve_path),
+            ledger,
+            awaken_lease_contract::system_clock(),
+        )
+        .await
     });
 
     // Brain side: dial the unix socket, retrying while the hand binds.

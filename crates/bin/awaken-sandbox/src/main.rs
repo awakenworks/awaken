@@ -41,10 +41,8 @@ struct OwnedCheckDirectory(std::path::PathBuf);
 
 impl OwnedCheckDirectory {
     fn create(purpose: &str) -> Result<Self, String> {
-        let identity = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| format!("read system clock: {error}"))?
-            .as_nanos();
+        // The directory name needs uniqueness, not a time: a random nonce.
+        let identity = uuid::Uuid::new_v4().simple();
         let root = std::env::temp_dir().join(format!(
             ".awaken-{purpose}-check-{}-{identity}",
             std::process::id()
@@ -152,7 +150,9 @@ fn run_control_forwarder_ready(args: &[String]) -> ExitCode {
 }
 
 async fn run_git_credential(args: &[String]) -> ExitCode {
-    match git_credential::run(args).await {
+    // The Git credential helper process's one wall clock.
+    let clock = awaken_lease_contract::system_clock();
+    match git_credential::run(args, clock.as_ref()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("awaken-sandbox git-credential: {error}");
@@ -324,7 +324,8 @@ async fn run_hand(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match serve(bind).await {
+    // The Hand process's one wall clock.
+    match serve(bind, awaken_lease_contract::system_clock()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("awaken-sandbox hand: {e}");

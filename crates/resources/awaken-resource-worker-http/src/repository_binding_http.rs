@@ -21,7 +21,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::worker_authority::{
-    SessionWorkerEffectTemporalRule, unix_now_ms, verify_session_worker_effect,
+    SessionWorkerEffectTemporalRule, clock_ms, verify_session_worker_effect,
 };
 
 const REPOSITORY_BINDING_PATH: &str = "/v1/worker/resources/repositories/verify";
@@ -48,6 +48,8 @@ pub struct WorkerRepositoryBindingService {
         Arc<dyn awaken_session_realization_contract::SessionTerminalRepositoryPublicationControl>,
     >,
     transport_authorizer: Option<Arc<dyn RepositoryTransportAuthorizer>>,
+    /// The Coordinator's wall clock: the instant claims and leases are judged at.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 /// Exact frozen facts supplied to the deployment adapter after the common
@@ -309,6 +311,7 @@ impl WorkerRepositoryBindingService {
         validator: Arc<dyn LiveResourceBindingVerifier>,
         dispatch: Arc<dyn DispatchQueue>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
     ) -> Self {
         Self {
             validator,
@@ -318,6 +321,7 @@ impl WorkerRepositoryBindingService {
             materialization_control: None,
             publication_control: None,
             transport_authorizer: None,
+            clock,
         }
     }
 
@@ -421,7 +425,7 @@ async fn verify_run_repository_binding(
         worker,
         request.identity.as_ref(),
         &claim,
-        unix_now_ms(),
+        clock_ms(service.clock.as_ref()),
     )
     .await
     .is_err()
@@ -429,7 +433,10 @@ async fn verify_run_repository_binding(
         return StatusCode::FORBIDDEN.into_response();
     }
     let guard = match service.dispatch.lock_commit_epoch(&claim).await {
-        Ok(Some(guard)) if guard.is_live_at(unix_now_ms()) && !guard.cancellation_requested() => {
+        Ok(Some(guard))
+            if guard.is_live_at(clock_ms(service.clock.as_ref()))
+                && !guard.cancellation_requested() =>
+        {
             guard
         }
         Ok(_) => return StatusCode::CONFLICT.into_response(),
@@ -507,7 +514,7 @@ async fn verify_run_repository_binding(
         .ok()
         .flatten()
         .is_some_and(|guard| {
-            guard.is_live_at(unix_now_ms())
+            guard.is_live_at(clock_ms(service.clock.as_ref()))
                 && !guard.cancellation_requested()
                 && guard.request().canonical_fingerprint() == dispatch_fingerprint
         });
@@ -516,7 +523,7 @@ async fn verify_run_repository_binding(
     }
     if !transport_expiry_is_admitted(
         &transport,
-        unix_now_ms(),
+        clock_ms(service.clock.as_ref()),
         RepositoryTransportExpiryRule::BoundToAuthority(claim_expires_ms),
     ) {
         return StatusCode::FORBIDDEN.into_response();
@@ -542,7 +549,7 @@ async fn verify_session_repository_binding(
     let Some(control) = service.materialization_control.as_deref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let now_ms = unix_now_ms();
+    let now_ms = clock_ms(service.clock.as_ref());
     if let Some(status) = verify_session_worker_effect(
         directory,
         worker,
@@ -615,7 +622,7 @@ async fn verify_session_repository_binding(
         Ok(transport) => transport,
         Err(error) => return repository_verifier_status(&error).into_response(),
     };
-    let latest_now_ms = unix_now_ms();
+    let latest_now_ms = clock_ms(service.clock.as_ref());
     if control
         .authorize_resource_materialization_intent(&intent)
         .await
@@ -667,7 +674,7 @@ async fn verify_terminal_repository_binding(
     let Some(control) = service.publication_control.as_deref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let now_ms = unix_now_ms();
+    let now_ms = clock_ms(service.clock.as_ref());
     if let Some(status) = verify_session_worker_effect(
         directory,
         worker,
@@ -760,7 +767,7 @@ async fn verify_terminal_repository_binding(
         Ok(Some(latest)) => latest,
         _ => return StatusCode::CONFLICT.into_response(),
     };
-    let latest_now_ms = unix_now_ms();
+    let latest_now_ms = clock_ms(service.clock.as_ref());
     if latest.workspace_id != projection.workspace_id
         || latest.command != projection.command
         || !awaken_session_realization_contract::realization_lease_generation_authorizes(

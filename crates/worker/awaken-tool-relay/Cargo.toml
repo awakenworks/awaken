@@ -13,6 +13,8 @@ authority = "tool-relay"
 test-support = []
 
 [dependencies]
+# The one wall-clock port: the instant a request deadline is judged at.
+awaken-lease-contract.workspace = true
 awaken-runtime-contract.workspace = true
 # The one channel-bound marker (ADR-0045 D6): the hand's framed I/O runs over any
 # `AgentChannel` (AsyncRead + AsyncWrite + Unpin + Send), same as every other
@@ -31,6 +33,7 @@ bytes = "1"
 # The crate stays minimal: no kernel, model, store, or connection-plan even in
 # tests (G33). The composition end-to-end test lives in awaken-runtime-examples.
 [dev-dependencies]
+awaken-lease-testkit.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "sync", "time"] }
 

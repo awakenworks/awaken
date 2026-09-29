@@ -5,7 +5,7 @@
 // @formal reason: same-generation renewal to the Session root. Every exact result still passes through the
 // @formal reason: Resource-specific authority without a second lease or authorization store; this is a
 // @formal reason: product-requirement classification, not a direct formal-proof claim.
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use awaken_session_resource_contract::SessionRealizationLease;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
@@ -99,13 +99,11 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Process-clock projection shared by every Resource Worker route. Pre-epoch
-/// clocks fail closed as zero; unrepresentable far-future values saturate.
-pub(crate) fn unix_now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(duration_millis)
-        .unwrap_or_default()
+/// A reading of a Resource Worker service's injected wall clock, shared by
+/// every Resource Worker route. Pre-epoch readings fail closed as zero;
+/// unrepresentable far-future values saturate.
+pub(crate) fn clock_ms(clock: &dyn awaken_lease_contract::WallClock) -> u64 {
+    duration_millis(clock.now().duration_since_epoch())
 }
 
 #[cfg(test)]

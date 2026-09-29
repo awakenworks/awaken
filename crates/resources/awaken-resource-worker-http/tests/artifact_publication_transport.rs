@@ -381,6 +381,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         dispatch.clone(),
         Arc::new(HeaderWorkerAuthenticator),
         directory.clone(),
+        awaken_lease_contract::system_clock(),
     ));
     let address = support::serve(worker_artifact_publication_router(service)).await;
     let upstream =
@@ -628,6 +629,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         dispatch.clone(),
         Arc::new(HeaderWorkerAuthenticator),
         directory,
+        awaken_lease_contract::system_clock(),
     ));
     let unavailable_address = support::serve(worker_artifact_publication_router(unavailable)).await;
     let unavailable_publisher = HttpArtifactPublisher::new(
@@ -683,6 +685,7 @@ async fn embedded_and_raw_http_artifact_admission_have_the_same_resource_effects
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
             directory,
+            awaken_lease_contract::system_clock(),
         ),
     )))
     .await;
@@ -867,6 +870,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
             )),
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .with_session_control(Arc::new(ExactArtifactControl {
             workspace_id: "workspace-artifacts".into(),
@@ -898,6 +902,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
             )),
             Arc::new(HeaderWorkerAuthenticator),
             directory,
+            awaken_lease_contract::system_clock(),
         )
         .with_session_control(Arc::new(ExactArtifactControl {
             workspace_id: "workspace-artifacts".into(),
@@ -1096,6 +1101,7 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
             )),
             Arc::new(HeaderWorkerAuthenticator),
             directory,
+            awaken_lease_contract::system_clock(),
         )
         .with_session_control(Arc::new(ExactArtifactControl {
             workspace_id: "workspace-artifacts".into(),
@@ -1296,6 +1302,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
             )),
             Arc::new(HeaderWorkerAuthenticator),
             directory.clone(),
+            awaken_lease_contract::system_clock(),
         )
         .with_session_control(Arc::new(ExactArtifactControl {
             workspace_id: "workspace-artifacts".into(),
@@ -1384,6 +1391,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
             )),
             Arc::new(HeaderWorkerAuthenticator),
             directory,
+            awaken_lease_contract::system_clock(),
         )
         .with_session_control(Arc::new(ExactArtifactControl {
             workspace_id: "workspace-artifacts".into(),
@@ -1488,6 +1496,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
         dispatch.clone(),
         Arc::new(HeaderWorkerAuthenticator),
         directory,
+        awaken_lease_contract::system_clock(),
     ));
     // R9 the actual handler commits, then a middleware loses its successful
     // response. Retrying the exact request must return Replayed, not revision+1.

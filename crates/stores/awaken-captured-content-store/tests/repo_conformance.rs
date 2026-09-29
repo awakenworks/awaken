@@ -88,7 +88,9 @@ async fn captured_content_contract(store: &dyn CapturedContentBackend) {
     // durable receipt so an ambiguous remote success is safe to replay;
     // R2 expired unrestricted B -> TTL removes B;
     // R3 restricted B -> erase and TTL retain it; release -> TTL removes it;
-    // R4 fresh unfenced C -> CaptureSink records it.
+    // R4 fresh unfenced C -> CaptureSink records it at the injected t=500;
+    // R5 TTL=10 at t=509 retains it, at t=510 removes it. Ambient time
+    // would stamp a different row and fail the exact boundary sweep.
     let a = DataSubjectId("subj_a".into());
     let b = DataSubjectId("subj_b".into());
     let tc = Purpose::TelemetryContent;
@@ -118,16 +120,28 @@ async fn captured_content_contract(store: &dyn CapturedContentBackend) {
         .await
         .unwrap();
     assert_eq!(store.len().await, 1, "R4");
+    assert_eq!(store.sweep_expired(10, 509).await, 0, "R5 before expiry");
+    assert_eq!(store.sweep_expired(10, 510).await, 1, "R5 at expiry");
+    assert_eq!(store.len().await, 0, "R5 no surviving capture");
 }
 
 #[tokio::test]
 async fn in_memory_captured_content_conforms() {
-    captured_content_contract(&InMemoryCapturedContentStore::new()).await;
+    captured_content_contract(&InMemoryCapturedContentStore::new(std::sync::Arc::new(
+        awaken_lease_testkit::ManualClock::new(500),
+    )))
+    .await;
 }
 
 #[tokio::test]
 async fn sqlite_captured_content_conforms() {
-    captured_content_contract(&SqliteCapturedContentStore::open_in_memory().unwrap()).await;
+    captured_content_contract(
+        &SqliteCapturedContentStore::open_in_memory(std::sync::Arc::new(
+            awaken_lease_testkit::ManualClock::new(500),
+        ))
+        .unwrap(),
+    )
+    .await;
 }
 
 #[cfg(feature = "postgres")]
@@ -209,7 +223,12 @@ mod postgres {
         let Some(pool) = schema_pool("t_captured_content").await else {
             return;
         };
-        let store = PgCapturedContentStore::with_pool(pool).await.unwrap();
+        let store = PgCapturedContentStore::with_pool(
+            pool,
+            std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(500)),
+        )
+        .await
+        .unwrap();
         captured_content_contract(&store).await;
     }
 }

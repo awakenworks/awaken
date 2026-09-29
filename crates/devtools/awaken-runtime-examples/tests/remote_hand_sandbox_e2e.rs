@@ -259,10 +259,13 @@ async fn brain_runs_its_tool_inside_a_sandbox_on_a_remote_hand() {
     let hand_base = base.clone();
     let hand = tokio::spawn(async move {
         let channel = listener.accept().await.expect("accept");
-        let session = HandSession::in_memory([Arc::new(SandboxEcho {
-            base: hand_base,
-            ran: hand_ran,
-        }) as Arc<dyn RawTool>]);
+        let session = HandSession::in_memory(
+            [Arc::new(SandboxEcho {
+                base: hand_base,
+                ran: hand_ran,
+            }) as Arc<dyn RawTool>],
+            awaken_lease_contract::system_clock(),
+        );
         let _ = serve_hand(channel, session).await;
     });
 

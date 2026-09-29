@@ -468,20 +468,23 @@ pub(super) async fn open_process_stores(
         ) = match &coordinator_cfg.captured_content {
             StoreBackend::Sqlite(p) => {
                 let store = Arc::new(
-                    awaken_captured_content_store::SqliteCapturedContentStore::open(&path(p))
-                        .map_err(|error| {
-                            format!("open captured-content SQLite {}: {error}", p.display())
-                        })?,
+                    awaken_captured_content_store::SqliteCapturedContentStore::open(
+                        &path(p),
+                        clock.clone(),
+                    )
+                    .map_err(|error| {
+                        format!("open captured-content SQLite {}: {error}", p.display())
+                    })?,
                 );
                 (store.clone(), store)
             }
             StoreBackend::Postgres(url) => {
                 let store = Arc::new(match postgres_schema {
                     PostgresSchemaMode::Migrate => {
-                        awaken_captured_content_store::PgCapturedContentStore::with_pool(postgres_pools.get(url).await?).await
+                        awaken_captured_content_store::PgCapturedContentStore::with_pool(postgres_pools.get(url).await?, clock.clone()).await
                     }
                     PostgresSchemaMode::Verify => {
-                        awaken_captured_content_store::PgCapturedContentStore::with_existing_pool(postgres_pools.get(url).await?)
+                        awaken_captured_content_store::PgCapturedContentStore::with_existing_pool(postgres_pools.get(url).await?, clock.clone())
                             .await
                     }
                 }

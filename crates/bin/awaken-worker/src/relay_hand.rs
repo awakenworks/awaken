@@ -65,7 +65,10 @@ mod tests {
         let (brain, hand) = tokio::io::duplex(64 * 1024);
         tokio::spawn(awaken_tool_relay::serve_hand(
             hand,
-            awaken_tool_relay::HandSession::in_memory([Arc::new(Echo) as Arc<dyn RawTool>]),
+            awaken_tool_relay::HandSession::in_memory(
+                [Arc::new(Echo) as Arc<dyn RawTool>],
+                awaken_lease_contract::system_clock(),
+            ),
         ));
         let executor = relay_hand_executor_factory().bind(
             Box::new(brain),
@@ -135,7 +138,10 @@ mod tests {
             let (brain, hand) = tokio::io::duplex(64 * 1024);
             let peer = tokio::spawn(awaken_tool_relay::serve_hand(
                 hand,
-                awaken_tool_relay::HandSession::in_memory([tool.clone() as Arc<dyn RawTool>]),
+                awaken_tool_relay::HandSession::in_memory(
+                    [tool.clone() as Arc<dyn RawTool>],
+                    awaken_lease_contract::system_clock(),
+                ),
             ));
             let factory = relay_hand_executor_factory();
             let executor = factory.bind(Box::new(brain), "session", recovery);
@@ -193,7 +199,10 @@ mod tests {
             let (brain, hand) = tokio::io::duplex(64 * 1024);
             let peer = tokio::spawn(awaken_tool_relay::serve_hand(
                 hand,
-                awaken_tool_relay::HandSession::in_memory([tool as Arc<dyn RawTool>]),
+                awaken_tool_relay::HandSession::in_memory(
+                    [tool as Arc<dyn RawTool>],
+                    awaken_lease_contract::system_clock(),
+                ),
             ));
             let replacement = factory.bind(Box::new(brain), "session", recovery);
             let result = with_tool_operation_context(

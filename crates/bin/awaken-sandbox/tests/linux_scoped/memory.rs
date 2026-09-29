@@ -16,8 +16,10 @@ fn repository(base: &Path) -> Arc<SqliteMemoryRepository> {
 }
 
 pub(super) fn provider(base: &Path) -> LocalProvider {
-    LocalProvider::trusted_host(base)
-        .with_memory_mounter(Arc::new(MemoryStoreMounter::new(repository(base))))
+    LocalProvider::trusted_host(base).with_memory_mounter(Arc::new(MemoryStoreMounter::new(
+        repository(base),
+        awaken_lease_contract::system_clock(),
+    )))
 }
 
 pub(super) fn specification() -> pc::SandboxSpec {

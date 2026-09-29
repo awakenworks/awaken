@@ -9,8 +9,8 @@
 //! [`CaptureSink`] (write) and [`ContentEraser`] (erase) over Coordinator's
 //! `coordinator_data_capture` migration scope — the same portable bundle as sqlite.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use awaken_runtime_contract::{
@@ -42,47 +42,56 @@ async fn pool_migrated(pool: PgPool) -> Result<PgPool, PgStoreError> {
     Ok(pool)
 }
 
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// A Postgres-backed captured-content store.
 pub struct PgCapturedContentStore {
     pool: PgPool,
     seq: AtomicU64,
+    /// The wall clock capture records and erasure fences are stamped with.
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 }
 
 impl PgCapturedContentStore {
     /// Connect and apply the Coordinator capture migration under the
     /// `coordinator_data_capture` namespace.
-    pub async fn connect(url: &str) -> Result<Self, PgStoreError> {
+    pub async fn connect(
+        url: &str,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, PgStoreError> {
         Ok(Self {
             pool: connect_migrated(url).await?,
             seq: AtomicU64::new(0),
+            clock,
         })
     }
 
     /// Build from an existing pool: apply the Coordinator capture migration.
-    pub async fn with_pool(pool: PgPool) -> Result<Self, PgStoreError> {
+    pub async fn with_pool(
+        pool: PgPool,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, PgStoreError> {
         Ok(Self {
             pool: pool_migrated(pool).await?,
             seq: AtomicU64::new(0),
+            clock,
         })
     }
 
     /// Connect to a schema owned by the deployment migration command.
-    pub async fn connect_existing(url: &str) -> Result<Self, PgStoreError> {
+    pub async fn connect_existing(
+        url: &str,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, PgStoreError> {
         let pool = PgPool::connect(url)
             .await
             .map_err(|error| PgStoreError::Connect(error.to_string()))?;
-        Self::with_existing_pool(pool).await
+        Self::with_existing_pool(pool, clock).await
     }
 
     /// Verify the existing scoped ledger over the composition-owned pool.
-    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, PgStoreError> {
+    pub async fn with_existing_pool(
+        pool: PgPool,
+        clock: Arc<dyn awaken_lease_contract::WallClock>,
+    ) -> Result<Self, PgStoreError> {
         let bundle = coordinator_data_capture_bundle()
             .map_err(|error| PgStoreError::Schema(error.to_string()))?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
@@ -93,6 +102,7 @@ impl PgCapturedContentStore {
         Ok(Self {
             pool,
             seq: AtomicU64::new(0),
+            clock,
         })
     }
 
@@ -220,8 +230,13 @@ impl CaptureSink for PgCapturedContentStore {
         _kind: ContentKind,
         content: &str,
     ) -> Result<(), CaptureError> {
-        self.try_insert(subject, purpose, content, now_millis())
-            .await?;
+        self.try_insert(
+            subject,
+            purpose,
+            content,
+            self.clock.now().as_epoch_ms_i64(),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -268,7 +283,7 @@ impl ContentEraser for PgCapturedContentStore {
              ON CONFLICT(subject) DO UPDATE SET records_removed = excluded.records_removed"
         ))
         .bind(&subject.0)
-        .bind(now_millis())
+        .bind(self.clock.now().as_epoch_ms_i64())
         .bind(receipt)
         .execute(&mut *tx)
         .await

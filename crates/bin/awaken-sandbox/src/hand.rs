@@ -199,9 +199,12 @@ fn subject_flag(rest: &[String]) -> Option<String> {
 
 /// Bind and serve the executor channel until the process is torn down. Each accepted
 /// connection is served concurrently over a fresh [`HandSession`].
-pub async fn serve(bind: HandBind) -> Result<(), String> {
+pub async fn serve(
+    bind: HandBind,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
+) -> Result<(), String> {
     let ledger = open_operation_ledger()?;
-    serve_with_operation_ledger(bind, ledger).await
+    serve_with_operation_ledger(bind, ledger, clock).await
 }
 
 /// Serve with an explicitly scoped ledger. SessionEnvironment embeddings and
@@ -209,6 +212,7 @@ pub async fn serve(bind: HandBind) -> Result<(), String> {
 pub async fn serve_with_operation_ledger(
     bind: HandBind,
     ledger: Arc<dyn HandOperationLedger>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<(), String> {
     match bind {
         HandBind::Stdio {
@@ -219,8 +223,11 @@ pub async fn serve_with_operation_ledger(
                 read: tokio::io::stdin(),
                 write: tokio::io::stdout(),
             };
-            let session =
-                HandSession::new(sandbox_hand_tools_at(mount_root, workspace_root), ledger);
+            let session = HandSession::new(
+                sandbox_hand_tools_at(mount_root, workspace_root),
+                ledger,
+                clock,
+            );
             serve_hand(channel, session)
                 .await
                 .map_err(|error| format!("hand stdio: {error}"))
@@ -255,9 +262,10 @@ pub async fn serve_with_operation_ledger(
                     .await
                     .map_err(|e| format!("hand accept: {e}"))?;
                 let ledger = ledger.clone();
+                let clock = clock.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let session = HandSession::new(sandbox_hand_tools(), ledger);
+                    let session = HandSession::new(sandbox_hand_tools(), ledger, clock);
                     let _ = serve_hand(channel, session).await;
                 });
             }
@@ -283,9 +291,10 @@ pub async fn serve_with_operation_ledger(
                     .await
                     .map_err(|e| format!("hand accept: {e}"))?;
                 let ledger = ledger.clone();
+                let clock = clock.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let session = HandSession::new(sandbox_hand_tools(), ledger);
+                    let session = HandSession::new(sandbox_hand_tools(), ledger, clock);
                     let _ = serve_hand(channel, session).await;
                 });
             }
@@ -307,7 +316,8 @@ pub async fn serve_with_operation_ledger(
                 .await
                 {
                     Ok(channel) => {
-                        let session = HandSession::new(sandbox_hand_tools(), ledger.clone());
+                        let session =
+                            HandSession::new(sandbox_hand_tools(), ledger.clone(), clock.clone());
                         let _ = serve_hand(channel, session).await;
                         eprintln!("awaken-sandbox hand: brain link closed; re-dialing");
                     }
@@ -315,7 +325,7 @@ pub async fn serve_with_operation_ledger(
                 }
             }
         }
-        HandBind::Nats { url, subject } => run_nats(&url, &subject, ledger).await,
+        HandBind::Nats { url, subject } => run_nats(&url, &subject, ledger, clock).await,
     }
 }
 
@@ -326,6 +336,7 @@ async fn run_nats(
     url: &str,
     subject: &str,
     ledger: Arc<dyn HandOperationLedger>,
+    clock: Arc<dyn awaken_lease_contract::WallClock>,
 ) -> Result<(), String> {
     use awaken_tool_relay::wire::HandRequest;
     use futures::StreamExt;
@@ -345,7 +356,7 @@ async fn run_nats(
         .subscribe(subject.to_string())
         .await
         .map_err(|e| format!("hand NATS subscribe {subject}: {e}"))?;
-    let mut session = HandSession::new(sandbox_hand_tools(), ledger);
+    let mut session = HandSession::new(sandbox_hand_tools(), ledger, clock);
     eprintln!(
         "awaken-sandbox hand: serving the executor channel over NATS {url} subject '{subject}'"
     );
@@ -501,6 +512,7 @@ mod tests {
                 &serve_url,
                 &serve_subject,
                 Arc::new(awaken_tool_relay::InMemoryOperationLedger::default()),
+                awaken_lease_contract::system_clock(),
             )
             .await
         });
