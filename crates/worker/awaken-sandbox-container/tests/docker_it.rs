@@ -389,11 +389,13 @@ async fn container_holds(rt: &DockerRuntime, container_id: &str, path: &str) -> 
 
 #[tokio::test]
 async fn reaping_stops_the_process_a_plain_spawn_started() {
-    // The physical half of the exec-responsibility table. The in-crate table
-    // uses a fake runtime, so it can only prove the reaper was *demanded*;
-    // this proves a real daemon's reaper actually stops a process started
-    // through the plain `spawn` edge — the edge whose attempts disposal used
-    // to miss entirely — before anything reads the workspace.
+    // Physical reaping decision table. C1 a live exec started through plain
+    // spawn has an exact PID/starttime record; C2 a stale record names the
+    // container's still-live PID 1 but has a different starttime. R1 C1+C2
+    // observes C1 stopped before workspace reads, removes the stale record,
+    // and leaves PID 1/its container running. The in-crate fake-runtime table can
+    // prove only that reaping was demanded; this real daemon case also kills
+    // the PID-only mutant that would terminate the unrelated PID 1.
     let Some(rt) = runtime().await else { return };
     let container = residue::create_owned(
         &rt,
@@ -443,9 +445,42 @@ async fn reaping_stops_the_process_a_plain_spawn_started() {
         "alive before reaping"
     );
 
+    let public_id = process.id().to_owned();
+    let (_, pid_file) = public_id
+        .split_once('|')
+        .expect("Docker exec publishes its in-container PID record");
+    let pid_dir = std::path::Path::new(pid_file)
+        .parent()
+        .expect("PID record has a directory")
+        .to_str()
+        .unwrap();
+    let seeded = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            id,
+            "sh",
+            "-c",
+            "mkdir -p \"$1\"; printf 1 > \"$1/stale.pid\"; printf 0 > \"$1/stale.pid.start\"",
+            "awaken-stale-pid-fixture",
+            pid_dir,
+        ])
+        .output()
+        .await
+        .expect("seed stale PID 1 record in task-owned container");
+    assert!(seeded.status.success(), "stale PID fixture: {seeded:?}");
+
     rt.reap_exec_orphans(id)
         .await
         .expect("the container forgets the execs it started");
+    assert_eq!(
+        rt.inspect(id).await.unwrap(),
+        ContainerState::Running,
+        "R1 the stale PID must not terminate the container's PID 1"
+    );
+    assert!(
+        process.poll().await.unwrap().is_some(),
+        "R1 reaping must observe exit before it releases workspace harvest"
+    );
 
     let stopped = tokio::time::timeout(Duration::from_secs(10), process.wait())
         .await

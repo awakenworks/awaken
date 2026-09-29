@@ -4,8 +4,9 @@
 // @formal reason: signals those records, and the in-process set naming attempts whose spawn was dropped
 // @formal reason: unsettled. Dynamic path: an attempt is counted before its ClaimedEffect can be polled,
 // @formal reason: retention records it only on an unsettled drop, and disposal reaps by enumerating the
-// @formal reason: container own pid files before Secret write-back or Memory harvest reads the workspace;
-// @formal reason: a failed reap keeps the record and fails disposal. Signal delivery and container-side
+// @formal reason: container own PID/starttime records before Secret write-back or Memory harvest reads
+// @formal reason: the workspace; an unproven reap skips in-container harvest and reports incomplete
+// @formal reason: disposal while removal proceeds. Signal delivery and container-side
 // @formal reason: shell behaviour are real process effects covered by the cancellation tests and the
 // @formal reason: feature-gated backend suites, not by a direct proof.
 //! Exec attempt identity: where a started process records itself, and who is
@@ -14,7 +15,7 @@
 //! # Why this is one module
 //!
 //! Starting an agent is two separate obligations that used to live nowhere.
-//! The *physical* one is the pid file the container writes: without an
+//! The *physical* one is the PID and process-start record the container writes: without an
 //! enumerable name, a process whose `ProcessHandle` never reached a caller can
 //! never be signalled again, because the only reference to it was the handle.
 //! The *in-process* one is the record saying a spawn was started and did not
@@ -42,6 +43,7 @@ use awaken_provisioning_contract as pc;
 /// a later call, not a restarted Worker, not the container itself — could name
 /// it.
 pub(crate) const EXEC_PID_DIR: &str = "/tmp/awaken-exec";
+const EXEC_PID_START_SUFFIX: &str = ".start";
 
 /// The environment variable each exec wrapper exports so a started process
 /// knows its own pid file. Only the orphan reaper reads it, and only so that it
@@ -59,36 +61,107 @@ pub(crate) fn exec_pid_file(attempt_id: &str) -> String {
 
 /// The shell prelude every backend's exec wrapper runs before writing its pid:
 /// create the enumerable directory (idempotent under a second exec in the same
-/// container) and publish the pid file's own path. Shared so the three wrappers
-/// cannot drift from the one path the reaper enumerates.
+/// container), publish the pid file's own path, and record PID plus `/proc`
+/// start time before executing the workload. Shared so the three wrappers
+/// cannot drift from the identity the reaper checks.
 #[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
 pub(crate) fn exec_pid_file_prelude() -> String {
-    format!("mkdir -p {EXEC_PID_DIR}; export {EXEC_PID_FILE_ENV}=\"$pid_file\";")
+    format!(
+        "mkdir -p {EXEC_PID_DIR}; export {EXEC_PID_FILE_ENV}=\"$pid_file\"; \
+         record_exec_identity() {{ \
+           stat=$(cat \"/proc/$$/stat\") || exit 125; \
+           stat=${{stat##*) }}; set -- $stat; \
+           [ \"$#\" -ge 20 ] || exit 125; shift 19; \
+           printf '%s' \"$1\" > \"$pid_file{EXEC_PID_START_SUFFIX}\" || exit 125; \
+           printf '%s' \"$$\" > \"$pid_file\" || exit 125; \
+         }};"
+    )
 }
 
 /// The command that makes the container reap its own exec orphans.
 ///
 /// It runs *in* the container because the pid files are in the container's
 /// filesystem: no Worker-side value survives the task that started the exec,
-/// and no backend API lists "processes I exec'd earlier". Every pid file it
-/// finds belongs to an attempt whose owner is gone or going, so it signals and
-/// then forgets each one. Its own record is excluded by name and removed last,
-/// so a later reap can never read a stale pid and signal whatever now holds it.
+/// and no backend API lists "processes I exec'd earlier". A PID can be reused,
+/// so a stale record is removed only after the recorded `/proc` start time
+/// differs; an unreadable identity refuses quiescence. Its own record is
+/// excluded by name and removed last.
 ///
-/// `kill -TERM` is a request. The backend's forced removal at disposal is what
-/// makes stopping unconditional; reaping first is what makes it happen *before*
-/// Secret write-back and Memory harvest read the workspace.
+/// `kill -TERM` is a request, not completion. The reaper waits for the exact
+/// identity to disappear or become a zombie, escalates to KILL within a bounded
+/// interval, and reports failure otherwise. Disposal then removes the container
+/// without reading mutable Secret or Memory bytes from an unquiet workspace.
 pub(crate) fn exec_orphan_reaper_command() -> pc::MaterializedCommand {
     let script = format!(
-        "for pid_file in {EXEC_PID_DIR}/*.pid; do \
-           [ -f \"$pid_file\" ] || continue; \
-           if [ \"$pid_file\" = \"${{{EXEC_PID_FILE_ENV}:-}}\" ]; then continue; fi; \
-           pid=$(cat -- \"$pid_file\" 2>/dev/null) || pid=''; \
-           if [ -n \"$pid\" ]; then kill -TERM \"$pid\" 2>/dev/null; fi; \
-           rm -f -- \"$pid_file\"; \
-         done; \
-         if [ -n \"${{{EXEC_PID_FILE_ENV}:-}}\" ]; then rm -f -- \"${EXEC_PID_FILE_ENV}\"; fi; \
-         exit 0"
+        r#"read_identity() {{
+  [ -e "/proc/$pid/stat" ] || return 1
+  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || {{
+    [ -e "/proc/$pid/stat" ] && return 2
+    return 1
+  }}
+  stat=${{stat##*) }}
+  set -- $stat
+  [ "$#" -ge 20 ] || {{
+    [ -e "/proc/$pid/stat" ] && return 2
+    return 1
+  }}
+  state=$1
+  shift 19
+  current_start=$1
+}}
+quiet_or_stale() {{
+  read_identity
+  result=$?
+  case "$result" in
+    0) ;;
+    1) return 0 ;;
+    *) return 2 ;;
+  esac
+  [ "$current_start" != "$started" ] || [ "$state" = Z ]
+}}
+wait_for_quiet() {{
+  attempts=0
+  while [ "$attempts" -lt 50 ]; do
+    if quiet_or_stale; then
+      return 0
+    else
+      result=$?
+      [ "$result" -eq 1 ] || return 2
+    fi
+    sleep 0.1 || return 2
+    attempts=$((attempts + 1))
+  done
+  return 1
+}}
+for pid_file in {EXEC_PID_DIR}/*.pid; do
+  [ -f "$pid_file" ] || continue
+  if [ "$pid_file" = "${{{EXEC_PID_FILE_ENV}:-}}" ]; then continue; fi
+  pid=$(cat -- "$pid_file" 2>/dev/null) || pid=''
+  started=$(cat -- "$pid_file{EXEC_PID_START_SUFFIX}" 2>/dev/null) || started=''
+  case "$pid:$started" in *[!0-9:]*|:*|*:) exit 125;; esac
+  if quiet_or_stale; then
+    rm -f -- "$pid_file" "$pid_file{EXEC_PID_START_SUFFIX}"
+    continue
+  else
+    result=$?
+    [ "$result" -eq 1 ] || exit 125
+  fi
+  [ "$pid" != "$$" ] || exit 125
+  kill -TERM "$pid" 2>/dev/null || :
+  if wait_for_quiet; then
+    :
+  else
+    result=$?
+    [ "$result" -eq 1 ] || exit 125
+    kill -KILL "$pid" 2>/dev/null || :
+    wait_for_quiet || exit 125
+  fi
+  rm -f -- "$pid_file" "$pid_file{EXEC_PID_START_SUFFIX}"
+done
+if [ -n "${{{EXEC_PID_FILE_ENV}:-}}" ]; then
+  rm -f -- "${EXEC_PID_FILE_ENV}" "${EXEC_PID_FILE_ENV}{EXEC_PID_START_SUFFIX}"
+fi
+exit 0"#
     );
     let mut command = pc::MaterializedCommand::new(["sh", "-c", script.as_str()]);
     // Nothing reads the reaper's output, and inheriting the Worker's streams
@@ -404,14 +477,24 @@ mod tests {
     /// the strings are built rather than only against a live daemon.
     #[test]
     fn the_reaper_enumerates_the_directory_the_wrappers_write_and_excludes_itself() {
+        // C1 each wrapper records PID and process starttime in one directory;
+        // C2 reaper checks that identity before signalling and excludes its
+        // own record. E1 a stale PID is skipped; E2 the reaper cannot signal
+        // itself; E3 signal alone cannot complete quiescence. The real Docker
+        // case supplies the effectful R1/E1-E3 witness.
         let command = exec_orphan_reaper_command();
         let script = command.argv.last().expect("reaper carries a script");
         assert!(script.contains(&format!("{EXEC_PID_DIR}/*.pid")));
         assert!(script.contains(&format!("${{{EXEC_PID_FILE_ENV}:-}}")));
+        assert!(script.contains("/proc/$pid/stat"));
+        assert!(script.contains(EXEC_PID_START_SUFFIX));
+        assert!(script.contains("wait_for_quiet"));
         assert_eq!(command.stdio, pc::Stdio::Null);
         assert!(exec_pid_file("k8s-exec-7-1").starts_with(EXEC_PID_DIR));
         let prelude = exec_pid_file_prelude();
         assert!(prelude.contains(&format!("mkdir -p {EXEC_PID_DIR}")));
         assert!(prelude.contains(EXEC_PID_FILE_ENV));
+        assert!(prelude.contains("record_exec_identity"));
+        assert!(prelude.contains(EXEC_PID_START_SUFFIX));
     }
 }

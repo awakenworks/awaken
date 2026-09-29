@@ -124,7 +124,7 @@ pub(super) fn k8s_exec_argv(
                secret_count=$((secret_count - 1)); \
              done; \
              {} \
-             printf '%s' \"$$\" > \"$pid_file\"; \
+             record_exec_identity; \
              if [ -n \"$cwd\" ]; then cd -- \"$cwd\" || exit 126; fi; exec \"$@\"{}",
             crate::exec_pid_file_prelude(),
             stdin_redirect

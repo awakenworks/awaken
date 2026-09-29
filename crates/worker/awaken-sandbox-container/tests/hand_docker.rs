@@ -16,6 +16,7 @@
 #[path = "common/residue.rs"]
 mod residue;
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,17 +71,24 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
     let rv = std::env::temp_dir().join(format!("awaken-hand-rv-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&rv);
     std::fs::create_dir_all(&rv).expect("create rendezvous dir");
+    // H1 causes: C1 the hardened Docker process runs as UID 10001; C2 a
+    // default host-created directory is not writable by that UID. Effect:
+    // the isolated test rendezvous admits its socket while the container
+    // retains --network none and the host receives the Hand response.
+    std::fs::set_permissions(&rv, std::fs::Permissions::from_mode(0o1777))
+        .expect("make test rendezvous writable by the sandbox UID");
     let host_sock = rv.join("hand.sock");
     let _ = std::fs::remove_file(&host_sock);
 
-    let _residue = residue::TestResidue::arm("hand-rv", residue::Backend::Docker);
+    let scope = format!("hand-rv-{}", std::process::id());
+    let _residue = residue::TestResidue::arm(&scope, residue::Backend::Docker);
     let runtime = DockerRuntime::connect_local(AGENT_PORT).expect("docker client");
     let provider = ContainerProvider::new(Arc::new(runtime), "python:3-slim")
         .with_clock(awaken_lease_contract::system_clock());
 
     let spec = pc::SandboxSpec {
         process_tree_supervision: false,
-        scope: "hand-rv".into(),
+        scope,
         isolation: pc::IsolationClass::Container,
         mounts: vec![pc::MountRequirement {
             mount_id: "rendezvous".into(),
@@ -151,7 +159,8 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
 
     assert!(
         connected,
-        "the host must reach the hand's unix socket across the --network none boundary"
+        "the host must reach the hand's unix socket across the --network none boundary; hand exit: {:?}",
+        status.code
     );
     assert_eq!(status.code, Some(0));
     assert!(
