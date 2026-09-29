@@ -430,7 +430,8 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     // Cause/effect graph: C1 retention is Resident/CheckpointAndRelease; C2 a
     // Memory input is RO/RW; C3 projection is effectful fresh materialization or
     // pure cold adoption; C4 a File is a late-attached Resource; C5 the remote
-    // Run materialization reference is present/absent. Effects: E1 ProviderDefault;
+    // Run materialization reference is present/absent; C6 no Worker upstream.
+    // Effects: E1 ProviderDefault;
     // E2 WriteThroughRequired; E3 only create-time Memory enters the substrate;
     // E4 fresh/cold immutable fingerprints agree. Decision rules:
     // | Rule | C1 checkpoint | C2 RW | C3 cold | C4 File | C5 Run ref | Effect |
@@ -438,6 +439,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     // | M2   | yes           | no    | any     | any     | any        | E1     |
     // | M3   | yes           | yes   | no      | yes     | yes        | E2+E3 |
     // | M4   | yes           | yes   | yes     | yes     | no         | E2+E3+E4 |
+    // M5 C6 => local validator and no remote materialization reference.
     // Constraint: the Environment policy is the only consistency cause; File
     // bytes remain governed by Resource reconciliation and never re-enter the
     // provider substrate fingerprint during adoption.
@@ -564,7 +566,9 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         .await
         .expect("effectful Memory staging");
     let pc::MountSource::MemoryStore {
-        write_consistency, ..
+        write_consistency,
+        materialization_reference,
+        ..
     } = &effectful.mounts[0].source
     else {
         panic!("effectful staging must preserve typed Memory")
@@ -573,6 +577,10 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         *write_consistency,
         pc::MemoryWriteConsistency::WriteThroughRequired,
         "M3/E2 effectful"
+    );
+    assert!(
+        materialization_reference.is_none(),
+        "M3 local no-upstream staging uses its binding validator, not a remote reference"
     );
     let cold = host.sandbox_spec_for_resolved_resources_and_provider(
         "checkpoint-memory",
