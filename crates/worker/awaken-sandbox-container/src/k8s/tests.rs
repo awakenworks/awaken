@@ -835,6 +835,47 @@ fn success_status(code: i32) -> Status {
     }
 }
 
+#[tokio::test]
+async fn attachment_lifetime_preserves_status_and_never_fabricates_missing_exit() {
+    // C1 pending observer; C2 status is success/failure/absent; C3 task is
+    // normally completed or cancelled. E1 C1 retains the attachment whose
+    // stdin Drop closes a v4 WebSocket; E2 C2 returns exactly that status,
+    // including None; E3 cancellation releases the attachment but supplies no
+    // exit receipt. Rules A1=C1=>E1; A2=C1+C2=>E1+E2; A3=C1+C3=>E3.
+    // A drop-before-await mutant closes the sender and fails A1/A2.
+    for status in [Some(success_status(0)), Some(success_status(7)), None] {
+        let (released, mut observed_release) = tokio::sync::oneshot::channel::<()>();
+        let (supply, observe) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(super::process::observe_attached_completion(
+            released,
+            async { observe.await.unwrap() },
+        ));
+        tokio::task::yield_now().await;
+        assert!(
+            matches!(
+                observed_release.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "A1"
+        );
+        supply.send(status.clone()).unwrap();
+        assert_eq!(task.await.unwrap(), status, "A2");
+        assert!(
+            observed_release.await.is_err(),
+            "A2 owner released after observation"
+        );
+    }
+    let (released, observed_release) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(super::process::observe_attached_completion(
+        released,
+        std::future::pending(),
+    ));
+    tokio::task::yield_now().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled(), "A3");
+    assert!(observed_release.await.is_err(), "A3");
+}
+
 #[test]
 fn signal_completion_uses_one_authoritative_success_rule() {
     // Cause/effect graph: C1 signal command exits zero/non-zero; C2 target
@@ -1903,4 +1944,49 @@ async fn remote_completion_requires_explicit_process_exit_evidence() {
             "D11 stable exact exit"
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn null_secret_exec_observes_eof_without_closing_transport_stdin() {
+    // S1 fixed-length secret prelude; S2 Null command attempts to read; S3
+    // caller keeps stdin open to retain a v4 WebSocket. S1+S2+S3 => env installed,
+    // command sees EOF and exits; no secret enters argv. Execute the actual
+    // generated shell. Missing Null redirection fails the bounded child wait.
+    use std::io::Write;
+    let mut command = pc::MaterializedCommand::new([
+        "sh",
+        "-c",
+        "IFS= read -r value && exit 9; printf '%s' \"$TOKEN\"",
+    ]);
+    command.stdio = pc::Stdio::Null;
+    command.env.push(pc::MaterializedEnvVar {
+        name: "TOKEN".into(),
+        value: pc::MaterializedEnvValue::Secret(awaken_runtime_contract::RedactedString::new(
+            "fixture",
+        )),
+    });
+    let execution = k8s_exec_argv("null-secret-test", command).unwrap();
+    let mut child = std::process::Command::new(&execution.argv[0])
+        .args(&execution.argv[1..])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"fixture").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("S2/S3 Null command waited for transport EOF");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let output = child.wait_with_output().unwrap();
+    drop(stdin);
+    assert!(output.status.success(), "S1-S3: {:?}", output.status);
+    assert_eq!(output.stdout, b"fixture");
+    let _ = std::fs::remove_file(execution.pid_file);
 }
