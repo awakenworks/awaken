@@ -375,7 +375,7 @@ YAML
 }
 
 hard_crash_native_worker() {
-  local pod="$1" expected_uid="$2" facts uid node container phase observed_container observed_uid
+  local pod="$1" expected_uid="$2" facts uid node container phase observed_container observed_uid observed_exit
   # One API observation binds UID, node and CRI id before the destructive
   # injection. Completion joins the exact retained UID/container, never a bare
   # name/404. Both Native fault phases reuse this one physical injection owner.
@@ -386,13 +386,13 @@ hard_crash_native_worker() {
   [ "$uid" = "$expected_uid" ] && [[ "$node" == "k3d-${CLUSTER}-"* ]] \
     && [[ "$container" =~ ^[0-9a-f]{64}$ ]] \
     || { err "invalid exact Native Worker CRI crash target"; return 1; }
-  docker exec "$node" crictl stop --timeout 0 "$container" >/dev/null
+  k3d_hard_stop_cri_container "$CLUSTER" "$node" "$container" || return "$?"
   for _ in $(seq 1 90); do
     facts=$(kubectl -n "$NS" get pod "$pod" \
-      -o jsonpath='{.metadata.uid}|{.status.phase}|{.status.containerStatuses[0].state.terminated.containerID}')
-    IFS='|' read -r observed_uid phase observed_container <<<"$facts"
+      -o jsonpath='{.metadata.uid}|{.status.phase}|{.status.containerStatuses[0].state.terminated.containerID}|{.status.containerStatuses[0].state.terminated.exitCode}')
+    IFS='|' read -r observed_uid phase observed_container observed_exit <<<"$facts"
     [ "$observed_uid" = "$expected_uid" ] && [ "$phase" = "Failed" ] \
-      && [ "$observed_container" = "containerd://${container}" ] && return 0
+      && [ "$observed_container" = "containerd://${container}" ] && [ "$observed_exit" = 137 ] && return 0
     sleep 1
   done
   err "Kubernetes did not retain the exact hard-crashed Worker process"
@@ -920,7 +920,7 @@ PRIMARY_CONTAINER=${PRIMARY_CONTAINER#containerd://}
 [[ "$PRIMARY_NODE" == "k3d-${CLUSTER}-"* ]] \
   && [[ "$PRIMARY_CONTAINER" =~ ^[0-9a-f]{64}$ ]] \
   || { err "invalid PostgreSQL CRI crash target"; exit 1; }
-docker exec "$PRIMARY_NODE" crictl stop --timeout 0 "$PRIMARY_CONTAINER" >/dev/null
+k3d_hard_stop_cri_container "$CLUSTER" "$PRIMARY_NODE" "$PRIMARY_CONTAINER"
 kubectl -n "$NS" scale statefulset/postgres-primary --replicas=0 >/dev/null
 kubectl -n "$NS" wait --for=delete pod/postgres-primary-0 --timeout=120s
 kubectl -n "$NS" exec postgres-standby-0 -- \
