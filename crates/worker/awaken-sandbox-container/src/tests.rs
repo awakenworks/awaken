@@ -374,6 +374,47 @@ fn container_plan_maps_command_image_env_binds_network_and_outputs() {
     assert_eq!(plan.limits.cpu_millis, Some(2000));
 }
 
+/// P1 every rootfs/command has one init, non-root identity, no new privileges,
+/// capability drop and read-only root. P2 only Open retains network; None and
+/// unresolved Allowlist deny it. P3 reservation is the same projection with
+/// create replacing run, so it cannot omit a floor used by activation.
+#[test]
+fn podman_execution_and_reservation_share_the_security_floor() {
+    let mut plan = container_plan(&spec("floor"), "busybox:latest", &["sh".into()], None).unwrap();
+    for network in [NetworkMode::Open, NetworkMode::None, NetworkMode::Allowlist] {
+        plan.network = network.clone();
+        let run = podman_run_argv("floor", &plan, &plan.rootfs);
+        for flag in [
+            "--init",
+            "--read-only",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+        ] {
+            assert_eq!(
+                run.iter().filter(|argument| *argument == flag).count(),
+                1,
+                "P1 {flag}"
+            );
+        }
+        assert!(
+            run.windows(2)
+                .any(|arguments| arguments == ["--user", "10001:10001"]),
+            "P1 image identity"
+        );
+        assert_eq!(
+            run.windows(2)
+                .any(|arguments| arguments == ["--network", "none"]),
+            network != NetworkMode::Open,
+            "P2"
+        );
+        let created = crate::podman_plan::podman_create_argv("floor", &plan, &plan.rootfs);
+        let mut expected = run;
+        expected[0] = "create".into();
+        expected.remove(1);
+        assert_eq!(created, expected, "P3");
+    }
+}
+
 #[test]
 fn container_plan_honors_an_image_override_and_network_variants() {
     /* Container-image authority cause/effect decision table. Causes: C1 the

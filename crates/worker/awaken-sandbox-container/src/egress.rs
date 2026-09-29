@@ -6,7 +6,9 @@
 // @formal reason: allowlist boundary.
 use awaken_provisioning_contract as pc;
 use base64::Engine as _;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+
+pub use awaken_container_contract::AllowlistCapability;
 
 /// How egress maps onto a container network mode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -76,14 +78,6 @@ impl std::fmt::Debug for AllowlistProxy {
             .field("ttl_secs", &self.ttl_secs)
             .finish_non_exhaustive()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AllowlistCapability {
-    pub version: u8,
-    pub scope: String,
-    pub hosts: Vec<String>,
-    pub expires_at_unix: u64,
 }
 
 impl AllowlistProxy {
@@ -391,6 +385,11 @@ mod tests {
 
     #[test]
     fn allowlist_capabilities_are_canonical_and_invalid_hosts_fail_closed() {
+        // A1 DNS spelling variants and duplicates -> one sorted host set and
+        // the historical signed v1 bytes (the Gateway consumes this vector).
+        // A2 IP/wildcard/malformed names -> refusal before token issuance.
+        // This golden byte assertion detects schema/order drift after moving
+        // the payload to the shared contract; round-trip equality would not.
         let proxy = AllowlistProxy::new("http://gateway.internal:8081", [3; 32], 30).unwrap();
         let token = proxy
             .issue_at(

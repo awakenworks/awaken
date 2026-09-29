@@ -1,5 +1,20 @@
-//! Allowlist host normalization shared by container egress and the Session
-//! owner's relay admission.
+// @formal surface obligation=sandbox.allowlist_claim_requires_runtime_and_issuer_evidence
+// @formal reason: Owns the shared signed payload and DNS-host normalization consumed by
+// @formal reason: runtime/issuer admission. Golden issuance and Gateway verification bound wire
+// @formal reason: compatibility; this vocabulary does not prove cryptography or kernel isolation.
+//! Allowlist wire vocabulary shared by container issuance, Gateway verification
+//! and the Session owner's relay admission.
+
+/// The existing signed v1 capability payload. Issuance and verification share
+/// this field order and schema; signatures, keys and transport remain adapter
+/// responsibilities rather than a second contract-owned authority.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AllowlistCapability {
+    pub version: u8,
+    pub scope: String,
+    pub hosts: Vec<String>,
+    pub expires_at_unix: u64,
+}
 
 /// Canonical form of one `NetworkPolicy::Allowlist` host: trimmed, without a
 /// trailing dot, ASCII-lowercased, and a syntactically valid DNS name (IP

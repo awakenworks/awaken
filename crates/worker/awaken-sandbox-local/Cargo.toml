@@ -60,6 +60,8 @@ awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-sandbox-memoryd.workspace = true
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 async-trait.workspace = true
+# Syscall numbers for the differential seccomp probe (tests/syscall_boundary.rs).
+libc = "0.2"
 
 [lints]
 workspace = true

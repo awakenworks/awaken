@@ -40,8 +40,8 @@ use awaken_sandbox_container::{
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use common::memory_mount;
 use k8s_common::{
-    container_environment, container_id, disposal_authorization, effect_fence, fixture_image,
-    spec_with_command,
+    container_environment, container_id, control_image, disposal_authorization, effect_fence,
+    fixture_image, spec_with_command,
 };
 use pc::test_support::EffectAuthority;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -84,11 +84,24 @@ fn require_live_cluster() -> bool {
         eprintln!("skipping: set AWAKEN_K8S_E2E=1 to require the live Kubernetes suite");
         return false;
     }
-    assert!(
-        kubectl(&["get", "nodes"]).status.success(),
-        "AWAKEN_K8S_E2E=1 requires a reachable Kubernetes cluster"
-    );
-    true
+    // Q1 the exact cluster answers immediately -> proceed. Q2 its API is
+    // briefly unavailable during parallel Pod/PVC convergence -> retry that
+    // same read, then proceed only on a real success. Q3 sustained failure ->
+    // panic in required mode, never an empty test or a fabricated Pod result.
+    for attempt in 0..6 {
+        let observed = kubectl(&["--request-timeout=5s", "get", "nodes"]);
+        if observed.status.success() {
+            return true;
+        }
+        if attempt == 5 {
+            panic!(
+                "AWAKEN_K8S_E2E=1 requires a reachable Kubernetes cluster: {}",
+                String::from_utf8_lossy(&observed.stderr)
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    unreachable!("bounded cluster-read admission returns on its final row")
 }
 
 fn session_argv() -> Vec<String> {
@@ -349,8 +362,10 @@ fn credential_spec(scope: &str, refreshed: &[u8]) -> pc::SandboxSpec {
     }
 }
 
+const KUBECTL_BIN: &str = "kubectl";
+
 fn kubectl(args: &[&str]) -> std::process::Output {
-    std::process::Command::new("kubectl")
+    std::process::Command::new(KUBECTL_BIN)
         .args(args)
         .output()
         .expect("kubectl runs")
@@ -449,12 +464,11 @@ async fn gated_k8s_marker_readiness_and_first_real_helper_roundtrip() {
         "the control gate also requires the ordinary live-cluster gate"
     );
     assert!(require_live_cluster(), "GKC1 reachable cluster");
-    let image = std::env::var("AWAKEN_K8S_CONTROL_IMAGE")
-        .expect("AWAKEN_K8S_CONTROL_E2E=1 requires a digest-pinned operator image");
+    let image = control_image();
     let executable = std::env::var("AWAKEN_K8S_CONTROL_EXECUTABLE")
         .unwrap_or_else(|_| "/usr/local/bin/awaken-sandbox".into());
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
-    let runtime = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to Kubernetes")
         .with_sandbox_control_forwarder(
@@ -547,7 +561,7 @@ async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_se
     }
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
     let runtime = Arc::new(
-        K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+        k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
             .await
             .expect("connect to Kubernetes"),
     );
@@ -615,7 +629,7 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
         current: Mutex::new(initial.to_vec()),
         reject_writeback: AtomicBool::new(false),
     });
-    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
@@ -698,7 +712,7 @@ async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
         current: Mutex::new(initial.to_vec()),
         reject_writeback: AtomicBool::new(false),
     });
-    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
@@ -747,7 +761,7 @@ async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
         current: Mutex::new(initial.to_vec()),
         reject_writeback: AtomicBool::new(true),
     });
-    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
@@ -796,7 +810,7 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     }
 
     let scope = format!("k8s-e2e-{}", std::process::id());
-    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let runtime = Arc::new(runtime);
@@ -828,6 +842,7 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     let got = exchange(&sandbox, agent_argv())
         .await
         .expect("exchange ACP frames over the Kubernetes exec channel");
+    process_lifecycle::verify_security_floor(runtime.as_ref(), &pod).await;
     process_lifecycle::verify_wait_cancellation_and_signal(runtime.as_ref(), &pod).await;
     sandbox
         .dispose()
@@ -855,7 +870,7 @@ async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_
     }
 
     let scope = format!("k8s-live-input-{}", std::process::id());
-    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let image = fixture_image();
@@ -965,7 +980,7 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
     let scope = format!("k8s-manifest-recovery-{}", std::process::id());
     let path_a = "/mnt/session/uploads/awaken-design/current/old.html";
     let path_b = "/mnt/session/uploads/awaken-design/current/index.html";
-    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
@@ -1062,7 +1077,7 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
     let scope = format!("k8s-cfg-{}", std::process::id());
     let marker = "inline-configmap-marker-42";
 
-    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let provider = ContainerProvider::new(Arc::new(runtime), fixture_image())
@@ -1147,7 +1162,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         .unwrap();
 
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
-    let runtime = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     let image = session_image();
@@ -1314,7 +1329,7 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
     let scope = format!("k8s-file-{}", std::process::id());
     let marker = "file-via-blobsource-99";
 
-    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     // The provider resolves the `File` id `blob-k8s` from its seeded BlobSource, then the
@@ -1373,7 +1388,7 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
 
     let scope = format!("k8s-bin-{}", std::process::id());
 
-    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
     // Non-UTF-8 bytes: a 0xff/0xfe prefix (so String::from_utf8 fails → binaryData) followed
@@ -1444,7 +1459,7 @@ async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_se
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".to_string());
     let image = session_image();
     let scope = format!("k8s-hand-recovery-{}", std::process::id());
-    let runtime = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+    let runtime = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to Kubernetes");
     let provider = ContainerProvider::new(Arc::new(runtime), image.clone())
@@ -1565,7 +1580,7 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
     let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
     let image = session_image();
     let scope = format!("k8s-resident-takeover-{}", std::process::id());
-    let runtime_a = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+    let runtime_a = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect Worker A provider")
         .with_pod_channel_port(7777);
@@ -1593,11 +1608,12 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
         }
     }
     let channel_a = channel_a.expect("resident Hand accepts the bounded initial channel probe");
+    const HA_STARTED_MARKER: &str = "/tmp/awaken-ha-started";
     let operation = ToolCall {
         call_id: "resident-one-effect".into(),
         tool_id: "bash".into(),
         arguments: serde_json::json!({
-            "command": "count=$(cat /tmp/awaken-ha-count 2>/dev/null || echo 0); count=$((count+1)); printf '%s' \"$count\" > /tmp/awaken-ha-count; touch /tmp/awaken-ha-started; sleep 2; printf 'resident-result-%s' \"$count\""
+            "command": format!("count=$(cat /tmp/awaken-ha-count 2>/dev/null || echo 0); count=$((count+1)); printf '%s' \"$count\" > /tmp/awaken-ha-count; touch {HA_STARTED_MARKER}; sleep 2; printf 'resident-result-%s' \"$count\"")
         }),
     };
     let worker_a = tokio::spawn({
@@ -1614,24 +1630,31 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
             .await
         }
     });
-    let mut started = false;
-    for _ in 0..50 {
-        if kubectl(&["exec", &pod, "--", "test", "-f", "/tmp/awaken-ha-started"])
-            .status
-            .success()
-        {
-            started = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(started, "H2/C2 real side effect entered before disconnect");
+    // H2/C2 waits on the agent's own file, not a local poll count or channel
+    // signal. One exact kubectl exec settles only after that fact exists; the
+    // deadline kills the observer and fails loudly if it never appears.
+    let marker_probe = format!("while ! test -f '{HA_STARTED_MARKER}'; do sleep 0.1; done");
+    let observed = tokio::time::timeout(
+        Duration::from_secs(8),
+        tokio::process::Command::new(KUBECTL_BIN)
+            .args(["exec", &pod, "-c", "agent", "--", "sh", "-c", &marker_probe])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("H2/C2 exact marker deadline")
+    .expect("H2/C2 kubectl observer");
+    assert!(
+        observed.status.success(),
+        "H2/C2 real side effect entered before disconnect: {}",
+        String::from_utf8_lossy(&observed.stderr)
+    );
     worker_a.abort();
     let _ = worker_a.await;
     drop(sandbox);
     drop(provider_a);
 
-    let runtime_b = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+    let runtime_b = k8s_common::connect_with_clock(&namespace, "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect Worker B provider")
         .with_pod_channel_port(7777);

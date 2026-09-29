@@ -1701,8 +1701,10 @@ dependencies = [
  "async-trait",
  "awaken-authority-clock",
  "awaken-provisioning-contract",
+ "libc",
  "nix 0.29.0",
  "rustix 1.1.4",
+ "seccompiler",
  "serde",
  "tempfile",
  "tokio",
@@ -2491,6 +2493,7 @@ dependencies = [
  "cap-std",
  "rustix 1.1.4",
  "same-file",
+ "tempfile",
 ]
 
 [[package]]
@@ -2517,6 +2520,7 @@ dependencies = [
  "blake3",
  "command-fds",
  "getrandom 0.2.17",
+ "libc",
  "serde",
  "serde_json",
  "tar",
@@ -7379,6 +7383,15 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "seccompiler"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "secrecy"

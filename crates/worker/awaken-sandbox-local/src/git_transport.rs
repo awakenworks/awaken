@@ -726,6 +726,14 @@ mod tests {
                     while !shutdown.load(Ordering::SeqCst) {
                         match listener.accept() {
                             Ok((mut stream, _)) => {
+                                // The listener is nonblocking so Drop can stop
+                                // this fixture. macOS also makes accepted
+                                // streams nonblocking; restore request I/O to
+                                // blocking mode before the canonical parser
+                                // reads the complete HTTP header. Otherwise
+                                // a partial first read yields WouldBlock and
+                                // the client observes a spurious reset.
+                                stream.set_nonblocking(false).unwrap();
                                 let (request_line, headers) = read_http_request(&mut stream);
                                 if !has_basic_authorization(&headers) {
                                     stream
@@ -1237,7 +1245,9 @@ mod tests {
         }
     }
 
-    /// H1 admitted origin receives Basic; H2 a cross-host redirect retaining
+    /// H0 an accepted socket may inherit nonblocking mode on macOS; the
+    /// fixture reads a complete request rather than treating WouldBlock as
+    /// transport failure. H1 admitted origin receives Basic; H2 a cross-host redirect retaining
     /// the Git service query receives no Authorization; H3 its challenge cannot
     /// obtain a credential from the exact protocol+host:port helper.
     #[test]
@@ -1270,6 +1280,8 @@ mod tests {
     /// Credentialed clone lifecycle: C1 authenticated exact checkout persists a
     /// clean origin; C2 authenticated clone plus invalid checkout removes the
     /// whole newly-created target and leaves no config/capability.
+    /// C3 the fixture's accepted socket is nonblocking before request bytes
+    /// arrive -> complete HTTP request still reaches the exact credential rule.
     #[test]
     fn credentialed_checkout_failure_leaves_no_repository_or_git_secret() {
         let tmp = tempfile::tempdir().unwrap();

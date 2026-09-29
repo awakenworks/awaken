@@ -1058,9 +1058,7 @@ impl RuntimePathEnv {
     }
 
     fn bash_env(&self) -> std::collections::BTreeMap<String, String> {
-        let mut env = std::env::vars()
-            .filter(|(key, _)| !key.starts_with("ANTHROPIC_"))
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut env = workdir_shell::workdir_bash_passthrough(std::env::vars());
         env.extend(
             self.entries()
                 .map(|(name, value)| (name.into(), value.into())),
@@ -1099,6 +1097,7 @@ mod git_transport;
 mod handle;
 mod namespace;
 mod provider;
+mod workdir_shell;
 #[cfg(target_os = "linux")]
 pub use provider::execution::LocalExecutionDeployment;
 mod read_only_tree;
@@ -1167,35 +1166,6 @@ impl IsolatedRoot {
         }
         Ok(out)
     }
-}
-
-/// Build the trusted launcher argv for one persistent Bash process in a
-/// networkless bubblewrap namespace rooted at the environment workdir.
-fn bwrap_persistent_bash(root: &str) -> Vec<String> {
-    [
-        "--ro-bind",
-        "/",
-        "/",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
-        "--tmpfs",
-        "/tmp",
-        "--bind",
-        root,
-        root,
-        "--chdir",
-        root,
-        "--unshare-net",
-        "--",
-        "/bin/bash",
-        "--noprofile",
-        "--norc",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
 }
 
 /// A hand tool bound to a sandbox environment. Unlike a [`RawTool`], its result is
@@ -1313,10 +1283,14 @@ pub(crate) fn rooted_hand_tools(
         .with_path_projection("outputs", &host_outputs)
         .with_bash_env(runtime_paths.bash_env());
     if deny_egress {
-        context = context.with_bash_launcher(
-            "bwrap",
-            bwrap_persistent_bash(&root.root().to_string_lossy()),
-        );
+        context = match awaken_local_process::resolve_operator_launcher("bwrap") {
+            Ok(launcher) => context.with_bash_launcher(
+                launcher,
+                workdir_shell::bwrap_persistent_bash(&root.root().to_string_lossy()),
+            ),
+            Err(cause) => context.with_bash_launcher_failure(cause.to_string()),
+        }
+        .with_bash_launch_preparation(workdir_shell::workdir_bash_launch_preparation());
     }
     all_hand_tools_in(context)
         .into_iter()
@@ -1689,24 +1663,6 @@ mod tests {
             .await
             .unwrap();
         assert!(grep.text().contains("input.txt"));
-    }
-
-    #[test]
-    fn persistent_bwrap_launcher_has_no_network_and_exact_root() {
-        // The root is passed as an argv token, not interpolated into shell text,
-        // while the shell process itself lives in the no-network namespace.
-        let args = bwrap_persistent_bash("/env/a'b");
-        assert!(args.iter().any(|arg| arg == "--unshare-net"));
-        assert!(
-            args.windows(3)
-                .any(|part| part == ["--bind", "/env/a'b", "/env/a'b"])
-        );
-        assert!(args.ends_with(&[
-            "--".to_owned(),
-            "/bin/bash".to_owned(),
-            "--noprofile".to_owned(),
-            "--norc".to_owned(),
-        ]));
     }
 
     // ---- HandOutput ----

@@ -5,6 +5,26 @@ pub(crate) fn fixture_image() -> String {
     std::env::var("AWAKEN_K8S_FIXTURE_IMAGE").unwrap_or_else(|_| "awaken-bb:1".to_string())
 }
 
+/// The repository-owned live runner exports the exact digest after accepting
+/// the current Sandbox image. A tag is never substituted for this control role.
+pub(crate) fn control_image() -> String {
+    std::env::var("AWAKEN_K8S_CONTROL_IMAGE")
+        .expect("live control qualification requires a digest-pinned operator image")
+}
+
+/// Every live Kubernetes fixture uses the Worker-owned process clock. The
+/// production constructor deliberately has no default clock and rejects a
+/// fenced effect until composition installs one; tests must make that same
+/// installation before exercising physical lifecycle behavior.
+pub(crate) async fn connect_with_clock(
+    namespace: &str,
+    address: std::net::SocketAddr,
+) -> Result<awaken_sandbox_container::k8s::K8sRuntime, awaken_sandbox_container::RuntimeError> {
+    awaken_sandbox_container::k8s::K8sRuntime::connect(namespace, address)
+        .await
+        .map(|runtime| runtime.with_clock(awaken_lease_contract::system_clock()))
+}
+
 pub(crate) fn container_environment(image: String) -> pc::EnvironmentKind {
     pc::EnvironmentKind::Image { reference: image }
 }
