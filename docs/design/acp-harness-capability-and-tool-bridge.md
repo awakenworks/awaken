@@ -402,8 +402,12 @@ batch migration, so another Run cannot replace the selected batch. Worker
 `RecoveryProjection` advances after acknowledged commits and supplies those
 fresh results through the existing committed-read port.
 
-The ACP request projection selects Runtime-minted, Assistant-call-paired results
-from committed Thread messages and preserves ordered content plus `is_error`.
+The ACP request projection selects Runtime-minted, Assistant-occurrence-paired
+results from committed Thread messages and preserves ordered content plus
+`is_error`. Runtime mints a result Message id from the owning `ToolBatch`
+Run/Step coordinate and the response-local provider call id. Older committed
+`tool-{call_id}` ids remain readable; neither id replaces the provider call id
+inside the model-visible `ToolResult` block.
 It rebuilds this read-only context on each attempt, including later Runs, without
 an acknowledgement cursor dependent on opaque SDK session-home persistence.
 A failure between tool-result commit and external delivery therefore loses no

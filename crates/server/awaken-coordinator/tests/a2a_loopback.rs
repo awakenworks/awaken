@@ -147,26 +147,28 @@ async fn assert_committed_child_report(host: &SharedHost, thread: &str) {
                 })
         })
         .expect("parent commits the agent_run request");
-    let expected_result_id = MessageId::tool_result(&relationship.parent_call_id);
     let (tool_result_index, child_report) = messages
         .iter()
         .enumerate()
         .find_map(|(index, message)| {
-            (message.role == Role::Tool && message.id == expected_result_id)
-                .then(|| {
-                    message.content.iter().find_map(|block| match block {
-                        ContentBlock::ToolResult {
-                            tool_use_id,
-                            content,
-                            is_error,
-                        } if tool_use_id == &relationship.parent_call_id && !is_error => {
-                            Some(awaken_session_executor::block_text(content))
-                        }
-                        _ => None,
-                    })
+            (message.role == Role::Tool
+                && message
+                    .id
+                    .is_tool_result_for_call(&relationship.parent_call_id))
+            .then(|| {
+                message.content.iter().find_map(|block| match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } if tool_use_id == &relationship.parent_call_id && !is_error => {
+                        Some(awaken_session_executor::block_text(content))
+                    }
+                    _ => None,
                 })
-                .flatten()
-                .map(|report| (index, report))
+            })
+            .flatten()
+            .map(|report| (index, report))
         })
         .unwrap_or_else(|| {
             panic!("completed child Run lacks its correlated non-error ToolResult: {messages:#?}")

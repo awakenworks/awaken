@@ -1725,6 +1725,129 @@ async fn gate_set_result_skips_execution_and_stages_supplied_result() {
 /// its step ceiling.
 struct AlwaysToolCall;
 
+struct ReusedProviderCall {
+    turns: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for ReusedProviderCall {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let turn = self.turns.fetch_add(1, Ordering::SeqCst);
+        let output = if turn < 2 {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "voice-final".into(),
+                tool_id: "echo".into(),
+                arguments: serde_json::json!({ "text": format!("turn-{turn}") }),
+            }])
+        } else {
+            AssistantOutput::text("complete")
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn provider_call_id_reused_across_steps_commits_distinct_tool_results() {
+    // Causes: C1 a provider reuses one response-local call id in two valid
+    // assistant Steps; C2 each step returns different content; C3 one Run and
+    // Thread commit both results. Effects: E1 both effects execute once; E2
+    // both result messages persist with distinct IDs; E3 content and model
+    // correlation call ids stay intact. Decision table: R1=C1+C2+C3=>E1-E3;
+    // R2=one call/step is covered by allowed_tool_call_executes_and_feeds_result_back.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ReusedProviderCall {
+            turns: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
+    let outcome = runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(ran.load(Ordering::SeqCst), 2, "R1/E1");
+    let results = commit
+        .committed()
+        .messages
+        .into_iter()
+        .filter(|message| message.role == Role::Tool)
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 2, "R1/E2");
+    assert_ne!(results[0].id, results[1].id, "R1/E2");
+    assert!(
+        results[0].id.is_tool_result_for_call("voice-final"),
+        "R1/E3"
+    );
+    assert!(
+        results[1].id.is_tool_result_for_call("voice-final"),
+        "R1/E3"
+    );
+    assert!(results[0].text_content().contains("turn-0"), "R1/E3");
+    assert!(results[1].text_content().contains("turn-1"), "R1/E3");
+}
+
+#[tokio::test]
+async fn provider_call_id_reused_across_runs_keeps_both_committed_results() {
+    // Causes: C1 two Runs share one Thread; C2 the provider reuses call-1 in
+    // each Run; C3 each Run supplies a different user input. Effects: E1 both
+    // Runs end normally; E2 two distinct durable result ids retain call-1 as
+    // model correlation; E3 the effects execute twice, once per Run. Decision
+    // table: R1=C1+C2+C3=>E1-E3; one Run is covered by the allowed-call test.
+    let ran = Arc::new(AtomicUsize::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new(
+        awaken_lease_contract::system_clock(),
+    ));
+    for (run, input) in [("run-1", "message-1"), ("run-2", "message-2")] {
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(ToolThenText::new()))
+            .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+            .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+        let mut activation = activation();
+        activation.run_id = RunId(run.into());
+        activation.input[0].id = MessageId(input.into());
+        assert_eq!(
+            runtime
+                .execute(
+                    activation,
+                    RuntimeRunContext::new().with_commit(commit.clone()),
+                )
+                .await
+                .unwrap(),
+            RunState::Ended(EndCause::NaturalEnd),
+            "R1/E1"
+        );
+    }
+    let results = commit
+        .committed()
+        .messages
+        .into_iter()
+        .filter(|message| message.role == Role::Tool)
+        .collect::<Vec<_>>();
+    assert_eq!(ran.load(Ordering::SeqCst), 2, "R1/E3");
+    assert_eq!(results.len(), 2, "R1/E2");
+    assert_ne!(results[0].id, results[1].id, "R1/E2");
+    assert!(
+        results
+            .iter()
+            .all(|message| message.id.is_tool_result_for_call("call-1")),
+        "R1/E2"
+    );
+}
+
 #[async_trait::async_trait]
 impl LlmExecutor for AlwaysToolCall {
     async fn infer(

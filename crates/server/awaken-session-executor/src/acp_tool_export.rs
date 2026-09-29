@@ -941,7 +941,7 @@ mod tests {
             let results = commit.committed_messages(&thread_id);
             let result = results
                 .iter()
-                .find(|message| message.id == MessageId::tool_result(&call.call_id))
+                .find(|message| message.id.is_tool_result_for_call(&call.call_id))
                 .unwrap();
             assert!(
                 matches!(&result.content[0], ContentBlock::ToolResult { tool_use_id, is_error, .. }
