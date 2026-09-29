@@ -6,7 +6,7 @@ use awaken_runtime_contract::llm::LlmExecutor;
 
 use super::{
     CredentialMaterializerSupport, InferenceExecutorMaterializer, ResourceManifestSupport,
-    StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder,
+    StandardManifestConfig, StandardManifestInputs, WorkerApplicationSource, WorkerNodeBuilder,
     configured_container_acp_targets, derive_standard_manifest, grace_window,
     validate_worker_manifest, worker_realization_namespace,
 };
@@ -483,7 +483,10 @@ fn worker_uses_the_injected_web_search_registry_as_its_only_catalog() {
     .with_web_search_provider_registry(registry)
     .build()
     .unwrap();
-    let descriptors = worker.web_search_providers.descriptors();
+    let WorkerApplicationSource::Static { dependencies, .. } = worker.application else {
+        panic!("static application source");
+    };
+    let descriptors = dependencies.web_providers.descriptors();
     assert!(descriptors.is_empty());
 }
 
@@ -496,7 +499,12 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
     let deployment = deployment();
     let manifest = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment,
-        materializer: Some(&materializer),
+        inference_schemes: &materializer
+            .supported_access_schemes()
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect(),
+        inference_credentials: &materializer.credential_realization_capabilities(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,
@@ -561,7 +569,8 @@ fn worker_manifest_reports_trusted_host_only_from_operator_configuration() {
         let primary_backend = deployment.sandbox_support().1.to_string();
         let manifest = derive_standard_manifest(StandardManifestInputs {
             deployment: &deployment,
-            materializer: None,
+            inference_schemes: &Default::default(),
+            inference_credentials: &Default::default(),
             credential_materializer: None,
             brokered_acp_model_access: None,
             worker_local_credential_resolver_installed: false,
@@ -1083,7 +1092,8 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
     );
     let workload = derive_standard_manifest(StandardManifestInputs {
         deployment: &acp,
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: Some(credential_support()),
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,
@@ -1163,7 +1173,8 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
 
     let without_acp = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment(),
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: Some(credential_support()),
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,
@@ -1205,7 +1216,8 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
 
     let local_observation_only = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment(),
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: true,
@@ -1239,7 +1251,8 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
 
     let without_credentials = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment(),
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,
@@ -1297,7 +1310,8 @@ fn standard_manifest_requires_complete_provider_evidence_for_worker_relay() {
         sandbox.enforced_network_allowlist = no_bypass;
         let manifest = derive_standard_manifest(StandardManifestInputs {
             deployment: &deployment,
-            materializer: None,
+            inference_schemes: &Default::default(),
+            inference_credentials: &Default::default(),
             credential_materializer: credential_materializer.then(credential_support),
             brokered_acp_model_access: None,
             worker_local_credential_resolver_installed: false,
@@ -1350,7 +1364,8 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
     let deployment = deployment();
     let without = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment,
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,
@@ -1381,7 +1396,8 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
 
     let secretless = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment,
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,
@@ -1412,7 +1428,8 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
 
     let credentialed = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment,
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,
@@ -1438,7 +1455,12 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
     let materializer = SchemeMaterializer;
     let inference = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment,
-        materializer: Some(&materializer),
+        inference_schemes: &materializer
+            .supported_access_schemes()
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect(),
+        inference_credentials: &materializer.credential_realization_capabilities(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,
@@ -1490,7 +1512,8 @@ fn worker_manifest_includes_explicit_application_capabilities() {
     let deployment = deployment();
     let manifest = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment,
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,
@@ -1528,7 +1551,8 @@ fn standard_manifest_uses_one_typed_metadata_source() {
         .with_max_concurrent(7);
     let manifest = derive_standard_manifest(StandardManifestInputs {
         deployment: &deployment,
-        materializer: None,
+        inference_schemes: &Default::default(),
+        inference_credentials: &Default::default(),
         credential_materializer: None,
         brokered_acp_model_access: None,
         worker_local_credential_resolver_installed: false,

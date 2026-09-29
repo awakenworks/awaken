@@ -851,7 +851,7 @@ pub(super) async fn prepare_runtime_routers(
             ai_sdk_browser_cors,
             model_inventory,
             dream_process_store,
-            worker_authenticator,
+            worker_authenticator: worker_authenticator.clone(),
             worker_placement_policy,
             worker_execution_bindings,
             worker_execution_stops,
@@ -926,5 +926,6 @@ pub(super) async fn prepare_runtime_routers(
         process.service_lifecycle,
         Some(event_batch_cutover_validation),
         admin_execs,
-    ))
+    )
+    .with_worker_authenticator(worker_authenticator))
 }

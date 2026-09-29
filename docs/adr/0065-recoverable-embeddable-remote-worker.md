@@ -587,3 +587,20 @@ remain unchanged.
 Awaken remains embeddable without creating an application-specific Worker
 protocol. The same Worker binary can execute locally or remotely, while
 products keep their business aggregates and acceptance rules outside Awaken.
+
+## Amendment: one registration-bound dependency assembly (2026-09-29)
+
+The existing registration-time application factory is the single assembly
+boundary for identity-bound dependencies. It receives the Coordinator-returned
+`RegisteredWorkerContext` and constructs the attempt decorator, inference,
+web-provider registry and checkpoint client from its exact upstream. The old
+decorator-only constructor projects into this same factory; it does not run a
+second initializer or maintain another identity cache.
+
+Static dependencies and a registration factory are mutually exclusive sources
+of one dependency value. A factory declares secret-free inference capabilities
+and checkpoint presence for the existing manifest derivation; after registration,
+the actual dependency output must match that declaration before Host creation or
+Ready. Errors, unwind, missing dependencies or capability drift use the existing
+bounded registration withdrawal. Backend selection, registry generations,
+Dispatch claims and Session lifecycle remain unchanged.

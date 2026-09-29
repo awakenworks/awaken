@@ -1050,6 +1050,7 @@ mod tests {
             service_lifecycle: awaken_service_lifecycle::ServiceLifecycle::new(),
             event_batch_cutover_validation: None,
             coordinator_authorities: None,
+            worker_authenticator: None,
             admin_tools: Vec::new(),
             clock: awaken_lease_contract::system_clock(),
         }
@@ -1435,6 +1436,7 @@ mod tests {
             service_lifecycle: awaken_service_lifecycle::ServiceLifecycle::new(),
             event_batch_cutover_validation: Some(source.clone()),
             coordinator_authorities: None,
+            worker_authenticator: None,
             admin_tools: Vec::new(),
             clock: awaken_lease_contract::system_clock(),
         };
