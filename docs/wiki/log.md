@@ -1,5 +1,12 @@
 # Wiki Update Log
 
+## 2026-09-29 — Consolidate Sandbox allowlist ownership
+
+- [ADR-0041](../adr/0041-sandbox-execution-environment-provider.md) records the
+  shared workload hardening mechanism and the container contract's single
+  allowlist wire owner. Runtime enforcement and Gateway admission remain
+  distinct evidence requirements.
+
 ## 2026-08-30 — Bind restore replay to one exact physical target
 
 - Projected the Session aggregate's one durable `Restoring` tuple through the

@@ -1109,3 +1109,21 @@ the exact source revision. Therefore a previous Debian image, a moving base, or
 an image missing `control-forwarder` cannot be promoted or silently reused after
 the contract changes. Environment package layers continue to derive only from
 the admitted base image identity; they do not own another base-image recipe.
+
+## Amendment 10 (2026-09-29): workload hardening and one allowlist wire owner
+
+`awaken-local-process` owns the Linux workload syscall profile and trusted
+operator executable resolution. Namespace launch, its readiness probe and the
+Workdir networkless shell consume that same profile mechanism and descriptor
+mapping. Namespace retains Unix sockets for declared Sandbox control services,
+but a denied-network launch does not project host resolver runtime directories.
+The host-view Workdir shell instead denies creating Unix sockets and masks host
+runtime state; that shell does not upgrade the Workdir provider's capabilities.
+An unresolved isolation launcher or filter preparation failure rejects launch.
+
+The existing `awaken-container-contract` owns the allowlist capability payload
+and DNS-host normalization consumed by the open issuer and closed Gateway.
+The Gateway verifies the existing signed wire format and owns public-address
+connection admission; the runtime separately proves that direct traffic cannot
+bypass it. Neither proxy variables nor a token alone establish isolation. No
+second provider, egress service or realization authority is introduced.

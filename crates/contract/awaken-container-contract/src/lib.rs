@@ -26,7 +26,7 @@ pub use checkpoint::{ContainerCheckpointAccess, ContainerCheckpointMutation};
 pub use environment::{
     ContainerCreateAttempt, ContainerEnvironment, EnvironmentFile, RuntimeAgentProcess,
 };
-pub use host::normalize_allowlist_host;
+pub use host::{AllowlistCapability, normalize_allowlist_host};
 pub use policy::{
     K8sContinuationVolume, K8sImagePrewarm, LIVE_INPUTS_ROOT, REPOSITORY_GATEWAY_CA_PATH,
     live_input_relative_path,
