@@ -233,6 +233,13 @@ Ordering is by commit visibility first, then adapter projection order. A live
 stream event may arrive before durable replay sees the matching fact, but replay
 must converge to the committed order.
 
+An Outcome's completed report makes its evaluation span trios listable at the
+terminal state commit. Their list position uses that terminal commit and the
+report's iteration order; their public `processed_at` still uses each evaluation
+command's commit time. A late report therefore cannot insert historical spans
+before a previously issued event cursor. Without the exact terminal and
+evaluation commit anchors, the projector withholds those spans.
+
 Assistant response coordinates use the neutral `MessageId` decoder, which also
 owns the existing Run-scoped classifiers. It reads the rightmost assistant
 delimiter and numeric suffix once; Managed then checks the decoded owner against
