@@ -160,6 +160,16 @@ step "runtime-host-neutral" "keep neutral Runtime Host ports available without e
 step "managed-protocol-production" "use production Session roles rather than fixture-only accessors" \
   cargo check -p awaken-protocol-managed --lib --no-default-features "${locked[@]}"
 
+# Process assembly compile-surface decision table: C1 the default product graph
+# has neither cfg(test) nor test-support; C2 fixture builds enable one of them.
+# E1 C1 must exclude fixture-only URLs and imports without dead-code warnings;
+# E2 C2 retains the same constructor and ControlStores type from their owners.
+# P1=C1 -> warning-free production libraries below; P2=C2 -> the existing
+# workspace test/all-feature gates exercise the unchanged fixture callers.
+# A workspace-only check can unify C2 into C1 and falsely pass P1.
+step "process-assembly-production" "keep fixture-only Coordinator and CLI helpers out of the production graph" \
+  cargo clippy -p awaken-coordinator -p awaken-cli --lib "${locked[@]}" -- -D warnings
+
 # The fuzz crate is a separate workspace and the only Rust consumer of this
 # repository's crates outside it, so `cargo check --workspace` never compiles it.
 # It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);

@@ -302,6 +302,7 @@ pub(crate) async fn migrate_with_pool(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn required_database_url<'a>(
     deployment: &'a DeploymentConfig,
     component: &str,
