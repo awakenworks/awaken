@@ -84,6 +84,11 @@ pub struct ManagedState {
     /// Current Workspace geography policy. Hosted composition supplies this
     /// authority; self-managed mode leaves it absent and retains local policy.
     pub(super) inference_geo_policy: Option<Arc<dyn crate::ManagedInferenceGeoPolicy>>,
+    /// Whether every published refresh is checked against a cold rebuild of
+    /// the same committed prefix. Only a test that counts source reads turns
+    /// it off, because the check reads the prefix a second time.
+    #[cfg(test)]
+    pub(super) warm_cold_oracle: std::sync::atomic::AtomicBool,
 }
 
 impl ManagedState {

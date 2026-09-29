@@ -35,6 +35,14 @@ impl ProjectionRefreshCandidate {
     }
 }
 
+#[cfg(test)]
+impl ProjectionRefreshCandidate {
+    /// The reduced record, for the warm/cold oracle's comparison.
+    pub(super) fn into_record(self) -> SessionRecord {
+        self.record
+    }
+}
+
 /// Result of the sole committed-prefix builder. `Retry` represents a changed
 /// source prefix, while an ordinary reducer error stays in the surrounding
 /// `Result`; neither form contains a publishable record.

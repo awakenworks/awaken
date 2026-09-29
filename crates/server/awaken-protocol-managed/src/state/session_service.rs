@@ -81,7 +81,18 @@ impl ManagedState {
             event_seq: Arc::new(AtomicU64::new(0)),
             live: Mutex::new(HashMap::new()),
             inference_geo_policy: None,
+            #[cfg(test)]
+            warm_cold_oracle: std::sync::atomic::AtomicBool::new(true),
         }
+    }
+
+    /// Stop checking published refreshes against a cold rebuild. The check
+    /// reads the committed prefix again, so only a test asserting the exact
+    /// source-read trace of one refresh may turn it off.
+    #[cfg(test)]
+    pub(crate) fn disable_warm_cold_oracle(&self) {
+        self.warm_cold_oracle
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Install the hosted Workspace policy used at Session creation and again
@@ -130,6 +141,8 @@ impl ManagedState {
             event_seq,
             live,
             inference_geo_policy,
+            #[cfg(test)]
+            warm_cold_oracle,
         } = self;
         drop(roles);
         configure(
@@ -146,6 +159,8 @@ impl ManagedState {
             event_seq,
             live,
             inference_geo_policy,
+            #[cfg(test)]
+            warm_cold_oracle,
         }
     }
 

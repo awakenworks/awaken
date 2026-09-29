@@ -4747,6 +4747,9 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
     for case in ["stable", "burst", "continuous", "error", "stall"] {
         let runtime = LifecycleRuntime::default();
         let state = ManagedState::new(runtime.clone());
+        // This test counts the source reads of each refresh; the warm/cold
+        // oracle would read the prefix a second time.
+        state.disable_warm_cold_oracle();
         let session = state
             .create_session(
                 serde_json::from_value(serde_json::json!({

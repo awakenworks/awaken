@@ -298,6 +298,9 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
             ]
         };
         let (runtime, state, id) = read_cut_fixture(with_child).await;
+        // This test asserts the exact source-read trace of one refresh; the
+        // warm/cold oracle would read the prefix a second time.
+        state.disable_warm_cold_oracle();
         state.refresh_committed_events(&id).await.unwrap();
         assert_eq!(
             runtime.reads.trace(),
@@ -307,6 +310,7 @@ async fn every_refresh_read_failure_preserves_current_frame_after_competing_publ
         for (cut, port) in expected.iter().enumerate().rev() {
             for competing in [false, true] {
                 let (runtime, state, id) = read_cut_fixture(with_child).await;
+                state.disable_warm_cold_oracle();
                 let entry = state.sessions.lock().unwrap().get(&id).unwrap().clone();
                 let (_, mut live) = state.stream_subscribe(&id).unwrap();
                 runtime.reads.fail_at(cut);
