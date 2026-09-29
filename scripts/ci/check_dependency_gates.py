@@ -97,12 +97,6 @@ SILENT_SKIP_EXEMPTIONS: dict[str, str] = {
         "repository's own MCP server; what is uncovered is interoperability "
         "with a third-party implementation."
     ),
-    "crates/server/awaken-run-executor-acp/tests/live_cli_recovery.rs": (
-        "Needs a real ACP CLI (claude/codex/gemini) plus provider credentials "
-        "selected by ACP_LIVE_CLI. No lane supplies either. Recovery is covered "
-        "deterministically by the fake-CLI ACP suites in e2e/; what is "
-        "uncovered is a real vendor CLI's behaviour on restart."
-    ),
     "crates/server/awaken-session-executor/src/mcp_relay.rs": (
         "Needs AWAKEN_GITHUB_MCP_TOKEN and GitHub's live MCP endpoint. A live "
         "third-party credential is not something a gate can supply. Relay "

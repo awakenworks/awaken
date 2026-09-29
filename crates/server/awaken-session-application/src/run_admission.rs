@@ -621,6 +621,17 @@ impl SessionApplication {
             tools: requested_tools,
             idempotency,
         } = command;
+        awaken_session_configuration_contract::SessionContextSeed::admit_authored_prompts(&prompts)
+            .map_err(|error| RunError::bad_request(error.to_string()))?;
+        let context_seed =
+            awaken_session_configuration_contract::SessionContextSeed::from_metadata(
+                awaken_session_configuration_contract::SessionTrigger::Interactive {},
+                &metadata,
+                None,
+            )
+            .map_err(|error| RunError::bad_request(error.to_string()))?;
+        let mut prompts = prompts;
+        prompts.push(context_seed.encode());
         // Authored Repository paths and ownership are pure command facts. Reject
         // them before refreshing catalogs or opening any model, Environment,
         // MCP, Skill, File, Vault, Registry, Runtime, or Git dependency.

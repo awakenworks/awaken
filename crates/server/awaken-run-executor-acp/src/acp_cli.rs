@@ -195,6 +195,9 @@ pub struct AcpCli {
     pub mcp_client_credential_injection: bool,
     /// Pinned adapter accepts Claude SDK toolAliases via session metadata.
     pub supports_tool_aliases: bool,
+    /// Adapter-owned routes that make the frozen Agent instructions part of
+    /// its system prompt (see [`crate::InstructionsDelivery`]).
+    pub instructions: crate::InstructionsDelivery,
     /// Env key naming the CLI's isolated config directory (e.g. `CLAUDE_CONFIG_DIR`).
     pub config_home_env: Option<&'static str>,
     /// Additional standard/vendor home variables that point at the same isolated
@@ -451,6 +454,7 @@ impl AcpCli {
                     .collect(),
                 session_working_directory,
                 expected_capability: Some(capability.clone()),
+                instructions: crate::AcpInstructions::default(),
             });
         }
 
@@ -531,6 +535,7 @@ impl AcpCli {
                 session_config_options,
                 session_working_directory,
                 expected_capability,
+                instructions: crate::AcpInstructions::default(),
             });
         };
         if !base_url.is_empty() {
@@ -646,6 +651,7 @@ impl AcpCli {
             session_config_options,
             session_working_directory,
             expected_capability,
+            instructions: crate::AcpInstructions::default(),
         })
     }
 

@@ -1,6 +1,7 @@
 //! Data-only rows for the external ACP adapter catalog.
 
 use super::*;
+use crate::{InstructionsChannel, InstructionsDelivery};
 
 // Claude Code does NOT speak ACP natively (there is no `claude --acp`). It is
 // fronted by the official adapter package `@agentclientprotocol/claude-agent-acp`,
@@ -82,6 +83,12 @@ const CLAUDE: AcpCli = AcpCli {
     auth_method_id: None,
     mcp_client_credential_injection: true,
     supports_tool_aliases: true,
+    // claude-agent-acp 0.69 reads `_meta.systemPrompt` on new/load/resume:
+    // a string replaces the `claude_code` preset, `{append}` extends it.
+    instructions: InstructionsDelivery {
+        replace: Some(InstructionsChannel::SessionMetaSystemPrompt),
+        append: Some(InstructionsChannel::SessionMetaSystemPrompt),
+    },
     config_home_env: Some("CLAUDE_CONFIG_DIR"),
     config_home_aliases: &[],
     memory_entrypoint: "CLAUDE.md",
@@ -179,6 +186,19 @@ const CODEX: AcpCli = AcpCli {
     // verify-acp-runtimes --authenticated-mcp codex witnesses auth and no persistence.
     mcp_client_credential_injection: true,
     supports_tool_aliases: false,
+    // codex-acp 1.10 forwards `CODEX_CONFIG` as thread config on every
+    // start/resume: `instructions` replaces the model's base instructions and
+    // `developer_instructions` adds a developer message after them.
+    instructions: InstructionsDelivery {
+        replace: Some(InstructionsChannel::JsonConfigKey {
+            env: "CODEX_CONFIG",
+            key: "instructions",
+        }),
+        append: Some(InstructionsChannel::JsonConfigKey {
+            env: "CODEX_CONFIG",
+            key: "developer_instructions",
+        }),
+    },
     config_home_env: None,
     config_home_aliases: &[],
     memory_entrypoint: "AGENTS.md",
@@ -259,7 +279,16 @@ const GEMINI: AcpCli = AcpCli {
     auth_method_id: None,
     mcp_client_credential_injection: false,
     supports_tool_aliases: false,
-    config_home_env: Some("GEMINI_DIR"),
+    // Gemini 0.53 ignores ACP `_meta`; its only append route is the global
+    // memory file below its home, rendered inside the system instruction.
+    // `GEMINI_SYSTEM_MD` would replace the tool guidance and is not used.
+    instructions: InstructionsDelivery {
+        replace: None,
+        append: Some(InstructionsChannel::HomeFile {
+            relative_path: ".gemini/GEMINI.md",
+        }),
+    },
+    config_home_env: Some("GEMINI_CLI_HOME"),
     config_home_aliases: &[],
     memory_entrypoint: "GEMINI.md",
     session_export_excludes: &[],
@@ -344,6 +373,15 @@ const OPENCODE: AcpCli = AcpCli {
     auth_method_id: None,
     mcp_client_credential_injection: false,
     supports_tool_aliases: false,
+    // OpenCode 1.18 ignores ACP `_meta`; config `instructions` lists files by
+    // absolute path and appends each to the provider system prompt.
+    instructions: InstructionsDelivery {
+        replace: None,
+        append: Some(InstructionsChannel::JsonConfigFileList {
+            env: "OPENCODE_CONFIG_CONTENT",
+            key: "instructions",
+        }),
+    },
     config_home_env: Some("OPENCODE_CONFIG_DIR"),
     config_home_aliases: &[
         "XDG_CONFIG_HOME",
@@ -353,10 +391,11 @@ const OPENCODE: AcpCli = AcpCli {
     ],
     memory_entrypoint: "AGENTS.md",
     session_export_excludes: &["auth.json"],
-    // opencode keeps conversation state in a local store, keyed by an internal id
-    // (provisional subtree — confirm the exact path by capability probe).
+    // OpenCode 1.18 stores opencode.db under $XDG_DATA_HOME/opencode.
+    // The subtree also carries storage migration data; credentials are excluded
+    // by the one Session blob implementation.
     session_persistence: SessionPersistence::LocalDir {
-        session_subpath: "storage",
+        session_subpath: "opencode",
         keyed_by: SessionKey::InternalId,
     },
     context_window_env: None,
@@ -429,6 +468,14 @@ const HERMES: AcpCli = AcpCli {
     auth_method_id: None,
     mcp_client_credential_injection: false,
     supports_tool_aliases: false,
+    // Hermes 0.19 ignores ACP `_meta` and has no ACP-reachable replace route;
+    // the embedder hint is appended to the stable system-prompt tier.
+    instructions: InstructionsDelivery {
+        replace: None,
+        append: Some(InstructionsChannel::ProcessEnv {
+            env: "HERMES_ENVIRONMENT_HINT",
+        }),
+    },
     config_home_env: Some("HERMES_HOME"),
     config_home_aliases: &[],
     memory_entrypoint: "AGENTS.md",

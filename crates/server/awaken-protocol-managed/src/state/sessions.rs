@@ -338,8 +338,15 @@ impl ManagedState {
         explicit_id: Option<String>,
         idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
     ) -> Result<Session, StateError> {
-        self.create_session_with_identity_from(req, owner_scope, explicit_id, idempotency, None)
-            .await
+        self.create_session_with_identity_from(
+            req,
+            owner_scope,
+            explicit_id,
+            idempotency,
+            None,
+            None,
+        )
+        .await
     }
 
     /// One create owner for Session and Deployment wire unions. `Some` carries
@@ -354,6 +361,7 @@ impl ManagedState {
         explicit_id: Option<String>,
         idempotency: Option<awaken_session_state_contract::IdempotencyRecord>,
         deployment_initial_events: Option<Vec<InboundEvent>>,
+        context_seed: Option<awaken_session_configuration_contract::SessionContextSeed>,
     ) -> Result<Session, StateError> {
         req.validate_common()
             .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
@@ -427,6 +435,7 @@ impl ManagedState {
             vault_ids: req.vault_ids.clone(),
             title: req.title.clone(),
             metadata: req.metadata.clone(),
+            context_seed,
             budget: req
                 .budget
                 .as_ref()

@@ -18,6 +18,7 @@ impl ManagedState {
         launch_fingerprint: &str,
         mut req: SessionCreateParams,
         workspace_id: String,
+        context_seed: awaken_session_configuration_contract::SessionContextSeed,
     ) -> Result<Session, StateError> {
         if deployment_run_id.trim().is_empty() || launch_fingerprint.trim().is_empty() {
             return Err(StateError::Run(RunError::bad_request(
@@ -59,6 +60,7 @@ impl ManagedState {
             Some(session_id),
             Some(idempotency),
             Some(initial_events),
+            Some(context_seed),
         )
         .await
     }
@@ -150,6 +152,15 @@ mod tests {
                 "launch-a",
                 request("first"),
                 "workspace-a".into(),
+                awaken_session_configuration_contract::SessionContextSeed::from_metadata(
+                    awaken_session_configuration_contract::SessionTrigger::DeploymentManual {
+                        deployment_id: "deployment-fixture".into(),
+                        run_id: "deployment-run-receipt".into(),
+                    },
+                    &BTreeMap::new(),
+                    None,
+                )
+                .unwrap(),
             )
             .await
             .expect("D1/E1");
@@ -170,6 +181,15 @@ mod tests {
                 "launch-a",
                 request("must not replace"),
                 "workspace-a".into(),
+                awaken_session_configuration_contract::SessionContextSeed::from_metadata(
+                    awaken_session_configuration_contract::SessionTrigger::DeploymentManual {
+                        deployment_id: "deployment-fixture".into(),
+                        run_id: "deployment-run-receipt".into(),
+                    },
+                    &BTreeMap::new(),
+                    None,
+                )
+                .unwrap(),
             )
             .await
             .expect("D2/E2");
@@ -190,7 +210,11 @@ mod tests {
                             launch,
                             request("conflicting"),
                             owner.into(),
-                        )
+                awaken_session_configuration_contract::SessionContextSeed::from_metadata(
+                    awaken_session_configuration_contract::SessionTrigger::DeploymentManual { deployment_id: "deployment-fixture".into(), run_id: "deployment-run-receipt".into() },
+                    &BTreeMap::new(), None,
+                ).unwrap(),
+            )
                         .await,
                     Err(StateError::IdempotencyMismatch)
                 ),
@@ -220,6 +244,8 @@ mod tests {
         let request = |environment_id: &str| DeploymentLaunch {
             deployment_id: "depl_a".into(),
             deployment_run_id: "deprun_a".into(),
+            trigger: Some(awaken_deployment_application::DeploymentTrigger::Manual),
+            timezone: None,
             workspace_id: "workspace_a".into(),
             agent: DeploymentAgent::new("agent_a", 1),
             environment_id: environment_id.into(),
@@ -275,6 +301,8 @@ mod tests {
         let request = DeploymentLaunch {
             deployment_id: "depl_version".into(),
             deployment_run_id: "deprun_version".into(),
+            trigger: Some(awaken_deployment_application::DeploymentTrigger::Manual),
+            timezone: None,
             workspace_id: "workspace_a".into(),
             agent: DeploymentAgent::new("agent_a", u64::from(u32::MAX) + 1),
             environment_id: awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.into(),

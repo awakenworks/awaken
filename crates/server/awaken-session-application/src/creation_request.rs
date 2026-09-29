@@ -87,6 +87,8 @@ pub struct SessionCreateRequest {
     pub vault_ids: Vec<String>,
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
+    /// Trusted application-origin projection; public protocol fields cannot set it.
+    pub context_seed: Option<awaken_session_configuration_contract::SessionContextSeed>,
     pub budget: Option<SessionBudgetRequest>,
 }
 
@@ -257,8 +259,21 @@ impl SessionApplication {
             vault_ids,
             title,
             metadata,
+            context_seed,
             budget: budget_request,
         } = request;
+        let context_seed = context_seed
+            .map_or_else(
+                || {
+                    awaken_session_configuration_contract::SessionContextSeed::from_metadata(
+                        awaken_session_configuration_contract::SessionTrigger::Interactive {},
+                        &metadata,
+                        None,
+                    )
+                },
+                Ok,
+            )
+            .map_err(|error| RunError::bad_request(error.to_string()))?;
         session_input::admit_memory_inputs(&inputs)?;
         session_input::preflight_repository_mount_paths(&inputs)?;
         session_input::admit_file_count(&inputs)?;
@@ -708,7 +723,7 @@ impl SessionApplication {
                 toolsets: tools.toolsets.clone(),
                 mounts: Vec::new(),
                 env: Vec::new(),
-                prompts: Vec::new(),
+                prompts: vec![context_seed.encode()],
                 transcript_prefix: None,
                 resources: resolved_inputs,
                 initial_mcp: mcp_drafts,

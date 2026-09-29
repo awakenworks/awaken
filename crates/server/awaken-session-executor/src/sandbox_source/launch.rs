@@ -10,8 +10,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use awaken_provisioning_contract as pc;
-use awaken_run_executor_acp::{AcpCli, AcpLaunch, LaunchResolver, OpenError};
+use awaken_run_executor_acp::{AcpCli, AcpLaunch, LaunchResolver, OpenError, ResolvedLaunch};
 use awaken_runtime_contract::activation::RunActivation;
 
 type ResolvedRoute = (AcpCli, Arc<dyn LaunchResolver>, Option<Vec<String>>);
@@ -140,12 +139,6 @@ pub enum LaunchSource {
     Projected(AcpLaunchRegistry),
 }
 
-pub(super) struct ResolvedLaunch {
-    pub(super) launch: AcpLaunch,
-    pub(super) credential_artifact: Option<awaken_run_executor_acp::CredentialArtifactRequirement>,
-    pub(super) secret_broker: Option<Arc<dyn pc::SecretBroker>>,
-}
-
 impl LaunchSource {
     pub(crate) fn credential_realization_capabilities(
         &self,
@@ -172,28 +165,14 @@ impl LaunchSource {
             }),
             LaunchSource::Projected(registry) => {
                 let selected = registry.selected(backend)?;
-                let model = selected.resolver.model(activation, context).await?;
-                let credential_artifact = model.credential_artifact().cloned();
-                let extra_env = selected.resolver.extra_env(activation)?;
-                let window = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
-                    &activation.snapshot.resolved_spec.plugin_config,
-                )
-                .compact_window;
-                let mut launch = selected.cli.try_project_with_argv(
-                    &model,
-                    window,
-                    &extra_env,
-                    selected.launch_argv.as_deref(),
-                )?;
-                launch.project_tool_aliases(
+                awaken_run_executor_acp::project_launch(
                     &selected.cli,
-                    &activation.snapshot.resolved_spec.tool_presentation,
-                )?;
-                Ok(ResolvedLaunch {
-                    launch,
-                    credential_artifact,
-                    secret_broker: selected.resolver.secret_broker(),
-                })
+                    selected.resolver.as_ref(),
+                    activation,
+                    context,
+                    selected.launch_argv.as_deref(),
+                )
+                .await
             }
         }
     }

@@ -415,6 +415,9 @@ pub struct TurnConfig<'a> {
     /// Project the Run's existing max_steps budget into adapters whose SDK owns
     /// an opaque provider loop (Claude Code supports this as maxTurns).
     pub max_turn_requests: Option<usize>,
+    /// Adapter `_meta.systemPrompt` resent on every `session/new|load|resume`,
+    /// so a relaunched adapter never reverts to its preset prompt.
+    pub system_prompt: Option<serde_json::Value>,
     /// Authorizes the agent's mid-turn tool requests (the neutral `ToolPermissionPolicy`
     /// behind an executor adapter).
     pub resolver: &'a dyn PermissionResolver,
@@ -475,6 +478,7 @@ impl<'a> TurnConfig<'a> {
             resolver,
             tool_aliases: Default::default(),
             max_turn_requests: None,
+            system_prompt: None,
             mcp_servers: Vec::new(),
             session_id: None,
             session_model: None,
@@ -1420,7 +1424,9 @@ mod tests {
     /// Reap liveness cause/effect rule R3: C1=TERM ignored, C2=KILL delivered,
     /// C3=provider wait never resolves; E1=the canonical signal ladder returns a
     /// bounded error after TERM+KILL instead of retaining an execution lock.
-    #[tokio::test]
+    /// K1: virtual time advances the ladder independently of host scheduling;
+    /// the total deadline must not win solely because this test was preempted.
+    #[tokio::test(start_paused = true)]
     async fn reap_bounds_a_provider_that_never_reports_exit_after_kill() {
         struct NeverExits {
             signalled: Arc<Mutex<Vec<pc::Signal>>>,

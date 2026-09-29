@@ -32,6 +32,29 @@ use super::*;
 
 struct FakeProcess;
 
+// All scripted sources share this one empty configuration fixture. Individual
+// tests still own their exact channel, process, codec and recovery cwd.
+fn fixture_session(
+    channel: Box<dyn AgentChannel>,
+    process: Arc<dyn ProcessHandle>,
+    codec: Codec,
+    workspace_cwd: Option<String>,
+) -> AgentSession {
+    AgentSession {
+        channel,
+        process,
+        codec,
+        workspace_cwd,
+        mcp_session_servers: Vec::new(),
+        session_model: None,
+        session_mode: None,
+        tool_aliases: Default::default(),
+        session_config_options: Vec::new(),
+        expected_capability: None,
+        instructions: crate::AcpInstructions::default(),
+    }
+}
+
 #[tokio::test]
 async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
     // Cause/effect graph: C1 Codex reports an MCP permission title in dotted
@@ -486,18 +509,12 @@ impl AgentChannelSource for ScriptedSource {
                 let _ = theirs.flush().await;
             }
         });
-        Ok(AgentSession {
-            channel: Box::new(ours),
-            process: Arc::new(FakeProcess),
-            codec: awaken_protocol_acp::Codec::Newline,
-            workspace_cwd: None,
-            mcp_session_servers: Vec::new(),
-            session_model: None,
-            session_mode: None,
-            tool_aliases: Default::default(),
-            session_config_options: Vec::new(),
-            expected_capability: None,
-        })
+        Ok(fixture_session(
+            Box::new(ours),
+            Arc::new(FakeProcess),
+            awaken_protocol_acp::Codec::Newline,
+            None,
+        ))
     }
 }
 
@@ -609,21 +626,15 @@ impl AgentChannelSource for CountingSource {
                 .await;
             let _ = theirs.flush().await;
         });
-        Ok(AgentSession {
-            channel: Box::new(ours),
-            process: Arc::new(CountingProcess {
+        Ok(fixture_session(
+            Box::new(ours),
+            Arc::new(CountingProcess {
                 polls: self.process_polls.clone(),
                 observation: self.observation.clone(),
             }),
-            codec: Codec::Newline,
-            workspace_cwd: None,
-            mcp_session_servers: Vec::new(),
-            session_model: None,
-            session_mode: None,
-            tool_aliases: Default::default(),
-            session_config_options: Vec::new(),
-            expected_capability: None,
-        })
+            Codec::Newline,
+            None,
+        ))
     }
 }
 
@@ -962,7 +973,7 @@ fn acp_prompt_orders_frozen_policy_context_and_authoritative_input() {
         ),
     ];
 
-    let prompt = super::initial_prompt(&activation, &context);
+    let prompt = super::initial_prompt(&activation, &context, &crate::AcpInstructions::default());
 
     let instructions = prompt.find("follow policy").expect("C1");
     let recalled = prompt.find("remember the user's preference").expect("C2");
@@ -976,7 +987,11 @@ fn acp_prompt_orders_frozen_policy_context_and_authoritative_input() {
     assert_eq!(activation.input, original, "E2");
 
     activation.snapshot.resolved_spec.instructions.clear();
-    assert_eq!(super::initial_prompt(&activation, &[]), "do it", "E3");
+    assert_eq!(
+        super::initial_prompt(&activation, &[], &crate::AcpInstructions::default()),
+        "do it",
+        "E3"
+    );
 }
 
 fn exec(frames: Vec<String>) -> AcpRunExecutor {
@@ -2629,7 +2644,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
     // Run 2 in a *different* config-home B restores it before launch, and the agent
     // finds the marker — proving cross-directory recovery of the whole
     // restore→run→harvest chain (a real CLI's `session/load` is the same shape).
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     /// A fake source whose agent persists a marker into its config-home on a fresh
     /// session and echoes it back once the dir was restored.
@@ -2666,69 +2681,32 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
                     .await;
                 let _ = theirs.flush().await;
             });
-            Ok(AgentSession {
-                channel: Box::new(ours),
-                process: Arc::new(FakeProcess),
-                codec: awaken_protocol_acp::Codec::Newline,
-                workspace_cwd: Some("/workspace".to_string()),
-                mcp_session_servers: Vec::new(),
-                session_model: None,
-                session_mode: None,
-                tool_aliases: Default::default(),
-                session_config_options: Vec::new(),
-                expected_capability: None,
-            })
-        }
-    }
-
-    fn copy_dir(src: &Path, dst: &Path) {
-        std::fs::create_dir_all(dst).unwrap();
-        for e in std::fs::read_dir(src).unwrap() {
-            let e = e.unwrap();
-            let to = dst.join(e.file_name());
-            if e.file_type().unwrap().is_dir() {
-                copy_dir(&e.path(), &to);
-            } else {
-                std::fs::copy(e.path(), to).unwrap();
-            }
-        }
-    }
-
-    /// The session-home harvest/restore essence: copy the config-home's session
-    /// subtree to/from a durable blob keyed by thread (what `DirSessionHome` does).
-    struct TmpHome {
-        blobs: PathBuf,
-        dir: PathBuf,
-    }
-    #[async_trait]
-    impl SessionHomeProvider for TmpHome {
-        async fn restore(&self, key: &SessionHomeKey, _p: &SessionHomePlan) {
-            let blob = self.blobs.join(&key.thread_id);
-            if blob.is_dir() {
-                copy_dir(&blob, &self.dir.join("projects"));
-            }
-        }
-        async fn harvest(&self, key: &SessionHomeKey, _p: &SessionHomePlan) {
-            let src = self.dir.join("projects");
-            if src.is_dir() {
-                let dst = self.blobs.join(&key.thread_id);
-                let _ = std::fs::remove_dir_all(&dst);
-                copy_dir(&src, &dst);
-            }
+            Ok(fixture_session(
+                Box::new(ours),
+                Arc::new(FakeProcess),
+                awaken_protocol_acp::Codec::Newline,
+                Some("/workspace".to_string()),
+            ))
         }
     }
 
     let root = std::env::temp_dir().join(format!("acp-recovery-e2e-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let (dir_a, dir_b, blobs) = (root.join("a"), root.join("b"), root.join("blobs"));
+    let (store_a, store_b) = (root.join("a"), root.join("b"));
+    let dir_a = ConfigHome::open(Some(&store_a), &activation().thread_id.0)
+        .unwrap()
+        .root()
+        .to_path_buf();
+    let dir_b = ConfigHome::open(Some(&store_b), &activation().thread_id.0)
+        .unwrap()
+        .root()
+        .to_path_buf();
+    let blobs = Arc::new(FsSessionBlobStore::new(root.join("blobs")));
 
     // Run 1 in dir A: a fresh session; the marker is written and harvested.
     let coord_a = Arc::new(RecordingCoordinator::default());
     AcpRunExecutor::new(Arc::new(PersistingSource { dir: dir_a.clone() }))
-        .with_session_home(Arc::new(TmpHome {
-            blobs: blobs.clone(),
-            dir: dir_a.clone(),
-        }))
+        .with_session_home(Arc::new(DirSessionHome::new(Some(store_a), blobs.clone())))
         .execute(
             activation(),
             RuntimeRunContext::new().with_commit(coord_a.clone()),
@@ -2747,10 +2725,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
     // so the agent finds the marker and resumes.
     let coord_b = Arc::new(RecordingCoordinator::default());
     AcpRunExecutor::new(Arc::new(PersistingSource { dir: dir_b.clone() }))
-        .with_session_home(Arc::new(TmpHome {
-            blobs: blobs.clone(),
-            dir: dir_b.clone(),
-        }))
+        .with_session_home(Arc::new(DirSessionHome::new(Some(store_b), blobs.clone())))
         .execute(
             activation(),
             RuntimeRunContext::new().with_commit(coord_b.clone()),
@@ -3516,18 +3491,12 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                     }
                 }
             });
-            Ok(AgentSession {
-                channel: Box::new(ours),
-                process: Arc::new(FakeProcess),
-                codec: Codec::Acp,
-                workspace_cwd: None,
-                mcp_session_servers: Vec::new(),
-                session_model: None,
-                session_mode: None,
-                tool_aliases: Default::default(),
-                session_config_options: Vec::new(),
-                expected_capability: None,
-            })
+            Ok(fixture_session(
+                Box::new(ours),
+                Arc::new(FakeProcess),
+                Codec::Acp,
+                None,
+            ))
         }
     }
 
@@ -4415,18 +4384,12 @@ async fn acp_relaunches_the_cli_every_run_so_a_model_switch_takes_effect() {
                     .await;
                 let _ = theirs.flush().await;
             });
-            Ok(AgentSession {
-                channel: Box::new(ours),
-                process: Arc::new(FakeProcess),
-                codec: awaken_protocol_acp::Codec::Newline,
-                workspace_cwd: None,
-                mcp_session_servers: Vec::new(),
-                session_model: None,
-                session_mode: None,
-                tool_aliases: Default::default(),
-                session_config_options: Vec::new(),
-                expected_capability: None,
-            })
+            Ok(fixture_session(
+                Box::new(ours),
+                Arc::new(FakeProcess),
+                awaken_protocol_acp::Codec::Newline,
+                None,
+            ))
         }
     }
 
@@ -4883,18 +4846,12 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
                 std::future::pending::<()>().await;
                 drop(theirs);
             });
-            Ok(AgentSession {
-                channel: Box::new(ours),
-                process: Arc::new(FakeProcess),
-                codec: awaken_protocol_acp::Codec::Newline,
-                workspace_cwd: None,
-                mcp_session_servers: Vec::new(),
-                session_model: None,
-                session_mode: None,
-                tool_aliases: Default::default(),
-                session_config_options: Vec::new(),
-                expected_capability: None,
-            })
+            Ok(fixture_session(
+                Box::new(ours),
+                Arc::new(FakeProcess),
+                awaken_protocol_acp::Codec::Newline,
+                None,
+            ))
         }
     }
 
@@ -5117,18 +5074,12 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
                     let _ = theirs.flush().await;
                 }
             });
-            Ok(AgentSession {
-                channel: Box::new(ours),
-                process: Arc::new(FakeProcess),
-                codec: awaken_protocol_acp::Codec::Newline,
-                workspace_cwd: None,
-                mcp_session_servers: Vec::new(),
-                session_model: None,
-                session_mode: None,
-                tool_aliases: Default::default(),
-                session_config_options: Vec::new(),
-                expected_capability: None,
-            })
+            Ok(fixture_session(
+                Box::new(ours),
+                Arc::new(FakeProcess),
+                awaken_protocol_acp::Codec::Newline,
+                None,
+            ))
         }
     }
 

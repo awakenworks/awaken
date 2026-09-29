@@ -262,6 +262,7 @@ pub(super) async fn open_or_restore_session(
                         .meta(claude_session_meta(
                             &config.tool_aliases,
                             config.max_turn_requests,
+                            config.system_prompt.as_ref(),
                         )),
                 )
                 .await?;
@@ -306,6 +307,7 @@ pub(super) async fn open_or_restore_session(
                                 meta: claude_session_meta(
                                     &config.tool_aliases,
                                     config.max_turn_requests,
+                                    config.system_prompt.as_ref(),
                                 ),
                             },
                         ),
@@ -337,7 +339,11 @@ pub(super) async fn open_or_restore_session(
                     NewSessionConfig {
                         cwd: &cwd,
                         mcp_servers: &config.mcp_servers,
-                        meta: claude_session_meta(&config.tool_aliases, config.max_turn_requests),
+                        meta: claude_session_meta(
+                            &config.tool_aliases,
+                            config.max_turn_requests,
+                            config.system_prompt.as_ref(),
+                        ),
                     },
                 ),
             )
@@ -351,11 +357,16 @@ pub(super) async fn open_or_restore_session(
     Ok((session_id, negotiated, supports_session_model))
 }
 
+/// `_meta` for `session/new|load|resume`. Every adapter receives the same
+/// object; adapters that do not read a key ignore it. `systemPrompt` is the
+/// top-level claude-agent-acp route and is never duplicated under
+/// `claudeCode.options`, where the SDK option would silently win.
 pub(super) fn claude_session_meta(
     aliases: &std::collections::BTreeMap<String, String>,
     max_turns: Option<usize>,
+    system_prompt: Option<&serde_json::Value>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
-    if aliases.is_empty() && max_turns.is_none() {
+    if aliases.is_empty() && max_turns.is_none() && system_prompt.is_none() {
         return None;
     }
     let mut options = serde_json::Map::new();
@@ -370,12 +381,17 @@ pub(super) fn claude_session_meta(
     if let Some(max_turns) = max_turns {
         options.insert("maxTurns".into(), serde_json::json!(max_turns));
     }
-    Some(
-        serde_json::json!({"claudeCode": {"options": options}})
-            .as_object()
-            .expect("metadata object")
-            .clone(),
-    )
+    let mut meta = serde_json::Map::new();
+    if !options.is_empty() {
+        meta.insert(
+            "claudeCode".into(),
+            serde_json::json!({ "options": options }),
+        );
+    }
+    if let Some(system_prompt) = system_prompt {
+        meta.insert("systemPrompt".into(), system_prompt.clone());
+    }
+    Some(meta)
 }
 
 /// Negotiate one prompt-free ACP Session and retain the full advertised
@@ -569,7 +585,10 @@ mod tests {
         // + max-turn budget -> new/load/recovery request -> identical constrained
         // SDK metadata -> prompt.
         // R1 absent aliases => no extension; R2 new; R3 load; R4 load missing => new;
-        // R5 load unavailable => new. Metadata carries no credential or arbitrary options.
+        // R5 load unavailable => new. S1 absent/string/append systemPrompt crosses
+        // every R1-R5 branch identically, appears only at top level, and never
+        // changes aliases, tools or the permission identity.
+        // Metadata carries no credential or arbitrary options.
         // A1 declared alias + explicit pinned adapter toolName -> one identical
         // identity in projected facts and permission; A2 absent alias or A3
         // undeclared toolName -> retain the raw title. These rules apply on new,
@@ -582,88 +601,106 @@ mod tests {
             (true, true, false, false, "Bash"),
             (true, false, false, false, "Undeclared"),
         ] {
-            let (mut ours, theirs) = channel();
-            let agent = tokio::spawn(async move {
-                let mut io = AgentIo::new(theirs);
-                io.read().await;
-                io.write_line(&serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":can_load}}}).to_string()).await;
-                let attempts = if prior && can_load && missing { 2 } else { 1 };
-                for attempt in 0..attempts {
-                    let request: serde_json::Value = io.read().await.unwrap();
-                    let load = prior && can_load && attempt == 0;
-                    assert_eq!(
-                        request["method"],
-                        if load { "session/load" } else { "session/new" }
-                    );
-                    let meta = &request["params"]["_meta"];
-                    if enabled {
+            for system_prompt in [
+                None,
+                Some(serde_json::json!("冻结规则")),
+                Some(serde_json::json!({"append":"追加规则"})),
+            ] {
+                let expected_system_prompt = system_prompt.clone();
+                let (mut ours, theirs) = channel();
+                let agent = tokio::spawn(async move {
+                    let mut io = AgentIo::new(theirs);
+                    io.read().await;
+                    io.write_line(&serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":can_load}}}).to_string()).await;
+                    let attempts = if prior && can_load && missing { 2 } else { 1 };
+                    for attempt in 0..attempts {
+                        let request: serde_json::Value = io.read().await.unwrap();
+                        let load = prior && can_load && attempt == 0;
                         assert_eq!(
-                            meta["claudeCode"]["options"],
-                            serde_json::json!({"toolAliases":{"Bash":"mcp__awaken_session__bash"},"tools":[],"disallowedTools":["Bash"],"maxTurns":8})
+                            request["method"],
+                            if load { "session/load" } else { "session/new" }
                         );
-                    } else {
-                        assert!(meta.is_null());
+                        let meta = &request["params"]["_meta"];
+                        if enabled {
+                            assert_eq!(
+                                meta["claudeCode"]["options"],
+                                serde_json::json!({"toolAliases":{"Bash":"mcp__awaken_session__bash"},"tools":[],"disallowedTools":["Bash"],"maxTurns":8})
+                            );
+                        } else {
+                            assert!(meta.get("claudeCode").is_none());
+                            assert_eq!(meta.is_null(), expected_system_prompt.is_none());
+                        }
+                        assert_eq!(
+                            meta.get("systemPrompt"),
+                            expected_system_prompt.as_ref(),
+                            "S1"
+                        );
+                        assert!(
+                            meta["claudeCode"]["options"].get("systemPrompt").is_none(),
+                            "one prompt owner"
+                        );
+                        let reply = if load && missing {
+                            serde_json::json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Session not found"}})
+                        } else {
+                            serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}})
+                        };
+                        io.write_line(&reply.to_string()).await;
                     }
-                    let reply = if load && missing {
-                        serde_json::json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Session not found"}})
-                    } else {
-                        serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}})
-                    };
-                    io.write_line(&reply.to_string()).await;
-                }
-                let prompt: serde_json::Value = io.read().await.unwrap();
-                assert_eq!(prompt["method"], "session/prompt");
-                io.write_line(&serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{
+                    let prompt: serde_json::Value = io.read().await.unwrap();
+                    assert_eq!(prompt["method"], "session/prompt");
+                    io.write_line(&serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{
                     "sessionId":"sess-1","update":{"sessionUpdate":"tool_call","toolCallId":"shell-1",
                     "title":"Terminal","kind":"execute","rawInput":{},"_meta":{"claudeCode":{"toolName":reported_name}}}
                 }}).to_string()).await;
-                io.write_line(&serde_json::json!({"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{
+                    io.write_line(&serde_json::json!({"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{
                     "sessionId":"sess-1","toolCall":{"toolCallId":"shell-1","title":"Terminal","kind":"execute","rawInput":{"command":"pwd"}},
                     "options":[{"optionId":"allow","kind":"allow_once","name":"Allow"}]
                 }}).to_string()).await;
-                let permission: serde_json::Value = io.read().await.unwrap();
-                assert_eq!(permission["result"]["outcome"]["optionId"], "allow");
-                io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
-                    .await;
-            });
-            let mut sink = RecordingSink::default();
-            let resolver = RecordingResolver::default();
-            let mut config = crate::TurnConfig::new(&resolver);
-            if enabled {
-                config
-                    .tool_aliases
-                    .insert("Bash".into(), "mcp__awaken_session__bash".into());
-                config.max_turn_requests = Some(8);
+                    let permission: serde_json::Value = io.read().await.unwrap();
+                    assert_eq!(permission["result"]["outcome"]["optionId"], "allow");
+                    io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
+                        .await;
+                });
+                let mut sink = RecordingSink::default();
+                let resolver = RecordingResolver::default();
+                let mut config = crate::TurnConfig::new(&resolver);
+                config.system_prompt = system_prompt;
+                if enabled {
+                    config
+                        .tool_aliases
+                        .insert("Bash".into(), "mcp__awaken_session__bash".into());
+                    config.max_turn_requests = Some(8);
+                }
+                if prior {
+                    config.session_id = Some("sess-1".into());
+                }
+                run_turn_with_config(ours.as_mut(), "task", &mut sink, &mut config, None)
+                    .await
+                    .unwrap();
+                agent.await.unwrap();
+                let expected = if enabled && reported_name == "Bash" {
+                    "mcp__awaken_session__bash"
+                } else {
+                    "Terminal"
+                };
+                let seen = resolver.seen.lock().unwrap();
+                assert_eq!(seen.len(), 1);
+                assert_eq!(seen[0].tool, expected, "A1/A2/A3 exact identity");
+                assert_eq!(seen[0].arguments, serde_json::json!({"command":"pwd"}));
+                assert!(
+                    sink.events
+                        .iter()
+                        .filter_map(|(_, event)| {
+                            if let AcpProjectedEvent::ToolCall { name, .. } = event {
+                                Some(name.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .all(|name| name == expected),
+                    "projection and permission share one identity"
+                );
             }
-            if prior {
-                config.session_id = Some("sess-1".into());
-            }
-            run_turn_with_config(ours.as_mut(), "task", &mut sink, &mut config, None)
-                .await
-                .unwrap();
-            agent.await.unwrap();
-            let expected = if enabled && reported_name == "Bash" {
-                "mcp__awaken_session__bash"
-            } else {
-                "Terminal"
-            };
-            let seen = resolver.seen.lock().unwrap();
-            assert_eq!(seen.len(), 1);
-            assert_eq!(seen[0].tool, expected, "A1/A2/A3 exact identity");
-            assert_eq!(seen[0].arguments, serde_json::json!({"command":"pwd"}));
-            assert!(
-                sink.events
-                    .iter()
-                    .filter_map(|(_, event)| {
-                        if let AcpProjectedEvent::ToolCall { name, .. } = event {
-                            Some(name.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .all(|name| name == expected),
-                "projection and permission share one identity"
-            );
         }
     }
 }

@@ -38,6 +38,9 @@ default = ["real-acp"]
 real-acp = ["awaken-protocol-acp/real-acp"]
 
 [dev-dependencies]
+awaken-store-inmem.workspace = true
+awaken-lease-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
 loom = "0.7"
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync"] }
 serde_json.workspace = true

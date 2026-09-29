@@ -41,9 +41,14 @@ use crate::{SessionHomeKey, SessionHomePlan, SessionHomeProvider};
 pub trait SessionBlobStore: Send + Sync {
     /// Copy the stored session tree for `key` into `dest` (created if needed).
     /// Returns `false` when nothing is stored — a fresh session.
-    async fn fetch(&self, key: &SessionHomeKey, dest: &Path) -> io::Result<bool>;
+    async fn fetch(
+        &self,
+        key: &SessionHomeKey,
+        dest: &Path,
+        exclude: &[String],
+    ) -> io::Result<bool>;
     /// Store the tree at `src` under `key`, replacing any prior copy.
-    async fn store(&self, key: &SessionHomeKey, src: &Path) -> io::Result<()>;
+    async fn store(&self, key: &SessionHomeKey, src: &Path, exclude: &[String]) -> io::Result<()>;
 }
 
 /// A [`SessionBlobStore`] backed by a local directory: `root/<thread>/<adapter>/`.
@@ -105,16 +110,21 @@ impl FsSessionBlobStore {
 
 #[async_trait]
 impl SessionBlobStore for FsSessionBlobStore {
-    async fn fetch(&self, key: &SessionHomeKey, dest: &Path) -> io::Result<bool> {
+    async fn fetch(
+        &self,
+        key: &SessionHomeKey,
+        dest: &Path,
+        exclude: &[String],
+    ) -> io::Result<bool> {
         let src = self.key_dir(key);
         if !src.is_dir() {
             return Ok(false);
         }
-        copy_tree(&src, dest)?;
+        copy_tree(&src, dest, exclude)?;
         Ok(true)
     }
 
-    async fn store(&self, key: &SessionHomeKey, src: &Path) -> io::Result<()> {
+    async fn store(&self, key: &SessionHomeKey, src: &Path, exclude: &[String]) -> io::Result<()> {
         if let Some(subject) = key.data_subject_id.as_deref()
             && self.erasure_receipt(subject)?.is_some()
         {
@@ -128,7 +138,7 @@ impl SessionBlobStore for FsSessionBlobStore {
         if dst.exists() {
             std::fs::remove_dir_all(&dst)?;
         }
-        let copied = copy_tree(src, &dst);
+        let copied = copy_tree(src, &dst, exclude);
         if let Some(subject) = key.data_subject_id.as_deref()
             && self.erasure_receipt(subject)?.is_some()
         {
@@ -212,7 +222,7 @@ impl SessionHomeProvider for DirSessionHome {
         // Best-effort: a failure just means the CLI starts fresh and the neutral
         // thread history rehydrates the run.
         if let Ok(dir) = self.session_dir(key, plan) {
-            let _ = self.blobs.fetch(key, &dir).await;
+            let _ = self.blobs.fetch(key, &dir, &plan.exclude).await;
         }
     }
 
@@ -220,21 +230,27 @@ impl SessionHomeProvider for DirSessionHome {
         if let Ok(dir) = self.session_dir(key, plan)
             && dir.is_dir()
         {
-            let _ = self.blobs.store(key, &dir).await;
+            let _ = self.blobs.store(key, &dir, &plan.exclude).await;
         }
     }
 }
 
 /// Recursively copy `src` into `dest` (byte-for-byte, binary-safe). The session
 /// subtree is opaque CLI data, so it is snapshotted whole, never interpreted.
-fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
+fn copy_tree(src: &Path, dest: &Path, excludes: &[String]) -> io::Result<()> {
     std::fs::create_dir_all(dest)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        if excludes
+            .iter()
+            .any(|excluded| entry.file_name() == excluded.as_str())
+        {
+            continue;
+        }
         let from = entry.path();
         let to = dest.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            copy_tree(&from, &to)?;
+            copy_tree(&from, &to, excludes)?;
         } else {
             std::fs::copy(&from, &to)?;
         }
@@ -355,8 +371,8 @@ mod tests {
             data_subject_id: Some("dsub_bob".into()),
             ..alice.clone()
         };
-        store.store(&alice, alice_source.path()).await.unwrap();
-        store.store(&bob, bob_source.path()).await.unwrap();
+        store.store(&alice, alice_source.path(), &[]).await.unwrap();
+        store.store(&bob, bob_source.path(), &[]).await.unwrap();
 
         let removed = store
             .erase_subject(&DataSubjectId("dsub_alice".into()))
@@ -375,18 +391,78 @@ mod tests {
         );
         assert_eq!(
             store
-                .store(&alice, alice_source.path())
+                .store(&alice, alice_source.path(), &[])
                 .await
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::PermissionDenied,
             "late harvest cannot resurrect erased content"
         );
-        assert!(!store.fetch(&alice, alice_dest.path()).await.unwrap());
-        assert!(store.fetch(&bob, bob_dest.path()).await.unwrap());
+        assert!(!store.fetch(&alice, alice_dest.path(), &[]).await.unwrap());
+        assert!(store.fetch(&bob, bob_dest.path(), &[]).await.unwrap());
         assert_eq!(
             std::fs::read(bob_dest.path().join("session")).unwrap(),
             b"bob"
         );
     }
+}
+#[tokio::test]
+async fn declared_opencode_database_moves_without_credential_or_local_config_files() {
+    // Causes: H1 catalog-declared data subtree; H2 nested credential name;
+    // H3 fresh destination; H4 stale blob contains credentials. Effects:
+    // exact opaque DB moves, credentials do not store or restore, and the
+    // existing DirSessionHome/BlobStore remain the only copy mechanism.
+    // H1+H2+H3=>all effects; H4=>restore filtering still excludes auth.
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let blob_root = tempfile::tempdir().unwrap();
+    let blobs = Arc::new(FsSessionBlobStore::new(blob_root.path().into()));
+    let cli = crate::acp_cli("opencode").unwrap();
+    let crate::SessionPersistence::LocalDir {
+        session_subpath, ..
+    } = cli.session_persistence
+    else {
+        panic!("portable OpenCode data")
+    };
+    assert_eq!(session_subpath, "opencode", "pinned vendor data path");
+    let plan = SessionHomePlan {
+        config_home_env: "OPENCODE_CONFIG_DIR".into(),
+        session_subpath: session_subpath.into(),
+        exclude: cli
+            .session_export_excludes
+            .iter()
+            .map(|p| (*p).into())
+            .collect(),
+        keyed_by_cwd: false,
+    };
+    let key = SessionHomeKey {
+        data_subject_id: None,
+        thread_id: "opencode-home".into(),
+        adapter: "opencode".into(),
+    };
+    let home = ConfigHome::open(Some(a.path()), &key.thread_id).unwrap();
+    home.write("opencode/opencode.db", b"\0opaque-session-db\xff")
+        .unwrap();
+    home.write("opencode/auth.json", b"fixture-private-auth")
+        .unwrap();
+    DirSessionHome::new(Some(a.path().into()), blobs.clone())
+        .harvest(&key, &plan)
+        .await;
+    assert!(
+        !blobs.key_dir(&key).join("auth.json").exists(),
+        "H2 never stored"
+    );
+    std::fs::write(blobs.key_dir(&key).join("auth.json"), b"stale-private-auth").unwrap();
+    DirSessionHome::new(Some(b.path().into()), blobs)
+        .restore(&key, &plan)
+        .await;
+    let restored = ConfigHome::open(Some(b.path()), &key.thread_id).unwrap();
+    assert_eq!(
+        restored.read("opencode/opencode.db").unwrap().as_deref(),
+        Some(&b"\0opaque-session-db\xff"[..])
+    );
+    assert!(
+        restored.read("opencode/auth.json").unwrap().is_none(),
+        "H4 not restored"
+    );
 }

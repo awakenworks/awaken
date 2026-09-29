@@ -5,6 +5,7 @@
 // process-as-container launch.
 
 import assert from 'node:assert/strict';
+import { sqliteRows } from './sqlite.mjs';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -98,7 +99,7 @@ while IFS= read -r line; do
       mounted=no
       test "$(cat /mnt/session/uploads/workspace/container-input.txt 2>/dev/null || true)" = CONTAINER_INPUT_OK && mounted=yes
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"container-projected-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"CONTAINER_PROJECTED base=%s model=%s key=%s file=%s mcp=%s home=%s"}}}}\\n' \
-        "$GOOGLE_GEMINI_BASE_URL" "$GEMINI_MODEL" "$(printf %s "$GEMINI_API_KEY" | cut -c1-6)" "$mounted" "$mcp" "$GEMINI_DIR"
+        "$GOOGLE_GEMINI_BASE_URL" "$GEMINI_MODEL" "$(printf %s "$GEMINI_API_KEY" | cut -c1-6)" "$mounted" "$mcp" "$GEMINI_CLI_HOME"
       printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\\n' "$id"
       exit 0 ;;
   esac
@@ -373,7 +374,19 @@ async function main() {
       'D1 durable history anchors the exact command to its failed Run terminal',
     );
     const secureErrors = secureEvents.filter((event) => event.type === 'session.error');
-    assert.equal(secureErrors.length, 1, 'D1 permanent custody failure projects exactly one error');
+    if (secureErrors.length !== 1) {
+      const rows = sqliteRows(path.join(STORAGE, 'sessions.db'),
+        'SELECT aggregate_json FROM managed_session WHERE session_id=?', secureSession.id);
+      const aggregate = JSON.parse(rows[0].aggregate_json).aggregate;
+      console.error('D1 source audit', JSON.stringify({
+        status: aggregate.status,
+        realization_progress: {
+          failure_source_run_id: aggregate.realization_progress?.failure_source_run_id,
+          failed_at_unix_ms: aggregate.realization_progress?.failed_at_unix_ms,
+        },
+      }));
+    }
+    assert.equal(secureErrors.length, 1, `D1 permanent custody failure projects exactly one error: ${JSON.stringify(secureErrors)}`);
     assert.ok(
       typeof secureErrors[0].error?.message === 'string' && secureErrors[0].error.message.length > 0,
       'D1 error retains a nonempty failure cause',
@@ -398,6 +411,15 @@ async function main() {
       1,
       'D1 terminates the Session once',
     );
+    // D1's failed Run still closes its ordinary idle/usage ledger. Those facts
+    // settle the admitted command; an end_turn or nonzero model tokens would
+    // instead claim successful inference before the blocked container launch.
+    const failedIdle = secureEvents.filter((event) => event.type === 'session.status_idle');
+    assert.equal(failedIdle.length, 1, 'D1 failed Run settles once');
+    assert.notEqual(failedIdle[0].stop_reason?.type, 'end_turn', 'D1 has no successful turn');
+    assert.ok(secureEvents.filter((event) => event.type === 'session.usage')
+      .every((event) => Number(event.usage?.input_tokens ?? 0) === 0
+        && Number(event.usage?.output_tokens ?? 0) === 0), 'D1 consumes no model tokens');
     assert.ok(
       !secureEvents.some((event) => [
         'agent.message',
@@ -405,8 +427,6 @@ async function main() {
         'agent.mcp_tool_result',
         'agent.tool_use',
         'agent.tool_result',
-        'session.status_idle',
-        'session.usage',
         'span.model_request_start',
         'span.model_request_end',
       ].includes(event.type)),
