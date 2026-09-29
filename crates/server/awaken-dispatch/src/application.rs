@@ -21,6 +21,14 @@ use crate::{ClaimedCommitRequest, RunDispatch};
 /// Lookup is read-only and retryable: it must not launch or stop execution.
 #[async_trait::async_trait]
 pub trait WorkerExecutionBindingSource: Send + Sync {
+    /// Retain process metadata after durable registration and before Ready.
+    /// It does not bind an attempt or grant execution authority.
+    async fn retain_registered_worker_evidence(
+        &self,
+        _worker: &crate::WorkerIdentity,
+    ) -> Result<(), ApplicationError> {
+        Ok(())
+    }
     async fn binding_for(
         &self,
         worker: &crate::WorkerIdentity,
@@ -212,6 +220,18 @@ pub enum AttemptStopStatus {
 /// facts; a local-only implementation must retain the default Unknown below.
 #[async_trait::async_trait]
 pub trait WorkerExecutionStopSource: Send + Sync {
+    /// Whether this provider owns retention for this exact incarnation.
+    fn owns_worker_evidence(&self, _identity: &crate::WorkerIdentity) -> bool {
+        false
+    }
+    /// Remove only retention metadata for an exact closed Worker that the
+    /// Coordinator has proved owns no physical slots. This is not exit evidence.
+    async fn release_closed_idle_worker_evidence(
+        &self,
+        _identity: &crate::WorkerIdentity,
+    ) -> Result<(), ApplicationError> {
+        Ok(())
+    }
     async fn stop_closed_worker(
         &self,
         execution: &ClosedWorkerExecution,
@@ -239,6 +259,64 @@ pub trait WorkerExecutionStopSource: Send + Sync {
     ) -> Result<AttemptStopStatus, ApplicationError> {
         Ok(AttemptStopStatus::Unknown)
     }
+}
+
+/// Release metadata only from the original closed incarnation and physical
+/// slot authority. HTTP withdrawal and maintenance retry share this operation.
+pub async fn release_closed_idle_worker_evidence(
+    dispatch: &dyn awaken_dispatch_contract::ControlDispatchQueue,
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    identity: &crate::WorkerIdentity,
+) -> Result<(), ApplicationError> {
+    let Some(record) = directory
+        .incarnation(identity)
+        .await
+        .map_err(|e| ApplicationError::unavailable(e.to_string()))?
+    else {
+        return Ok(());
+    };
+    if !matches!(
+        record.snapshot.state,
+        crate::WorkerState::Quiesced | crate::WorkerState::Dead
+    ) {
+        return Ok(());
+    }
+    if has_active_physical_attempt_for_owner(dispatch, &identity.lease_owner()).await? {
+        return Ok(());
+    }
+    source.release_closed_idle_worker_evidence(identity).await
+}
+
+/// Read the original Dispatch physical-slot authority for a complete Worker
+/// incarnation owner. The closed-idle release and Coordinator cutover
+/// observation share this one scan. A concurrent or inconsistent read fails
+/// closed; it never manufactures a process-exit or whole-attempt receipt.
+pub async fn has_active_physical_attempt_for_owner(
+    dispatch: &dyn awaken_dispatch_contract::ControlDispatchQueue,
+    owner: &str,
+) -> Result<bool, ApplicationError> {
+    for summary in dispatch
+        .list_dispatches()
+        .await
+        .map_err(|e| ApplicationError::unavailable(e.to_string()))?
+    {
+        if summary.physical_attempt_active {
+            let physical = dispatch
+                .load_physical_attempt(&summary.run_id)
+                .await
+                .map_err(|e| ApplicationError::unavailable(e.to_string()))?;
+            let physical = physical.ok_or_else(|| {
+                ApplicationError::unavailable(
+                    "Dispatch reported an active physical slot without its exact attempt",
+                )
+            })?;
+            if physical.claim.owner == owner {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Progress a blocked successor through the existing authorities, without a
@@ -676,6 +754,50 @@ impl ClaimedCommitService {
             ))),
         }
     }
+}
+
+/// Memory/SQLite consume the original Registry exclusion around their canonical
+/// slot operation. PostgreSQL transfers the same resource into its transaction.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) async fn admit_with_incarnation_guard(
+    dispatch: &dyn crate::DispatchQueue,
+    claim: &crate::RunClaim,
+    binding: Option<&crate::AttemptExecutionBinding>,
+    guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+    handoff: bool,
+) -> Result<crate::AttemptAdmission, crate::DispatchError> {
+    let snapshot = guard.snapshot();
+    if matches!(
+        snapshot.state,
+        crate::WorkerState::Quiesced | crate::WorkerState::Dead
+    ) {
+        guard
+            .release()
+            .await
+            .map_err(crate::DispatchError::unavailable)?;
+        return Ok(crate::AttemptAdmission::Fenced);
+    }
+    if snapshot.identity.lease_owner() != claim.owner
+        || binding.is_none_or(|binding| binding.worker() != &snapshot.identity)
+    {
+        guard
+            .release()
+            .await
+            .map_err(crate::DispatchError::unavailable)?;
+        return Err(crate::DispatchError::Rejected(
+            "Registry guard does not match the physical attempt".into(),
+        ));
+    }
+    let admission = if handoff {
+        dispatch.handoff_attempt(claim, binding).await
+    } else {
+        dispatch.begin_attempt(claim, binding).await
+    };
+    guard
+        .release()
+        .await
+        .map_err(crate::DispatchError::unavailable)?;
+    admission
 }
 
 #[cfg(test)]

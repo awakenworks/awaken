@@ -1255,6 +1255,21 @@ async fn register_worker(
             }
             Err(error) => return Err(HostError::bad_request(error.to_string())),
         };
+        if record.snapshot.state == awaken_dispatch::WorkerState::Starting
+            && let Some(source) = &service.execution_bindings
+        {
+            tokio::time::timeout(std::time::Duration::from_secs(5),
+                source.retain_registered_worker_evidence(&record.snapshot.identity))
+                .await.map_err(|_| HostError::unavailable("Worker evidence retention timed out"))??;
+            // Provider I/O can outlive closure. Re-read durable truth before
+            // replying, then converge retention if admission closed meanwhile.
+            release_closed_idle_worker_evidence(&service, &record.snapshot.identity).await?;
+        }
+        let identity = record.snapshot.identity.clone();
+        let record = directory(&service)?.current(&identity.worker_id)
+            .await.map_err(|e| HostError::unavailable(e.to_string()))?
+            .filter(|current| current.snapshot.identity == identity)
+            .ok_or_else(|| HostError::unavailable("registered Worker disappeared"))?;
         Ok(json!({
             "worker": record,
             "lease_ttl_ms": service.registry_ttl_ms,
@@ -1359,6 +1374,9 @@ async fn quiesce_worker(
             .mark_quiesced(&request.identity)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
+        if mutation == awaken_dispatch::RegistryMutation::Applied {
+            release_closed_idle_worker_evidence(&service, &request.identity).await?;
+        }
         Ok(json!({ "mutation": mutation }))
     }
     .await;
@@ -1382,10 +1400,35 @@ async fn deregister_worker(
             .deregister(&request.identity)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
+        if mutation == awaken_dispatch::RegistryMutation::Applied {
+            release_closed_idle_worker_evidence(&service, &request.identity).await?;
+        }
         Ok(json!({ "mutation": mutation }))
     }
     .await;
     respond(result)
+}
+
+/// Closure and final physical admission share the Registry exclusion. A closed
+/// exact incarnation cannot acquire another slot after this authoritative read.
+async fn release_closed_idle_worker_evidence(
+    service: &WorkerDispatchService,
+    identity: &WorkerIdentity,
+) -> Result<(), HostError> {
+    let Some(source) = &service.execution_stops else {
+        return Ok(());
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        awaken_dispatch::release_closed_idle_worker_evidence(
+            service.dispatch.as_ref(),
+            directory(service)?.as_ref(),
+            source.as_ref(),
+            identity,
+        ),
+    )
+    .await
+    .map_err(|_| HostError::unavailable("idle Worker evidence release timed out"))?
 }
 
 async fn settle(

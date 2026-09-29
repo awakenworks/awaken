@@ -4,7 +4,6 @@
 use std::collections::BTreeSet;
 
 use awaken_runtime_contract::execution::NATIVE_RUNTIME_CAPABILITY;
-use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_worker_contract::{
     PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, REPOSITORY_CREDENTIALS_CAPABILITY,
     SESSION_RESOURCES_CAPABILITY, VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
@@ -151,7 +150,9 @@ impl
 
 pub(crate) struct StandardManifestInputs<'a> {
     pub(crate) deployment: &'a awaken_session_executor::DeploymentConfig,
-    pub(crate) materializer: Option<&'a dyn InferenceExecutorMaterializer>,
+    pub(crate) inference_schemes: &'a BTreeSet<String>,
+    pub(crate) inference_credentials:
+        &'a awaken_runtime_contract::CredentialRealizationCapabilities,
     pub(crate) credential_materializer: Option<CredentialMaterializerSupport>,
     pub(crate) brokered_acp_model_access:
         Option<&'a dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>,
@@ -213,13 +214,7 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     let mut capabilities = BTreeSet::from([NATIVE_RUNTIME_CAPABILITY.to_string()]);
     capabilities
         .insert(awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string());
-    capabilities.extend(
-        inputs
-            .materializer
-            .into_iter()
-            .flat_map(InferenceExecutorMaterializer::supported_access_schemes)
-            .map(|capability| (*capability).to_string()),
-    );
+    capabilities.extend(inputs.inference_schemes.iter().cloned());
     match inputs.resource_support {
         ResourceManifestSupport::None => {}
         ResourceManifestSupport::Session => {
@@ -246,8 +241,8 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         capabilities.insert(PROVIDER_CREDENTIAL_SOURCE_CAPABILITY.to_string());
     }
     let mut credential_profiles = Vec::new();
-    if let Some(materializer) = inputs.materializer {
-        credential_profiles.push(materializer.credential_realization_capabilities());
+    if !inputs.inference_credentials.is_empty() {
+        credential_profiles.push(inputs.inference_credentials.clone());
     }
     if let Some(remote) = inputs.remote_credential_realization {
         credential_profiles.push(remote.clone());

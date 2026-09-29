@@ -44,6 +44,118 @@ fn retained(mut pod: Value) -> Pod {
 }
 
 #[tokio::test]
+async fn registration_retention_is_exact_idempotent_and_rejects_deleting_pods() {
+    // T1 original live UID + absent finalizer -> exact RV CAS preserves sibling
+    // metadata; T2 repeat -> no second write; T3 deletion/replacement -> no
+    // retention and no inferred exit. No Pod template is required to pin a Pod
+    // before registration. A fake API tests adapter decisions, not GKE health.
+    let fixture = Fixture::new(Fault::None);
+    fixture
+        .facts
+        .lock()
+        .unwrap()
+        .pod
+        .as_mut()
+        .unwrap()
+        .metadata
+        .finalizers = Some(vec!["other.example/keep".into()]);
+    fixture
+        .observer()
+        .retain_pod_process_evidence("worker", "uid-a")
+        .await
+        .unwrap();
+    assert!(evidence_is_retained(
+        fixture.facts.lock().unwrap().pod.as_ref().unwrap()
+    ));
+    let writes = fixture
+        .facts
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .filter(|(m, _)| m == "PUT")
+        .count();
+    fixture
+        .observer()
+        .retain_pod_process_evidence("worker", "uid-a")
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .facts
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|(m, _)| m == "PUT")
+            .count(),
+        writes
+    );
+    for replacement in [false, true] {
+        let fixture = Fixture::new(Fault::None);
+        {
+            let mut facts = fixture.facts.lock().unwrap();
+            let pod = facts.pod.as_mut().unwrap();
+            if replacement {
+                pod.metadata.uid = Some("uid-b".into());
+            } else {
+                pod.metadata.deletion_timestamp =
+                    Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                        "2026-09-29T00:00:00Z".parse().unwrap(),
+                    ));
+            }
+        }
+        assert!(
+            fixture
+                .observer()
+                .retain_pod_process_evidence("worker", "uid-a")
+                .await
+                .is_err()
+        );
+        assert!(
+            !fixture
+                .facts
+                .lock()
+                .unwrap()
+                .calls
+                .iter()
+                .any(|(m, _)| m == "PUT")
+        );
+    }
+}
+
+#[tokio::test]
+async fn closed_idle_release_removes_only_the_original_uid_retention_metadata() {
+    // I1 trusted closed/no-slot admission is supplied by Coordinator. I2 exact
+    // UID + finalizer -> one existing CAS remove, no DELETE/exit receipt. I3
+    // replacement UID -> no metadata mutation. This is not a physical ACK.
+    let fixture = Fixture::new(Fault::None);
+    fixture
+        .stopper()
+        .release_closed_idle_pod_evidence("worker", "uid-a")
+        .await
+        .unwrap();
+    assert_eq!(fixture.facts.lock().unwrap().released, 1, "I2");
+    assert_eq!(fixture.facts.lock().unwrap().accepted, 0, "I2 no stop");
+    let fixture = Fixture::new(Fault::None);
+    fixture
+        .facts
+        .lock()
+        .unwrap()
+        .pod
+        .as_mut()
+        .unwrap()
+        .metadata
+        .uid = Some("replacement".into());
+    fixture
+        .stopper()
+        .release_closed_idle_pod_evidence("worker", "uid-a")
+        .await
+        .unwrap();
+    assert_eq!(fixture.facts.lock().unwrap().released, 0, "I3");
+}
+
+#[tokio::test]
 async fn deployment_stop_uses_existing_exact_delete_then_observes_original_exits() {
     // C1 frozen retained Always Pod; C2 exact UID/RV; C3 deletion accepted;
     // C4 original containers exited. P1(C1+C2) => one conditional DELETE and

@@ -584,3 +584,108 @@ remain unchanged.
 Awaken remains embeddable without creating an application-specific Worker
 protocol. The same Worker binary can execute locally or remotely, while
 products keep their business aggregates and acceptance rules outside Awaken.
+
+## Amendment: one registration-bound dependency assembly (2026-09-29)
+
+The existing registration-time application factory is the single assembly
+boundary for identity-bound dependencies. It receives the Coordinator-returned
+`RegisteredWorkerContext` and constructs the attempt decorator, inference,
+web-provider registry and checkpoint client from its exact upstream. The old
+decorator-only constructor projects into this same factory; it does not run a
+second initializer or maintain another identity cache.
+
+Static dependencies and a registration factory are mutually exclusive sources
+of one dependency value. A factory declares secret-free inference capabilities
+and checkpoint presence for the existing manifest derivation; after registration,
+the actual dependency output must match that declaration before Host creation or
+Ready. Errors, unwind, missing dependencies or capability drift use the existing
+bounded registration withdrawal. Backend selection, registry generations,
+Dispatch claims and Session lifecycle remain unchanged.
+
+## Amendment: closed-Worker evidence release fences late admission (2026-09-29)
+
+Physical admission holds the existing Registry incarnation exclusion only across
+its final authority check and Dispatch slot transaction, never across provider
+I/O. Registry closure uses the same exclusion, so a request admitted before
+closure is visible to the subsequent physical-slot check and a late request
+cannot install a slot after it. The guard carries the exact snapshot and no new
+state, lease or identity cache.
+
+PostgreSQL passes the Registry's original advisory-lock transaction into the
+paired Dispatch adapter, verifies their process-pool identity, and commits the
+physical slot using that one connection. A single-connection process pool must
+admit normally; two adapters cannot nest pool acquisition while holding an
+incarnation lock. Different pools fail closed. Memory and SQLite retain their
+original exclusion through the narrow Dispatch completion task; HTTP receipt
+loss cannot drop it ahead of a still-running SQLite transaction.
+
+Guarded server admission is a required port on the existing
+`ControlDispatchQueue` capability rung. Worker transport implements only the
+ordinary claim-scoped `DispatchQueue` rung and cannot receive a Registry
+transaction. Registry exclusion is a required `WorkerDirectory` port, not an
+optional capability default. Adapter orchestration stays in run-ingress's
+existing application; the contract contains only its seven-line port declaration
+and neutral guard re-export. The contract-shape growth record covers those
+necessary declarations instead of an orchestration body or a new facade crate.
+
+Normal quiescence and failed startup may release the exact Worker Pod's evidence
+finalizer only after the Registry incarnation is irreversibly closed and the
+Dispatch authority proves that it owns no active physical slots. Unknown,
+corrupt or occupied observations retain evidence. This metadata release creates
+no process-exit receipt and grants no replay or physical retirement. Blocked
+predecessors keep the existing independent stop, stored exit readback and
+whole-attempt proof path. Both releases use the same Kubernetes finalizer CAS;
+no Pod cleanup controller or second active-attempt inventory is added.
+
+The Pod template does not install retention. After durable Worker registration,
+the Coordinator retains the exact live UID before returning the Starting
+receipt; physical binding still requires that retained metadata. A Pod that
+never registers therefore cannot pin a rollout. A lost retention response or
+failed dependency assembly leaves a discoverable Registry record. Withdrawal
+and the original Dispatch maintenance loop retry the same closed-idle release,
+including exact lease expiry, with bounded provider I/O. Retention creates no
+historical process binding and never repairs a legacy occupied unbound slot.
+
+WorkQueue ownership observation stays on its existing port and stored lease
+owner. `has_owner_claims` is read-only and compares the complete
+incarnation-qualified owner, across Environments and Work payloads. An expired
+but unreleased claim still counts; querying neither reclaims nor releases it.
+Storage failure is an error, never an empty observation. This narrow read is
+not process-exit or physical-attempt evidence, and cannot retire another Worker
+generation or authorize replay. The shared backend conformance suite owns the
+decision cases; no second occupancy store or release-owned queue reader is added.
+The PostgreSQL WorkQueue implementation now lives in its own source module,
+but retains the same schema, migration scope, port and transaction owner. Its
+new exact-owner read shares one statement with SQLite; the original backend
+conformance suite still runs against both durable stores.
+
+The same maintenance pass closes an exact expired Registry incarnation before
+checking whether the selected provider owns its evidence. Provider ownership
+limits retention/stop operations, not Registry lease semantics. An unsupported
+historical identity can therefore lose stale Ready state without gaining an
+exit receipt, binding or Dispatch retirement; its unknown physical attempt
+remains occupied. A live lease remains unchanged and no provider operation is
+issued for an unowned identity.
+
+## Amendment: exact Worker-domain observation for transport cutover (2026-09-30)
+
+A release crossing an incompatible Worker transport must observe the exact old
+incarnation through Coordinator's existing service-authenticated, read-only
+Worker observation boundary. Registry supplies the exact durable incarnation,
+Dispatch supplies active physical slots, and the Environment application asks
+the existing WorkQueue whether the complete incarnation-qualified owner still
+holds any claim. The Dispatch occupancy scan is also the one used by closed-idle
+evidence release; it cannot become a parallel release inventory. A missing
+incarnation, unavailable store, inconsistent active slot, or nonempty occupancy
+cannot be interpreted as safe absence. Observations carry no mutation capability
+and do not substitute for a closed Registry lease or Kubernetes Pod termination.
+
+The cutover closes old admission first and then samples this projection again
+under the retained release barrier, along with exact Pod UID/image and release
+phase facts. Only the release owner decides whether its already-frozen phase
+may advance. It must keep an incompatible Phase A floor distinct from the
+ordinary healthy rollback floor: after a forward-only boundary it cannot
+compensate by reviving the invalid transport. A historical occupied slot with
+no original execution binding remains unknown even if a newer incarnation has
+no slots; no query, current-Pod inspection or phase transition may clear it or
+replay its original Run.

@@ -68,10 +68,7 @@ impl SqliteWorkerDirectory {
         })
     }
 
-    fn read(
-        tx: &Transaction<'_>,
-        worker_id: &str,
-    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+    fn read(tx: &Connection, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
         let encoded = tx
             .query_row(
                 &format!(
@@ -219,6 +216,37 @@ impl WorkerObservationSource for SqliteWorkerDirectory {
 
 #[async_trait]
 impl WorkerDirectory for SqliteWorkerDirectory {
+    async fn lock_incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<awaken_worker_contract::WorkerIncarnationGuard>, RegistryError> {
+        let identity = identity.clone();
+        let (current, held) =
+            awaken_sqlite_pool::with_held_connection(self.conn.clone(), move |conn| {
+                conn.execute_batch("BEGIN IMMEDIATE").map_err(persist)?;
+                let record = Self::read(conn, &identity.worker_id)?;
+                Ok::<_, RegistryError>(record.filter(|r| r.snapshot.identity == identity))
+            })
+            .await
+            .map_err(persist)?;
+        let current = match current {
+            Ok(current) => current,
+            Err(error) => {
+                held.release().await.map_err(persist)?;
+                return Err(error);
+            }
+        };
+        let Some(record) = current else {
+            held.release().await.map_err(persist)?;
+            return Ok(None);
+        };
+        Ok(Some(
+            awaken_worker_contract::WorkerIncarnationGuard::new_releasing(
+                record.snapshot,
+                async move { held.release().await.map_err(|e| e.to_string()) },
+            ),
+        ))
+    }
     async fn register(
         &self,
         registration: WorkerRegistration,

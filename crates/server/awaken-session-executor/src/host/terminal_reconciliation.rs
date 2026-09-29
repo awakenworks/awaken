@@ -20,6 +20,11 @@ pub(crate) struct TerminalReconciliationState {
     /// Local pools already own the same canonical maintenance mechanism.
     dispatch_reconciler: std::sync::OnceLock<awaken_dispatch::DispatchReconciler>,
     terminal_scan: awaken_dispatch::TerminalReconciliationScan,
+    worker_evidence: std::sync::OnceLock<(
+        Arc<dyn awaken_dispatch::WorkerDirectory>,
+        Arc<dyn awaken_dispatch::WorkerExecutionStopSource>,
+    )>,
+    worker_evidence_after: tokio::sync::Mutex<Option<String>>,
 }
 
 /// Deliver one direct cold-recovery fact from the Runtime contract's sole
@@ -71,6 +76,78 @@ where
 }
 
 impl SharedHost {
+    /// Bind the exact transport/Registry owners before maintenance startup.
+    /// Retention retry joins the original Dispatch reconciliation schedule.
+    pub fn bind_worker_evidence_reconciliation(
+        &self,
+        directory: Arc<dyn awaken_dispatch::WorkerDirectory>,
+        source: Arc<dyn awaken_dispatch::WorkerExecutionStopSource>,
+    ) -> Result<(), HostError> {
+        self.dispatch.terminal_reconciliation.worker_evidence
+            .set((directory, source))
+            .map_err(|_| HostError::internal("Worker evidence reconciliation already bound"))
+    }
+
+    pub(super) async fn reconcile_worker_evidence(&self) -> Result<(), awaken_dispatch::Error> {
+        let Some((directory, source)) = self.dispatch.terminal_reconciliation.worker_evidence.get() else {
+            return Ok(());
+        };
+        let dispatch = self
+            .dispatch_store()
+            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+        let now = awaken_dispatch::Clock::now_ms(&awaken_dispatch::SystemClock);
+        let mut records = directory
+            .list()
+            .await
+            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+        let Ok(mut after) = self.dispatch.terminal_reconciliation.worker_evidence_after.try_lock() else {
+            return Ok(());
+        };
+        records.sort_by(|a, b| {
+            a.snapshot
+                .identity
+                .worker_id
+                .cmp(&b.snapshot.identity.worker_id)
+        });
+        let start = after.as_ref().map_or(0, |cursor| {
+            records.partition_point(|r| r.snapshot.identity.worker_id <= *cursor)
+        });
+        let start = if start == records.len() { 0 } else { start };
+        // One candidate per original maintenance tick. Advance scheduling before
+        // provider I/O so cancellation/failure cannot starve a later Worker.
+        for record in records.into_iter().skip(start).take(1) {
+            let identity = &record.snapshot.identity;
+            *after = Some(identity.worker_id.clone());
+            if record.snapshot.expires_at_ms <= now {
+                directory
+                    .expire_incarnation(identity, now)
+                    .await
+                    .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+            }
+            // Registry expiry applies to every exact incarnation. Provider
+            // ownership controls evidence operations, never lease closure.
+            if !source.owns_worker_evidence(identity) {
+                continue;
+            }
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                awaken_dispatch::release_closed_idle_worker_evidence(
+                    dispatch.as_ref(),
+                    directory.as_ref(),
+                    source.as_ref(),
+                    identity,
+                ),
+            )
+            .await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "exact Worker retention retry pending"),
+                Err(_) => tracing::warn!("exact Worker retention retry timed out"),
+            }
+        }
+        Ok(())
+    }
+
     /// Repair direct-ingress terminal Memory work before ordinary Session
     /// construction can enter the physical Environment lifecycle. This is a
     /// cold recovery wake only: resident contexts already own their observer and
@@ -357,7 +434,212 @@ mod tests {
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    struct IdleEvidence {
+        released: std::sync::Mutex<Vec<awaken_dispatch::WorkerIdentity>>,
+        fail_first: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl awaken_dispatch::WorkerExecutionStopSource for IdleEvidence {
+        fn owns_worker_evidence(&self, _: &awaken_dispatch::WorkerIdentity) -> bool {
+            true
+        }
+        async fn release_closed_idle_worker_evidence(
+            &self,
+            identity: &awaken_dispatch::WorkerIdentity,
+        ) -> Result<(), awaken_dispatch::ApplicationError> {
+            if self.fail_first.swap(false, Ordering::SeqCst) {
+                return Err(awaken_dispatch::ApplicationError::unavailable(
+                    "provider unavailable",
+                ));
+            }
+            self.released.lock().unwrap().push(identity.clone());
+            Ok(())
+        }
+        async fn stop_closed_worker(
+            &self,
+            _: &awaken_dispatch::ClosedWorkerExecution,
+        ) -> Result<awaken_dispatch::WorkerProcessStopStatus, awaken_dispatch::ApplicationError>
+        {
+            panic!("idle maintenance cannot issue a physical stop")
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_retention_retries_expired_originals_without_starving_later_workers() {
+        // M1 expired exact registrations + empty original Dispatch -> close and
+        // release metadata, no physical-stop receipt. M2 first provider failure
+        // -> retain and advance scheduling; M3 next tick handles later Worker;
+        // M4 cursor wraps -> original retry succeeds. The cursor is scheduling
+        // only; Registry closure and physical-slot authority are re-read.
+        use awaken_dispatch::WorkerDirectory as _;
+        let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
+        let mut identities = Vec::new();
+        for id in ["retention-a", "retention-b"] {
+            identities.push(
+                directory
+                    .register(
+                        awaken_dispatch::WorkerRegistration {
+                            worker_id: id.into(),
+                            incarnation_id: "boot".into(),
+                            manifest: Default::default(),
+                        },
+                        0,
+                        1,
+                    )
+                    .await
+                    .unwrap()
+                    .snapshot
+                    .identity,
+            );
+        }
+        let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
+            .with_dispatch_store(Arc::new(
+                awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(Arc::new(
+                    awaken_dispatch::ManualClock::new(0),
+                ))
+                .unwrap(),
+            ));
+        let source = Arc::new(IdleEvidence {
+            released: Default::default(),
+            fail_first: std::sync::atomic::AtomicBool::new(true),
+        });
+        host.bind_worker_evidence_reconciliation(directory.clone(), source.clone())
+            .unwrap();
+        for _ in 0..3 {
+            host.reconcile_worker_evidence().await.unwrap();
+        }
+        assert_eq!(
+            *source.released.lock().unwrap(),
+            [identities[1].clone(), identities[0].clone()]
+        );
+        for identity in identities {
+            let record = directory.incarnation(&identity).await.unwrap().unwrap();
+            assert_eq!(record.snapshot.state, awaken_dispatch::WorkerState::Dead);
+            assert!(
+                record.process_exit.is_none(),
+                "M1 metadata release does not mint exit"
+            );
+        }
+    }
+
     struct TerminalProjectionView(Option<RunRecord>);
+
+    struct UnownedEvidence;
+
+    #[async_trait]
+    impl awaken_dispatch::WorkerExecutionStopSource for UnownedEvidence {
+        async fn release_closed_idle_worker_evidence(
+            &self,
+            _: &awaken_dispatch::WorkerIdentity,
+        ) -> Result<(), awaken_dispatch::ApplicationError> {
+            panic!("an unowned domain cannot release provider evidence")
+        }
+        async fn stop_closed_worker(
+            &self,
+            _: &awaken_dispatch::ClosedWorkerExecution,
+        ) -> Result<awaken_dispatch::WorkerProcessStopStatus, awaken_dispatch::ApplicationError>
+        {
+            panic!("expiry is not physical termination")
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_expiry_does_not_depend_on_provider_ownership_or_retire_unknown_attempts() {
+        // Cause/effect graph: U1 the selected provider does not own a legacy
+        // identity; U2 its exact Registry lease has expired; U3 another legacy
+        // identity is live; U4 an unbound physical attempt remains occupied.
+        // Effects: E1 U1+U2 closes only Registry admission; E2 U1+U3 preserves
+        // the live identity; E3 no provider call/exit receipt is invented; E4
+        // U4 keeps the exact original slot. Rules UE1=U1+U2=>E1+E3+E4;
+        // UE2=U1+U3=>E2+E3. This uses normal registration/claim/admission APIs,
+        // not a database backfill or synthetic termination assertion.
+        use awaken_dispatch::{DispatchQueue as _, WorkerDirectory as _};
+        let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
+        let mut identities = Vec::new();
+        for (id, ttl) in [("legacy-a", 1), ("legacy-b", u64::MAX)] {
+            identities.push(
+                directory
+                    .register(
+                        awaken_dispatch::WorkerRegistration {
+                            worker_id: id.into(),
+                            incarnation_id: "boot".into(),
+                            manifest: Default::default(),
+                        },
+                        0,
+                        ttl,
+                    )
+                    .await
+                    .unwrap()
+                    .snapshot
+                    .identity,
+            );
+        }
+        let clock = Arc::new(awaken_dispatch::ManualClock::new(0));
+        let dispatch = Arc::new(
+            awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory(clock.clone()).unwrap(),
+        );
+        let claimed = claim(
+            &dispatch,
+            "legacy-thread",
+            "legacy-run",
+            &identities[0].lease_owner(),
+            0,
+            &clock,
+        )
+        .await;
+        assert_eq!(
+            dispatch
+                .begin_attempt(&awaken_dispatch::RunClaim::from(&claimed.lease), None)
+                .await
+                .unwrap(),
+            awaken_dispatch::AttemptAdmission::Applied
+        );
+        let before = dispatch
+            .load_physical_attempt(&claimed.lease.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(before.binding.is_none(), "U4 historical unbound slot");
+        let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
+            .with_dispatch_store(dispatch.clone());
+        host.bind_worker_evidence_reconciliation(directory.clone(), Arc::new(UnownedEvidence))
+            .unwrap();
+        for _ in 0..2 {
+            host.reconcile_worker_evidence().await.unwrap();
+        }
+        let expired = directory
+            .incarnation(&identities[0])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            expired.snapshot.state,
+            awaken_dispatch::WorkerState::Dead,
+            "UE1/E1"
+        );
+        assert!(expired.process_exit.is_none(), "UE1/E3");
+        let live = directory
+            .incarnation(&identities[1])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            live.snapshot.state,
+            awaken_dispatch::WorkerState::Starting,
+            "UE2/E2"
+        );
+        assert!(live.process_exit.is_none(), "UE2/E3");
+        let after = dispatch
+            .load_physical_attempt(&claimed.lease.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "UE1/E4 exact unknown physical attempt retained"
+        );
+    }
 
     impl CommittedThreadView for TerminalProjectionView {
         fn committed_messages(&self, _thread_id: &ThreadId) -> Vec<Message> {

@@ -162,6 +162,16 @@ pub mod worker_http {
 
     #[async_trait::async_trait]
     impl WorkerDirectory for CurrentWorkerDirectory {
+        async fn lock_incarnation(
+            &self,
+            _identity: &WorkerIdentity,
+        ) -> Result<Option<awaken_dispatch_contract::WorkerIncarnationGuard>, RegistryError>
+        {
+            Err(RegistryError::Persistence(
+                "fixture forbids physical admission".into(),
+            ))
+        }
+
         async fn register(
             &self,
             _registration: WorkerRegistration,

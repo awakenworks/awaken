@@ -153,6 +153,16 @@ impl ExecutableAgentWiring {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn local_server_with_observer(token: &str) -> Self {
+        let mut wiring = Self::local_server(token);
+        wiring.service_authenticator = Some(
+            awaken_service_auth_contract::static_token_authenticator(token)
+                .expect("test Coordinator observer credential"),
+        );
+        wiring
+    }
+
     pub(crate) async fn coordinator(
         deployment: &ResolvedDeployment,
         schema: PostgresSchemaMode,

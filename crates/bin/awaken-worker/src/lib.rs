@@ -50,7 +50,11 @@ use manifest::{
     StandardManifestInputs, derive_standard_manifest,
 };
 
-pub use attempt_decorator::{RegisteredAttemptDecoratorFactory, RegisteredWorkerContext};
+use attempt_decorator::WorkerApplicationSource;
+pub use attempt_decorator::{
+    RegisteredAttemptDecoratorFactory, RegisteredWorkerApplicationFactory, RegisteredWorkerContext,
+    WorkerApplicationCapabilities, WorkerApplicationDependencies,
+};
 pub use bootstrap::{
     WorkerBootstrap, WorkerBootstrapInput, WorkerDaemonConfig, WorkerUpstreamSecurity,
 };
@@ -126,9 +130,8 @@ pub struct WorkerNodeBuilder {
     manifest: ManifestSelection,
     deployment: awaken_session_executor::DeploymentConfig,
     standard_manifest_config: StandardManifestConfig,
-    attempt_decorator_factory: Option<RegisteredAttemptDecoratorFactory>,
+    application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
-    materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
@@ -149,7 +152,6 @@ pub struct WorkerNodeBuilder {
         Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
     mcp_attachment_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
-    web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
     admin_listen: Option<String>,
@@ -252,9 +254,8 @@ impl WorkerNodeBuilder {
             manifest: ManifestSelection::Unset,
             deployment: awaken_session_executor::DeploymentConfig::ephemeral(),
             standard_manifest_config: StandardManifestConfig::default(),
-            attempt_decorator_factory: None,
+            application: WorkerApplicationSource::default(),
             tool_gate: None,
-            materializer: None,
             credential_materializer: None,
             brokered_acp_model_access: None,
             remote_attempt: None,
@@ -266,7 +267,6 @@ impl WorkerNodeBuilder {
             prepared_local_sandbox: None,
             environment_checkpoint_store: None,
             mcp_attachment_realizer: None,
-            web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             memory_mounter_factory: None,
             admin_tools: Vec::new(),
             admin_listen: Some("0.0.0.0:9090".to_string()),
@@ -347,7 +347,37 @@ impl WorkerNodeBuilder {
         mut self,
         factory: RegisteredAttemptDecoratorFactory,
     ) -> Self {
-        self.attempt_decorator_factory = Some(factory);
+        match &mut self.application {
+            WorkerApplicationSource::Static {
+                decorator,
+                selected,
+                ..
+            } => {
+                *selected = true;
+                *decorator = Some(factory);
+            }
+            _ => self.application = WorkerApplicationSource::Conflict,
+        }
+        self
+    }
+
+    /// Build one complete application dependency value using the exact
+    /// Coordinator-returned identity. Static dependency setters cannot coexist.
+    #[must_use]
+    pub fn with_registered_application_factory(
+        mut self,
+        capabilities: WorkerApplicationCapabilities,
+        factory: RegisteredWorkerApplicationFactory,
+    ) -> Self {
+        self.application = match &self.application {
+            WorkerApplicationSource::Static {
+                selected: false, ..
+            } => WorkerApplicationSource::Registered {
+                capabilities,
+                factory,
+            },
+            _ => WorkerApplicationSource::Conflict,
+        };
         self
     }
 
@@ -367,7 +397,9 @@ impl WorkerNodeBuilder {
         mut self,
         materializer: Arc<dyn InferenceExecutorMaterializer>,
     ) -> Self {
-        self.materializer = Some(materializer);
+        if let Some(dependencies) = self.application.static_dependencies() {
+            dependencies.inference = Some(materializer);
+        }
         self
     }
 
@@ -402,7 +434,9 @@ impl WorkerNodeBuilder {
         mut self,
         providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     ) -> Self {
-        self.web_search_providers = providers;
+        if let Some(dependencies) = self.application.static_dependencies() {
+            dependencies.web_providers = providers;
+        }
         self
     }
 
@@ -614,7 +648,9 @@ impl WorkerNodeBuilder {
         mut self,
         store: Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>,
     ) -> Self {
-        self.environment_checkpoint_store = Some(store);
+        if let Some(dependencies) = self.application.static_dependencies() {
+            dependencies.checkpoint_store = Some(store);
+        }
         self
     }
 
@@ -741,12 +777,16 @@ impl WorkerNodeBuilder {
             .unwrap_or_default()
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        if !provider_checkpoint_formats.is_empty() && self.environment_checkpoint_store.is_none() {
+        let dependency_capabilities = self
+            .application
+            .capabilities()
+            .map_err(WorkerNodeBuildError)?;
+        if !provider_checkpoint_formats.is_empty() && !dependency_capabilities.checkpoint_store {
             return Err(WorkerNodeBuildError(
                 "checkpoint-capable Session provider requires a checkpoint store".to_string(),
             ));
         }
-        if self.environment_checkpoint_store.is_some() && provider_checkpoint_formats.is_empty() {
+        if dependency_capabilities.checkpoint_store && provider_checkpoint_formats.is_empty() {
             return Err(WorkerNodeBuildError(
                 "checkpoint store requires a checkpoint-capable Session provider".to_string(),
             ));
@@ -781,7 +821,8 @@ impl WorkerNodeBuilder {
                 }
                 derive_standard_manifest(StandardManifestInputs {
                     deployment: &self.deployment,
-                    materializer: self.materializer.as_deref(),
+                    inference_schemes: &dependency_capabilities.inference_schemes,
+                    inference_credentials: &dependency_capabilities.inference_credentials,
                     credential_materializer: self
                         .credential_materializer
                         .as_ref()
@@ -835,9 +876,8 @@ impl WorkerNodeBuilder {
             clock: self.clock,
             manifest,
             deployment: self.deployment,
-            attempt_decorator_factory: self.attempt_decorator_factory,
+            application: self.application,
             tool_gate: self.tool_gate,
-            materializer: self.materializer,
             credential_materializer: self.credential_materializer,
             brokered_acp_model_access: self.brokered_acp_model_access,
             remote_attempt: self.remote_attempt,
@@ -848,7 +888,6 @@ impl WorkerNodeBuilder {
             prepared_local_sandbox: self.prepared_local_sandbox,
             environment_checkpoint_store: self.environment_checkpoint_store,
             mcp_attachment_realizer: self.mcp_attachment_realizer,
-            web_search_providers: self.web_search_providers,
             memory_mounter_factory: self.memory_mounter_factory,
             admin_tools: self.admin_tools,
             admin_listen: self.admin_listen,
@@ -931,9 +970,8 @@ pub struct WorkerNode {
     clock: Arc<dyn awaken_lease_contract::WallClock>,
     manifest: WorkerManifest,
     deployment: awaken_session_executor::DeploymentConfig,
-    attempt_decorator_factory: Option<RegisteredAttemptDecoratorFactory>,
+    application: WorkerApplicationSource,
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
-    materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     brokered_acp_model_access:
         Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
@@ -953,7 +991,6 @@ pub struct WorkerNode {
         Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
     mcp_attachment_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
-    web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
     admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
     admin_listen: Option<String>,
@@ -1266,22 +1303,16 @@ impl WorkerNode {
                 "Control did not select the current Worker runtime protocol; upgrade Control and Worker together",
             ).into());
         }
+        if !matches!(registration.snapshot.state,
+            awaken_worker_contract::WorkerState::Starting | awaken_worker_contract::WorkerState::Ready)
+        {
+            return Err(std::io::Error::other("registered Worker admission is already closed").into());
+        }
         let (host, lifecycle, heartbeat_timing, environment_proof_started) = {
         let startup = std::panic::AssertUnwindSafe(async {
         let registered_context =
             RegisteredWorkerContext::new(registration.clone(), upstream.clone());
-        let attempt_decorator = match self.attempt_decorator_factory {
-            Some(factory) => match factory(&registered_context) {
-                Ok(application) => Some(application),
-                Err(error) => {
-                    return Err(std::io::Error::other(format!(
-                        "registered attempt decorator factory failed: {error}"
-                    ))
-                    .into());
-                }
-            },
-            None => None,
-        };
+        let application = self.application.realize(&registered_context).map_err(|error| std::io::Error::other(format!("registered Worker application factory failed: {error}")))?;
         let memory_mounter = match self.memory_mounter_factory {
             Some(factory) => match factory(&registered_context) {
                 Ok(mounter) => Some(mounter),
@@ -1360,18 +1391,18 @@ impl WorkerNode {
         .with_worker_stream_publisher(stream_publisher)
         .with_worker_dispatch(dispatch, registered_capacity)
         .with_skill_bundle_source(remote_skills)
-        .with_web_search_provider_registry(self.web_search_providers)
+        .with_web_search_provider_registry(application.web_providers)
         .with_admin_tools(self.admin_tools);
         if let Some(remote_attempt) = self.remote_attempt {
             host = host.with_remote_attempt_executor(remote_attempt);
         }
-        if let Some(materializer) = &self.materializer {
+        if let Some(materializer) = &application.inference {
             host = host.with_inference_materializer(materializer.clone());
         }
         if let Some(resolver) = &self.credential_observation_resolver {
             host = host.with_worker_credential_resolver(resolver.clone());
         }
-        if let Some(decorator) = attempt_decorator {
+        if let Some(decorator) = application.attempt_decorator {
             host = host.with_attempt_decorator(decorator);
         }
         // Every registered Worker realizes the already-frozen Session projection
@@ -1413,7 +1444,7 @@ impl WorkerNode {
                 hand_factory,
             );
         }
-        if let Some(store) = self.environment_checkpoint_store {
+        if let Some(store) = application.checkpoint_store {
             host = host.with_environment_checkpoint_store(store);
         }
         if let Some(credentials) = managed_credential_materializer.clone() {

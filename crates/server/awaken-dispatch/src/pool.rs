@@ -66,6 +66,11 @@ use awaken_coordinator_client::execution_capacity::ExecutionCapacity;
 /// the one shared store, which satisfies this).
 #[async_trait]
 pub trait WorkerResolver<S>: Send + Sync {
+    /// Retry infrastructure retention through this same maintenance loop.
+    /// It never drives a Run or creates a second scheduler.
+    async fn reconcile_worker_evidence(&self) -> Result<(), Error> {
+        Ok(())
+    }
     /// Exact process-local realization evidence used before the pool freezes a
     /// local claim. Registered remote workers use their immutable manifest at
     /// the server and do not route through this local pool seam.
@@ -856,7 +861,7 @@ async fn drain_loop<S: ControlDispatch + 'static>(
                     // Request-local pressure releases a prior recovery probe,
                     // so unrelated claims can run without a pool-wide delay.
                     admission.error_gate.record_success().await;
-                    tracing::debug!(owner = %owner, error = %error,
+                    tracing::warn!(owner = %owner, error = %error,
                         retry_delay_ms = retry_after.map(|delay| delay.as_millis()),
                         "request-local dispatch retry deferred");
                 }
@@ -1325,6 +1330,17 @@ async fn reconciliation_loop<S: ControlDispatch + 'static>(context: Reconciliati
         if let Some(deadline) = next_terminal_reconciliation
             && awaken_lease_contract::mono::now() >= deadline
         {
+            match tokio::time::timeout(Duration::from_secs(5), resolver.reconcile_worker_evidence())
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "Worker evidence reconciliation failed; retrying")
+                }
+                Err(_) => {
+                    tracing::warn!("Worker evidence reconciliation budget exhausted; retrying")
+                }
+            }
             match resolver.reconcile_committed_terminals(256).await {
                 Ok(reconciled) => {
                     if let Some(sink) = &completion {
@@ -1611,11 +1627,21 @@ mod in_flight_tests {
 
     struct ReconciliationResolver {
         calls: AtomicUsize,
+        evidence_calls: AtomicUsize,
         fail_first: bool,
     }
 
     #[async_trait]
     impl WorkerResolver<MemoryDispatchStore> for ReconciliationResolver {
+        async fn reconcile_worker_evidence(&self) -> Result<(), Error> {
+            let call = self.evidence_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_first && call == 0 {
+                return Err(Error::Dispatch(crate::DispatchError::Unavailable(
+                    "retention API unavailable".into(),
+                )));
+            }
+            Ok(())
+        }
         async fn worker_for(
             &self,
             _thread_id: &ThreadId,
@@ -1668,6 +1694,7 @@ mod in_flight_tests {
         // cadence independently of the ordinary 60s fallback.
         let resolver = Arc::new(ReconciliationResolver {
             calls: AtomicUsize::new(0),
+            evidence_calls: AtomicUsize::new(0),
             fail_first: true,
         });
         let completion = Arc::new(RecordingCompletion::default());
@@ -1771,6 +1798,7 @@ mod in_flight_tests {
 
         let disabled_resolver = Arc::new(ReconciliationResolver {
             calls: AtomicUsize::new(0),
+            evidence_calls: AtomicUsize::new(0),
             fail_first: false,
         });
         let disabled_shutdown = CancellationToken::new();
@@ -1792,9 +1820,15 @@ mod in_flight_tests {
         disabled_shutdown.cancel();
         disabled.await.expect("disabled maintenance exits");
         assert_eq!(disabled_resolver.calls.load(Ordering::SeqCst), 0, "R1");
+        assert_eq!(
+            disabled_resolver.evidence_calls.load(Ordering::SeqCst),
+            0,
+            "R1 retention shares schedule"
+        );
 
         let retrying_resolver = Arc::new(ReconciliationResolver {
             calls: AtomicUsize::new(0),
+            evidence_calls: AtomicUsize::new(0),
             fail_first: true,
         });
         let completion = Arc::new(RecordingCompletion::default());
@@ -1820,6 +1854,10 @@ mod in_flight_tests {
         enabled.await.expect("enabled maintenance exits");
 
         assert!(retrying_resolver.calls.load(Ordering::SeqCst) >= 2, "R2");
+        assert!(
+            retrying_resolver.evidence_calls.load(Ordering::SeqCst) >= 2,
+            "R2 retention failure neither disables terminal repair nor creates a second timer"
+        );
         assert_eq!(
             completion
                 .values

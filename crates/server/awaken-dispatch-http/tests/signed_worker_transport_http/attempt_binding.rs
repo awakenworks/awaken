@@ -6,6 +6,7 @@ use awaken_dispatch::{
 use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_dispatch_testkit::worker_http as support;
 use serde_json::{Value, json};
+use std::future::Future;
 use tokio::sync::{Notify, Semaphore};
 
 struct BindingSource {
@@ -13,10 +14,23 @@ struct BindingSource {
     calls: AtomicUsize,
     entered: Notify,
     release: Semaphore,
+    retention: Mutex<Result<(), String>>,
+    retained: Mutex<Vec<WorkerIdentity>>,
 }
 
 #[async_trait::async_trait]
 impl WorkerExecutionBindingSource for BindingSource {
+    async fn retain_registered_worker_evidence(
+        &self,
+        worker: &WorkerIdentity,
+    ) -> Result<(), ApplicationError> {
+        self.retained.lock().unwrap().push(worker.clone());
+        self.retention
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(ApplicationError::unavailable)
+    }
     async fn binding_for(
         &self,
         _: &WorkerIdentity,
@@ -35,13 +49,54 @@ impl WorkerExecutionBindingSource for BindingSource {
 struct Fixture {
     source: Arc<BindingSource>,
     store: Arc<MemoryDispatchStore>,
-    directory: Arc<TestWorkerDirectory>,
+    directory: Arc<awaken_worker_registry::MemoryWorkerDirectory>,
     clock: Arc<ManualClock>,
     /// The dispatch store's own clock, held at the same reading as `clock`.
     dispatch_clock: Arc<awaken_lease_testkit::ManualClock>,
     claim: RunClaim,
     upstream: WorkerUpstream,
     server: tokio::task::JoinHandle<()>,
+}
+
+#[tokio::test]
+async fn final_incarnation_guard_rechecks_closure_after_provider_and_authority_reads() {
+    // G1 provider returns while the original Registry exclusion is held and
+    // closure is already queued -> admission cannot pass the final guard.
+    // G2 closure commits first -> BAD_REQUEST and no physical slot. The test
+    // establishes the closure queue order, without claiming the HTTP task has
+    // reached its second read. Guard release is an interleaving gate, never a
+    // termination or application readiness receipt.
+    let f = Fixture::new(true, 5_000).await;
+    let identity = f.upstream.worker_identity().unwrap().clone();
+    let request = f.request("begin", f.body());
+    f.entered().await;
+    let held = f
+        .directory
+        .lock_incarnation(&identity)
+        .await
+        .unwrap()
+        .unwrap();
+    f.source.release.add_permits(1);
+    // The closure queues behind the exact guard before admission can own it.
+    let directory = f.directory.clone();
+    let closing_identity = identity.clone();
+    let mut closing = Box::pin(directory.deregister(&closing_identity));
+    std::future::poll_fn(|cx| {
+        assert!(closing.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    held.release().await.unwrap();
+    assert_eq!(closing.await.unwrap(), RegistryMutation::Applied);
+    let (status, _) = request.await.unwrap();
+    assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+    assert!(
+        f.store
+            .load_physical_attempt(&f.claim.run_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 impl Drop for Fixture {
@@ -52,9 +107,45 @@ impl Drop for Fixture {
 
 impl Fixture {
     async fn new(configured: bool, request_budget_ms: u64) -> Self {
-        let (ready, identity) = support::ready_worker("binding-http").await;
-        let record = ready.current(&identity.worker_id).await.unwrap().unwrap();
-        let directory = Arc::new(TestWorkerDirectory(Mutex::new(Some(record.clone()))));
+        let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
+        let mut manifest = WorkerManifest::default();
+        manifest.runtime_protocol.min = 1;
+        manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        let identity = directory
+            .register(
+                WorkerRegistration {
+                    worker_id: "binding-http".into(),
+                    incarnation_id: "binding-http-boot".into(),
+                    manifest,
+                },
+                10_000,
+                30_000,
+            )
+            .await
+            .unwrap()
+            .snapshot
+            .identity;
+        directory
+            .heartbeat(
+                &identity,
+                WorkerHeartbeat {
+                    sequence: 1,
+                    ready: true,
+                    in_flight: 0,
+                    warm_environment_shapes: Default::default(),
+                    credential_observations: Default::default(),
+                    acp_capability_observations: Default::default(),
+                },
+                10_000,
+                30_000,
+            )
+            .await
+            .unwrap();
+        let record = directory
+            .current(&identity.worker_id)
+            .await
+            .unwrap()
+            .unwrap();
         let dispatch_clock = Arc::new(awaken_lease_testkit::ManualClock::new(10_000));
         let store = Arc::new(MemoryDispatchStore::new(dispatch_clock.clone()));
         store
@@ -78,6 +169,8 @@ impl Fixture {
             calls: AtomicUsize::new(0),
             entered: Notify::new(),
             release: Semaphore::new(0),
+            retention: Mutex::new(Ok(())),
+            retained: Mutex::new(Vec::new()),
         });
         let clock = Arc::new(ManualClock::new(10_000));
         let credential = WorkerSigningCredential::new(
@@ -167,6 +260,79 @@ impl Fixture {
             "lookup precedes installation"
         );
     }
+}
+
+#[tokio::test]
+async fn registration_retention_failure_retries_the_same_durable_identity_before_receipt() {
+    // R1 retention error after durable registration -> retryable server error,
+    // original Starting record survives and no physical binding is looked up.
+    // R2 provider recovery + same registration -> same generation/identity,
+    // retained metadata completes before receipt. R3 already closed replay
+    // cannot reinstall metadata. This uses actual signed HTTP and Registry.
+    let f = Fixture::new(true, 5_000).await;
+    let bootstrap = f.upstream.clone();
+    // A bootstrap has the same signer and no incarnation header.
+    let credential = WorkerSigningCredential::new(
+        "binding-http",
+        "key",
+        "credential",
+        b"fixture-only-binding-secret".to_vec(),
+    )
+    .unwrap();
+    let upstream = WorkerUpstream::new(bootstrap.base_url())
+        .with_worker_id("binding-http")
+        .with_request_authorizer(Arc::new(
+            SignedWorkerRequestAuthorizer::new(credential).with_clock(f.clock.clone()),
+        ));
+    let control = awaken_coordinator_client::WorkerControlClient::new(upstream);
+    let mut manifest = WorkerManifest::default();
+    manifest.runtime_protocol.min = 1;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+    f.directory
+        .deregister(f.upstream.worker_identity().unwrap())
+        .await
+        .unwrap();
+    *f.source.retention.lock().unwrap() = Err("API unavailable".into());
+    assert!(
+        matches!(
+            control
+                .register_classified("retention-boot", manifest.clone())
+                .await,
+            Err(awaken_coordinator_client::WorkerRegistrationError::Unavailable(
+                _
+            ))
+        ),
+        "R1 exact retryable outcome"
+    );
+    let original = f.directory.current("binding-http").await.unwrap().unwrap();
+    assert_eq!(original.snapshot.state, WorkerState::Starting);
+    *f.source.retention.lock().unwrap() = Ok(());
+    let receipt = control
+        .register_classified("retention-boot", manifest.clone())
+        .await
+        .unwrap();
+    assert_eq!(receipt.worker.snapshot.identity, original.snapshot.identity);
+    assert_eq!(
+        *f.source.retained.lock().unwrap(),
+        [
+            original.snapshot.identity.clone(),
+            original.snapshot.identity.clone()
+        ]
+    );
+    assert_eq!(f.source.calls.load(Ordering::SeqCst), 0);
+    f.directory
+        .deregister(&original.snapshot.identity)
+        .await
+        .unwrap();
+    control
+        .register_classified("retention-boot", manifest)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.source.retained.lock().unwrap().len(),
+        2,
+        "R3 no reinstall"
+    );
 }
 
 #[tokio::test]
@@ -415,36 +581,32 @@ async fn provider_wait_cannot_refresh_stale_authority_or_downgrade_failure() {
                 }
                 "registry-replaced" => {
                     f.directory
-                        .0
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .snapshot
-                        .identity
-                        .incarnation_id = "replacement".into()
+                        .deregister(&f.upstream.worker_identity().unwrap().clone())
+                        .await
+                        .unwrap();
+                    let record = f.directory.current("binding-http").await.unwrap().unwrap();
+                    f.directory
+                        .register(
+                            WorkerRegistration {
+                                worker_id: "binding-http".into(),
+                                incarnation_id: "replacement".into(),
+                                manifest: record.snapshot.manifest,
+                            },
+                            10_000,
+                            30_000,
+                        )
+                        .await
+                        .unwrap();
                 }
                 "registry-dead" => {
                     f.directory
-                        .0
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .snapshot
-                        .state = WorkerState::Dead
+                        .deregister(f.upstream.worker_identity().unwrap())
+                        .await
+                        .unwrap();
                 }
                 "registry-expired" => {
-                    f.directory
-                        .0
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .snapshot
-                        .expires_at_ms = 10_001;
-                    f.clock.set(10_001);
-                    f.dispatch_clock.set(10_001);
+                    f.clock.set(40_000);
+                    f.dispatch_clock.set(40_000);
                 }
                 "claim-expired" => {
                     f.clock.set(11_001);
@@ -455,13 +617,11 @@ async fn provider_wait_cannot_refresh_stale_authority_or_downgrade_failure() {
                     f.dispatch_clock.set(11_001);
                     let mut snapshot = f
                         .directory
-                        .0
-                        .lock()
+                        .current("binding-http")
+                        .await
                         .unwrap()
-                        .as_ref()
                         .unwrap()
-                        .snapshot
-                        .clone();
+                        .snapshot;
                     snapshot.identity = WorkerIdentity::new("replacement", "new-boot", 1);
                     f.store
                         .claim_compatible(&snapshot, 10_000)

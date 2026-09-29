@@ -285,6 +285,24 @@ impl WorkerObservationSource for PostgresWorkerDirectory {
 
 #[async_trait]
 impl WorkerDirectory for PostgresWorkerDirectory {
+    async fn lock_incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<awaken_worker_contract::WorkerIncarnationGuard>, RegistryError> {
+        let mut tx = self.pool.begin().await.map_err(persist)?;
+        Self::lock_slot(&mut tx, &identity.worker_id).await?;
+        let current = Self::read(&mut tx, &identity.worker_id).await?;
+        let Some(record) = current.filter(|r| r.snapshot.identity == *identity) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            awaken_worker_contract::WorkerIncarnationGuard::new_resource(
+                record.snapshot,
+                (tx, self.pool.clone()),
+                |(tx, _pool)| async move { tx.rollback().await.map_err(|e| e.to_string()) },
+            ),
+        ))
+    }
     async fn register(
         &self,
         registration: WorkerRegistration,

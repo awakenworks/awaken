@@ -7,6 +7,15 @@
 
 use super::*;
 
+/// Keep admission-owned resources alive after a caller drops its HTTP future.
+fn complete_admission<F, T>(operation: F) -> tokio::task::JoinHandle<T>
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::spawn(operation)
+}
+
 async fn attach_claim_credential_deliveries(
     service: &WorkerDispatchService,
     claimed: Option<awaken_dispatch::Claimed>,
@@ -372,18 +381,53 @@ async fn admit_attempt(
     } else {
         None
     };
-    let admission = if handoff {
-        service
-            .dispatch
-            .handoff_attempt(&request.claim, binding.as_ref())
+    let incarnation_guard = if service.execution_bindings.is_some() {
+        let identity = request.identity.as_ref().ok_or_else(|| {
+            HostError::bad_request("registered Worker identity is required for physical admission")
+        })?;
+        let guard = super::directory(service)?
+            .lock_incarnation(identity)
             .await
+            .map_err(|e| HostError::unavailable(e.to_string()))?
+            .ok_or_else(|| {
+                HostError::bad_request("Worker incarnation changed before physical admission")
+            })?;
+        let snapshot = guard.snapshot();
+        if snapshot.expires_at_ms <= service.clock.now_ms()
+            || matches!(
+                snapshot.state,
+                awaken_dispatch::WorkerState::Quiesced | awaken_dispatch::WorkerState::Dead
+            )
+        {
+            guard.release().await.map_err(HostError::unavailable)?;
+            return Err(HostError::bad_request(
+                "Worker incarnation closed before physical admission",
+            ));
+        }
+        Some(guard)
     } else {
-        service
-            .dispatch
-            .begin_attempt(&request.claim, binding.as_ref())
-            .await
-    }
-    .map_err(|error| match error {
+        None
+    };
+    // SQLite's blocking transaction survives HTTP cancellation. Move the
+    // original Registry exclusion into the same completion task; dropping the
+    // request must not release it ahead of a still-running slot installation.
+    let dispatch = service.dispatch.clone();
+    let claim = request.claim.clone();
+    let admission = complete_admission(async move {
+        let admission = if let Some(guard) = incarnation_guard {
+            dispatch
+                .admit_attempt_guarded(&claim, binding.as_ref(), guard, handoff)
+                .await
+        } else if handoff {
+            dispatch.handoff_attempt(&claim, binding.as_ref()).await
+        } else {
+            dispatch.begin_attempt(&claim, binding.as_ref()).await
+        };
+        Ok::<_, HostError>(admission)
+    })
+    .await
+    .map_err(|_| HostError::unavailable("physical admission completion unavailable"))??;
+    let admission = admission.map_err(|error| match error {
         awaken_dispatch::DispatchError::Conflict(message) => HostError::conflict(message),
         error => HostError::internal(error.to_string()),
     })?;
@@ -523,4 +567,63 @@ pub(super) async fn close_attempt(
     }
     .await;
     respond(result)
+}
+
+#[cfg(test)]
+mod admission_cancellation_tests {
+    use super::complete_admission;
+    use awaken_dispatch::{RegistryMutation, WorkerDirectory, WorkerRegistration};
+
+    #[tokio::test]
+    async fn cancelled_receipt_keeps_original_exclusion_until_admission_finishes() {
+        // C1 production completion owner holds a real Registry guard; C2 HTTP
+        // receipt is dropped; C3 underlying operation has not completed. R1
+        // C1+C2+C3 -> closure stays queued. R2 actual completion -> release and
+        // closure commits. This qualifies cancellation ownership, independently
+        // of store conformance; it does not claim an actual SQLite write test.
+        let directory = std::sync::Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
+        let identity = directory
+            .register(
+                WorkerRegistration {
+                    worker_id: "cancelled-admission".into(),
+                    incarnation_id: "boot".into(),
+                    manifest: Default::default(),
+                },
+                100,
+                50,
+            )
+            .await
+            .unwrap()
+            .snapshot
+            .identity;
+        let guard = directory
+            .lock_incarnation(&identity)
+            .await
+            .unwrap()
+            .unwrap();
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let receipt = complete_admission(async move {
+            finished.await.unwrap();
+            guard.release().await.unwrap();
+        });
+        drop(receipt);
+        let mut close = Box::pin(directory.deregister(&identity));
+        std::future::poll_fn(|cx| {
+            assert!(
+                std::future::Future::poll(close.as_mut(), cx).is_pending(),
+                "R1 original exclusion survives receipt loss"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        finish.send(()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), close)
+                .await
+                .unwrap()
+                .unwrap(),
+            RegistryMutation::Applied,
+            "R2"
+        );
+}
 }

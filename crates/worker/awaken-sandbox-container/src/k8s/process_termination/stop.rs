@@ -3,7 +3,7 @@
 //! It never removes evidence or calls Dispatch/Session cleanup.
 
 use super::*;
-use crate::k8s::finalizer::{ExactFinalizerReleaseAdmission, release_exact_pod_finalizer};
+use crate::k8s::finalizer::{ExactFinalizerAdmission, update_exact_pod_finalizer};
 use kube::api::{DeleteParams, Preconditions};
 
 /// A trusted recovery application may request termination of a whole Worker
@@ -17,6 +17,37 @@ pub struct PodProcessStopper {
 impl PodProcessStopper {
     pub fn new(observer: PodProcessObserver) -> Self {
         Self { observer }
+    }
+
+    /// Drop retention metadata only after the trusted Coordinator has closed
+    /// this incarnation and proved its Dispatch slots empty. No process binding
+    /// or exit receipt is constructed, and a replacement UID is never touched.
+    pub async fn release_closed_idle_pod_evidence(
+        &self,
+        name: &str,
+        uid: &str,
+    ) -> Result<(), RuntimeError> {
+        if uid.is_empty() {
+            return Err(backend("idle evidence release requires an exact UID"));
+        }
+        update_exact_pod_finalizer(
+            &self.observer.pods,
+            name,
+            WORKER_PROCESS_EVIDENCE_FINALIZER,
+            false,
+            &|| Ok(()),
+            &|pod| {
+                if pod.metadata.uid.as_deref() != Some(uid)
+                    || retention_finalizer(pod) != Some(WORKER_PROCESS_EVIDENCE_FINALIZER)
+                {
+                    Ok(ExactFinalizerAdmission::Complete)
+                } else {
+                    Ok(ExactFinalizerAdmission::Remove)
+                }
+            },
+            &|_| {},
+        )
+        .await
     }
 
     /// Retry the same exact bound domain, never a replacement with its name.
@@ -100,23 +131,8 @@ impl PodProcessStopper {
         if binding.retention_finalizer != WORKER_PROCESS_EVIDENCE_FINALIZER {
             return Ok(());
         }
-        release_exact_pod_finalizer(
-            &self.observer.pods,
-            &binding.name,
-            WORKER_PROCESS_EVIDENCE_FINALIZER,
-            &|| Ok(()),
-            &|pod| {
-                if pod.metadata.uid.as_deref() != Some(binding.uid.as_str())
-                    || !binding_retention_is_present(binding, pod)
-                {
-                    Ok(ExactFinalizerReleaseAdmission::Complete)
-                } else {
-                    Ok(ExactFinalizerReleaseAdmission::Remove)
-                }
-            },
-            &|_| {},
-        )
-        .await
+        self.release_closed_idle_pod_evidence(&binding.name, &binding.uid)
+            .await
     }
 }
 

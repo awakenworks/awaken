@@ -61,7 +61,8 @@ pub use application::{
     ClaimedCommitService, ClaimedOperationCoordinatorResolver, ClosedAttemptExecution,
     ClosedWorkerExecution, DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
     ObservedAttemptStop, ObservedWorkerProcessExit, WorkerExecutionBindingSource,
-    WorkerExecutionStopSource, WorkerProcessStopStatus, stop_expired_predecessor,
+    WorkerExecutionStopSource, WorkerProcessStopStatus, has_active_physical_attempt_for_owner,
+    release_closed_idle_worker_evidence, stop_expired_predecessor,
 };
 pub use awaken_dispatch_contract::ClaimedStreamPublisher;
 pub use awaken_dispatch_contract::operational::{

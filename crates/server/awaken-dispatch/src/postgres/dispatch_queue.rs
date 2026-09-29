@@ -24,9 +24,21 @@ impl PostgresDispatchStore {
         handoff: bool,
         binding: Option<&AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
+        let tx = self.pool.begin().await.map_err(store_error)?;
+        self.admit_physical_attempt_transaction(claim, handoff, binding, tx, None)
+            .await
+    }
+
+    async fn admit_physical_attempt_transaction(
+        &self,
+        claim: &RunClaim,
+        handoff: bool,
+        binding: Option<&AttemptExecutionBinding>,
+        mut tx: Transaction<'static, Postgres>,
+        worker: Option<WorkerSnapshot>,
+    ) -> Result<AttemptAdmission, DispatchError> {
         let p = NS;
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
         // Match claim's Thread-before-row order. The unique physical index is
         // the storage backstop; recheck peers under this transaction lock to
         // return the domain Blocked outcome instead of an expected SQL error.
@@ -35,6 +47,17 @@ impl PostgresDispatchStore {
             return Ok(AttemptAdmission::Fenced);
         };
         let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
+        if worker.as_ref().is_some_and(|snapshot| {
+            snapshot.expires_at_ms <= now_ms
+                || matches!(
+                    snapshot.state,
+                    crate::WorkerState::Quiesced | crate::WorkerState::Dead
+                )
+        }) {
+            tx.rollback().await.map_err(store_error)?;
+            return Ok(AttemptAdmission::Fenced);
+        }
+
         let current = sqlx::query(&format!(
             "SELECT status, lease_owner, lease_epoch, lease_until, \
              active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment, active_attempt_closing \
@@ -1327,6 +1350,35 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         claim: &RunClaim,
     ) -> Result<SettleOutcome, DispatchError> {
         self.finish_physical_attempt_with(claim, true).await
+    }
+
+    async fn admit_attempt_guarded(
+        &self,
+        claim: &RunClaim,
+        binding: Option<&AttemptExecutionBinding>,
+        mut guard: awaken_dispatch_contract::WorkerIncarnationGuard,
+        handoff: bool,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        let snapshot = guard.snapshot().clone();
+        let identity = &snapshot.identity;
+        if identity.lease_owner() != claim.owner || binding.is_none_or(|b| b.worker() != identity) {
+            return Err(DispatchError::Rejected(
+                "Registry guard does not match the physical attempt".into(),
+            ));
+        }
+        let Some((tx, pool)) = guard.take_resource::<(Transaction<'static, Postgres>, PgPool)>()
+        else {
+            return Err(DispatchError::Rejected(
+                "PostgreSQL admission requires its original Registry transaction".into(),
+            ));
+        };
+        if !std::sync::Arc::ptr_eq(&pool.connect_options(), &self.pool.connect_options()) {
+            return Err(DispatchError::Rejected(
+                "Registry and Dispatch do not share the original process pool".into(),
+            ));
+        }
+        self.admit_physical_attempt_transaction(claim, handoff, binding, tx, Some(snapshot))
+            .await
     }
 
     async fn current_credential_binding(

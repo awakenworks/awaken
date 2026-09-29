@@ -11,15 +11,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_worker_registry::{RegisteredWorker, RegistryError, WorkerObservationSource};
-use axum::extract::State;
+use awaken_worker_registry::{
+    RegisteredWorker, RegistryError, WorkerDirectory, WorkerObservationSource,
+};
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
+use serde::Serialize;
+
+use crate::SharedHost;
 
 pub const WORKER_OBSERVATIONS_PATH: &str = "/internal/v1/workers/observations";
 pub const WORKER_OBSERVE_PERMISSION: &str = "worker:observe";
+pub(crate) const WORKER_DOMAIN_PATH: &str = "/internal/v1/workers/domain";
 /// Total per-attempt deadline for one private control-plane call.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTEMPTS: usize = 3;
@@ -29,6 +35,119 @@ const RETRY_DELAY: Duration = Duration::from_millis(25);
 struct BoundaryState {
     source: Arc<dyn WorkerObservationSource>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
+}
+
+#[derive(Clone)]
+struct DomainState {
+    directory: Arc<dyn WorkerDirectory>,
+    host: Arc<SharedHost>,
+    environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
+}
+
+/// A read-only composition of the original Registry, Dispatch, and WorkQueue
+/// owners. Neither this DTO nor its route can close or retire an attempt.
+#[derive(Serialize)]
+struct WorkerDomainObservation {
+    registered: RegisteredWorker,
+    physical_attempt_active: bool,
+    work_claims_active: bool,
+}
+
+pub(crate) fn domain_router_with_authenticator(
+    directory: Arc<dyn WorkerDirectory>,
+    host: Arc<SharedHost>,
+    environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
+) -> Router {
+    Router::new()
+        .route(WORKER_DOMAIN_PATH, get(handle_domain))
+        .with_state(DomainState {
+            directory,
+            host,
+            environments,
+            authenticator,
+        })
+}
+
+fn authenticate_observer(
+    authenticator: &dyn awaken_service_auth_contract::ServiceRequestAuthenticator,
+    headers: &HeaderMap,
+) -> Result<(), axum::response::Response> {
+    match authenticator.authenticate(
+        headers
+            .get(header::AUTHORIZATION)
+            .map(|value| value.as_bytes()),
+        awaken_service_auth_contract::ServiceAuthorizationRequirement::new(
+            awaken_service_auth_contract::COORDINATOR_SERVICE_AUDIENCE,
+            WORKER_OBSERVE_PERMISSION,
+        ),
+    ) {
+        Ok(_) => Ok(()),
+        Err(awaken_service_auth_contract::ServiceAuthError::Unauthorized) => {
+            Err(StatusCode::UNAUTHORIZED.into_response())
+        }
+        Err(awaken_service_auth_contract::ServiceAuthError::Forbidden) => {
+            Err(StatusCode::FORBIDDEN.into_response())
+        }
+        Err(awaken_service_auth_contract::ServiceAuthError::Unavailable(_)) => {
+            Err(StatusCode::SERVICE_UNAVAILABLE.into_response())
+        }
+    }
+}
+
+async fn handle_domain(
+    State(state): State<DomainState>,
+    headers: HeaderMap,
+    query: Result<
+        Query<awaken_worker_registry::WorkerIdentity>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> axum::response::Response {
+    if let Err(response) = authenticate_observer(state.authenticator.as_ref(), &headers) {
+        return response;
+    }
+    let identity = match query {
+        Ok(Query(identity)) => identity,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    if identity.worker_id.trim().is_empty()
+        || identity.incarnation_id.trim().is_empty()
+        || identity.generation == 0
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let registered = match state.directory.incarnation(&identity).await {
+        Ok(Some(record)) if record.snapshot.identity == identity => record,
+        Ok(Some(_)) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(None) => return StatusCode::CONFLICT.into_response(),
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let dispatch = match state.host.dispatch_store() {
+        Ok(store) => store,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    let owner = identity.lease_owner();
+    let physical_attempt_active =
+        match awaken_dispatch::has_active_physical_attempt_for_owner(dispatch.as_ref(), &owner)
+            .await
+        {
+            Ok(active) => active,
+            Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        };
+    let work_claims_active = match state.environments.has_worker_owner_claims(&owner).await {
+        Ok(active) => active,
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    (
+        StatusCode::OK,
+        Json(WorkerDomainObservation {
+            registered,
+            physical_attempt_active,
+            work_claims_active,
+        }),
+    )
+        .into_response()
 }
 
 pub fn router(
@@ -57,25 +176,8 @@ async fn handle_list(
     State(state): State<BoundaryState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    match state.authenticator.authenticate(
-        headers
-            .get(header::AUTHORIZATION)
-            .map(|value| value.as_bytes()),
-        awaken_service_auth_contract::ServiceAuthorizationRequirement::new(
-            awaken_service_auth_contract::COORDINATOR_SERVICE_AUDIENCE,
-            WORKER_OBSERVE_PERMISSION,
-        ),
-    ) {
-        Ok(_) => {}
-        Err(awaken_service_auth_contract::ServiceAuthError::Unauthorized) => {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
-        Err(awaken_service_auth_contract::ServiceAuthError::Forbidden) => {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-        Err(awaken_service_auth_contract::ServiceAuthError::Unavailable(_)) => {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
+    if let Err(response) = authenticate_observer(state.authenticator.as_ref(), &headers) {
+        return response;
     }
     match state.source.list().await {
         Ok(workers) => (StatusCode::OK, Json(Ok::<_, String>(workers))).into_response(),

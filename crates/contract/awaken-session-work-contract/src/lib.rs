@@ -1093,6 +1093,10 @@ pub trait WorkQueue: Send + Sync {
     /// exact incarnation-qualified owner are returned to the queue, so a live
     /// non-terminal Session can be adopted by a fresh incarnation.
     async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError>;
+    /// Whether any persisted Work lease still names this exact owner. Expiry is
+    /// not release: this read never reclaims, clears or extends lease authority.
+    /// It is occupancy evidence only, never process-exit or replay permission.
+    async fn has_owner_claims(&self, worker_owner: &str) -> Result<bool, WorkQueueError>;
     /// Coordinator-owned terminal projection. This is not a Worker mutation:
     /// it retires the canonical item after the Session terminal fence and
     /// therefore intentionally does not require the former lease owner.
@@ -1319,6 +1323,9 @@ mod tests {
             }
             async fn release_owner(&self, _: &str) -> Result<usize, WorkQueueError> {
                 Ok(0)
+            }
+            async fn has_owner_claims(&self, _: &str) -> Result<bool, WorkQueueError> {
+                Ok(false)
             }
             async fn retire_session(
                 &self,

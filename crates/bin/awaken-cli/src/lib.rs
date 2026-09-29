@@ -84,7 +84,10 @@ pub use deployment_process::migrate_deployment_schema;
 use deployment_process::{
     prepare_runtime_process, prepare_runtime_process_with_coordinator_services,
 };
-use hosted_model_publication::{HostedAndDirectModelPublicationResolver, PublicationModelSupply};
+use hosted_model_publication::{
+    HostedAndDirectModelPublicationResolver, PublicationModelSupply, brokered_inference_client,
+    local_client_instance_id,
+};
 use identity::identity_wiring;
 pub use managed_platform::{
     CoordinatorServiceAdapters, ManagedBackgroundService, ManagedServiceAdapters,
@@ -167,80 +170,9 @@ impl ControlServices {
         }
     }
 }
-/// Role-owned HTTP surfaces plus the cleartext local setup handoff printed by
-/// the CLI once. `private_router` is never merged into `public_router`.
-#[derive(Clone)]
-pub struct CoordinatorAuthorityHandles {
-    pub runtime_authority: Arc<dyn awaken_session_executor::RuntimeAuthority>,
-    pub worker_directory: Arc<dyn awaken_worker_contract::WorkerDirectory>,
-    pub sessions: Arc<dyn awaken_session_repository_contract::SessionRepository>,
-    /// The one process-owned Coordinator pool. Hosted adapters and the
-    /// process-readiness probe clone this handle rather than reconnecting.
-    pub postgres_pool: Option<sqlx::PgPool>,
-    pub run_recovery:
-        Option<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>>,
-    pub run_lifecycle:
-        Option<Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>>,
-}
-
-pub struct PreparedProcess {
-    pub public_router: Router,
-    pub private_router: Router,
-    pub local_setup: Option<awaken_control::LocalSetupHandoff>,
-    pub registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
-    pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-    /// Read-only projection published by the exact Session application's sole
-    /// lifecycle supervisor.
-    pub event_batch_cutover_validation:
-        Option<Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>>,
-    /// Canonical Coordinator persistence handles for a hosted composition.
-    /// Consumers must reuse these handles and must not reopen the same stores.
-    pub coordinator_authorities: Option<CoordinatorAuthorityHandles>,
-    pub admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
-    /// The process's one wall clock. The embedded Worker an AllInOne process
-    /// supervises is built on it, so it and the Coordinator share one timeline.
-    pub clock: Arc<dyn awaken_lease_contract::WallClock>,
-}
-
-struct ProcessRouters {
-    public_router: Router,
-    private_router: Router,
-    registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
-    service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-    event_batch_cutover_validation:
-        Option<Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>>,
-    admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
-}
-
-impl ProcessRouters {
-    fn new(
-        public_router: Router,
-        private_router: Router,
-        registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
-        service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-        event_batch_cutover_validation: Option<
-            Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>,
-        >,
-        admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
-    ) -> Self {
-        // Router-only embedding helpers do not retain PreparedProcess. Keep the
-        // same supervisor alive inside the router as well as exposing it to the
-        // binary's readiness controller.
-        let public_router = match &registration_supervisor {
-            Some(supervisor) => public_router.layer(axum::Extension(supervisor.clone())),
-            None => public_router,
-        };
-        let public_router = public_router.layer(axum::Extension(service_lifecycle.clone()));
-        Self {
-            public_router,
-            private_router,
-            registration_supervisor,
-            service_lifecycle,
-            event_batch_cutover_validation,
-            admin_tools,
-        }
-    }
-}
+mod prepared_process;
+use prepared_process::ProcessRouters;
+pub use prepared_process::{CoordinatorAuthorityHandles, PreparedProcess};
 
 /// Build all-in-one from the standard typed deployment configuration.
 pub async fn build_all_in_one_router() -> Router {
@@ -558,104 +490,6 @@ pub async fn build_secured_all_in_one_router(
     .expect("prepare secured all-in-one process")
     .public_router;
     (router, iam)
-}
-
-fn brokered_inference_client(
-    cloud_models_enabled: bool,
-    remote_iam: Option<&Arc<RemoteManagementAuthz>>,
-    developer_key_file: Option<&std::path::Path>,
-    cloud_api_base_url: Option<&str>,
-    execution_workspace: &str,
-    client_instance_id: &str,
-) -> Option<Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>> {
-    if !cloud_models_enabled {
-        return None;
-    }
-    let token_source: Arc<awaken_agent_contract::RedactedStringSource> =
-        if let Some(path) = developer_key_file {
-            let path = path.to_owned();
-            Arc::new(move || {
-                let value = std::fs::read_to_string(&path)
-                    .map_err(|error| format!("read Cloud Developer Key file: {error}"))?;
-                let value = value.trim();
-                if !value.starts_with("sk-awaken-") || value.chars().any(char::is_whitespace) {
-                    return Err("Cloud Developer Key file does not contain one valid key".into());
-                }
-                Ok(awaken_agent_contract::RedactedString::new(value.to_owned()))
-            })
-        } else {
-            let authz = Arc::clone(remote_iam?);
-            Arc::new(move || {
-                authz
-                    .cloud_user_token()?
-                    .ok_or_else(|| "Cloud login credential is unavailable".to_string())
-            })
-        };
-    let base_url =
-        cloud_api_base_url.expect("Awaken Cloud identity requires a Cloud inference API URL");
-    Some(Arc::new(
-        awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient::new(
-            base_url,
-            token_source,
-            execution_workspace,
-            client_instance_id,
-        )
-        .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
-    ))
-}
-
-fn local_client_instance_id(workspace_root: Option<&std::path::Path>) -> String {
-    let coordinate = workspace_root
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "ephemeral".to_owned());
-    let fingerprint = awaken_runtime_contract::content_fingerprint(&coordinate)
-        .unwrap_or_else(|_| "unavailable".to_owned());
-    format!("awaken-installation:{fingerprint}")
-}
-
-#[cfg(test)]
-mod brokered_client_boundary_tests {
-    use super::*;
-
-    #[test]
-    fn projected_developer_key_and_workspace_use_distinct_client_coordinates() {
-        // Cause/effect graph: C1=Cloud models enabled, C2=projected Developer
-        // Key is valid, C3=Workspace and installation root are present.
-        // Effects: one brokered client is constructed without an OAuth fallback;
-        // Workspace identity remains distinct from the stable installation id.
-        // R1 all true => client; !C2 => fail construction before network.
-        let dir = tempfile::tempdir().unwrap();
-        let key = dir.path().join("cloud-api-key");
-        std::fs::write(&key, "sk-awaken-fixture.secret\n").unwrap();
-        let workspace = "awaken:workspace-a";
-        let instance = local_client_instance_id(Some(dir.path()));
-        assert_ne!(workspace, instance);
-        assert!(instance.starts_with("awaken-installation:"));
-        assert!(
-            brokered_inference_client(
-                true,
-                None,
-                Some(&key),
-                Some("https://api.awaken.test"),
-                workspace,
-                &instance,
-            )
-            .is_some()
-        );
-
-        std::fs::write(&key, "not-a-developer-key").unwrap();
-        let result = std::panic::catch_unwind(|| {
-            brokered_inference_client(
-                true,
-                None,
-                Some(&key),
-                Some("https://api.awaken.test"),
-                workspace,
-                &instance,
-            )
-        });
-        assert!(result.is_err());
-    }
 }
 
 fn resolve_model_services(
@@ -1315,7 +1149,37 @@ mod process_role_surface_tests {
                     .clone(),
             )
             .expect("configure Coordinator test Environment wiring");
+        let domain_work = coordinator_stores
+            .coordinator
+            .as_ref()
+            .expect("Coordinator test owns WorkQueue")
+            .environment_work
+            .clone();
         let worker_directory = awaken_coordinator::test_worker_directory();
+        // Domain-observation decision table: C1 private service token valid,
+        // C2 exact incarnation exists, C3 Dispatch and WorkQueue are empty.
+        // R1 no token -> 401 before query parsing; R2 valid token + exact
+        // record + empty owners -> one read-only 200 projection; R3 missing
+        // record -> 409, never a false empty-domain proof. R4 claimed Work,
+        // even past its lease deadline, -> occupied; R5 ordinary owner release
+        // -> empty. Public listener remains absent in the role matrix above.
+        let mut domain_manifest = awaken_worker_contract::WorkerManifest::default();
+        domain_manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        domain_manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        let domain_identity = worker_directory
+            .register(
+                awaken_worker_contract::WorkerRegistration {
+                    worker_id: "domain-test".into(),
+                    incarnation_id: "domain-boot".into(),
+                    manifest: domain_manifest,
+                },
+                100,
+                10_000,
+            )
+            .await
+            .expect("register exact domain test Worker")
+            .snapshot
+            .identity;
         let coordinator_routers = prepare_runtime_routers(
             coordinator_stores,
             None,
@@ -1325,7 +1189,7 @@ mod process_role_surface_tests {
             ProcessStartup {
                 role: config::Role::Coordinator,
                 executable_agent_wiring: Some(
-                    executable_agent_registration::ExecutableAgentWiring::local_server(
+                    executable_agent_registration::ExecutableAgentWiring::local_server_with_observer(
                         "registration-token",
                     ),
                 ),
@@ -1439,6 +1303,105 @@ mod process_role_surface_tests {
         assert_eq!(retired_private_launch.status(), StatusCode::NOT_FOUND);
 
         let private_coordinator = coordinator_routers.private_router;
+        let domain_path = format!(
+            "/internal/v1/workers/domain?worker_id={}&incarnation_id={}&generation={}",
+            domain_identity.worker_id, domain_identity.incarnation_id, domain_identity.generation
+        );
+        let no_token = private_coordinator
+            .clone()
+            .oneshot(Request::get(&domain_path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED, "R1");
+        let observed = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get(&domain_path)
+                    .header("authorization", "Bearer registration-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(observed.status(), StatusCode::OK, "R2");
+        let observed: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(observed.into_body(), 1_000_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            observed["registered"]["snapshot"]["identity"]["worker_id"],
+            "domain-test"
+        );
+        assert_eq!(observed["physical_attempt_active"], false);
+        assert_eq!(observed["work_claims_active"], false);
+        domain_work
+            .enqueue_session(
+                "domain-env",
+                &awaken_session_types::SessionId::from("domain-session"),
+            )
+            .await
+            .unwrap();
+        domain_work
+            .claim("domain-env", &domain_identity.lease_owner(), 0)
+            .await
+            .unwrap()
+            .expect("R4 Work claim");
+        let occupied = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get(&domain_path)
+                    .header("authorization", "Bearer registration-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(occupied.status(), StatusCode::OK, "R4");
+        let occupied: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(occupied.into_body(), 1_000_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(occupied["work_claims_active"], true, "R4");
+        assert_eq!(
+            domain_work
+                .release_owner(&domain_identity.lease_owner())
+                .await
+                .unwrap(),
+            1
+        );
+        let released = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get(&domain_path)
+                    .header("authorization", "Bearer registration-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(released.status(), StatusCode::OK, "R5");
+        let released: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(released.into_body(), 1_000_000)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(released["work_claims_active"], false, "R5");
+        let missing = private_coordinator
+            .clone()
+            .oneshot(
+                Request::get("/internal/v1/workers/domain?worker_id=missing&incarnation_id=boot&generation=1")
+                    .header("authorization", "Bearer registration-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::CONFLICT, "R3");
         let session_on_private = private_coordinator
             .clone()
             .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
