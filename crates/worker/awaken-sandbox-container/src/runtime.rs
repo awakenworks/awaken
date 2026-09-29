@@ -1814,10 +1814,24 @@ pub trait ContainerRuntime: Send + Sync {
                 crate::exec_orphan_reaper_command(),
             )
             .await?;
-        let status = reaper
-            .wait()
-            .await
-            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        let status =
+            match tokio::time::timeout(std::time::Duration::from_secs(30), reaper.wait()).await {
+                Ok(Ok(status)) => status,
+                Ok(Err(error)) => return Err(RuntimeError::Backend(error.to_string())),
+                Err(_) => {
+                    // Unknown completion is never a quiescence receipt. Limit the
+                    // cleanup request too; the owning disposal will remove the
+                    // container while skipping in-container harvest.
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        reaper.signal(pc::Signal::Kill),
+                    )
+                    .await;
+                    return Err(RuntimeError::Backend(
+                        "container exec orphan reaping timed out".into(),
+                    ));
+                }
+            };
         if status.code == Some(0) {
             return Ok(());
         }

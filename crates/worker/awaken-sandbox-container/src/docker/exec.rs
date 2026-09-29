@@ -199,7 +199,7 @@ pub(super) fn wrapped_exec_argv(command: Vec<String>) -> (String, Vec<String>) {
         "sh".to_string(),
         "-c".to_string(),
         format!(
-            "pid_file=$1; shift; {} printf '%s' \"$$\" > \"$pid_file\"; exec \"$@\"",
+            "pid_file=$1; shift; {} record_exec_identity; exec \"$@\"",
             crate::exec_pid_file_prelude()
         ),
         "awaken-exec".to_string(),

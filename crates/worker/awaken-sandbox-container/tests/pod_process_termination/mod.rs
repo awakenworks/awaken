@@ -76,11 +76,17 @@ fn hard_stop_container(cluster: &str, pod: &k8s_openapi::api::core::v1::Pod, con
         .args(["exec", node, "crictl", "stop", "--timeout", "0", id])
         .output()
         .unwrap();
-    assert!(
-        stopped.status.success(),
-        "exact CRI fault: {}",
-        String::from_utf8_lossy(&stopped.stderr)
-    );
+    if !stopped.status.success() {
+        let detail = String::from_utf8_lossy(&stopped.stderr);
+        // A zero-deadline CRI stop can report DeadlineExceeded after sending
+        // the kill. This is indeterminate, not exit evidence: every caller
+        // below still requires the exact independent process observation.
+        assert!(
+            detail.contains("DeadlineExceeded") && detail.contains(id),
+            "exact CRI fault: {detail}"
+        );
+        eprintln!("exact CRI stop remained indeterminate: {detail}");
+    }
 }
 
 #[tokio::test]
@@ -96,7 +102,10 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     // KPT9 adding retention after the old binding cannot authorize its stop.
     // KPT10 all containers crash before stop: a read-only exit observation is
     // possible, but the stop command must still close the exact Pod and return
-    // Unknown before a subsequent independent closed-exit observation.
+    // Unknown before a subsequent independent closed-exit observation. KPT11
+    // CRI stop returns an exact-ID DeadlineExceeded: retain an indeterminate
+    // injection and require the same KPT2/KPT10 independent exit observation;
+    // every other CRI failure rejects before an observation can be credited.
     // KPT5/6/8 correspond to ExactCompleteObservation in the existing three-
     // generation K8sProcessObservation model. KPT7 tests the API's UID-precondition
     // trusted boundary, not a new Dispatch retirement or replay implementation.

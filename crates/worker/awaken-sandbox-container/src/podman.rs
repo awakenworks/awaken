@@ -625,7 +625,7 @@ impl PodmanRuntime {
                 " export \"$1=${{{alias}}}\"; unset {alias}; shift;"
             ));
         }
-        wrapper.push_str(" printf '%s' \"$$\" > \"$pid_file\"; exec \"$@\"");
+        wrapper.push_str(" record_exec_identity; exec \"$@\"");
         args.extend([
             container_id.to_string(),
             "sh".into(),
