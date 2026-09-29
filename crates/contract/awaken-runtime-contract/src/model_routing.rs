@@ -26,51 +26,6 @@ pub fn pinned_candidate_at<'a, T>(
     }
 }
 
-#[cfg(test)]
-mod selection_tests {
-    use super::*;
-    use crate::resolved::ModelBinding;
-
-    #[test]
-    fn selection_returns_the_complete_real_candidate_or_none() {
-        // Cause/effect table: P1 ordinal 0 -> primary; P2 ordinals 1/2 ->
-        // corresponding fallback; P3 first out-of-range and usize::MAX -> None.
-        // Distinct admitted model coordinates witness payload preservation;
-        // reference identity proves no binding/provisioning fields are mixed.
-        let candidate = |model| {
-            ResolvedModelCandidate::host(
-                ModelBinding::parse("provider", model, "native")
-                    .expect("admitted literal test binding"),
-            )
-        };
-        let primary = candidate("primary");
-        let fallbacks = [candidate("fallback-one"), candidate("fallback-two")];
-        for (ordinal, expected) in [(0, &primary), (1, &fallbacks[0]), (2, &fallbacks[1])] {
-            let selected = pinned_candidate_at(&primary, &fallbacks, ordinal).unwrap();
-            assert!(
-                std::ptr::eq(selected, expected),
-                "P1/P2 exact complete member"
-            );
-            assert_eq!(
-                selected.binding().identity(),
-                expected.binding().identity(),
-                "P1/P2 coordinates"
-            );
-            assert_eq!(
-                selected.provisioning(),
-                expected.provisioning(),
-                "P1/P2 provisioning"
-            );
-        }
-        for ordinal in [3, usize::MAX] {
-            assert!(
-                pinned_candidate_at(&primary, &fallbacks, ordinal).is_none(),
-                "P3"
-            );
-        }
-    }
-}
-
 /// Representation-free conjunction used by exact route identity checks.
 /// Keeping the four axes explicit prevents later code from accidentally
 /// treating a shared model id as a complete route identity.
@@ -150,5 +105,50 @@ mod kani_proofs {
         assert!(!route_pin_axes_are_exact(
             axes[0], axes[1], axes[2], axes[3]
         ));
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use crate::resolved::ModelBinding;
+
+    #[test]
+    fn selection_returns_the_complete_real_candidate_or_none() {
+        // Cause/effect table: P1 ordinal 0 -> primary; P2 ordinals 1/2 ->
+        // corresponding fallback; P3 first out-of-range and usize::MAX -> None.
+        // Distinct admitted model coordinates witness payload preservation;
+        // reference identity proves no binding/provisioning fields are mixed.
+        let candidate = |model| {
+            ResolvedModelCandidate::host(
+                ModelBinding::parse("provider", model, "native")
+                    .expect("admitted literal test binding"),
+            )
+        };
+        let primary = candidate("primary");
+        let fallbacks = [candidate("fallback-one"), candidate("fallback-two")];
+        for (ordinal, expected) in [(0, &primary), (1, &fallbacks[0]), (2, &fallbacks[1])] {
+            let selected = pinned_candidate_at(&primary, &fallbacks, ordinal).unwrap();
+            assert!(
+                std::ptr::eq(selected, expected),
+                "P1/P2 exact complete member"
+            );
+            assert_eq!(
+                selected.binding().identity(),
+                expected.binding().identity(),
+                "P1/P2 coordinates"
+            );
+            assert_eq!(
+                selected.provisioning(),
+                expected.provisioning(),
+                "P1/P2 provisioning"
+            );
+        }
+        for ordinal in [3, usize::MAX] {
+            assert!(
+                pinned_candidate_at(&primary, &fallbacks, ordinal).is_none(),
+                "P3"
+            );
+        }
     }
 }
