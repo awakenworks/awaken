@@ -1,0 +1,62 @@
+[package]
+name = "awaken-session-environment"
+description = "The sandbox-backed Session environment: Workdir, Namespace and container adapters behind the Session environment ports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "worker"
+layer = "infrastructure"
+authority = "session-environment"
+
+[dependencies]
+# The per-role ports this crate implements.
+awaken-session-environment-contract.workspace = true
+# The backend-erased container environments the Container tier adapts.
+awaken-container-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-agent-channel.workspace = true
+awaken-runtime-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
+awaken-lease-contract.workspace = true
+awaken-sandbox-control.workspace = true
+# The Workdir and Namespace tiers.
+awaken-sandbox-local = { workspace = true }
+# Hand process reaping and Hand lifecycle metrics.
+awaken-run-executor-acp = { workspace = true }
+awaken-observability = { workspace = true }
+# The canonical built-in tool descriptors a Hand serves.
+awaken-ext-builtin-tools = { workspace = true }
+async-trait.workspace = true
+base64 = "0.22"
+serde_json.workspace = true
+url.workspace = true
+uuid = { version = "1", features = ["v4"] }
+tokio = { workspace = true, features = ["sync", "time", "io-util", "process"] }
+tracing = "0.1"
+# The fake container provider decodes real container handles (test-support).
+awaken-sandbox-container = { workspace = true, optional = true }
+
+[features]
+# Shared fake providers, processes and Hand factories, plus test access to the
+# adapters behind the role handles, for this crate's and the Host's tests.
+test-support = [
+    "dep:awaken-sandbox-container",
+    "awaken-sandbox-local/test-support",
+    "awaken-provisioning-contract/test-support",
+]
+# Live-backend tests only: a real Docker daemon behind the container tier.
+docker-tests = ["awaken-sandbox-container/docker"]
+
+[dev-dependencies]
+awaken-sandbox-container.workspace = true
+awaken-sandbox-local = { workspace = true, features = ["test-support"] }
+awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
+awaken-lease-testkit.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true

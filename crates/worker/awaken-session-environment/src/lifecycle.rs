@@ -63,6 +63,13 @@ impl SandboxEnvironment {
         }
     }
 
+    /// The concrete sandbox behind the environment (test observability only;
+    /// production reaches it through the roles).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_sandbox(&self) -> &dyn pc::Sandbox {
+        self.sandbox()
+    }
+
     pub(super) fn sandbox(&self) -> &dyn pc::Sandbox {
         match self {
             Self::Workdir { sandbox, .. } => sandbox.as_ref(),
@@ -99,13 +106,15 @@ impl SandboxEnvironment {
     /// Direct provider status is test observability only. Production recovery
     /// uses the provider's effect-free typed observation under the Session
     /// realization fence.
-    #[cfg(test)]
-    pub(crate) async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
         self.sandbox().status().await
     }
 
-    #[cfg(test)]
-    pub(crate) async fn run_test_command(
+    /// Run `command` to completion in the environment's sandbox (test
+    /// observability only).
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn run_test_command(
         &self,
         command: pc::Command,
     ) -> Result<pc::ExitStatus, pc::SandboxError> {

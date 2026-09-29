@@ -1389,6 +1389,7 @@ dependencies = [
  "awaken-runtime-host-testkit",
  "awaken-sandbox-container",
  "awaken-sandbox-local",
+ "awaken-session-environment",
  "awaken-session-environment-contract",
  "awaken-session-executor",
  "tempfile",
@@ -2370,6 +2371,7 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-resource-persistence",
  "awaken-runtime-contract",
+ "awaken-session-environment",
  "awaken-session-executor",
  "awaken-session-store",
  "tempfile",
@@ -2776,6 +2778,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-session-environment"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "awaken-agent-channel",
+ "awaken-container-contract",
+ "awaken-ext-builtin-tools",
+ "awaken-lease-contract",
+ "awaken-lease-testkit",
+ "awaken-observability",
+ "awaken-provisioning-contract",
+ "awaken-resource-contract",
+ "awaken-run-executor-acp",
+ "awaken-runtime-contract",
+ "awaken-sandbox-container",
+ "awaken-sandbox-control",
+ "awaken-sandbox-local",
+ "awaken-session-configuration-contract",
+ "awaken-session-environment-contract",
+ "base64 0.22.1",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "awaken-session-environment-contract"
 version = "1.0.0"
 dependencies = [
@@ -2880,6 +2911,7 @@ dependencies = [
  "awaken-session-application-contract",
  "awaken-session-budget-contract",
  "awaken-session-configuration-contract",
+ "awaken-session-environment",
  "awaken-session-environment-contract",
  "awaken-session-error-contract",
  "awaken-session-event-contract",

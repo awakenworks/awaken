@@ -75,7 +75,7 @@ pub(super) fn workspace_path(subdir: &str) -> Result<String, pc::SandboxError> {
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn read_root(subdir: &str, outputs_path: &str) -> Result<String, pc::SandboxError> {
     let workspace = workspace_path(subdir)?;
     if subdir == "outputs" {

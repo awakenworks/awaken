@@ -32,7 +32,7 @@ fi
 # native Sandbox lifecycle and filesystem boundary on the executing OS.
 cargo test -p awaken-session-executor --lib resource_prompt_tests
 cargo test -p awaken-session-executor --lib trusted_host_repository_projection_preserves_the_exact_tier
-cargo test -p awaken-session-executor --lib trusted_host_live_resource_admission_keeps_readonly_advisory
+cargo test -p awaken-session-environment --lib trusted_host_live_resource_admission_keeps_readonly_advisory
 # Memory replay decision tables cover absent/exact/different installed pins,
 # lost acknowledgements and concurrent callers as well as Provider restart.
 # Select this existing group once: prompt and terminal rows have their own
@@ -47,10 +47,10 @@ cargo test -p awaken-session-executor --lib terminal_
 # their existing test module once on every OS; the terminal filter above does
 # not include these source/ABA rows, and provider unit tests cannot prove wiring.
 cargo test -p awaken-session-executor --lib fence_source_tests
-cargo test -p awaken-session-executor --lib \
+cargo test -p awaken-session-environment --lib \
   trusted_host_filesystem_view_maps_workspace_relative_cwd_once
-cargo test -p awaken-session-executor --lib trusted_host_installed_hand
-cargo test -p awaken-session-executor --lib workdir_unknown_hand_reap
+cargo test -p awaken-session-environment --lib trusted_host_installed_hand
+cargo test -p awaken-session-environment --lib workdir_unknown_hand_reap
 cargo test -p awaken-session-executor --lib \
   configured_working_directory_drives_process_and_acp_from_one_view
 cargo test -p awaken-session-executor --lib \
@@ -75,6 +75,7 @@ cargo test -p awaken-sandbox-control-transport --lib
 cargo test -p awaken-provisioning-contract --lib
 cargo test -p awaken-sandbox-container --lib
 cargo test -p awaken-sandbox-local --lib
+cargo test -p awaken-session-environment --lib
 # The authority clock's Linux BOOTTIME and non-Linux Instant paths both need
 # every matrix runner; the local-process scoped cutoff reads the same Linux clock.
 cargo test -p awaken-authority-clock --lib
@@ -96,6 +97,8 @@ if [[ "$linux_supervision" == true ]]; then
   # mandatory Linux gate from portable unit builds without an installed helper.
   AWAKEN_TEST_SCOPED_LAUNCHER="$(command -v bwrap)" \
     cargo test -p awaken-session-executor --lib trusted_host_scoped_session -- --ignored
+  AWAKEN_TEST_SCOPED_LAUNCHER="$(command -v bwrap)" \
+    cargo test -p awaken-session-environment --lib trusted_host_scoped_session -- --ignored
 fi
 # These startup rows require the just-built release companion. The thin scoped
 # qualification above intentionally does not provide Hand, and must not race
