@@ -2,6 +2,169 @@
 
 use super::*;
 
+#[tokio::test]
+async fn revoked_owner_waits_for_exact_monotonic_resource_readoption() {
+    // Causes: R1 revoked durable B1 with current Root revision advancing to
+    // same-generation/same-substrate B2 by one owned File path; R2 ordinary
+    // strict projection; R3 changed generation, foreign substrate, or a
+    // different retirement cause. Effects: R1 permits only the pending
+    // projection and retains the old physical Arc/cleanup owner; R2/R3 reject
+    // before publication or owner replacement. Provider Ready/adopt is the
+    // separate physical edge, not a consequence of this projection.
+    let thread = "revoked-file-resource";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
+    let environment = environment(&provider, thread).await;
+    let previous = environment.lifecycle().handle();
+    let mut next_json = serde_json::to_value(&previous).unwrap();
+    next_json["payload"]["owned_paths"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!("/workspace/confirmed-2.json"));
+    let next: awaken_provisioning_contract::SandboxHandle =
+        serde_json::from_value(next_json).unwrap();
+    assert!(previous.owned_paths_are_monotonic_to(&next));
+    let binding = serde_json::to_string(&next).unwrap();
+    let initial = match resident(thread, environment.clone()) {
+        SessionEnvironmentOwner::Resident(owned) => owned,
+        _ => unreachable!(),
+    };
+    let retired = || {
+        SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+            cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+            owned: RetiringEnvironmentOwner::Bound(initial.clone()),
+        })
+    };
+    let projection =
+        |identity, binding| ProjectedEnvironmentOwner::AwaitingAdoption { identity, binding };
+    let mut pending = retired();
+    assert!(
+        pending
+            .install_projection(projection(identity(thread), binding.clone()), true)
+            .is_err(),
+        "R2"
+    );
+    pending
+        .install_projection_with_resource_reservation(
+            projection(identity(thread), binding.clone()),
+            true,
+            true,
+        )
+        .expect("R1 pending projection");
+    assert!(
+        matches!(&pending,
+        SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+            cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+            owned: RetiringEnvironmentOwner::Bound(owned),
+        }) if owned.binding == initial.binding && Arc::ptr_eq(&owned.environment, &environment)),
+        "R1"
+    );
+    let mut different_generation = retired();
+    assert!(
+        different_generation
+            .install_projection_with_resource_reservation(
+                projection(identity("other-generation"), binding.clone()),
+                true,
+                true,
+            )
+            .is_err(),
+        "R3 generation"
+    );
+    let mut foreign = next;
+    foreign.sandbox_id = "foreign-sandbox".into();
+    let mut foreign_owner = retired();
+    assert!(
+        foreign_owner
+            .install_projection_with_resource_reservation(
+                projection(identity(thread), serde_json::to_string(&foreign).unwrap()),
+                true,
+                true,
+            )
+            .is_err(),
+        "R3 substrate"
+    );
+    let mut terminal = retired();
+    if let SessionEnvironmentOwner::Retiring(ref mut retiring) = terminal {
+        retiring.cause = SessionEnvironmentRetirementCause::Terminal {
+            effect_id: "terminal".into(),
+        };
+    }
+    assert!(
+        terminal
+            .install_projection_with_resource_reservation(
+                projection(identity(thread), binding),
+                true,
+                true,
+            )
+            .is_err(),
+        "R3 terminal owner"
+    );
+}
+
+#[tokio::test]
+async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
+    // C1 a bound durable owner is revoked; C2 the current root names the same
+    // Sandbox plus one File path and the same generation; C3 a foreign
+    // generation claims those bytes. R1=C1+C2 => decode/validate B2 but do
+    // not borrow old B1 as an exact Resident; the old Arc remains Retiring.
+    // R2=C1+C3 => reject before provider observation or any slot mutation.
+    let thread = "revoked-resource-adoption";
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
+        .into_session_provider();
+    let environment = environment(&provider, thread).await;
+    let initial = match resident(thread, environment.clone()) {
+        SessionEnvironmentOwner::Resident(owned) => owned,
+        _ => unreachable!(),
+    };
+    let mut successor = serde_json::to_value(environment.lifecycle().handle()).unwrap();
+    successor["payload"]["owned_paths"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!("/workspace/confirmed-2.json"));
+    let binding = serde_json::to_string(&successor).unwrap();
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    host.session_slots.update(thread, |slot| {
+        slot.environment_owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+            cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+            owned: RetiringEnvironmentOwner::Bound(initial.clone()),
+        });
+    });
+    let (_, _, resident, candidate) = host
+        .validated_session_environment_adoption(
+            thread,
+            &binding,
+            &provider,
+            None,
+            Some(generation(thread).id()),
+        )
+        .expect("R1 trusted later Resource receipt");
+    assert!(
+        resident.is_none() && candidate.is_none(),
+        "R1 old Arc is not B2"
+    );
+    assert!(
+        host.validated_session_environment_adoption(
+            thread,
+            &binding,
+            &provider,
+            None,
+            Some(generation("foreign").id()),
+        )
+        .is_err(),
+        "R2 foreign generation"
+    );
+    assert!(
+        matches!(host.session_slots.read(thread, |slot| slot.environment_owner.clone()),
+        Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+            cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+            owned: RetiringEnvironmentOwner::Bound(owned),
+        })) if owned.binding == initial.binding && Arc::ptr_eq(&owned.environment, &environment)),
+        "R1/R2 retain the sole cleanup owner"
+    );
+}
+
 fn restore_request(thread: &str) -> awaken_session_state_contract::SandboxRestoreRequest {
     let generation = generation(thread);
     let suspend = awaken_session_state_contract::SessionEnvironmentOperation::new(

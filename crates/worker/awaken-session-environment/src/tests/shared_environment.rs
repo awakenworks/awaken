@@ -3,6 +3,71 @@
 use super::*;
 
 #[tokio::test]
+async fn revoked_container_rebinds_only_a_proven_owned_path_successor() {
+    // Causes: C1 a revoked wrapper retains container V2 handle A; C2 the
+    // aggregate has committed A plus one owned input path on the same
+    // substrate; C3 the incoming handle instead names a foreign substrate.
+    // R1=C1+C2 => adopt the existing container once with a fresh wrapper and
+    // preserve its exact output root. R2=C1+C3 => reject before any adoption.
+    // This fixture proves provider routing and fences; real Pod identity and
+    // process exit remain Kubernetes acceptance obligations.
+    let provider = Arc::new(FakeContainerProvider::default());
+    let configured = SandboxEnvironmentProvider::container(
+        provider.clone(),
+        Vec::new(),
+        Arc::new(FakeHandExecutorFactory),
+        "/usr/local/bin/awaken-sandbox",
+    )
+    .into_session_provider();
+    let environment = configured.create(&spec()).await.unwrap();
+    let before = environment.lifecycle().handle();
+    let mut next_json = serde_json::to_value(&before).unwrap();
+    next_json["payload"]["owned_paths"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!("/mnt/session/uploads/confirmed-2.json"));
+    let next: pc::SandboxHandle = serde_json::from_value(next_json).unwrap();
+    assert!(before.owned_paths_are_monotonic_to(&next));
+    let rebound = configured
+        .adoption()
+        .rebind_retained(
+            &spec(),
+            &next,
+            &environment,
+            awaken_session_environment_contract::ProviderEffect::Unattached,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rebound.lifecycle().handle(), next, "R1 exact new handle");
+    assert_eq!(
+        provider.creates.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "R1 no second physical create"
+    );
+    assert_eq!(
+        provider.adopts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "R1 canonical provider adoption"
+    );
+    let mut foreign = next;
+    foreign.sandbox_id = "another-container".into();
+    assert!(
+        configured
+            .adoption()
+            .rebind_retained(
+                &spec(),
+                &foreign,
+                &environment,
+                awaken_session_environment_contract::ProviderEffect::Unattached,
+            )
+            .await
+            .is_err(),
+        "R2 foreign substrate"
+    );
+    assert_eq!(provider.adopts.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_failure() {
     // Causes: H1 trusted provider; H2 installed Hand missing at dispatch;
     // H3 concurrent first calls; H4 provider relocated/adopted. Effects:

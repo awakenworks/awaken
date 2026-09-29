@@ -23,6 +23,10 @@ impl FrozenResourceProjectionMode {
         matches!(self, Self::Dispatch | Self::Synchronize)
     }
 
+    pub(super) const fn allows_revoked_owner_reservation(self, revision: u64) -> bool {
+        self.synchronizes() && revision > 0
+    }
+
     pub(super) const fn transition_use(
         self,
     ) -> awaken_session_realization_contract::FrozenResourceTransitionUse {
@@ -149,7 +153,8 @@ fn session_resource_replacement_requires_newer_or_authority_amended_generation()
 #[cfg(test)]
 mod tests {
     use super::{
-        FrozenResourceTransitionInstallDecision, frozen_resource_transition_install_decision,
+        FrozenResourceProjectionMode, FrozenResourceTransitionInstallDecision,
+        frozen_resource_transition_install_decision,
     };
 
     fn transition(
@@ -259,6 +264,37 @@ mod tests {
                     mode.allows_unattempted_amendment(),
                 ),
                 expected,
+            );
+        }
+    }
+
+    #[test]
+    fn revoked_owner_can_receive_a_committed_resource_receipt_after_child_completion() {
+        // C1 a child completed Resource revision 2, so the next parent
+        // projection has previous=desired=2; C2 this is live Dispatch or
+        // Synchronize, versus ValidateInstalled/Terminal; C3 revision 0 has
+        // no committed Resource. R1=C1+live => allow only the owner kernel to
+        // assess a revoked same-substrate path successor. R2=!live or C3 =>
+        // no such admission. This does not itself admit a physical binding.
+        let completed = transition("workspace", 2, Some("confirmed"));
+        assert_eq!(completed.previous().revision, completed.desired().revision);
+        for mode in [
+            FrozenResourceProjectionMode::Dispatch,
+            FrozenResourceProjectionMode::Synchronize,
+        ] {
+            assert!(
+                mode.allows_revoked_owner_reservation(completed.desired().revision),
+                "R1"
+            );
+            assert!(!mode.allows_revoked_owner_reservation(0), "R2 no Resource");
+        }
+        for mode in [
+            FrozenResourceProjectionMode::ValidateInstalled,
+            FrozenResourceProjectionMode::Terminal,
+        ] {
+            assert!(
+                !mode.allows_revoked_owner_reservation(completed.desired().revision),
+                "R2"
             );
         }
     }

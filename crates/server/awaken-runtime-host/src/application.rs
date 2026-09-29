@@ -1497,6 +1497,13 @@ impl crate::SharedHost {
                 resource_transition.desired().revision,
             )));
         }
+        // A child may commit Resource revision R before the parent resumes;
+        // the frozen transition can then be R->R even though this Worker's
+        // revoked physical wrapper still holds R-1. The root receipt and the
+        // owner kernel, rather than the transition delta alone, govern whether
+        // that exact monotonic reservation may be re-adopted.
+        let pending_resource_reservation =
+            resource_mode.allows_revoked_owner_reservation(projection.resource_revision);
         // Resource installation owns generation equality and fencing. Claimed
         // replay revalidates the exact aggregate transition. Requirements are
         // staged here, but only the physical transition body may publish the
@@ -1507,11 +1514,12 @@ impl crate::SharedHost {
             // object. Publication still revalidates this same canonical kernel.
             self.session_slots.update(thread, |slot| {
                 let newer = slot.validate_projection_receipt(&receipt)?;
-                slot.projected_environment_owner(
+                slot.projected_environment_owner_for_resource_reservation(
                     thread,
                     &projection.workspace_id,
                     &projection.environment,
                     newer,
+                    pending_resource_reservation,
                 )
                 .map(|_| ())
             })?;
@@ -1558,11 +1566,12 @@ impl crate::SharedHost {
                 slot.validate_session_publication(publication.as_ref())?;
                 slot.validate_environment_projection(thread, &environment_projection)?;
                 let newer = slot.validate_projection_receipt(&receipt)?;
-                let owner = slot.projected_environment_owner(
+                let owner = slot.projected_environment_owner_for_resource_reservation(
                     thread,
                     &projection.workspace_id,
                     &projection.environment,
                     newer,
+                    pending_resource_reservation,
                 )?;
                 if let Some(preparation) = &preparation {
                     preparation.finish(slot)?;
