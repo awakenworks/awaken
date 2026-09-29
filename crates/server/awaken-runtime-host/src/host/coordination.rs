@@ -856,7 +856,11 @@ impl SharedHost {
         }
         let store = self.dispatch_store()?;
 
-        let ctx = self.ctx_for(command.session_id.as_str(), None).await?;
+        // This is Coordinator admission, not a physical execution attempt.
+        // A completed child may have left its Environment with a remote Worker.
+        let ctx = self
+            .ctx_for_session_coordination(command.session_id.as_str(), None)
+            .await?;
         let run_id = RunId(format!(
             "coord-report-run-{}",
             awaken_agent_contract::stable_fingerprint(&(
