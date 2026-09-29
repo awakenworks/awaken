@@ -692,6 +692,17 @@ impl SessionAgentCoordination for SessionApplication {
             command.source_run_id.0.as_str(),
             command.operation_id.as_str(),
         ));
+        // A new child is authored after the committed source call, so its
+        // Resource envelope must use the Session's current desired generation.
+        // Reuse complete dispatch projection; this stages facts only. The
+        // claimed Worker remains the sole physical realization owner.
+        self.install_dispatch_projection(&owner, &session)
+            .await
+            .map_err(|error| {
+                RunError::unavailable(format!(
+                    "Agent coordination Resource projection is unavailable: {error}"
+                ))
+            })?;
         let (_, activity_epoch) = self
             .begin_activity_for_operation(&command.session_id, &command.operation_id)
             .await

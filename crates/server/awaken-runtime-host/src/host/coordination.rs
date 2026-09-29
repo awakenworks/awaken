@@ -1252,7 +1252,9 @@ mod tests {
         // queues desired B before physical publication; E2 desired B wins over
         // stale A; E3 legacy admission falls back to A; E4 the queued manifest
         // owns exact Workspace scope and Worker capability; E5 selection never
-        // publishes or replaces active.
+        // publishes or replaces active. E6 a real File binding, exact path and
+        // read-only access survive the envelope; revision-only empty fixtures
+        // cannot establish the file projection that the writer needs.
         //
         // | Rule | Active | Transition | Queued | Active after | Effects    |
         // | C1   | none   | 0->B       | B      | none         | E1,E4,E5  |
@@ -1264,7 +1266,23 @@ mod tests {
             awaken_session_resource_contract::SessionResourceManifest::at_revision(
                 "workspace-a",
                 revision,
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
+                awaken_session_resource_contract::ResolvedSessionResources::try_new(
+                    vec![awaken_session_resource_contract::ResolvedInput {
+                        created_at_unix_ms: None,
+                        updated_at_unix_ms: None,
+                        binding_id: awaken_resource_contract::BindingId::from(format!(
+                            "file-binding-{revision}"
+                        )),
+                        source: awaken_session_resource_contract::ResolvedInputSource::File {
+                            file_id: format!("file-{revision}").into(),
+                        },
+                        mount_path: format!("/mnt/files/confirmed-{revision}.json"),
+                        access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                        instructions: None,
+                    }],
+                    Vec::new(),
+                )
+                .expect("File-bearing manifest"),
             )
         };
         for (rule, active_revision, desired_revision, expected_revision) in [
