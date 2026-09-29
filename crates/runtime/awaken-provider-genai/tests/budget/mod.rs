@@ -4,9 +4,7 @@
 //! budget declares them here, exactly as Runtime or a probe would.
 use std::time::Duration;
 
-use awaken_runtime_contract::llm::{
-    ModelAttemptTiming, ModelInferenceBudget, ModelInferenceClock, TokioModelInferenceClock,
-};
+use awaken_runtime_contract::llm::{ModelAttemptTiming, ModelInferenceBudget};
 use awaken_runtime_contract::model_operation::with_model_invocation_context;
 
 /// One attempt whose complete response must arrive within `response` and
@@ -21,7 +19,7 @@ pub async fn with_budget<T>(
     budget: ModelInferenceBudget,
     future: impl std::future::Future<Output = T>,
 ) -> T {
-    let timing = ModelAttemptTiming::standalone(TokioModelInferenceClock.now(), budget)
+    let timing = ModelAttemptTiming::standalone(awaken_lease_contract::mono::now(), budget)
         .expect("test budget is representable");
     with_model_invocation_context(None, timing, future).await
 }

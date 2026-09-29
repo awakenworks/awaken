@@ -1920,7 +1920,7 @@ impl LlmExecutor for SlowFailingLlm {
         self.deadlines
             .lock()
             .unwrap()
-            .push(timing.response_deadline());
+            .push(timing.response_deadline().instant());
         // awaken-wait: the provider's own response time is the cause under test.
         tokio::time::sleep(self.delay).await;
         Err((self.error)().with_execution_evidence(

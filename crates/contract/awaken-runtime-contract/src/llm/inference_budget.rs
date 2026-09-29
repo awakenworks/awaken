@@ -11,25 +11,12 @@
 
 use super::Error;
 use crate::model_operation::{ModelExecutionEvidence, NoDispatchProof};
+use awaken_lease_contract::mono::{Instant, MonoDeadline};
 use std::time::Duration;
-use tokio::time::Instant;
 
-/// Monotonic scheduler clock for inference policy only. UTC observation and
-/// suspend-aware Worker authority clocks retain their existing distinct owners.
-pub trait ModelInferenceClock: Send + Sync {
-    fn now(&self) -> Instant;
-}
-
-/// The one scheduler adapter shared by Runtime and native provider timing.
-/// Tokio's controlled clock lets real HTTP tests name elapsed policy time.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TokioModelInferenceClock;
-
-impl ModelInferenceClock for TokioModelInferenceClock {
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-}
+// Inference policy reads the one monotonic point, `awaken_lease_contract::mono`:
+// tokio's controlled clock, so a paused test runtime names elapsed policy time.
+// UTC observation and suspend-aware Worker authority keep their own owners.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
@@ -133,9 +120,10 @@ impl ModelInferenceBudget {
     pub fn logical_deadline(
         self,
         started: Instant,
-    ) -> std::result::Result<Instant, ModelInferenceBudgetError> {
+    ) -> std::result::Result<MonoDeadline, ModelInferenceBudgetError> {
         started
             .checked_add(self.total)
+            .map(MonoDeadline::at)
             .ok_or(ModelInferenceBudgetError)
     }
 }
@@ -146,8 +134,8 @@ impl ModelInferenceBudget {
 /// read it.
 #[derive(Debug, Clone, Copy)]
 pub struct ModelAttemptTiming {
-    response_deadline: Instant,
-    watchdog_deadline: Instant,
+    response_deadline: MonoDeadline,
+    watchdog_deadline: MonoDeadline,
     idle: Duration,
 }
 
@@ -158,18 +146,18 @@ impl ModelAttemptTiming {
     pub fn start_at(
         started: Instant,
         budget: ModelInferenceBudget,
-        logical_deadline: Instant,
+        logical_deadline: MonoDeadline,
     ) -> std::result::Result<Self, ModelInferenceBudgetError> {
         let response_deadline = started
             .checked_add(budget.attempt_response)
             .ok_or(ModelInferenceBudgetError)?
-            .min(logical_deadline);
+            .min(logical_deadline.instant());
         let watchdog_deadline = response_deadline
             .checked_add(budget.return_allowance)
             .ok_or(ModelInferenceBudgetError)?;
         Ok(Self {
-            response_deadline,
-            watchdog_deadline,
+            response_deadline: MonoDeadline::at(response_deadline),
+            watchdog_deadline: MonoDeadline::at(watchdog_deadline),
             idle: budget.idle,
         })
     }
@@ -184,11 +172,11 @@ impl ModelAttemptTiming {
     }
 
     #[must_use]
-    pub const fn response_deadline(self) -> Instant {
+    pub const fn response_deadline(self) -> MonoDeadline {
         self.response_deadline
     }
     #[must_use]
-    pub const fn watchdog_deadline(self) -> Instant {
+    pub const fn watchdog_deadline(self) -> MonoDeadline {
         self.watchdog_deadline
     }
     #[must_use]
@@ -252,7 +240,7 @@ mod tests {
         // scope masks both outer facts. S3 return restores/removes exactly the
         // original scope. The one task-local remains the sole invocation owner.
         let timing = ModelAttemptTiming::standalone(
-            ModelInferenceClock::now(&TokioModelInferenceClock),
+            awaken_lease_contract::mono::now(),
             ModelInferenceBudget::DEFAULT,
         )
         .unwrap();
@@ -349,17 +337,23 @@ mod tests {
         // response deadline = min(S + A, L); watchdog = response + R; idle is
         // the budget's; an unrepresentable instant is a typed refusal, never a
         // clock panic.
-        let start = TokioModelInferenceClock.now();
+        let start = awaken_lease_contract::mono::now();
         let budget = ModelInferenceBudget::new(100 * MS, 10 * MS, 5 * MS, 2 * MS).unwrap();
         for (row, logical, response) in [
             ("attempt window first", 100, 10),
             ("logical deadline first", 4, 4),
             ("logical deadline already spent", 0, 0),
         ] {
-            let timing = ModelAttemptTiming::start_at(start, budget, start + logical * MS).unwrap();
-            assert_eq!(timing.response_deadline(), start + response * MS, "{row}");
+            let timing =
+                ModelAttemptTiming::start_at(start, budget, MonoDeadline::at(start + logical * MS))
+                    .unwrap();
             assert_eq!(
-                timing.watchdog_deadline(),
+                timing.response_deadline().instant(),
+                start + response * MS,
+                "{row}"
+            );
+            assert_eq!(
+                timing.watchdog_deadline().instant(),
                 start + (response + 2) * MS,
                 "{row}"
             );
@@ -367,7 +361,7 @@ mod tests {
         }
         let standalone = ModelAttemptTiming::standalone(start, budget).unwrap();
         assert_eq!(
-            standalone.response_deadline(),
+            standalone.response_deadline().instant(),
             start + 10 * MS,
             "standalone"
         );
